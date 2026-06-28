@@ -6,16 +6,38 @@
 //! graph, so "the core cannot perform an effect" stays a compile-time fact.
 //!
 //! Modules:
-//! - [`hash`] — content hashing (I5) and, as a free consequence, transitive
-//!   pinning (I6): a unit's hash is computed bottom-up over its closure, every
-//!   child referenced only by its 32-byte hash.
+//! - [`hash`] — content hashing (I5) and transitive pinning (I6).
 //! - [`value`] — the runtime [`Value`] that flows on wires (P1.4.1).
+//! - [`resolve`] — turn a child hash into its [`Unit`] (shared by validation and
+//!   evaluation).
+//! - [`validate`] — graph validation: well-formedness, acyclicity, wire-time type
+//!   compatibility (P1.3.1).
 
 mod hash;
+mod resolve;
+mod validate;
 mod value;
 
 pub use hash::{
     encode_preimage, hash_unit, Edge, EncodeError, Hash, Param, Port, Type, Unit,
     UnitBody, ENCODING_VERSION,
 };
+pub use resolve::{MapResolver, Resolver};
+pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;
+
+/// Reserved edge endpoint denoting a composite's **boundary** (its own interface)
+/// rather than one of its children.
+///
+/// The composite's interface↔inner binding rides the ordinary edge mechanism — no
+/// new fields, no encoder change:
+/// - an edge with `from_child == BOUNDARY` carries the composite's input `from_port`
+///   *inward* to a child (the boundary acts as a **source**);
+/// - an edge with `to_child == BOUNDARY` exposes a child's output as the composite's
+///   output `to_port` (the boundary acts as a **sink**).
+///
+/// Because the boundary is a source for inputs and a sink for outputs, it can never
+/// participate in an internal cycle, and a graph traversal that only follows
+/// child→child edges (e.g. acyclicity) naturally ignores it. A composite cannot have
+/// `u32::MAX` children, so the sentinel never collides with a real index.
+pub const BOUNDARY: u32 = u32::MAX;
