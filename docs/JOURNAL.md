@@ -193,3 +193,40 @@ substitutable); `deterministic`.
 **Next inch.** **P1.4.4 — determinism harness** (ordered structures already in use; add
 the repeated-/cross-run identity tests and a fuzz check), then Phase B (**P1.5.1
 encapsulation**, where `Map` and `ctx` finally land).
+
+---
+
+## 2026-06-29 · P1.4.4 — Determinism harness · *(Phase A, inch 6 — closes Phase A)*
+
+**Built.** `holon-core::is_finite_number` (the float-discipline predicate) + the
+`determinism` harness. The `number` constant now **rejects non-finite values** (NaN,
+±inf) — the one place they could enter from user data — so the value domain stays finite
+and equality / future canonical hashing are total.
+
+**Leaf closed.** **P1.4.4** — and with it **Phase A** (Evaluation) is complete:
+`P1.4.1 → P1.3.1 → P1.4.2 → P1.4.3 → P1.4.4`, plus P1.2.1 discharged. `holon-core` holds
+values, validates graphs, computes, and is provably deterministic.
+
+**Tests prove** (3, total now ~52): `golden_nested_arithmetic` (`(2+3)*(10-4)=30`, a
+pinned multi-level answer); `deterministic_over_random_graphs` (200 random nested
+arithmetic trees, each evaluated **twice** for determinism *and* against a direct Rust
+computation for correctness — kept in the exact-integer range so eval must match
+bit-for-bit); `non_finite_constants_rejected`.
+
+**Forks pinned.**
+- **Determinism is structural, not bolted on.** The evaluator already uses only ordered
+  structures (`BTreeMap`/`BTreeSet`, index-keyed scratch); the harness *proves* it rather
+  than enforcing it after the fact.
+- **Float discipline = finite-only domain.** NaN/±inf rejected at the constant boundary;
+  division already guards ÷0. This keeps `Value` equality total — the property the shared
+  cache (P3.3) inherits.
+- **Cross-target identity deferred to P4.2.1.** Native-vs-WASM bit-identity is the other
+  half of I5; it needs the WASM bindings to exist. Single-target determinism is
+  established here; the harness is ready to run against WASM later.
+- **No external dep for fuzzing.** A tiny inline LCG generates the random graphs — the
+  pure core keeps its only dependency (`blake3`).
+
+**Phase A complete. Next: Phase B — P1.5.1 (encapsulation: derive-then-freeze).** This is
+where a selection of wired units becomes a new hashed `Unit` with an auto-derived
+interface (unbound inputs promote, the chosen output is exposed, kind = union of
+children) — and, right after, where **`Map`** and the evaluation **`ctx`** finally land.

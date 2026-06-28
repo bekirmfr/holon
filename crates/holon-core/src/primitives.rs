@@ -16,7 +16,10 @@ use crate::{Param, Value};
 pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> {
     match name {
         // ── constants: value comes from a param, no inputs ──
-        "number" => param(params, "value").and_then(|s| s.parse::<f64>().ok()).map(Value::Number),
+        "number" => param(params, "value")
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|n| crate::determinism::is_finite_number(*n))
+            .map(Value::Number),
         "boolean" => param(params, "value").and_then(parse_bool).map(Value::Boolean),
         "text" => param(params, "value").map(|s| Value::Text(s.to_string())),
 

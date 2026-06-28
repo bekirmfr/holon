@@ -15,7 +15,9 @@
 //! - [`primitives`] — the pure first-order primitive vocabulary + native compute
 //!   (P1.4.2).
 //! - [`eval`] — the eager graph evaluator (P1.4.3).
+//! - [`determinism`] — float discipline + the determinism harness (P1.4.4).
 
+mod determinism;
 mod eval;
 mod hash;
 mod resolve;
@@ -24,6 +26,7 @@ mod value;
 
 pub mod primitives;
 
+pub use determinism::is_finite_number;
 pub use eval::eval;
 pub use hash::{
     encode_preimage, hash_unit, Edge, EncodeError, Hash, Param, Port, Type, Unit,
