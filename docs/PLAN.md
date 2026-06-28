@@ -195,6 +195,11 @@ moves to **P2.4**. The Language is eager; the OS decides when effects fire.
    *pre:* P1.6 (done), P1.3.1, P1.4.1 · *inv:* `I4`/`I8` · *test:* derived interface
    matches expectation; a selection containing a sink yields sink-kind; derivation is
    deterministic · *effort:* **M**
+   *→ **L4 detailed** in `P1.5.1-encapsulation-L4.md`. Headline: derive-vs-choose split —
+   types + boundary edges are **derived**; which inputs promote, their **order** (= identity),
+   names, and the exposed output are **chosen** (in `EncapSpec`). `derive_and_freeze`
+   generates exactly the `BOUNDARY` edges eval/validate consume; `default_spec` gives the
+   canonical proposal. Kind-derivation stays P2; param promotion stays P1.5.2.*
 
 8. **P1.5.2 · Param promotion** — `Param = Frozen(value) | Open(name)` + a binding
    table on the composite; the encoder tags the two states; the evaluator injects
@@ -646,6 +651,7 @@ How we deepen this plan, and in what order:
 | P3 leaves (L3) | L3 | ✅ frozen |
 | P4 leaves (L3) | L3 | ✅ frozen |
 | P1.4.3 · evaluator | L4 | design note (`P1.4.3-evaluator-L4.md`) |
+| P1.5.1 · encapsulation | L4 | design note (`P1.5.1-encapsulation-L4.md`) |
 
 *Level 3 ratified and frozen across all four pillars. Master build order derived.*
 *Selected leaves descend to L4 just-in-time (see "Level-4 readiness"). First descent: P1.4.3.*
