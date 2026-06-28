@@ -78,20 +78,22 @@ impl Type {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Param {
     Frozen { name: String, value: String },
-    Open { name: String },
+    /// A hole. `name` is the param's role (what `compute` looks up once filled); `bind` is
+    /// the open-parameter key it is filled by at instantiate time.
+    Open { name: String, bind: String },
 }
 
 impl Param {
     pub fn frozen(name: impl Into<String>, value: impl Into<String>) -> Self {
         Param::Frozen { name: name.into(), value: value.into() }
     }
-    pub fn open(name: impl Into<String>) -> Self {
-        Param::Open { name: name.into() }
+    pub fn open(name: impl Into<String>, bind: impl Into<String>) -> Self {
+        Param::Open { name: name.into(), bind: bind.into() }
     }
     /// The param's name (present for both variants).
     pub fn name(&self) -> &str {
         match self {
-            Param::Frozen { name, .. } | Param::Open { name } => name,
+            Param::Frozen { name, .. } | Param::Open { name, .. } => name,
         }
     }
     /// The frozen value, or `None` for an open hole.
@@ -99,6 +101,13 @@ impl Param {
         match self {
             Param::Frozen { value, .. } => Some(value),
             Param::Open { .. } => None,
+        }
+    }
+    /// The open-parameter key, for a hole; `None` when frozen.
+    pub fn bind(&self) -> Option<&str> {
+        match self {
+            Param::Open { bind, .. } => Some(bind),
+            Param::Frozen { .. } => None,
         }
     }
     /// Whether this param is an unfilled hole.
@@ -250,9 +259,10 @@ pub fn encode_preimage(unit: &Unit) -> Result<Vec<u8>, EncodeError> {
                 e.str(name)?;
                 e.str(value)?;
             }
-            Param::Open { name } => {
+            Param::Open { name, bind } => {
                 e.tag(PARAM_OPEN);
                 e.str(name)?;
+                e.str(bind)?;
             }
         }
     }

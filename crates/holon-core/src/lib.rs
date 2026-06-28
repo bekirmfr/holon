@@ -17,10 +17,12 @@
 //! - [`eval`] — the eager graph evaluator (P1.4.3).
 //! - [`determinism`] — float discipline + the determinism harness (P1.4.4).
 //! - [`encapsulate`] — derive-then-freeze a selection into a hashed `Unit` (P1.5.1).
+//! - [`promote`] — open params into holes and instantiate templates (P1.5.2).
 
 mod determinism;
 mod encapsulate;
 mod eval;
+mod promote;
 mod hash;
 mod resolve;
 mod validate;
@@ -30,6 +32,7 @@ pub mod primitives;
 
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Promote};
+pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::eval;
 pub use hash::{
     encode_preimage, hash_unit, Edge, EncodeError, Hash, Param, Port, Type, Unit,

@@ -353,3 +353,66 @@ leaves them intact. That is exactly why the encoder change was isolated first.
 **Next.** **P1.5.2 b/c** — `open_param` (frozen→open, make a template), `open_params` (the
 derived open interface), `instantiate` (open→frozen, specialize bottom-up and re-hash). Then
 Phase B closes.
+
+---
+
+## 2026-06-29 · P1.5.2 b/c — open / instantiate · *(Phase B, inch 3 b/c — closes Phase B)*
+
+**Built.** `holon-core::promote` —
+- `open_param(unit, name, bind)`: turn a frozen param into a hole (creates a template);
+- `open_params(unit, resolver)`: the **derived** open interface — the set of `bind` keys
+  across the closure (union over children), never stored (I8);
+- `instantiate(template, bindings, store)`: specialize — substitute `bind→value` throughout
+  the closure, re-hash bottom-up, insert new concrete units, return the top hash. Partial
+  binding leaves the rest open.
+
+**Representation fixed (found while building).** Sub-leaf (a) shipped `Open { name }`, but
+`instantiate` revealed a hole needs **two** names: the *role* `name` (`"value"`, what
+`compute` looks up once filled) and a separate *bind* key (`"K"`, what `instantiate` fills
+by) — otherwise two holes sharing a role name couldn't be set independently. Revised to
+`Open { name, bind }` (encoder + accessor `bind()`). Nothing had constructed `Open` yet, so
+the fix was clean and the 63 stayed green.
+
+**Leaf closed → Phase B complete.** `P1.5.1 → Map → P1.5.2`. The language pillar's
+composition story is whole: encapsulate flows into units, apply units higher-order (`map`),
+and parameterize units into families.
+
+**Tests prove** (5, total now ~68): `open_then_instantiate_is_identity` (open `number(5)`
+as `K`, bind `K=5` ⇒ **hash equals** the original `number(5)` — open and bind are true
+inverses); `family_by_hash` (`K=2` vs `K=3` ⇒ different units, eval to 2 vs 3);
+`open_params_is_derived` (`MultiplyByK`'s open interface is `{"K"}`, derived);
+`template_not_evaluable_until_instantiated` (template ⇒ `None`; `MultiplyBy3(7)=21` after);
+`partial_instantiation_leaves_rest_open`.
+
+**Forks pinned.**
+- **Instantiate-time (B) confirmed.** Instances are first-class content-addressed units;
+  eval and the cache treat them like any other unit — no param channel in either.
+- **Always-recurse.** `instantiate` rebuilds every child; an unaffected subtree rebuilds to
+  the **same hash** (content-addressing), so it's correct, just unoptimized. Skipping
+  subtrees with no bound open param is a deferred optimization.
+- **`instantiate` is coupled to `MapResolver`** (it needs `insert`). A `MutableStore` trait
+  would generalize it to the on-disk store (P3.8.1); deferred.
+
+**Next: Phase C — the effect boundary (P2).** Kinds, the state cell, derived kind +
+capabilities, eager effect-firing, design/deploy modes. The pure core is done; P2 builds the
+OS around it (in `holon-host`, never in `holon-core`).
+
+---
+
+## 2026-06-29 · Addendum — "template not evaluable" is consumer-dependent
+
+**Correction.** The P1.5.2 b/c entry claimed a template evaluates to `None`. A test caught
+that this is only true at the **primitive** level. A number with an open hole *does* eval to
+`None` (the hole makes `compute` fail). But a **composite** template whose hole feeds a
+**variadic** consumer (`multiply`/`add`) does **not** hard-fail — the missing operand is
+simply absent, so `multiply([7]) = 7`, not `None`. Variadic firing tolerates the gap.
+
+**Fixed.** Split the over-strong test into `primitive_template_is_not_evaluable` (a hole ⇒
+`None`, then instantiates and computes) and `instantiate_composite_specializes`
+(`MultiplyBy3(7)=21`, no false `None` claim). promote tests: 5 → 6; total ~69.
+
+**Pinned.** Templates are **"evaluate only after instantiation" by contract**, not by a
+hard eval-time guard. A universal guard (eval rejects any unit with open params in its
+closure) would cost a closure walk per eval and is **deferred**; the cheap primitive-level
+truth (an open hole ⇒ `compute` ⇒ `None`) already holds for the actual vocabulary, since
+every current primitive reads the param it would open.
