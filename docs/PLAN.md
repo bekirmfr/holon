@@ -204,6 +204,11 @@ moves to **P2.4**. The Language is eager; the OS decides when effects fire.
 8. **P1.5.2 · Param promotion** — `Param = Frozen(value) | Open(name)` + a binding
    table on the composite; the encoder tags the two states; the evaluator injects
    supplied params into open slots.
+   *→ **L4 detailed** in `P1.5.2-param-promotion-L4.md`. Refines the L3 sketch:
+   **instantiate-time specialization** (not eval-time injection) — `instantiate(template,
+   bindings)` produces a new concrete content-addressed unit; binding is **by name** (no
+   binding-table field); the open-param interface is **derived**. Encoder change = a
+   one-byte Frozen/Open tag on params.*
    *pre:* P1.4.3, P1.5.1, P1.6 · *inv:* `I4`/`I5` · *test:* `Double`(b=2) and
    `MultiplyByN`(b=open) hash differently; a promoted composite evaluates with the
    supplied value · *effort:* **M**
@@ -652,6 +657,7 @@ How we deepen this plan, and in what order:
 | P4 leaves (L3) | L3 | ✅ frozen |
 | P1.4.3 · evaluator | L4 | design note (`P1.4.3-evaluator-L4.md`) |
 | P1.5.1 · encapsulation | L4 | design note (`P1.5.1-encapsulation-L4.md`) |
+| P1.5.2 · param promotion | L4 | design note (`P1.5.2-param-promotion-L4.md`) |
 
 *Level 3 ratified and frozen across all four pillars. Master build order derived.*
 *Selected leaves descend to L4 just-in-time (see "Level-4 readiness"). First descent: P1.4.3.*
