@@ -140,7 +140,7 @@ fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver
         Some(Some(Value::List(xs))) => xs,
         _ => return None,
     };
-    let fn_hex = params.iter().find(|p| p.name == "fn").map(|p| p.value.as_str())?;
+    let fn_hex = params.iter().find(|p| p.name() == "fn").and_then(|p| p.value())?;
     let fn_hash = parse_hash(fn_hex)?;
     let unit = resolver.resolve(&fn_hash)?;
 
@@ -282,7 +282,7 @@ mod tests {
     fn double(r: &mut MapResolver) -> Hash {
         let two = Unit {
             body: UnitBody::Primitive { name: "number".into() },
-            params: vec![Param { name: "value".into(), value: "2".into() }],
+            params: vec![Param::frozen("value", "2")],
             inputs: vec![],
             output: Some(Type::Number),
         };
@@ -299,7 +299,7 @@ mod tests {
     fn map_unit(fn_hash: &Hash) -> Unit {
         Unit {
             body: UnitBody::Primitive { name: "map".into() },
-            params: vec![Param { name: "fn".into(), value: hex(fn_hash) }],
+            params: vec![Param::frozen("fn", hex(fn_hash))],
             inputs: vec![Port { name: "list".into(), ty: Type::List }],
             output: Some(Type::List),
         }

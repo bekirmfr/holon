@@ -122,7 +122,7 @@ fn as_index(v: &Value) -> Option<usize> {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 fn param<'a>(params: &'a [Param], name: &str) -> Option<&'a str> {
-    params.iter().find(|p| p.name == name).map(|p| p.value.as_str())
+    params.iter().find(|p| p.name() == name).and_then(|p| p.value())
 }
 fn parse_bool(s: &str) -> Option<bool> {
     match s {
@@ -169,7 +169,7 @@ mod tests {
     fn txt(s: &str) -> Value { Value::Text(s.into()) }
     fn boo(x: bool) -> Value { Value::Boolean(x) }
     fn list(xs: Vec<Value>) -> Value { Value::List(xs) }
-    fn p(name: &str, value: &str) -> Param { Param { name: name.into(), value: value.into() } }
+    fn p(name: &str, value: &str) -> Param { Param::frozen(name, value) }
 
     #[test]
     fn add_sums() {

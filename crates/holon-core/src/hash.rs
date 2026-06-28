@@ -2,7 +2,7 @@
 //!
 //! # What goes into a hash (the structural preimage)
 //! - the unit's **kind discriminant** (primitive identity, or "composite");
-//! - its **frozen params** (name + value), in a deterministic order;
+//! - its **params** (frozen value or open hole), in a deterministic order;
 //! - its **derived interface**: input ports (name + type) in declaration order,
 //!   and the output type — names are part of the frozen public contract (I4),
 //!   so they are *in*;
@@ -40,6 +40,8 @@ const TAG_PARAM: u8 = 0x10;
 const TAG_PORT: u8 = 0x11;
 const TAG_EDGE: u8 = 0x12;
 const TAG_CHILD: u8 = 0x13;
+const PARAM_FROZEN: u8 = 0x00; // Param variant tags (domain-separate the two states)
+const PARAM_OPEN: u8 = 0x01;
 
 // ── Value types (§5: monomorphic base + `any` wildcard) ─────────────────────
 
@@ -68,13 +70,41 @@ impl Type {
     }
 }
 
-/// A frozen parameter: configuration captured at encapsulation time. Param
-/// *values* are encoded by a canonical textual form for now; richer typed param
-/// values can be added later behind a new [`ENCODING_VERSION`].
+/// A parameter: configuration that is part of identity. Either a `Frozen` value or an
+/// `Open` hole (filled at instantiate time, P1.5.2). A unit with any open param in its
+/// closure is a *template* — not directly evaluable until instantiated. Param values are
+/// a canonical textual form for now; richer typed values can follow behind a new
+/// [`ENCODING_VERSION`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Param {
-    pub name: String,
-    pub value: String,
+pub enum Param {
+    Frozen { name: String, value: String },
+    Open { name: String },
+}
+
+impl Param {
+    pub fn frozen(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Param::Frozen { name: name.into(), value: value.into() }
+    }
+    pub fn open(name: impl Into<String>) -> Self {
+        Param::Open { name: name.into() }
+    }
+    /// The param's name (present for both variants).
+    pub fn name(&self) -> &str {
+        match self {
+            Param::Frozen { name, .. } | Param::Open { name } => name,
+        }
+    }
+    /// The frozen value, or `None` for an open hole.
+    pub fn value(&self) -> Option<&str> {
+        match self {
+            Param::Frozen { value, .. } => Some(value),
+            Param::Open { .. } => None,
+        }
+    }
+    /// Whether this param is an unfilled hole.
+    pub fn is_open(&self) -> bool {
+        matches!(self, Param::Open { .. })
+    }
 }
 
 /// An interface port: a name plus a type. Names are part of the frozen public
@@ -207,14 +237,24 @@ pub fn encode_preimage(unit: &Unit) -> Result<Vec<u8>, EncodeError> {
         }
     }
 
-    // 2. Frozen params, sorted by name for determinism.
+    // 2. Params, sorted by name for determinism. The variant (Frozen/Open) is tagged so
+    //    a frozen and an open param of the same name hash differently.
     let mut params = unit.params.clone();
-    params.sort_by(|a, b| a.name.cmp(&b.name));
+    params.sort_by(|a, b| a.name().cmp(b.name()));
     e.u32(params.len().try_into().map_err(|_| EncodeError::FieldTooLong)?);
     for p in &params {
         e.tag(TAG_PARAM);
-        e.str(&p.name)?;
-        e.str(&p.value)?;
+        match p {
+            Param::Frozen { name, value } => {
+                e.tag(PARAM_FROZEN);
+                e.str(name)?;
+                e.str(value)?;
+            }
+            Param::Open { name } => {
+                e.tag(PARAM_OPEN);
+                e.str(name)?;
+            }
+        }
     }
 
     // 3. Interface — inputs in declaration order (the frozen contract), output.
@@ -276,24 +316,18 @@ mod tests {
     fn param_order_is_cosmetic() {
         // Same params, authored in different order ⇒ identical hash.
         let mut u1 = prim("add");
-        u1.params = vec![
-            Param { name: "x".into(), value: "1".into() },
-            Param { name: "y".into(), value: "2".into() },
-        ];
+        u1.params = vec![Param::frozen("x", "1"), Param::frozen("y", "2")];
         let mut u2 = prim("add");
-        u2.params = vec![
-            Param { name: "y".into(), value: "2".into() },
-            Param { name: "x".into(), value: "1".into() },
-        ];
+        u2.params = vec![Param::frozen("y", "2"), Param::frozen("x", "1")];
         assert_eq!(hash_unit(&u1).unwrap(), hash_unit(&u2).unwrap());
     }
 
     #[test]
     fn param_value_changes_hash() {
         let mut u1 = prim("add");
-        u1.params = vec![Param { name: "x".into(), value: "1".into() }];
+        u1.params = vec![Param::frozen("x", "1")];
         let mut u2 = prim("add");
-        u2.params = vec![Param { name: "x".into(), value: "2".into() }];
+        u2.params = vec![Param::frozen("x", "2")];
         assert_ne!(hash_unit(&u1).unwrap(), hash_unit(&u2).unwrap());
     }
 

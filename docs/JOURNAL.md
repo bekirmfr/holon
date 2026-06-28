@@ -326,3 +326,30 @@ element type. Both acceptable for now.
 
 **Next inch.** **P1.5.2 — param promotion** (`Param = Frozen | Open` + a binding table;
 touches the encoder), which closes Phase B.
+
+---
+
+## 2026-06-29 · P1.5.2a — `Param = Frozen | Open` + encoder tag · *(Phase B, inch 3a)*
+
+**Built.** `Param` is now an enum — `Frozen { name, value } | Open { name }` — with
+constructors (`frozen`/`open`) and accessors (`name`/`value`/`is_open`). The canonical
+encoder tags the variant in the preimage (`PARAM_FROZEN = 0x00`, `PARAM_OPEN = 0x01`), so a
+frozen and an open param of the same name hash differently. All readers now use `value()`
+(which is `None` for a hole) and all constructors use `Param::frozen`.
+
+**Scope.** Sub-leaf **(a)** of P1.5.2 — the representation + encoder change, **in isolation
+and behavior-preserving**. Every param is still `Frozen`, so the system computes exactly as
+before. `open_param` / `open_params` / `instantiate` (sub-leaves b, c) follow next.
+
+**Encoder discipline.** The first encoder change since the foundations. The variant tag is
+domain-separated and length-prefixed like everything else. Param-bearing unit hashes change
+(the preimage gained a tag byte) — pre-release, so no migration; `ENCODING_VERSION` stays 1.
+
+**Tests prove.** No new tests this sub-inch — the proof of safety is that **all 63 existing
+tests still pass under the re-encoding**. They are all *relative* (determinism, `=`, `≠`, the
+encapsulation hash-equality test, the `map` hash round-trip), so a uniform encoding change
+leaves them intact. That is exactly why the encoder change was isolated first.
+
+**Next.** **P1.5.2 b/c** — `open_param` (frozen→open, make a template), `open_params` (the
+derived open interface), `instantiate` (open→frozen, specialize bottom-up and re-hash). Then
+Phase B closes.
