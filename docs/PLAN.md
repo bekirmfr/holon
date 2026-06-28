@@ -7,6 +7,7 @@
 > we judge it thorough.
 >
 > **Current resolution:** Level 2 (pillars decomposed into entailed requirements).
+> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ P3) + one parallel pillar (P4 · Editor).
 > **Next descent:** Level 3 — expand **P1** to buildable leaves.
 
 ---
@@ -64,6 +65,16 @@ The root is a conjunction of three pillars with a strict entailment order. Read
 This order is logical dependency, not preference: the spine (P1) must be finished
 before P2 or P3 are anything but speculation. Both P2 and P3 are *theorems of P1*.
 
+**P4 · The Editor — a parallel pillar, not in the spine.** It presupposes P1 (you
+cannot author units without the unit model) and is an *optional client* of P3 (the
+registry), but P2 and P3 do not presuppose *it*. It sits beside the spine because
+it is the human authoring/inspection surface — convenience, not foundation.
+
+**Deployment / runtime hosting — deliberately *not* a pillar.** Scoped to a **local
+process**: `holon-host` (P2) run on localhost via `cargo run`. There is no
+networked-hosting concern until we ever choose to add one. Recorded as a decision,
+not an omission.
+
 ---
 
 ## Level 2 — Entailed requirements
@@ -102,6 +113,19 @@ before P2 or P3 are anything but speculation. Both P2 and P3 are *theorems of P1
 - **P3.7** Author identity, costly to forge — `§9` · ○ ◇
 - **P3.8** Content-addressed store to distribute units — `I5` · ○ ◇
 
+### P4 · The Editor (parallel) — *for humans to author, inspect, and run units conveniently:*
+*Presupposes P1; optional client of P3; not in the spine.*
+- **P4.1** Graph authoring canvas: place units, wire ports, set params; wire-time type checking — `§5`/`I1` · ◐ ▣
+  *(proven in JS prototypes v1–v3; not yet in the real stack)*
+- **P4.2** Live evaluation that **embeds `holon-core` (WASM)** — one evaluator, never a second, so editor results are bit-identical to native — `I5`/`I2` · ○ ▣
+  *(the load-bearing constraint; see findings)*
+- **P4.3** Encapsulation UX: group a selection into a unit; expand to inspect — `I4`/`I9` · ◐ ▣
+  *(proven in v3)*
+- **P4.4** Transitive inspection UI: descend a composite to its leaf primitives — `I9` · ○ ▣
+  *(the human face of P3.2)*
+- **P4.5** Registry client: browse / import-as-pin / publish — `§8` · ○ ◇
+  *(needs P3; deferred until the marketplace exists)*
+
 ---
 
 ## Cross-cutting findings (banked)
@@ -115,6 +139,12 @@ before P2 or P3 are anything but speculation. Both P2 and P3 are *theorems of P1
   as JS. Deductively, `holon-core` today has **identity but not evaluation** — the
   spine is not done. Porting a deterministic evaluator into Rust is therefore more
   load-bearing than the more exciting param-promotion work, and likely comes first.
+- **Requirements also flow *sideways*.** P4.2 forces the Editor to embed
+  `holon-core` compiled to WASM rather than reimplement evaluation in JS. Two
+  evaluators would eventually disagree, and the instant they do, I5 is false and the
+  shared cache (P3.3) is poisoned. So "compile the core to WASM" is a hard
+  requirement the **Editor places on the Language** — and a reason P1.4 must be
+  built WASM-targetable from its first line (which `holon-core` already is).
 
 ---
 
@@ -122,10 +152,11 @@ before P2 or P3 are anything but speculation. Both P2 and P3 are *theorems of P1
 
 How we deepen this plan, and in what order:
 
-1. **P1 → Level 3 first** (it is the entailed base; P2/P3 are its theorems).
+1. **P1 → Level 3 first** (it is the entailed base; P2/P3/P4 all presuppose it).
    Within P1, the open frontier is P1.3 (types), P1.4 (evaluator), P1.5
    (encapsulation + param promotion) — with their own internal order to be derived.
-2. Then **P2 → Level 3**, then **P3 → Level 3**.
+2. Then **P2 → Level 3**, then **P3 → Level 3**. **P4** descends in parallel once
+   P1.4 exists, since the Editor embeds the core it evaluates with.
 3. Each Level-3 leaf is specified as: *precondition leaves* · *the invariant it
    serves* · *the test that proves it* · *a rough effort note*. A leaf is "ready"
    only when those four are filled.
@@ -137,7 +168,7 @@ How we deepen this plan, and in what order:
 |---|---|---|
 | Root (L0) | L0 | pending review |
 | Pillars (L1) | L1 | pending review |
-| P1 / P2 / P3 (L2) | L2 | pending review |
+| P1 / P2 / P3 / P4 (L2) | L2 | pending review |
 | P1 leaves (L3) | — | not started |
 
 *(Open trunk-review question: is anything in the Level-0 end-state **not** covered
