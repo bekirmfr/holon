@@ -228,14 +228,51 @@ mod tests {
     }
 
     #[test]
-    fn interface_parity_primitive_eq_composite() {
-        // P1.2.1: a primitive and an equivalent composite are substitutable.
+    fn parity_standalone_primitive_eq_composite() {
+        // A primitive and an equivalent composite evaluate identically in isolation.
         let mut r = MapResolver::new();
         let comp_add = add2(&mut r);
         let prim_add = prim("add", 2, Type::Number);
         let inp = [Some(num(8.0)), Some(num(9.0))];
         assert_eq!(eval(&prim_add, &inp, &r), eval(&comp_add, &inp, &r));
         assert_eq!(eval(&comp_add, &inp, &r), Some(num(17.0)));
+    }
+
+    #[test]
+    fn substitution_in_host_is_invisible() {
+        // P1.2.1 / I1: swap a host's child between a *primitive* add and a
+        // *composite-wrapping-add* (genuinely different units — different hashes) and the
+        // host's output is identical. This is the substitutability claim, not just
+        // standalone equality. Host computes (x + y) * z via the swappable add-like child.
+        let mut r = MapResolver::new();
+        let h_prim = r.insert(prim("add", 2, Type::Number)).unwrap();
+        let comp_add = add2(&mut r);
+        let h_comp = r.insert(comp_add).unwrap();
+        let h_mul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
+
+        // child0 is the swappable "add-like" unit; child1 is multiply.
+        let host = |child0: Hash| {
+            composite(
+                vec![nport("x"), nport("y"), nport("z")],
+                Type::Number,
+                vec![child0, h_mul],
+                vec![
+                    edge(BOUNDARY, 0, 0, 0), // x → add-like.0
+                    edge(BOUNDARY, 1, 0, 1), // y → add-like.1
+                    edge(0, 0, 1, 0),        // add-like.out → mul.0
+                    edge(BOUNDARY, 2, 1, 1), // z → mul.1
+                    edge(1, 0, BOUNDARY, 0), // mul.out → output
+                ],
+            )
+        };
+
+        assert_ne!(h_prim, h_comp, "the two children must be genuinely different units");
+
+        let host_prim = host(h_prim);
+        let host_comp = host(h_comp);
+        let inp = [Some(num(3.0)), Some(num(4.0)), Some(num(2.0))]; // (3 + 4) * 2 = 14
+        assert_eq!(eval(&host_prim, &inp, &r), eval(&host_comp, &inp, &r));
+        assert_eq!(eval(&host_prim, &inp, &r), Some(num(14.0)));
     }
 
     #[test]

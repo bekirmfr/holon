@@ -230,3 +230,27 @@ bit-for-bit); `non_finite_constants_rejected`.
 where a selection of wired units becomes a new hashed `Unit` with an auto-derived
 interface (unbound inputs promote, the chosen output is exposed, kind = union of
 children) — and, right after, where **`Map`** and the evaluation **`ctx`** finally land.
+
+---
+
+## 2026-06-29 · Addendum — P1.2.1 parity properly discharged
+
+**Correction.** Inch 5 claimed P1.2.1 "discharged," but its test only showed *standalone*
+equality (`eval(prim) == eval(comp)` for one input) — that demonstrates the idea, not the
+substitutability I1 actually asserts.
+
+**Strengthened.** Renamed the old test `parity_standalone_primitive_eq_composite` and added
+`substitution_in_host_is_invisible`: one host computes `(x + y) * z` through a swappable
+"add-like" child; evaluated once with a **primitive** `add` and once with a
+**composite-wrapping-add** as that child. The two children hash **differently** (asserted),
+so it is a genuine substitution — and the host's output is identical. That is the I1 claim,
+now proven, not asserted. (eval tests: 7 → 8.)
+
+**Why parity is robust (banked).** It is structural: primitive and composite are the same
+`Unit` type with the same interface fields and one `eval` entry point; a faithful 1:1
+wrapper reconstructs the exact input vector (Nones preserved positionally) and delegates,
+so identity holds by construction. The primitive path's `flatten` vs the composite path's
+positional gather cannot diverge, because the flatten always happens at the primitive leaf
+— the same place, both ways. The only future case that could matter (a positional optional
+input with a default) is exactly the deferred feature, and faithful-wrapper parity survives
+it.
