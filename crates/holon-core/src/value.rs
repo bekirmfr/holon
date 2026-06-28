@@ -1,0 +1,97 @@
+//! Runtime values that flow on wires (P1.4.1).
+//!
+//! A [`Value`] is the concrete datum a unit produces and consumes. It is immutable
+//! with value-semantics: cloning deep-copies, equality is structural. Every value
+//! has exactly one *concrete* type ([`Value::ty`]) — never the `Any` wildcard, which
+//! is a wire-time type, not a runtime value.
+
+use crate::Type;
+
+/// A runtime value — the concrete counterpart of the monomorphic base types in
+/// [`Type`] (§5). `Number` is a single IEEE-754 `f64` (one numeric type, not an
+/// int/float split); `List` is heterogeneous and may nest.
+///
+/// Derives `PartialEq` but **not** `Eq`/`Hash`: `f64` has no total equality (NaN).
+/// Canonical hashing of *values* (needed later by the memoization cache, P3.3.1) is
+/// a deliberate canonical encoder, never `derive(Hash)`; NaN / float-canonicalization
+/// discipline is deferred to the determinism harness (P1.4.4).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    Number(f64),
+    Boolean(bool),
+    Text(String),
+    List(Vec<Value>),
+}
+
+impl Value {
+    /// The concrete type of this value. Total: every value maps to exactly one
+    /// non-`Any` [`Type`]. (`Any` is a wire-time wildcard; no runtime value is `Any`.)
+    pub fn ty(&self) -> Type {
+        match self {
+            Value::Number(_) => Type::Number,
+            Value::Boolean(_) => Type::Boolean,
+            Value::Text(_) => Type::Text,
+            Value::List(_) => Type::List,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ty_agrees_with_type() {
+        assert_eq!(Value::Number(1.0).ty(), Type::Number);
+        assert_eq!(Value::Boolean(true).ty(), Type::Boolean);
+        assert_eq!(Value::Text("x".into()).ty(), Type::Text);
+        assert_eq!(Value::List(vec![]).ty(), Type::List);
+    }
+
+    #[test]
+    fn no_value_is_any() {
+        // Every value has a concrete type; `Any` is wire-time only.
+        for v in [
+            Value::Number(0.0),
+            Value::Boolean(false),
+            Value::Text(String::new()),
+            Value::List(vec![Value::Number(1.0)]),
+        ] {
+            assert_ne!(v.ty(), Type::Any);
+        }
+    }
+
+    #[test]
+    fn value_semantics_clone_is_independent() {
+        let original = Value::List(vec![
+            Value::Number(3.0),
+            Value::Text("a".into()),
+            Value::List(vec![Value::Boolean(true)]),
+        ]);
+        let clone = original.clone();
+        assert_eq!(original, clone);
+
+        // Mutating the clone's contents must not touch the original.
+        if let Value::List(mut inner) = clone {
+            inner.push(Value::Number(9.0));
+            assert_ne!(Value::List(inner), original);
+        } else {
+            unreachable!("clone of a List is a List");
+        }
+    }
+
+    #[test]
+    fn equality_is_structural() {
+        assert_eq!(Value::Number(15.0), Value::Number(15.0));
+        assert_ne!(Value::Number(15.0), Value::Number(16.0));
+        assert_ne!(Value::Number(1.0), Value::Boolean(true)); // cross-type ≠
+        assert_eq!(
+            Value::List(vec![Value::Number(1.0), Value::Number(2.0)]),
+            Value::List(vec![Value::Number(1.0), Value::Number(2.0)]),
+        );
+        assert_ne!(
+            Value::List(vec![Value::Number(1.0)]),
+            Value::List(vec![Value::Number(1.0), Value::Number(2.0)]),
+        );
+    }
+}
