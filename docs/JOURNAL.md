@@ -152,3 +152,44 @@ roadmap text, not in the build — noted here, the set is otherwise exactly as l
 composite's DAG in topological order, inject promoted inputs via `BOUNDARY→child` edges,
 dispatch primitives to `compute`, read the exposed output via the `child→BOUNDARY` edge,
 recurse for nested composites. `None` propagates.
+
+---
+
+## 2026-06-29 · P1.4.3 — Eager graph evaluator · *(Phase A, inch 5 — the load-bearing leaf)*
+
+**Built.** `holon-core::eval(unit, inputs, resolver) -> Option<Value>`. A primitive
+dispatches to `primitives::compute`; a composite resolves its inner DAG **by reference**,
+in a **single topological pass** (acyclicity from P1.3.1 ⇒ one pass suffices), injecting
+promoted inputs via `BOUNDARY→child` edges and reading the exposed output via the
+`child→BOUNDARY` edge. Primitive and composite share the **identical** entry point (I1).
+Each composite call gets a fresh scratch (nested / repeated composites never collide).
+`None` propagates.
+
+**Leaf closed.** **P1.4.3** — and **P1.2.1** (interface parity) discharged by test. The
+"identity but not evaluation" gap is **closed**: `holon-core` now computes, not just hashes.
+Phase A is effectively complete (only the determinism harness P1.4.4 remains, and the
+evaluator already uses ordered structures throughout).
+
+**Tests prove** (7): `eval_primitive_add` (`add[3,7,5]=15`); `eval_composite_add`;
+`eval_composite_sum` (the v3 seed minus `Map`: `list(a,b,c)→sum→15`); `eval_nested_composite`
+(recursion); `none_propagates` (binary `subtract`, one operand absent ⇒ `None`);
+`interface_parity_primitive_eq_composite` (a primitive and an equivalent composite are
+substitutable); `deterministic`.
+
+**Forks pinned.**
+- **Firing rule = compute's arity check, for now.** The evaluator gathers *present* inputs
+  in port order and lets `compute` decide. For the current vocabulary this realizes
+  `required/optional` exactly (a fixed-arity op with a gap ⇒ wrong count ⇒ `None`; a
+  variadic op folds whatever is present), and skipping an absent port never yields a
+  *wrong* value — only `None` or the correct one. The explicit per-port
+  `required/optional/default` field (an encoder change) is **deferred** until a primitive
+  needs a positional optional with a default. `persist`/`consume` remain out of the pure
+  core (state boundary / async, P2.4.2).
+- **Eager = one topological pass** (`topo_order`, Kahn's, ties broken by ascending child
+  index for determinism). No iteration; the prototype's repeated passes were a shortcut.
+- **`Map`/`ctx` still deferred** to P1.5.1: `compute` is first-order; the evaluator will
+  be the provider of the `apply(hash, inputs)` context when `Map` lands.
+
+**Next inch.** **P1.4.4 — determinism harness** (ordered structures already in use; add
+the repeated-/cross-run identity tests and a fuzz check), then Phase B (**P1.5.1
+encapsulation**, where `Map` and `ctx` finally land).

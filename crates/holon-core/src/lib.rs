@@ -14,7 +14,9 @@
 //!   compatibility (P1.3.1).
 //! - [`primitives`] — the pure first-order primitive vocabulary + native compute
 //!   (P1.4.2).
+//! - [`eval`] — the eager graph evaluator (P1.4.3).
 
+mod eval;
 mod hash;
 mod resolve;
 mod validate;
@@ -22,6 +24,7 @@ mod value;
 
 pub mod primitives;
 
+pub use eval::eval;
 pub use hash::{
     encode_preimage, hash_unit, Edge, EncodeError, Hash, Param, Port, Type, Unit,
     UnitBody, ENCODING_VERSION,
