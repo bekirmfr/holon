@@ -291,3 +291,38 @@ different order ⇒ **different hashes**); `rejects_promoting_bound_port`;
 **Next inch.** **`Map`** (the 21st primitive) + the eval **`ctx`**: `compute` gains
 `ctx.apply(&Hash, &[Value]) -> Option<Value>` (the evaluator provides it); `Map` takes its
 function as a param hash and applies it per list element. Then **P1.5.2** (param promotion).
+
+---
+
+## 2026-06-29 · `map` (higher-order) · *(Phase B, inch 2)*
+
+**Built.** `map` handled **in `eval`** (not `compute`): input 0 is a list, the `fn` param
+holds the hex hash of the unit to apply; the evaluator resolves `fn` and applies it per
+element through its own recursion. Added `eval_map` + `parse_hash` (hex→`Hash`). `compute`
+and the 20 first-order primitives are unchanged.
+
+**Leaf closed.** `map` — the 21st primitive. The higher-order story is complete: the v3
+seed `list(3,7,5) → Map(Double) → [6,14,10]` now runs end-to-end.
+
+**Tests prove** (2, total ~63): `map_doubles_list` (the v3 seed); `map_none_propagates`
+(`Double` on a `Text` element fails ⇒ the whole map is `None`).
+
+**Deviation from the L4 (banked).** The L4 planned a `ctx` threaded into `compute` so a
+first-order `compute` could call back into `eval`. Building showed that is backwards:
+`map` *invokes* the evaluator, so it belongs **in `eval`**, where recursion already lives —
+which keeps `compute` purely first-order. No `ctx` trait, no signature change, no churn to
+the first-order tests. Clean boundary: **`compute` = first-order leaves; `eval` = graph +
+higher-order.**
+
+**Fork surfaced (for P3.2.1).** `map`'s `fn` is referenced by a **param-hash** (hex),
+outside the `children` channel. Transitive **pinning** holds — the param is in the preimage,
+so `map`'s hash depends on `fn`'s hash (I6 ✓). Transitive **inspection** (P3.2.1) must
+additionally treat hash-valued params as references:
+`referenced_hashes(unit) = children ∪ {hash-valued params}`. Recorded; needed at P3.2.1.
+
+**Deferred.** Higher-order **type checking** (does `fn`'s signature fit the element type?)
+is not done — `fn` is applied dynamically, `None` on mismatch; and `Type::List` carries no
+element type. Both acceptable for now.
+
+**Next inch.** **P1.5.2 — param promotion** (`Param = Frozen | Open` + a binding table;
+touches the encoder), which closes Phase B.

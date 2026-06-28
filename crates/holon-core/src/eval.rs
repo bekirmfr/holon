@@ -16,18 +16,22 @@
 //! `required/optional/default` field is deferred until a primitive needs a positional
 //! optional with a default — none does yet.
 //!
-//! ## `Map` / `ctx`
-//! `compute` is first-order here. The higher-order `Map` and the evaluation context it
-//! needs (`apply(hash, inputs)`) arrive with P1.5.1; the evaluator is the natural
-//! provider of that context.
+//! ## Higher-order `map`
+//! `compute` stays purely first-order. `map` is higher-order — it resolves a referenced
+//! unit and applies it per element — so it is handled **here**, where recursion already
+//! lives, rather than via a callback into a first-order `compute`. Its `fn` argument is a
+//! param holding the hex hash of the unit to apply.
 
-use crate::{primitives, Edge, Hash, Resolver, Unit, UnitBody, Value, BOUNDARY};
+use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Evaluate a unit against values for its input ports (index = input-port index;
 /// `None` = absent). Returns the unit's single output (port 0), or `None`.
 pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> Option<Value> {
     match &unit.body {
+        // `map` is higher-order — it invokes the evaluator — so it lives here, where
+        // recursion lives, rather than in first-order `compute`.
+        UnitBody::Primitive { name } if name == "map" => eval_map(inputs, &unit.params, resolver),
         UnitBody::Primitive { name } => {
             // Gather present values in port order; compute's arity check is the firing rule.
             let present: Vec<Value> = inputs.iter().flatten().cloned().collect();
@@ -123,6 +127,43 @@ fn topo_order(n: usize, edges: &[Edge]) -> Option<Vec<usize>> {
     } else {
         None
     }
+}
+
+/// Higher-order `map`: input 0 is a list; the `fn` param holds the hex hash of the unit
+/// to apply to each element. Yields a list of results, or `None` if the list/param is
+/// malformed or any application is `None` (None-propagation). The `fn` reference rides a
+/// param, so `map`'s hash transitively depends on `fn`'s hash (I6 holds via the preimage);
+/// children-based *inspection* (P3.2.1) must additionally treat hash-valued params as
+/// references.
+fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+    let list = match inputs.first() {
+        Some(Some(Value::List(xs))) => xs,
+        _ => return None,
+    };
+    let fn_hex = params.iter().find(|p| p.name == "fn").map(|p| p.value.as_str())?;
+    let fn_hash = parse_hash(fn_hex)?;
+    let unit = resolver.resolve(&fn_hash)?;
+
+    let mut out = Vec::with_capacity(list.len());
+    for elem in list {
+        out.push(eval(unit, &[Some(elem.clone())], resolver)?); // any None ⇒ whole map None
+    }
+    Some(Value::List(out))
+}
+
+/// Decode a 64-char lowercase/uppercase hex string into a 32-byte hash.
+fn parse_hash(hex: &str) -> Option<Hash> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let bytes = hex.as_bytes();
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        let hi = (bytes[2 * i] as char).to_digit(16)?;
+        let lo = (bytes[2 * i + 1] as char).to_digit(16)?;
+        out[i] = (hi * 16 + lo) as u8;
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -225,6 +266,66 @@ mod tests {
             vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
         );
         assert_eq!(eval(&c, &[Some(num(3.0)), None], &r), None);
+    }
+
+    // hex-encode a hash for a `map` fn param (the inverse of eval's parse_hash).
+    fn hex(h: &Hash) -> String {
+        h.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+    fn txt(s: &str) -> Value {
+        Value::Text(s.into())
+    }
+    fn list(xs: Vec<Value>) -> Value {
+        Value::List(xs)
+    }
+    // Double(x) = x * 2, as a composite: BOUNDARY.x → mul.0 ; const(2) → mul.1 ; mul → out.
+    fn double(r: &mut MapResolver) -> Hash {
+        let two = Unit {
+            body: UnitBody::Primitive { name: "number".into() },
+            params: vec![Param { name: "value".into(), value: "2".into() }],
+            inputs: vec![],
+            output: Some(Type::Number),
+        };
+        let htwo = r.insert(two).unwrap();
+        let hmul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
+        let unit = composite(
+            vec![nport("x")],
+            Type::Number,
+            vec![hmul, htwo], // child0 = mul, child1 = const 2
+            vec![edge(BOUNDARY, 0, 0, 0), edge(1, 0, 0, 1), edge(0, 0, BOUNDARY, 0)],
+        );
+        r.insert(unit).unwrap()
+    }
+    fn map_unit(fn_hash: &Hash) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: "map".into() },
+            params: vec![Param { name: "fn".into(), value: hex(fn_hash) }],
+            inputs: vec![Port { name: "list".into(), ty: Type::List }],
+            output: Some(Type::List),
+        }
+    }
+
+    #[test]
+    fn map_doubles_list() {
+        // The v3 seed: list(3,7,5) → Map(Double) → [6, 14, 10].
+        let mut r = MapResolver::new();
+        let hdouble = double(&mut r);
+        let m = map_unit(&hdouble);
+        let input = list(vec![num(3.0), num(7.0), num(5.0)]);
+        assert_eq!(
+            eval(&m, &[Some(input)], &r),
+            Some(list(vec![num(6.0), num(14.0), num(10.0)]))
+        );
+    }
+
+    #[test]
+    fn map_none_propagates() {
+        // Double applied to a Text element fails ⇒ the whole map is None.
+        let mut r = MapResolver::new();
+        let hdouble = double(&mut r);
+        let m = map_unit(&hdouble);
+        let input = list(vec![num(3.0), txt("x")]);
+        assert_eq!(eval(&m, &[Some(input)], &r), None);
     }
 
     #[test]
