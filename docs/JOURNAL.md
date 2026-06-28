@@ -254,3 +254,40 @@ positional gather cannot diverge, because the flatten always happens at the prim
 — the same place, both ways. The only future case that could matter (a positional optional
 input with a default) is exactly the deferred feature, and faithful-wrapper parity survives
 it.
+
+---
+
+## 2026-06-29 · P1.5.1 — Encapsulation (derive-then-freeze) · *(Phase B, inch 1)*
+
+**Built.** `holon-core::encapsulate` — `derive_and_freeze(children, inner_edges, spec,
+resolver) -> Result<Unit, EncapError>` plus `default_spec(...)`. Turns a self-contained
+selection into a new hashed composite: **derives** interface types from inner ports,
+**generates** the `BOUNDARY` edges, and honors the spec's **choices** (which inputs
+promote, their order, names, the exposed output). `default_spec` gives the canonical
+proposal (promote all unbound in `(child, port)` order; expose the unique free output).
+
+**Leaf closed.** **P1.5.1.** Encapsulation is the inverse of evaluation — it *produces*
+the boundary edges P1.4.3/P1.3.1 *consume* — so the two are now provably in lockstep.
+The system is recursive in practice: a flow can become a referenceable unit.
+
+**Tests prove** (8, total now ~61): `encapsulates_single_unit_to_expected_hash` (wrapping
+a bare `add` yields **exactly** the hand-built add2 — equal hashes, edge order normalized);
+`encapsulated_evaluates_correctly` (`(a+b)*q` selection evaluates to 20 — behavior
+preserved); `default_spec_promotes_unbound_canonically`; `order_is_identity` (same ports,
+different order ⇒ **different hashes**); `rejects_promoting_bound_port`;
+`rejects_invalid_output`; `ambiguous_default_output`; `derived_unit_validates`.
+
+**Forks pinned.**
+- **Derive vs choose.** Types + boundary edges derived; promotion subset/order/names +
+  exposed output chosen (in `EncapSpec`). Order is identity — the `order_is_identity` test
+  makes that concrete.
+- **"Freeze" is construct-and-hash**, not a flag. Re-deriving from edited children yields a
+  different hash by I5; nothing can drift.
+- **Defensive validation.** `derive_and_freeze` validates its own output, so encapsulation
+  can never emit an invalid unit (the test confirms it always passes).
+- **Empty params / no kind yet.** Param promotion is P1.5.2; kind = union of children is
+  P2.2.1. P1.5.1 derives the *type* interface only.
+
+**Next inch.** **`Map`** (the 21st primitive) + the eval **`ctx`**: `compute` gains
+`ctx.apply(&Hash, &[Value]) -> Option<Value>` (the evaluator provides it); `Map` takes its
+function as a param hash and applies it per list element. Then **P1.5.2** (param promotion).

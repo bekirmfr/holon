@@ -16,8 +16,10 @@
 //!   (P1.4.2).
 //! - [`eval`] — the eager graph evaluator (P1.4.3).
 //! - [`determinism`] — float discipline + the determinism harness (P1.4.4).
+//! - [`encapsulate`] — derive-then-freeze a selection into a hashed `Unit` (P1.5.1).
 
 mod determinism;
+mod encapsulate;
 mod eval;
 mod hash;
 mod resolve;
@@ -27,6 +29,7 @@ mod value;
 pub mod primitives;
 
 pub use determinism::is_finite_number;
+pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Promote};
 pub use eval::eval;
 pub use hash::{
     encode_preimage, hash_unit, Edge, EncodeError, Hash, Param, Port, Type, Unit,
