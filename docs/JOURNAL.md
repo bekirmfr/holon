@@ -111,3 +111,44 @@ cycle).
 **Next inch.** **P1.4.3 — the evaluator** (design pinned in `P1.4.3-evaluator-L4.md`).
 The binding it presupposed now exists: inject promoted inputs via `BOUNDARY→child` edges,
 read the exposed output via the `child→BOUNDARY` edge.
+
+---
+
+## 2026-06-29 · P1.4.2 — Primitive registry + native compute · *(Phase A, inch 4)*
+
+**Built.** `holon-core::primitives::compute(name, inputs, params) -> Option<Value>` —
+the pure first-order vocabulary, dispatched by name:
+- constants `number` `boolean` `text` (value from a param);
+- arithmetic `add` `multiply` (variadic), `subtract` `divide` (binary; divide guards ÷0);
+- `compare` (op param `> < >= <= = !=`);
+- logic `and` `or` (variadic) `not`;
+- `select` (control-as-data); text `concat` `uppercase`;
+- list `list` `get` `append` `length` `sum` `join`.
+
+**Leaf closed.** **P1.4.2.** The evaluator (next) now has native leaves to dispatch to.
+
+**Tests prove** (16): each primitive matches expectation (`add[3,7,5]=15`,
+`compare(72,70,">")=true`, `sum([3,7,5])=15`, `join(["a","b","c"],"-")="a-b-c"`, …);
+unknown name → `None`; runtime type mismatch through an `any` port → `None`;
+determinism.
+
+**Forks pinned.**
+- **`None` = not computable** (unknown name, wrong arity, or runtime type mismatch). The
+  evaluator will treat this as `None`-propagation; wire-time checking (P1.3.1) already
+  rules out everything except `any`-port mismatches, which `compute` guards at runtime.
+- **First-order only.** `compute` takes `&[Value]` and ignores any eval context — it has
+  none yet. `Map` (the 21st primitive) and the `ctx` it needs are gated behind P1.5.1, so
+  the signature stays first-order until then.
+- **Variadic vs binary is per-primitive** (`add`/`multiply`/`and`/`or`/`concat`/`list`
+  fold over all inputs; `subtract`/`divide`/`compare`/`get`/`append`/`join` are
+  fixed-arity). Arity is enforced by slice patterns; the firing rule (required/optional)
+  is the evaluator's job, not `compute`'s.
+
+**Correction banked.** The plan calls the pure set "22 primitives" (and `Map` "the
+23rd"); the enumerated set is in fact **20** (`Map` is the 21st). Off-by-two in the
+roadmap text, not in the build — noted here, the set is otherwise exactly as listed.
+
+**Next inch.** **P1.4.3 — the evaluator** (`P1.4.3-evaluator-L4.md`): resolve a
+composite's DAG in topological order, inject promoted inputs via `BOUNDARY→child` edges,
+dispatch primitives to `compute`, read the exposed output via the `child→BOUNDARY` edge,
+recurse for nested composites. `None` propagates.
