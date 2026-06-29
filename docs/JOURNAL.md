@@ -416,3 +416,36 @@ hard eval-time guard. A universal guard (eval rejects any unit with open params 
 closure) would cost a closure walk per eval and is **deferred**; the cheap primitive-level
 truth (an open hole ⇒ `compute` ⇒ `None`) already holds for the actual vocabulary, since
 every current primitive reads the param it would open.
+
+---
+
+## 2026-06-29 · P2.1.1 — Kind taxonomy (Phase C opens)
+
+**Built.** `kind.rs`: `Kind = Pure | Driver | State | Sink` + `kind_of(name) -> Option<Kind>`,
+the leaf classifier that is the **trust basis** of the effect layer. New module wired into
+`lib.rs` (mod + doc + re-export). 75 tests (69 → +6).
+
+**Shape (settled in the kind-sourcing sketch).** A *closed core table*: all 23 pure leaves
+(the `compute` vocabulary + higher-order `map`) → `Pure`; three effectful exemplars
+(`store → State`, `timer → Driver`, `email → Sink`) classification-only, no `compute` —
+core *declares* their kind without being able to *run* them (execution is host-side).
+
+**Why a closed table, not an open registry.** The marketplace ships only *composites*
+(kind derives, no declaration → no trust surface); new *leaves* (effects) arrive only as
+trusted host releases ("syscalls"). So the leaf set is closed+trusted and core can own the
+classification outright. An open registry would buy extensibility we don't need and smuggle
+back an asserted-label surface I8 forbids.
+
+**Fail-closed.** Unknown leaf → `None` (never `Some(Pure)`); callers treat `None` ≥ `Sink`.
+`unknown_is_none` pins the one direction that would be a laundering hole.
+
+**Pinned for later.** Two boundary invariants live in the module header, untestable until
+host execution exists (P2.4.1 / P2.6.1): (1) *disjointness* — a leaf is pure-in-core xor
+effect-in-host; (2) *no effect without classification* — every host-fired name classifies
+non-`Pure`. Tested the in-core half now (`effectful_exemplars_are_not_pure` = the security
+direction); the cross-crate containment lands as a real test with the host, not as an empty
+`#[ignore]`. **Follow-on noted:** `validate` rejecting unknown leaf names (the leaf-analogue
+of its existing unresolved-child rejection) — closes the hole at *import*; separate inch.
+
+**Kind is a derived view, never a field** — nothing stored or hashed, so mislabel is
+inexpressible, not merely forbidden (I8).
