@@ -204,6 +204,7 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
         | "compare" | "and" | "or" | "not" | "select"
         | "concat" | "uppercase"
         | "list" | "get" | "append" | "length" | "sum" | "join"
+        | "cons" | "head" | "tail" | "is_empty"
         | "map" => &[],
 
         // Effectful exemplars (classification only; execution is host-side). A state
@@ -415,7 +416,7 @@ mod tests {
             "number", "boolean", "text", "true", "false", "add", "multiply",
             "subtract", "divide", "compare", "and", "or", "not", "select",
             "concat", "uppercase", "list", "get", "append", "length", "sum",
-            "join", "map",
+            "join", "cons", "head", "tail", "is_empty", "map",
         ];
         for name in PURE {
             assert_eq!(kind_of(name), Some(Kind::Pure), "{name} should be Pure");

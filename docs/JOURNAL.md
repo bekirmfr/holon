@@ -1212,3 +1212,32 @@ hash P1.6 already computes. Exposure, not invention.
 hash forever). It's the first place a hash becomes a *permanent public commitment* — so
 the genesis reconciliation (§13) is the thing to settle in the same neighbourhood, before
 the first publish fragments the trust root.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R1a — list-structure irreducibles (cons/head/tail/is_empty)
+
+**The reconciliation to §13 is an arc, not an inch** — most of it (effect renames, the
+five-constants→`const` merge, demoting the list library to `fold`-composites) re-hashes
+existing units, and the demotions need a stdlib mechanism first. Wrote
+`P3-genesis-reconciliation-L4.md` to sequence it into six independently-green inches
+(R1–R6): additive first (no hash moves), breaking-but-localized renames next, the heavy
+demotions last behind an open fork. **The fork (decide at R6):** full §13 (build the stdlib,
+demote, minimal trust root) vs trust-root-freeze (add the irreducibles, clean names, keep the
+convenience derivables native, let the admission *gate* stop future bloat). Both give the
+registry a stable trust root; deferred because R1–R5 are required either way.
+
+**R1a (additive, 137 green = 118c + 19h):** added `cons`/`head`/`tail`/`is_empty` to `compute`.
+O(1) build/inspect — the irreducibles §13 was missing; every demoted op (sum/map/filter…)
+will be a `fold`-composite over these. `head`/`tail` of `[]` ⇒ `None`, reusing the existing
+`get`-out-of-bounds convention (partial-via-`None`; it halts, just yields no value, so
+totality is intact); `is_empty` is total. No existing hash moved.
+
+**Re-confirmed the two-table rule:** a pure primitive lands in `compute` (primitives.rs) **and**
+the pure allowlist in `capabilities_of` (kind.rs); the enumerated `pure_leaves_are_pure` test
+was extended in place so any drift between table and list fails loudly. No `eval`/`simulate`/
+`validate` change — pure leaves flow through `compute`, aren't sourced, carry no capability.
+
+**Next — R1b · `fold`:** the one iteration primitive and the universal list donor. Higher-order
+(reads a `fn`-hash param, threads an accumulator over a list), so it's the first reconciliation
+inch to reach into `eval.rs`, beside `map`.

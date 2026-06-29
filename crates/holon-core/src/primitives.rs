@@ -97,6 +97,31 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
             Some(Value::Text(parts.join(sep)))
         }
 
+        // ── list structure (§13 irreducibles): O(1) build / inspect. `fold`-composites
+        // (sum, map, filter, …) are built from these. `head`/`tail` of `[]` ⇒ None — the
+        // existing `get`-out-of-bounds convention (partial-via-None; it halts, just yields
+        // no value, so totality is intact). `is_empty` is total. ──
+        "cons" => {
+            let [x, l] = inputs else { return None };
+            let tail = as_list(l)?;
+            let mut xs = Vec::with_capacity(tail.len() + 1);
+            xs.push(x.clone());
+            xs.extend_from_slice(tail);
+            Some(Value::List(xs))
+        }
+        "head" => {
+            let [l] = inputs else { return None };
+            as_list(l)?.first().cloned()
+        }
+        "tail" => {
+            let [l] = inputs else { return None };
+            as_list(l)?.split_first().map(|(_, rest)| Value::List(rest.to_vec()))
+        }
+        "is_empty" => {
+            let [l] = inputs else { return None };
+            Some(Value::Boolean(as_list(l)?.is_empty()))
+        }
+
         // ── boundary sink (Fork B): a sink purely *constructs its request* — representation
         // B: a self-describing `Effect { sink-name, payload }`. The capability is *derived*
         // from the name by the host (`capabilities_of`), never stored in the value. Because
@@ -253,6 +278,22 @@ mod tests {
     fn join_strings() {
         let l = list(vec![txt("a"), txt("b"), txt("c")]);
         assert_eq!(compute("join", &[l, txt("-")], &[]), Some(txt("a-b-c")));
+    }
+    #[test]
+    fn list_structure_primitives() {
+        let l = list(vec![num(1.0), num(2.0), num(3.0)]);
+        assert_eq!(
+            compute("cons", &[num(0.0), l.clone()], &[]),
+            Some(list(vec![num(0.0), num(1.0), num(2.0), num(3.0)]))
+        );
+        assert_eq!(compute("head", &[l.clone()], &[]), Some(num(1.0)));
+        assert_eq!(compute("tail", &[l.clone()], &[]), Some(list(vec![num(2.0), num(3.0)])));
+        assert_eq!(compute("is_empty", &[l], &[]), Some(boo(false)));
+        // Empty: head/tail are partial (None — the get-out-of-bounds convention); is_empty is total.
+        let empty = list(vec![]);
+        assert_eq!(compute("head", &[empty.clone()], &[]), None);
+        assert_eq!(compute("tail", &[empty.clone()], &[]), None);
+        assert_eq!(compute("is_empty", &[empty], &[]), Some(boo(true)));
     }
     #[test]
     fn constants_from_params() {
