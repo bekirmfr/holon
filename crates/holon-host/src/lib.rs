@@ -469,4 +469,61 @@ mod tests {
         assert_eq!(original.storage(), &num(8.0));
         assert_eq!(fork.storage(), &num(7.0)); // diverged — independent runtime state
     }
+
+    #[test]
+    fn saturating_counter_is_one_atomic_conditional_update() {
+        // P2.6.2 by dissolution. A conditional read-modify-write — write N+1 only while N < cap,
+        // else hold — *composes* from store_read → compare → select → store_write, and the round
+        // makes it atomic: the value written is computed from the value read with no gap, because
+        // a round is snapshot → fire → apply and rounds are serialized (`&mut self`). The round
+        // IS the transaction; no special primitive. Caps at 2: 0 → 1 → 2 → 2 → 2.
+        let mut r = MapResolver::new();
+        let rd = r.insert(prim("store_read", vec![], Type::Number)).unwrap();
+        let one = r.insert(number("1")).unwrap();
+        let cap = r.insert(number("2")).unwrap();
+        let add = r.insert(prim("add", vec![nport("a"), nport("b")], Type::Number)).unwrap();
+        let cmp = r
+            .insert(Unit {
+                body: UnitBody::Primitive { name: "compare".into() },
+                params: vec![Param::frozen("op", "<")],
+                inputs: vec![nport("a"), nport("b")],
+                output: Some(Type::Boolean),
+            })
+            .unwrap();
+        let sel = r
+            .insert(prim(
+                "select",
+                vec![Port { name: "cond".into(), ty: Type::Boolean }, nport("then"), nport("else")],
+                Type::Number,
+            ))
+            .unwrap();
+        let wr = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
+        let saturating = Unit {
+            body: UnitBody::Composite {
+                children: vec![rd, one, cap, add, cmp, sel, wr],
+                edges: vec![
+                    Edge { from_child: 0, from_port: 0, to_child: 3, to_port: 0 }, // N   → add.a
+                    Edge { from_child: 1, from_port: 0, to_child: 3, to_port: 1 }, // 1   → add.b
+                    Edge { from_child: 0, from_port: 0, to_child: 4, to_port: 0 }, // N   → cmp.a
+                    Edge { from_child: 2, from_port: 0, to_child: 4, to_port: 1 }, // cap → cmp.b
+                    Edge { from_child: 4, from_port: 0, to_child: 5, to_port: 0 }, // N<cap → sel.cond
+                    Edge { from_child: 3, from_port: 0, to_child: 5, to_port: 1 }, // N+1 → sel.then
+                    Edge { from_child: 0, from_port: 0, to_child: 5, to_port: 2 }, // N   → sel.else
+                    Edge { from_child: 5, from_port: 0, to_child: 6, to_port: 0 }, // chosen → write.v
+                    Edge { from_child: 6, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // write → out
+                ],
+            },
+            params: vec![],
+            inputs: vec![],
+            output: Some(Type::Effect),
+        };
+
+        let mut host = StateHost::new(num(0.0));
+        let mut seen = vec![host.storage().clone()];
+        for _ in 0..4 {
+            host.round(&saturating, &[], &r);
+            seen.push(host.storage().clone());
+        }
+        assert_eq!(seen, vec![num(0.0), num(1.0), num(2.0), num(2.0), num(2.0)]);
+    }
 }

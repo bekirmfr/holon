@@ -951,3 +951,44 @@ the state and fork tests.
 look first at what concurrency even *means* in a single-process eager host (the round is already
 atomic: snapshot → fire → apply, no interleaving) before any code; the contract may be largely
 present, or may need a precise modeled adversary to be worth stating.
+
+---
+
+## 2026-06-29 · P2.6.2 — transactional read-then-write, dissolved (the round is the transaction)
+
+**One demonstration test, no production code (122 green = 111 core + 11 host).** Grounding
+falsified the leaf's own premise. It called transactional read-then-write "the isolation
+guarantee that *cannot* be composed from separate read + write units" — but in a single-process
+eager host it **can**, and the round already provides the isolation.
+
+**Why there's no adversary.** `round` is `&mut self`, so rounds are *serialized by the borrow
+checker* — none overlap. The body is snapshot (`clone`) → `fire_sourced` (pure `eval`, nothing
+committed) → apply (`StateWrite → storage`); nothing observes intermediate state. So a round is
+atomic by construction: the write that lands is computed from the value read, with no gap an
+interleaving writer could exploit — because there is no other writer and no mid-round observation.
+The interleaved read-modify-write the leaf imagined simply cannot occur.
+
+**Conditional updates compose.** `compare → Bool` and `select(cond, a, b)` already exist, so a
+read-modify-write is an ordinary graph: `store_read → compare(N, cap) → select(·, N+1, N) →
+store_write`. `saturating_counter_is_one_atomic_conditional_update` runs it five times and watches
+`0 → 1 → 2 → 2 → 2`: the saturation at 2 *is* the proof the conditional branched on a consistent
+snapshot. No transaction primitive — the composition is the transaction.
+
+**The deferral, stated honestly.** The genuine transactional adversary — a *concurrent* writer, or
+*shared external* state two processes both touch — only appears with real multi-process hosting.
+And when it does, "transactional" there will **not** be a Holon core primitive: it will be
+whatever the backing store offers (a DB transaction, a CAS on a key), carried through the `Host`
+seam — the same deferral as real `email`/socket. P2.6.2's real future home is *inside a platform
+host*, not the round or the core.
+
+**Three in a row — no longer a coincidence.** P2.6.1 (storage in the host), then P2.6.3 (identity)
+and P2.6.2 (transaction) each dissolved into it rather than building atop it. That single design
+choice — *the cell's value is host runtime state, threaded between atomic rounds, never in the
+unit* — turned out unusually load-bearing: value-not-hashed, non-replayable, fork-CoW, pin, and
+now read-then-write isolation are all corollaries of it. The lesson is the project's own thesis
+turned inward: pin the right boundary once and the "features" downstream become theorems.
+
+**Next.** `P2.5.1` correlation token — and it is *genuinely different in kind*. It touches the
+**value model** and request identity, not state, so it will not dissolve into host-storage the way
+these three did. It is the design-forward fork (does every value carry routing identity, or is the
+token explicit?) and wants its own L4.

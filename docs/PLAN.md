@@ -10,7 +10,9 @@
 > **Current resolution:** trunk + all four pillars at L3 **frozen**; L4s built: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, plus `sink-as-pure-request-L4.md`, `P2.4.1-deploy-firing-L4.md`, `P2.6.1-state-cell-L4.md`, `A-to-B-effect-value-L4.md`, `drive-sourced-resolver-L4.md`. **Two orthogonal classification axes decide everything the host needs:** effect-bearing ⊥ replayable (Fork B), sourced ⊥ performed (state/drive). **One substituting machine** (`SourcedResolver`) injects all sourced values; the round commits only `StateWrite` back. Effects **output-carried, self-describing**; performing driven by the output (does), the manifest stays disclosure (may).
 > **Decisions pinned:** the host is the **only** impurity; an effect value carries the sink's **name, not its capability** (derived — no `kind` dependency in `value`/`primitives`). `Type::Effect` (tag 6, appended — **no existing hash moved**); a request can't be re-consumed as data. **`store_read` is a driver** (sourced); `StateResolver` generalized away. **Per-capability (anonymous) keying** for cells *and* drivers — keyed/multiple defer behind parameterized capabilities (`Clock(id)`/`StateWrite(key)`). **Multi-output composites stay deferred** — `List[Effect]` dissolves the need. Deploy has **no silent driver default** (undriven ⇒ nothing; design mode mocks for preview).
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ P3) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has one dependency (`blake3`).
-> **Next:** **`P2.6.2`** — transactional read-then-write (the cell's isolation guarantee). First a careful look at what concurrency *means* in a single-process eager host (the round is already atomic — snapshot→fire→apply), then the `P2.5.x` contracts (correlation, idempotency). Beyond P2: real platform hosts, keyed cells/drivers (parameterized capabilities), and P3 (the trustless memo marketplace, where replayability pays off — and where cell pin/fork land).
+> **Next:** **`P2.5.1`** — correlation token. *Genuinely different in kind:* it touches the **value model** and request identity, not state, so it will not dissolve into host-storage the way `P2.6.1`/`6.2`/`6.3` did. The design-forward fork (does every value carry routing identity, or is the token explicit?) — wants its own L4. Then `P2.5.2` idempotency. Beyond P2: real platform hosts (where concurrent-transactional, real `email`/clock/socket live behind the `Host` seam), keyed cells/drivers (parameterized capabilities), and P3 (the trustless memo marketplace, where replayability pays off and cell pin/fork land).
+>
+> **Pattern worth naming:** P2.6.1's one decision — *the cell's value is host runtime state, threaded between atomic rounds, never in the unit* — dissolved **three** downstream leaves (`6.2`/`6.3` plus state itself): value-not-hashed, non-replayable, fork-CoW, pin, and read-then-write isolation are all corollaries. Pin the right boundary once; downstream "features" become theorems.
 
 ---
 
@@ -320,11 +322,16 @@ async is a fork-open leaf we do not need yet.
    *pre:* P2.6.1, P1.6 · *inv:* `§7`/`I5` · *test:* fork CoW diverges; non-replayable (existing);
    value-not-hashed holds by construction · *effort:* **M** *(done — one demo test, no prod code)*
 
-8. **P2.6.2 · Transactional read-then-write** *(host)* — an atomic conditional-update on
-   the state cell (the isolation guarantee that *cannot* be composed from separate
-   read + write units).
-   *pre:* P2.6.1 · *inv:* `§7` · *test:* concurrent conditional updates don't lose a
-   write (no write-skew in the modeled case) · *effort:* **M**
+8. **P2.6.2 · Transactional read-then-write** *(host)* — **complete ✅ (by dissolution).** The
+   round *is* the transaction: `&mut self` serializes rounds, and snapshot → fire → apply is
+   atomic by construction, so the write lands computed from the value read with no exploitable
+   gap. A conditional read-modify-write **composes** (`store_read → compare → select →
+   store_write`) — falsifying the leaf's "cannot be composed" premise. The genuine adversary
+   (a *concurrent* writer / *shared external* state) is multi-process, and there "transactional"
+   is the **backing store's** primitive (DB txn / CAS) carried through the `Host` seam — **not a
+   core primitive** → deferred to platform hosting.
+   *pre:* P2.6.1 · *inv:* `§7` · *test:* saturating counter `0→1→2→2→2` — one atomic conditional
+   update · *effort:* **M** *(done — one demo test, no prod code)*
 
 9. **P2.5.1 · Correlation token in the value model** *(core + host)* — request/response
    routing: a driver mints a token threaded through the graph so a response sink reaches
@@ -624,7 +631,9 @@ single brittle 1..N list would over-claim precision — the phases are the real 
   → drive: SourcedResolver injects any sourced value (store_read was a driver all along), round
   threads storage AND drivers — the Elm runtime closes (Model/update/Cmd/Sub) on a pure core
   → P2.6.3: cell identity dissolved by host-storage (value-not-hashed unrepresentable,
-  non-replayable already held, fork=CoW tested, pin→P3)`,
+  non-replayable already held, fork=CoW tested, pin→P3) → P2.6.2: transactional read-then-write
+  dissolved — the round IS the transaction (atomic snapshot→fire→apply; conditional RMW composes
+  via select; saturating counter 0→1→2→2→2); concurrent-txn → platform host, not core`,
   all pure core. **`P2.6.1` (state) was deferred to the deploy crossing** rather than built
   before firing: the substituting-resolver insight made design-mode firing pure and
   buildable without state, so the purity seam is crossed once, at deploy, not twice.
