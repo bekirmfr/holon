@@ -25,30 +25,32 @@
 
 use crate::eval::eval;
 use crate::hash::parse_hash;
-use crate::{kind_of, Hash, Kind, Param, Resolver, Type, Unit, UnitBody, Value};
+use crate::{capabilities_of, Hash, Param, Resolver, Type, Unit, UnitBody, Value};
 use std::collections::BTreeMap;
 
-/// A pure stand-in for a **driver** leaf, used **only** in design-mode evaluation —
-/// a constant of the driver's output type (a scripted stimulus; custom stimuli are a
-/// deferred P2.7 refinement, the default is a type-zero value).
+/// A pure stand-in for a **sourced** (input-side) leaf, used **only** in design-mode
+/// evaluation — a constant of the leaf's output type (a scripted stimulus; custom
+/// stimuli are a deferred P2.7 refinement, the default is a type-zero value).
 ///
-/// Everything else returns `None` — nothing to substitute:
-/// - a [`Sink`](Kind::Sink) purely constructs its request (Fork B) ⇒ `eval` runs it;
-/// - a [`State`](Kind::State) cell is host-threaded (its value depends on prior writes);
-/// - a [`Pure`](Kind::Pure) or unknown leaf already evaluates.
+/// Mock the *sourced* side — input the host would otherwise supply: drivers (`Clock`,
+/// inbound request, file/secret/random read) and `store_read` (`StateRead`). Everything
+/// else returns `None`:
+/// - a sink / `store_write` purely constructs its request (Fork B) ⇒ `eval` runs it;
+/// - a pure or unknown leaf already evaluates (or has no manifest).
 pub fn mock_of(unit: &Unit) -> Option<Unit> {
     let name = match &unit.body {
         UnitBody::Primitive { name } => name,
         UnitBody::Composite { .. } => return None,
     };
-    match kind_of(name)? {
-        Kind::Driver => driver_mock(unit),
-        Kind::Sink | Kind::State | Kind::Pure => None,
+    if capabilities_of(name)?.iter().any(|c| c.is_sourced()) {
+        sourced_mock(unit)
+    } else {
+        None
     }
 }
 
-/// A driver's mock: a pure constant of its output type.
-fn driver_mock(unit: &Unit) -> Option<Unit> {
+/// A sourced leaf's mock: a pure constant of its output type.
+fn sourced_mock(unit: &Unit) -> Option<Unit> {
     let (cname, value): (&str, &str) = match unit.output.as_ref()? {
         Type::Number => ("number", "0"),
         Type::Boolean => ("boolean", "false"),
@@ -237,7 +239,7 @@ mod tests {
     fn state_graph_is_not_replayable() {
         // The one place purity ends: a state cell forfeits replay / caching.
         let mut store = MapResolver::new();
-        let sh = store.insert(prim("store", Some(Type::Number))).unwrap();
+        let sh = store.insert(prim("store_write", Some(Type::Number))).unwrap();
         let comp = pass_through(sh, Type::Number);
         assert!(!capabilities(&comp, &store).is_replayable());
     }
@@ -271,8 +273,25 @@ mod tests {
     }
 
     #[test]
-    fn state_leaf_has_no_pure_mock() {
-        // State is the exception — host-threaded, no standalone pure mock.
-        assert_eq!(mock_of(&prim("store", Some(Type::Number))), None);
+    fn store_read_is_mockable() {
+        // StateRead is sourced (the host supplies it) ⇒ design mode scripts a mock.
+        assert!(mock_of(&prim("store_read", Some(Type::Number))).is_some());
+    }
+
+    #[test]
+    fn store_write_has_no_mock() {
+        // StateWrite is performed (output-carried, a Fork-B sink) ⇒ eval runs it; no mock.
+        assert_eq!(mock_of(&prim("store_write", Some(Type::Number))), None);
+    }
+
+    #[test]
+    fn state_read_graph_design_evals() {
+        // A read-bearing graph runs in design mode: store_read is sourced, so it mocks to
+        // a scripted value and the graph evaluates purely (just like a driver).
+        let mut store = MapResolver::new();
+        let rh = store.insert(prim("store_read", Some(Type::Number))).unwrap();
+        let comp = pass_through(rh, Type::Number);
+        assert_eq!(eval(&comp, &[], &store), None); // store_read not computable (sourced)
+        assert_eq!(design_eval(&comp, &[], &store), Some(Value::Number(0.0))); // scripted
     }
 }

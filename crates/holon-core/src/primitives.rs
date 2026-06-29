@@ -103,6 +103,10 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
         // never stored in the value. Drivers and state stay outside the pure core
         // (driver input is host-sourced; state is host-threaded).
         "email" => inputs.first().cloned(),
+        // A state write is a Fork-B sink too: identity on the payload it commits. The
+        // host performs it by *storing* (capability `StateWrite`) rather than sending.
+        // `store_read` has no pure compute — it is sourced (host-supplied), like a driver.
+        "store_write" => inputs.first().cloned(),
 
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
@@ -249,6 +253,12 @@ mod tests {
         // effect it is lives in the derived capability, not in this value.
         assert_eq!(compute("email", &[txt("hello")], &[]), Some(txt("hello")));
         assert_eq!(compute("email", &[], &[]), None); // no payload ⇒ nothing to construct
+    }
+    #[test]
+    fn store_write_is_pure_identity() {
+        // A state write is a Fork-B sink too: identity on the value it commits.
+        assert_eq!(compute("store_write", &[num(7.0)], &[]), Some(num(7.0)));
+        assert_eq!(compute("store_read", &[], &[]), None); // read is sourced, not computed
     }
     #[test]
     fn unknown_is_none() {

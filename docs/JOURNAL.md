@@ -720,3 +720,47 @@ actual mail/file/network `Host`) wait until there is a platform to target.
 **Next.** `drive` (source real driver values) and the **state cell** (`P2.6.1`) — the
 `(Model, Cmd)` round — then the **A→B** value upgrade when computed fan-out is concrete.
 The purity seam now has a crate on each side of it.
+
+---
+
+## 2026-06-29 · State cell, core half — two leaves, the sourced/performed split (P2.6.1)
+
+**Built.** The pure `holon-core` half of the state cell: `store` splits into two leaves,
+the classifier gains the input/output axis, and `mock_of` sharpens. 111 core tests
+(107 → +1 `primitives`, +1 `kind`, net +2 `simulate`). Host untouched (3); workspace 114.
+
+**The realization driving it (pinned in `P2.6.1-state-cell-L4.md`).** A cell needs almost
+no new machinery: a **read** is a driver (host-supplied), a **write** is a Fork-B sink
+(its output *is* the new value; the host performs it by *storing*). Two leaves, not one,
+which dissolves three problems at once — no graph cycle (the feedback goes through the
+host's storage *between rounds*, so `validate` is untouched), no `eval` change (the write
+is output-carried), and the `(Model, Cmd)` round falls out (storage is the `Model`;
+`StateWrite` is a loop-back effect). The editor (P4) will present one "Store" widget over
+the pair; the mechanism stays two clean leaves.
+
+**This inch (core only).** `"store" => [StateRead, StateWrite]` became `"store_read" =>
+[StateRead]` + `"store_write" => [StateWrite]`. `store_write` got an identity `compute`
+(a Fork-B sink, like `email`); `store_read` has none (sourced). The keystone is
+`Capability::is_sourced()` — the **sourced** (input-side: `Clock`, `FileRead`, …,
+**`StateRead`**) vs **performed** (output-side: `NetworkEgress`, …, **`StateWrite`**)
+split. With it, two predicates sharpen rather than two get invented: `mock_of` mocks the
+sourced side (so `StateRead` joins the drivers), and — next inch — `fire` will perform
+the non-sourced side (so `StateWrite` joins the sinks). `StateRead ≠ StateWrite` was
+always two capabilities; this just lets the two ends be sourced and performed.
+
+**Tests.** `is_sourced_splits_input_from_output` pins that `State` divides across the
+line. `store_read_is_mockable` / `store_write_has_no_mock` are the old single
+`state_leaf_has_no_pure_mock` *split in two* — the read is supplied, the write is
+constructed, which is the model getting more correct. `state_read_graph_design_evals`:
+a read-bearing graph runs purely in design mode via the scripted mock, exactly like a
+driver. `store_write_is_pure_identity` pins the `compute`.
+
+**Honest scope.** Nothing here threads state. A `store_read` mocks to a type-zero
+constant (always `0` in design mode); a `store_write`'s value just reaches the output.
+Correct for this inch — it makes the leaves real and classified. Memory across firings is
+the **host inch**.
+
+**Next.** The host round: a single-slot `storage` (the `Model`), a read-substituting
+resolver (injects the snapshot for `store_read`), `fire` performing `!is_sourced` (so
+`StateWrite` stores), and the snapshot→fire→apply loop — with the counter that finally
+remembers across firings.

@@ -130,6 +130,18 @@ impl Capability {
             NetworkEgress | FileWrite | Spawn => Kind::Sink,
         }
     }
+
+    /// **Sourced** (input-side) ⇔ the host *supplies* this value to the graph (a clock
+    /// tick, an inbound request, a file/secret/random read, **a state read**). The
+    /// complement is **performed** (output-side): the host *executes* it (egress, file
+    /// write, spawn, **state write**). Design mode mocks the sourced side; deploy
+    /// performs the rest. The `State` kind splits here — `StateRead` enters at the top,
+    /// `StateWrite` exits at the bottom — which is what "time in, consequences out"
+    /// always meant.
+    pub fn is_sourced(self) -> bool {
+        use Capability::*;
+        matches!(self, Clock | NetworkIngress | FileRead | SecretAccess | Random | StateRead)
+    }
 }
 
 /// The capability manifest of a unit — the set it **may** touch. Same shape as
@@ -194,8 +206,11 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
         | "list" | "get" | "append" | "length" | "sum" | "join"
         | "map" => &[],
 
-        // Effectful exemplars (classification only; execution is host-side).
-        "store" => &[StateRead, StateWrite],
+        // Effectful exemplars (classification only; execution is host-side). A state
+        // cell is two leaves: `store_read` sources its slot (input-side), `store_write`
+        // commits to it (output-side) — see the P2.6.1 L4.
+        "store_read" => &[StateRead],
+        "store_write" => &[StateWrite],
         "timer" => &[Clock],
         "email" => &[NetworkEgress],
 
@@ -403,7 +418,8 @@ mod tests {
 
     #[test]
     fn effectful_exemplars_classify() {
-        assert_eq!(kind_of("store"), Some(Kind::State));
+        assert_eq!(kind_of("store_read"), Some(Kind::State));
+        assert_eq!(kind_of("store_write"), Some(Kind::State));
         assert_eq!(kind_of("timer"), Some(Kind::Driver));
         assert_eq!(kind_of("email"), Some(Kind::Sink));
     }
@@ -413,7 +429,7 @@ mod tests {
     /// name — lands with host execution, P2.4.1 / P2.6.1.)
     #[test]
     fn effectful_exemplars_are_not_pure() {
-        for name in ["store", "timer", "email"] {
+        for name in ["store_read", "store_write", "timer", "email"] {
             assert!(kind_of(name).unwrap().is_effectful(), "{name} must be effectful");
         }
     }
@@ -554,14 +570,30 @@ mod tests {
         assert!(email.contains(Capability::NetworkEgress));
         assert_eq!(email.len(), 1);
 
-        let store = capabilities_of("store").unwrap();
-        assert!(store.contains(Capability::StateRead));
-        assert!(store.contains(Capability::StateWrite));
-        assert_eq!(store.len(), 2);
+        let store_read = capabilities_of("store_read").unwrap();
+        assert!(store_read.contains(Capability::StateRead));
+        assert_eq!(store_read.len(), 1);
+
+        let store_write = capabilities_of("store_write").unwrap();
+        assert!(store_write.contains(Capability::StateWrite));
+        assert_eq!(store_write.len(), 1);
 
         let timer = capabilities_of("timer").unwrap();
         assert!(timer.contains(Capability::Clock));
         assert_eq!(timer.len(), 1);
+    }
+
+    #[test]
+    fn is_sourced_splits_input_from_output() {
+        use Capability::*;
+        // sourced (input-side): drivers and the state *read*
+        for c in [Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead] {
+            assert!(c.is_sourced(), "{c:?} should be sourced");
+        }
+        // performed (output-side): sinks and the state *write*
+        for c in [NetworkEgress, FileWrite, Spawn, StateWrite] {
+            assert!(!c.is_sourced(), "{c:?} should be performed");
+        }
     }
 
     #[test]
@@ -629,8 +661,9 @@ mod tests {
         let mut store = MapResolver::new();
         let timer = store.insert(prim("timer")).unwrap();
         let email = store.insert(prim("email")).unwrap();
-        let store_cell = store.insert(prim("store")).unwrap();
-        let comp = composite(vec![timer, email, store_cell]);
+        let store_read = store.insert(prim("store_read")).unwrap();
+        let store_write = store.insert(prim("store_write")).unwrap();
+        let comp = composite(vec![timer, email, store_read, store_write]);
         let caps = capabilities(&comp, &store);
         assert!(caps.contains(Capability::Clock));
         assert!(caps.contains(Capability::NetworkEgress));
