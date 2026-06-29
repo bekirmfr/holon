@@ -199,7 +199,7 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
     let caps: &[Capability] = match name {
         // Pure leaves: the first-order vocabulary `compute` implements, plus
         // higher-order `map` (effect-free). A positive empty manifest.
-        "number" | "boolean" | "text" | "true" | "false"
+        "const"
         | "add" | "multiply" | "subtract" | "divide"
         | "compare" | "and" | "or" | "not" | "select"
         | "concat" | "uppercase" | "lowercase" | "text_length" | "slice" | "index_of"
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn pure_leaves_are_pure() {
         const PURE: &[&str] = &[
-            "number", "boolean", "text", "true", "false", "add", "multiply",
+            "const", "add", "multiply",
             "subtract", "divide", "compare", "and", "or", "not", "select",
             "concat", "uppercase", "lowercase", "text_length", "slice", "index_of",
             "list", "get", "append", "length", "sum",
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn pure_only_closure_is_pure() {
         let mut store = MapResolver::new();
-        let n = store.insert(prim("number")).unwrap();
+        let n = store.insert(prim("const")).unwrap();
         let m = store.insert(prim("multiply")).unwrap();
         let comp = composite(vec![n, m]);
         let fx = effects_of(&comp, &store);
@@ -489,7 +489,7 @@ mod tests {
         let egress = store.insert(prim("egress")).unwrap();
         let inner = store.insert(composite(vec![egress])).unwrap();
         let mid = store.insert(composite(vec![inner])).unwrap();
-        let pure = store.insert(prim("number")).unwrap();
+        let pure = store.insert(prim("const")).unwrap();
         let top = composite(vec![mid, pure]);
         let fx = effects_of(&top, &store);
         assert!(!fx.is_pure());
@@ -659,7 +659,7 @@ mod tests {
         let egress = store.insert(prim("egress")).unwrap();
         let inner = store.insert(composite(vec![egress])).unwrap();
         let mid = store.insert(composite(vec![inner])).unwrap();
-        let pure = store.insert(prim("number")).unwrap();
+        let pure = store.insert(prim("const")).unwrap();
         let top = composite(vec![mid, pure]);
         let caps = capabilities(&top, &store);
         assert!(caps.contains(Capability::NetworkEgress));
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn pure_closure_has_empty_manifest() {
         let mut store = MapResolver::new();
-        let n = store.insert(prim("number")).unwrap();
+        let n = store.insert(prim("const")).unwrap();
         let m = store.insert(prim("multiply")).unwrap();
         let caps = capabilities(&composite(vec![n, m]), &store);
         assert!(caps.is_pure());

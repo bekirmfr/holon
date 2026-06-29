@@ -51,17 +51,21 @@ pub fn mock_of(unit: &Unit) -> Option<Unit> {
 
 /// A sourced leaf's mock: a pure constant of its output type.
 fn sourced_mock(unit: &Unit) -> Option<Unit> {
-    let (cname, value): (&str, &str) = match unit.output.as_ref()? {
-        Type::Number => ("number", "0"),
-        Type::Boolean => ("boolean", "false"),
-        Type::Text | Type::Any => ("text", ""),
+    let (ty, value): (&str, &str) = match unit.output.as_ref()? {
+        Type::Number => ("Number", "0"),
+        Type::Boolean => ("Boolean", "false"),
+        Type::Text | Type::Any => ("Text", ""),
         // An empty-list constant: `list` with no inputs computes to `[]`.
         Type::List => return Some(constant("list", vec![], unit.output.clone())),
         // A sourced leaf never outputs an Effect (effects are constructed by sinks, the
         // performed side, not the sourced side) — so there is nothing to mock.
         Type::Effect => return None,
     };
-    Some(constant(cname, vec![Param::frozen("value", value)], unit.output.clone()))
+    Some(constant(
+        "const",
+        vec![Param::frozen("type", ty), Param::frozen("value", value)],
+        unit.output.clone(),
+    ))
 }
 
 fn constant(name: &str, params: Vec<Param>, output: Option<Type>) -> Unit {

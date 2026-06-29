@@ -111,8 +111,8 @@ mod tests {
 
     fn number(v: &str) -> Unit {
         Unit {
-            body: UnitBody::Primitive { name: "number".into() },
-            params: vec![Param::frozen("value", v)],
+            body: UnitBody::Primitive { name: "const".into() },
+            params: vec![Param::frozen("type", "Number"), Param::frozen("value", v)],
             inputs: vec![],
             output: Some(Type::Number),
         }

@@ -1368,3 +1368,29 @@ distinguished "send mail" from "send a reply" now lives where §13 says it belon
 **R4 complete: all effects carry §13 names** (clock, ingress, egress). **Next — R5 · const merge**:
 number/boolean/text/true/false → one `const` reading value+type from params. Same species as R4b
 (N primitives → 1), so the same three-site checklist applies. Then the R6 fork (demotions).
+
+---
+
+## 2026-06-29 · Genesis reconciliation R5 — const merge (COMPLETES the arc R1–R5)
+
+**Five constants → one data-driven `const` (142 green = 123c + 19h, count unchanged).** The most
+*spread-out* inch — eight files — because constants are minted in more places than any effect:
+eval/determinism/promote/validate fixtures, the design-mode mock (`sourced_mock`), and the host's
+state-cell injector (`constant_unit`/`scalar`) all build scalar units. But the change is the
+cleanest consolidation: `number`/`boolean`/`text` (+ the niladic `true`/`false`) fold into one
+`const` reading `value` + `type` params.
+
+**Key decision held: `const` *declares* its type, never infers it.** `const(Number,"true")` ⇒ None
+(no coercion); `const(Boolean,"true")` ⇒ the bool; a literal `"true"` string ⇒ `const(Text,"true")`
+— three unambiguous units, three distinct hashes, exactly what content-addressing needs (I5). Test
+pins it: value-not-parsing-for-type ⇒ None, and a type with no literal form (List) ⇒ None.
+
+**Disposed of a latent inconsistency:** `true`/`false` were never real primitives — allowlist +
+purity-test entries with no `compute` arm, a "pure leaf" that couldn't produce a value. Gone now (a
+boolean literal is just `const(Boolean,…)`). Trust root is smaller *and* more honest.
+
+**RECONCILIATION ARC R1–R5 COMPLETE.** The native set matches §13 on every axis: pure irreducibles
+(cons/head/tail/is_empty + fold), text (lowercase/text_length/slice/index_of, Text opaque), drivers
+(clock/random/ingress, store_read), effects (one egress + store_write), constants (one const). Only
+R6 remains — and R6 is a genuine design *fork* (demote to stdlib vs trust-root-freeze), not a
+mechanical inch. To be discussed, not just executed.

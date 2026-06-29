@@ -25,8 +25,8 @@ mod tests {
 
     fn constant(v: i64) -> Unit {
         Unit {
-            body: UnitBody::Primitive { name: "number".into() },
-            params: vec![Param::frozen("value", v.to_string())],
+            body: UnitBody::Primitive { name: "const".into() },
+            params: vec![Param::frozen("type", "Number"), Param::frozen("value", v.to_string())],
             inputs: vec![],
             output: Some(Type::Number),
         }
@@ -120,9 +120,9 @@ mod tests {
         assert!(!is_finite_number(f64::INFINITY));
 
         use crate::primitives::compute;
-        let p = |v: &str| vec![Param::frozen("value", v)];
-        assert_eq!(compute("number", &[], &p("NaN")), None);
-        assert_eq!(compute("number", &[], &p("inf")), None);
-        assert_eq!(compute("number", &[], &p("2.5")), Some(Value::Number(2.5)));
+        let p = |v: &str| vec![Param::frozen("type", "Number"), Param::frozen("value", v)];
+        assert_eq!(compute("const", &[], &p("NaN")), None);
+        assert_eq!(compute("const", &[], &p("inf")), None);
+        assert_eq!(compute("const", &[], &p("2.5")), Some(Value::Number(2.5)));
     }
 }

@@ -15,13 +15,24 @@ use crate::{Param, Value};
 /// Dispatch a primitive by name to its native computation.
 pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> {
     match name {
-        // ── constants: value comes from a param, no inputs ──
-        "number" => param(params, "value")
-            .and_then(|s| s.parse::<f64>().ok())
-            .filter(|n| crate::determinism::is_finite_number(*n))
-            .map(Value::Number),
-        "boolean" => param(params, "value").and_then(parse_bool).map(Value::Boolean),
-        "text" => param(params, "value").map(|s| Value::Text(s.to_string())),
+        // ── const (§13): the one literal constructor. `value` is the literal as text; `type`
+        // (Number/Boolean/Text) declares how to read it — no inference, so the unit is
+        // self-describing and two authors who meant different types never collide (I5). A value
+        // that doesn't parse for its type ⇒ None; List/Effect/Any have no literal form (an empty
+        // list is the niladic `list`), ⇒ None. ──
+        "const" => {
+            let value = param(params, "value")?;
+            match param(params, "type")? {
+                "Number" => value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|n| crate::determinism::is_finite_number(*n))
+                    .map(Value::Number),
+                "Boolean" => parse_bool(value).map(Value::Boolean),
+                "Text" => Some(Value::Text(value.to_string())),
+                _ => None,
+            }
+        }
 
         // ── arithmetic ──
         "add" => fold_numbers(inputs, 0.0, |a, b| a + b),
@@ -337,9 +348,13 @@ mod tests {
     }
     #[test]
     fn constants_from_params() {
-        assert_eq!(compute("number", &[], &[p("value", "42")]), Some(num(42.0)));
-        assert_eq!(compute("boolean", &[], &[p("value", "true")]), Some(boo(true)));
-        assert_eq!(compute("text", &[], &[p("value", "hi")]), Some(txt("hi")));
+        assert_eq!(compute("const", &[], &[p("type", "Number"), p("value", "42")]), Some(num(42.0)));
+        assert_eq!(compute("const", &[], &[p("type", "Boolean"), p("value", "true")]), Some(boo(true)));
+        assert_eq!(compute("const", &[], &[p("type", "Text"), p("value", "hi")]), Some(txt("hi")));
+        // No inference: a value that doesn't parse for its declared type ⇒ None.
+        assert_eq!(compute("const", &[], &[p("type", "Number"), p("value", "hi")]), None);
+        // A type with no literal form ⇒ None.
+        assert_eq!(compute("const", &[], &[p("type", "List"), p("value", "x")]), None);
     }
     #[test]
     fn egress_constructs_an_effect() {

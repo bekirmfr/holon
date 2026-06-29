@@ -204,8 +204,10 @@ mod tests {
         }
     }
     fn text_source() -> Unit {
+        // A Text-typed wiring stub (validate never evaluates it), so a bare `const` suffices —
+        // no `value`/`type` params needed for type-checking.
         Unit {
-            body: UnitBody::Primitive { name: "text".into() },
+            body: UnitBody::Primitive { name: "const".into() },
             params: vec![],
             inputs: vec![],
             output: Some(Type::Text),

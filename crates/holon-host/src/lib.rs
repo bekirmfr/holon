@@ -200,9 +200,9 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
 /// carry list items without children-by-hash, and the minimal cell is scalar).
 fn constant_unit(value: &Value) -> Unit {
     match value {
-        Value::Number(n) => scalar("number", n.to_string(), Type::Number),
-        Value::Boolean(b) => scalar("boolean", b.to_string(), Type::Boolean),
-        Value::Text(s) => scalar("text", s.clone(), Type::Text),
+        Value::Number(n) => scalar("Number", n.to_string(), Type::Number),
+        Value::Boolean(b) => scalar("Boolean", b.to_string(), Type::Boolean),
+        Value::Text(s) => scalar("Text", s.clone(), Type::Text),
         Value::List(_) => Unit {
             body: UnitBody::Primitive { name: "list".into() },
             params: vec![],
@@ -216,10 +216,10 @@ fn constant_unit(value: &Value) -> Unit {
     }
 }
 
-fn scalar(name: &str, value: String, ty: Type) -> Unit {
+fn scalar(ty_name: &str, value: String, ty: Type) -> Unit {
     Unit {
-        body: UnitBody::Primitive { name: name.into() },
-        params: vec![Param::frozen("value", value)],
+        body: UnitBody::Primitive { name: "const".into() },
+        params: vec![Param::frozen("type", ty_name), Param::frozen("value", value)],
         inputs: vec![],
         output: Some(ty),
     }
@@ -384,8 +384,8 @@ mod tests {
     }
     fn number(n: &str) -> Unit {
         Unit {
-            body: UnitBody::Primitive { name: "number".into() },
-            params: vec![Param::frozen("value", n)],
+            body: UnitBody::Primitive { name: "const".into() },
+            params: vec![Param::frozen("type", "Number"), Param::frozen("value", n)],
             inputs: vec![],
             output: Some(Type::Number),
         }
@@ -754,8 +754,8 @@ mod tests {
         let mut r = MapResolver::new();
         let welcome = r
             .insert(Unit {
-                body: UnitBody::Primitive { name: "text".into() },
-                params: vec![Param::frozen("value", "welcome")],
+                body: UnitBody::Primitive { name: "const".into() },
+                params: vec![Param::frozen("type", "Text"), Param::frozen("value", "welcome")],
                 inputs: vec![],
                 output: Some(Type::Text),
             })

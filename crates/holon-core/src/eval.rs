@@ -315,8 +315,8 @@ mod tests {
     // Double(x) = x * 2, as a composite: BOUNDARY.x → mul.0 ; const(2) → mul.1 ; mul → out.
     fn double(r: &mut MapResolver) -> Hash {
         let two = Unit {
-            body: UnitBody::Primitive { name: "number".into() },
-            params: vec![Param::frozen("value", "2")],
+            body: UnitBody::Primitive { name: "const".into() },
+            params: vec![Param::frozen("type", "Number"), Param::frozen("value", "2")],
             inputs: vec![],
             output: Some(Type::Number),
         };
