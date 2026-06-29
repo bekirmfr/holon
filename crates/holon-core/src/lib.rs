@@ -28,6 +28,7 @@ mod eval;
 mod kind;
 mod promote;
 mod hash;
+mod inspect;
 mod resolve;
 mod simulate;
 mod validate;
@@ -39,6 +40,7 @@ pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::eval;
+pub use inspect::{child_refs, dependencies};
 pub use hash::{
     decode_preimage, encode_preimage, hash_unit, parse_hash, DecodeError, Edge, EncodeError, Hash,
     Param, Port, Type, Unit, UnitBody, ENCODING_VERSION,

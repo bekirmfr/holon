@@ -38,7 +38,6 @@
 
 /// What a primitive or composite *is*, with respect to effects.
 ///
-use crate::hash::parse_hash;
 use crate::{Resolver, Unit, UnitBody};
 use std::collections::BTreeSet;
 
@@ -347,29 +346,14 @@ fn collect_caps(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capabi
         }
     }
 
-    // (2) Children of a composite, recursed.
-    if let UnitBody::Composite { children, .. } = &unit.body {
-        for child in children {
-            match resolver.resolve(child) {
-                Some(u) => collect_caps(u, resolver, acc),
-                None => saturate_caps(acc), // unresolvable child ⇒ fail closed
-            }
-        }
-    }
-
-    // (3) Hash-valued params (e.g. `map`'s `fn`) are references, not data — follow
-    //     them so a capability routed through a param cannot hide. An `Open` hole has
-    //     no value and contributes nothing (filled at instantiate time). A value
-    //     shaped exactly like a 64-char hash is treated as a reference; if it cannot
-    //     be resolved, we fail closed rather than read it as inert data.
-    for p in &unit.params {
-        if let Some(v) = p.value() {
-            if let Some(h) = parse_hash(v) {
-                match resolver.resolve(&h) {
-                    Some(u) => collect_caps(u, resolver, acc),
-                    None => saturate_caps(acc),
-                }
-            }
+    // (2) Every reference — a composite's children and the `fn` param — via the shared
+    //     `child_refs` (the one definition of what a unit references). A capability routed
+    //     through a reference cannot hide; an unresolvable reference fails closed rather than
+    //     being read as inert data.
+    for h in crate::inspect::child_refs(unit) {
+        match resolver.resolve(&h) {
+            Some(u) => collect_caps(u, resolver, acc),
+            None => saturate_caps(acc),
         }
     }
 }

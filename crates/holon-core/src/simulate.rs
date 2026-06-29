@@ -24,7 +24,6 @@
 //! at the trust boundary, and a mock is never in any content hash.
 
 use crate::eval::eval;
-use crate::hash::parse_hash;
 use crate::{capabilities_of, Hash, Param, Resolver, Type, Unit, UnitBody, Value};
 use std::collections::BTreeMap;
 
@@ -99,30 +98,16 @@ impl<R: Resolver> Resolver for Simulated<'_, R> {
     }
 }
 
-/// Walk a root's closure (children ∪ hash-valued params) and pre-build a mock for
-/// every effect leaf, keyed by the leaf's hash. Termination is free: content-
-/// addressing forbids a cycle.
+/// Walk a root's closure via the shared [`crate::child_refs`] (children ∪ the `fn` param)
+/// and pre-build a mock for every effect leaf, keyed by the leaf's hash. Termination is free:
+/// content-addressing forbids a cycle.
 fn collect_mocks(unit: &Unit, real: &impl Resolver, mocks: &mut BTreeMap<Hash, Unit>) {
-    if let UnitBody::Composite { children, .. } = &unit.body {
-        for child_hash in children {
-            if let Some(child) = real.resolve(child_hash) {
-                if let Some(mock) = mock_of(child) {
-                    mocks.insert(*child_hash, mock);
-                }
-                collect_mocks(child, real, mocks);
+    for h in crate::inspect::child_refs(unit) {
+        if let Some(referenced) = real.resolve(&h) {
+            if let Some(mock) = mock_of(referenced) {
+                mocks.insert(h, mock);
             }
-        }
-    }
-    for p in &unit.params {
-        if let Some(v) = p.value() {
-            if let Some(h) = parse_hash(v) {
-                if let Some(referenced) = real.resolve(&h) {
-                    if let Some(mock) = mock_of(referenced) {
-                        mocks.insert(h, mock);
-                    }
-                    collect_mocks(referenced, real, mocks);
-                }
-            }
+            collect_mocks(referenced, real, mocks);
         }
     }
 }

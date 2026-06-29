@@ -1456,3 +1456,34 @@ persisted by the store; persisting the record is a short follow-on); no networki
 
 **Next — P3.2.1 inspection:** surface a unit's full transitive structure (same closure shape) so a
 consumer audits what they're about to depend on *before* pinning — I9 full-inspectability made concrete.
+
+---
+
+## 2026-06-29 · P3.2.1 — inspection + the child_refs unification
+
+**More consolidation than new surface (154 green = 130c + 24h, +7 core inspect tests).** New
+core module `inspect.rs`: `dependencies(root, resolver)` — the transitive closure below a root,
+deduped and hash-ordered, so a consumer audits exactly what they'd depend on before pinning (I9
+made an operation). Flat reachable-set, not a tree: each composite already lists its children, so
+flat + bodies *is* the structure, and flat is what an audit ("is every node pure?") wants.
+
+**The substantive work: dissolving three divergent closure-walks into one `child_refs`.**
+`collect_caps` (kind), `collect_mocks` (simulate), and registry `verify_closure` (host) each had
+their own answer to "what does a unit reference." Two used the **parse-heuristic** (follow any
+value that parses as a hash) — a latent fail-closed-wrong bug: a `const(Text, value="<64 hex>")`
+would make `collect_caps` saturate and report a *pure text constant as maximally capable* (a
+security-relevant misclassification), and `collect_mocks` would try to mock a string. No unit
+triggers it today, so nothing was red — but it was real. `child_refs` keys on the param **name
+`fn`** (eval's convention), removing the whole class; pinned by `child_refs_ignores_a_hash_shaped_
+non_fn_param` (value = 64 valid hex chars, correctly ignored).
+
+All four walks — capability classification, mocking, publish, inspection — now consult one
+definition; they can't drift, and a 2nd hash-valued param is added in exactly one place. The
+"align to the natural boundary" principle doing concrete work: the boundary was "what does a unit
+reference," it had three contradictory impls, dissolving them was the fix. (Also removed two
+now-unused `parse_hash` imports; updated the P3.1.1 registry doc from "future refactor" to done.)
+
+**Next — P3.3.1 local memo** (the cache thesis made real): a pure unit's hash + inputs ⇒ output
+forever, so cache and re-serve without re-eval. New piece: a **canonical `Value` encoder** (the
+cache key needs inputs in a stable hashable form; Value derives only PartialEq). Real design call
+— what makes two inputs "the same" for caching — so it gets an L4 first.

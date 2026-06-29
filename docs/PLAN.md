@@ -12,7 +12,7 @@
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`).
 > **Next — genesis reconciliation arc (`P3-genesis-reconciliation-L4`), then `P3.1.1` (registry).** Reconciling the native set to `§13` *before* the registry's first publish freezes the trust root. A breaking arc done one green inch at a time: **R1 ✅ R2 ✅ R3 ✅** (the additive run — pure kit, text kit, `random` driver; no existing hash moved) → **R4 ✅** (clock/ingress/egress) → **R5 ✅** (one `const`) → **R6 ✅ DECISION** (freeze the as-built trust root — Branch B; demotion-to-stdlib deferred to its own pillar; gate stays active; 34-leaf genesis manifest pinned in §13a). **GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape — the hygiene prerequisite before the registry's first publish is met.
 
-**Next — P3 local-first, registry banked:** **P3.1.1 ✅** (the publish boundary — `Registry` over the store, closure-verified, fail-closed on dangling child/`fn`; hash-only, in-memory record) → **P3.2.1 inspection** (surface a unit's full transitive structure — children + hash-valued params — so a consumer audits before pinning; I9 made concrete) → local memo (P3.3.1, canonical-Value encoder is the new piece) → fork/re-pin (P3.5.1, needs L4) → advisory (P3.6.1). Networked tier (shared trustless cache P3.3.2, reputation, identity) deferred. Both stabilize the trust root; the fork is deferred since R1–R5 are required either way. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin (needs L4) → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
+**Next — P3 local-first:** **P3.1.1 ✅** (publish boundary, closure-verified) → **P3.2.1 ✅** (inspection — `dependencies` transitive view; the `child_refs` unification dissolved 3 divergent closure-walks into one, fixing a latent capability-misclassification) → **P3.3.1 local memo** (cache thesis made real: pure hash+inputs ⇒ output forever; new piece = canonical `Value` encoder; needs L4) → fork/re-pin (P3.5.1, needs L4) → advisory (P3.6.1). Networked tier (shared trustless cache P3.3.2, reputation, identity) deferred. Both stabilize the trust root; the fork is deferred since R1–R5 are required either way. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin (needs L4) → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
 
 ---
 
@@ -790,3 +790,22 @@ future change can tell a real defect from an invariant doing its job.
   child refused**; **dangling `fn` param refused** (the I6 subtlety); re-publish idempotent.
 - **Deferred from here:** names/discovery, catalog persistence, networking, a shared
   `child_refs(unit)` core helper (warranted once a 2nd hash-valued param exists).
+
+---
+
+### P3.2.1 — inspection + child_refs unification (DONE)
+- **Core `inspect.rs`:** `child_refs(unit) -> Vec<Hash>` (THE single definition of direct refs:
+  composite children + the `fn`-named param) and `dependencies(root, resolver) -> BTreeMap<Hash,
+  &Unit>` (transitive closure below root, deduped, hash-ordered; lenient on unresolvable —
+  completeness is the registry's guarantee). Exported from lib.
+- **Decision:** flat reachable-set, not a tree (composite bodies already encode structure; flat is
+  what audit wants). Hash-valued param identified by NAME `fn` (eval's convention), not parse —
+  removes the parse-heuristic false-positive (a 64-hex-char Text value is data, not a reference).
+- **Unification:** `collect_caps` (kind), `collect_mocks` (simulate), registry `verify_closure`
+  (host) all refactored to consult `child_refs`. Fixed a latent fail-closed-wrong bug: the
+  parse-heuristic would mis-saturate a hash-shaped Text const's capabilities. Removed 2 unused
+  `parse_hash` imports.
+- **Tests (+7 core = 130):** child_refs of primitive/composite/map; child_refs ignores hash-shaped
+  non-fn param; dependencies transitive / follow-fn-and-dedup / leaf-empty. Host 24 unchanged
+  (registry refactor behavior-preserving).
+- **Future:** a 2nd hash-valued param now slots into `child_refs` in exactly one place.

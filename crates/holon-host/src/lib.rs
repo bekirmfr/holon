@@ -22,7 +22,7 @@ use std::io;
 use std::path::PathBuf;
 
 use holon_core::{
-    capabilities_of, decode_preimage, design_eval, encode_preimage, eval, hash_unit, parse_hash,
+    capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval, hash_unit,
     Capability, DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
 };
 
@@ -363,10 +363,10 @@ impl Store for FileStore {
 ///
 /// Scope (P3.1.1): hash-only (no names — hash *is* identity); the published record lives in
 /// memory (the *units* are persisted by the store; persisting the record is a short
-/// follow-on); no networking. The walk follows the `fn`-named param — the one hash-valued
-/// param convention `eval` defines — rather than guessing from any value that happens to
-/// parse as a hash (a literal text value could coincide). A shared `child_refs(unit)` helper
-/// is the right refactor once a second hash-valued param exists.
+/// follow-on); no networking. The closure walk uses the shared [`holon_core::child_refs`]
+/// (P3.2.1) — children plus the `fn`-named param — the one definition of "what a unit
+/// references" that capability classification, design-mode mocking, and this publish path all
+/// agree on, so none can disagree about what must be present.
 #[derive(Debug)]
 pub enum PublishError {
     /// The store failed to read or write.
@@ -415,31 +415,16 @@ impl<S: Store> Registry<S> {
     }
 }
 
-/// Walk a unit's transitive closure — children (composite) and the `fn`-named hash param —
-/// requiring every reference to resolve in `store`. `None` ⇒ `DanglingReference`. Terminates
-/// for free: content-addressing forbids a cycle.
+/// Walk a unit's transitive closure via the shared [`holon_core::child_refs`] (children +
+/// the `fn` param), requiring every reference to resolve in `store`. `None` ⇒
+/// `DanglingReference`. Terminates for free: content-addressing forbids a cycle.
 fn verify_closure<S: Store>(unit: &Unit, store: &S) -> Result<(), PublishError> {
-    if let UnitBody::Composite { children, .. } = &unit.body {
-        for h in children {
-            let child = store
-                .get(h)
-                .map_err(PublishError::Store)?
-                .ok_or(PublishError::DanglingReference(*h))?;
-            verify_closure(&child, store)?;
-        }
-    }
-    for p in &unit.params {
-        // `fn` is the one hash-valued param convention (map/fold); a literal value that merely
-        // looks like a hash is not a reference, so we key on the name, not on parse success.
-        if p.name() == "fn" {
-            if let Some(h) = p.value().and_then(parse_hash) {
-                let referenced = store
-                    .get(&h)
-                    .map_err(PublishError::Store)?
-                    .ok_or(PublishError::DanglingReference(h))?;
-                verify_closure(&referenced, store)?;
-            }
-        }
+    for h in child_refs(unit) {
+        let referenced = store
+            .get(&h)
+            .map_err(PublishError::Store)?
+            .ok_or(PublishError::DanglingReference(h))?;
+        verify_closure(&referenced, store)?;
     }
     Ok(())
 }
