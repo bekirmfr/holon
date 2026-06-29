@@ -556,3 +556,49 @@ the same as today's ~22 — but it is the *right* set, every atom now passing a 
 test instead of sitting there by habit. The demotions are the one breaking move
 (re-hashing), hence genesis-timed; the gate protects the boundary, for free, forever
 after.
+
+### 13a. The genesis freeze — R6 decision (interim: Branch B)
+
+The reconciliation arc (R1–R5, 2026-06-29) brought the as-built native set into line
+with this section on every axis **except the demotions above**: it *added* the missing
+irreducibles (`fold`, `cons`/`head`/`tail`/`is_empty`, the text kit
+`lowercase`/`text_length`/`slice`/`index_of`, the `random` driver); *renamed* effects to
+their §13 names (`timer`→`clock`, `request`→`ingress`); *merged* `email`+`respond`→ one
+`egress` sink and the five typed constants → one `const`. What it did **not** do is demote
+the convenience leaves (the list library, `map`) to a stdlib — the one move §13's gate
+would make if they were proposed fresh today.
+
+**R6 fork, decided:** that demotion is **deferred**, not performed. We freeze the
+**as-built** set as the genesis set (Branch B) rather than shrink to the theoretical
+minimum (Branch A). Reasoning: Branch A's payoff — the smallest possible surface for an
+auditor to verify — only *accrues once there is an auditor*, i.e. the networked trustless
+cache (deferred P3 tier). There is no auditor today, and Branch A additionally requires
+inventing the blessed-stdlib distribution mechanism (how do shipped composites resolve and
+pin?), which is a new pillar's worth of design, not a reconciliation cleanup. So the
+minimal-trust-root principle is *acknowledged and deferred*, to be revisited as its own
+pillar **when the stdlib mechanism and the auditing use-case both actually exist**. The
+admission **gate stays fully active** in the meantime — purely as a gatekeeper for the
+*future*: nothing new enters the native set without passing it. The set is grandfathered,
+not derived; the gate guarantees it never grows by habit again.
+
+**The frozen genesis manifest (34 leaves).** This is the entire trusted-semantics surface
+— the leaves of every hash DAG, the only code the engine vouches for. Append-only
+hereafter (adding re-hashes nothing below; redefining/removing breaks the world).
+
+- **Pure — language core (16):** `const`, `add`, `multiply`, `subtract`, `divide`,
+  `compare` (op param), `and`, `or`, `not`, `select`, `cons`, `head`, `tail`, `is_empty`,
+  `fold`, `map`.
+- **Pure — text, `Text` opaque (6):** `concat`, `uppercase`, `lowercase`, `text_length`,
+  `slice`, `index_of`.
+- **Pure — list convenience, demotion-deferred (6):** `list`, `get`, `append`, `length`,
+  `sum`, `join`. *(All expressible as `fold`/`cons` composites; kept native for speed and
+  ergonomics under Branch B. These are the concrete leaves a future demotion pillar would
+  move to the stdlib.)*
+- **Drivers — sourced, no compute (3):** `clock`, `random`, `ingress`.
+- **State cell (2):** `store_read`, `store_write`.
+- **Sink — performed (1):** `egress`.
+
+Totality holds as before: control flow is exactly `select` + `fold`, `while` is absent, so
+every composite anyone builds is guaranteed to halt — the property the trustless cache
+will lean on when the auditing tier arrives. Freezing the larger set changes none of that;
+it only keeps six convenience leaves on the privileged side of the line for now.

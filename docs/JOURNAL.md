@@ -1394,3 +1394,32 @@ boolean literal is just `const(Boolean,…)`). Trust root is smaller *and* more 
 (clock/random/ingress, store_read), effects (one egress + store_write), constants (one const). Only
 R6 remains — and R6 is a genuine design *fork* (demote to stdlib vs trust-root-freeze), not a
 mechanical inch. To be discussed, not just executed.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R6 — DECISION: freeze the trust root (Branch B), defer demotion
+
+**No code (the native set is already at 142 green); this inch is a decision pinned in writing.**
+The R6 fork was: shrink to the theoretical-minimal trust root by demoting convenience leaves to a
+blessed stdlib (Branch A), *vs* freeze the as-built set and let the admission gate bar future bloat
+(Branch B). **Chose B as the interim state, deferring A to its own pillar.**
+
+Reasoning: Branch A's payoff — the smallest surface for an auditor to verify — only accrues *once
+there is an auditor*, i.e. the networked trustless cache (deferred P3 tier). No auditor today, and A
+additionally needs the blessed-stdlib distribution mechanism invented first (a pillar's worth of
+design, not a cleanup). So the minimal-trust-root principle is acknowledged and deferred, revisited
+when stdlib mechanism + auditing use-case both exist. The gate stays fully active as
+gatekeeper-for-the-future: the set is grandfathered, not derived, but it never grows by habit again.
+
+**Pinned in COMPOSABLE_VM_DESIGN.md §13a** — the frozen genesis manifest, 34 leaves (the entire
+trusted-semantics surface, append-only hereafter): 16 pure language core, 6 text (Text opaque), 6
+list-convenience (demotion-deferred — the concrete leaves a future pillar moves to stdlib), 3
+drivers, 2 state, 1 sink. Totality (select+fold, no while) unchanged by the larger freeze.
+
+**GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape, reached one
+green inch at a time, breaking hashes only where designed. This was the hygiene prerequisite before
+the registry's first publish (the first permanent public commitment of a hash).
+
+**Next — back to P3 local-first**, now unblocked: registry (P3.1.1) → inspection (P3.2.1) → local
+memo (P3.3.1, the canonical-Value encoder is the new piece) → fork/re-pin (P3.5.1, needs L4) →
+advisory (P3.6.1). Networked tier (shared cache P3.3.2, reputation, identity) still deferred.
