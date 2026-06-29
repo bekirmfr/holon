@@ -6,9 +6,10 @@
 > level across the whole tree, then leaf by leaf — and is not a build target until
 > we judge it thorough.
 >
-> **Current resolution:** trunk + all four pillars at L3 **frozen**; `P1.4.3` descended to **L4**.
+> **Build status:** **Phase A + B complete — the Language pillar (P1) is closed** (~69 tests; pure core holds values, validates, evaluates deterministically, encapsulates, `map`s higher-order, and parameterizes via open/instantiate).
+> **Current resolution:** trunk + all four pillars at L3 **frozen**; `P1.4.3`, `P1.5.1`, `P1.5.2` descended to L4 and built.
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ P3) + one parallel pillar (P4 · Editor).
-> **Next:** begin **Phase A** building from `P1.4.1` (value model); `P1.4.3` design is pinned.
+> **Next:** **Phase C — the effect boundary (P2)**. Opens with `P2.1.1` (kind taxonomy, still pure core); crosses into `holon-host` at `P2.6.1` (state) / `P2.4.1` (firing).
 
 ---
 
