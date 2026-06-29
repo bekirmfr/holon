@@ -213,6 +213,12 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
         "store_write" => &[StateWrite],
         "timer" => &[Clock],
         "email" => &[NetworkEgress],
+        // Request/response (P2.5.1): `request` is the ingress driver (a request arrives), `respond`
+        // the egress sink (a reply goes out). A correlation token rides as ordinary data between
+        // them; isolation is purity's (independent pure paths can't cross), so the token is only a
+        // boundary label, not an engine mechanism.
+        "request" => &[NetworkIngress],
+        "respond" => &[NetworkEgress],
 
         // Unknown leaf ⇒ fail closed. The engine does not vouch for it.
         _ => return None,
@@ -581,6 +587,16 @@ mod tests {
         let timer = capabilities_of("timer").unwrap();
         assert!(timer.contains(Capability::Clock));
         assert_eq!(timer.len(), 1);
+
+        // Request/response (P2.5.1): the in/out pair. A request→respond closure is effect-bearing
+        // (egress) yet *replayable* (no State) — and the token that correlates them is plain data,
+        // never a capability.
+        let request = capabilities_of("request").unwrap();
+        assert!(request.contains(Capability::NetworkIngress));
+        assert!(request.is_replayable()); // a driver, not state
+        let respond = capabilities_of("respond").unwrap();
+        assert!(respond.contains(Capability::NetworkEgress));
+        assert_eq!(respond.len(), 1);
     }
 
     #[test]

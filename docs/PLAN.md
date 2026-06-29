@@ -10,7 +10,7 @@
 > **Current resolution:** trunk + all four pillars at L3 **frozen**; L4s built: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, plus `sink-as-pure-request-L4.md`, `P2.4.1-deploy-firing-L4.md`, `P2.6.1-state-cell-L4.md`, `A-to-B-effect-value-L4.md`, `drive-sourced-resolver-L4.md`. **Two orthogonal classification axes decide everything the host needs:** effect-bearing ⊥ replayable (Fork B), sourced ⊥ performed (state/drive). **One substituting machine** (`SourcedResolver`) injects all sourced values; the round commits only `StateWrite` back. Effects **output-carried, self-describing**; performing driven by the output (does), the manifest stays disclosure (may).
 > **Decisions pinned:** the host is the **only** impurity; an effect value carries the sink's **name, not its capability** (derived — no `kind` dependency in `value`/`primitives`). `Type::Effect` (tag 6, appended — **no existing hash moved**); a request can't be re-consumed as data. **`store_read` is a driver** (sourced); `StateResolver` generalized away. **Per-capability (anonymous) keying** for cells *and* drivers — keyed/multiple defer behind parameterized capabilities (`Clock(id)`/`StateWrite(key)`). **Multi-output composites stay deferred** — `List[Effect]` dissolves the need. Deploy has **no silent driver default** (undriven ⇒ nothing; design mode mocks for preview).
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ P3) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has one dependency (`blake3`).
-> **Next:** **`P2.5.1`** — correlation token. *Genuinely different in kind:* it touches the **value model** and request identity, not state, so it will not dissolve into host-storage the way `P2.6.1`/`6.2`/`6.3` did. The design-forward fork (does every value carry routing identity, or is the token explicit?) — wants its own L4. Then `P2.5.2` idempotency. Beyond P2: real platform hosts (where concurrent-transactional, real `email`/clock/socket live behind the `Host` seam), keyed cells/drivers (parameterized capabilities), and P3 (the trustless memo marketplace, where replayability pays off and cell pin/fork land).
+> **Next:** **`P2.5.2`** — idempotency key on sinks (a user-supplied key so the *external system* dedupes a double-fire; engine carries the key, user composes the policy), then **`P2.7.2`** — mode-aware firing (consolidate design/deploy under one host surface; both modes already exist). **Two inches from a closed P2.** Beyond P2: real platform hosts (real `email`/clock/socket *and* the real token→socket routing behind the `Host` seam), keyed cells/drivers + non-scalar sourcing (parameterized capabilities / list `constant_unit`), async/await (`P2.4.2`), and P3 (the trustless memo marketplace, where replayability pays off and cell pin/fork land).
 >
 > **Pattern worth naming:** P2.6.1's one decision — *the cell's value is host runtime state, threaded between atomic rounds, never in the unit* — dissolved **three** downstream leaves (`6.2`/`6.3` plus state itself): value-not-hashed, non-replayable, fork-CoW, pin, and read-then-write isolation are all corollaries. Pin the right boundary once; downstream "features" become theorems.
 
@@ -333,11 +333,19 @@ async is a fork-open leaf we do not need yet.
    *pre:* P2.6.1 · *inv:* `§7` · *test:* saturating counter `0→1→2→2→2` — one atomic conditional
    update · *effort:* **M** *(done — one demo test, no prod code)*
 
-9. **P2.5.1 · Correlation token in the value model** *(core + host)* — request/response
-   routing: a driver mints a token threaded through the graph so a response sink reaches
-   the right open caller.
-   *pre:* P1.4.1, P2.4.1 · *inv:* `§4` · *test:* two concurrent requests get their
-   responses routed correctly; none cross · *effort:* **M**
+9. **P2.5.1 · Correlation token in the value model** *(core + host)* — **complete ✅.** Resolved
+   *against* its own framing: the token is **not** an isolation mechanism — **non-crossing is a
+   theorem of purity** (independent requests, independent pure paths, no shared channel; only a
+   *state cell* can mix them, by the user's choice). The token is only a **boundary label** (which
+   open connection to reply on), carried as **explicit data** in the `[token, reply]` payload — no
+   `Value` change (implicit would *be* the shared channel non-crossing's freedom forbids). Caps:
+   `request → NetworkIngress`, `respond → NetworkEgress`; a `request→respond` closure is
+   effect-bearing yet **replayable**. Demo: `map(respond, ·)` over two `[token,data]` requests —
+   tokens don't cross. Deferred: real socket routing (platform host), client-await (async/`P2.4.2`),
+   ingress batch sourcing (non-scalar `constant_unit`).
+   *pre:* P1.4.1, P2.4.1 · *inv:* `§4` · *test:* two concurrent requests routed correctly, none
+   cross · *effort:* **M** *(done)*
+   *→ **L4** in `P2.5.1-correlation-token-L4.md`.*
 
 10. **P2.5.2 · Idempotency-key affordance on sinks** *(host)* — an effectful sink accepts
     a user-supplied key (derived from intent) so the **external system** dedupes a
@@ -633,7 +641,9 @@ single brittle 1..N list would over-claim precision — the phases are the real 
   → P2.6.3: cell identity dissolved by host-storage (value-not-hashed unrepresentable,
   non-replayable already held, fork=CoW tested, pin→P3) → P2.6.2: transactional read-then-write
   dissolved — the round IS the transaction (atomic snapshot→fire→apply; conditional RMW composes
-  via select; saturating counter 0→1→2→2→2); concurrent-txn → platform host, not core`,
+  via select; saturating counter 0→1→2→2→2); concurrent-txn → platform host, not core
+  → P2.5.1: correlation token = boundary label (explicit data, no Value change); non-crossing is
+  purity's theorem (map(respond,·) keeps tokens paired); real routing/await defer`,
   all pure core. **`P2.6.1` (state) was deferred to the deploy crossing** rather than built
   before firing: the substituting-resolver insight made design-mode firing pure and
   buildable without state, so the purity seam is crossed once, at deploy, not twice.

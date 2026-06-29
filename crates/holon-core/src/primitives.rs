@@ -108,6 +108,10 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
         // performs it by *storing* (capability `StateWrite`). `store_read` has no pure compute
         // — it is sourced (host-supplied), like a driver.
         "store_write" => sink_effect("store_write", inputs),
+        // A reply is an egress sink too (P2.5.1): it constructs a `respond` request whose payload
+        // carries the correlation token alongside the reply. `request` (ingress) has no compute —
+        // it is sourced, like a driver.
+        "respond" => sink_effect("respond", inputs),
 
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
@@ -274,6 +278,16 @@ mod tests {
             Some(Value::Effect { sink: "store_write".into(), payload: Box::new(num(7.0)) })
         );
         assert_eq!(compute("store_read", &[], &[]), None); // read is sourced, not computed
+    }
+    #[test]
+    fn respond_constructs_an_effect_carrying_its_token() {
+        // P2.5.1: a reply is an egress sink; its payload is a [token, reply] pair, plain data.
+        let payload = list(vec![num(1.0), txt("ok")]);
+        assert_eq!(
+            compute("respond", &[payload.clone()], &[]),
+            Some(Value::Effect { sink: "respond".into(), payload: Box::new(payload) })
+        );
+        assert_eq!(compute("request", &[], &[]), None); // ingress is sourced, not computed
     }
     #[test]
     fn unknown_is_none() {

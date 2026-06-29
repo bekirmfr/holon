@@ -526,4 +526,41 @@ mod tests {
         }
         assert_eq!(seen, vec![num(0.0), num(1.0), num(2.0), num(2.0), num(2.0)]);
     }
+
+    #[test]
+    fn concurrent_requests_keep_their_tokens_no_crossing() {
+        // P2.5.1: two requests, each `[token, data]`, processed by `map(respond, ·)`. Each reply
+        // carries *its own* token because each flowed down its own pure path — non-crossing is
+        // purity's theorem, not an engine feature. The token is just the boundary label the host
+        // would route the reply on (real routing → platform host). Token 1 stays with "alpha",
+        // token 2 with "beta"; neither crosses.
+        let mut r = MapResolver::new();
+        let respond = r
+            .insert(Unit {
+                body: UnitBody::Primitive { name: "respond".into() },
+                params: vec![],
+                inputs: vec![Port { name: "req".into(), ty: Type::List }],
+                output: Some(Type::Effect),
+            })
+            .unwrap();
+        let mapper = Unit {
+            body: UnitBody::Primitive { name: "map".into() },
+            params: vec![Param::frozen("fn", hex(&respond))],
+            inputs: vec![Port { name: "requests".into(), ty: Type::List }],
+            output: Some(Type::List),
+        };
+        let batch = Value::List(vec![
+            Value::List(vec![num(1.0), text("alpha")]), // [token=1, data="alpha"]
+            Value::List(vec![num(2.0), text("beta")]),  // [token=2, data="beta"]
+        ]);
+        let mut host = Recorder::default();
+        fire(&mapper, &[Some(batch)], &r, &mut host);
+        assert_eq!(
+            host.performed,
+            vec![
+                (Capability::NetworkEgress, Value::List(vec![num(1.0), text("alpha")])),
+                (Capability::NetworkEgress, Value::List(vec![num(2.0), text("beta")])),
+            ]
+        );
+    }
 }

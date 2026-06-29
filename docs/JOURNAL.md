@@ -992,3 +992,46 @@ turned inward: pin the right boundary once and the "features" downstream become 
 **value model** and request identity, not state, so it will not dissolve into host-storage the way
 these three did. It is the design-forward fork (does every value carry routing identity, or is the
 token explicit?) and wants its own L4.
+
+---
+
+## 2026-06-29 · P2.5.1 — correlation as a boundary label (isolation is purity's theorem)
+
+**Two caps, one sink-compute, two tests (124 green = 112 core + 12 host).** The leaf asked for a
+correlation mechanism — machinery to keep request A's reply from reaching caller B. Grounding
+found that machinery is a **trap**: we already have it, as a theorem of purity, and building it
+again would be the bad kind of duplication.
+
+**Why non-crossing is free.** For two replies to cross, request A's data must bleed into request
+B's path — i.e. *shared mutable state*. But the interior is pure: independent requests flow down
+independent data paths, `eval` has no ambient channel, no global. The only place two requests can
+mix is a *state cell*, a merge the user deliberately writes. So "two concurrent requests, none
+cross" is the **same purity** that gives replay and memoization, seen sideways. The demo
+(`concurrent_requests_keep_their_tokens_no_crossing`) is `map(respond, [[1,"alpha"],[2,"beta"]])`
+→ each reply keeps its own token, and it *looks* like a `map` test because that **is** the point:
+correlation is purity preserving independence, not special machinery.
+
+**So the token isn't the isolation — it's a boundary label.** It is only what survives the
+round-trip so the *host* knows which open connection to write the reply on. That settled the
+explicit-vs-implicit fork from two directions at once: explicit (the token is ordinary data in the
+`[token, reply]` payload — no `Value` change, since `Effect`'s payload is any `Value`) is not just
+cleaner but the *only shape consistent with non-crossing being free* — an implicit ambient token
+would itself be the shared channel two requests could cross on. Keeping the token as data keeps
+the theorem true. (Same `I8` move yet again: derive/route by data, don't store identity in the
+value model.)
+
+**The surface, and a noticed corollary.** `request → [NetworkIngress]`, `respond →
+[NetworkEgress]` make the in/out pair real; `respond` constructs an `Effect` like any Fork-B sink;
+`request` is a sourced driver (no compute). The classification test pins something nice: a
+`request → respond` closure is **effect-bearing yet replayable** — it bears egress but has no
+`State`, so it stays cacheable. (Egress doesn't forfeit replay; only `State` does.)
+
+**Deferred, honestly.** Real routing (token → an actual socket) is a **platform host**, same seam
+as real `email`. Client-flavor *await* (fire a request, suspend, resume when the response arrives)
+is a graph state-machine across rounds — async-adjacent (`P2.4.2`). And sourcing a request *batch*
+as an ingress driver hits `constant_unit`'s non-scalar limit, so the demo models the batch as an
+input — the same non-scalar deferral state already carries; the correlation point is identical.
+
+**Next.** `P2.5.2` idempotency (a key on a sink so the external system dedupes a double-fire —
+"engine carries the key, user composes the policy"), then `P2.7.2` mode-aware firing (consolidate
+design/deploy under one host surface). Two inches from a closed P2.
