@@ -263,6 +263,17 @@ Each is a *boundary to pin later*, deliberately deferred to keep the spine clean
 - **Content-hashing & versioning** — the floor everything in §8 stands on (below).
 - **Author identity** — the adoption metric is only as forgeable as the cheapest
   fake author; identity model still open.
+- **Value payload sharing (`Arc`/`Rc`)** — `Value`'s heap variants (`Text(String)`,
+  `List(Vec<Value>)`) are deep-cloned at every wire crossing, so fan-out and depth
+  multiply copies. Values are already immutable with value-semantics, so sharing the
+  payloads by refcount (`Text(Arc<str>)`, `List(Arc<[Value]>)`) turns those clones
+  into pointer bumps — invariant-safe and invisible to the hash (runtime `Value` is
+  *not* in the hash preimage at all). **Deferred to P3.3.1**, not done speculatively:
+  it is a constant-factor win behind the order-of-magnitude one (memoization), and the
+  cache's *input-hash* is the first thing to canonically encode a `Value` — so the
+  representation is best settled in one coordinated touch with `Value`-hashing.
+  *Open sub-choice:* `Arc` (thread-safe, for parallel cache population) vs `Rc`
+  (cheaper, single-threaded) depends on the host's threading model (P2.4 / P3.3).
 
 ---
 
