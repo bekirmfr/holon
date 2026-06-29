@@ -17,7 +17,8 @@
 //! *between rounds* — no `validate` change, no `eval` change.
 
 use holon_core::{
-    capabilities_of, eval, Capability, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
+    capabilities_of, design_eval, eval, Capability, Hash, Param, Resolver, Type, Unit, UnitBody,
+    Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -32,9 +33,10 @@ pub trait Host {
 /// re-implemented (`I5`). Under representation **B** the output is a self-describing
 /// `Effect { sink, payload }`, so performance is driven by the **output** (what actually
 /// reached the boundary), not the manifest — the manifest stays the trust disclosure.
-pub fn fire(root: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver, host: &mut impl Host) {
-    let Some(output) = eval(root, inputs, resolver) else { return };
+pub fn fire(root: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver, host: &mut impl Host) -> Option<Value> {
+    let output = eval(root, inputs, resolver)?;
     perform_effects(&output, host);
+    Some(output)
 }
 
 /// Perform the effect(s) a settled output carries. A single `Effect`, or a `List` of them
@@ -74,9 +76,37 @@ pub fn fire_sourced(
     sourced: &[(Capability, Value)],
     real: &impl Resolver,
     host: &mut impl Host,
-) {
+) -> Option<Value> {
     let resolver = SourcedResolver::new(sourced, real);
-    fire(root, &[], &resolver, host);
+    fire(root, &[], &resolver, host)
+}
+
+/// The two firing modes the host offers over one graph. The **core never learns about them** —
+/// both call the same `eval`; the mode only chooses what the resolver injects and whether effects
+/// are performed.
+pub enum Mode {
+    /// Drivers substituted by mocks — the whole graph goes pure, so the run is deterministic,
+    /// replayable, and **performs nothing**. A safe preview: a sink still *constructs* its request
+    /// (visible in the settled output), but no effect is ever performed.
+    Design,
+    /// Drivers sourced from the world, effects **performed** for real.
+    Deploy,
+}
+
+/// Run a graph in `Design` (mocked, performs nothing) or `Deploy` (real, performs), returning the
+/// settled output either way. Design substitutes mocks at resolve time (`design_eval`); deploy
+/// supplies real sourced values (`fire_sourced`) — the same `eval` underneath both.
+pub fn run(
+    mode: Mode,
+    graph: &Unit,
+    drivers: &[(Capability, Value)],
+    real: &impl Resolver,
+    host: &mut impl Host,
+) -> Option<Value> {
+    match mode {
+        Mode::Design => design_eval(graph, &[], real), // host untouched — nothing performed
+        Mode::Deploy => fire_sourced(graph, drivers, real, host),
+    }
 }
 
 // ── State: one anonymous cell threaded across rounds (P2.6.1) ──────────────────────
@@ -644,5 +674,48 @@ mod tests {
             host.performed,
             vec![(Capability::NetworkEgress, Value::List(vec![text("order-42"), text("welcome")]))]
         );
+    }
+
+    #[test]
+    fn the_same_graph_previews_in_design_and_fires_in_deploy() {
+        // P2.7.2: one graph, two modes. Design mocks the driver (whole graph pure) and performs
+        // NOTHING — a safe preview: the email Effect appears in the output but is never sent.
+        // Deploy sources the driver for real and performs the send. The core never learns of modes.
+        let mut r = MapResolver::new();
+        let tk = r.insert(prim("timer", vec![], Type::Number)).unwrap();
+        let em = r
+            .insert(Unit {
+                body: UnitBody::Primitive { name: "email".into() },
+                params: vec![],
+                inputs: vec![Port { name: "msg".into(), ty: Type::Number }],
+                output: Some(Type::Effect),
+            })
+            .unwrap();
+        let graph = Unit {
+            body: UnitBody::Composite {
+                children: vec![tk, em],
+                edges: vec![
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // timer → email
+                    Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // email → out
+                ],
+            },
+            params: vec![],
+            inputs: vec![],
+            output: Some(Type::Effect),
+        };
+
+        // Design: driver mocked to 0, the email Effect is *previewed*, nothing performed.
+        let mut design = Recorder::default();
+        let preview = run(Mode::Design, &graph, &[], &r, &mut design);
+        assert_eq!(
+            preview,
+            Some(Value::Effect { sink: "email".into(), payload: Box::new(num(0.0)) })
+        );
+        assert!(design.performed.is_empty()); // safe — design sends nothing
+
+        // Deploy: driver sourced (42), the email is performed for real.
+        let mut deploy = Recorder::default();
+        run(Mode::Deploy, &graph, &[(Capability::Clock, num(42.0))], &r, &mut deploy);
+        assert_eq!(deploy.performed, vec![(Capability::NetworkEgress, num(42.0))]);
     }
 }

@@ -6,13 +6,11 @@
 > level across the whole tree, then leaf by leaf — and is not a build target until
 > we judge it thorough.
 >
-> **Build status:** **Phase A + B complete — the Language pillar (P1) is closed.** **Phase C (effect boundary, P2) is well underway:** classification done; both **firing modes** built (design = substituting resolver, deploy = host shell); **Fork B** sink reconciliation (effect-bearing ⊥ replayable); **the state cell is complete** (`P2.6.1`); **representation B is in** (self-describing `Value::Effect` — `map` fans out to N sends, write+send in one round; the one-effect ceiling lifted); and **`drive` is in** — a `SourcedResolver` injects host-supplied values at any sourced leaf, so deploy sources drivers (`Clock`, ingress) from the world. **The Elm runtime is structurally complete on a pure core:** `Model` = storage, `update` = the graph, `Cmd` = sinks→effects, `Sub` = drivers→sourced values. The only impure function is `Host::perform`. **120 tests (111 core + 9 host).**
-> **Current resolution:** trunk + all four pillars at L3 **frozen**; L4s built: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, plus `sink-as-pure-request-L4.md`, `P2.4.1-deploy-firing-L4.md`, `P2.6.1-state-cell-L4.md`, `A-to-B-effect-value-L4.md`, `drive-sourced-resolver-L4.md`. **Two orthogonal classification axes decide everything the host needs:** effect-bearing ⊥ replayable (Fork B), sourced ⊥ performed (state/drive). **One substituting machine** (`SourcedResolver`) injects all sourced values; the round commits only `StateWrite` back. Effects **output-carried, self-describing**; performing driven by the output (does), the manifest stays disclosure (may).
-> **Decisions pinned:** the host is the **only** impurity; an effect value carries the sink's **name, not its capability** (derived — no `kind` dependency in `value`/`primitives`). `Type::Effect` (tag 6, appended — **no existing hash moved**); a request can't be re-consumed as data. **`store_read` is a driver** (sourced); `StateResolver` generalized away. **Per-capability (anonymous) keying** for cells *and* drivers — keyed/multiple defer behind parameterized capabilities (`Clock(id)`/`StateWrite(key)`). **Multi-output composites stay deferred** — `List[Effect]` dissolves the need. Deploy has **no silent driver default** (undriven ⇒ nothing; design mode mocks for preview).
-> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ P3) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has one dependency (`blake3`).
-> **Next:** **`P2.7.2`** — mode-aware firing, the **last leaf in P2.** Pure consolidation: `design_eval` (core, mocks effects → whole graph pure) and `fire`/`fire_sourced` (host, real effects) both exist; P2.7.2 is one host surface that picks between them, with a test that the *same* graph mocks an effect in design and fires it for real in deploy — the core staying mode-blind. Then **P2 closes.** Beyond P2: real platform hosts (real `email`/clock/socket, token→socket routing, external dedup behind the `Host` seam), keyed cells/drivers + non-scalar sourcing, async/await (`P2.4.2`), and P3 (the trustless memo marketplace, where replayability pays off and cell pin/fork land).
->
-> **Pattern worth naming:** P2.6.1's one decision — *the cell's value is host runtime state, threaded between atomic rounds, never in the unit* — dissolved **three** downstream leaves (`6.2`/`6.3` plus state itself): value-not-hashed, non-replayable, fork-CoW, pin, and read-then-write isolation are all corollaries. Pin the right boundary once; downstream "features" become theorems.
+> **Build status:** **P1 (Language) and P2 (OS / effect boundary) are both COMPLETE — two of three spine pillars closed.** P2's twelve leaves all built or honestly dissolved: classification (kind + 10 capabilities, derived not asserted, unioned + surfaced before import); one evaluator / two modes (design = `eval` over a mock-substituting resolver, deploy = the host shell, chosen by `Mode{Design,Deploy}`/`run`); effects output-carried + self-describing (`Value::Effect`, `map` fan-out, heterogeneous in one round); one host-threaded state cell (with transactional + identity/fork/pin dissolved into it); and the two effect contracts (correlation, idempotency) as data labels the engine carries. **The Elm runtime is closed on a pure core** (`Model`/`update`/`Cmd`/`Sub`); the only impurity is `Host::perform`. **126 tests (112 core + 14 host).**
+> **Current resolution:** trunk + all four pillars at L3 **frozen**; L4s built across P1/P2: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, `sink-as-pure-request`, `P2.4.1-deploy-firing`, `P2.6.1-state-cell`, `A-to-B-effect-value`, `drive-sourced-resolver`, `P2.5.1-correlation-token`. **The phase's lesson:** pin the right boundary once and downstream "features" become theorems — P2.6.1's host-storage dissolved three leaves; purity dissolved correlation's isolation; determinism dissolved idempotency's stability.
+> **Decisions pinned (P2):** host is the **only** impurity; effect value carries the sink's **name** not its capability (`Type::Effect`, tag 6, no hash moved); `store_read` is a driver, one `SourcedResolver` injects all sourced values; per-capability (anonymous) keying for cells *and* drivers; multi-output dissolved by `List[Effect]`; no silent driver default (undriven ⇒ nothing). Effect contracts = data labels (token = which connection, key = which intent); isolation/stability are purity's/determinism's, not engine mechanisms.
+> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has one dependency (`blake3`).
+> **Next — P3, The Marketplace.** The trustless memo cache where `is_replayable` stops being a predicate and becomes **the product**: pure + content-pinned ⟹ universal, shareable memoization (`P3.3.2`, the differentiator). A far larger arc than any P2 leaf — wants grounding + its own L4 sequence. **Deferred from P2** (all behind the one `Host` seam): real platform hosts (real `email`/clock/socket, token→socket routing, external dedup), keyed cells/drivers + non-scalar sourcing, async/quiescence (`P2.4.2`), the replayable-key guardrail.
 
 ---
 
@@ -372,14 +370,13 @@ async is a fork-open leaf we do not need yet.
     *pre:* P2.1.1, P1.4.2 · *inv:* `I5`/`§4` · *test:* a driver exposes a mock; a sink does
     not (it evaluates purely); the mock is never in any hash · *effort:* **M** *(done)*
 
-12. **P2.7.2 · Mode-aware firing (design / deploy)** *(host)* — the host runs `design`
-    (effectful leaves substituted by mocks + driver stimuli — the whole graph becomes
-    **pure**, hence deterministic / replayable / safe) or `deploy` (real effects). The
-    **core never learns about modes.** Composites inherit simulation by leaf
-    substitution — no per-composite mock needed.
-    *pre:* P2.7.1, P2.4.1, P2.2.1 · *inv:* `§6`/`I2` · *test:* a graph with a real `Email`
-    sink run in design mode fires the mock (not the effect) and the run is deterministic
-    and replayable; deploy mode fires the real effect · *effort:* **M**
+12. **P2.7.2 · Mode-aware firing (design / deploy)** *(host)* — **complete ✅ (the last P2 leaf).**
+    `Mode{Design,Deploy}` + `run` name the choice the host already had: `design_eval` (mocks
+    drivers → whole graph pure → performs nothing, a safe preview) vs `fire_sourced` (real,
+    performs). `fire`/`fire_sourced` now *return* the settled output, so design hands back the
+    preview value. The **core never learns of modes** — both call the one `eval`; the mode only
+    chooses what the resolver injects and whether effects fire. Test: one `timer→email` graph
+    previews `Effect{email,0}` (nothing sent) in design, performs `(NetworkEgress, 42)` in deploy.
     *Decision pinned:* mocks are a **leaf property** — composites always inherit, never
     carry their own. Custom mocks / stimuli are allowed only as **ephemeral test-context
     overrides** a user sets for a session, never baked into a unit's identity.
@@ -649,7 +646,9 @@ single brittle 1..N list would over-claim precision — the phases are the real 
   → P2.5.1: correlation token = boundary label (explicit data, no Value change); non-crossing is
   purity's theorem (map(respond,·) keeps tokens paired); real routing/await defer
   → P2.5.2: idempotency key = data; determinism (P1.4.4) makes a re-fire rebuild the same key →
-  dedup-able (DedupeHost performs once); user derives key from intent (must be replayable)`,
+  dedup-able (DedupeHost performs once); user derives key from intent (must be replayable)
+  → P2.7.2: Mode{Design,Deploy}+run; fire returns the settled output; same graph previews in
+  design (nothing performed) / fires in deploy — **P2 COMPLETE** (P1 ⊳ P2 closed; P3 next)`,
   all pure core. **`P2.6.1` (state) was deferred to the deploy crossing** rather than built
   before firing: the substituting-resolver insight made design-mode firing pure and
   buildable without state, so the purity seam is crossed once, at deploy, not twice.

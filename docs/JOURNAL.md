@@ -1073,3 +1073,61 @@ Fork B and A→B set it up to.
 (core) and `fire`/`fire_sourced` (host) both exist; P2.7.2 is one host surface that picks between
 them, with a test that the *same* graph mocks an effect in design and fires it for real in deploy,
 the core staying mode-blind throughout. Then P2 closes.
+
+---
+
+## 2026-06-29 · P2.7.2 — mode-aware firing, and **P2 closes**
+
+**One host surface, two modes (126 green = 112 core + 14 host).** `Mode{Design, Deploy}` + `run`
+name a choice the host already had: `design_eval` (core — mocks drivers, the whole graph goes
+pure, performs nothing) vs `fire_sourced` (host — real drivers, effects performed). The only real
+change is that `fire`/`fire_sourced` now *return* the settled output, so design mode can hand back
+a **preview** — the same `timer → email` graph returns `Effect{email, 0}` with the driver mocked
+and **nothing sent**, then performs `(NetworkEgress, 42)` for real in deploy. The core never sees a
+`Mode`: design substitutes mocks at resolve time, deploy supplies real values, both through the
+**one** evaluator (`I2`/`I5` intact).
+
+---
+
+## ▣▣▣ MILESTONE — P2 (The OS / effect boundary) is COMPLETE ▣▣▣
+
+Twelve leaves, every one built or **honestly dissolved**. What stands:
+
+- **Classification** (`P2.1`–`P2.3`): `Kind{Pure,Driver,State,Sink}` derived not asserted;
+  10 atomic `Capability`s; the manifest unions up the closure and surfaces before import; fail
+  closed on the unknown. Two orthogonal axes — **effect-bearing ⊥ replayable**, **sourced ⊥
+  performed** — decide everything the host needs.
+- **Firing** (`P2.4`, `P2.7`): one evaluator, two modes. Design = `eval` over a substituting
+  resolver (mocks); deploy = the host shell. Effects **output-carried, self-describing**
+  (`Value::Effect{sink-name, payload}`) — `map` fans out to N, heterogeneous effects ride one
+  output, no multi-output composite. The only impurity is `Host::perform`.
+- **State** (`P2.6`): one host-threaded cell. `P2.6.1` built it; `P2.6.2` (transactional) and
+  `P2.6.3` (identity/replay/fork/pin) **dissolved into it** — the round *is* the transaction,
+  value-not-hashed is unrepresentable-to-violate, fork is CoW, non-replayable is tested.
+- **Effect contracts** (`P2.5`): correlation and idempotency, both **a label riding as data**;
+  the engine carries it, the boundary acts on it. Correlation's non-crossing is purity's theorem;
+  idempotency's key-stability is determinism's. Neither touched `Value`.
+
+**The Elm runtime is closed on a pure core:** `Model` = host storage, `update` = the graph,
+`Cmd` = sinks→effects, `Sub` = drivers→sourced values — and the entire effectful surface reduces
+to one impure function.
+
+**The lesson of the phase.** Pin the right boundary once and the downstream "features" become
+theorems. P2.6.1's host-storage decision dissolved three leaves; purity dissolved correlation's
+isolation; determinism dissolved idempotency's stability. Of twelve leaves, the genuinely *new*
+code was small and the recurring move was recognition — the system's own thesis (derive, don't
+assert; keep the core pure) turned back on its own roadmap.
+
+**Honestly deferred (not gaps — decisions):** real platform hosts (real `email`/clock/socket,
+token→socket routing, external dedup — all behind the one `Host` seam); keyed cells/drivers and
+non-scalar sourcing (parameterized capabilities + list `constant_unit`); async/await + quiescence
+(`P2.4.2` — eager makes it unnecessary now); the replayable-key guardrail (`is_replayable` on an
+idempotency key).
+
+---
+
+**Next — P3, The Marketplace.** The trustless memo cache where `is_replayable` stops being a
+predicate and becomes **the product**: pure + content-pinned ⟹ universal, shareable memoization.
+This is the project's actual thesis and a far larger design arc than any P2 leaf — it will want
+real grounding and its own L4 sequence, not an inch. The spine so far: P1 (language) ⊳ P2 (OS)
+both closed; P3 is the third and final spine pillar.
