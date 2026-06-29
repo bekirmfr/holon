@@ -6,11 +6,11 @@
 > level across the whole tree, then leaf by leaf — and is not a build target until
 > we judge it thorough.
 >
-> **Build status:** **P1 (Language) and P2 (OS / effect boundary) are both COMPLETE — two of three spine pillars closed.** P2's twelve leaves all built or honestly dissolved: classification (kind + 10 capabilities, derived not asserted, unioned + surfaced before import); one evaluator / two modes (design = `eval` over a mock-substituting resolver, deploy = the host shell, chosen by `Mode{Design,Deploy}`/`run`); effects output-carried + self-describing (`Value::Effect`, `map` fan-out, heterogeneous in one round); one host-threaded state cell (with transactional + identity/fork/pin dissolved into it); and the two effect contracts (correlation, idempotency) as data labels the engine carries. **The Elm runtime is closed on a pure core** (`Model`/`update`/`Cmd`/`Sub`); the only impurity is `Host::perform`. **126 tests (112 core + 14 host).**
-> **Current resolution:** trunk + all four pillars at L3 **frozen**; L4s built across P1/P2: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, `sink-as-pure-request`, `P2.4.1-deploy-firing`, `P2.6.1-state-cell`, `A-to-B-effect-value`, `drive-sourced-resolver`, `P2.5.1-correlation-token`. **The phase's lesson:** pin the right boundary once and downstream "features" become theorems — P2.6.1's host-storage dissolved three leaves; purity dissolved correlation's isolation; determinism dissolved idempotency's stability.
-> **Decisions pinned (P2):** host is the **only** impurity; effect value carries the sink's **name** not its capability (`Type::Effect`, tag 6, no hash moved); `store_read` is a driver, one `SourcedResolver` injects all sourced values; per-capability (anonymous) keying for cells *and* drivers; multi-output dissolved by `List[Effect]`; no silent driver default (undriven ⇒ nothing). Effect contracts = data labels (token = which connection, key = which intent); isolation/stability are purity's/determinism's, not engine mechanisms.
-> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has one dependency (`blake3`).
-> **Next — P3, The Marketplace.** The trustless memo cache where `is_replayable` stops being a predicate and becomes **the product**: pure + content-pinned ⟹ universal, shareable memoization (`P3.3.2`, the differentiator). A far larger arc than any P2 leaf — wants grounding + its own L4 sequence. **Deferred from P2** (all behind the one `Host` seam): real platform hosts (real `email`/clock/socket, token→socket routing, external dedup), keyed cells/drivers + non-scalar sourcing, async/quiescence (`P2.4.2`), the replayable-key guardrail.
+> **Build status:** **P1 (Language) and P2 (OS) COMPLETE; P3 (Marketplace) underway — `P3.8.1` (the content-addressed store) done.** Two of three spine pillars closed, the third begun. The store is where units live, keyed by their 32-byte hash: a `Store` trait (not a `Resolver` — it returns *owned* units, so eval never touches disk and IO stays host-side) with `MemStore` + on-disk `FileStore` backends, **verify-on-read = pure content-addressing** (the stored bytes are the hash preimage; a blob is trusted only because it re-hashes to the key it was filed under — `I5` made operational, no `blake3` in the host). The one genuinely-new piece is core's `decode_preimage`, the byte-exact inverse of `encode_preimage`. **136 tests (117 core + 19 host).**
+> **Current resolution:** trunk + all four pillars at L3 **frozen**; the genesis primitive set + admission gate pinned in design `§13` (trust root; reconcile to it just before the registry's first publish). L4s built across P1/P2: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, `sink-as-pure-request`, `P2.4.1-deploy-firing`, `P2.6.1-state-cell`, `A-to-B-effect-value`, `drive-sourced-resolver`, `P2.5.1-correlation-token`. **The phase's lesson:** pin the right boundary once and downstream "features" become theorems. **P3 so far confirms the plan's prediction** — the store *consumes* the content-addressing P3 forced at the very start: exposure, not invention.
+> **Decisions pinned (P3):** the genesis primitive set is the trust root (`§13`), admission-gated (native iff slower-by-class / hot-and-pervasive / an effect / genuinely inexpressible), totality already secured by refusing `while`; the **local-first** marketplace core (store, registry, inspection, local memo, fork, advisory) needs **no server** — only `P3.3.2`/`P3.4.1`/`P3.7.1`/`P3.8.2` are networked/deferred. `Store ≠ Resolver`; the byte format **is** the hash preimage (one canonical encoding, now with a decoder); verify-on-read is content-addressing, not a separate check.
+> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`).
+> **Next — `P3.1.1`, the registry:** `name@version` alias → hash, publish (unit→store + alias→hash), immutability (a published alias resolves to one hash forever). The first **permanent public commitment** of a hash — so the genesis reconciliation (`§13`) is the thing to settle in the same neighbourhood, before the first publish fragments the trust root. Then inspection (`P3.2.1`) → local memo cache (`P3.3.1`, where the canonical-`Value` encoder is the new piece) → fork/re-pin (`P3.5.1`, needs L4) → advisory (`P3.6.1`). Networked/social tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
 
 ---
 
@@ -441,10 +441,14 @@ two, and the split is the main finding:
 
 **Local-first leaves (buildable on one machine, in build order):**
 
-1. **P3.8.1 · Content-addressed store (local CAS)** *(host; verify in core)* — persist
-   and fetch a unit **by its 32-byte hash**; on-disk, single machine. The place units live.
+1. **P3.8.1 · Content-addressed store (local CAS)** *(host; verify in core)* — **complete ✅.**
+   `Store` trait (owned `put`/`get` — **not** a `Resolver`, so eval never touches disk),
+   `MemStore` + on-disk `FileStore` sharing one encode/key/verify/decode path. The byte
+   format **is** the hash preimage; core gained `decode_preimage` (byte-exact inverse of
+   `encode_preimage`) + `Type::from_tag`. Verify-on-read = re-hash the decoded unit, refuse
+   unless it equals its key (`I5` operational; no `blake3` in host). 136 green (117c + 19h).
    *pre:* P1.6 · *inv:* `I5` · *test:* `store(unit)→hash`; `fetch(hash)→` identical unit;
-   a blob whose bytes don't match its key is rejected · *effort:* **M**
+   a tampered/mismatched blob is rejected · *effort:* **M**
 
 2. **P3.1.1 · Registry: alias→hash, publish, immutability (local)** *(host)* — a
    `name@version` alias resolves to a hash; publish writes unit→store + alias→hash;
@@ -648,7 +652,11 @@ single brittle 1..N list would over-claim precision — the phases are the real 
   → P2.5.2: idempotency key = data; determinism (P1.4.4) makes a re-fire rebuild the same key →
   dedup-able (DedupeHost performs once); user derives key from intent (must be replayable)
   → P2.7.2: Mode{Design,Deploy}+run; fire returns the settled output; same graph previews in
-  design (nothing performed) / fires in deploy — **P2 COMPLETE** (P1 ⊳ P2 closed; P3 next)`,
+  design (nothing performed) / fires in deploy — **P2 COMPLETE** (P1 ⊳ P2 closed; P3 next)
+  → §13: genesis primitive set + admission gate pinned (trust root; reconcile before first publish)
+  → P3.8.1: content-addressed store — Store≠Resolver (owned units, eval never touches disk),
+  Mem+File backends, byte format IS the preimage (+decode_preimage inverse), verify-on-read =
+  re-hash the decoded unit against its key (I5 operational, no blake3 in host) — **P3 begins**`,
   all pure core. **`P2.6.1` (state) was deferred to the deploy crossing** rather than built
   before firing: the substituting-resolver insight made design-mode firing pure and
   buildable without state, so the purity seam is crossed once, at deploy, not twice.

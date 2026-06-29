@@ -16,9 +16,14 @@
 //! commits to it. The feedback that looked like a graph cycle is broken by storage
 //! *between rounds* — no `validate` change, no `eval` change.
 
+use std::collections::BTreeMap;
+use std::fs;
+use std::io;
+use std::path::PathBuf;
+
 use holon_core::{
-    capabilities_of, design_eval, eval, Capability, Hash, Param, Resolver, Type, Unit, UnitBody,
-    Value,
+    capabilities_of, decode_preimage, design_eval, encode_preimage, eval, hash_unit, Capability,
+    DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -220,6 +225,132 @@ fn scalar(name: &str, value: String, ty: Type) -> Unit {
     }
 }
 
+// ── P3.8.1 · Content-addressed store (local CAS) ─────────────────────────────
+//
+// Where units live, keyed by their 32-byte hash. A `Store` is **not** a
+// `Resolver`: a `Resolver` hands out `&Unit` for the in-memory eval hot path,
+// whereas a store persists and returns *owned* units — so evaluation never
+// reaches for disk (IO stays out of the core). The stored bytes are exactly the
+// hash preimage (`encode_preimage`), so verify-on-read is pure content-
+// addressing: decode the blob, re-hash the decoded unit, and refuse it unless it
+// equals the key it was filed under. No `blake3` in the host; the proof is the
+// hash itself.
+
+/// What can go wrong putting or getting a unit. Holds an `io::Error`, so it is
+/// deliberately not `PartialEq` — match on the variant.
+#[derive(Debug)]
+pub enum StoreError {
+    /// Disk IO failed.
+    Io(io::Error),
+    /// The unit could not be encoded (a field over the 32-bit budget).
+    Encode(EncodeError),
+    /// The stored bytes are not a well-formed preimage.
+    Decode(DecodeError),
+    /// The blob's bytes do not hash to the key it was filed under — corruption,
+    /// tampering, or a key/blob mismatch. The store refuses it.
+    Corrupt { key: Hash, actual: Hash },
+}
+
+/// A content-addressed store: persist a unit by its hash, fetch it back by that
+/// hash. Implementations differ only in the byte backend (memory, disk, and
+/// later a networked CAS, `P3.8.2`); the encode / key / verify / decode path is
+/// shared, so the content-addressing guarantee is identical across all of them.
+pub trait Store {
+    /// Persist `unit`; returns the hash it is filed under (its identity).
+    fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError>;
+    /// Fetch the unit filed under `key`. `Ok(None)` if absent; `Err(Corrupt)` if
+    /// the stored bytes do not hash to `key`.
+    fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError>;
+}
+
+/// Encode a unit to its canonical bytes and the key they must be filed under.
+fn encode_keyed(unit: &Unit) -> Result<(Hash, Vec<u8>), StoreError> {
+    let bytes = encode_preimage(unit).map_err(StoreError::Encode)?;
+    let key = hash_unit(unit).map_err(StoreError::Encode)?;
+    Ok((key, bytes))
+}
+
+/// Decode a fetched blob and verify it against the key it was filed under — the
+/// content-addressing guarantee: the bytes are trusted only because they hash to
+/// their own name.
+fn decode_verified(key: &Hash, bytes: &[u8]) -> Result<Unit, StoreError> {
+    let unit = decode_preimage(bytes).map_err(StoreError::Decode)?;
+    let actual = hash_unit(&unit).map_err(StoreError::Encode)?;
+    if &actual != key {
+        return Err(StoreError::Corrupt { key: *key, actual });
+    }
+    Ok(unit)
+}
+
+fn hex(key: &Hash) -> String {
+    let mut s = String::with_capacity(64);
+    for b in key {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// In-memory content-addressed store. For tests and any in-process need; shares
+/// the exact encode / verify / decode path with the on-disk store.
+#[derive(Default)]
+pub struct MemStore {
+    blobs: BTreeMap<Hash, Vec<u8>>,
+}
+
+impl MemStore {
+    pub fn new() -> Self {
+        MemStore::default()
+    }
+}
+
+impl Store for MemStore {
+    fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
+        let (key, bytes) = encode_keyed(unit)?;
+        self.blobs.insert(key, bytes);
+        Ok(key)
+    }
+    fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
+        match self.blobs.get(key) {
+            Some(bytes) => decode_verified(key, bytes).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+/// On-disk content-addressed store: one file per unit, named by its hex hash,
+/// under a single root directory. Where units actually live on a machine.
+pub struct FileStore {
+    root: PathBuf,
+}
+
+impl FileStore {
+    /// Open (creating if needed) a store rooted at `root`.
+    pub fn new(root: impl Into<PathBuf>) -> io::Result<Self> {
+        let root = root.into();
+        fs::create_dir_all(&root)?;
+        Ok(FileStore { root })
+    }
+    fn path(&self, key: &Hash) -> PathBuf {
+        self.root.join(hex(key))
+    }
+}
+
+impl Store for FileStore {
+    fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
+        let (key, bytes) = encode_keyed(unit)?;
+        fs::write(self.path(&key), &bytes).map_err(StoreError::Io)?;
+        Ok(key)
+    }
+    fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
+        let bytes = match fs::read(self.path(key)) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(StoreError::Io(e)),
+        };
+        decode_verified(key, &bytes).map(Some)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,10 +498,6 @@ mod tests {
     }
 
     // ── slice 2: computed fan-out ──────────────────────────────────────────────
-    fn hex(h: &Hash) -> String {
-        h.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
     #[test]
     fn map_fans_out_one_email_per_element() {
         // map(email, [a,b,c]) ⇒ List[Effect{email,a}, …] ⇒ three sends, in order. The
@@ -717,5 +844,72 @@ mod tests {
         let mut deploy = Recorder::default();
         run(Mode::Deploy, &graph, &[(Capability::Clock, num(42.0))], &r, &mut deploy);
         assert_eq!(deploy.performed, vec![(Capability::NetworkEgress, num(42.0))]);
+    }
+
+    // ── P3.8.1 · content-addressed store ────────────────────────────────────
+
+    fn unique_temp_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("holon-store-{nanos}-{n}"))
+    }
+
+    #[test]
+    fn store_put_then_get_round_trips() {
+        let mut s = MemStore::new();
+        let u = number("42");
+        let key = s.put(&u).unwrap();
+        assert_eq!(key, hash_unit(&u).unwrap()); // filed under its identity
+        assert_eq!(s.get(&key).unwrap(), Some(u));
+    }
+
+    #[test]
+    fn store_get_missing_is_none() {
+        let s = MemStore::new();
+        assert!(s.get(&[7u8; 32]).unwrap().is_none());
+    }
+
+    #[test]
+    fn store_is_content_addressed() {
+        let mut s = MemStore::new();
+        let add = || prim("add", vec![nport("a"), nport("b")], Type::Number);
+        let mul = || prim("multiply", vec![nport("a"), nport("b")], Type::Number);
+        let k1 = s.put(&add()).unwrap();
+        let k2 = s.put(&add()).unwrap();
+        let k3 = s.put(&mul()).unwrap();
+        assert_eq!(k1, k2); // same unit ⇒ same key
+        assert_ne!(k1, k3); // different unit ⇒ different key
+    }
+
+    #[test]
+    fn store_rejects_a_corrupted_blob() {
+        let mut s = MemStore::new();
+        let key = s.put(&number("1")).unwrap();
+        s.blobs.get_mut(&key).unwrap()[2] ^= 0xff; // tamper with the stored bytes
+        match s.get(&key) {
+            Err(StoreError::Corrupt { .. }) | Err(StoreError::Decode(_)) => {}
+            other => panic!("expected a tampered blob to be rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_store_round_trips_on_disk() {
+        let dir = unique_temp_dir();
+        let u = number("7");
+        let key = {
+            let mut s = FileStore::new(&dir).unwrap();
+            let key = s.put(&u).unwrap();
+            assert!(dir.join(hex(&key)).exists()); // a file named by the hash
+            key
+        };
+        // A fresh handle on the same root fetches it back, identical.
+        let s2 = FileStore::new(&dir).unwrap();
+        assert_eq!(s2.get(&key).unwrap(), Some(u));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

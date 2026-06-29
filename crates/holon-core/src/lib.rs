@@ -40,8 +40,8 @@ pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Pr
 pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::eval;
 pub use hash::{
-    encode_preimage, hash_unit, Edge, EncodeError, Hash, Param, Port, Type, Unit,
-    UnitBody, ENCODING_VERSION,
+    decode_preimage, encode_preimage, hash_unit, DecodeError, Edge, EncodeError, Hash,
+    Param, Port, Type, Unit, UnitBody, ENCODING_VERSION,
 };
 pub use kind::{
     capabilities, capabilities_of, effects_of, kind_of, Capabilities, Capability,

@@ -1171,3 +1171,44 @@ appends stay free forever.
 **Status:** no code, no tests touched (126 green unchanged). This is the trust-root
 characterization + admission gate; the *act* of freezing the canonical set, and the
 totality decision it rests on, are the natural first preconditions when we ground P3.
+
+---
+
+## 2026-06-29 · P3.8.1 — content-addressed store (local CAS); P3 begins
+
+**The first leaf of the Marketplace pillar (136 green = 117 core + 19 host).** Where
+units live, keyed by their 32-byte hash. Chose the additive path (prove the machinery on
+the current primitive set; defer the breaking genesis reconciliation to just before the
+registry), so this inch moves nothing's hash.
+
+**The one genuinely-new piece is in core: `decode_preimage`,** the exact inverse of
+`encode_preimage`. The preimage was already length-prefixed, tagged, and counted, so the
+decoder is mechanical — but identity-critical, so every read is bounds-checked and counts
+from the (untrusted) stream are never pre-allocated (a blob that lies about a length hits
+`UnexpectedEof`, not an allocation). Five tests pin the property: `encode∘decode` is
+byte-exact, the hash survives the round-trip, malformed bytes are rejected with a reason.
+Added `Type::from_tag` as the mirror of `Type::tag` (one append-only table, both directions).
+
+**Two boundaries did the load-bearing work on the host side.** (1) **`Store` is not
+`Resolver`** — the store returns *owned* units for persistence; `Resolver` hands out
+borrows for the eval hot path. So evaluation never reaches for disk, and IO stays cleanly
+on the host side of the purity boundary. (2) **Verify-on-read is pure content-addressing**
+— the stored bytes *are* the hash preimage, so `get` decodes, re-hashes the decoded unit,
+and refuses it unless it equals the key it was filed under (`I5` made operational: a blob
+is trusted only because it hashes to its own name). This needed no `blake3` in the host —
+the crate-dependency boundary holds, `holon-core` still at one dependency.
+
+`MemStore` and `FileStore` share the exact encode/key/verify/decode path, differing only
+in the byte backend — which is what makes the deferred networked CAS (`P3.8.2`) a third
+backend, not a rewrite. The leaf's test stands: `store(unit)→hash`; `fetch(hash)→` the
+identical unit; a tampered blob is rejected.
+
+**The loop the plan predicted is visible here:** P3.3 *forced* content-addressing at the
+very start; the store is the first place that pin is *consumed* — units addressed by the
+hash P1.6 already computes. Exposure, not invention.
+
+**Next — `P3.1.1`, the registry:** a `name@version` alias resolving to a hash, publish
+(unit→store + alias→hash), and the immutability rule (a published alias resolves to one
+hash forever). It's the first place a hash becomes a *permanent public commitment* — so
+the genesis reconciliation (§13) is the thing to settle in the same neighbourhood, before
+the first publish fragments the trust root.

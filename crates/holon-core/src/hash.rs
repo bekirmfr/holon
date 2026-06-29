@@ -74,6 +74,21 @@ impl Type {
             Type::Effect => 6, // appended last — tags 1-5 unchanged, so no existing hash moves
         }
     }
+
+    /// Inverse of [`tag`](Self::tag): map a wire discriminant back to its `Type`.
+    /// `None` for a byte that names no known type (a corrupt or future-version
+    /// blob). Must mirror `tag` exactly — they are one append-only table.
+    fn from_tag(tag: u8) -> Option<Type> {
+        match tag {
+            1 => Some(Type::Number),
+            2 => Some(Type::Boolean),
+            3 => Some(Type::Text),
+            4 => Some(Type::List),
+            5 => Some(Type::Any),
+            6 => Some(Type::Effect),
+            _ => None,
+        }
+    }
 }
 
 /// A parameter: configuration that is part of identity. Either a `Frozen` value or an
@@ -165,6 +180,26 @@ pub struct Unit {
 pub enum EncodeError {
     /// A field exceeded the 32-bit length budget of the canonical encoding.
     FieldTooLong,
+}
+
+/// Errors from decoding a unit out of its canonical preimage bytes (the inverse
+/// of [`encode_preimage`]). Every variant means the bytes are not a well-formed
+/// v-[`ENCODING_VERSION`] preimage — which, in the store, is exactly how a
+/// corrupt or truncated blob is rejected.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DecodeError {
+    /// The stream ended before a field was fully read.
+    UnexpectedEof,
+    /// The leading version byte is not the one this build understands.
+    WrongVersion { found: u8, expected: u8 },
+    /// A structural tag byte was not one the grammar allows at that position.
+    BadTag(u8),
+    /// A type discriminant byte did not name a known [`Type`].
+    BadType(u8),
+    /// A length-prefixed string field was not valid UTF-8.
+    BadUtf8,
+    /// Bytes remained after a complete unit was decoded.
+    TrailingBytes,
 }
 
 // ── Canonical encoder ───────────────────────────────────────────────────────
@@ -298,6 +333,148 @@ pub fn hash_unit(unit: &Unit) -> Result<Hash, EncodeError> {
     let mut h = Hasher::new();
     h.update(&preimage);
     Ok(*h.finalize().as_bytes())
+}
+
+// ── Canonical decoder ───────────────────────────────────────────────────────
+//
+// The exact inverse of `encode_preimage`. Every read is bounds-checked; counts
+// from the (untrusted) stream are never pre-allocated, so a blob that lies about
+// a length hits `UnexpectedEof` quickly instead of trying to allocate.
+
+struct Decoder<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Decoder<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Decoder { buf, pos: 0 }
+    }
+
+    fn u8(&mut self) -> Result<u8, DecodeError> {
+        let b = *self.buf.get(self.pos).ok_or(DecodeError::UnexpectedEof)?;
+        self.pos += 1;
+        Ok(b)
+    }
+
+    fn u32(&mut self) -> Result<u32, DecodeError> {
+        let bytes = self.take(4)?;
+        let arr: [u8; 4] = bytes.try_into().expect("take(4) yields exactly 4 bytes");
+        Ok(u32::from_le_bytes(arr))
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
+        let end = self.pos.checked_add(n).ok_or(DecodeError::UnexpectedEof)?;
+        let slice = self.buf.get(self.pos..end).ok_or(DecodeError::UnexpectedEof)?;
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn str(&mut self) -> Result<String, DecodeError> {
+        let len = self.u32()? as usize;
+        let bytes = self.take(len)?;
+        std::str::from_utf8(bytes)
+            .map(|s| s.to_string())
+            .map_err(|_| DecodeError::BadUtf8)
+    }
+
+    fn hash(&mut self) -> Result<Hash, DecodeError> {
+        let bytes = self.take(32)?;
+        let mut h = [0u8; 32];
+        h.copy_from_slice(bytes);
+        Ok(h)
+    }
+
+    fn ty(&mut self) -> Result<Type, DecodeError> {
+        let t = self.u8()?;
+        Type::from_tag(t).ok_or(DecodeError::BadType(t))
+    }
+}
+
+/// Decode a unit from its canonical preimage bytes — the exact inverse of
+/// [`encode_preimage`]. For any unit `u`, `encode_preimage(&decode_preimage(b))`
+/// reproduces `b` byte-for-byte (params and edges come back in canonical, not
+/// authored, order — which is what re-encoding produces anyway, so the hash is
+/// unchanged). This is what lets a content-addressed store hand back a real
+/// `Unit` after a blob has been verified against its key.
+pub fn decode_preimage(bytes: &[u8]) -> Result<Unit, DecodeError> {
+    let mut d = Decoder::new(bytes);
+
+    // 0. Version (Encoder::new writes this byte first).
+    let v = d.u8()?;
+    if v != ENCODING_VERSION {
+        return Err(DecodeError::WrongVersion { found: v, expected: ENCODING_VERSION });
+    }
+
+    // 1. Body.
+    let body = match d.u8()? {
+        TAG_PRIMITIVE => UnitBody::Primitive { name: d.str()? },
+        TAG_COMPOSITE => {
+            let n_children = d.u32()?;
+            let mut children = Vec::new();
+            for _ in 0..n_children {
+                match d.u8()? {
+                    TAG_CHILD => children.push(d.hash()?),
+                    other => return Err(DecodeError::BadTag(other)),
+                }
+            }
+            let n_edges = d.u32()?;
+            let mut edges = Vec::new();
+            for _ in 0..n_edges {
+                match d.u8()? {
+                    TAG_EDGE => edges.push(Edge {
+                        from_child: d.u32()?,
+                        from_port: d.u32()?,
+                        to_child: d.u32()?,
+                        to_port: d.u32()?,
+                    }),
+                    other => return Err(DecodeError::BadTag(other)),
+                }
+            }
+            UnitBody::Composite { children, edges }
+        }
+        other => return Err(DecodeError::BadTag(other)),
+    };
+
+    // 2. Params.
+    let n_params = d.u32()?;
+    let mut params = Vec::new();
+    for _ in 0..n_params {
+        match d.u8()? {
+            TAG_PARAM => {}
+            other => return Err(DecodeError::BadTag(other)),
+        }
+        let p = match d.u8()? {
+            PARAM_FROZEN => Param::Frozen { name: d.str()?, value: d.str()? },
+            PARAM_OPEN => Param::Open { name: d.str()?, bind: d.str()? },
+            other => return Err(DecodeError::BadTag(other)),
+        };
+        params.push(p);
+    }
+
+    // 3. Interface.
+    let n_inputs = d.u32()?;
+    let mut inputs = Vec::new();
+    for _ in 0..n_inputs {
+        match d.u8()? {
+            TAG_PORT => {}
+            other => return Err(DecodeError::BadTag(other)),
+        }
+        let name = d.str()?;
+        let ty = d.ty()?;
+        inputs.push(Port { name, ty });
+    }
+    let output = match d.u8()? {
+        0 => None,
+        1 => Some(d.ty()?),
+        other => return Err(DecodeError::BadTag(other)),
+    };
+
+    if d.pos != d.buf.len() {
+        return Err(DecodeError::TrailingBytes);
+    }
+
+    Ok(Unit { body, params, inputs, output })
 }
 
 /// Decode a 64-char hex string into a [`Hash`]. `None` if it is not exactly 64
@@ -437,5 +614,67 @@ mod tests {
             output: p.output,
         };
         assert_ne!(hash_unit(&p).unwrap(), hash_unit(&c).unwrap());
+    }
+
+    // ── Decoder: the inverse property ───────────────────────────────────────
+
+    #[test]
+    fn decode_round_trips_a_primitive() {
+        let u = prim("add");
+        assert_eq!(decode_preimage(&encode_preimage(&u).unwrap()).unwrap(), u);
+    }
+
+    #[test]
+    fn decode_round_trips_a_composite_with_params() {
+        let c0 = hash_unit(&prim("add")).unwrap();
+        let c1 = hash_unit(&prim("multiply")).unwrap();
+        let u = Unit {
+            body: UnitBody::Composite {
+                children: vec![c0, c1],
+                // authored already in canonical (sorted) order, so structural
+                // equality — not just hash equality — holds after the round-trip.
+                edges: vec![
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 1 },
+                ],
+            },
+            params: vec![Param::frozen("x", "1"), Param::open("y", "k")],
+            inputs: vec![Port { name: "a".into(), ty: Type::List }],
+            output: Some(Type::Effect),
+        };
+        assert_eq!(decode_preimage(&encode_preimage(&u).unwrap()).unwrap(), u);
+    }
+
+    #[test]
+    fn encode_decode_is_byte_exact() {
+        // encode∘decode is the identity on bytes even when params are authored
+        // out of canonical order (decode yields canonical order, which is what a
+        // re-encode produces anyway).
+        let mut u = prim("add");
+        u.params = vec![Param::frozen("y", "2"), Param::frozen("x", "1")];
+        let bytes = encode_preimage(&u).unwrap();
+        let round = encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap();
+        assert_eq!(round, bytes);
+    }
+
+    #[test]
+    fn decode_preserves_the_hash() {
+        let u = prim("subtract");
+        let via_decode = hash_unit(&decode_preimage(&encode_preimage(&u).unwrap()).unwrap()).unwrap();
+        assert_eq!(hash_unit(&u).unwrap(), via_decode);
+    }
+
+    #[test]
+    fn decode_rejects_malformed_bytes() {
+        assert_eq!(decode_preimage(&[]), Err(DecodeError::UnexpectedEof));
+        assert_eq!(
+            decode_preimage(&[99]),
+            Err(DecodeError::WrongVersion { found: 99, expected: ENCODING_VERSION })
+        );
+        let good = encode_preimage(&prim("add")).unwrap();
+        assert!(decode_preimage(&good[..good.len() - 1]).is_err()); // truncated
+        let mut extra = good.clone();
+        extra.push(0);
+        assert_eq!(decode_preimage(&extra), Err(DecodeError::TrailingBytes)); // trailing
     }
 }
