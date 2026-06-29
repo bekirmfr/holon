@@ -449,3 +449,34 @@ of its existing unresolved-child rejection) — closes the hole at *import*; sep
 
 **Kind is a derived view, never a field** — nothing stored or hashed, so mislabel is
 inexpressible, not merely forbidden (I8).
+
+---
+
+## 2026-06-29 · P2.2.1 — Derived-kind (Effects set over the closure)
+
+**Built.** `effects_of(unit, resolver) -> Effects` in `kind.rs` — the leaf classifier
+lifted to whole graphs. 83 tests (75 → +8).
+
+**Combine rule: a set, not a "worst" bucket.** The three effect kinds are independent
+*axes* (read / retain / commit), not degrees of one quantity, so collapsing to a single
+`Kind` would conceal real axes — a soft cousin of laundering. `Effects(BTreeSet<Kind>)`,
+**`Pure` is the empty set** (never a member; `is_pure() == is_empty()`), a **may-touch
+upper bound**. `mixed_axes_are_preserved_not_collapsed` proves `timer+email ⇒ {Driver,Sink}`.
+This is the shape capability-union (P2.3.2) reuses verbatim.
+
+**Fail-closed, self-contained.** Unknown leaf, unresolvable child, and hash-shaped param that
+won't resolve each *saturate* to all axes. Over-approximating danger is sound; the only
+forbidden move (under-approximating to `Pure`) is unreachable. The analysis does not assume
+`validate` ran first.
+
+**`map` laundering hole closed.** The walk follows `children ∪ hash-valued params`, so a `map`
+(itself `Pure`) over an `email`-bearing `fn` reads `{Sink}` — `map_over_effectful_fn_is_effectful`.
+Per §12, content-pinning the `fn` ref is exactly what sidesteps Unison's hardest open problem
+("when to infer concrete effects"): the reference is always concrete at authoring.
+
+**Refactor at the natural boundary.** `parse_hash` was private to `eval` but the hex⇄`Hash`
+mapping is a `hash.rs` concern and now has two production callers (`eval`, `kind`), so it moved
+there as `pub(crate)` (+ symmetric `to_hex`) — not reached for across an odd `kind→eval` edge.
+
+**`Kind` gained `Ord`** purely for deterministic `BTreeSet` storage (disclaimed in-code as
+*storage order, not a danger priority* — we explicitly do not rank the axes).
