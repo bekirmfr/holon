@@ -480,3 +480,35 @@ there as `pub(crate)` (+ symmetric `to_hex`) — not reached for across an odd `
 
 **`Kind` gained `Ord`** purely for deterministic `BTreeSet` storage (disclaimed in-code as
 *storage order, not a danger priority* — we explicitly do not rank the axes).
+
+---
+
+## 2026-06-29 · P2.3.1 — Capability model (primary classification; kind becomes a projection)
+
+**Built.** `Capability` (10 atomic categories) + `Capability::kind()` projection,
+`Capabilities` newtype (mirrors `Effects`), and `capabilities_of(name) -> Option<Capabilities>`
+in `kind.rs`. 89 tests (83 → +6).
+
+**The inversion (the decision that mattered).** Capabilities are now the **primary** leaf
+classification; `kind_of` and `effects_of` are **projections** of it. Caps are fine, kind is
+coarse — project fine→coarse, never the reverse — so by *derivable ⟹ derived* the coarse view
+is computed from the fine one and the two cannot drift. `kind_of(name)` = single-bucket
+projection of `capabilities_of`; `effects_of`'s leaf branch inserts each capability's `.kind()`.
+
+**Why caps exist (the motivating test).** `fine_distinguishes_what_coarse_loses`: `Clock` and
+`SecretAccess` **both** project to `Driver`, yet are distinct capabilities — the gap kind
+discards and a consent gate cannot live without ("reads the clock" vs "reads your credentials").
+
+**Staging α was behaviour-preserving.** The leaf branch switched `kind_of → capabilities_of`
+projection; for the current vocabulary outputs are identical, so the proof is the **entire
+P2.1.1 + P2.2.1 suite (14 tests) staying green** beside the 6 new ones. Source moved, behaviour
+did not. Recorded caveat: `kind_of`'s single-`Kind` return is exact only for today's ≤1-axis
+leaves; a multi-axis leaf makes leaf-kind a *set* and the convenience yields to `Effects` (§4).
+
+**Set: atomic, fail-closed, ∅⇒pure** — `email→{NetworkEgress}`, `store→{StateRead,StateWrite}`,
+`timer→{Clock}`; pure leaves declare the positive empty manifest; unknown ⇒ `None` ⇒ saturate.
+Parameterized resources (`NetworkEgress(host)`), Role-1/Role-2 param invocation, and
+"disclosure attaches to running not naming" are pinned in the P2.3.1 L4 §9 for later.
+
+**One fix:** a tail-expression `match` over `caps.iter().next()` outlived `caps` (E0597);
+bound `next()` to a local (owned `Option<Capability>`, `Copy`) so the iterator drops first.

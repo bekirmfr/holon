@@ -18,8 +18,9 @@
 //! - [`determinism`] — float discipline + the determinism harness (P1.4.4).
 //! - [`encapsulate`] — derive-then-freeze a selection into a hashed `Unit` (P1.5.1).
 //! - [`promote`] — open params into holes and instantiate templates (P1.5.2).
-//! - [`kind`] — classify a leaf as Pure / Driver / State / Sink (P2.1.1); the
-//!   trust basis of the effect layer.
+//! - [`kind`] — effect classification: a leaf's capability manifest (P2.3.1, the
+//!   primary classification) and its Pure/Driver/State/Sink kind projection (P2.1.1),
+//!   derived over a closure (P2.2.1); the trust basis of the effect layer.
 
 mod determinism;
 mod encapsulate;
@@ -41,7 +42,9 @@ pub use hash::{
     encode_preimage, hash_unit, Edge, EncodeError, Hash, Param, Port, Type, Unit,
     UnitBody, ENCODING_VERSION,
 };
-pub use kind::{effects_of, kind_of, Effects, Kind};
+pub use kind::{
+    capabilities_of, effects_of, kind_of, Capabilities, Capability, Effects, Kind,
+};
 pub use resolve::{MapResolver, Resolver};
 pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;

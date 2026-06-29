@@ -77,39 +77,141 @@ impl Kind {
     }
 }
 
-/// Classify a **primitive leaf** by its name.
+// ── Capabilities: the fine-grained manifest (the *primary* classification) ────
+//
+// Capabilities are primary; [`Kind`] is their coarse four-bucket *projection*
+// (P2.3.1). Capability is finer than kind on purpose: `Clock` and `SecretAccess`
+// both project to `Driver`, but a consent surface must tell "reads the clock" from
+// "reads your secrets" — the distinction kind discards and capabilities keep. By
+// *derivable ⟹ derived*, kind is computed from capabilities, never asserted beside
+// them, so the two cannot drift.
+
+/// A category of effect — what a leaf touches outside its inputs. **Atomic** for
+/// now: the *category*, not yet the *resource* (`NetworkEgress`, not
+/// `NetworkEgress("api.evil.com")`); the resource parameter is a deferred precision
+/// layer. Grouped by the [`Kind`] each projects to.
 ///
-/// Returns `None` for a name this engine does not implement — a **fail-closed**
-/// signal. A caller must treat an unclassified leaf at least as conservatively as
-/// a [`Sink`](Kind::Sink), never as [`Pure`](Kind::Pure); a `Pure` answer is a
-/// *positive* claim that the leaf touches nothing outside its inputs, and the
-/// engine only makes that claim for leaves it actually owns.
+/// `PartialOrd`/`Ord` exist for deterministic [`BTreeSet`] storage only — storage
+/// order, not a danger ranking (same disclaimer as [`Kind`]).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Capability {
+    /// Reads wall-clock / timers.
+    Clock,
+    /// Receives inbound data / requests.
+    NetworkIngress,
+    /// Reads external file state.
+    FileRead,
+    /// Reads a secret / credential (a security-sensitive read).
+    SecretAccess,
+    /// Sources entropy / nondeterminism.
+    Random,
+    /// Reads a value retained across firings.
+    StateRead,
+    /// Writes a value retained across firings.
+    StateWrite,
+    /// Sends outbound (mail, HTTP write).
+    NetworkEgress,
+    /// Writes / deletes files.
+    FileWrite,
+    /// Starts a process / job.
+    Spawn,
+}
+
+impl Capability {
+    /// The coarse [`Kind`] bucket this capability projects to — *read the world* ⇒
+    /// `Driver`, *retain* ⇒ `State`, *commit irreversibly* ⇒ `Sink`. Never
+    /// [`Kind::Pure`]: purity is the **empty** capability set, not a projection
+    /// target.
+    pub fn kind(self) -> Kind {
+        use Capability::*;
+        match self {
+            Clock | NetworkIngress | FileRead | SecretAccess | Random => Kind::Driver,
+            StateRead | StateWrite => Kind::State,
+            NetworkEgress | FileWrite | Spawn => Kind::Sink,
+        }
+    }
+}
+
+/// The capability manifest of a unit — the set it **may** touch. Same shape as
+/// [`Effects`]: **∅ ⇒ pure** (a positive "touches nothing outside its inputs"), a
+/// may-touch upper bound. The union over a closure (P2.3.2) is the same fold as
+/// [`effects_of`], with `Capability` in place of [`Kind`].
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Capabilities(BTreeSet<Capability>);
+
+impl Capabilities {
+    /// No capabilities ⇒ pure.
+    pub fn is_pure(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// Alias of [`is_pure`](Capabilities::is_pure) (the empty manifest is pure).
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// Does the manifest include this capability?
+    pub fn contains(&self, cap: Capability) -> bool {
+        self.0.contains(&cap)
+    }
+    /// Number of distinct capabilities (`0` ⇒ pure).
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    /// Iterate the capabilities in deterministic order.
+    pub fn iter(&self) -> impl Iterator<Item = Capability> + '_ {
+        self.0.iter().copied()
+    }
+}
+
+/// Classify a **primitive leaf**'s capability manifest by name — the *primary* leaf
+/// classification (P2.3.1), from which [`kind_of`] and [`effects_of`] are projected.
 ///
-/// This classifies leaves only. A composite's kind is *derived* from its closure
-/// (P2.2.1), not looked up here.
-pub fn kind_of(name: &str) -> Option<Kind> {
-    use Kind::*;
-    Some(match name {
-        // --- Pure leaves: the first-order vocabulary `compute` implements, plus
-        // --- higher-order `map` (effect-free; dispatched inside `eval`). Every
-        // --- name here is a positive "touches nothing outside its inputs".
+/// - pure leaf ⇒ `Some(∅)` — the positive "touches nothing outside its inputs";
+/// - effectful exemplar ⇒ `Some({…})`;
+/// - unknown leaf ⇒ `None` — **fail closed**: a caller treats it at least as
+///   conservatively as the full capability set, never as ∅.
+///
+/// Closed core table: the marketplace ships only composites (which *derive*); new
+/// effect leaves are trusted host releases that add a row here. Core *declares* the
+/// manifest; `holon-host` *honours* it at execution.
+pub fn capabilities_of(name: &str) -> Option<Capabilities> {
+    use Capability::*;
+    let caps: &[Capability] = match name {
+        // Pure leaves: the first-order vocabulary `compute` implements, plus
+        // higher-order `map` (effect-free). A positive empty manifest.
         "number" | "boolean" | "text" | "true" | "false"
         | "add" | "multiply" | "subtract" | "divide"
         | "compare" | "and" | "or" | "not" | "select"
         | "concat" | "uppercase"
         | "list" | "get" | "append" | "length" | "sum" | "join"
-        | "map" => Pure,
+        | "map" => &[],
 
-        // --- Effectful exemplars: classification only. These have no `compute`;
-        // --- their execution is registered in `holon-host` against these names
-        // --- when the firing loop and state cell land (P2.4.1 / P2.6.1). They
-        // --- anchor the three non-pure kinds so the taxonomy is exercised now.
-        "store" => State,
-        "timer" => Driver,
-        "email" => Sink,
+        // Effectful exemplars (classification only; execution is host-side).
+        "store" => &[StateRead, StateWrite],
+        "timer" => &[Clock],
+        "email" => &[NetworkEgress],
 
         // Unknown leaf ⇒ fail closed. The engine does not vouch for it.
         _ => return None,
+    };
+    Some(Capabilities(caps.iter().copied().collect()))
+}
+
+/// The coarse [`Kind`] of a **primitive leaf**, *projected* from its capability
+/// manifest ([`capabilities_of`]) — the single source of leaf classification:
+///
+/// - unknown leaf ⇒ `None` (fail-closed);
+/// - pure leaf (∅ manifest) ⇒ `Some(Pure)`;
+/// - effectful leaf ⇒ the [`Kind`] its capabilities project to.
+///
+/// A single-bucket **convenience**, exact for the current ≤1-axis vocabulary. The
+/// general truth — a leaf may touch several axes — is the *set* [`effects_of`]
+/// returns; when a multi-axis leaf first exists, this convenience yields to it.
+pub fn kind_of(name: &str) -> Option<Kind> {
+    let caps = capabilities_of(name)?;
+    let first = caps.iter().next();
+    Some(match first {
+        None => Kind::Pure,
+        Some(cap) => cap.kind(),
     })
 }
 
@@ -179,14 +281,17 @@ fn saturate(acc: &mut BTreeSet<Kind>) {
 }
 
 fn collect(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Kind>) {
-    // (1) This unit's own leaf contribution, if it is a primitive.
+    // (1) This unit's own leaf contribution, if it is a primitive: the projection
+    //     of its capability manifest (P2.3.1). Each capability contributes its kind
+    //     bucket; a pure leaf's ∅ contributes nothing; an unknown leaf fails closed.
     if let UnitBody::Primitive { name } = &unit.body {
-        match kind_of(name) {
-            Some(Kind::Pure) => {}            // contributes no axis
-            Some(k) => {
-                acc.insert(k);                // Driver / State / Sink
+        match capabilities_of(name) {
+            Some(caps) => {
+                for c in caps.iter() {
+                    acc.insert(c.kind());
+                }
             }
-            None => saturate(acc),            // unknown leaf ⇒ fail closed
+            None => saturate(acc), // unknown leaf ⇒ fail closed
         }
     }
 
@@ -403,5 +508,65 @@ mod tests {
         assert!(fx.is_pure());
         assert!(!fx.contains(Kind::Pure));
         assert_eq!(fx.iter().count(), 0);
+    }
+
+    // ── P2.3.1: the capability manifest (primary classification) ────────────
+
+    #[test]
+    fn pure_leaf_declares_empty_manifest() {
+        // A positive empty manifest — Some(∅), not None — "touches nothing".
+        let caps = capabilities_of("add").unwrap();
+        assert!(caps.is_pure());
+        assert_eq!(caps.len(), 0);
+    }
+
+    #[test]
+    fn effectful_leaves_declare_their_caps() {
+        let email = capabilities_of("email").unwrap();
+        assert!(email.contains(Capability::NetworkEgress));
+        assert_eq!(email.len(), 1);
+
+        let store = capabilities_of("store").unwrap();
+        assert!(store.contains(Capability::StateRead));
+        assert!(store.contains(Capability::StateWrite));
+        assert_eq!(store.len(), 2);
+
+        let timer = capabilities_of("timer").unwrap();
+        assert!(timer.contains(Capability::Clock));
+        assert_eq!(timer.len(), 1);
+    }
+
+    #[test]
+    fn capability_projects_to_expected_kind() {
+        assert_eq!(Capability::NetworkEgress.kind(), Kind::Sink);
+        assert_eq!(Capability::Clock.kind(), Kind::Driver);
+        assert_eq!(Capability::StateRead.kind(), Kind::State);
+        assert_eq!(Capability::StateWrite.kind(), Kind::State);
+    }
+
+    #[test]
+    fn fine_distinguishes_what_coarse_loses() {
+        // The motivating case: Clock and SecretAccess both project to Driver, yet
+        // are distinct capabilities — kind is lossy where capabilities are not.
+        assert_eq!(Capability::Clock.kind(), Kind::Driver);
+        assert_eq!(Capability::SecretAccess.kind(), Kind::Driver);
+        assert_ne!(Capability::Clock, Capability::SecretAccess);
+    }
+
+    #[test]
+    fn capability_kind_is_never_pure() {
+        use Capability::*;
+        for cap in [
+            Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead,
+            StateWrite, NetworkEgress, FileWrite, Spawn,
+        ] {
+            assert_ne!(cap.kind(), Kind::Pure, "{cap:?} must project to an effect");
+        }
+    }
+
+    #[test]
+    fn unknown_leaf_has_no_manifest() {
+        assert_eq!(capabilities_of("frobnicate"), None);
+        assert_eq!(capabilities_of(""), None);
     }
 }
