@@ -255,43 +255,62 @@ impl Effects {
     }
 }
 
-/// Derive the effect set of a unit by folding [`kind_of`] over its closure
-/// (P2.2.1): a primitive contributes its own kind; a composite contributes the
-/// union over its children; **and any hash-valued param is followed as a
-/// reference**, so a `map` over an effectful function cannot read as pure.
+/// Derive the **capability manifest** of a unit by folding [`capabilities_of`]
+/// over its closure (P2.3.2) — the fine-grained, security-relevant union of
+/// everything the unit *may* touch, **computed not stored**, surfaced *before* a
+/// unit is run or imported (I9). This is the single closure walk; [`effects_of`] is
+/// its projection.
+///
+/// A primitive contributes its own manifest; a composite the union over its
+/// children; **and any hash-valued param is followed as a reference**, so a `map`
+/// over an effectful `fn` cannot hide its capabilities.
 ///
 /// Fail-closed throughout — an unknown leaf, an unresolvable child, or a
-/// hash-shaped param that does not resolve each *saturate* to every axis. The
+/// hash-shaped param that does not resolve each *saturate* to the full set. The
 /// analysis never assumes innocence it cannot verify, and does not depend on
-/// validation having run first.
-///
-/// Termination is free: content-addressing forbids a cycle (a hash cannot contain
-/// itself), so the closure is a finite DAG.
+/// validation having run first. Termination is free: content-addressing forbids a
+/// cycle (a hash cannot contain itself), so the closure is a finite DAG.
+pub fn capabilities(unit: &Unit, resolver: &impl Resolver) -> Capabilities {
+    let mut acc = BTreeSet::new();
+    collect_caps(unit, resolver, &mut acc);
+    Capabilities(acc)
+}
+
+/// Derive the kind-set of a unit — the coarse **projection** of its
+/// [`capabilities`]. There is one source of truth and one closure walk (the
+/// capability union); kind is each capability's [`Kind`](Capability::kind) lifted
+/// to the set. (Saturated capabilities project to the saturated kind-set
+/// `{Driver, State, Sink}`, so fail-closed behaviour is preserved.)
 pub fn effects_of(unit: &Unit, resolver: &impl Resolver) -> Effects {
     let mut acc = BTreeSet::new();
-    collect(unit, resolver, &mut acc);
+    for cap in capabilities(unit, resolver).iter() {
+        acc.insert(cap.kind());
+    }
     Effects(acc)
 }
 
-/// Insert the three ways purity ends — the saturated, maximally-suspicious set.
-fn saturate(acc: &mut BTreeSet<Kind>) {
-    acc.insert(Kind::Driver);
-    acc.insert(Kind::State);
-    acc.insert(Kind::Sink);
+/// Insert every capability — the saturated, maximally-suspicious manifest.
+fn saturate_caps(acc: &mut BTreeSet<Capability>) {
+    use Capability::*;
+    for c in [
+        Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead,
+        StateWrite, NetworkEgress, FileWrite, Spawn,
+    ] {
+        acc.insert(c);
+    }
 }
 
-fn collect(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Kind>) {
-    // (1) This unit's own leaf contribution, if it is a primitive: the projection
-    //     of its capability manifest (P2.3.1). Each capability contributes its kind
-    //     bucket; a pure leaf's ∅ contributes nothing; an unknown leaf fails closed.
+fn collect_caps(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capability>) {
+    // (1) This unit's own leaf contribution, if it is a primitive: its capability
+    //     manifest. A pure leaf's ∅ contributes nothing; an unknown leaf fails closed.
     if let UnitBody::Primitive { name } = &unit.body {
         match capabilities_of(name) {
             Some(caps) => {
                 for c in caps.iter() {
-                    acc.insert(c.kind());
+                    acc.insert(c);
                 }
             }
-            None => saturate(acc), // unknown leaf ⇒ fail closed
+            None => saturate_caps(acc), // unknown leaf ⇒ fail closed
         }
     }
 
@@ -299,23 +318,23 @@ fn collect(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Kind>) {
     if let UnitBody::Composite { children, .. } = &unit.body {
         for child in children {
             match resolver.resolve(child) {
-                Some(u) => collect(u, resolver, acc),
-                None => saturate(acc),        // unresolvable child ⇒ fail closed
+                Some(u) => collect_caps(u, resolver, acc),
+                None => saturate_caps(acc), // unresolvable child ⇒ fail closed
             }
         }
     }
 
     // (3) Hash-valued params (e.g. `map`'s `fn`) are references, not data — follow
-    //     them so an effect routed through a param cannot hide. An `Open` hole has
-    //     no value and contributes nothing (it is filled at instantiate time). A
-    //     value shaped exactly like a 64-char hash is treated as a reference; if it
-    //     cannot be resolved, we fail closed rather than read it as inert data.
+    //     them so a capability routed through a param cannot hide. An `Open` hole has
+    //     no value and contributes nothing (filled at instantiate time). A value
+    //     shaped exactly like a 64-char hash is treated as a reference; if it cannot
+    //     be resolved, we fail closed rather than read it as inert data.
     for p in &unit.params {
         if let Some(v) = p.value() {
             if let Some(h) = parse_hash(v) {
                 match resolver.resolve(&h) {
-                    Some(u) => collect(u, resolver, acc),
-                    None => saturate(acc),
+                    Some(u) => collect_caps(u, resolver, acc),
+                    None => saturate_caps(acc),
                 }
             }
         }
@@ -568,5 +587,78 @@ mod tests {
     fn unknown_leaf_has_no_manifest() {
         assert_eq!(capabilities_of("frobnicate"), None);
         assert_eq!(capabilities_of(""), None);
+    }
+
+    // ── P2.3.2: capability union, surfaced before import ────────────────────
+
+    #[test]
+    fn buried_egress_surfaces_before_import() {
+        // The governing I9 test: a `NetworkEgress` buried three levels down
+        // surfaces at the top — nothing exfiltrates silently.
+        let mut store = MapResolver::new();
+        let email = store.insert(prim("email")).unwrap();
+        let inner = store.insert(composite(vec![email])).unwrap();
+        let mid = store.insert(composite(vec![inner])).unwrap();
+        let pure = store.insert(prim("number")).unwrap();
+        let top = composite(vec![mid, pure]);
+        let caps = capabilities(&top, &store);
+        assert!(caps.contains(Capability::NetworkEgress));
+        assert_eq!(caps.len(), 1);
+    }
+
+    #[test]
+    fn pure_closure_has_empty_manifest() {
+        let mut store = MapResolver::new();
+        let n = store.insert(prim("number")).unwrap();
+        let m = store.insert(prim("multiply")).unwrap();
+        let caps = capabilities(&composite(vec![n, m]), &store);
+        assert!(caps.is_pure());
+    }
+
+    #[test]
+    fn mixed_caps_union_over_closure() {
+        let mut store = MapResolver::new();
+        let timer = store.insert(prim("timer")).unwrap();
+        let email = store.insert(prim("email")).unwrap();
+        let store_cell = store.insert(prim("store")).unwrap();
+        let comp = composite(vec![timer, email, store_cell]);
+        let caps = capabilities(&comp, &store);
+        assert!(caps.contains(Capability::Clock));
+        assert!(caps.contains(Capability::NetworkEgress));
+        assert!(caps.contains(Capability::StateRead));
+        assert!(caps.contains(Capability::StateWrite));
+        assert_eq!(caps.len(), 4);
+    }
+
+    #[test]
+    fn map_fn_capabilities_surface() {
+        // A capability routed through a `map` fn-param cannot hide.
+        let mut store = MapResolver::new();
+        let email = store.insert(prim("email")).unwrap();
+        let caps = capabilities(&map_over(&email), &store);
+        assert!(caps.contains(Capability::NetworkEgress));
+    }
+
+    #[test]
+    fn unknown_in_closure_saturates_caps() {
+        let mut store = MapResolver::new();
+        let unknown = store.insert(prim("frobnicate")).unwrap();
+        let caps = capabilities(&composite(vec![unknown]), &store);
+        assert_eq!(caps.len(), 10); // every capability — fail closed
+    }
+
+    #[test]
+    fn effects_is_the_projection_of_capabilities() {
+        // The structural invariant: effects_of is exactly capabilities projected
+        // through Capability::kind — one source of truth, one walk.
+        let mut store = MapResolver::new();
+        let timer = store.insert(prim("timer")).unwrap();
+        let email = store.insert(prim("email")).unwrap();
+        let comp = composite(vec![timer, email]);
+        let projected: std::collections::BTreeSet<Kind> =
+            capabilities(&comp, &store).iter().map(|c| c.kind()).collect();
+        let fx = effects_of(&comp, &store);
+        assert!(fx.contains(Kind::Driver) && fx.contains(Kind::Sink));
+        assert_eq!(fx.iter().collect::<std::collections::BTreeSet<_>>(), projected);
     }
 }

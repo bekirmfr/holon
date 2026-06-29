@@ -512,3 +512,33 @@ Parameterized resources (`NetworkEgress(host)`), Role-1/Role-2 param invocation,
 
 **One fix:** a tail-expression `match` over `caps.iter().next()` outlived `caps` (E0597);
 bound `next()` to a local (owned `Option<Capability>`, `Copy`) so the iterator drops first.
+
+---
+
+## 2026-06-29 · P2.3.2 — Capability union (single walk; effects_of becomes a projection)
+
+**Built.** `capabilities(unit, resolver) -> Capabilities` — the security manifest, union
+over the closure, **computed not stored**, surfaced before import (I9). 95 tests (89 → +6).
+
+**The consolidation (the structural win).** There is now **one** closure walk, not two.
+`effects_of` was reduced to `capabilities(...).iter().map(|c| c.kind()).collect()` — the
+kind-set is literally the capability-set projected through `Capability::kind()`. The old
+kind-walk (`collect`/`saturate`) is deleted. So the primary/projection relationship holds all
+the way down: capabilities are the single source of truth, kind is the view, one place the
+closure is traversed, one place the fail-closed rule lives. Removed the drift surface rather
+than adding a parallel walk (the option chosen over duplicating the fold).
+
+**Behaviour-preserving, proven structurally.** The saturated capability set (all 10) projects
+to exactly `{Driver, State, Sink}`, so `effects_of`'s fail-closed output is unchanged; the
+P2.2.1 suite stays green beside the new union tests. `effects_is_the_projection_of_capabilities`
+pins the relationship as a regression guard.
+
+**Governing test (I9).** `buried_egress_surfaces_before_import`: a `NetworkEgress` three levels
+down surfaces at the top — nothing exfiltrates silently. `map_fn_capabilities_surface`: a
+capability routed through a `map` fn-param cannot hide either. Fail-closed: an unknown leaf in
+the closure saturates to all 10 capabilities.
+
+**Milestone: the classification half of P2 is complete.** kind (P2.1.1) + derived-kind (P2.2.1)
++ capability model (P2.3.1) + capability union (P2.3.2) — all pure core, all derived, all
+surfaced, none assertable. Next the frontier crosses the purity seam into `holon-host`:
+P2.6.1 (state cell) and P2.4.1 (eager firing loop, needs L4).

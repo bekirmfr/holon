@@ -43,7 +43,8 @@ pub use hash::{
     UnitBody, ENCODING_VERSION,
 };
 pub use kind::{
-    capabilities_of, effects_of, kind_of, Capabilities, Capability, Effects, Kind,
+    capabilities, capabilities_of, effects_of, kind_of, Capabilities, Capability,
+    Effects, Kind,
 };
 pub use resolve::{MapResolver, Resolver};
 pub use validate::{compatible, validate, ValidationError};
