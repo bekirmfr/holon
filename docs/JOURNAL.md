@@ -807,3 +807,52 @@ cells (`StateWrite(key)`, the parameterized capability resource), non-scalar sta
 (`Value::Effect` / `List[Effect]`) when computed fan-out — a `StateWrite` *and* an egress
 in one round, or N effects — becomes concrete. `P2.6.2` (transactional) and `P2.6.3`
 (fork/pin; the non-replayable half already holds) compose from this donor cell.
+
+---
+
+## 2026-06-29 · A→B — the effect *value*, computed fan-out (representation B complete)
+
+**Built (two slices, 118 green = 111 core + 7 host).** Representation **B**: an effect is now a
+self-describing value, `Value::Effect { sink: String, payload: Box<Value> }`, so an output can
+carry *many*. The one-effect ceiling — a round could write state **or** send a mail, never both,
+and "a welcome email **per** signup" couldn't be said at all — is gone.
+
+**The realization that made it cheap: the value carries the *name*, not the capability.** I had
+quoted this as forcing a layering inversion — `value.rs` learning about `Capability`, the sink's
+`compute` too. Wrong. The effect value holds the sink's **name** (a `String`); the capability is
+*derived* from it (`capabilities_of`), so nothing is lost and **no layer learns anything it
+didn't already key on**. `value.rs` needs no `kind` import; `primitives.rs` constructs the effect
+with the name it's already matching on; `fire` derives the capability from the name, so the
+`Host` trait never moves. The name *is* the structural identity; the capability is a projection
+(`I8` again — derived, not asserted). B cost less than A's own framing implied.
+
+**Slice 1 — representation swap, behavior identical.** Two sink lines flipped from identity to
+`sink_effect` construction; `Type::Effect` appended (tag 6 — existing hashes unmoved); `fire`
+now performs from the **output** (`perform_effects` unwraps the `Effect`) rather than the
+manifest. Same 116 tests, same count, same performs — only the internal representation changed.
+A clean refactor-shaped inch. Adding a `Value` variant rippled into three exhaustive matches
+(`ty`, `sourced_mock`, the host's `constant_unit`) — each got an honest arm: a sourced leaf
+*never* outputs an effect (`sourced_mock` → `None`); a state cell *never* holds one
+(`constant_unit` → `unreachable!`, an asserted invariant, not a fabricated value).
+
+**Slice 2 — the fan-out walk.** One additive change: `perform_effects` recurses through a
+`List`. `map(email, [a,b,c])` ⇒ `List[Effect{email,·}]` ⇒ **three sends** — fan-out is just
+`map` doing what it already did. And a single output carrying `[Effect{store_write,v},
+Effect{email,msg}]` fires **both** a write and a send in one round, **with no multi-output
+composite** — the self-describing `List[Effect]` is what lets two *different* effects exit one
+output. That fork stays deferred, dissolved rather than built.
+
+**A bonus invariant from `Type::Effect`.** validate's compat (`src==dst || Any`) absorbs `Effect`
+with zero code change, and because `Effect` matches only `Effect`, **a request cannot be wired
+into a sink's payload slot** — effects flow down and out, never back in. A typing fact now, not
+a convention.
+
+**What stood still:** no `eval` rewrite (an `Effect` flows like any value; `map` already
+iterates), no `Host` trait change, no `validate` rewrite, **no existing content address** (`compute`
+keyed by name, outside the preimage; `Type::Effect` appended last). Performing is driven by the
+output (*does*); the manifest stays the disclosure (*may*) — and "fires what reaches the output"
+became literally true rather than approximately so.
+
+**Next.** `drive` — source real *external* driver values from the world (`Clock`, ingress).
+It generalizes the read-substituting resolver from "state reads its own slot" to "a driver reads
+the world," turning a `round` from a test-loop call into something an event can trigger.

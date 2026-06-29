@@ -97,19 +97,28 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
             Some(Value::Text(parts.join(sep)))
         }
 
-        // ── boundary sink (Fork B): a sink purely *constructs its request payload* —
-        // here, identity on the settled payload it was given. *Which* effect that
-        // payload describes is the leaf's derived capability (e.g. NetworkEgress),
-        // never stored in the value. Drivers and state stay outside the pure core
-        // (driver input is host-sourced; state is host-threaded).
-        "email" => inputs.first().cloned(),
-        // A state write is a Fork-B sink too: identity on the payload it commits. The
-        // host performs it by *storing* (capability `StateWrite`) rather than sending.
-        // `store_read` has no pure compute — it is sourced (host-supplied), like a driver.
-        "store_write" => inputs.first().cloned(),
+        // ── boundary sink (Fork B): a sink purely *constructs its request* — representation
+        // B: a self-describing `Effect { sink-name, payload }`. The capability is *derived*
+        // from the name by the host (`capabilities_of`), never stored in the value. Because
+        // each effect self-describes, an output can carry *many* (a `List` of them via `map`),
+        // and heterogeneous effects ride out together. Drivers and state reads stay outside
+        // the pure core (host-sourced / host-threaded).
+        "email" => sink_effect("email", inputs),
+        // A state write is a Fork-B sink too: it constructs a `store_write` request; the host
+        // performs it by *storing* (capability `StateWrite`). `store_read` has no pure compute
+        // — it is sourced (host-supplied), like a driver.
+        "store_write" => sink_effect("store_write", inputs),
 
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
+}
+
+// ── sink request constructor (Fork B / representation B) ─────────────────────
+/// Construct a sink's settled request: `Effect { sink-name, payload }`. The payload is the
+/// first (and only) input it was given; no input ⇒ nothing to construct. The capability is
+/// derived from the name downstream, never stored here.
+fn sink_effect(sink: &str, inputs: &[Value]) -> Option<Value> {
+    inputs.first().map(|p| Value::Effect { sink: sink.into(), payload: Box::new(p.clone()) })
 }
 
 // ── extractors (runtime type guards) ────────────────────────────────────────
@@ -248,16 +257,22 @@ mod tests {
         assert_eq!(compute("text", &[], &[p("value", "hi")]), Some(txt("hi")));
     }
     #[test]
-    fn sink_email_is_identity_on_payload() {
-        // Fork B: a sink purely constructs its request payload — here, identity. *Which*
-        // effect it is lives in the derived capability, not in this value.
-        assert_eq!(compute("email", &[txt("hello")], &[]), Some(txt("hello")));
+    fn sink_email_constructs_an_effect() {
+        // Representation B: a sink constructs a self-describing request, not an identity.
+        // *Which* effect it is lives in the name; the host derives the capability from it.
+        assert_eq!(
+            compute("email", &[txt("hello")], &[]),
+            Some(Value::Effect { sink: "email".into(), payload: Box::new(txt("hello")) })
+        );
         assert_eq!(compute("email", &[], &[]), None); // no payload ⇒ nothing to construct
     }
     #[test]
-    fn store_write_is_pure_identity() {
-        // A state write is a Fork-B sink too: identity on the value it commits.
-        assert_eq!(compute("store_write", &[num(7.0)], &[]), Some(num(7.0)));
+    fn store_write_constructs_an_effect() {
+        // A state write is a Fork-B sink too: it constructs a `store_write` request.
+        assert_eq!(
+            compute("store_write", &[num(7.0)], &[]),
+            Some(Value::Effect { sink: "store_write".into(), payload: Box::new(num(7.0)) })
+        );
         assert_eq!(compute("store_read", &[], &[]), None); // read is sourced, not computed
     }
     #[test]

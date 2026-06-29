@@ -17,8 +17,7 @@
 //! *between rounds* — no `validate` change, no `eval` change.
 
 use holon_core::{
-    capabilities, capabilities_of, eval, Capability, Hash, Param, Resolver, Type, Unit,
-    UnitBody, Value,
+    capabilities_of, eval, Capability, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -29,17 +28,37 @@ pub trait Host {
 }
 
 /// Deploy-mode firing: settle the graph (core — the one decider), then perform the
-/// request its output carries (host — the only impurity). `eval` is *called*, never
-/// re-implemented (`I5`). Performs the **output-side** capabilities (`!is_sourced` —
-/// sinks *and* state writes); the sourced side (drivers, state reads) is supplied, not
-/// performed.
+/// effect(s) its output *carries* (host — the only impurity). `eval` is *called*, never
+/// re-implemented (`I5`). Under representation **B** the output is a self-describing
+/// `Effect { sink, payload }`, so performance is driven by the **output** (what actually
+/// reached the boundary), not the manifest — the manifest stays the trust disclosure.
 pub fn fire(root: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver, host: &mut impl Host) {
-    let Some(payload) = eval(root, inputs, resolver) else { return };
-    let caps = capabilities(root, resolver);
-    for cap in caps.iter() {
-        if !cap.is_sourced() {
-            host.perform(cap, &payload);
+    let Some(output) = eval(root, inputs, resolver) else { return };
+    perform_effects(&output, host);
+}
+
+/// Perform the effect(s) a settled output carries. A single `Effect`, or a `List` of them
+/// (and nested lists) — the **computed fan-out**: `map(email, xs)` yields a `List[Effect]`,
+/// performed in order. Pure data carries nothing. The capability is *derived* from the sink's
+/// name (`capabilities_of`), so the `Host` trait is unchanged and a graph can only perform a
+/// capability it structurally declares — the effect was constructed by a leaf that has it.
+fn perform_effects(value: &Value, host: &mut impl Host) {
+    match value {
+        Value::Effect { sink, payload } => {
+            if let Some(caps) = capabilities_of(sink) {
+                for cap in caps.iter() {
+                    if !cap.is_sourced() {
+                        host.perform(cap, &**payload);
+                    }
+                }
+            }
         }
+        Value::List(items) => {
+            for item in items {
+                perform_effects(item, host); // flatten lists of effects (and nested lists)
+            }
+        }
+        _ => {} // pure data at the root carries nothing to perform
     }
 }
 
@@ -124,6 +143,10 @@ fn constant_unit(value: &Value) -> Unit {
             inputs: vec![],
             output: Some(Type::List),
         },
+        // A state cell never holds an effect: a write commits the *payload* (`&**payload`),
+        // never the request itself. If this fires, the round stored an `Effect` by mistake —
+        // a bug to fix, not a value to fabricate.
+        Value::Effect { .. } => unreachable!("a state cell never holds an effect"),
     }
 }
 
@@ -158,7 +181,7 @@ mod tests {
             body: UnitBody::Primitive { name: "email".into() },
             params: vec![],
             inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::Text),
+            output: Some(Type::Effect),
         }
     }
     fn nport(name: &str) -> Port {
@@ -204,7 +227,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::Text),
+            output: Some(Type::Effect),
         };
         let mut host = Recorder::default();
         fire(&comp, &[Some(text("ship it"))], &r, &mut host);
@@ -224,7 +247,7 @@ mod tests {
     fn state_write_is_performed() {
         // A store_write is now an output-side effect (`!is_sourced`): fire performs it.
         let mut r = MapResolver::new();
-        let wh = r.insert(prim("store_write", vec![nport("v")], Type::Number)).unwrap();
+        let wh = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
         let comp = Unit {
             body: UnitBody::Composite {
                 children: vec![wh],
@@ -235,7 +258,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![nport("v")],
-            output: Some(Type::Number),
+            output: Some(Type::Effect),
         };
         let mut host = Recorder::default();
         fire(&comp, &[Some(num(42.0))], &r, &mut host);
@@ -250,7 +273,7 @@ mod tests {
         let rd = r.insert(prim("store_read", vec![], Type::Number)).unwrap();
         let one = r.insert(number("1")).unwrap();
         let add = r.insert(prim("add", vec![nport("a"), nport("b")], Type::Number)).unwrap();
-        let wr = r.insert(prim("store_write", vec![nport("v")], Type::Number)).unwrap();
+        let wr = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
         let counter = Unit {
             body: UnitBody::Composite {
                 children: vec![rd, one, add, wr],
@@ -263,7 +286,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            output: Some(Type::Effect),
         };
 
         let mut host = StateHost::new(num(0.0));
@@ -274,5 +297,78 @@ mod tests {
         assert_eq!(host.storage(), &num(2.0));
         host.round(&counter, &r);
         assert_eq!(host.storage(), &num(3.0));
+    }
+
+    // ── slice 2: computed fan-out ──────────────────────────────────────────────
+    fn hex(h: &Hash) -> String {
+        h.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn map_fans_out_one_email_per_element() {
+        // map(email, [a,b,c]) ⇒ List[Effect{email,a}, …] ⇒ three sends, in order. The
+        // one-effect ceiling is lifted: a single graph performs many effects.
+        let mut r = MapResolver::new();
+        let eh = r.insert(email()).unwrap();
+        let mapper = Unit {
+            body: UnitBody::Primitive { name: "map".into() },
+            params: vec![Param::frozen("fn", hex(&eh))],
+            inputs: vec![Port { name: "xs".into(), ty: Type::List }],
+            output: Some(Type::List),
+        };
+        let xs = Value::List(vec![text("a"), text("b"), text("c")]);
+        let mut host = Recorder::default();
+        fire(&mapper, &[Some(xs)], &r, &mut host);
+        assert_eq!(
+            host.performed,
+            vec![
+                (Capability::NetworkEgress, text("a")),
+                (Capability::NetworkEgress, text("b")),
+                (Capability::NetworkEgress, text("c")),
+            ]
+        );
+    }
+
+    #[test]
+    fn heterogeneous_effects_fire_in_one_round() {
+        // One output carrying two *different* effects — a state write AND a send — both fire,
+        // with no multi-output composite: the self-describing List[Effect] is enough.
+        let mut r = MapResolver::new();
+        let sw = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
+        let em = r.insert(email()).unwrap();
+        let lst = r
+            .insert(prim(
+                "list",
+                vec![
+                    Port { name: "x".into(), ty: Type::Effect },
+                    Port { name: "y".into(), ty: Type::Effect },
+                ],
+                Type::List,
+            ))
+            .unwrap();
+        let comp = Unit {
+            body: UnitBody::Composite {
+                children: vec![sw, em, lst],
+                edges: vec![
+                    Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 }, // v   → store_write
+                    Edge { from_child: BOUNDARY, from_port: 1, to_child: 1, to_port: 0 }, // msg → email
+                    Edge { from_child: 0, from_port: 0, to_child: 2, to_port: 0 },        // write → list.x
+                    Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 1 },        // email → list.y
+                    Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // list → out
+                ],
+            },
+            params: vec![],
+            inputs: vec![nport("v"), Port { name: "msg".into(), ty: Type::Text }],
+            output: Some(Type::List),
+        };
+        let mut host = Recorder::default();
+        fire(&comp, &[Some(num(7.0)), Some(text("hi"))], &r, &mut host);
+        assert_eq!(
+            host.performed,
+            vec![
+                (Capability::StateWrite, num(7.0)),
+                (Capability::NetworkEgress, text("hi")),
+            ]
+        );
     }
 }

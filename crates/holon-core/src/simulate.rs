@@ -57,6 +57,9 @@ fn sourced_mock(unit: &Unit) -> Option<Unit> {
         Type::Text | Type::Any => ("text", ""),
         // An empty-list constant: `list` with no inputs computes to `[]`.
         Type::List => return Some(constant("list", vec![], unit.output.clone())),
+        // A sourced leaf never outputs an Effect (effects are constructed by sinks, the
+        // performed side, not the sourced side) — so there is nothing to mock.
+        Type::Effect => return None,
     };
     Some(constant(cname, vec![Param::frozen("value", value)], unit.output.clone()))
 }
@@ -150,7 +153,7 @@ mod tests {
             body: UnitBody::Primitive { name: "email".into() },
             params: vec![],
             inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::Text),
+            output: Some(Type::Effect),
         }
     }
     fn prim(name: &str, output: Option<Type>) -> Unit {
@@ -215,13 +218,17 @@ mod tests {
 
     #[test]
     fn sink_is_eval_pure() {
-        // Fork B: a sink purely constructs its payload (identity here), so a sink-bearing
-        // graph evaluates under the REAL resolver — no design mode, no mock.
+        // Fork B: a sink purely *constructs its request* (representation B), so a sink-bearing
+        // graph evaluates under the REAL resolver — no design mode, no mock. The settled output
+        // is a self-describing `Effect`, not the bare payload.
         let mut store = MapResolver::new();
         let eh = store.insert(email()).unwrap();
         let comp = sink_graph(eh);
         let hi = Value::Text("hi".into());
-        assert_eq!(eval(&comp, &[Some(hi.clone())], &store), Some(hi));
+        assert_eq!(
+            eval(&comp, &[Some(hi.clone())], &store),
+            Some(Value::Effect { sink: "email".into(), payload: Box::new(hi) })
+        );
     }
 
     #[test]

@@ -21,6 +21,12 @@ pub enum Value {
     Boolean(bool),
     Text(String),
     List(Vec<Value>),
+    /// A settled effect *request* (representation B): the sink's **name** plus the payload it
+    /// constructed. The capability is *derived* from the name (`capabilities_of`), never stored
+    /// here — so this layer needs no `kind` dependency, and the name joins the convention the
+    /// rest of the system already keys on (`compute`, `capabilities_of`, `kind_of`). The pure
+    /// core only ever *constructs* and *carries* an effect; the host alone *performs* it.
+    Effect { sink: String, payload: Box<Value> },
 }
 
 impl Value {
@@ -32,6 +38,7 @@ impl Value {
             Value::Boolean(_) => Type::Boolean,
             Value::Text(_) => Type::Text,
             Value::List(_) => Type::List,
+            Value::Effect { .. } => Type::Effect,
         }
     }
 }
@@ -46,6 +53,10 @@ mod tests {
         assert_eq!(Value::Boolean(true).ty(), Type::Boolean);
         assert_eq!(Value::Text("x".into()).ty(), Type::Text);
         assert_eq!(Value::List(vec![]).ty(), Type::List);
+        assert_eq!(
+            Value::Effect { sink: "email".into(), payload: Box::new(Value::Text("hi".into())) }.ty(),
+            Type::Effect
+        );
     }
 
     #[test]
@@ -56,6 +67,7 @@ mod tests {
             Value::Boolean(false),
             Value::Text(String::new()),
             Value::List(vec![Value::Number(1.0)]),
+            Value::Effect { sink: "email".into(), payload: Box::new(Value::Number(1.0)) },
         ] {
             assert_ne!(v.ty(), Type::Any);
         }

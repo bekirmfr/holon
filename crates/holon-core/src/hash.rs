@@ -53,6 +53,11 @@ pub enum Type {
     Boolean,
     Text,
     List,
+    /// A settled effect *request* (representation B) — the type of a sink's output. It
+    /// matches only itself (or `Any`), so an effect can flow to a boundary output or into
+    /// `map`, but **never into a sink's payload slot**: a request cannot be re-consumed as
+    /// data. Effects flow down and out, never back in.
+    Effect,
     Any,
 }
 
@@ -66,6 +71,7 @@ impl Type {
             Type::Text => 3,
             Type::List => 4,
             Type::Any => 5,
+            Type::Effect => 6, // appended last — tags 1-5 unchanged, so no existing hash moves
         }
     }
 }
