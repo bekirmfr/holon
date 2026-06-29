@@ -1241,3 +1241,29 @@ was extended in place so any drift between table and list fails loudly. No `eval
 **Next — R1b · `fold`:** the one iteration primitive and the universal list donor. Higher-order
 (reads a `fn`-hash param, threads an accumulator over a list), so it's the first reconciliation
 inch to reach into `eval.rs`, beside `map`.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R1b — `fold` (closes R1: pure irreducibles)
+
+**The keystone primitive (140 green = 121c + 19h).** `fold` is the second higher-order
+primitive, so it lives in `eval.rs` beside `map` (it needs the resolver to look up the
+combiner by hash — `compute` can't). Shape committed: `fn` is a param (the combiner's hash,
+structural), `init` + `list` are inputs (runtime), combiner applied left-to-right as
+`fn(acc, elem)` — the conventional left fold. `fold(init, []) = init` (total); any `None`
+propagates (like `map`). The test shows the payoff directly: `fold(add, 0, [3,7,5]) = 15` is
+`sum` as a fold — exactly how every demoted list op (R6) will be rebuilt.
+
+**Control flow is now provably two primitives — `select` (choice) + `fold` (iteration) —
+and nothing in the vocabulary can express unbounded looping** (`fold` is bounded by its
+list; `while` was refused at the gate). The language is total *by construction*, visible in
+code, not just the design doc. That totality is what the P3 trustless cache leans on: a
+verifier is never asked to confirm a result that might not halt.
+
+Same two-table discipline: `fold` registered pure (higher-order, effect-free) in both
+`capabilities_of` and the enumerated `pure_leaves_are_pure` test. Additive — no hash moved.
+
+**R1 (pure irreducibles) complete.** Next — **R2 · text irreducibles** (`text_length`,
+`slice`, `index_of`, `lowercase`), `Text` stays opaque; the one real call is casing =
+locale-independent Unicode default mapping (an `I2` determinism decision — locale tailoring
+would poison every downstream hash).

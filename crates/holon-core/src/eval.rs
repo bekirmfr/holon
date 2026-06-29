@@ -33,6 +33,9 @@ pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> 
         // `map` is higher-order — it invokes the evaluator — so it lives here, where
         // recursion lives, rather than in first-order `compute`.
         UnitBody::Primitive { name } if name == "map" => eval_map(inputs, &unit.params, resolver),
+        // `fold` is the one iteration primitive (the universal list donor): also higher-order,
+        // so it lives here too. It threads an accumulator, which `map` does not.
+        UnitBody::Primitive { name } if name == "fold" => eval_fold(inputs, &unit.params, resolver),
         UnitBody::Primitive { name } => {
             // Gather present values in port order; compute's arity check is the firing rule.
             let present: Vec<Value> = inputs.iter().flatten().cloned().collect();
@@ -155,6 +158,36 @@ fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver
         out.push(eval(unit, &[Some(elem.clone())], resolver)?); // any None ⇒ whole map None
     }
     Some(Value::List(out))
+}
+
+/// Higher-order `fold` — the **one** iteration primitive, and the universal list donor
+/// (`sum`/`map`/`filter`/`length`/… are all composites over it). Input 0 is the initial
+/// accumulator, input 1 is a list; the `fn` param holds the hex hash of the combining unit,
+/// applied left-to-right as `fn(acc, elem)`. Yields the final accumulator; `fold(init, [])`
+/// = `init`. Iteration is bounded by the list length — there is no unbounded looping
+/// construct anywhere in the vocabulary, so **every composite is total** (the property the
+/// trustless cache leans on). Any application returning `None` propagates. Like `map`, the
+/// `fn` reference rides a param, so `fold`'s hash transitively depends on it (I6), and
+/// inspection (P3.2.1) must treat hash-valued params as references.
+fn eval_fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+    let init = match inputs.first() {
+        Some(Some(v)) => v.clone(),
+        _ => return None,
+    };
+    let list = match inputs.get(1) {
+        Some(Some(Value::List(xs))) => xs,
+        _ => return None,
+    };
+    let fn_hex = params.iter().find(|p| p.name() == "fn").and_then(|p| p.value())?;
+    let fn_hash = parse_hash(fn_hex)?;
+    let unit = resolver.resolve(&fn_hash)?;
+
+    let mut acc = init;
+    for elem in list {
+        // fn(acc, elem) → new acc; any None ⇒ the whole fold is None.
+        acc = eval(unit, &[Some(acc), Some(elem.clone())], resolver)?;
+    }
+    Some(acc)
 }
 
 #[cfg(test)]
@@ -327,6 +360,48 @@ mod tests {
         let m = map_unit(&hdouble);
         let input = list(vec![num(3.0), txt("x")]);
         assert_eq!(eval(&m, &[Some(input)], &r), None);
+    }
+
+    fn fold_unit(fn_hash: &Hash) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: "fold".into() },
+            params: vec![Param::frozen("fn", hex(fn_hash))],
+            inputs: vec![
+                Port { name: "init".into(), ty: Type::Any },
+                Port { name: "list".into(), ty: Type::List },
+            ],
+            output: Some(Type::Any),
+        }
+    }
+
+    #[test]
+    fn fold_sums_with_add() {
+        // sum expressed as a fold (the universal donor): fold(add, 0, [3,7,5]) = 15.
+        // `add` is the combiner — add(acc, elem) = acc + elem.
+        let mut r = MapResolver::new();
+        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
+        let f = fold_unit(&hadd);
+        let xs = list(vec![num(3.0), num(7.0), num(5.0)]);
+        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r), Some(num(15.0)));
+    }
+
+    #[test]
+    fn fold_on_empty_is_init() {
+        // No element ⇒ the accumulator is the seed, untouched. Total.
+        let mut r = MapResolver::new();
+        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
+        let f = fold_unit(&hadd);
+        assert_eq!(eval(&f, &[Some(num(42.0)), Some(list(vec![]))], &r), Some(num(42.0)));
+    }
+
+    #[test]
+    fn fold_none_propagates() {
+        // add(acc, "x") fails ⇒ the whole fold is None.
+        let mut r = MapResolver::new();
+        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
+        let f = fold_unit(&hadd);
+        let xs = list(vec![num(3.0), txt("x")]);
+        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r), None);
     }
 
     #[test]

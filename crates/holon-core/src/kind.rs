@@ -205,7 +205,7 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
         | "concat" | "uppercase"
         | "list" | "get" | "append" | "length" | "sum" | "join"
         | "cons" | "head" | "tail" | "is_empty"
-        | "map" => &[],
+        | "fold" | "map" => &[],
 
         // Effectful exemplars (classification only; execution is host-side). A state
         // cell is two leaves: `store_read` sources its slot (input-side), `store_write`
@@ -416,7 +416,7 @@ mod tests {
             "number", "boolean", "text", "true", "false", "add", "multiply",
             "subtract", "divide", "compare", "and", "or", "not", "select",
             "concat", "uppercase", "list", "get", "append", "length", "sum",
-            "join", "cons", "head", "tail", "is_empty", "map",
+            "join", "cons", "head", "tail", "is_empty", "fold", "map",
         ];
         for name in PURE {
             assert_eq!(kind_of(name), Some(Kind::Pure), "{name} should be Pure");
