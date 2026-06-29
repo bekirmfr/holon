@@ -202,7 +202,7 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
         "number" | "boolean" | "text" | "true" | "false"
         | "add" | "multiply" | "subtract" | "divide"
         | "compare" | "and" | "or" | "not" | "select"
-        | "concat" | "uppercase"
+        | "concat" | "uppercase" | "lowercase" | "text_length" | "slice" | "index_of"
         | "list" | "get" | "append" | "length" | "sum" | "join"
         | "cons" | "head" | "tail" | "is_empty"
         | "fold" | "map" => &[],
@@ -415,7 +415,8 @@ mod tests {
         const PURE: &[&str] = &[
             "number", "boolean", "text", "true", "false", "add", "multiply",
             "subtract", "divide", "compare", "and", "or", "not", "select",
-            "concat", "uppercase", "list", "get", "append", "length", "sum",
+            "concat", "uppercase", "lowercase", "text_length", "slice", "index_of",
+            "list", "get", "append", "length", "sum",
             "join", "cons", "head", "tail", "is_empty", "fold", "map",
         ];
         for name in PURE {

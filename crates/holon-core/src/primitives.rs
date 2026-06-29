@@ -62,6 +62,35 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
             let [v] = inputs else { return None };
             Some(Value::Text(as_text(v)?.to_uppercase()))
         }
+        // ── text irreducibles (§13): `Text` stays opaque; these touch the encoding, so they
+        // are native. Char-based throughout (Unicode scalar values), so length/slice/index
+        // agree. Casing uses Unicode **default** (locale-independent) mapping — Rust's
+        // to_uppercase/to_lowercase — so it can never vary by locale and poison a hash (I2). ──
+        "lowercase" => {
+            let [v] = inputs else { return None };
+            Some(Value::Text(as_text(v)?.to_lowercase()))
+        }
+        "text_length" => {
+            let [v] = inputs else { return None };
+            Some(Value::Number(as_text(v)?.chars().count() as f64))
+        }
+        "slice" => {
+            let [s, start, len] = inputs else { return None };
+            let (s, start, len) = (as_text(s)?, as_index(start)?, as_index(len)?);
+            // start past the end ⇒ empty; len past the end ⇒ truncated. Total for valid types.
+            Some(Value::Text(s.chars().skip(start).take(len).collect()))
+        }
+        "index_of" => {
+            let [h, n] = inputs else { return None };
+            let (h, n) = (as_text(h)?, as_text(n)?);
+            // Char index of the first match, or -1 (not-found is a normal answer, not a
+            // None-propagating failure). `find` is byte-based, so re-count chars before it.
+            let idx = match h.find(n) {
+                Some(b) => h[..b].chars().count() as f64,
+                None => -1.0,
+            };
+            Some(Value::Number(idx))
+        }
 
         // ── list ──
         "list" => Some(Value::List(inputs.to_vec())),
@@ -260,6 +289,17 @@ mod tests {
     fn text_ops() {
         assert_eq!(compute("concat", &[txt("foo"), txt("bar")], &[]), Some(txt("foobar")));
         assert_eq!(compute("uppercase", &[txt("abc")], &[]), Some(txt("ABC")));
+    }
+    #[test]
+    fn text_irreducibles() {
+        assert_eq!(compute("lowercase", &[txt("AbC")], &[]), Some(txt("abc")));
+        // char-based (Unicode scalar values), not byte-based: "ab\u{00e7}" is 3 chars / 4 bytes.
+        assert_eq!(compute("text_length", &[txt("ab\u{00e7}")], &[]), Some(num(3.0)));
+        assert_eq!(compute("slice", &[txt("hello"), num(1.0), num(3.0)], &[]), Some(txt("ell")));
+        // start past the end ⇒ empty (total, never None for valid types).
+        assert_eq!(compute("slice", &[txt("hi"), num(5.0), num(2.0)], &[]), Some(txt("")));
+        assert_eq!(compute("index_of", &[txt("hello"), txt("ll")], &[]), Some(num(2.0)));
+        assert_eq!(compute("index_of", &[txt("hello"), txt("z")], &[]), Some(num(-1.0)));
     }
     #[test]
     fn list_construct_and_query() {

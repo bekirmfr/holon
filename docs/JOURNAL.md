@@ -1267,3 +1267,29 @@ Same two-table discipline: `fold` registered pure (higher-order, effect-free) in
 `slice`, `index_of`, `lowercase`), `Text` stays opaque; the one real call is casing =
 locale-independent Unicode default mapping (an `I2` determinism decision — locale tailoring
 would poison every downstream hash).
+
+---
+
+## 2026-06-29 · Genesis reconciliation R2 — text irreducibles (Text opaque)
+
+**Four native text ops (141 green = 122c + 19h), additive.** `Text` stays opaque (not a list
+of char-codes — that would regress UTF-8 to O(n) and launder text through `List`). Added the
+ops that must touch the encoding: `lowercase` (mirror of `uppercase`), `text_length`, `slice`,
+`index_of`. Three decisions baked in:
+
+- **Char-based throughout** (Unicode scalar values): `text_length` counts chars, `slice` indexes
+  in chars, `index_of` re-counts chars before a byte-level `find`. The three never disagree; a
+  multibyte char is never split. (Tested with `"ab\u{00e7}"` = 3 chars / 4 bytes.)
+- **Casing is locale-free by construction.** Rust's `to_lower/uppercase` are Unicode *default*
+  case conversion, not locale-tailored — so the same text hashes the same on every machine. This
+  is the `I2` call (locale tailoring, e.g. Turkish dotted/dotless i, would poison every
+  downstream hash and break the trustless-sharing thesis).
+- **`index_of` returns a -1 sentinel**, not `None`: "not found" is a normal, total answer, not a
+  computation failure — it must not propagate as `None` and collapse the graph. `slice` is total
+  too (start past end ⇒ empty).
+
+The rest of the text surface (`contains`/`starts_with`/`split`/`replace`/`trim`/`join`) composes
+from these four + `compare`/`fold` — stdlib, not native. Two-table rule held (allowlist + test).
+
+**Next — R3 · `random` driver** (sourced like `clock`; capability `Random` already defined),
+the last additive inch. Then the trust root starts moving: R4 (effect renames) + R5 (const merge).
