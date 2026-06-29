@@ -54,7 +54,7 @@ mod tests {
         assert_eq!(Value::Text("x".into()).ty(), Type::Text);
         assert_eq!(Value::List(vec![]).ty(), Type::List);
         assert_eq!(
-            Value::Effect { sink: "email".into(), payload: Box::new(Value::Text("hi".into())) }.ty(),
+            Value::Effect { sink: "egress".into(), payload: Box::new(Value::Text("hi".into())) }.ty(),
             Type::Effect
         );
     }
@@ -67,7 +67,7 @@ mod tests {
             Value::Boolean(false),
             Value::Text(String::new()),
             Value::List(vec![Value::Number(1.0)]),
-            Value::Effect { sink: "email".into(), payload: Box::new(Value::Number(1.0)) },
+            Value::Effect { sink: "egress".into(), payload: Box::new(Value::Number(1.0)) },
         ] {
             assert_ne!(v.ty(), Type::Any);
         }

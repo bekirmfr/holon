@@ -17,7 +17,7 @@
 //! ## This table is the trust basis — and it is closed
 //!
 //! [`kind_of`] is core-resident for **every** leaf, effectful ones included: core
-//! *declares* `email` a [`Sink`](Kind::Sink) without being able to *run* it —
+//! *declares* `egress` a [`Sink`](Kind::Sink) without being able to *run* it —
 //! execution lives in `holon-host`. That split is sound because the leaf set is
 //! **closed and trusted**: the permissionless marketplace ships only *composites*
 //! (whose kind derives, no declaration), while new *leaves* (new effects) arrive
@@ -214,13 +214,14 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
         "store_write" => &[StateWrite],
         "clock" => &[Clock],
         "random" => &[Random],
-        "email" => &[NetworkEgress],
-        // Request/response (P2.5.1): `request` is the ingress driver (a request arrives), `respond`
-        // the egress sink (a reply goes out). A correlation token rides as ordinary data between
-        // them; isolation is purity's (independent pure paths can't cross), so the token is only a
-        // boundary label, not an engine mechanism.
+        "egress" => &[NetworkEgress],
+        // Request/response (P2.5.1): `ingress` is the driver (a request arrives), `egress` carries
+        // the reply out. §13 merges the old `email`/`respond` into this one `egress` sink — both
+        // were NetworkEgress, and the host dispatches on the *capability*, not the sink name, so the
+        // destination (mailbox, connection token, …) belongs in the payload, not in a distinct
+        // primitive. The correlation token rides as ordinary data; isolation is purity's
+        // (independent pure paths can't cross), so the token is only a boundary label.
         "ingress" => &[NetworkIngress],
-        "respond" => &[NetworkEgress],
 
         // Unknown leaf ⇒ fail closed. The engine does not vouch for it.
         _ => return None,
@@ -431,7 +432,7 @@ mod tests {
         assert_eq!(kind_of("store_write"), Some(Kind::State));
         assert_eq!(kind_of("clock"), Some(Kind::Driver));
         assert_eq!(kind_of("random"), Some(Kind::Driver));
-        assert_eq!(kind_of("email"), Some(Kind::Sink));
+        assert_eq!(kind_of("egress"), Some(Kind::Sink));
     }
 
     /// The security-relevant direction: every effectful leaf classifies non-`Pure`.
@@ -439,7 +440,7 @@ mod tests {
     /// name — lands with host execution, P2.4.1 / P2.6.1.)
     #[test]
     fn effectful_exemplars_are_not_pure() {
-        for name in ["store_read", "store_write", "clock", "email"] {
+        for name in ["store_read", "store_write", "clock", "egress"] {
             assert!(kind_of(name).unwrap().is_effectful(), "{name} must be effectful");
         }
     }
@@ -482,11 +483,11 @@ mod tests {
 
     #[test]
     fn sink_leaf_at_depth_surfaces() {
-        // An `email` (Sink) buried three levels down must surface at the top —
+        // An `egress` (Sink) buried three levels down must surface at the top —
         // and the pure sibling must add nothing.
         let mut store = MapResolver::new();
-        let email = store.insert(prim("email")).unwrap();
-        let inner = store.insert(composite(vec![email])).unwrap();
+        let egress = store.insert(prim("egress")).unwrap();
+        let inner = store.insert(composite(vec![egress])).unwrap();
         let mid = store.insert(composite(vec![inner])).unwrap();
         let pure = store.insert(prim("number")).unwrap();
         let top = composite(vec![mid, pure]);
@@ -498,11 +499,11 @@ mod tests {
 
     #[test]
     fn mixed_axes_are_preserved_not_collapsed() {
-        // clock (Driver) + email (Sink) ⇒ {Driver, Sink}, not one "worst" bucket.
+        // clock (Driver) + egress (Sink) ⇒ {Driver, Sink}, not one "worst" bucket.
         let mut store = MapResolver::new();
         let clock = store.insert(prim("clock")).unwrap();
-        let email = store.insert(prim("email")).unwrap();
-        let comp = composite(vec![clock, email]);
+        let egress = store.insert(prim("egress")).unwrap();
+        let comp = composite(vec![clock, egress]);
         let fx = effects_of(&comp, &store);
         assert!(fx.contains(Kind::Driver));
         assert!(fx.contains(Kind::Sink));
@@ -513,11 +514,11 @@ mod tests {
     #[test]
     fn map_over_effectful_fn_is_effectful() {
         // The laundering test: `map` is itself Pure, but its `fn` references an
-        // email-bearing unit — following the hash-valued param is what keeps the
+        // egress-bearing unit — following the hash-valued param is what keeps the
         // whole thing from reading as pure.
         let mut store = MapResolver::new();
-        let email = store.insert(prim("email")).unwrap();
-        let map = map_over(&email);
+        let egress = store.insert(prim("egress")).unwrap();
+        let map = map_over(&egress);
         let fx = effects_of(&map, &store);
         assert!(!fx.is_pure());
         assert!(fx.contains(Kind::Sink));
@@ -576,9 +577,9 @@ mod tests {
 
     #[test]
     fn effectful_leaves_declare_their_caps() {
-        let email = capabilities_of("email").unwrap();
-        assert!(email.contains(Capability::NetworkEgress));
-        assert_eq!(email.len(), 1);
+        let egress = capabilities_of("egress").unwrap();
+        assert!(egress.contains(Capability::NetworkEgress));
+        assert_eq!(egress.len(), 1);
 
         let store_read = capabilities_of("store_read").unwrap();
         assert!(store_read.contains(Capability::StateRead));
@@ -592,15 +593,13 @@ mod tests {
         assert!(clock.contains(Capability::Clock));
         assert_eq!(clock.len(), 1);
 
-        // Request/response (P2.5.1): the in/out pair. A request→respond closure is effect-bearing
-        // (egress) yet *replayable* (no State) — and the token that correlates them is plain data,
-        // never a capability.
+        // Request/response (P2.5.1): the in/out pair. `ingress` (a request arrives) is a driver —
+        // effect-bearing yet *replayable* (no State); `egress` carries the reply (checked above,
+        // since the merged sink is the same leaf). The correlating token is plain data, never a
+        // capability.
         let ingress = capabilities_of("ingress").unwrap();
         assert!(ingress.contains(Capability::NetworkIngress));
         assert!(ingress.is_replayable()); // a driver, not state
-        let respond = capabilities_of("respond").unwrap();
-        assert!(respond.contains(Capability::NetworkEgress));
-        assert_eq!(respond.len(), 1);
     }
 
     #[test]
@@ -657,8 +656,8 @@ mod tests {
         // The governing I9 test: a `NetworkEgress` buried three levels down
         // surfaces at the top — nothing exfiltrates silently.
         let mut store = MapResolver::new();
-        let email = store.insert(prim("email")).unwrap();
-        let inner = store.insert(composite(vec![email])).unwrap();
+        let egress = store.insert(prim("egress")).unwrap();
+        let inner = store.insert(composite(vec![egress])).unwrap();
         let mid = store.insert(composite(vec![inner])).unwrap();
         let pure = store.insert(prim("number")).unwrap();
         let top = composite(vec![mid, pure]);
@@ -680,10 +679,10 @@ mod tests {
     fn mixed_caps_union_over_closure() {
         let mut store = MapResolver::new();
         let clock = store.insert(prim("clock")).unwrap();
-        let email = store.insert(prim("email")).unwrap();
+        let egress = store.insert(prim("egress")).unwrap();
         let store_read = store.insert(prim("store_read")).unwrap();
         let store_write = store.insert(prim("store_write")).unwrap();
-        let comp = composite(vec![clock, email, store_read, store_write]);
+        let comp = composite(vec![clock, egress, store_read, store_write]);
         let caps = capabilities(&comp, &store);
         assert!(caps.contains(Capability::Clock));
         assert!(caps.contains(Capability::NetworkEgress));
@@ -696,8 +695,8 @@ mod tests {
     fn map_fn_capabilities_surface() {
         // A capability routed through a `map` fn-param cannot hide.
         let mut store = MapResolver::new();
-        let email = store.insert(prim("email")).unwrap();
-        let caps = capabilities(&map_over(&email), &store);
+        let egress = store.insert(prim("egress")).unwrap();
+        let caps = capabilities(&map_over(&egress), &store);
         assert!(caps.contains(Capability::NetworkEgress));
     }
 
@@ -715,8 +714,8 @@ mod tests {
         // through Capability::kind — one source of truth, one walk.
         let mut store = MapResolver::new();
         let clock = store.insert(prim("clock")).unwrap();
-        let email = store.insert(prim("email")).unwrap();
-        let comp = composite(vec![clock, email]);
+        let egress = store.insert(prim("egress")).unwrap();
+        let comp = composite(vec![clock, egress]);
         let projected: std::collections::BTreeSet<Kind> =
             capabilities(&comp, &store).iter().map(|c| c.kind()).collect();
         let fx = effects_of(&comp, &store);

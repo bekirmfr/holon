@@ -157,15 +157,15 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
         // each effect self-describes, an output can carry *many* (a `List` of them via `map`),
         // and heterogeneous effects ride out together. Drivers and state reads stay outside
         // the pure core (host-sourced / host-threaded).
-        "email" => sink_effect("email", inputs),
+        // The one egress sink (§13): `email`/`respond` merged into a single NetworkEgress request
+        // constructor — the destination (mailbox, connection token) rides in the payload, not in a
+        // distinct primitive. A reply (P2.5.1) is just an egress whose payload is a [token, reply]
+        // pair, the token plain data alongside the body.
+        "egress" => sink_effect("egress", inputs),
         // A state write is a Fork-B sink too: it constructs a `store_write` request; the host
         // performs it by *storing* (capability `StateWrite`). `store_read` has no pure compute
-        // — it is sourced (host-supplied), like a driver.
+        // — it is sourced (host-supplied), like a driver. `ingress` is sourced too (no compute).
         "store_write" => sink_effect("store_write", inputs),
-        // A reply is an egress sink too (P2.5.1): it constructs a `respond` request whose payload
-        // carries the correlation token alongside the reply. `request` (ingress) has no compute —
-        // it is sourced, like a driver.
-        "respond" => sink_effect("respond", inputs),
 
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
@@ -342,14 +342,14 @@ mod tests {
         assert_eq!(compute("text", &[], &[p("value", "hi")]), Some(txt("hi")));
     }
     #[test]
-    fn sink_email_constructs_an_effect() {
+    fn egress_constructs_an_effect() {
         // Representation B: a sink constructs a self-describing request, not an identity.
         // *Which* effect it is lives in the name; the host derives the capability from it.
         assert_eq!(
-            compute("email", &[txt("hello")], &[]),
-            Some(Value::Effect { sink: "email".into(), payload: Box::new(txt("hello")) })
+            compute("egress", &[txt("hello")], &[]),
+            Some(Value::Effect { sink: "egress".into(), payload: Box::new(txt("hello")) })
         );
-        assert_eq!(compute("email", &[], &[]), None); // no payload ⇒ nothing to construct
+        assert_eq!(compute("egress", &[], &[]), None); // no payload ⇒ nothing to construct
     }
     #[test]
     fn store_write_constructs_an_effect() {
@@ -361,12 +361,13 @@ mod tests {
         assert_eq!(compute("store_read", &[], &[]), None); // read is sourced, not computed
     }
     #[test]
-    fn respond_constructs_an_effect_carrying_its_token() {
-        // P2.5.1: a reply is an egress sink; its payload is a [token, reply] pair, plain data.
+    fn egress_carries_a_correlation_token() {
+        // P2.5.1: a reply is just egress; its payload is a [token, reply] pair, the token plain
+        // data alongside the body — the merged `email`/`respond` sink handles both shapes.
         let payload = list(vec![num(1.0), txt("ok")]);
         assert_eq!(
-            compute("respond", &[payload.clone()], &[]),
-            Some(Value::Effect { sink: "respond".into(), payload: Box::new(payload) })
+            compute("egress", &[payload.clone()], &[]),
+            Some(Value::Effect { sink: "egress".into(), payload: Box::new(payload) })
         );
         assert_eq!(compute("ingress", &[], &[]), None); // ingress is sourced, not computed
     }

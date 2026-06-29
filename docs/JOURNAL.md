@@ -1342,3 +1342,29 @@ comment block left intact here. Hence its own inch.
 **Next — R4b · the egress merge.** Survey `email`/`respond`, collapse to one native `egress` sink
 (both already NetworkEgress; the host dispatches on capability, not sink name, so the merge is
 clean host-side), dedup the arms, rewrite the P2.5.1 comment.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R4b — email+respond→egress merge (completes R4)
+
+**The structural rename: two sink primitives collapse into one (142 green = 123c + 19h, count
+unchanged — the two sink tests were renamed, not removed).** `email`/`respond` → a single native
+`egress`. Safe because of the capability/name split built in P2: **the host dispatches on the
+*capability* (NetworkEgress), never the sink name.** Both were always NetworkEgress; the name only
+fed `capabilities_of` to *derive* it. So unifying to `egress` changes nothing the host does — what
+distinguished "send mail" from "send a reply" now lives where §13 says it belongs: in the payload
+(a mailbox, or the `[token, reply]` pair the correlation test still checks). The reply lost nothing
+— its token was already plain data, non-crossing already purity's theorem.
+
+**Three site-types needed care beyond a blanket sed** (the checklist for R5):
+1. *Collapsing match arms* — `capabilities_of` and `compute` each ended with two identical `egress`
+   arms (duplicate patterns = compile error); deduped by hand to one. A duplicate `let egress` cap
+   check (email + respond → same leaf) also dropped.
+2. *Explanatory comments* — three comments name `email`/`respond` on purpose (documenting the
+   merge); they must survive the rename, so primitives.rs was edited by hand, not sed'd.
+3. *Embedded identifiers* — `email_hash`, `map_fans_out_one_email_per_element`: a trailing `_`
+   defeats `\bemail\b`, so a substring grep caught them after the word-boundary pass.
+
+**R4 complete: all effects carry §13 names** (clock, ingress, egress). **Next — R5 · const merge**:
+number/boolean/text/true/false → one `const` reading value+type from params. Same species as R4b
+(N primitives → 1), so the same three-site checklist applies. Then the R6 fork (demotions).

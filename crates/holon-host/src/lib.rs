@@ -45,7 +45,7 @@ pub fn fire(root: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver, hos
 }
 
 /// Perform the effect(s) a settled output carries. A single `Effect`, or a `List` of them
-/// (and nested lists) — the **computed fan-out**: `map(email, xs)` yields a `List[Effect]`,
+/// (and nested lists) — the **computed fan-out**: `map(egress, xs)` yields a `List[Effect]`,
 /// performed in order. Pure data carries nothing. The capability is *derived* from the sink's
 /// name (`capabilities_of`), so the `Host` trait is unchanged and a graph can only perform a
 /// capability it structurally declares — the effect was constructed by a leaf that has it.
@@ -368,9 +368,9 @@ mod tests {
         }
     }
 
-    fn email() -> Unit {
+    fn egress() -> Unit {
         Unit {
-            body: UnitBody::Primitive { name: "email".into() },
+            body: UnitBody::Primitive { name: "egress".into() },
             params: vec![],
             inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
             output: Some(Type::Effect),
@@ -401,14 +401,14 @@ mod tests {
     fn bare_sink_is_performed_once_with_settled_payload() {
         let r = MapResolver::new();
         let mut host = Recorder::default();
-        fire(&email(), &[Some(text("hi"))], &r, &mut host);
+        fire(&egress(), &[Some(text("hi"))], &r, &mut host);
         assert_eq!(host.performed, vec![(Capability::NetworkEgress, text("hi"))]);
     }
 
     #[test]
     fn sink_in_a_composite_is_performed() {
         let mut r = MapResolver::new();
-        let eh = r.insert(email()).unwrap();
+        let eh = r.insert(egress()).unwrap();
         let comp = Unit {
             body: UnitBody::Composite {
                 children: vec![eh],
@@ -499,11 +499,11 @@ mod tests {
 
     // ── slice 2: computed fan-out ──────────────────────────────────────────────
     #[test]
-    fn map_fans_out_one_email_per_element() {
-        // map(email, [a,b,c]) ⇒ List[Effect{email,a}, …] ⇒ three sends, in order. The
+    fn map_fans_out_one_egress_per_element() {
+        // map(egress, [a,b,c]) ⇒ List[Effect{egress,a}, …] ⇒ three sends, in order. The
         // one-effect ceiling is lifted: a single graph performs many effects.
         let mut r = MapResolver::new();
-        let eh = r.insert(email()).unwrap();
+        let eh = r.insert(egress()).unwrap();
         let mapper = Unit {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", hex(&eh))],
@@ -529,7 +529,7 @@ mod tests {
         // with no multi-output composite: the self-describing List[Effect] is enough.
         let mut r = MapResolver::new();
         let sw = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
-        let em = r.insert(email()).unwrap();
+        let em = r.insert(egress()).unwrap();
         let lst = r
             .insert(prim(
                 "list",
@@ -545,9 +545,9 @@ mod tests {
                 children: vec![sw, em, lst],
                 edges: vec![
                     Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 }, // v   → store_write
-                    Edge { from_child: BOUNDARY, from_port: 1, to_child: 1, to_port: 0 }, // msg → email
+                    Edge { from_child: BOUNDARY, from_port: 1, to_child: 1, to_port: 0 }, // msg → egress
                     Edge { from_child: 0, from_port: 0, to_child: 2, to_port: 0 },        // write → list.x
-                    Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 1 },        // email → list.y
+                    Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 1 },        // egress → list.y
                     Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // list → out
                 ],
             },
@@ -686,15 +686,15 @@ mod tests {
 
     #[test]
     fn concurrent_requests_keep_their_tokens_no_crossing() {
-        // P2.5.1: two requests, each `[token, data]`, processed by `map(respond, ·)`. Each reply
+        // P2.5.1: two requests, each `[token, data]`, processed by `map(egress, ·)`. Each reply
         // carries *its own* token because each flowed down its own pure path — non-crossing is
         // purity's theorem, not an engine feature. The token is just the boundary label the host
         // would route the reply on (real routing → platform host). Token 1 stays with "alpha",
         // token 2 with "beta"; neither crosses.
         let mut r = MapResolver::new();
-        let respond = r
+        let egress = r
             .insert(Unit {
-                body: UnitBody::Primitive { name: "respond".into() },
+                body: UnitBody::Primitive { name: "egress".into() },
                 params: vec![],
                 inputs: vec![Port { name: "req".into(), ty: Type::List }],
                 output: Some(Type::Effect),
@@ -702,7 +702,7 @@ mod tests {
             .unwrap();
         let mapper = Unit {
             body: UnitBody::Primitive { name: "map".into() },
-            params: vec![Param::frozen("fn", hex(&respond))],
+            params: vec![Param::frozen("fn", hex(&egress))],
             inputs: vec![Port { name: "requests".into(), ty: Type::List }],
             output: Some(Type::List),
         };
@@ -772,7 +772,7 @@ mod tests {
             .unwrap();
         let em = r
             .insert(Unit {
-                body: UnitBody::Primitive { name: "email".into() },
+                body: UnitBody::Primitive { name: "egress".into() },
                 params: vec![],
                 inputs: vec![Port { name: "msg".into(), ty: Type::List }],
                 output: Some(Type::Effect),
@@ -784,8 +784,8 @@ mod tests {
                 edges: vec![
                     Edge { from_child: BOUNDARY, from_port: 0, to_child: 1, to_port: 0 }, // id → key (intent-derived)
                     Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 1 },        // "welcome" → body
-                    Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 },        // [key,body] → email
-                    Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // email → out
+                    Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 },        // [key,body] → egress
+                    Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // egress → out
                 ],
             },
             params: vec![],
@@ -806,13 +806,13 @@ mod tests {
     #[test]
     fn the_same_graph_previews_in_design_and_fires_in_deploy() {
         // P2.7.2: one graph, two modes. Design mocks the driver (whole graph pure) and performs
-        // NOTHING — a safe preview: the email Effect appears in the output but is never sent.
+        // NOTHING — a safe preview: the egress Effect appears in the output but is never sent.
         // Deploy sources the driver for real and performs the send. The core never learns of modes.
         let mut r = MapResolver::new();
         let tk = r.insert(prim("clock", vec![], Type::Number)).unwrap();
         let em = r
             .insert(Unit {
-                body: UnitBody::Primitive { name: "email".into() },
+                body: UnitBody::Primitive { name: "egress".into() },
                 params: vec![],
                 inputs: vec![Port { name: "msg".into(), ty: Type::Number }],
                 output: Some(Type::Effect),
@@ -822,8 +822,8 @@ mod tests {
             body: UnitBody::Composite {
                 children: vec![tk, em],
                 edges: vec![
-                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // clock → email
-                    Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // email → out
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // clock → egress
+                    Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // egress → out
                 ],
             },
             params: vec![],
@@ -831,16 +831,16 @@ mod tests {
             output: Some(Type::Effect),
         };
 
-        // Design: driver mocked to 0, the email Effect is *previewed*, nothing performed.
+        // Design: driver mocked to 0, the egress Effect is *previewed*, nothing performed.
         let mut design = Recorder::default();
         let preview = run(Mode::Design, &graph, &[], &r, &mut design);
         assert_eq!(
             preview,
-            Some(Value::Effect { sink: "email".into(), payload: Box::new(num(0.0)) })
+            Some(Value::Effect { sink: "egress".into(), payload: Box::new(num(0.0)) })
         );
         assert!(design.performed.is_empty()); // safe — design sends nothing
 
-        // Deploy: driver sourced (42), the email is performed for real.
+        // Deploy: driver sourced (42), the egress is performed for real.
         let mut deploy = Recorder::default();
         run(Mode::Deploy, &graph, &[(Capability::Clock, num(42.0))], &r, &mut deploy);
         assert_eq!(deploy.performed, vec![(Capability::NetworkEgress, num(42.0))]);

@@ -148,9 +148,9 @@ mod tests {
             output: Some(Type::Number),
         }
     }
-    fn email() -> Unit {
+    fn egress() -> Unit {
         Unit {
-            body: UnitBody::Primitive { name: "email".into() },
+            body: UnitBody::Primitive { name: "egress".into() },
             params: vec![],
             inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
             output: Some(Type::Effect),
@@ -170,12 +170,12 @@ mod tests {
             output: Some(out),
         }
     }
-    /// input → email → output. Under Fork B `email` is pure (identity on payload), so
+    /// input → egress → output. Under Fork B `egress` is pure (identity on payload), so
     /// this whole graph is eval-pure.
-    fn sink_graph(email_hash: Hash) -> Unit {
+    fn sink_graph(egress_hash: Hash) -> Unit {
         Unit {
             body: UnitBody::Composite {
-                children: vec![email_hash],
+                children: vec![egress_hash],
                 edges: vec![
                     Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 },
                     Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 },
@@ -233,12 +233,12 @@ mod tests {
         // graph evaluates under the REAL resolver — no design mode, no mock. The settled output
         // is a self-describing `Effect`, not the bare payload.
         let mut store = MapResolver::new();
-        let eh = store.insert(email()).unwrap();
+        let eh = store.insert(egress()).unwrap();
         let comp = sink_graph(eh);
         let hi = Value::Text("hi".into());
         assert_eq!(
             eval(&comp, &[Some(hi.clone())], &store),
-            Some(Value::Effect { sink: "email".into(), payload: Box::new(hi) })
+            Some(Value::Effect { sink: "egress".into(), payload: Box::new(hi) })
         );
     }
 
@@ -246,7 +246,7 @@ mod tests {
     fn sink_graph_is_effect_bearing_and_replayable() {
         // The combination Fork A could not express: bears an egress AND is replayable.
         let mut store = MapResolver::new();
-        let eh = store.insert(email()).unwrap();
+        let eh = store.insert(egress()).unwrap();
         let comp = sink_graph(eh);
         let caps = capabilities(&comp, &store);
         assert!(caps.contains(Capability::NetworkEgress)); // effect-bearing (you see the send)
@@ -266,7 +266,7 @@ mod tests {
     fn driver_still_needs_a_mock() {
         // Design mode substitutes only drivers; sinks are pure, state is host-threaded.
         assert!(mock_of(&clock()).is_some()); // driver — external input, mocked
-        assert!(mock_of(&email()).is_none()); // sink — pure request, no mock
+        assert!(mock_of(&egress()).is_none()); // sink — pure request, no mock
     }
 
     #[test]
