@@ -915,3 +915,39 @@ scheduling / quiescence (`P2.4.2`) wait on real need.
 **Next.** The effect *contracts* that compose from the donor cell: `P2.6.2` transactional
 read-then-write, or `P2.5.x` correlation / idempotency. The runtime shape is done; what remains is
 making individual effects well-behaved.
+
+---
+
+## 2026-06-29 · P2.6.3 — the cell's identity, dissolved by host-storage (complete)
+
+**One demonstration test, no production code (121 green = 111 core + 10 host).** P2.6.3 —
+"a cell's value is runtime state, not identity; cell-bearing ⇒ non-replayable; fork is
+copy-on-write; pin" — turns out to be **entirely a corollary of P2.6.1's decision to put storage
+in the host, not the unit.** Each sub-part:
+
+- **value-not-hashed** — not merely tested but **unrepresentable to violate.** `hash_unit` takes a
+  `Unit`; the runtime value lives in `StateHost.storage`; there is no input you could hand the
+  hasher that carries it. (`Value` appears in `hash.rs` only in a comment.) The architecture is
+  the proof; a test would be vacuous.
+- **cell-bearing ⇒ non-replayable** — already proven by `state_graph_is_not_replayable`, and
+  `is_replayable`'s own doc names it as exactly P2.6.3's positive form. Landed with Fork B.
+- **fork = copy-on-write** — the one sub-part with observable behavior, and it needed no new
+  mechanism: a fork is a new `StateHost` over a *clone* of the current storage. `forking_a_cells_
+  state_is_copy_on_write` forks a counter at 6, runs the original to 8 and the fork to 7, and
+  watches them diverge. Identity shared (one `&counter`), state per-host.
+- **pin** — the value-not-hashed split once more: pinning a cell-bearing unit pins its *structure*
+  (hash); state stays runtime. Drifts to **P3**, where pinning *configured-stateful* units is an
+  actual marketplace concern.
+
+**The shape of the result.** This is the "dissolved more than built" pattern in its purest form:
+a single load-bearing decision (host-threaded storage) paid four debts at once, and P2.6.3's job
+was to *recognize* that, add the one test fork actually has, and book pin to P3. Naming an inch
+"already true by construction" honestly beats padding it with vacuous tests.
+
+**Housekeeping.** Extracted `counter_graph()` — the canonical one-cell counter — shared now by
+the state and fork tests.
+
+**Next.** `P2.6.2` — transactional read-then-write. I expect "transactional" to want a careful
+look first at what concurrency even *means* in a single-process eager host (the round is already
+atomic: snapshot → fire → apply, no interleaving) before any code; the contract may be largely
+present, or may need a precise modeled adversary to be worth stating.

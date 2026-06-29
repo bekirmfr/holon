@@ -296,10 +296,9 @@ mod tests {
         assert_eq!(host.performed, vec![(Capability::StateWrite, num(42.0))]);
     }
 
-    #[test]
-    fn counter_remembers_across_firings() {
-        // store_read → +1 → store_write. The host threads storage through each round:
-        // reads see the prior write, and `eval` performed none of it.
+    /// store_read → +1 → store_write: the canonical one-cell counter. Shared by the state and
+    /// fork tests.
+    fn counter_graph() -> (MapResolver, Unit) {
         let mut r = MapResolver::new();
         let rd = r.insert(prim("store_read", vec![], Type::Number)).unwrap();
         let one = r.insert(number("1")).unwrap();
@@ -319,7 +318,14 @@ mod tests {
             inputs: vec![],
             output: Some(Type::Effect),
         };
+        (r, counter)
+    }
 
+    #[test]
+    fn counter_remembers_across_firings() {
+        // store_read → +1 → store_write. The host threads storage through each round:
+        // reads see the prior write, and `eval` performed none of it.
+        let (r, counter) = counter_graph();
         let mut host = StateHost::new(num(0.0));
         assert_eq!(host.storage(), &num(0.0));
         host.round(&counter, &[], &r);
@@ -443,5 +449,24 @@ mod tests {
         let mut host = Recorder::default();
         fire_sourced(&graph, &[], &r, &mut host); // no Clock supplied
         assert!(host.performed.is_empty());
+    }
+
+    #[test]
+    fn forking_a_cells_state_is_copy_on_write() {
+        // P2.6.3, the only sub-part with observable behavior. Fork = a new host over a *clone* of
+        // the current state; the two then diverge independently. Copy-on-write falls out of
+        // storage living in the host (P2.6.1), not the unit — no new mechanism. Identity is
+        // shared (both run the same `&counter`, one graph); state is per-host.
+        let (r, counter) = counter_graph();
+        let mut original = StateHost::new(num(5.0));
+        original.round(&counter, &[], &r); // original: 6
+
+        let mut fork = StateHost::new(original.storage().clone()); // CoW: copy current state (6)
+        original.round(&counter, &[], &r); // original: 7
+        original.round(&counter, &[], &r); // original: 8
+        fork.round(&counter, &[], &r); // fork: 7 (from its own 6, untouched by original)
+
+        assert_eq!(original.storage(), &num(8.0));
+        assert_eq!(fork.storage(), &num(7.0)); // diverged — independent runtime state
     }
 }
