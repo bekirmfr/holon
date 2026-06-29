@@ -669,3 +669,54 @@ that surface, exactly as the doc always said.
 "pending effects" computation — inspectable before running), and *perform* them (the
 only impure act). The `(state, effects)` round shape, batching, and the A→B value
 upgrade all live there, with real IO.
+
+---
+
+## 2026-06-29 · Deploy-mode firing — the host crossing (holon-host stops being a stub)
+
+**Built.** Deploy-mode firing in `holon-host`: a `Host` trait, `fire`, and a recording
+host. The crate now depends on `holon-core`. 110 tests (107 core + **3 host**) — the
+first tests outside the pure core.
+
+**The seam is real.** Until now everything was pure `holon-core`. `holon-host` now
+depends on it, and that edge — **host → core, never the reverse** — *is* the purity
+boundary, enforced by Cargo, not by discipline. `holon-core` still has exactly one
+dependency (`blake3`); the day it grows an IO/async crate is the day the invariant
+breaks, and the crate graph will say so out loud. There is exactly **one impure
+function in the whole system**: `Host::perform`.
+
+**The design choice that shaped it: effects are output-carried, not collected from
+inside the evaluator.** The alternative was an observer hook firing as each sink settles
+(capture at any depth). Rejected for two non-aesthetic reasons: it would give the one
+evaluator a second job and a hook every caller must reason about (`I5`/P4.2 — the
+editor's `eval` and the host's must stay bit-identical), and it contradicts the doc's
+geometry, *"consequences exit at the bottom."* So `fire` calls the same `eval`
+everything uses, then performs the request the **output** carries. `eval` is untouched;
+no hook exists. Consequence, made explicit and *correct*: the capability manifest is a
+conservative **may** (surfaced at any depth, the trust story before import), and a
+request **fires** only when it reaches the output — a buried request wired nowhere is
+dead code that correctly does nothing. *Can egress* ≠ *will egress on this wiring*, and
+keeping them distinct is right.
+
+**Multiplicity rides the A→B axis, not a loop change.** Minimal (A) = a single terminal
+sink: the settled output *is* the payload, the manifest names the egress, the host
+performs once. Fan-out (B) = `Value::Effect` / `List[Effect]` at the output, performed
+by iterating — taken when the per-signup case is concrete. `fire` never changes; only
+the output *shape* does. (Flagged honestly: under A a multi-sink graph would perform one
+payload per sink — which is *why* genuine fan-out waits for B rather than being faked.)
+
+**The tests pin the load-bearing claims.** `bare_sink_is_performed_once_with_settled_
+payload`: the egress happens **once**, with the value `eval` settled, and **only** at
+the host (core performed nothing). `sink_in_a_composite_is_performed`: the same through
+a layer of composition — the consequence exits at the bottom and the host picks it up.
+`pure_graph_performs_nothing`: no sink in the manifest ⇒ the host is never called; the
+pure surface stays inert until something actually egresses.
+
+**Deferred, not hidden.** No driver leaves yet — inputs are handed in directly, standing
+in for what `drive` will source from the world. State (the `Model` half of the round's
+`(Model, Cmd)`) is host-threaded and its own leaf (`P2.6.1`). Real platform hosts (an
+actual mail/file/network `Host`) wait until there is a platform to target.
+
+**Next.** `drive` (source real driver values) and the **state cell** (`P2.6.1`) — the
+`(Model, Cmd)` round — then the **A→B** value upgrade when computed fan-out is concrete.
+The purity seam now has a crate on each side of it.
