@@ -213,6 +213,7 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
         "store_read" => &[StateRead],
         "store_write" => &[StateWrite],
         "timer" => &[Clock],
+        "random" => &[Random],
         "email" => &[NetworkEgress],
         // Request/response (P2.5.1): `request` is the ingress driver (a request arrives), `respond`
         // the egress sink (a reply goes out). A correlation token rides as ordinary data between
@@ -429,6 +430,7 @@ mod tests {
         assert_eq!(kind_of("store_read"), Some(Kind::State));
         assert_eq!(kind_of("store_write"), Some(Kind::State));
         assert_eq!(kind_of("timer"), Some(Kind::Driver));
+        assert_eq!(kind_of("random"), Some(Kind::Driver));
         assert_eq!(kind_of("email"), Some(Kind::Sink));
     }
 

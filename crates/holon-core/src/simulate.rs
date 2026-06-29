@@ -197,6 +197,17 @@ mod tests {
     }
 
     #[test]
+    fn random_driver_mocks_like_any_driver() {
+        // A new driver is *only* a `capabilities_of` entry: `random` has no `compute`
+        // (sourced), and design mode mocks it to its output-type zero through the generic
+        // `sourced_mock` — this module needed no change to gain a new driver.
+        let store = MapResolver::new();
+        let rnd = prim("random", Some(Type::Number));
+        assert_eq!(eval(&rnd, &[], &store), None); // sourced ⇒ not computable
+        assert_eq!(design_eval(&rnd, &[], &store), Some(Value::Number(0.0))); // mocked
+    }
+
+    #[test]
     fn effect_leaf_makes_graph_evaluable_in_design() {
         let mut store = MapResolver::new();
         let th = store.insert(timer()).unwrap();

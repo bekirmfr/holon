@@ -1293,3 +1293,27 @@ from these four + `compare`/`fold` — stdlib, not native. Two-table rule held (
 
 **Next — R3 · `random` driver** (sourced like `clock`; capability `Random` already defined),
 the last additive inch. Then the trust root starts moving: R4 (effect renames) + R5 (const merge).
+
+---
+
+## 2026-06-29 · Genesis reconciliation R3 — `random` driver (closes the additive run)
+
+**The smallest inch, and the point is its smallness (142 green = 123c + 19h).** Adding a new
+driver to the language was **one line of real code**: a single `capabilities_of` row,
+`random → [Random]`. Everything else is generic. No `compute` arm — a driver has no pure
+computation (entropy is host-sourced at deploy), so `random` falls through `_ => None`. No
+`simulate.rs` change — `sourced_mock` keys on a leaf's *output type*, not its name, so `random`
+(output Number) mocks to 0 in design mode through the exact path `timer` uses. Classification,
+sourcing, mocking, design preview — all worked the moment the capability was declared. `I8`
+(derived-not-asserted) + the two-axis model paying off: the engine learned a new way to touch
+the world by being told one fact about it.
+
+**The additive run (R1–R3) is complete; not one existing hash has moved.** The native set now
+holds every irreducible §13 specifies — pure kit, text kit, drivers. The trust root has only
+grown, never shifted.
+
+**Next — the breaking inches.** R4 (`timer→clock`, `request→ingress`, `email`+`respond`→`egress`)
+and R5 (five constants → `const`) change the dispatch names ⇒ the preimage ⇒ hashes. Each is a
+multi-file lockstep rename (compute/sink_effect names, `capabilities_of` rows AND the enumerated
+tests, `simulate.rs` helpers, host tests). Discipline: survey *every* occurrence first, move them
+together. Approach R4 by grepping the workspace for each old name before touching anything.
