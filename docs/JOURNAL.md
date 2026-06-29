@@ -1317,3 +1317,28 @@ and R5 (five constants → `const`) change the dispatch names ⇒ the preimage �
 multi-file lockstep rename (compute/sink_effect names, `capabilities_of` rows AND the enumerated
 tests, `simulate.rs` helpers, host tests). Discipline: survey *every* occurrence first, move them
 together. Approach R4 by grepping the workspace for each old name before touching anything.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R4a — timer→clock, request→ingress (first breaking inch)
+
+**The first inch where hashes deliberately move (142 green = 123c + 19h, count unchanged — a
+rename adds no tests).** Two clean 1:1 renames to §13 names. `clock` and `ingress` now hash
+differently than `timer`/`request` did; no test asserts a golden hash, so the suite holds.
+
+**Survey-first paid off immediately.** Grepping every occurrence first revealed `request` is two
+things: the *primitive* (→ `ingress`) and the *word* (Fork-B "the request a sink constructs",
+correct terminology that had to stay). A naive find-replace would have corrupted the vocabulary —
+so the rename was scoped to quoted strings for the primitive, leaving the word (still 8× in
+primitives.rs, correctly). `timer` was unambiguous (every occurrence the primitive), so it cleaned
+all the way to helper-fn and variable names.
+
+**Why R4 split.** `clock`/`ingress` are 1:1: one table arm in, one out, nothing collides. R4b
+(`email`+`respond`→`egress`) is a *merge* — after renaming, `capabilities_of` and `compute` would
+each hold two identical `egress` arms (duplicate patterns, a compile error). R4b's real work is
+deduplicating those collapsed arms + merging the two sink tests + rewriting the request/response
+comment block left intact here. Hence its own inch.
+
+**Next — R4b · the egress merge.** Survey `email`/`respond`, collapse to one native `egress` sink
+(both already NetworkEgress; the host dispatches on capability, not sink name, so the merge is
+clean host-side), dedup the arms, rewrite the P2.5.1 comment.

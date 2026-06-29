@@ -368,7 +368,7 @@ mod tests {
             compute("respond", &[payload.clone()], &[]),
             Some(Value::Effect { sink: "respond".into(), payload: Box::new(payload) })
         );
-        assert_eq!(compute("request", &[], &[]), None); // ingress is sourced, not computed
+        assert_eq!(compute("ingress", &[], &[]), None); // ingress is sourced, not computed
     }
     #[test]
     fn unknown_is_none() {

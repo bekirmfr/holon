@@ -212,14 +212,14 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
         // commits to it (output-side) — see the P2.6.1 L4.
         "store_read" => &[StateRead],
         "store_write" => &[StateWrite],
-        "timer" => &[Clock],
+        "clock" => &[Clock],
         "random" => &[Random],
         "email" => &[NetworkEgress],
         // Request/response (P2.5.1): `request` is the ingress driver (a request arrives), `respond`
         // the egress sink (a reply goes out). A correlation token rides as ordinary data between
         // them; isolation is purity's (independent pure paths can't cross), so the token is only a
         // boundary label, not an engine mechanism.
-        "request" => &[NetworkIngress],
+        "ingress" => &[NetworkIngress],
         "respond" => &[NetworkEgress],
 
         // Unknown leaf ⇒ fail closed. The engine does not vouch for it.
@@ -429,7 +429,7 @@ mod tests {
     fn effectful_exemplars_classify() {
         assert_eq!(kind_of("store_read"), Some(Kind::State));
         assert_eq!(kind_of("store_write"), Some(Kind::State));
-        assert_eq!(kind_of("timer"), Some(Kind::Driver));
+        assert_eq!(kind_of("clock"), Some(Kind::Driver));
         assert_eq!(kind_of("random"), Some(Kind::Driver));
         assert_eq!(kind_of("email"), Some(Kind::Sink));
     }
@@ -439,7 +439,7 @@ mod tests {
     /// name — lands with host execution, P2.4.1 / P2.6.1.)
     #[test]
     fn effectful_exemplars_are_not_pure() {
-        for name in ["store_read", "store_write", "timer", "email"] {
+        for name in ["store_read", "store_write", "clock", "email"] {
             assert!(kind_of(name).unwrap().is_effectful(), "{name} must be effectful");
         }
     }
@@ -498,11 +498,11 @@ mod tests {
 
     #[test]
     fn mixed_axes_are_preserved_not_collapsed() {
-        // timer (Driver) + email (Sink) ⇒ {Driver, Sink}, not one "worst" bucket.
+        // clock (Driver) + email (Sink) ⇒ {Driver, Sink}, not one "worst" bucket.
         let mut store = MapResolver::new();
-        let timer = store.insert(prim("timer")).unwrap();
+        let clock = store.insert(prim("clock")).unwrap();
         let email = store.insert(prim("email")).unwrap();
-        let comp = composite(vec![timer, email]);
+        let comp = composite(vec![clock, email]);
         let fx = effects_of(&comp, &store);
         assert!(fx.contains(Kind::Driver));
         assert!(fx.contains(Kind::Sink));
@@ -588,16 +588,16 @@ mod tests {
         assert!(store_write.contains(Capability::StateWrite));
         assert_eq!(store_write.len(), 1);
 
-        let timer = capabilities_of("timer").unwrap();
-        assert!(timer.contains(Capability::Clock));
-        assert_eq!(timer.len(), 1);
+        let clock = capabilities_of("clock").unwrap();
+        assert!(clock.contains(Capability::Clock));
+        assert_eq!(clock.len(), 1);
 
         // Request/response (P2.5.1): the in/out pair. A request→respond closure is effect-bearing
         // (egress) yet *replayable* (no State) — and the token that correlates them is plain data,
         // never a capability.
-        let request = capabilities_of("request").unwrap();
-        assert!(request.contains(Capability::NetworkIngress));
-        assert!(request.is_replayable()); // a driver, not state
+        let ingress = capabilities_of("ingress").unwrap();
+        assert!(ingress.contains(Capability::NetworkIngress));
+        assert!(ingress.is_replayable()); // a driver, not state
         let respond = capabilities_of("respond").unwrap();
         assert!(respond.contains(Capability::NetworkEgress));
         assert_eq!(respond.len(), 1);
@@ -679,11 +679,11 @@ mod tests {
     #[test]
     fn mixed_caps_union_over_closure() {
         let mut store = MapResolver::new();
-        let timer = store.insert(prim("timer")).unwrap();
+        let clock = store.insert(prim("clock")).unwrap();
         let email = store.insert(prim("email")).unwrap();
         let store_read = store.insert(prim("store_read")).unwrap();
         let store_write = store.insert(prim("store_write")).unwrap();
-        let comp = composite(vec![timer, email, store_read, store_write]);
+        let comp = composite(vec![clock, email, store_read, store_write]);
         let caps = capabilities(&comp, &store);
         assert!(caps.contains(Capability::Clock));
         assert!(caps.contains(Capability::NetworkEgress));
@@ -714,9 +714,9 @@ mod tests {
         // The structural invariant: effects_of is exactly capabilities projected
         // through Capability::kind — one source of truth, one walk.
         let mut store = MapResolver::new();
-        let timer = store.insert(prim("timer")).unwrap();
+        let clock = store.insert(prim("clock")).unwrap();
         let email = store.insert(prim("email")).unwrap();
-        let comp = composite(vec![timer, email]);
+        let comp = composite(vec![clock, email]);
         let projected: std::collections::BTreeSet<Kind> =
             capabilities(&comp, &store).iter().map(|c| c.kind()).collect();
         let fx = effects_of(&comp, &store);

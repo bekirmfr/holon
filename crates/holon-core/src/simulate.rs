@@ -1,6 +1,6 @@
 //! # Design-mode simulation — running a service with its *drivers* mocked (P2.4.1 / P2.7.1)
 //!
-//! A **driver** leaf (`timer`, an inbound request) has no pure `compute` — it is
+//! A **driver** leaf (`clock`, an inbound request) has no pure `compute` — it is
 //! external input the host supplies. **Design mode** lets a driver-bearing graph run
 //! without a host by substituting each driver with a *pure mock* (a scripted stimulus)
 //! at resolve time, then running ordinary core [`eval`]. The result is pure,
@@ -140,9 +140,9 @@ mod tests {
     use super::*;
     use crate::{capabilities, hash_unit, Capability, Edge, MapResolver, Port, BOUNDARY};
 
-    fn timer() -> Unit {
+    fn clock() -> Unit {
         Unit {
-            body: UnitBody::Primitive { name: "timer".into() },
+            body: UnitBody::Primitive { name: "clock".into() },
             params: vec![],
             inputs: vec![],
             output: Some(Type::Number),
@@ -189,9 +189,9 @@ mod tests {
 
     #[test]
     fn driver_leaf_mocks_to_constant() {
-        // A bare timer (Driver) is not evaluable; design mode substitutes a constant.
+        // A bare clock (Driver) is not evaluable; design mode substitutes a constant.
         let store = MapResolver::new();
-        let t = timer();
+        let t = clock();
         assert_eq!(eval(&t, &[], &store), None);
         assert_eq!(design_eval(&t, &[], &store), Some(Value::Number(0.0)));
     }
@@ -210,9 +210,9 @@ mod tests {
     #[test]
     fn effect_leaf_makes_graph_evaluable_in_design() {
         let mut store = MapResolver::new();
-        let th = store.insert(timer()).unwrap();
+        let th = store.insert(clock()).unwrap();
         let comp = pass_through(th, Type::Number);
-        assert_eq!(eval(&comp, &[], &store), None); // timer not computable
+        assert_eq!(eval(&comp, &[], &store), None); // clock not computable
         assert_eq!(design_eval(&comp, &[], &store), Some(Value::Number(0.0)));
         // deterministic
         assert_eq!(design_eval(&comp, &[], &store), design_eval(&comp, &[], &store));
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn effect_leaf_at_depth_is_substituted() {
         let mut store = MapResolver::new();
-        let th = store.insert(timer()).unwrap();
+        let th = store.insert(clock()).unwrap();
         let inner = store.insert(pass_through(th, Type::Number)).unwrap();
         let mid = pass_through(inner, Type::Number);
         assert_eq!(design_eval(&mid, &[], &store), Some(Value::Number(0.0))); // depth-agnostic
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn driver_still_needs_a_mock() {
         // Design mode substitutes only drivers; sinks are pure, state is host-threaded.
-        assert!(mock_of(&timer()).is_some()); // driver — external input, mocked
+        assert!(mock_of(&clock()).is_some()); // driver — external input, mocked
         assert!(mock_of(&email()).is_none()); // sink — pure request, no mock
     }
 
@@ -275,14 +275,14 @@ mod tests {
         // surfaces Clock even though design mode would mock it away — and the mock is a
         // different unit than the leaf, so it is never part of the graph's identity.
         let mut store = MapResolver::new();
-        let th = store.insert(timer()).unwrap();
+        let th = store.insert(clock()).unwrap();
         let comp = pass_through(th, Type::Number);
 
         let caps = capabilities(&comp, &store);
         assert!(caps.contains(Capability::Clock)); // real classification, unmocked
 
-        let mock = mock_of(&timer()).unwrap();
-        assert_ne!(hash_unit(&mock).unwrap(), hash_unit(&timer()).unwrap());
+        let mock = mock_of(&clock()).unwrap();
+        assert_ne!(hash_unit(&mock).unwrap(), hash_unit(&clock()).unwrap());
     }
 
     #[test]

@@ -183,7 +183,7 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
         if let UnitBody::Primitive { name } = &u.body {
             if let Some(caps) = capabilities_of(name) {
                 // Inject the first sourced capability we hold a value for (one per leaf in the
-                // minimal set: timer→Clock, store_read→StateRead).
+                // minimal set: clock→Clock, store_read→StateRead).
                 for (cap, constant) in &self.sourced {
                     if caps.contains(*cap) {
                         return Some(constant);
@@ -567,17 +567,17 @@ mod tests {
     }
 
     // ── drive: source the world ────────────────────────────────────────────────
-    /// timer (Clock) → store_write: read the clock, commit it. A graph whose driver leaf
-    /// (`timer`) has no pure compute — it must be sourced.
+    /// clock (Clock) → store_write: read the clock, commit it. A graph whose driver leaf
+    /// (`clock`) has no pure compute — it must be sourced.
     fn timer_to_store() -> (MapResolver, Unit) {
         let mut r = MapResolver::new();
-        let th = r.insert(prim("timer", vec![], Type::Number)).unwrap();
+        let th = r.insert(prim("clock", vec![], Type::Number)).unwrap();
         let wh = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
         let graph = Unit {
             body: UnitBody::Composite {
                 children: vec![th, wh],
                 edges: vec![
-                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // timer → write.v
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // clock → write.v
                     Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // write → out
                 ],
             },
@@ -809,7 +809,7 @@ mod tests {
         // NOTHING — a safe preview: the email Effect appears in the output but is never sent.
         // Deploy sources the driver for real and performs the send. The core never learns of modes.
         let mut r = MapResolver::new();
-        let tk = r.insert(prim("timer", vec![], Type::Number)).unwrap();
+        let tk = r.insert(prim("clock", vec![], Type::Number)).unwrap();
         let em = r
             .insert(Unit {
                 body: UnitBody::Primitive { name: "email".into() },
@@ -822,7 +822,7 @@ mod tests {
             body: UnitBody::Composite {
                 children: vec![tk, em],
                 edges: vec![
-                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // timer → email
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // clock → email
                     Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // email → out
                 ],
             },
