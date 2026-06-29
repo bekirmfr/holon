@@ -1131,3 +1131,43 @@ predicate and becomes **the product**: pure + content-pinned ⟹ universal, shar
 This is the project's actual thesis and a far larger design arc than any P2 leaf — it will want
 real grounding and its own L4 sequence, not an inch. The spine so far: P1 (language) ⊳ P2 (OS)
 both closed; P3 is the third and final spine pillar.
+
+---
+
+## 2026-06-29 · The genesis primitive set & the admission gate (design inch, no code)
+
+A design-only inch, written into `COMPOSABLE_VM_DESIGN.md` §13 — pinning the atom set
+as the trust root before P3 makes it permanent.
+
+**The frame that did the work.** The primitives are the *leaves of the hash DAG*
+(confirmed in `hash.rs`: composites encode children by hash, primitives by name). So
+the atom set is the entire surface of *trusted semantics* — everything above it is
+verifiable by re-hashing, nothing above it must be trusted. That reframed "how many
+primitives" into "how small can the privileged, unforkable centre be," which is the
+permissionless thesis itself.
+
+**The gate (decidable, not taste).** Native iff a composite couldn't match it:
+worse complexity class, or hot-and-pervasive (finer than memo grain), or impossible
+(an effect = a capability), or genuinely inexpressible (the constructive test: a `for`
+loop *builds* as `fold`, so it's surface syntax, not an atom; iteration itself does
+*not* build, so `fold` is native; `while` is refused — it would forfeit totality).
+Everything failing the gate is a blessed stdlib composite that, by I1, *feels* native.
+Convenience is served one tier out, in the open, for free — and the gate is what stops
+the native set ballooning over the years.
+
+**The set: 27 frozen atoms** — 15 language core (incl. the two control atoms `select`
++ `fold`, and `cons`/`head`/`tail`/`is_empty`), 6 text (Text kept *opaque*; casing
+native via locale-independent Unicode default mapping — a determinism/I2 call, since
+Turkish-i-style locale tailoring would poison every downstream hash), 6 effects
+(`email`/`respond` merged into `egress`); `spawn` deferred, append-only.
+
+**Two donors, two payoffs.** `fold` (language) and the state cell (OS) generate almost
+everything above them. Control flow = `select` + `fold` only ⇒ **everything is total by
+construction** ⇒ the memo thesis is airtight (no verifier ever asked to confirm a result
+that might not halt). And the demotions (subtract's inverse, the list lib, typed
+constants, email/respond) are the one breaking move — re-hashing — hence genesis-timed;
+appends stay free forever.
+
+**Status:** no code, no tests touched (126 green unchanged). This is the trust-root
+characterization + admission gate; the *act* of freezing the canonical set, and the
+totality decision it rests on, are the natural first preconditions when we ground P3.

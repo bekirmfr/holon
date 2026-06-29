@@ -423,3 +423,136 @@ state. And much of Holon is still aspirational (holon-host, async cells, the
 settle/commit gate, the editor) — these comparisons treat design intent as intent,
 and the verdict can shift as those pieces meet (or collide with) the prior art
 named above.
+
+---
+
+## 13. The genesis primitive set (the atoms & the admission gate)
+
+The primitives are the **leaves of the hash DAG**. A composite's identity is taken
+over its children's hashes, transitively, until the chain terminates at primitive
+units whose identity is a *name* (verified in `hash.rs`: a composite encodes each
+child *by hash only*; a primitive encodes its name). So the primitive set is the
+one place identity stops being "a composition of…" and becomes "a name you trust" —
+which makes it the **entire surface of trusted semantics in the system.** Everything
+above it is mechanically verifiable by re-hashing; nothing above it must be trusted,
+only checked. The atoms are the axioms; every composite is a theorem whose proof is
+its hash chain (§2, §8).
+
+Two consequences fix the shape of this set.
+
+**It is genesis-frozen, and the freeze is now-or-never for *removal* only.**
+*Adding* a primitive later is append-only-safe — it never re-hashes anything below
+it (exactly as `Type::Effect` took tag 6 with no existing hash moved). *Redefining or
+removing* one re-hashes the whole closure that depended on it. So the irreducibles
+are frozen at genesis; later atoms (a fixpoint, `spawn`) are admitted by deliberate
+append, never by editing what exists.
+
+**Admission is decided by a gate, not by taste.** A unit earns *native* status only
+if a composite could not give the same thing. Concretely, native iff one of:
+
+- **Speed — complexity class.** The composite form would be in a worse class. (`head`
+  from `fold` walks the whole list: O(1) → O(n).)
+- **Speed — hot and pervasive.** Same class, but paid in the inner loop of everything,
+  finer than memoization's grain (caching a single `a − b` costs more than the
+  subtraction). Arithmetic, comparison, logic, `select`.
+- **Capability.** Impossible to compose because it is an effect — you cannot build
+  `egress` from pure parts. This leg keeps every effect leaf native, which is why the
+  primitive list and the permission list are the *same* list.
+- **Expressibility.** Genuinely inexpressible from the existing atoms, such that no
+  user could reasonably wire it. The test is constructive: *try to build it.* A `for`
+  loop falls out cleanly as `fold` (so `for` is **not** a primitive — it is surface
+  syntax over `fold`); iteration *itself* does not (the acyclic graph cannot express a
+  loop), so `fold` is native. `while` is the case we **refuse** — not because it is
+  hard but because admitting it would forfeit totality.
+
+Everything that fails the gate is a **blessed standard-library composite**: pinned,
+canonical, and — by interface parity (I1) — indistinguishable from a primitive to
+whoever drags the block. Convenience is fully served *one tier out*, in the open
+marketplace where it is forkable and improvable, without enlarging the privileged,
+unforkable centre. The prize is not the one-time count: it is that the gate is
+decidable, so the native set **cannot balloon** over the years while the convenience
+surface stays rich and open. The smaller the privileged physics, the more fully Holon
+is the permissionless thing it claims to be.
+
+### The set
+
+**Language core — 15** *(non-text)*
+
+- `const` — emit a literal *(subsumes typed constants and `true`/`false`)*. *introduce*
+- `add`, `subtract`, `multiply`, `divide` — *speed (hot)*; `divide` carries the zero-guard.
+- `compare` — operator by param (`< > <= >= = !=`), **polymorphic over scalar base types**
+  (Number, Text, Boolean), so there is no separate text comparison. *speed (hot)*
+- `and`, `or`, `not` — *speed/legibility* (`or` is derivable but the minimal form is
+  slower and uglier for no gain — the gate keeps it native).
+- `select(cond, a, b)` — the only branch. *expressibility (irreducible control flow)*
+- `cons`, `head`, `tail`, `is_empty` — list structure; *speed* (O(1); O(n) via `fold`).
+- `fold` — the one iteration primitive; *expressibility*. **The language's universal
+  donor:** `map`, `filter`, `sum`, `length`, `join`, `append`, `get`, `reverse`,
+  `repeat`, and the surface `for` loop are all `fold` composites.
+
+**Text — 6** *(`Text` is an opaque base type)*
+
+Kept opaque, not as a list of char-codes: the composite form regresses UTF-8 handling
+to O(n) and launders text through `List` — failing both the speed and expressibility
+legs. The native ops are exactly those that must touch the opaque encoding:
+
+- `text_length` — character count *(encoding-aware; nothing to `fold` over an opaque
+  value)*.
+- `concat` — join two texts *(hot)*.
+- `slice(start, len)` — substring by position *(safe indexing into the encoding is the
+  engine's job)*.
+- `index_of(needle)` — the irreducible search; `contains` / `starts_with` /
+  `ends_with` / `split` / `replace` / `trim` / `pad` all compose from it.
+- `uppercase`, `lowercase` — **native, using locale-independent Unicode default case
+  mapping.** This is a *determinism* (I2) decision, not a convenience one:
+  locale-tailored casing (e.g. the Turkish dotted/dotless `i`) makes `uppercase`
+  locale-dependent, which would break "identical input ⇒ identical output" and poison
+  every hash and cache entry downstream. The atom is therefore a fixed, locale-free
+  mapping the engine owns.
+
+The entire rich text surface (`split`, `replace`, `trim`, `contains`, `join`, …) is
+stdlib composition over `concat` / `slice` / `index_of` / `compare` / `fold`.
+
+**Effects — 6** *(all native by capability; each atom **is** one permission)*
+
+- *Sourced (read the world):* `clock`, `random`, `ingress`, `store_read`.
+- *Performed (act on the world):* `egress` *(subsumes `email`/`respond` — send with a
+  destination in the payload)*, `store_write`.
+- `store_read` + `store_write` are the **state cell — the OS's universal donor** (§7):
+  queue, mutex, database, file, and the P3 trustless cache are all composites over it.
+
+**Deferred — append-only**
+
+- `spawn` (concurrency) — admitted when P-concurrency is actually entered; appending it
+  re-hashes nothing.
+
+**Frozen genesis total: 27 atoms** (15 language + 6 text + 6 effect); 28 with `spawn`.
+
+### Two properties this set buys
+
+**Totality by construction.** All control flow is exactly two atoms — `select`
+(choice) and `fold` (bounded iteration) — with `while` deliberately absent. No atom in
+the base can express non-termination, so *every composite anyone ever builds is
+guaranteed to halt.* This is the airtight form of the memo thesis (§8): verification
+can never be asked to confirm a result that might not exist, so a pure, total composite
+is always safely cacheable and re-hashable. Minimizing iteration into `fold` and the
+"everything halts" guarantee are the same fact.
+
+**A neutral minimal centre.** Every atom is privileged, unforkable runtime; every
+composite is open, ownable, contestable marketplace content. The gate pushes the entire
+expressive surface of the language *out* of the engine and into the economy, leaving the
+runtime as close to bare irreducible physics as speed and capability allow. That
+boundary — privileged physics vs open content — is the natural one the whole project
+keeps rewarding, not an imposed cap.
+
+### What this changes from the as-built set
+
+Gained: `fold`, `cons`/`head`/`tail`/`is_empty` (real irreducibles the current set
+lacks). Demoted to stdlib (derivables that were masquerading as primitives): the unary
+inverses behind `subtract`/`divide`, the bundled-but-derivable comparison operators, the
+list library (`sum`/`length`/`join`/`append`/`get`), and the typed constants +
+`true`/`false` (now `const`). Merged: `email`/`respond` → `egress`. The count is about
+the same as today's ~22 — but it is the *right* set, every atom now passing a decidable
+test instead of sitting there by habit. The demotions are the one breaking move
+(re-hashing), hence genesis-timed; the gate protects the boundary, for free, forever
+after.
