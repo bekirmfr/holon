@@ -601,3 +601,71 @@ guardrail); `state_leaf_has_no_pure_mock` (the exception is explicit).
 `emit` shell, real sink observation, and state threading (P2.6.1) — all with real IO,
 all deferred until now. The pure core's effect layer is design-runnable; deploy is the
 remaining half.
+
+---
+
+## 2026-06-29 · Fork B — sinks become pure request-constructors (reconciling code to design intent)
+
+**Built.** The sink-model reconciliation, pure core: `email` gains a one-line pure
+`compute` (identity on payload), `Capabilities` gains `is_replayable` (no `State` in
+the closure), and the sink mock retires. 107 tests (103 → +1 in `primitives`, net +3
+in `simulate`).
+
+**The decision (and why it was a *reconciliation*, not a new design).** A fork hid in
+the deploy crossing: is a sink an *impure leaf observed in place* (Fork A) or a *pure
+request-constructor the host performs* (Fork B)? We chose **Fork B**, and the deciding
+frame was the end-state, not local taste: the product is a trustless, content-addressed,
+universally-memoized fabric, so **purity is the currency — the pure surface *is* the
+product.** Fork A makes impurity contagious (every graph that ultimately *does*
+something falls out of the cacheable/shareable surface); Fork B confines impurity to one
+point, the host. Grounding confirmed the design doc already committed to B —
+*"the state cell, the one explicit place purity ends"*, FCIS/Roc named as the model to
+adopt. The **code had drifted**: `email` had no pure `compute` and `is_effectful` was
+`!= Pure`, quietly asserting a *second* place purity ends. Fork B reconciles the
+implementation back to intent that was already correct.
+
+**The split that carries it.** `is_effectful = (self != Pure)` conflated two questions.
+They are now distinct: **effect-bearing** (the capability manifest — does this *describe*
+an effect the host must perform? Driver/State/Sink yes) stays exactly as-is; and
+**replayable** (`is_replayable` = no `State` capability — is the output deterministic
+across firings?) is new, and is the one the design doc actually ties caching to. Mapped
+across the four kinds, only `State` breaks replayability — drivers are *inputs*, sinks
+purely *construct requests*. The headline test, `sink_graph_is_effect_bearing_and_
+replayable`: a `Timer → Email` graph reports `{NetworkEgress}` **and** `is_replayable`
+at once — the combination Fork A made structurally inexpressible ("bears an effect" and
+"is cacheable" were the same bit). `sink_is_eval_pure` pins the other half: `eval` now
+succeeds over a sink-bearing graph under the *real* resolver, no design mode.
+
+**The value-representation answer (solved carefully, not reflexively).** A request is the
+pair *(capability, payload)*: the capability is **structural** (derived from the leaf,
+already in the manifest), the payload is **ordinary data** (the `Text`/`List` the pure
+interior composed). So **no `Value::Request` variant** — the "command-ness" lives in the
+structural manifest, never in the `Value` that pure arithmetic shares, and the hash
+preimage doesn't move (runtime `Value` was never hashed). A sink is therefore
+*identity-on-payload + a structural capability* (option **A**). The richer alternative —
+a first-class `Value::Effect` enabling **computed, data-driven effect fan-out** (one
+`map` producing `List[Effect]`, the "welcome email per signup" pattern, Elm/Roc `Cmd`) —
+is **B**, deferred to the host inch where the case is concrete. Key finding that makes
+the deferral free: **A → B touches no content address** — a primitive's `compute` is
+keyed by name *outside* the hashed preimage, so switching later re-hashes nobody's
+graphs. We pay the `Value→Capability` layering cost only when deploy evidence justifies
+the cut, not on spec.
+
+**Retired.** The sink mock and `sink_mock_echoes_settled_input` — they were Fork A
+leaking into the P2.4.1 L4 (rev. 2), which treated sinks as impure leaves needing a pure
+stand-in. A pure sink needs none. `mock_of` now substitutes **only drivers**; sinks
+evaluate directly, state stays host-threaded. The eval fix from that inch was correct on
+its own and survives untouched.
+
+**The payoff (the end-state argument, concrete).** The marketplace's keyed surface just
+grew from "arithmetic" to "anything whose only impurity is the final send." A
+`Timer → compose → Email` graph is now eval-pure, replayable, cacheable, and trustlessly
+shareable — its manifest shows the egress *before import* (I9), yet computing *what* to
+send is pure and memoizable. Exactly one thing — a `State` cell — pulls a graph out of
+that surface, exactly as the doc always said.
+
+**Next.** Deploy firing in `holon-host`, now genuinely thin: source driver values,
+`eval` the fully-pure graph, collect *(capability, settled payload)* per sink (a pure
+"pending effects" computation — inspectable before running), and *perform* them (the
+only impure act). The `(state, effects)` round shape, batching, and the A→B value
+upgrade all live there, with real IO.

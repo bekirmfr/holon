@@ -1,41 +1,41 @@
-//! # Design-mode simulation — running a service with its effects mocked (P2.4.1 / P2.7.1)
+//! # Design-mode simulation — running a service with its *drivers* mocked (P2.4.1 / P2.7.1)
 //!
-//! An effectful leaf (`timer`, `email`, …) has no pure `compute`, so the pure
-//! evaluator cannot run a graph that contains one. **Design mode** makes such a
-//! graph evaluable by substituting each effect leaf with a *pure mock* (P2.7.1) at
-//! resolve time, then running ordinary core [`eval`]. The result is pure,
+//! A **driver** leaf (`timer`, an inbound request) has no pure `compute` — it is
+//! external input the host supplies. **Design mode** lets a driver-bearing graph run
+//! without a host by substituting each driver with a *pure mock* (a scripted stimulus)
+//! at resolve time, then running ordinary core [`eval`]. The result is pure,
 //! deterministic, replayable, and memoizable like any pure evaluation.
 //!
+//! Sinks need no mock: under Fork B a sink purely *constructs its request payload*, so
+//! `eval` runs it directly (the host performs the request later, at deploy). State is
+//! the other exception — host-threaded, not mockable. So **only drivers are
+//! substituted here.**
+//!
 //! The substitution rides the **resolver**: `eval` resolves every child by hash
-//! before running it, so a [`Simulated`] resolver returns a leaf's mock instead of
-//! the effect primitive — at any depth, with no `eval` change and no graph surgery.
+//! before running it, so a [`Simulated`] resolver returns a driver's mock instead of
+//! the driver primitive — at any depth, with no `eval` change and no graph surgery.
 //! Core `eval` stays mode-ignorant; the resolver is the only thing that differs.
-//! (Deploy mode — sourcing real driver events and firing real sinks — is the
-//! `holon-host` shell, a separate and deferred path.)
 //!
 //! ## The guardrail (enforced structurally)
 //!
-//! This module *depends on* [`crate::kind`] (to know which leaves are effects); the
+//! This module *depends on* [`crate::kind`] (to know which leaves are drivers); the
 //! classifiers never depend on it. So `capabilities` / `effects_of` are computed
 //! from the **real** units and never see a mock — simulating innocent buys nothing
 //! at the trust boundary, and a mock is never in any content hash.
 
 use crate::eval::eval;
 use crate::hash::parse_hash;
-use crate::{kind_of, Edge, Hash, Kind, Param, Resolver, Type, Unit, UnitBody, Value, BOUNDARY};
+use crate::{kind_of, Hash, Kind, Param, Resolver, Type, Unit, UnitBody, Value};
 use std::collections::BTreeMap;
 
-/// A pure stand-in for an effect leaf, used **only** in design-mode evaluation.
+/// A pure stand-in for a **driver** leaf, used **only** in design-mode evaluation —
+/// a constant of the driver's output type (a scripted stimulus; custom stimuli are a
+/// deferred P2.7 refinement, the default is a type-zero value).
 ///
-/// - a [`Driver`](Kind::Driver) mocks to a *constant* of its output type — the
-///   scripted stimulus a design run sees (custom stimuli are a deferred P2.7
-///   refinement; the default is a type-zero value);
-/// - a [`Sink`](Kind::Sink) mocks to a *passthrough* that echoes its input — absorb
-///   the value, return a plausible result;
-/// - a [`State`](Kind::State) cell has **no** pure mock: its value depends on prior
-///   writes, so it is host-threaded (P2.6.1) ⇒ `None`;
-/// - a [`Pure`](Kind::Pure) or unknown leaf is not an effect ⇒ `None` (nothing to
-///   substitute; it already evaluates).
+/// Everything else returns `None` — nothing to substitute:
+/// - a [`Sink`](Kind::Sink) purely constructs its request (Fork B) ⇒ `eval` runs it;
+/// - a [`State`](Kind::State) cell is host-threaded (its value depends on prior writes);
+/// - a [`Pure`](Kind::Pure) or unknown leaf already evaluates.
 pub fn mock_of(unit: &Unit) -> Option<Unit> {
     let name = match &unit.body {
         UnitBody::Primitive { name } => name,
@@ -43,8 +43,7 @@ pub fn mock_of(unit: &Unit) -> Option<Unit> {
     };
     match kind_of(name)? {
         Kind::Driver => driver_mock(unit),
-        Kind::Sink => sink_mock(unit),
-        Kind::State | Kind::Pure => None,
+        Kind::Sink | Kind::State | Kind::Pure => None,
     }
 }
 
@@ -62,23 +61,6 @@ fn driver_mock(unit: &Unit) -> Option<Unit> {
 
 fn constant(name: &str, params: Vec<Param>, output: Option<Type>) -> Unit {
     Unit { body: UnitBody::Primitive { name: name.to_string() }, params, inputs: vec![], output }
-}
-
-/// A sink's mock: a passthrough composite that echoes its first input to its output
-/// (absorb → plausible result). Requires an input and an output to wire through.
-fn sink_mock(unit: &Unit) -> Option<Unit> {
-    if unit.inputs.is_empty() || unit.output.is_none() {
-        return None;
-    }
-    Some(Unit {
-        body: UnitBody::Composite {
-            children: vec![],
-            edges: vec![Edge { from_child: BOUNDARY, from_port: 0, to_child: BOUNDARY, to_port: 0 }],
-        },
-        params: vec![],
-        inputs: unit.inputs.clone(),
-        output: unit.output.clone(),
-    })
 }
 
 /// A design-mode resolver: wraps the real resolver and, for every effect leaf in a
@@ -151,7 +133,7 @@ pub fn design_eval(root: &Unit, inputs: &[Option<Value>], real: &impl Resolver) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{capabilities, hash_unit, Capability, MapResolver, Port};
+    use crate::{capabilities, hash_unit, Capability, Edge, MapResolver, Port, BOUNDARY};
 
     fn timer() -> Unit {
         Unit {
@@ -181,6 +163,22 @@ mod tests {
             params: vec![],
             inputs: vec![],
             output: Some(out),
+        }
+    }
+    /// input → email → output. Under Fork B `email` is pure (identity on payload), so
+    /// this whole graph is eval-pure.
+    fn sink_graph(email_hash: Hash) -> Unit {
+        Unit {
+            body: UnitBody::Composite {
+                children: vec![email_hash],
+                edges: vec![
+                    Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 },
+                    Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
+            output: Some(Type::Text),
         }
     }
 
@@ -214,26 +212,41 @@ mod tests {
     }
 
     #[test]
-    fn sink_mock_echoes_settled_input() {
-        // A sink (email) mocks to a passthrough: it absorbs its input and returns it,
-        // seeing the settled value exactly as eval's single pass delivers it.
+    fn sink_is_eval_pure() {
+        // Fork B: a sink purely constructs its payload (identity here), so a sink-bearing
+        // graph evaluates under the REAL resolver — no design mode, no mock.
         let mut store = MapResolver::new();
         let eh = store.insert(email()).unwrap();
-        let comp = Unit {
-            body: UnitBody::Composite {
-                children: vec![eh],
-                edges: vec![
-                    Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 }, // input → email
-                    Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // email → output
-                ],
-            },
-            params: vec![],
-            inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::Text),
-        };
+        let comp = sink_graph(eh);
         let hi = Value::Text("hi".into());
-        assert_eq!(eval(&comp, &[Some(hi.clone())], &store), None); // email not computable
-        assert_eq!(design_eval(&comp, &[Some(hi.clone())], &store), Some(hi));
+        assert_eq!(eval(&comp, &[Some(hi.clone())], &store), Some(hi));
+    }
+
+    #[test]
+    fn sink_graph_is_effect_bearing_and_replayable() {
+        // The combination Fork A could not express: bears an egress AND is replayable.
+        let mut store = MapResolver::new();
+        let eh = store.insert(email()).unwrap();
+        let comp = sink_graph(eh);
+        let caps = capabilities(&comp, &store);
+        assert!(caps.contains(Capability::NetworkEgress)); // effect-bearing (you see the send)
+        assert!(caps.is_replayable()); // no state ⇒ cacheable / shareable
+    }
+
+    #[test]
+    fn state_graph_is_not_replayable() {
+        // The one place purity ends: a state cell forfeits replay / caching.
+        let mut store = MapResolver::new();
+        let sh = store.insert(prim("store", Some(Type::Number))).unwrap();
+        let comp = pass_through(sh, Type::Number);
+        assert!(!capabilities(&comp, &store).is_replayable());
+    }
+
+    #[test]
+    fn driver_still_needs_a_mock() {
+        // Design mode substitutes only drivers; sinks are pure, state is host-threaded.
+        assert!(mock_of(&timer()).is_some()); // driver — external input, mocked
+        assert!(mock_of(&email()).is_none()); // sink — pure request, no mock
     }
 
     #[test]

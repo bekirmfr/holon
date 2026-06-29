@@ -160,6 +160,15 @@ impl Capabilities {
     pub fn iter(&self) -> impl Iterator<Item = Capability> + '_ {
         self.0.iter().copied()
     }
+    /// Replayable / cacheable ⇔ **no `State` capability anywhere in the closure** — the
+    /// one place the design forfeits caching and replay (`§7`). This is *orthogonal* to
+    /// effect-bearing: a sink-bearing but state-free manifest is effect-bearing **and**
+    /// replayable — the combination the memo market (P3.3) keys on. Drivers are inputs,
+    /// sinks purely construct requests (Fork B); only retained state breaks determinism
+    /// across firings. (The positive form of P2.6.3's "cell-bearing ⇒ non-replayable".)
+    pub fn is_replayable(&self) -> bool {
+        !self.iter().any(|c| c.kind() == Kind::State)
+    }
 }
 
 /// Classify a **primitive leaf**'s capability manifest by name — the *primary* leaf

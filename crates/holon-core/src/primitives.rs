@@ -97,7 +97,14 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
             Some(Value::Text(parts.join(sep)))
         }
 
-        _ => None, // unknown name, or a boundary unit handled outside the pure core
+        // ── boundary sink (Fork B): a sink purely *constructs its request payload* —
+        // here, identity on the settled payload it was given. *Which* effect that
+        // payload describes is the leaf's derived capability (e.g. NetworkEgress),
+        // never stored in the value. Drivers and state stay outside the pure core
+        // (driver input is host-sourced; state is host-threaded).
+        "email" => inputs.first().cloned(),
+
+        _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
 }
 
@@ -235,6 +242,13 @@ mod tests {
         assert_eq!(compute("number", &[], &[p("value", "42")]), Some(num(42.0)));
         assert_eq!(compute("boolean", &[], &[p("value", "true")]), Some(boo(true)));
         assert_eq!(compute("text", &[], &[p("value", "hi")]), Some(txt("hi")));
+    }
+    #[test]
+    fn sink_email_is_identity_on_payload() {
+        // Fork B: a sink purely constructs its request payload — here, identity. *Which*
+        // effect it is lives in the derived capability, not in this value.
+        assert_eq!(compute("email", &[txt("hello")], &[]), Some(txt("hello")));
+        assert_eq!(compute("email", &[], &[]), None); // no payload ⇒ nothing to construct
     }
     #[test]
     fn unknown_is_none() {
