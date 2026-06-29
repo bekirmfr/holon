@@ -23,6 +23,7 @@
 //! param holding the hex hash of the unit to apply.
 
 use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY};
+use crate::hash::parse_hash;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Evaluate a unit against values for its input ports (index = input-port index;
@@ -151,21 +152,6 @@ fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver
     Some(Value::List(out))
 }
 
-/// Decode a 64-char lowercase/uppercase hex string into a 32-byte hash.
-fn parse_hash(hex: &str) -> Option<Hash> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let bytes = hex.as_bytes();
-    let mut out = [0u8; 32];
-    for i in 0..32 {
-        let hi = (bytes[2 * i] as char).to_digit(16)?;
-        let lo = (bytes[2 * i + 1] as char).to_digit(16)?;
-        out[i] = (hi * 16 + lo) as u8;
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,7 +254,7 @@ mod tests {
         assert_eq!(eval(&c, &[Some(num(3.0)), None], &r), None);
     }
 
-    // hex-encode a hash for a `map` fn param (the inverse of eval's parse_hash).
+    // hex-encode a hash for a `map` fn param (the inverse of hash::parse_hash).
     fn hex(h: &Hash) -> String {
         h.iter().map(|b| format!("{:02x}", b)).collect()
     }

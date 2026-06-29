@@ -41,7 +41,7 @@ pub use hash::{
     encode_preimage, hash_unit, Edge, EncodeError, Hash, Param, Port, Type, Unit,
     UnitBody, ENCODING_VERSION,
 };
-pub use kind::{kind_of, Kind};
+pub use kind::{effects_of, kind_of, Effects, Kind};
 pub use resolve::{MapResolver, Resolver};
 pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;

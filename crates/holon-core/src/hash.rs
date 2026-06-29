@@ -294,6 +294,31 @@ pub fn hash_unit(unit: &Unit) -> Result<Hash, EncodeError> {
     Ok(*h.finalize().as_bytes())
 }
 
+/// Decode a 64-char hex string into a [`Hash`]. `None` if it is not exactly 64
+/// hex digits — the canonical home for the hex⇄`Hash` mapping, shared by the
+/// evaluator (reading a `map` `fn` reference) and the kind derivation (following
+/// hash-valued params).
+pub(crate) fn parse_hash(hex: &str) -> Option<Hash> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let bytes = hex.as_bytes();
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        let hi = (bytes[2 * i] as char).to_digit(16)?;
+        let lo = (bytes[2 * i + 1] as char).to_digit(16)?;
+        out[i] = (hi * 16 + lo) as u8;
+    }
+    Some(out)
+}
+
+/// Encode a [`Hash`] as a 64-char lowercase hex string (the inverse of
+/// [`parse_hash`]). Used when constructing a hash-valued param (e.g. `map`'s `fn`).
+#[cfg(test)]
+pub(crate) fn to_hex(h: &Hash) -> String {
+    h.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 // ── Tests: the governing property ───────────────────────────────────────────
 
 #[cfg(test)]

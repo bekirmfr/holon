@@ -51,6 +51,9 @@ boundary at a time* exists precisely because these seams must stay clean. Blur
 the pure/effect line or the immutability line and you don't get this system —
 you get a generic automation tool with extra steps.
 
+*How this synthesis sits against existing systems — Unison, Nix, Bazel, FRP — and
+what in it is genuinely new versus reused, is mapped honestly in §12.*
+
 ---
 
 ## 2. The core model
@@ -311,3 +314,101 @@ Each is a *boundary to pin later*, deliberately deferred to keep the spine clean
   inspection; updates are explicit re-pins; nothing frozen is ever mutated.
 - **One boundary at a time.** The end state is only reachable if each seam stays
   clean. Pin one decision, prove it, move to the next.
+
+---
+
+## 12. Prior art & honest positioning
+
+*This section exists because the rule that matters most — understand why a
+decision was made before changing it — applies to the novelty claim too. A
+commissioned prior-art review (June 2026) asked whether Holon already exists. The
+honest answer sharpens the vision rather than dulling it: it tells us which wheels
+not to reinvent, and narrows the claim to ground we can actually defend.*
+
+**The bundle is not unprecedented; the intersection is.** The closest whole-system
+analogue, by a wide margin, is **Unison** (with Unison Cloud and UCM). It
+independently arrived at content-addressed code by hash, effect inference as the
+*union of callees*, hash-keyed memoization, and a code marketplace — and reached
+production in late 2025. So the "compounding" of §1 is real but not first: Unison
+got there in a *textual* language. Holon's open ground is the **intersection**
+below, not any single mechanism in it.
+
+**Almost every load-bearing mechanism is established prior art.** This is a gift,
+not a threat — each row is a place to adopt a proven design instead of deriving
+one:
+
+| Mechanism (Holon) | Closest prior art | Verdict |
+|---|---|---|
+| Content-addressed units; version = alias to hash | Unison (hash of name-stripped AST), Git, IPFS/IPLD, Nix, Bazel CAS | established |
+| Composition by reference (pinned-hash black boxes) | Unison, Nix derivations, FBP composite components | established |
+| Transitive pinned closure, exact pins, no ranges | Nix flakes (`flake.lock`), Cargo.lock, Go modules | established |
+| Universal memo keyed by (closure-hash, input-hash) | Bazel remote cache, Unison result caches (local), Nix binary caches | mostly prior art; *trustless cross-user* framing partly new |
+| Visual dataflow DAG of typed units; control-flow-as-data | Max/Pure Data, TouchDesigner, Houdini, Node-RED, Enso/Luna, FBP | established |
+| Recursive encapsulation (composite ≡ primitive) | FBP black-box composites, Houdini HDAs, Unreal Blueprints, Enso | established |
+| Higher-order units (`Map` applies a referenced unit) | FP standard; Houdini / Geometry-Nodes for-each | established |
+| Derive-then-freeze auto-derived interface | Houdini HDA promoted params, Blueprint collapse | partial — *freezing it as a hashed interface* is the new combination |
+| Pure interior, effects only at edges | Functional Core / Imperative Shell, Haskell IO, Roc platforms | established |
+| Driver / state / sink as a capability-gated "OS" | Roc platforms, object-capability langs (E, Pony) | partly new — the *tripartite taxonomy on a visual graph* is not a named pattern |
+| Kind/capabilities derived as union of children, non-launderable, surfaced before import | **Unison abilities** (required set = union of callees, propagated into callers' signatures); Koka / Eff / Effekt row effects | established — Unison is the match |
+| Quiescence before an irreversible sink | FRP glitch-freedom (FrTime, Flapjax, REScala): height/topological propagation | solved — adopt, don't reinvent |
+| Yank/advisory channel that flags a hash, never mutates bytes | crates.io yank + RustSec, Go checksum DB, Sigstore/SLSA | established |
+| Reputation by dependency-adoption (PageRank over the dep graph) | npm/Julia package-centrality studies | established technique |
+
+**The actual novelty — narrow and defensible.** *Not* content-addressing, effect
+inference, memoization, or recursive encapsulation (each is prior art, and Unison
+pre-empts the bundle in text). Holon's novelty is the **intersection**: visual
+dataflow authoring fused with content-addressed immutable packaging *and* a
+trustless cross-user memoization marketplace, with a **derived driver/state/sink
+capability boundary on a visual graph**. Two points inside that intersection are
+genuinely under-explored: (1) a *shipped* global, trustless, cross-user
+*memoized-computation* marketplace (Unison's own materials describe its shared
+result cache as a future direction; today it is local/ephemeral); and (2) the
+capability boundary as a *derived, non-launderable property of a visual graph*,
+with an explicit settle/commit gate for irreversible sinks.
+
+**Where Holon is deliberately stricter or simpler than its closest reference.**
+Two design choices already pinned elsewhere in this document turn out to *improve
+on* Unison for our use-case, and the comparison is worth recording so they are not
+"fixed" later by someone who mistakes them for omissions:
+
+- **No effect discharge at the kind level.** In Unison an ability propagates up
+  *until terminated by a handler* — a handler discharges the effect. Holon has
+  **no discharge**: a state cell makes outputs history-dependent, a driver makes
+  them world-dependent, a sink mutates the world, and that observability does not
+  vanish under encapsulation. The only handler-analogue we have — design-mode
+  mocks — is *explicitly excluded from trust decisions* (the guardrail in P2.7:
+  kind and capabilities are always computed from the real units, never the mocks).
+  This is a stricter non-laundering stance than the reference, on purpose.
+- **Content-pinned function references sidestep effect polymorphism.** The review
+  names "when to infer concrete effects" as Unison's hard open problem — the
+  higher-order case where a function's effects depend on a function *argument* not
+  known until applied. Holon avoids it: `Map`'s function rides a *content-pinned
+  hash* (a frozen param, concrete at authoring), so its effects are always
+  derivable now. Following `children ∪ hash-valued params` is therefore sufficient
+  — there is no effect-polymorphism uncertainty to defer. This is a direct
+  dividend of content-addressing.
+
+**Solved problems to adopt rather than reinvent** (cross-referenced to the
+roadmap): FRP height/topological propagation for the settle/commit gate (§6, P2.4)
+— *if we find ourselves inserting per-edge debounces or sleeps, stop; that is the
+anti-pattern glitch-freedom already eliminated* (§11); Bazel's Remote Execution
+API split of action-cache vs CAS for hash-verified result sharing (§8, P3); Nix
+`flake.lock` and Go's checksum/transparency-log model for tamper-evident pinning
+(I6, P3); Unison's ability-inference rule as the reference for derived kind/caps
+(I8, P2.2/P2.3); crates.io-yank + RustSec for the advisory channel (§8, P3);
+Salsa/Adapton for the eventual incremental/reactive direction (P2.4.2).
+
+**Strategic watch-item.** The single biggest risk to the distribution thesis: if
+Unison Cloud ships a *global, trustless, cross-user* result cache (its stated
+future direction), Holon's largest differentiator on that axis erodes. This is a
+marketplace-era (P3) concern, not a near-term one — but it is worth monitoring,
+especially given Unison's late-2025 production milestone.
+
+**Caveats on this verdict.** "Genuinely new" is a claim about *absence of
+evidence*: visual/no-code and dataflow tooling is a large, fast-moving, partly
+proprietary space, so the intersection claim is strong but not exhaustively
+provable. Unison Cloud's closed beta may already do more than its public docs
+state. And much of Holon is still aspirational (holon-host, async cells, the
+settle/commit gate, the editor) — these comparisons treat design intent as intent,
+and the verdict can shift as those pieces meet (or collide with) the prior art
+named above.
