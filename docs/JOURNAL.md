@@ -764,3 +764,46 @@ the **host inch**.
 resolver (injects the snapshot for `store_read`), `fire` performing `!is_sourced` (so
 `StateWrite` stores), and the snapshot→fire→apply loop — with the counter that finally
 remembers across firings.
+
+---
+
+## 2026-06-29 · State cell, host round — the cell remembers (P2.6.1 complete)
+
+**Built.** The host half of the state cell: `StateHost` threads one anonymous cell across
+firing rounds. 5 host tests (3 → +`state_write_is_performed`, +`counter_remembers_across_
+firings`); workspace 116 (111 core + 5 host). **P2.6.1 is complete.**
+
+**The counter remembers.** `store_read → +1 → store_write`, three rounds, storage climbs
+`0 → 1 → 2 → 3`. That proves the whole P2.6.1 design — and it cost `eval` **zero** changes,
+`validate` **zero** changes, and needed **no graph cycle**. The feedback that looked like a
+loop (`cell → … → cell`) is the host's storage *between rounds*; the register that breaks
+the combinational cycle is storage, not a `validate` exemption.
+
+**Three pieces, all in `holon-host`.** `fire` flipped from `kind == Sink` to
+`!cap.is_sourced()`, so `StateWrite` is performed alongside egress (`state_write_is_
+performed` pins it; the three email/pure tests confirm backward-compatibility — egress is
+non-sourced). A `StateResolver` injects the round-start snapshot at every `store_read`
+leaf (it *owns* the constant, since `resolve` hands out `&Unit`). And `StateHost::round`
+is Elm's `update(old) → (new, cmds)`: snapshot → fire → apply the write — reads see the
+round-start value, the write lands at round-end and loops back. The borrow knot (resolver
+reads storage, the round writes it) dissolves because the snapshot is a clone the resolver
+owns, leaving `self` free to be the `&mut Host`, and the apply uses `mem::take`.
+
+**The classification paid off in full.** Two orthogonal axes now decide everything the
+host needs: **effect-bearing ⊥ replayable** (Fork B) and **sourced ⊥ performed** (this
+arc). `State` sits on the interesting side of every line — effect-bearing, *not*
+replayable, and it *straddles* sourced/performed (read sourced, write performed). The
+host acts on exactly those bits: source the sourced, perform the performed, store the
+`StateWrite`, never cache a `State`-bearing graph. "One fenced place purity ends" is now
+a structural fact the code enforces, not a sentence in the doc.
+
+**Honest scope.** One anonymous scalar cell. The injection masks `store_read` to a pure
+constant in the resolver `fire` sees (harmless — reads are sourced, never performed;
+sinks/`store_write` are never masked, so the performed manifest is intact). Keyed/multiple
+cells (`StateWrite(key)`, the parameterized capability resource), non-scalar state, and
+`drive` (sourcing real *external* driver values, vs state reading its own slot) remain.
+
+**Next.** `drive` (real driver sourcing from the world), then the **A→B** value upgrade
+(`Value::Effect` / `List[Effect]`) when computed fan-out — a `StateWrite` *and* an egress
+in one round, or N effects — becomes concrete. `P2.6.2` (transactional) and `P2.6.3`
+(fork/pin; the non-replayable half already holds) compose from this donor cell.

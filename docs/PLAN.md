@@ -6,11 +6,11 @@
 > level across the whole tree, then leaf by leaf — and is not a build target until
 > we judge it thorough.
 >
-> **Build status:** **Phase A + B complete — the Language pillar (P1) is closed.** **Phase C (effect boundary, P2) is well underway:** classification done; **design-mode firing** built (`P2.4.1` design + minimal `P2.7.1`); **Fork B** sink reconciliation (effect-bearing ⊥ replayable); **the purity seam is crossed** — `holon-host` real, **deploy-mode firing** built (representation-A, single terminal sink); and the **state cell's core half** (`P2.6.1`) is in — `store` split into two leaves (`store_read`/`store_write`), and `Capability::is_sourced` draws the **sourced** (input-side, incl. `StateRead`) vs **performed** (output-side, incl. `StateWrite`) line. The only impure function is `Host::perform`. ~114 tests (111 core + 3 host).
-> **Current resolution:** trunk + all four pillars at L3 **frozen**; L4s built: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, plus `sink-as-pure-request-L4.md`, `P2.4.1-deploy-firing-L4.md`, `P2.6.1-state-cell-L4.md`. **Firing pinned:** design = core `eval` + substituting resolver; deploy = a thin host shell. **Effects output-carried, not collected from inside `eval`** (`I5`). **State = driver-read + sink-write**, two leaves; the host's storage is the register (no graph cycle, `validate` untouched).
-> **Decisions pinned (Fork B):** the host is the **only** impurity; a request = *(structural capability, ordinary-data payload)* — **no `Value::Request` variant**. Representation **A** now; **B (`Value::Effect`, computed fan-out)** the expected upgrade — A→B **touches no content address**. **State**: `mock_of` mocks the sourced side; `fire` will perform the non-sourced side (`StateWrite` stores).
+> **Build status:** **Phase A + B complete — the Language pillar (P1) is closed.** **Phase C (effect boundary, P2) is well underway:** classification done; **design-mode firing** built; **Fork B** sink reconciliation (effect-bearing ⊥ replayable); **the purity seam is crossed** — `holon-host` real, **deploy-mode firing** built (representation-A); and **the state cell is complete** (`P2.6.1`) — `store` is two leaves (`store_read`/`store_write`), `Capability::is_sourced` draws the **sourced ⊥ performed** line, and `StateHost` **threads one anonymous cell across firings** (the counter climbs 0→1→2→3), with **no `eval`/`validate` change and no graph cycle** — the host's storage is the register. The only impure function is `Host::perform`. ~116 tests (111 core + 5 host).
+> **Current resolution:** trunk + all four pillars at L3 **frozen**; L4s built: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, plus `sink-as-pure-request-L4.md`, `P2.4.1-deploy-firing-L4.md`, `P2.6.1-state-cell-L4.md`. **Two orthogonal classification axes now decide everything the host needs:** effect-bearing ⊥ replayable (Fork B), sourced ⊥ performed (state). `State` sits on the interesting side of every line — effect-bearing, *not* replayable, and *straddles* sourced/performed (read sourced, write performed). **Effects output-carried, not collected from inside `eval`** (`I5`).
+> **Decisions pinned (Fork B):** the host is the **only** impurity; a request = *(structural capability, ordinary-data payload)* — **no `Value::Request` variant**. Representation **A** now; **B (`Value::Effect`, computed fan-out)** the expected upgrade — A→B **touches no content address**. **State**: `mock_of` mocks the sourced side; `fire` performs the non-sourced side (`StateWrite` stores); `StateHost::round` is Elm's `update(old) → (new, cmds)`, snapshot→fire→apply.
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ P3) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has one dependency (`blake3`).
-> **Next:** the **state-cell host round** (`P2.6.1` host half) — single-slot storage (the `Model`), a read-substituting resolver, `fire` performing `!is_sourced`, the snapshot→fire→apply loop, the counter that remembers across firings. Then **`drive`** (real driver sourcing) and the **A→B** value upgrade.
+> **Next:** **`drive`** (source real *external* driver values from the world — `Clock`, ingress; state reads its own slot, not the world) and the **A→B** value upgrade (`Value::Effect`/`List[Effect]`) when computed fan-out — a `StateWrite` *and* an egress in one round, or N effects — is concrete. `P2.6.2`/`P2.6.3` (transactional, fork/pin) compose from the donor cell.
 
 ---
 
@@ -254,16 +254,18 @@ async is a fork-open leaf we do not need yet.
    *pre:* P1.4.2 · *inv:* `I7` · *test:* the registry resolves the correct kind per
    primitive (pure ops → Pure, `Store` → State, `Email` → Sink) · *effort:* **S**
 
-2. **P2.6.1 · State-cell primitive** *(core decl / host storage)* — the cell as **two
-   leaves** (`store_read` driver-like + `store_write` Fork-B sink); the one fenced place
-   purity ends; kind = State. The **donor primitive** for all effect contracts (P2.5).
-   **Core half built ✅:** the split, `store_write` identity `compute`, `Capability::
-   is_sourced` (input/output axis), `mock_of` mocks the sourced side. **Host half remains:**
-   single-slot storage, read-substituting resolver, `fire` performing `!is_sourced`, the
-   snapshot→fire→apply round, the counter. One anonymous cell (keys deferred).
+2. **P2.6.1 · State-cell primitive** *(core decl / host storage)* — **complete ✅.** The cell
+   as **two leaves** (`store_read` driver-like + `store_write` Fork-B sink); the one fenced
+   place purity ends; kind = State. The **donor primitive** for all effect contracts (P2.5).
+   Core: the split, `store_write` identity `compute`, `Capability::is_sourced` (input/output
+   axis), `mock_of` mocks the sourced side. Host: `StateHost` threads one anonymous cell —
+   `fire` performs `!is_sourced`, a read-substituting resolver injects the snapshot, the
+   snapshot→fire→apply round; **the counter climbs 0→1→2→3**. No `eval`/`validate` change, no
+   graph cycle (storage is the register). One anonymous scalar cell; keys / non-scalar
+   deferred.
    *pre:* P1.4.2, P2.1.1 · *inv:* `§7`/`I7` · *test:* `store_read` mockable, `store_write`
-   pure; a cell-bearing closure non-replayable; *(host)* the counter remembers across
-   firings · *effort:* **M** *(core half done)*
+   pure; cell-bearing closure non-replayable; **the counter remembers across firings** ·
+   *effort:* **M** *(done)*
    *→ **L4** in `P2.6.1-state-cell-L4.md`: two-leaf, storage = register, snapshot-apply.*
 
 3. **P2.2.1 · Derived-kind computation** *(core)* — `kind(composite) = union of children`,
@@ -616,7 +618,8 @@ single brittle 1..N list would over-claim precision — the phases are the real 
   **Realized so far:** `P2.1.1 → P2.2.1 → P2.3.1 → P2.3.2 → P2.4.1(design) + P2.7.1(minimal)
   → sink reconciliation (Fork B: sinks pure, effect-bearing⊥replayable) → P2.4.1(deploy-minimal):
   holon-host real, the purity seam crossed → P2.6.1(core half): state cell = two leaves,
-  is_sourced (sourced⊥performed)`,
+  is_sourced (sourced⊥performed) → P2.6.1(complete): StateHost threads one cell, the counter
+  remembers 0→1→2→3`,
   all pure core. **`P2.6.1` (state) was deferred to the deploy crossing** rather than built
   before firing: the substituting-resolver insight made design-mode firing pure and
   buildable without state, so the purity seam is crossed once, at deploy, not twice.
