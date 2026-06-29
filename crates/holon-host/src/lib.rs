@@ -563,4 +563,86 @@ mod tests {
             ]
         );
     }
+
+    /// Models the external system's idempotency: it remembers the keys it has performed and
+    /// ignores a repeat. Dedup is on the key (`payload[0]` of a `[key, body]` pair), not the body.
+    #[derive(Default)]
+    struct DedupeHost {
+        seen: Vec<Value>,
+        performed: Vec<(Capability, Value)>,
+    }
+    impl Host for DedupeHost {
+        fn perform(&mut self, capability: Capability, payload: &Value) {
+            let key = match payload {
+                Value::List(items) => items.first().cloned(),
+                _ => None,
+            };
+            if let Some(k) = key {
+                if self.seen.contains(&k) {
+                    return; // already performed this key — the boundary ignores the double-fire
+                }
+                self.seen.push(k);
+            }
+            self.performed.push((capability, payload.clone()));
+        }
+    }
+
+    #[test]
+    fn an_idempotency_key_dedupes_a_refire() {
+        // P2.5.2: the same intent fired twice reconstructs the *same* key — a pure graph is
+        // deterministic (P1.4.4), so re-evaluation rebuilds an identical effect, key included.
+        // The external system (modeled by DedupeHost) recognizes the repeated key and performs
+        // once. Purity is both why the re-fire reproduces the effect AND why dedup works (the key
+        // is stable). The engine carries the key; the user derives it from intent (here, the id).
+        let mut r = MapResolver::new();
+        let welcome = r
+            .insert(Unit {
+                body: UnitBody::Primitive { name: "text".into() },
+                params: vec![Param::frozen("value", "welcome")],
+                inputs: vec![],
+                output: Some(Type::Text),
+            })
+            .unwrap();
+        let pair = r
+            .insert(prim(
+                "list",
+                vec![
+                    Port { name: "key".into(), ty: Type::Text },
+                    Port { name: "body".into(), ty: Type::Text },
+                ],
+                Type::List,
+            ))
+            .unwrap();
+        let em = r
+            .insert(Unit {
+                body: UnitBody::Primitive { name: "email".into() },
+                params: vec![],
+                inputs: vec![Port { name: "msg".into(), ty: Type::List }],
+                output: Some(Type::Effect),
+            })
+            .unwrap();
+        let graph = Unit {
+            body: UnitBody::Composite {
+                children: vec![welcome, pair, em],
+                edges: vec![
+                    Edge { from_child: BOUNDARY, from_port: 0, to_child: 1, to_port: 0 }, // id → key (intent-derived)
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 1 },        // "welcome" → body
+                    Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 },        // [key,body] → email
+                    Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // email → out
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "id".into(), ty: Type::Text }],
+            output: Some(Type::Effect),
+        };
+
+        let order = Value::Text("order-42".into());
+        let mut host = DedupeHost::default();
+        fire(&graph, &[Some(order.clone())], &r, &mut host); // first fire — performed
+        fire(&graph, &[Some(order)], &r, &mut host); // re-fire, same intent — same key, deduped
+        assert_eq!(
+            host.performed,
+            vec![(Capability::NetworkEgress, Value::List(vec![text("order-42"), text("welcome")]))]
+        );
+    }
 }

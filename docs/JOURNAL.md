@@ -1035,3 +1035,41 @@ input — the same non-scalar deferral state already carries; the correlation po
 **Next.** `P2.5.2` idempotency (a key on a sink so the external system dedupes a double-fire —
 "engine carries the key, user composes the policy"), then `P2.7.2` mode-aware firing (consolidate
 design/deploy under one host surface). Two inches from a closed P2.
+
+---
+
+## 2026-06-29 · P2.5.2 — idempotency = determinism + a data key + external dedup
+
+**One demonstration test, no core change (125 green = 112 core + 13 host).** Like correlation, the
+key is plain data in the `[key, body]` payload and `Host::perform` already carries it — but the
+*reason it works* is the opposite of correlation's, and that's the point worth recording.
+
+**Purity is the source of the problem and the fix.** Correlation's isolation was free because
+purity prevents crossing. Idempotency is about a **double-fire**, and that is not an interior
+property — it's caused by re-running the graph (a retry, a resubmit, a replay). Purity makes
+re-running *expected*: a replayable graph re-evaluated reconstructs the same `email`/`respond`
+again, by design. So determinism (P1.4.4 — proven: identical `(unit, inputs)` ⇒ identical output)
+turns "the same effect fires twice" from a bug into a **dedup-able event** — the re-fire rebuilds
+the *identical key*, and an external system that remembers keys recognizes it. The demo
+(`an_idempotency_key_dedupes_a_refire`) fires the same intent (`"order-42"`) twice; `DedupeHost`
+performs once, because the second fire's key matched the first.
+
+**Where the guarantee lives — two halves, neither a new mechanism.** The engine guarantees the key
+is *stable* — but that's just determinism, already proven. The user guarantees the key *tracks
+intent* — by deriving it from intent data with pure primitives. That responsibility has teeth: a
+key derived from a `Clock` driver or a `State` counter would **vary** across re-fires and defeat
+the dedup. So an idempotency-key subgraph must be **replayable** (`is_replayable` already expresses
+exactly this) — a future guardrail could enforce it; for now it's the user's discipline, noted.
+The dedup itself is the external system's (modeled by `DedupeHost`; real → platform host).
+
+**The P2.5 pattern, stated once.** Both effect contracts dissolve to the same shape: *a label
+rides as ordinary data; the engine carries it without interpreting; the boundary acts on it; the
+real boundary defers to a platform host.* Correlation's label is "which connection" (isolation is
+purity's); idempotency's label is "which intent" (stability is determinism's). Neither needed a
+`Value` change, an `eval` change, or a `Host` change — the value model stayed clean, exactly as
+Fork B and A→B set it up to.
+
+**Next.** `P2.7.2` — mode-aware firing, the **last leaf in P2.** Pure consolidation: `design_eval`
+(core) and `fire`/`fire_sourced` (host) both exist; P2.7.2 is one host surface that picks between
+them, with a test that the *same* graph mocks an effect in design and fires it for real in deploy,
+the core staying mode-blind throughout. Then P2 closes.

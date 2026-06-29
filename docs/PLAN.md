@@ -10,7 +10,7 @@
 > **Current resolution:** trunk + all four pillars at L3 **frozen**; L4s built: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, plus `sink-as-pure-request-L4.md`, `P2.4.1-deploy-firing-L4.md`, `P2.6.1-state-cell-L4.md`, `A-to-B-effect-value-L4.md`, `drive-sourced-resolver-L4.md`. **Two orthogonal classification axes decide everything the host needs:** effect-bearing ⊥ replayable (Fork B), sourced ⊥ performed (state/drive). **One substituting machine** (`SourcedResolver`) injects all sourced values; the round commits only `StateWrite` back. Effects **output-carried, self-describing**; performing driven by the output (does), the manifest stays disclosure (may).
 > **Decisions pinned:** the host is the **only** impurity; an effect value carries the sink's **name, not its capability** (derived — no `kind` dependency in `value`/`primitives`). `Type::Effect` (tag 6, appended — **no existing hash moved**); a request can't be re-consumed as data. **`store_read` is a driver** (sourced); `StateResolver` generalized away. **Per-capability (anonymous) keying** for cells *and* drivers — keyed/multiple defer behind parameterized capabilities (`Clock(id)`/`StateWrite(key)`). **Multi-output composites stay deferred** — `List[Effect]` dissolves the need. Deploy has **no silent driver default** (undriven ⇒ nothing; design mode mocks for preview).
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ P3) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has one dependency (`blake3`).
-> **Next:** **`P2.5.2`** — idempotency key on sinks (a user-supplied key so the *external system* dedupes a double-fire; engine carries the key, user composes the policy), then **`P2.7.2`** — mode-aware firing (consolidate design/deploy under one host surface; both modes already exist). **Two inches from a closed P2.** Beyond P2: real platform hosts (real `email`/clock/socket *and* the real token→socket routing behind the `Host` seam), keyed cells/drivers + non-scalar sourcing (parameterized capabilities / list `constant_unit`), async/await (`P2.4.2`), and P3 (the trustless memo marketplace, where replayability pays off and cell pin/fork land).
+> **Next:** **`P2.7.2`** — mode-aware firing, the **last leaf in P2.** Pure consolidation: `design_eval` (core, mocks effects → whole graph pure) and `fire`/`fire_sourced` (host, real effects) both exist; P2.7.2 is one host surface that picks between them, with a test that the *same* graph mocks an effect in design and fires it for real in deploy — the core staying mode-blind. Then **P2 closes.** Beyond P2: real platform hosts (real `email`/clock/socket, token→socket routing, external dedup behind the `Host` seam), keyed cells/drivers + non-scalar sourcing, async/await (`P2.4.2`), and P3 (the trustless memo marketplace, where replayability pays off and cell pin/fork land).
 >
 > **Pattern worth naming:** P2.6.1's one decision — *the cell's value is host runtime state, threaded between atomic rounds, never in the unit* — dissolved **three** downstream leaves (`6.2`/`6.3` plus state itself): value-not-hashed, non-replayable, fork-CoW, pin, and read-then-write isolation are all corollaries. Pin the right boundary once; downstream "features" become theorems.
 
@@ -347,11 +347,15 @@ async is a fork-open leaf we do not need yet.
    cross · *effort:* **M** *(done)*
    *→ **L4** in `P2.5.1-correlation-token-L4.md`.*
 
-10. **P2.5.2 · Idempotency-key affordance on sinks** *(host)* — an effectful sink accepts
-    a user-supplied key (derived from intent) so the **external system** dedupes a
-    double-fire; the user composes the policy, the engine only carries the key.
-    *pre:* P2.6.1, P2.4.1 · *inv:* `§4` · *test:* a sink given the same key twice is
-    deduped at the boundary (modeled) · *effort:* **M**
+10. **P2.5.2 · Idempotency-key affordance on sinks** *(host)* — **complete ✅.** The key is plain
+    data in the `[key, body]` payload (no core change; `perform` already carries it). It works by
+    the *opposite* of correlation: purity makes a re-fire **reproduce** the effect, and determinism
+    (P1.4.4) makes the re-fire rebuild the **same key** — turning a double-fire into a dedup-able
+    event. Engine guarantees stability (= determinism); user derives the key from intent (must be
+    **replayable** — a driver/`State` key would vary; `is_replayable` could guard, future). Dedup
+    is the external system's (`DedupeHost` models it; real → platform host).
+    *pre:* P2.6.1, P2.4.1 · *inv:* `§4` · *test:* same intent fired twice → performed once · *effort:*
+    **M** *(done)*
 
 **Execution modes (design / deploy) — simulation doubles at the seam:**
 
@@ -643,7 +647,9 @@ single brittle 1..N list would over-claim precision — the phases are the real 
   dissolved — the round IS the transaction (atomic snapshot→fire→apply; conditional RMW composes
   via select; saturating counter 0→1→2→2→2); concurrent-txn → platform host, not core
   → P2.5.1: correlation token = boundary label (explicit data, no Value change); non-crossing is
-  purity's theorem (map(respond,·) keeps tokens paired); real routing/await defer`,
+  purity's theorem (map(respond,·) keeps tokens paired); real routing/await defer
+  → P2.5.2: idempotency key = data; determinism (P1.4.4) makes a re-fire rebuild the same key →
+  dedup-able (DedupeHost performs once); user derives key from intent (must be replayable)`,
   all pure core. **`P2.6.1` (state) was deferred to the deploy crossing** rather than built
   before firing: the substituting-resolver insight made design-mode firing pure and
   buildable without state, so the purity seam is crossed once, at deploy, not twice.
