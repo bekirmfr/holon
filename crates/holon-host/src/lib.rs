@@ -62,6 +62,23 @@ fn perform_effects(value: &Value, host: &mut impl Host) {
     }
 }
 
+// ── Drive: source the world (and state) at sourced leaves ──────────────────────────
+
+/// Fire a graph with its **sourced** inputs supplied: each `(capability, value)` injects
+/// `value` at every leaf carrying that sourced capability — `Clock`, ingress, `StateRead`, …
+/// This is the one entry every mode funnels through; a leaf with no pure `compute` (a driver,
+/// a state read) gets its value here, or — if unsupplied — evaluates to nothing (deploy's
+/// honest asymmetry with design mode, which substitutes a default).
+pub fn fire_sourced(
+    root: &Unit,
+    sourced: &[(Capability, Value)],
+    real: &impl Resolver,
+    host: &mut impl Host,
+) {
+    let resolver = SourcedResolver::new(sourced, real);
+    fire(root, &[], &resolver, host);
+}
+
 // ── State: one anonymous cell threaded across rounds (P2.6.1) ──────────────────────
 
 /// A host that threads a single anonymous state cell across firing rounds. Storage is
@@ -82,21 +99,21 @@ impl StateHost {
         &self.storage
     }
 
-    /// One firing round: snapshot storage, fire with `store_read` sourced from the
-    /// snapshot, then apply the `StateWrite` to storage. Reads see the round-start
-    /// value; the write lands at round-end and loops back to the next round's read.
-    pub fn round(&mut self, graph: &Unit, real: &impl Resolver) {
-        // Read-side: inject the snapshot at every `store_read`. `read_value` is owned by
-        // the resolver (it is built by value, not a borrow of `self`), so `self` stays
-        // free to be the &mut Host below.
-        let resolver = StateResolver { read_value: constant_unit(&self.storage), real };
+    /// One firing round: source `StateRead` from storage (internal, threaded) and the given
+    /// `drivers` from the world (external, this event's inputs), fire, then apply the
+    /// `StateWrite` to storage. Reads see the round-start values; the write lands at round-end
+    /// and loops back. With `drivers` empty this is the pure state loop.
+    pub fn round(&mut self, graph: &Unit, drivers: &[(Capability, Value)], real: &impl Resolver) {
+        // Sourced inputs: storage for `StateRead` (threaded), the world for the drivers. The
+        // resolver injects both uniformly; only the internal one (`StateWrite`) is committed
+        // back below — drivers have no write-back.
+        let mut sourced = vec![(Capability::StateRead, self.storage.clone())];
+        sourced.extend_from_slice(drivers);
         self.pending.clear();
-        fire(graph, &[], &resolver, self);
-        // Write-side: apply at round-end. (Other output-side effects — egress, … — would
-        // be performed for real here; the counter has only the state write.)
+        fire_sourced(graph, &sourced, real, self);
         for (cap, payload) in std::mem::take(&mut self.pending) {
             if cap == Capability::StateWrite {
-                self.storage = payload;
+                self.storage = payload; // the Model-out (loops back to next round's read)
             }
         }
     }
@@ -108,21 +125,35 @@ impl Host for StateHost {
     }
 }
 
-/// A resolver that injects the host's held value at every `store_read` leaf (one
-/// anonymous cell). It **owns** the constant it hands out, since `resolve` returns
-/// `&Unit`. Only `StateRead` leaves are substituted — sinks and `store_write` are left
-/// real, so the performed manifest is intact.
-struct StateResolver<'a, R: Resolver> {
-    read_value: Unit,
+/// A resolver that injects a host-supplied constant at every **sourced** leaf — `StateRead`,
+/// `Clock`, ingress, … — keyed by capability (one value per kind: the anonymous cell, the
+/// anonymous clock; keyed/multiple resources defer with the capability model). It **owns** the
+/// constants it hands out, since `resolve` returns `&Unit`. Performed leaves (sinks,
+/// `store_write`) are never substituted, so the effect manifest is intact.
+struct SourcedResolver<'a, R: Resolver> {
+    sourced: Vec<(Capability, Unit)>,
     real: &'a R,
 }
 
-impl<R: Resolver> Resolver for StateResolver<'_, R> {
+impl<'a, R: Resolver> SourcedResolver<'a, R> {
+    fn new(sourced: &[(Capability, Value)], real: &'a R) -> Self {
+        let sourced = sourced.iter().map(|(cap, value)| (*cap, constant_unit(value))).collect();
+        SourcedResolver { sourced, real }
+    }
+}
+
+impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
     fn resolve(&self, hash: &Hash) -> Option<&Unit> {
         let u = self.real.resolve(hash)?;
         if let UnitBody::Primitive { name } = &u.body {
-            if capabilities_of(name).is_some_and(|c| c.contains(Capability::StateRead)) {
-                return Some(&self.read_value);
+            if let Some(caps) = capabilities_of(name) {
+                // Inject the first sourced capability we hold a value for (one per leaf in the
+                // minimal set: timer→Clock, store_read→StateRead).
+                for (cap, constant) in &self.sourced {
+                    if caps.contains(*cap) {
+                        return Some(constant);
+                    }
+                }
             }
         }
         Some(u)
@@ -291,11 +322,11 @@ mod tests {
 
         let mut host = StateHost::new(num(0.0));
         assert_eq!(host.storage(), &num(0.0));
-        host.round(&counter, &r);
+        host.round(&counter, &[], &r);
         assert_eq!(host.storage(), &num(1.0));
-        host.round(&counter, &r);
+        host.round(&counter, &[], &r);
         assert_eq!(host.storage(), &num(2.0));
-        host.round(&counter, &r);
+        host.round(&counter, &[], &r);
         assert_eq!(host.storage(), &num(3.0));
     }
 
@@ -370,5 +401,47 @@ mod tests {
                 (Capability::NetworkEgress, text("hi")),
             ]
         );
+    }
+
+    // ── drive: source the world ────────────────────────────────────────────────
+    /// timer (Clock) → store_write: read the clock, commit it. A graph whose driver leaf
+    /// (`timer`) has no pure compute — it must be sourced.
+    fn timer_to_store() -> (MapResolver, Unit) {
+        let mut r = MapResolver::new();
+        let th = r.insert(prim("timer", vec![], Type::Number)).unwrap();
+        let wh = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
+        let graph = Unit {
+            body: UnitBody::Composite {
+                children: vec![th, wh],
+                edges: vec![
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // timer → write.v
+                    Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // write → out
+                ],
+            },
+            params: vec![],
+            inputs: vec![],
+            output: Some(Type::Effect),
+        };
+        (r, graph)
+    }
+
+    #[test]
+    fn round_sources_a_driver() {
+        // A driver (Clock) is sourced from the round's supply — the world flows in, through the
+        // graph, and here lands in storage. One round threads state AND injects the world.
+        let (r, graph) = timer_to_store();
+        let mut host = StateHost::new(num(0.0));
+        host.round(&graph, &[(Capability::Clock, num(99.0))], &r);
+        assert_eq!(host.storage(), &num(99.0));
+    }
+
+    #[test]
+    fn an_undriven_driver_yields_nothing() {
+        // Deploy's deliberate asymmetry with design mode: an undriven driver has no compute, so
+        // the graph evaluates to None and nothing is performed — no silent default.
+        let (r, graph) = timer_to_store();
+        let mut host = Recorder::default();
+        fire_sourced(&graph, &[], &r, &mut host); // no Clock supplied
+        assert!(host.performed.is_empty());
     }
 }

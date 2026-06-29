@@ -856,3 +856,62 @@ became literally true rather than approximately so.
 **Next.** `drive` — source real *external* driver values from the world (`Clock`, ingress).
 It generalizes the read-substituting resolver from "state reads its own slot" to "a driver reads
 the world," turning a `round` from a test-loop call into something an event can trigger.
+
+---
+
+## 2026-06-29 · `drive` — source the world (the Sub half; the Elm runtime closes)
+
+**Built (host-only, 120 green = 111 core + 9 host).** Deploy can now source a driver from
+outside the pure core — a `timer` (Clock) gets its value injected and the graph reacts. No core
+change: classification, `is_sourced`, the driver table, `constant_unit` already existed. `drive`
+was *recognition*, not construction.
+
+**The recognition: `store_read` was a driver all along.** `is_sourced()` already grouped
+`StateRead` with `Clock | NetworkIngress | …` — they share the one property that matters: the
+value enters from outside. So `StateResolver` (which substitutes `StateRead`) and a driver
+resolver are **one machine with a wider key**. Generalized it to `SourcedResolver`: a map
+`(capability → constant)` that injects at *any* sourced leaf. `fire_sourced` is the single entry
+every mode funnels through; `round` now assembles its sourced set as storage-for-`StateRead`
+(internal, threaded) plus this round's `drivers` (external, the event's inputs).
+
+**The two boundaries stayed in their two layers.** `StateRead` and a driver differ for real —
+internal/threaded/write-paired vs external/sampled/unpaired — but that difference never lived in
+the resolver; it lives in the round. The resolver answers one uniform question ("sourced? inject
+the constant"); the round assembles values from storage vs event and commits *only* the
+`StateWrite` back. Unification removed an accidental narrowness without conflating a real
+distinction — reads injected by the resolver, writes committed by the round, no overlap.
+
+**Per-capability keying — the principled default, three ways.** One value per sourced *kind*
+(one anonymous clock, like the one anonymous cell): (1) it makes the round a *consistent
+snapshot* — every leaf reading `Clock` sees the same instant, so a smeared round is
+unrepresentable, not merely discouraged; (2) it stages identically to the state cell, so keyed
+drivers lift with the same mechanism keyed cells will; (3) it's what the *atomic* capability
+model can express — per-leaf keying needs parameterized capabilities (`Clock(id)`), the same
+extension `StateWrite(key)` needs, so choosing it now would drag that work forward out of order.
+
+**Deploy's honest asymmetry.** `an_undriven_driver_yields_nothing`: with no `Clock` supplied, the
+driver has no compute, the graph evaluates to `None`, nothing performs — no silent default. Design
+mode answers "what *would* happen" (it mocks a type-default for preview); deploy answers "what
+*does* happen," and the honest answer to a clock-dependent graph with no time given is nothing,
+not zero.
+
+**The Elm runtime is structurally complete, on a pure core:**
+
+| Elm | Holon |
+|---|---|
+| `Model`  | the host's storage (threaded `StateRead`/`StateWrite`) |
+| `update` | the graph (pure `eval`) |
+| `Cmd`    | sinks → `Value::Effect`, performed by the host |
+| `Sub`    | drivers → sourced values, injected by the host |
+
+And `round` is no longer a test convenience: once a driver value arrives **from an event**, that
+event *is* the round trigger — `round` is the event loop's body. The pure interior reacts; only
+the host touches a clock or a socket.
+
+**Deferred (unchanged):** *real* world-reading (`SystemTime::now`, an actual socket) is a platform
+host — the same seam as real `email`. Keyed/multiple drivers, multi-sourced leaves, and event
+scheduling / quiescence (`P2.4.2`) wait on real need.
+
+**Next.** The effect *contracts* that compose from the donor cell: `P2.6.2` transactional
+read-then-write, or `P2.5.x` correlation / idempotency. The runtime shape is done; what remains is
+making individual effects well-behaved.
