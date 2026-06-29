@@ -29,6 +29,7 @@ mod kind;
 mod promote;
 mod hash;
 mod resolve;
+mod simulate;
 mod validate;
 mod value;
 
@@ -47,6 +48,7 @@ pub use kind::{
     Effects, Kind,
 };
 pub use resolve::{MapResolver, Resolver};
+pub use simulate::{design_eval, mock_of, Simulated};
 pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;
 

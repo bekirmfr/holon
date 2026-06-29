@@ -6,10 +6,10 @@
 > level across the whole tree, then leaf by leaf — and is not a build target until
 > we judge it thorough.
 >
-> **Build status:** **Phase A + B complete — the Language pillar (P1) is closed** (~69 tests; pure core holds values, validates, evaluates deterministically, encapsulates, `map`s higher-order, and parameterizes via open/instantiate).
-> **Current resolution:** trunk + all four pillars at L3 **frozen**; `P1.4.3`, `P1.5.1`, `P1.5.2` descended to L4 and built.
+> **Build status:** **Phase A + B complete — the Language pillar (P1) is closed.** **Phase C (effect boundary, P2) is well underway, still pure core:** classification is done — `P2.1.1` kind, `P2.2.1` derived-kind, `P2.3.1` capability model, `P2.3.2` capability union (one closure walk; kind is a *projection* of capabilities) — and **design-mode firing is built and pure** — `P2.4.1` (design half) + a minimal `P2.7.1`: `mock_of` + the `Simulated` substituting resolver + `design_eval`. ~103 tests. An evaluator defect (a composite output fed by a promoted input) was surfaced by the sink mock and fixed (eval now total over that valid shape).
+> **Current resolution:** trunk + all four pillars at L3 **frozen**; `P1.4.3`, `P1.5.1`, `P1.5.2`, `P2.3.1`, `P2.4.1` descended to L4 and built. **Firing mechanism pinned:** design = core `eval` + a substituting resolver (pure, in `holon-core`); deploy = a host shell (`drive`/`emit`), deferred with real IO. α′ (boundary-promotion) demoted to a deploy-time sink-observation option.
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ P3) + one parallel pillar (P4 · Editor).
-> **Next:** **Phase C — the effect boundary (P2)**. Opens with `P2.1.1` (kind taxonomy, still pure core); crosses into `holon-host` at `P2.6.1` (state) / `P2.4.1` (firing).
+> **Next:** **deploy-mode firing** crosses the purity seam into `holon-host` — the `Host`/`drive`/`emit` shell, real sink observation, and the **state cell** (`P2.6.1`, host-threaded value). The remaining P2 effect-*execution* work is host-side; the effect *classification* and *design-mode* halves are pure-core and done.
 
 ---
 
@@ -94,10 +94,10 @@ not an omission.
   *(**landed in `holon-core`** — canonical hashing + closure commitment)*
 
 ### P2 · The OS — *for the effect boundary to be safe and legible:*
-- **P2.1** Driver / state / sink taxonomy (the reversibility seam) — `I7` · ○ ▣
-- **P2.2** Derived, not asserted, labels (kind = union of children) — `I8` · ○ ▣
-- **P2.3** Capability declaration + union up the closure, surfaced before import — `I7` · ○ ◇
-- **P2.4** Effect-firing model: quiescence / settle-gate before irreversible sinks — `§6` · ○ ◇
+- **P2.1** Driver / state / sink taxonomy (the reversibility seam) — `I7` · ✅ ▣
+- **P2.2** Derived, not asserted, labels (kind = union of children) — `I8` · ✅ ▣
+- **P2.3** Capability declaration + union up the closure, surfaced before import — `I7` · ✅ ▣
+- **P2.4** Effect-firing model: quiescence / settle-gate before irreversible sinks — `§6` · ◐ ▣ *(design mode built — pure; deploy open)*
   *(the central unsolved boundary)*
 - **P2.5** Effect contracts: idempotency, transactional read-then-write, req/resp correlation — `§4` · ○ ◇
 - **P2.6** State-cell semantics under replay / fork / pin — `§7` · ○ ◇
@@ -281,12 +281,22 @@ async is a fork-open leaf we do not need yet.
    deep in the closure surfaces at the top before import — **nothing exfiltrates
    silently** · *effort:* **M**
 
-6. **P2.4.1 · Eager effect-firing model** *(host)* — the runtime loop: a driver event
-   triggers a full evaluation; the graph settles (fixed point); sinks fire **once** per
-   settled round with committed values.
-   *pre:* P1.4.3, P2.1.1, P2.6.1 · *inv:* `§6`/`I7` · *test:* a `driver→pure→sink` chain
-   fires the sink exactly once per trigger with the settled value — no mid-propagation
-   fire · *effort:* **M**
+6. **P2.4.1 · Eager effect-firing** — **split into two modes by the substituting-resolver
+   insight (L4 rev. 2).**
+   - **Design mode** *(pure `holon-core` — built)*: effect leaves are substituted by pure
+     mocks **at the resolver**, and the closure runs under core `eval` — deterministic,
+     replayable, memoizable. `mock_of` + `Simulated` + `design_eval`; the "loop" *is* `eval`,
+     and the core never learns a mode exists.
+   - **Deploy mode** *(host — remains)*: the runtime loop — a driver event triggers a full
+     evaluation; the graph settles (fixed point); sinks fire **once** per settled round with
+     committed values. The `Host`/`drive`/`emit` shell, with real IO.
+   *pre:* P1.4.3, P2.1.1 *(design)* · P2.6.1 *(deploy — state threading)* · *inv:* `§6`/`I7`
+   · *test (design, ✅):* a graph with an effect leaf evaluates purely through mocks at any
+   depth, the sink mock sees the settled value, and classification still reports the real
+   effects (the guardrail) · *test (deploy):* the real sink fires exactly once per trigger
+   with the settled value — no mid-propagation fire · *effort:* **M** *(design half done)*
+   *→ **L4** in `P2.4.1-firing-loop-L4.md` (rev. 2): substituting-resolver frame; α′ demoted
+   to a deploy sink-observation option; state is host-threaded (P2.6.1).*
 
 7. **P2.6.3 · State-cell replay/fork/pin semantics** *(core + host)* — a cell's retained
    **value is runtime state, not part of its content hash**; a subgraph containing a
@@ -315,13 +325,19 @@ async is a fork-open leaf we do not need yet.
 
 **Execution modes (design / deploy) — simulation doubles at the seam:**
 
-11. **P2.7.1 · Simulation doubles on effectful primitives** *(core decl / host)* — each
+11. **P2.7.1 · Simulation doubles on effectful primitives** *(core decl)* — each
     **driver / state / sink** primitive declares a `mock` alongside its real `compute`:
     a driver mock *injects* a stimulus, a sink mock *absorbs* and returns a plausible
     result, a state mock is *ephemeral* memory. Pure primitives need none — their mock
     is themselves. **The mock is never part of the content hash.**
+    **[Minimal version built with `P2.4.1`:** `mock_of(unit)` for the driver/sink exemplars
+    — driver ⇒ a constant of its output type, sink ⇒ a passthrough that echoes its input,
+    state ⇒ *no* pure mock (it is host-threaded, the explicit exception), pure/unknown ⇒
+    none. The remainder — every primitive's mock, custom stimuli, ephemeral test-context
+    doubles — stays open.**]**
     *pre:* P2.1.1, P1.4.2 · *inv:* `I5`/`§4` · *test:* an effectful primitive exposes a
     mock; two units differing *only* in their mock hash identically · *effort:* **M**
+    *(minimal done)*
 
 12. **P2.7.2 · Mode-aware firing (design / deploy)** *(host)* — the host runs `design`
     (effectful leaves substituted by mocks + driver stimuli — the whole graph becomes
@@ -581,9 +597,14 @@ single brittle 1..N list would over-claim precision — the phases are the real 
   `P1.4.1` is the first inch.**
 - **Phase B · Encapsulation** *(pure `holon-core`)* — `P1.5.1 → (Map lands) → P1.5.2`.
   Full recursion + genuinely reusable units.
-- **Phase C · Effect boundary** *(`core` classify + `host` execute)* — `P2.1.1 → P2.6.1 →
-  P2.2.1 → P2.3.1 → P2.3.2 → P2.4.1 → P2.6.3 → P2.6.2 → P2.5.1 → P2.5.2 → P2.7.1 → P2.7.2`.
+- **Phase C · Effect boundary** *(`core` classify + `host` execute)* — planned:
+  `P2.1.1 → P2.6.1 → P2.2.1 → P2.3.1 → P2.3.2 → P2.4.1 → P2.6.3 → P2.6.2 → P2.5.1 →
+  P2.5.2 → P2.7.1 → P2.7.2`.
   *(P2.7 adds design/deploy modes — the whole graph runs purely in design mode.)*
+  **Realized so far:** `P2.1.1 → P2.2.1 → P2.3.1 → P2.3.2 → P2.4.1(design) + P2.7.1(minimal)`,
+  all pure core. **`P2.6.1` (state) was deferred to the deploy crossing** rather than built
+  before firing: the substituting-resolver insight made design-mode firing pure and
+  buildable without state, so the purity seam is crossed once, at deploy, not twice.
 - **Phase D · Local marketplace** *(`host`)* — `P3.8.1 → P3.1.1 → P3.2.1 → P3.3.1 →
   P3.5.1 → P3.6.1`. (`P3.8.1` needs only P1.6 — done — so it can begin early in parallel.)
 - **Phase E · Editor** *(TS/React over WASM)* — `P4.2.1 → P4.1.1 → P4.1.2 → P4.3.1 →

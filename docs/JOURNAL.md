@@ -542,3 +542,62 @@ the closure saturates to all 10 capabilities.
 + capability model (P2.3.1) + capability union (P2.3.2) — all pure core, all derived, all
 surfaced, none assertable. Next the frontier crosses the purity seam into `holon-host`:
 P2.6.1 (state cell) and P2.4.1 (eager firing loop, needs L4).
+
+---
+
+## 2026-06-29 · P2.4.1 — Design-mode firing (+ minimal P2.7.1); an eval defect fixed on the way in
+
+**Built.** Design-mode firing, and it is **pure `holon-core`** — `mock_of(unit)`,
+the `Simulated` substituting resolver, and `design_eval`. 103 tests (95 → +8: 7 in
+`simulate`, 1 regression in `eval`).
+
+**The decision that held.** An effect leaf has no pure `compute`, so a graph
+containing one is unevaluable. Design mode makes it evaluable by substituting each
+effect leaf with a *pure mock* (the minimal P2.7.1) — **at the resolver**, since
+`eval` already resolves every child by hash before running it. So firing's design
+mode is not a second evaluator and not a host shell: it is ordinary core `eval`
+against a `Simulated` resolver. Core stays mode-ignorant; the resolver is the only
+thing that differs. α′ (boundary-promotion) is demoted to a deploy-time sink-
+observation option — `resolve` returns structure, never IO, so it can swap inputs at
+any depth but cannot *fire* a sink; design mode never needs to.
+
+**The structural consequence (the win).** Following the insight all the way kept the
+buildable inch **on the pure side of the seam**. `mock_of` + the substituting
+resolver + `design_eval` are all pure core; only deploy (real `drive`/`emit`) crosses
+into `holon-host`, and it is deferred with real IO. The effect layer's first runnable
+slice cost zero impurity.
+
+**Mocks, by kind.** Driver ⇒ a constant of its output type (scripted stimulus;
+type-zero default, custom stimuli deferred to P2.7). Sink ⇒ a passthrough that echoes
+its settled input (absorb → plausible result). **State ⇒ no pure mock** — its value
+depends on prior writes, so it is host-threaded ephemeral memory, which is exactly why
+P2.6.1 stays its own leaf. Pure/unknown ⇒ no substitution.
+
+**Guardrail, enforced structurally.** `simulate` depends on `kind`; the classifiers
+never depend on `simulate`. So `capabilities()`/`effects_of()` are computed from the
+**real** units and never see a mock — `classification_ignores_mocks` pins that a
+mocked-away `timer` still surfaces `Clock`, and the mock (a different unit) is never in
+any content hash. Simulating innocent buys nothing at the trust boundary.
+
+**A real eval defect, surfaced by the sink mock.** The sink mock is a passthrough
+composite — output fed directly by a promoted input (`BOUNDARY→BOUNDARY`). No prior
+graph had used that shape, and `eval` had a latent gap: line 82 let a promoted input
+feed a *child's* input, but the output resolver let it feed only a *child's* output,
+so it indexed the scratch by `BOUNDARY` and panicked. `validate` accepts the shape
+(it is the identity passthrough), so `eval` was simply non-total over a valid graph.
+Fixed by adding the symmetric arm — the composite output may be fed by a promoted
+input too. Not a mock artifact: any composite exposing an input unchanged as its
+output would have hit it. `promoted_input_routes_straight_to_output` pins it in
+`eval`'s own suite. This is the dividend of building the effect layer on the pure
+core — it stresses shapes the arithmetic tests never reached.
+
+**Governing tests.** `effect_leaf_makes_graph_evaluable_in_design` (the unevaluable
+becomes evaluable under substitution); `effect_leaf_at_depth_is_substituted` (depth-
+agnostic, where α′ could not reach); `sink_mock_echoes_settled_input` (the sink sees
+the value `eval`'s single pass settles); `classification_ignores_mocks` (the
+guardrail); `state_leaf_has_no_pure_mock` (the exception is explicit).
+
+**Next.** Deploy-mode firing crosses the seam into `holon-host`: the `Host`/`drive`/
+`emit` shell, real sink observation, and state threading (P2.6.1) — all with real IO,
+all deferred until now. The pure core's effect layer is design-runnable; deploy is the
+remaining half.

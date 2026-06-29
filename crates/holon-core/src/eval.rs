@@ -90,8 +90,13 @@ fn eval_composite(
         scratch[ci] = eval(child, &gathered, resolver);
     }
 
-    // The exposed output is whatever feeds the output boundary (port 0).
+    // The exposed output is whatever feeds the output boundary (port 0): a child's
+    // output, or — symmetric with the child-input case above — a promoted input routed
+    // straight through. (A composite whose output *is* one of its inputs is a valid,
+    // validate-accepted shape; without this arm eval would index the scratch by
+    // BOUNDARY and panic.)
     match incoming.get(&(BOUNDARY, 0)) {
+        Some(&(BOUNDARY, fp)) => inputs.get(fp as usize).cloned().flatten(),
         Some(&(fc, _fp)) => scratch[fc as usize].clone(),
         None => None,
     }
@@ -200,6 +205,16 @@ mod tests {
         let mut r = MapResolver::new();
         let c = add2(&mut r);
         assert_eq!(eval(&c, &[Some(num(3.0)), Some(num(4.0))], &r), Some(num(7.0)));
+    }
+
+    #[test]
+    fn promoted_input_routes_straight_to_output() {
+        // A composite whose output *is* its input (an identity passthrough): no
+        // children, a single BOUNDARY→BOUNDARY edge. Valid per validate; eval must
+        // return the input rather than index the scratch by BOUNDARY and panic.
+        let r = MapResolver::new();
+        let c = composite(vec![nport("x")], Type::Number, vec![], vec![edge(BOUNDARY, 0, BOUNDARY, 0)]);
+        assert_eq!(eval(&c, &[Some(num(42.0))], &r), Some(num(42.0)));
     }
 
     #[test]
