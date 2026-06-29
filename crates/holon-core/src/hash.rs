@@ -481,7 +481,7 @@ pub fn decode_preimage(bytes: &[u8]) -> Result<Unit, DecodeError> {
 /// hex digits — the canonical home for the hex⇄`Hash` mapping, shared by the
 /// evaluator (reading a `map` `fn` reference) and the kind derivation (following
 /// hash-valued params).
-pub(crate) fn parse_hash(hex: &str) -> Option<Hash> {
+pub fn parse_hash(hex: &str) -> Option<Hash> {
     if hex.len() != 64 {
         return None;
     }

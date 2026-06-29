@@ -1423,3 +1423,36 @@ the registry's first publish (the first permanent public commitment of a hash).
 **Next — back to P3 local-first**, now unblocked: registry (P3.1.1) → inspection (P3.2.1) → local
 memo (P3.3.1, the canonical-Value encoder is the new piece) → fork/re-pin (P3.5.1, needs L4) →
 advisory (P3.6.1). Networked tier (shared cache P3.3.2, reputation, identity) still deferred.
+
+---
+
+## 2026-06-29 · P3.1.1 — the registry (the first permanent publish boundary)
+
+**First P3 inch after the reconciliation; the marketplace's trust model is first anchored here
+(147 green = 123c + 24h, +5 host registry tests).** `Registry<S: Store>` over the P3.8.1 store, in
+holon-host. `publish(root)` has exactly one load-bearing job: **closure-completeness (I6 at the
+boundary)** — walk the unit's children *and* its `fn` param, and **fail closed** (`DanglingReference`)
+on any reference the store can't resolve. A dangling hash would be fetchable yet un-evaluable,
+poisoning the trust root the instant it's committed. Verify-first-then-commit ⇒ a refused publish
+leaves nothing extra. The store's verify-on-read means every resolved reference is the right bytes,
+so the closure check integrity-checks for free.
+
+**The two tests that matter are the dangling cases:** an unstored child, and a `map` whose `fn` hash
+was never stored — the I6 subtlety a children-only walk silently misses, hence its own test.
+
+**Judgment call — identifying a hash-valued param.** The mock-walker's lenient heuristic ("follow
+any value that parses as a hash") is *wrong* for publishing: a literal Text const whose value is 64
+hex chars would parse-as-hash, fail to resolve, and wrongly reject a valid unit. So the registry keys
+on the param **name `fn`** — the exact convention `eval` already uses to find the combiner. Not an
+arbitrary special-case; aligning to the evaluator's reference convention. Limitation noted in code:
+when a 2nd hash-valued param appears, this wants a shared `child_refs(unit)` helper in core that eval,
+mock-walker, and registry all consult (single source of truth). Future refactor, not needed yet.
+
+**One core change:** `parse_hash` widened `pub(crate)`→`pub` so the host can follow a `fn` hash —
+legitimate public API, symmetric with `hash_unit`, widening is safe.
+
+**Scope honest:** hash-only (no names — hash *is* identity); published *record* in memory (units are
+persisted by the store; persisting the record is a short follow-on); no networking.
+
+**Next — P3.2.1 inspection:** surface a unit's full transitive structure (same closure shape) so a
+consumer audits what they're about to depend on *before* pinning — I9 full-inspectability made concrete.

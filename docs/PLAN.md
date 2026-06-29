@@ -12,7 +12,7 @@
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`).
 > **Next — genesis reconciliation arc (`P3-genesis-reconciliation-L4`), then `P3.1.1` (registry).** Reconciling the native set to `§13` *before* the registry's first publish freezes the trust root. A breaking arc done one green inch at a time: **R1 ✅ R2 ✅ R3 ✅** (the additive run — pure kit, text kit, `random` driver; no existing hash moved) → **R4 ✅** (clock/ingress/egress) → **R5 ✅** (one `const`) → **R6 ✅ DECISION** (freeze the as-built trust root — Branch B; demotion-to-stdlib deferred to its own pillar; gate stays active; 34-leaf genesis manifest pinned in §13a). **GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape — the hygiene prerequisite before the registry's first publish is met.
 
-**Next — back to P3 local-first, now unblocked:** registry (P3.1.1, first permanent publish of a hash) → inspection (P3.2.1, transitive children incl. hash-valued params) → local memo (P3.3.1, canonical-Value encoder is the new piece) → fork/re-pin (P3.5.1, needs L4) → advisory (P3.6.1). Networked tier (shared trustless cache P3.3.2, reputation, identity) deferred. Both stabilize the trust root; the fork is deferred since R1–R5 are required either way. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin (needs L4) → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
+**Next — P3 local-first, registry banked:** **P3.1.1 ✅** (the publish boundary — `Registry` over the store, closure-verified, fail-closed on dangling child/`fn`; hash-only, in-memory record) → **P3.2.1 inspection** (surface a unit's full transitive structure — children + hash-valued params — so a consumer audits before pinning; I9 made concrete) → local memo (P3.3.1, canonical-Value encoder is the new piece) → fork/re-pin (P3.5.1, needs L4) → advisory (P3.6.1). Networked tier (shared trustless cache P3.3.2, reputation, identity) deferred. Both stabilize the trust root; the fork is deferred since R1–R5 are required either way. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin (needs L4) → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
 
 ---
 
@@ -775,3 +775,18 @@ proved · any fork that got pinned in the doing**. The journal is the retroactiv
 audit trail that makes "understand design intent before changing it" actually
 possible — it is where the *why* of each implementation choice is preserved, so a
 future change can tell a real defect from an invariant doing its job.
+---
+
+### P3.1.1 — registry (DONE)
+- **L4:** P3.1.1-registry-L4.md. The publish boundary; one invariant — closure-completeness (I6).
+- **Shape:** `Registry<S: Store>` in holon-host; `publish(&Unit)->Result<Hash, PublishError>`
+  verifies the closure (children + `fn` param) via the store, fails closed on `DanglingReference`,
+  then commits (put + record). `is_published`/`published`/`store` accessors. Verify-first-then-commit.
+- **Decisions:** hash-only (F1); in-memory published record (F2, persistence = short follow-on);
+  re-publish idempotent (F3); only the root is a published entry, closure is verified-present (F4).
+  Reference detection keys on the `fn` param **name** (eval's convention), not a parse heuristic
+  (which false-positives on hash-like literal text). `parse_hash` widened pub for the host.
+- **Tests (+5 host = 24):** leaf publishes; composite-with-stored-children publishes; **dangling
+  child refused**; **dangling `fn` param refused** (the I6 subtlety); re-publish idempotent.
+- **Deferred from here:** names/discovery, catalog persistence, networking, a shared
+  `child_refs(unit)` core helper (warranted once a 2nd hash-valued param exists).

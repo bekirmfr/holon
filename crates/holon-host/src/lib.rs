@@ -16,14 +16,14 @@
 //! commits to it. The feedback that looked like a graph cycle is broken by storage
 //! *between rounds* — no `validate` change, no `eval` change.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 
 use holon_core::{
-    capabilities_of, decode_preimage, design_eval, encode_preimage, eval, hash_unit, Capability,
-    DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
+    capabilities_of, decode_preimage, design_eval, encode_preimage, eval, hash_unit, parse_hash,
+    Capability, DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -348,6 +348,183 @@ impl Store for FileStore {
             Err(e) => return Err(StoreError::Io(e)),
         };
         decode_verified(key, &bytes).map(Some)
+    }
+}
+
+// ── P3.1.1 The registry — the publish boundary ───────────────────────────────
+/// The first **permanent public commitment** of a hash. Publishing a unit moves it from a
+/// private working artifact to one others may depend on, so its meaning is a single
+/// invariant: **closure-completeness** (I6 at the boundary). A composite references its
+/// children by hash (I3); a higher-order unit references its `fn` by hash in a param (I6).
+/// [`Registry::publish`] walks that closure and **fails closed** on any reference the store
+/// cannot resolve — a dangling hash would be fetchable yet un-evaluable, poisoning the trust
+/// root the instant it is committed. The store's verify-on-read means every resolved
+/// reference is, by construction, the right bytes, so the walk integrity-checks for free.
+///
+/// Scope (P3.1.1): hash-only (no names — hash *is* identity); the published record lives in
+/// memory (the *units* are persisted by the store; persisting the record is a short
+/// follow-on); no networking. The walk follows the `fn`-named param — the one hash-valued
+/// param convention `eval` defines — rather than guessing from any value that happens to
+/// parse as a hash (a literal text value could coincide). A shared `child_refs(unit)` helper
+/// is the right refactor once a second hash-valued param exists.
+#[derive(Debug)]
+pub enum PublishError {
+    /// The store failed to read or write.
+    Store(StoreError),
+    /// A referenced hash (a child, or a `fn` param) is absent from the store. Publishing it
+    /// would commit a dangling reference — refused.
+    DanglingReference(Hash),
+}
+
+/// A published catalog backed by a content-addressed [`Store`].
+pub struct Registry<S: Store> {
+    store: S,
+    published: BTreeSet<Hash>,
+}
+
+impl<S: Store> Registry<S> {
+    /// A registry over `store`, nothing published yet.
+    pub fn new(store: S) -> Self {
+        Registry { store, published: BTreeSet::new() }
+    }
+
+    /// Publish `root`: verify its whole closure is present (else fail closed), then commit it
+    /// to the store and record its hash. Verify-first-then-commit means a refused publish
+    /// leaves nothing extra. Idempotent — re-publishing returns the same hash.
+    pub fn publish(&mut self, root: &Unit) -> Result<Hash, PublishError> {
+        verify_closure(root, &self.store)?; // every reference resolves, or DanglingReference
+        let h = self.store.put(root).map_err(PublishError::Store)?;
+        self.published.insert(h);
+        Ok(h)
+    }
+
+    /// Whether `h` is an explicitly published entry. (Dependencies inside a published closure
+    /// are verified-present and resolvable, but are not themselves listed unless published.)
+    pub fn is_published(&self, h: &Hash) -> bool {
+        self.published.contains(h)
+    }
+
+    /// The published entries, in hash order.
+    pub fn published(&self) -> impl Iterator<Item = &Hash> {
+        self.published.iter()
+    }
+
+    /// The backing store (read-only) — for resolving a published unit's closure.
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+}
+
+/// Walk a unit's transitive closure — children (composite) and the `fn`-named hash param —
+/// requiring every reference to resolve in `store`. `None` ⇒ `DanglingReference`. Terminates
+/// for free: content-addressing forbids a cycle.
+fn verify_closure<S: Store>(unit: &Unit, store: &S) -> Result<(), PublishError> {
+    if let UnitBody::Composite { children, .. } = &unit.body {
+        for h in children {
+            let child = store
+                .get(h)
+                .map_err(PublishError::Store)?
+                .ok_or(PublishError::DanglingReference(*h))?;
+            verify_closure(&child, store)?;
+        }
+    }
+    for p in &unit.params {
+        // `fn` is the one hash-valued param convention (map/fold); a literal value that merely
+        // looks like a hash is not a reference, so we key on the name, not on parse success.
+        if p.name() == "fn" {
+            if let Some(h) = p.value().and_then(parse_hash) {
+                let referenced = store
+                    .get(&h)
+                    .map_err(PublishError::Store)?
+                    .ok_or(PublishError::DanglingReference(h))?;
+                verify_closure(&referenced, store)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    use holon_core::{Edge, Port, BOUNDARY};
+
+    fn num_const(v: &str) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: "const".into() },
+            params: vec![Param::frozen("type", "Number"), Param::frozen("value", v)],
+            inputs: vec![],
+            output: Some(Type::Number),
+        }
+    }
+    fn passthrough(child: Hash) -> Unit {
+        Unit {
+            body: UnitBody::Composite {
+                children: vec![child],
+                edges: vec![Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }],
+            },
+            params: vec![],
+            inputs: vec![],
+            output: Some(Type::Number),
+        }
+    }
+
+    #[test]
+    fn publishes_a_leaf() {
+        let mut reg = Registry::new(MemStore::new());
+        let h = reg.publish(&num_const("5")).expect("leaf has empty closure");
+        assert!(reg.is_published(&h));
+        assert!(reg.store().get(&h).unwrap().is_some()); // committed to the store
+    }
+
+    #[test]
+    fn publishes_a_composite_whose_children_are_stored() {
+        let mut store = MemStore::new();
+        let ch = store.put(&num_const("7")).unwrap(); // child present first
+        let comp = passthrough(ch);
+        let mut reg = Registry::new(store);
+        let h = reg.publish(&comp).expect("closure is complete");
+        assert!(reg.is_published(&h));
+    }
+
+    #[test]
+    fn dangling_child_is_refused() {
+        // a composite referencing a child that was never stored
+        let absent = hash_unit(&num_const("99")).unwrap();
+        let comp = passthrough(absent);
+        let mut reg = Registry::new(MemStore::new());
+        match reg.publish(&comp) {
+            Err(PublishError::DanglingReference(h)) => assert_eq!(h, absent),
+            other => panic!("expected DanglingReference, got {other:?}"),
+        }
+        assert!(!reg.is_published(&hash_unit(&comp).unwrap())); // nothing committed
+    }
+
+    #[test]
+    fn dangling_fn_param_is_refused() {
+        // a `map` whose `fn` hash was never stored — the I6 subtlety a children-only walk misses
+        let absent = hash_unit(&num_const("1")).unwrap();
+        let map = Unit {
+            body: UnitBody::Primitive { name: "map".into() },
+            params: vec![Param::frozen("fn", hex(&absent))],
+            inputs: vec![Port { name: "list".into(), ty: Type::List }],
+            output: Some(Type::List),
+        };
+        let mut reg = Registry::new(MemStore::new());
+        match reg.publish(&map) {
+            Err(PublishError::DanglingReference(h)) => assert_eq!(h, absent),
+            other => panic!("expected DanglingReference, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn republish_is_idempotent() {
+        let mut reg = Registry::new(MemStore::new());
+        let leaf = num_const("3");
+        let h1 = reg.publish(&leaf).unwrap();
+        let h2 = reg.publish(&leaf).unwrap();
+        assert_eq!(h1, h2);
+        assert_eq!(reg.published().count(), 1); // one entry, not two
     }
 }
 
