@@ -1,0 +1,142 @@
+# Child-order canonicalization — is child order identity? (L4)
+
+**Status:** design note for a core inch, taken *before* the editor's authoring inches (P4.1) so the
+editor is built on a settled identity model. Touches the hash preimage — identity itself.
+
+---
+
+## 1. The fork
+
+A `Composite { children: Vec<Hash>, edges: Vec<Edge> }` lists its children in *some* order, and the
+edges reference children by **index** into that list. Today `encode_preimage` normalizes edge order
+(sorts edges) but **preserves the given child order**, with a comment that a deterministic child
+order is "the caller's responsibility, frozen at encapsulation time." There is even a test,
+`order_is_identity`… but it is about the *promoted input* order (the interface `inputs` vector —
+`add(a,b)` vs `add(b,a)`), which genuinely **is** identity (the calling convention). **Child order is
+a different thing, and nothing in the system canonicalizes it.**
+
+So: **should two composites with the same children and the same wiring, but listed in a different
+child order (edges remapped to match), be the same unit or different units?**
+
+- **Today:** different units (different child order ⇒ different preimage ⇒ different hash).
+- **Proposed:** the same unit — canonicalize child order away in the encoder.
+
+## 2. The decision, and why it is forced
+
+**Child order is presentation, not structure, so it must not be part of identity.** The proof is in
+`eval`: `eval_composite` resolves each child by hash and **topologically orders by the edges**, not
+by the child-list order; the only use of a child's index is to look up which `Unit` to resolve.
+Reorder the children and remap the edges to match, and every value `eval` produces is identical — the
+topo order is the same structure with relabeled indices. (Even the topo tie-break "ascending child
+index" can't change a value: tied nodes are mutually independent, so their relative evaluation order
+is irrelevant.) **`eval` ignores child order exactly as it ignores edge order** — and edge order is
+*already* canonicalized in the encoder. Treating the two differently is an inconsistency, and it
+bakes a meaningless distinction (how the author happened to list the children) into the content
+address. For a system whose entire thesis is "identity = what the thing **is**," that is a bug.
+
+The payoff: two authors who build the identical wiring get the identical unit — strengthening
+independent-rebuild dedup. (Honest scope: the shared-cache moat mostly rides on **import-by-
+reference** — everyone references a published unit's one hash — so this is "structurally-identical
+compositions share an identity," not "the moat collapses without it." It is still the right thing.)
+
+## 3. Where it lives: the encoder, not the caller
+
+Canonicalize **inside `encode_preimage`**, in the same place edge order is already normalized. This is
+the natural boundary:
+
+- `encode_preimage` is the *one* definition of the preimage, hence of the hash. Canonicalizing there
+  makes child order provably non-identity for **every** caller — the editor, encapsulation, fork, a
+  future CLI — with no way to forget. The alternative (a separate `canonicalize` that callers must
+  remember to call) is a parallel mechanism and a future divergence bug.
+- It keeps the store consistent: `put` stores `encode_preimage(unit)` (now canonical) under
+  `hash_unit(unit)` (the canonical hash); `decode_verified` re-encodes and re-hashes, which is
+  idempotent on canonical bytes. One canonical encoding flows to the hash, the store key, the store
+  bytes, and the cache key — unchanged invariant, now actually true for composites.
+
+**`ENCODING_VERSION` stays at 1 (a considered call).** The rule is "bump on any encoding change,"
+whose purpose is to prevent a unit hashed under one version from colliding with a *different* unit
+under another. This change introduces no such collision: it only *restricts* the encoder to canonical
+orderings — primitives and already-canonical composites encode byte-for-byte as before, and every
+canonical ordering was already a valid v1 encoding, so the new output set is a subset of the old. No
+new byte pattern appears; order-equivalent composites simply collapse onto the canonical one (the
+intent). Bumping would needlessly re-address every hash (including the genesis trust root and the
+heartbeat's `const`) for zero collision-safety gain, so v1 stands.
+
+**Consequence to state plainly:** `decode(encode(u))` is no longer structurally `u` for a
+non-canonically-ordered `u` — it is the *canonical* form of `u`. That is correct (it's
+canonicalization), and the property that matters — `encode(decode(canonical_bytes)) ==
+canonical_bytes` — still holds. `MapResolver` keeps the unit *as inserted* (so it may hand back a
+non-canonical child order), but its **hash is canonical**, and `eval` is order-inert, so nothing
+downstream cares. Only the on-disk `Store` round-trips through bytes and therefore returns canonical
+order.
+
+## 4. How: hash-sort, ties broken by minimization
+
+Canonical child order is computed structurally:
+
+1. **Order children by hash.** Distinct hashes ⇒ fully determined order.
+2. **Ties = same-hash children** (two `add` nodes are interchangeable *by hash alone*). For each
+   maximal equal-hash run, choose the within-run ordering whose serialization of
+   `(children ++ remapped-sorted-edges)` is **lexicographically smallest**, minimizing over all
+   within-run permutations. Because the equal-hash partition is itself presentation-invariant and we
+   take the min over an invariantly-defined candidate set, the result is invariant under the input's
+   child order — the same wiring always yields the same bytes.
+3. **Remap edges** to the new indices (`BOUNDARY` fixed), then sort.
+
+This is canonical-by-minimization: simple, and provably presentation-invariant. The only cost is the
+within-run permutation search, paid **only** when a composite has duplicate-hash children — which
+hand-authored composites rarely do, and then only a couple.
+
+**Bound (fail-closed):** the work is the product of equal-hash-group factorials. Capped at
+`MAX_CHILD_SYMMETRY` (= 8! = 40320); a composite with more symmetry than that is **rejected**
+(`EncodeError::TooSymmetric`) rather than canonicalized cheaply. Rejecting — not silently falling
+back to a non-minimized order — is what keeps canonicality honest (a non-minimized fallback would
+not be presentation-invariant, the whole point). Hand-authored composites never approach this;
+hitting it is the trigger for the deferred optimization below.
+
+## 5. Deferred (with a trigger)
+
+**Refinement of duplicate-hash children by their wiring** (a color-refinement / Weisfeiler-Leman
+pass that distinguishes same-hash children by their incident edges before the permutation search,
+shrinking the ambiguous groups). It would make even highly-symmetric composites cheap and lift the
+cap. Not built now: KISS — the minimization is correct and fast for the realistic case. *Trigger:* a
+real composite hits `MAX_CHILD_SYMMETRY` (genuinely many identical-hash children with symmetric
+wiring), at which point refinement is the principled fix and lives in the same encoder seam.
+
+## 6. Why now (empty corpus), not at P4.3
+
+This is a **breaking change to every composite's hash**. The project already has the precedent and
+the rule: *settle identity before you mint* — genesis reconciliation deliberately froze the trust
+root **before** the registry's first publish. Child-order is the same shape of decision, and the
+corpus is empty *right now*. The editor (P4.1) is about to start producing composites in volume;
+doing this after a corpus exists is exactly the breaking-change pain we sequence to avoid. So this
+core inch lands before the palette.
+
+## 7. Blast radius (grounded against the actual code)
+
+- **`encode_preimage`** (hash.rs): the Composite arm canonicalizes children + remaps/sorts edges. New
+  `EncodeError::TooSymmetric`. ~6 small private helpers (factorial, permute, enumerate, apply-order,
+  serialize-key, `canonical_composite`).
+- **`decode_preimage`**: **no change** — it reads whatever order is encoded (now canonical).
+- **`eval`, `child_refs`, `adoption`, `validate`**: **no change** — all order-inert (eval topo-sorts;
+  child_refs/adoption use the child *set*, reordering doesn't change *which* children).
+- **Tests that break (exactly two), both because the property changed:**
+  - `hash.rs::decode_round_trips_a_composite_with_params` asserts `decode(encode(u)) == u`
+    structurally — now holds only for canonical input ⇒ author its children already hash-sorted.
+  - `host::fork_repins_and_republishes` asserts `children_of(nr) == [cc, cb]` in order after a
+    *store* round-trip (now canonical order) ⇒ make the assertion order-agnostic (set membership:
+    C present, B present, A gone).
+- **Everything else verified safe:** the promote/instantiate tests and all deploy-firing tests build
+  units and `eval`/fire them in-memory (order-inert) and never pin a composite hash; the store
+  round-trip tests that assert structural equality use *primitives*; `edge_authoring_order_is_cosmetic`
+  and `child_hash_changes_parent_hash` still pass (identical canonicalization both sides / different
+  child multiset).
+- **New tests:** `child_order_is_cosmetic` (same wiring, different child order ⇒ equal hash) and
+  `duplicate_children_canonicalize` (two same-hash children wired to different roles ⇒ the two
+  presentations produce one deterministic hash; swapping presentation doesn't change it).
+
+## 8. Invariants
+
+I5 (identity = content): strengthened — presentation order no longer leaks into the hash, matching
+the existing edge-order treatment. I3 (compose by reference): untouched. I2 (eval determinism): the
+linchpin — eval is order-inert, which is *why* this is safe.

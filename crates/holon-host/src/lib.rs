@@ -923,7 +923,13 @@ mod registry_tests {
         assert!(reg.is_published(&new_root)); // and it's published
         let nr = reg.store().get(&new_root).unwrap().unwrap();
         let cc_hash = hash_unit(&cc).unwrap();
-        assert_eq!(children_of(&nr), vec![cc_hash, cb]); // A→C, B shared
+        // Child order is canonicalized in the encoder, so assert the fork's effect set-wise:
+        // A was replaced by C, B is shared, A is gone.
+        let kids = children_of(&nr);
+        assert_eq!(kids.len(), 2);
+        assert!(kids.contains(&cc_hash)); // A → C
+        assert!(kids.contains(&cb)); // B shared
+        assert!(!kids.contains(&ca)); // A gone
     }
 
     #[test]

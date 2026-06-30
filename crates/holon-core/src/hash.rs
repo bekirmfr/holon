@@ -22,6 +22,8 @@
 
 use blake3::Hasher;
 
+use crate::BOUNDARY;
+
 /// Bumped whenever the canonical encoding changes in any way. Mixed into every
 /// preimage so a unit hashed under v1 can never collide with the same unit
 /// hashed under a future v2 encoding.
@@ -180,6 +182,11 @@ pub struct Unit {
 pub enum EncodeError {
     /// A field exceeded the 32-bit length budget of the canonical encoding.
     FieldTooLong,
+    /// A composite has more equal-hash (interchangeable) children than the encoder will
+    /// canonicalize by minimization (the product of equal-hash-group factorials exceeds
+    /// [`MAX_CHILD_SYMMETRY`]). Rejected — fail-closed — rather than hashed in a non-canonical
+    /// order; the fix (refinement by wiring) is deferred. See [`canonical_composite`].
+    TooSymmetric,
 }
 
 /// Errors from decoding a unit out of its canonical preimage bytes (the inverse
@@ -244,6 +251,151 @@ impl Encoder {
     }
 }
 
+// ── Child-order canonicalization ────────────────────────────────────────────
+// A composite's *child order* is presentation, not structure: `eval` topo-orders by edges and uses
+// a child's index only to resolve which unit it is, so reordering children (with edges remapped)
+// changes no value. The encoder therefore normalizes child order — exactly as it already normalizes
+// edge order — so that presentation order is not part of identity. See child-order-canonical-L4.
+
+/// Cap on the number of equal-hash child orderings the encoder will minimize over (the product of
+/// equal-hash-group factorials). Hand-authored composites rarely have duplicate-hash children; one
+/// exceeding this is rejected ([`EncodeError::TooSymmetric`]) rather than hashed in a non-canonical
+/// order. Lifting it is the trigger for wiring-based refinement (deferred).
+const MAX_CHILD_SYMMETRY: usize = 40_320; // 8!
+
+/// Canonicalize a composite's child order. Children are ordered by hash; equal-hash children
+/// (interchangeable by hash alone) are ordered by minimizing the `(children ++ remapped-sorted-edges)`
+/// serialization over all within-group permutations — a presentation-invariant choice. Edges are
+/// remapped to the new indices (`BOUNDARY` fixed) and sorted. Identity changes; behaviour never does.
+fn canonical_composite(
+    children: &[Hash],
+    edges: &[Edge],
+) -> Result<(Vec<Hash>, Vec<Edge>), EncodeError> {
+    let k = children.len();
+
+    // Child indices ordered by hash; equal-hash children become adjacent.
+    let mut base: Vec<usize> = (0..k).collect();
+    base.sort_by(|&i, &j| children[i].cmp(&children[j]));
+
+    // Fast path: all hashes distinct ⇒ the hash order is the unique canonical order.
+    if base.windows(2).all(|w| children[w[0]] != children[w[1]]) {
+        return Ok(apply_child_order(children, edges, &base));
+    }
+
+    // Group the sorted indices into equal-hash runs (the ambiguous groups).
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut i = 0;
+    while i < k {
+        let mut j = i + 1;
+        while j < k && children[base[j]] == children[base[i]] {
+            j += 1;
+        }
+        groups.push(base[i..j].to_vec());
+        i = j;
+    }
+
+    // Bound the work; reject pathological symmetry rather than hash non-canonically.
+    let mut budget = 1usize;
+    for g in &groups {
+        budget = budget.saturating_mul(factorial(g.len()));
+        if budget > MAX_CHILD_SYMMETRY {
+            return Err(EncodeError::TooSymmetric);
+        }
+    }
+
+    // Minimize the serialization over every hash-respecting ordering (permute within groups only).
+    let mut best: Option<(Vec<u8>, Vec<usize>)> = None;
+    let mut order: Vec<usize> = Vec::with_capacity(k);
+    enumerate_orderings(&groups, 0, &mut order, &mut |full: &[usize]| {
+        let (kids, es) = apply_child_order(children, edges, full);
+        let key = order_key(&kids, &es);
+        if best.as_ref().map_or(true, |(bk, _)| key < *bk) {
+            best = Some((key, full.to_vec()));
+        }
+    });
+
+    let winner = best.expect("at least one ordering exists").1;
+    Ok(apply_child_order(children, edges, &winner))
+}
+
+fn factorial(n: usize) -> usize {
+    (1..=n).product()
+}
+
+/// Visit every full ordering formed by permuting each group independently (their cartesian product).
+fn enumerate_orderings(
+    groups: &[Vec<usize>],
+    gi: usize,
+    acc: &mut Vec<usize>,
+    visit: &mut impl FnMut(&[usize]),
+) {
+    if gi == groups.len() {
+        visit(acc);
+        return;
+    }
+    let mut perm = groups[gi].clone();
+    permute(&mut perm, 0, &mut |p: &[usize]| {
+        let mark = acc.len();
+        acc.extend_from_slice(p);
+        enumerate_orderings(groups, gi + 1, acc, visit);
+        acc.truncate(mark);
+    });
+}
+
+/// Visit every permutation of `a` (whose elements are distinct child indices).
+fn permute(a: &mut [usize], i: usize, visit: &mut impl FnMut(&[usize])) {
+    if i + 1 >= a.len() {
+        visit(a);
+        return;
+    }
+    for j in i..a.len() {
+        a.swap(i, j);
+        permute(a, i + 1, visit);
+        a.swap(i, j);
+    }
+}
+
+/// Apply a child ordering (`order[new_index] = old_index`): reorder children, remap edge endpoints to
+/// the new indices (`BOUNDARY`, and any out-of-range index in a malformed unit, left untouched — no
+/// panic), then sort edges.
+fn apply_child_order(children: &[Hash], edges: &[Edge], order: &[usize]) -> (Vec<Hash>, Vec<Edge>) {
+    let k = children.len();
+    let mut inv = vec![0u32; k]; // old_index -> new_index
+    for (new_index, &old) in order.iter().enumerate() {
+        inv[old] = new_index as u32;
+    }
+    let kids: Vec<Hash> = order.iter().map(|&old| children[old]).collect();
+    let remap = |c: u32| if c == BOUNDARY || (c as usize) >= k { c } else { inv[c as usize] };
+    let mut es: Vec<Edge> = edges
+        .iter()
+        .map(|e| Edge {
+            from_child: remap(e.from_child),
+            from_port: e.from_port,
+            to_child: remap(e.to_child),
+            to_port: e.to_port,
+        })
+        .collect();
+    es.sort_unstable_by_key(|x| (x.from_child, x.from_port, x.to_child, x.to_port));
+    (kids, es)
+}
+
+/// The comparison key for canonicalization: child hashes then edges, as raw bytes. The rest of the
+/// preimage (tags, params, ports) is identical across orderings, so minimizing this key minimizes the
+/// full preimage among hash-respecting orderings.
+fn order_key(kids: &[Hash], es: &[Edge]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(kids.len() * 32 + es.len() * 16);
+    for h in kids {
+        v.extend_from_slice(h);
+    }
+    for e in es {
+        v.extend_from_slice(&e.from_child.to_le_bytes());
+        v.extend_from_slice(&e.from_port.to_le_bytes());
+        v.extend_from_slice(&e.to_child.to_le_bytes());
+        v.extend_from_slice(&e.to_port.to_le_bytes());
+    }
+    v
+}
+
 /// Produce the canonical preimage bytes for a unit. The output is a pure
 /// function of the unit's *structure* — identical structures (regardless of
 /// cosmetics) yield identical bytes; any computational change yields different
@@ -260,24 +412,19 @@ pub fn encode_preimage(unit: &Unit) -> Result<Vec<u8>, EncodeError> {
         UnitBody::Composite { children, edges } => {
             e.tag(TAG_COMPOSITE);
 
-            // Children, each as a 32-byte hash. Child order is preserved as
-            // given (it is the canonical index space the edges refer to); the
-            // *caller* is responsible for having frozen a deterministic child
-            // order at encapsulation time. We still tag + count for safety.
+            // Canonicalize child order (presentation is not identity, §child-order-canonical-L4):
+            // children ordered by hash, ties minimized; edges remapped to the new indices and sorted.
+            // After this, the authored child *and* edge order never leak into the hash.
+            let (children, edges) = canonical_composite(children, edges)?;
+
             e.u32(children.len().try_into().map_err(|_| EncodeError::FieldTooLong)?);
-            for child in children {
+            for child in &children {
                 e.tag(TAG_CHILD);
                 e.buf.extend_from_slice(child);
             }
 
-            // Edges, sorted into a deterministic order so authored wiring order
-            // never leaks into the hash.
-            let mut sorted = edges.clone();
-            sorted.sort_unstable_by_key(|x| {
-                (x.from_child, x.from_port, x.to_child, x.to_port)
-            });
-            e.u32(sorted.len().try_into().map_err(|_| EncodeError::FieldTooLong)?);
-            for edge in &sorted {
+            e.u32(edges.len().try_into().map_err(|_| EncodeError::FieldTooLong)?);
+            for edge in &edges {
                 e.tag(TAG_EDGE);
                 e.u32(edge.from_child);
                 e.u32(edge.from_port);
@@ -628,11 +775,14 @@ mod tests {
     fn decode_round_trips_a_composite_with_params() {
         let c0 = hash_unit(&prim("add")).unwrap();
         let c1 = hash_unit(&prim("multiply")).unwrap();
+        // Author children already in canonical (hash-ascending) order, so the structural — not just
+        // hash — equality holds after the round-trip (decode∘encode is identity only on canonical
+        // input now that the encoder normalizes child order).
+        let mut children = vec![c0, c1];
+        children.sort();
         let u = Unit {
             body: UnitBody::Composite {
-                children: vec![c0, c1],
-                // authored already in canonical (sorted) order, so structural
-                // equality — not just hash equality — holds after the round-trip.
+                children,
                 edges: vec![
                     Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
                     Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 1 },
@@ -643,6 +793,48 @@ mod tests {
             output: Some(Type::Effect),
         };
         assert_eq!(decode_preimage(&encode_preimage(&u).unwrap()).unwrap(), u);
+    }
+
+    #[test]
+    fn child_order_is_cosmetic() {
+        // Same children, same wiring (add.out → mul.in0), listed in opposite order with the edge
+        // remapped to match ⇒ identical hash. Authoring order is not identity.
+        let add = hash_unit(&prim("add")).unwrap();
+        let mul = hash_unit(&prim("multiply")).unwrap();
+        let presentation = |children: Vec<Hash>, edge: Edge| Unit {
+            body: UnitBody::Composite { children, edges: vec![edge] },
+            params: vec![],
+            inputs: vec![],
+            output: Some(Type::Number),
+        };
+        // A: [add@0, mul@1], add@0 → mul@1.   B: [mul@0, add@1], add@1 → mul@0.  Same wiring.
+        let a = presentation(vec![add, mul], Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 });
+        let b = presentation(vec![mul, add], Edge { from_child: 1, from_port: 0, to_child: 0, to_port: 0 });
+        assert_eq!(hash_unit(&a).unwrap(), hash_unit(&b).unwrap());
+    }
+
+    #[test]
+    fn duplicate_children_canonicalize() {
+        // Two identical-hash children (both `add`) in DIFFERENT roles: one feeds the boundary output,
+        // the other is fed by the boundary input. The two presentations (which index plays which
+        // role) must collapse to ONE hash — the duplicate is disambiguated by minimization.
+        let add = hash_unit(&prim("add")).unwrap();
+        let roles = |out_child: u32, in_child: u32| Unit {
+            body: UnitBody::Composite {
+                children: vec![add, add],
+                edges: vec![
+                    Edge { from_child: out_child, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                    Edge { from_child: BOUNDARY, from_port: 0, to_child: in_child, to_port: 0 },
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "x".into(), ty: Type::Number }],
+            output: Some(Type::Number),
+        };
+        let a = roles(0, 1); // child0 → out ; in → child1
+        let b = roles(1, 0); // child1 → out ; in → child0  (same composite, swapped presentation)
+        assert_eq!(hash_unit(&a).unwrap(), hash_unit(&b).unwrap());
+        assert_eq!(hash_unit(&a).unwrap(), hash_unit(&a).unwrap()); // and deterministic
     }
 
     #[test]
