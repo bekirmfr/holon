@@ -256,7 +256,7 @@ mod tests {
     fn eval_composite_sum() {
         // The v3 seed (minus Map): list(a,b,c) → sum → 15.
         let mut r = MapResolver::new();
-        let hlist = r.insert(prim("list", 3, Type::List)).unwrap();
+        let hlist = r.insert(prim("list", 3, Type::list_any())).unwrap();
         let hsum = r.insert(prim("sum", 1, Type::Number)).unwrap();
         let c = composite(
             vec![nport("a"), nport("b"), nport("c")],
@@ -336,8 +336,8 @@ mod tests {
         Unit {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", hex(fn_hash))],
-            inputs: vec![Port { name: "list".into(), ty: Type::List }],
-            output: Some(Type::List),
+            inputs: vec![Port { name: "list".into(), ty: Type::list_any() }],
+            output: Some(Type::list_any()),
         }
     }
 
@@ -370,7 +370,7 @@ mod tests {
             params: vec![Param::frozen("fn", hex(fn_hash))],
             inputs: vec![
                 Port { name: "init".into(), ty: Type::Any },
-                Port { name: "list".into(), ty: Type::List },
+                Port { name: "list".into(), ty: Type::list_any() },
             ],
             output: Some(Type::Any),
         }

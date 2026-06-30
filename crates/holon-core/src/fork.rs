@@ -145,8 +145,8 @@ mod tests {
         Unit {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", to_hex(fn_hash))],
-            inputs: vec![Port { name: "list".into(), ty: Type::List }],
-            output: Some(Type::List),
+            inputs: vec![Port { name: "list".into(), ty: Type::list_any() }],
+            output: Some(Type::list_any()),
         }
     }
     fn children_of(u: &Unit) -> Vec<Hash> {

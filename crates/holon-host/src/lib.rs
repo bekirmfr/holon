@@ -208,7 +208,7 @@ fn constant_unit(value: &Value) -> Unit {
             body: UnitBody::Primitive { name: "list".into() },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::List),
+            output: Some(Type::list_any()),
         },
         // A state cell never holds an effect: a write commits the *payload* (`&**payload`),
         // never the request itself. If this fires, the round stored an `Effect` by mistake —
@@ -867,8 +867,8 @@ mod registry_tests {
         let map = Unit {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", hex(&absent))],
-            inputs: vec![Port { name: "list".into(), ty: Type::List }],
-            output: Some(Type::List),
+            inputs: vec![Port { name: "list".into(), ty: Type::list_any() }],
+            output: Some(Type::list_any()),
         };
         let mut reg = Registry::new(MemStore::new());
         match reg.publish(&map) {
@@ -1152,8 +1152,8 @@ mod tests {
         let mapper = Unit {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", hex(&eh))],
-            inputs: vec![Port { name: "xs".into(), ty: Type::List }],
-            output: Some(Type::List),
+            inputs: vec![Port { name: "xs".into(), ty: Type::list_any() }],
+            output: Some(Type::list_any()),
         };
         let xs = Value::List(vec![text("a"), text("b"), text("c")]);
         let mut host = Recorder::default();
@@ -1182,7 +1182,7 @@ mod tests {
                     Port { name: "x".into(), ty: Type::Effect },
                     Port { name: "y".into(), ty: Type::Effect },
                 ],
-                Type::List,
+                Type::list_any(),
             ))
             .unwrap();
         let comp = Unit {
@@ -1198,7 +1198,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![nport("v"), Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::List),
+            output: Some(Type::list_any()),
         };
         let mut host = Recorder::default();
         fire(&comp, &[Some(num(7.0)), Some(text("hi"))], &r, &mut host);
@@ -1341,15 +1341,15 @@ mod tests {
             .insert(Unit {
                 body: UnitBody::Primitive { name: "egress".into() },
                 params: vec![],
-                inputs: vec![Port { name: "req".into(), ty: Type::List }],
+                inputs: vec![Port { name: "req".into(), ty: Type::list_any() }],
                 output: Some(Type::Effect),
             })
             .unwrap();
         let mapper = Unit {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", hex(&egress))],
-            inputs: vec![Port { name: "requests".into(), ty: Type::List }],
-            output: Some(Type::List),
+            inputs: vec![Port { name: "requests".into(), ty: Type::list_any() }],
+            output: Some(Type::list_any()),
         };
         let batch = Value::List(vec![
             Value::List(vec![num(1.0), text("alpha")]), // [token=1, data="alpha"]
@@ -1412,14 +1412,14 @@ mod tests {
                     Port { name: "key".into(), ty: Type::Text },
                     Port { name: "body".into(), ty: Type::Text },
                 ],
-                Type::List,
+                Type::list_any(),
             ))
             .unwrap();
         let em = r
             .insert(Unit {
                 body: UnitBody::Primitive { name: "egress".into() },
                 params: vec![],
-                inputs: vec![Port { name: "msg".into(), ty: Type::List }],
+                inputs: vec![Port { name: "msg".into(), ty: Type::list_any() }],
                 output: Some(Type::Effect),
             })
             .unwrap();

@@ -68,17 +68,17 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![],
             Any,
         ),
-        "cons" => prim(vec![port("item", Any), port("list", List)], vec![], List),
-        "head" => prim(vec![port("list", List)], vec![], Any),
-        "tail" => prim(vec![port("list", List)], vec![], List),
-        "is_empty" => prim(vec![port("list", List)], vec![], Boolean),
+        "cons" => prim(vec![port("item", Any), port("list", Type::list_any())], vec![], Type::list_any()),
+        "head" => prim(vec![port("list", Type::list_any())], vec![], Any),
+        "tail" => prim(vec![port("list", Type::list_any())], vec![], Type::list_any()),
+        "is_empty" => prim(vec![port("list", Type::list_any())], vec![], Boolean),
         // higher-order: the function rides an open `fn` param (hex hash once bound), not a port.
         "fold" => prim(
-            vec![port("init", Any), port("list", List)],
+            vec![port("init", Any), port("list", Type::list_any())],
             vec![Param::open("fn", "fn")],
             Any,
         ),
-        "map" => prim(vec![port("list", List)], vec![Param::open("fn", "fn")], List),
+        "map" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Type::list_any()),
 
         // ── pure — text ──
         "concat" => prim(vec![port("a", Text), port("b", Text)], vec![], Text),
@@ -92,12 +92,12 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "index_of" => prim(vec![port("haystack", Text), port("needle", Text)], vec![], Number),
 
         // ── pure — list convenience ──
-        "list" => prim(vec![port("a", Any), port("b", Any)], vec![], List),
-        "get" => prim(vec![port("list", List), port("index", Number)], vec![], Any),
-        "append" => prim(vec![port("list", List), port("item", Any)], vec![], List),
-        "length" => prim(vec![port("list", List)], vec![], Number),
-        "sum" => prim(vec![port("list", List)], vec![], Number),
-        "join" => prim(vec![port("list", List), port("sep", Text)], vec![], Text),
+        "list" => prim(vec![port("a", Any), port("b", Any)], vec![], Type::list_any()),
+        "get" => prim(vec![port("list", Type::list_any()), port("index", Number)], vec![], Any),
+        "append" => prim(vec![port("list", Type::list_any()), port("item", Any)], vec![], Type::list_any()),
+        "length" => prim(vec![port("list", Type::list_any())], vec![], Number),
+        "sum" => prim(vec![port("list", Type::list_any())], vec![], Number),
+        "join" => prim(vec![port("list", Type::list_any()), port("sep", Text)], vec![], Text),
 
         // ── drivers — sourced (no inputs; host-supplied). Concrete where unambiguous, `Any` where
         //    the payload is genuinely polymorphic (the editor may specialize later). ──

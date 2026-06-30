@@ -25,9 +25,10 @@ use blake3::Hasher;
 use crate::BOUNDARY;
 
 /// Bumped whenever the canonical encoding changes in any way. Mixed into every
-/// preimage so a unit hashed under v1 can never collide with the same unit
-/// hashed under a future v2 encoding.
-pub const ENCODING_VERSION: u8 = 1;
+/// preimage so a unit hashed under one version can never collide with the same
+/// unit hashed under another. v2: `Type` became recursive (`List<T>` carries an
+/// element type), so the type encoding gained a recursive tail (P1.3.2).
+pub const ENCODING_VERSION: u8 = 2;
 
 /// A 32-byte content hash. This is a unit's identity; the version label in the
 /// registry is merely a friendly alias that resolves *to* one of these.
@@ -45,16 +46,20 @@ const TAG_CHILD: u8 = 0x13;
 const PARAM_FROZEN: u8 = 0x00; // Param variant tags (domain-separate the two states)
 const PARAM_OPEN: u8 = 0x01;
 
-// ── Value types (§5: monomorphic base + `any` wildcard) ─────────────────────
+// ── Value types (§5: structural base + `any` wildcard, recursive over `List<T>`) ─
 
-/// The wire types. `Any` is the single escape hatch that lets polymorphic units
-/// (`Select`, `Get`, `Store`, `Map`) exist without a unification type checker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The wire types. `Any` is the escape hatch that lets polymorphic units (`select`,
+/// `get`, `store`, `map`) exist without a unification type checker. `List` carries
+/// its element type, so types compose: `List<Number>`, `List<List<Text>>`, … The
+/// element type makes `Type` recursive, so it is `Clone` (not `Copy`) — a `List`
+/// owns a boxed element.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
     Number,
     Boolean,
     Text,
-    List,
+    /// A homogeneous list of `T`. The bare/legacy list is `List<Any>` ([`Type::list_any`]).
+    List(Box<Type>),
     /// A settled effect *request* (representation B) — the type of a sink's output. It
     /// matches only itself (or `Any`), so an effect can flow to a boundary output or into
     /// `map`, but **never into a sink's payload slot**: a request cannot be re-consumed as
@@ -64,31 +69,37 @@ pub enum Type {
 }
 
 impl Type {
-    /// Stable on-wire discriminant. These bytes are part of the hash preimage,
-    /// so they must never be reordered or reused once shipped.
-    fn tag(self) -> u8 {
+    /// The bare/legacy list: a list whose element type is unconstrained. Compatible
+    /// with any `List<T>` (the `Any` wildcard, one level down — see `compatible`).
+    pub fn list_any() -> Type {
+        Type::List(Box::new(Type::Any))
+    }
+
+    /// Stable on-wire discriminant (the *head* byte of a type). These bytes are part
+    /// of the hash preimage, so they must never be reordered or reused once shipped.
+    /// `List`'s element type follows this byte, written by the recursive encoder.
+    fn tag(&self) -> u8 {
         match self {
             Type::Number => 1,
             Type::Boolean => 2,
             Type::Text => 3,
-            Type::List => 4,
+            Type::List(_) => 4,
             Type::Any => 5,
             Type::Effect => 6, // appended last — tags 1-5 unchanged, so no existing hash moves
         }
     }
 
-    /// Inverse of [`tag`](Self::tag): map a wire discriminant back to its `Type`.
-    /// `None` for a byte that names no known type (a corrupt or future-version
-    /// blob). Must mirror `tag` exactly — they are one append-only table.
+    /// Inverse of [`tag`](Self::tag) for the **nullary** types only. `None` for a byte
+    /// that names no known nullary type — including `4` (`List`), which is recursive and
+    /// is decoded by [`Decoder::ty`], not here. Must mirror `tag` for the nullary cases.
     fn from_tag(tag: u8) -> Option<Type> {
         match tag {
             1 => Some(Type::Number),
             2 => Some(Type::Boolean),
             3 => Some(Type::Text),
-            4 => Some(Type::List),
             5 => Some(Type::Any),
             6 => Some(Type::Effect),
-            _ => None,
+            _ => None, // 4 (List) carries an element type — the decoder reads it recursively
         }
     }
 }
@@ -205,6 +216,9 @@ pub enum DecodeError {
     BadType(u8),
     /// A length-prefixed string field was not valid UTF-8.
     BadUtf8,
+    /// A type nested deeper than [`MAX_TYPE_DEPTH`] — a hostile or corrupt blob trying to
+    /// exhaust the stack during recursive type decoding. Rejected, never recursed into.
+    TypeTooDeep,
     /// Bytes remained after a complete unit was decoded.
     TrailingBytes,
 }
@@ -246,8 +260,14 @@ impl Encoder {
         self.bytes(s.as_bytes())
     }
 
-    fn ty(&mut self, t: Type) {
+    /// Write a type: its head tag, then — for `List<T>` — its element type, recursively.
+    /// In-memory types come from `decode` (depth-bounded) or trusted core construction
+    /// (shallow), so the encoder is not depth-limited; the untrusted entry point is `decode`.
+    fn ty(&mut self, t: &Type) {
         self.buf.push(t.tag());
+        if let Type::List(inner) = t {
+            self.ty(inner);
+        }
     }
 }
 
@@ -460,9 +480,9 @@ pub fn encode_preimage(unit: &Unit) -> Result<Vec<u8>, EncodeError> {
     for port in &unit.inputs {
         e.tag(TAG_PORT);
         e.str(&port.name)?;
-        e.ty(port.ty);
+        e.ty(&port.ty);
     }
-    match unit.output {
+    match &unit.output {
         Some(t) => {
             e.buf.push(1);
             e.ty(t);
@@ -487,6 +507,12 @@ pub fn hash_unit(unit: &Unit) -> Result<Hash, EncodeError> {
 // The exact inverse of `encode_preimage`. Every read is bounds-checked; counts
 // from the (untrusted) stream are never pre-allocated, so a blob that lies about
 // a length hits `UnexpectedEof` quickly instead of trying to allocate.
+
+/// Maximum type nesting depth the decoder will accept (`List<List<…>>`). Far above any
+/// legitimate type (real types are depth 1-3) and far below stack exhaustion. A blob
+/// nesting deeper is rejected with [`DecodeError::TypeTooDeep`] — depth is the one new
+/// attack surface a recursive type decoder opens over untrusted bytes.
+const MAX_TYPE_DEPTH: u32 = 32;
 
 struct Decoder<'a> {
     buf: &'a [u8],
@@ -533,8 +559,23 @@ impl<'a> Decoder<'a> {
     }
 
     fn ty(&mut self) -> Result<Type, DecodeError> {
+        self.ty_at(0)
+    }
+
+    /// Read a type, recursing into `List<T>`'s element type. `depth` guards against a
+    /// hostile blob nesting types deep enough to exhaust the stack: past
+    /// [`MAX_TYPE_DEPTH`] it returns [`DecodeError::TypeTooDeep`] instead of recursing.
+    fn ty_at(&mut self, depth: u32) -> Result<Type, DecodeError> {
+        if depth > MAX_TYPE_DEPTH {
+            return Err(DecodeError::TypeTooDeep);
+        }
         let t = self.u8()?;
-        Type::from_tag(t).ok_or(DecodeError::BadType(t))
+        if t == 4 {
+            // List: tag 4 (must match Type::tag) is followed by the element type.
+            Ok(Type::List(Box::new(self.ty_at(depth + 1)?)))
+        } else {
+            Type::from_tag(t).ok_or(DecodeError::BadType(t))
+        }
     }
 }
 
@@ -758,7 +799,7 @@ mod tests {
             body: UnitBody::Composite { children: vec![], edges: vec![] },
             params: p.params.clone(),
             inputs: p.inputs.clone(),
-            output: p.output,
+            output: p.output.clone(),
         };
         assert_ne!(hash_unit(&p).unwrap(), hash_unit(&c).unwrap());
     }
@@ -789,7 +830,7 @@ mod tests {
                 ],
             },
             params: vec![Param::frozen("x", "1"), Param::open("y", "k")],
-            inputs: vec![Port { name: "a".into(), ty: Type::List }],
+            inputs: vec![Port { name: "a".into(), ty: Type::list_any() }],
             output: Some(Type::Effect),
         };
         assert_eq!(decode_preimage(&encode_preimage(&u).unwrap()).unwrap(), u);
@@ -868,5 +909,45 @@ mod tests {
         let mut extra = good.clone();
         extra.push(0);
         assert_eq!(decode_preimage(&extra), Err(DecodeError::TrailingBytes)); // trailing
+    }
+
+    // ── Recursive types (P1.3.2) ────────────────────────────────────────────
+
+    #[test]
+    fn list_type_round_trips() {
+        // A composed type — List<List<Number>> on a port, List<Any> as output — survives
+        // encode∘decode byte-for-byte and structurally.
+        let mut u = prim("add");
+        u.inputs[0].ty = Type::List(Box::new(Type::List(Box::new(Type::Number))));
+        u.output = Some(Type::list_any());
+        let bytes = encode_preimage(&u).unwrap();
+        assert_eq!(decode_preimage(&bytes).unwrap(), u);
+        assert_eq!(encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn bare_list_encodes_as_list_any() {
+        // The legacy bare list is List<Any>: tag 4 followed by tag 5 (Any).
+        let mut u = prim("add");
+        u.inputs[0].ty = Type::list_any();
+        let round = decode_preimage(&encode_preimage(&u).unwrap()).unwrap();
+        assert_eq!(round.inputs[0].ty, Type::List(Box::new(Type::Any)));
+    }
+
+    #[test]
+    fn deep_type_is_rejected() {
+        // A maliciously over-nested type is refused at decode, never recursed into — the
+        // depth bound, the one new attack surface a recursive type decoder opens.
+        fn nest(depth: u32) -> Type {
+            let mut t = Type::Number;
+            for _ in 0..depth {
+                t = Type::List(Box::new(t));
+            }
+            t
+        }
+        let mut u = prim("add");
+        u.inputs[0].ty = nest(MAX_TYPE_DEPTH + 5);
+        let bytes = encode_preimage(&u).unwrap(); // encoder allows it (trusted, in-memory)
+        assert_eq!(decode_preimage(&bytes), Err(DecodeError::TypeTooDeep));
     }
 }

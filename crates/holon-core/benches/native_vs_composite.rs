@@ -70,7 +70,7 @@ fn fold_sum(r: &mut MapResolver) -> Unit {
         params: vec![Param::frozen("fn", to_hex(&hadd))],
         inputs: vec![
             Port { name: "init".into(), ty: Type::Any },
-            Port { name: "list".into(), ty: Type::List },
+            Port { name: "list".into(), ty: Type::list_any() },
         ],
         output: Some(Type::Any),
     }

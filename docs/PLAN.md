@@ -223,9 +223,33 @@ moves to **P2.4**. The Language is eager; the OS decides when effects fire.
    `MultiplyByN`(b=open) hash differently; a promoted composite evaluates with the
    supplied value · *effort:* **M**
 
-**Deferred out of P1 (fork-open, not leaves now):** generics / parametric types
-(`P1.3.2` — the largest checker-complexity jump, `§5`); async firing + quiescence
-(relocated to `P2.4`).
+---
+
+### P1.3.2 · inch 1 — the composed-type-expression language (`List<T>`) (DONE; identity settled, green)
+- **`Type` is recursive** (`List(Box<Type>)`, `Clone` not `Copy`); recursive encode/decode;
+  `ENCODING_VERSION = 2`; fail-closed decode depth bound (`MAX_TYPE_DEPTH`, `DecodeError::TypeTooDeep`).
+- **`compatible(&Type, &Type)`** — structural equality + `Any` wildcard, recursive; §5 nested, no
+  inference, no subtyping. **Catalog = `List<Any>`** (behaviour-identical). **Bottom-up promotion**
+  (`derive_and_freeze`) carries composed types (I4). Bridge stays flat (`List<Any>`).
+- **Scope:** `List<T>` only — `Product`/`Sum` *types* fold into their value-constructor inches (the
+  de-Copy is paid by `List` alone; a second version bump is free pre-release).
+- **Identity:** nothing persisted ⇒ the `v2` bump moved every hash for free; no manifest to re-pin.
+  **All 208 prior tests green under the re-encoding** = `List<Any>` ≡ old bare `List`.
+- **Tests:** 212 native (+4: `list_type_round_trips`, `bare_list_encodes_as_list_any`,
+  `deep_type_is_rejected`, `compatible_is_structural`) / 12 wasm-target. `wasm-pack` + `tsc` clean.
+
+> **The type system can now compose.** A unit can declare, encode, check, and promote `List<T>`
+> contracts. `Product`/`Sum` (the other two generators) and the editor's recursive `WType` are the
+> remaining inches — see `P1.3.2-parametric-types-L4.md` §8.
+
+---
+
+**In progress:** generics / parametric types
+P1.3.2 (parametric types): inch 1 (the List<T> type-expression language)
+DONE (see the DONE block above + L4 §8); remaining inches — Product then Sum value
+constructors, then the editor's recursive WType + boundary-input fields — are scoped in
+P1.3.2-parametric-types-L4.md. (The "largest checker-complexity jump" was paid as the one-time
+de-Copy; the checker stays structural — no inference, no subtyping.)
 
 **Consistency check vs design-doc §10.** §10 named *param promotion* as the next step
 after content-hashing. The deduction corrects this: §10 tacitly assumed an evaluator,

@@ -91,7 +91,7 @@ pub fn derive_and_freeze(
         if !seen.insert((pr.child, pr.port)) {
             return Err(EncapError::DuplicatePromotion { child: pr.child, port: pr.port });
         }
-        inputs.push(Port { name: pr.name.clone(), ty: resolved[ci].inputs[pp].ty });
+        inputs.push(Port { name: pr.name.clone(), ty: resolved[ci].inputs[pp].ty.clone() });
     }
 
     // Validate the exposed output and derive its type.
@@ -99,8 +99,8 @@ pub fn derive_and_freeze(
     if oc as usize >= k {
         return Err(EncapError::OutputChildOutOfRange(oc));
     }
-    let out_ty = match (op, resolved[oc as usize].output) {
-        (0, Some(t)) => t,
+    let out_ty = match (op, &resolved[oc as usize].output) {
+        (0, Some(t)) => t.clone(),
         _ => return Err(EncapError::OutputPortInvalid { child: oc, port: op }),
     };
 

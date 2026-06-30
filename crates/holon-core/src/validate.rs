@@ -45,10 +45,16 @@ pub enum ValidationError {
     TypeMismatch { edge: usize, src: Type, dst: Type },
 }
 
-/// Wire-time type compatibility (§5) — the entire type discipline at this stage:
-/// monomorphic base types plus the single `Any` escape hatch.
-pub fn compatible(src: Type, dst: Type) -> bool {
-    dst == Type::Any || src == Type::Any || src == dst
+/// Wire-time type compatibility (§5) — structural equality plus the single `Any`
+/// escape hatch, made recursive over `List<T>`: `List<A>` fits `List<B>` iff `A` fits
+/// `B`, and `Any` matches anything at any level. No inference, no subtyping — the §5
+/// rule, lifted to nested types.
+pub fn compatible(src: &Type, dst: &Type) -> bool {
+    match (src, dst) {
+        (_, Type::Any) | (Type::Any, _) => true,
+        (Type::List(a), Type::List(b)) => compatible(a, b),
+        _ => src == dst, // scalar equality (Number / Boolean / Text / Effect)
+    }
 }
 
 /// Validate a unit's graph. A primitive always passes. A composite is checked for
@@ -85,7 +91,7 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
         // ---- source type (a real child's output, or a composite input via BOUNDARY) ----
         let src_ty = if e.from_child == BOUNDARY {
             match unit.inputs.get(e.from_port as usize) {
-                Some(p) => p.ty,
+                Some(p) => p.ty.clone(),
                 None => {
                     errors.push(ValidationError::BoundaryInputOutOfRange { edge: ei, port: e.from_port });
                     continue;
@@ -99,8 +105,8 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
             }
             match resolved[fc] {
                 None => continue, // unresolved child already reported
-                Some(src) => match (e.from_port, src.output) {
-                    (0, Some(t)) => t,
+                Some(src) => match (e.from_port, &src.output) {
+                    (0, Some(t)) => t.clone(),
                     _ => {
                         errors.push(ValidationError::OutputPortOutOfRange {
                             edge: ei,
@@ -115,8 +121,8 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
 
         // ---- destination type (a real child's input, or the composite output via BOUNDARY) ----
         let dst_ty = if e.to_child == BOUNDARY {
-            match (e.to_port, unit.output) {
-                (0, Some(t)) => t,
+            match (e.to_port, &unit.output) {
+                (0, Some(t)) => t.clone(),
                 _ => {
                     errors.push(ValidationError::BoundaryOutputOutOfRange { edge: ei, port: e.to_port });
                     continue;
@@ -131,7 +137,7 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
             match resolved[tc] {
                 None => continue,
                 Some(dst) => match dst.inputs.get(e.to_port as usize) {
-                    Some(p) => p.ty,
+                    Some(p) => p.ty.clone(),
                     None => {
                         errors.push(ValidationError::InputPortOutOfRange {
                             edge: ei,
@@ -144,7 +150,7 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
             }
         };
 
-        if !compatible(src_ty, dst_ty) {
+        if !compatible(&src_ty, &dst_ty) {
             errors.push(ValidationError::TypeMismatch { edge: ei, src: src_ty, dst: dst_ty });
         }
     }
@@ -227,11 +233,28 @@ mod tests {
     #[test]
     fn compatibility_rule() {
         use Type::*;
-        assert!(compatible(Number, Number));
-        assert!(compatible(Any, Number));
-        assert!(compatible(Number, Any));
-        assert!(!compatible(Number, Text));
-        assert!(!compatible(Text, Number));
+        assert!(compatible(&Number, &Number));
+        assert!(compatible(&Any, &Number));
+        assert!(compatible(&Number, &Any));
+        assert!(!compatible(&Number, &Text));
+        assert!(!compatible(&Text, &Number));
+    }
+
+    #[test]
+    fn compatible_is_structural() {
+        use Type::*;
+        let list = |t: Type| Type::List(Box::new(t));
+        // List<Any> bridges any element type (constructed lists stay permissive).
+        assert!(compatible(&Type::list_any(), &list(Number)));
+        assert!(compatible(&list(Number), &Type::list_any()));
+        // Two precisely-declared list types are checked element-wise.
+        assert!(compatible(&list(Number), &list(Number)));
+        assert!(!compatible(&list(Text), &list(Number)));
+        // …and recursively.
+        assert!(compatible(&list(list(Number)), &list(list(Any))));
+        assert!(!compatible(&list(list(Text)), &list(list(Number))));
+        // A list is not a scalar.
+        assert!(!compatible(&list(Number), &Number));
     }
 
     #[test]

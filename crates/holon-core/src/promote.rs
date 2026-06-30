@@ -38,7 +38,7 @@ pub fn open_param(unit: &Unit, name: &str, bind: &str) -> Result<Unit, ParamErro
         body: unit.body.clone(),
         params,
         inputs: unit.inputs.clone(),
-        output: unit.output,
+        output: unit.output.clone(),
     })
 }
 

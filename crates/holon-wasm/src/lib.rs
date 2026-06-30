@@ -104,12 +104,16 @@ pub enum WType {
 }
 
 impl WType {
-    fn from_core(t: Type) -> WType {
+    // At inch 1, core's only composed type is List<Any> (the catalog), so the editor-facing
+    // WType stays flat: a core List<T> maps to WType::List (the element rides along unseen) and
+    // WType::List reconstructs as List<Any>. A recursive WType that preserves the element type
+    // is the editor inch (P1.3.2 step 4), when precise list types first reach a port.
+    fn from_core(t: &Type) -> WType {
         match t {
             Type::Number => WType::Number,
             Type::Boolean => WType::Boolean,
             Type::Text => WType::Text,
-            Type::List => WType::List,
+            Type::List(_) => WType::List,
             Type::Effect => WType::Effect,
             Type::Any => WType::Any,
         }
@@ -119,7 +123,7 @@ impl WType {
             WType::Number => Type::Number,
             WType::Boolean => Type::Boolean,
             WType::Text => Type::Text,
-            WType::List => Type::List,
+            WType::List => Type::list_any(),
             WType::Effect => Type::Effect,
             WType::Any => Type::Any,
         }
@@ -212,9 +216,9 @@ impl WUnit {
             inputs: u
                 .inputs
                 .iter()
-                .map(|p| WPort { name: p.name.clone(), ty: WType::from_core(p.ty) })
+                .map(|p| WPort { name: p.name.clone(), ty: WType::from_core(&p.ty) })
                 .collect(),
-            output: u.output.map(WType::from_core),
+            output: u.output.as_ref().map(WType::from_core),
         }
     }
 
@@ -306,7 +310,7 @@ pub fn compatible(src: JsValue, dst: JsValue) -> Result<bool, JsError> {
 /// one `into_core` and delegate to `holon_core::compatible`. Fully-qualified so it does not collide
 /// with the exported `compatible` above.
 fn types_compatible(s: WType, d: WType) -> bool {
-    holon_core::compatible(s.into_core(), d.into_core())
+    holon_core::compatible(&s.into_core(), &d.into_core())
 }
 
 // ── The evaluator ────────────────────────────────────────────────────────────────────────────

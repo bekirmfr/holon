@@ -37,7 +37,7 @@ impl Value {
             Value::Number(_) => Type::Number,
             Value::Boolean(_) => Type::Boolean,
             Value::Text(_) => Type::Text,
-            Value::List(_) => Type::List,
+            Value::List(_) => Type::list_any(),
             Value::Effect { .. } => Type::Effect,
         }
     }
@@ -52,7 +52,7 @@ mod tests {
         assert_eq!(Value::Number(1.0).ty(), Type::Number);
         assert_eq!(Value::Boolean(true).ty(), Type::Boolean);
         assert_eq!(Value::Text("x".into()).ty(), Type::Text);
-        assert_eq!(Value::List(vec![]).ty(), Type::List);
+        assert_eq!(Value::List(vec![]).ty(), Type::list_any());
         assert_eq!(
             Value::Effect { sink: "egress".into(), payload: Box::new(Value::Text("hi".into())) }.ty(),
             Type::Effect

@@ -55,7 +55,7 @@ fn sourced_mock(unit: &Unit) -> Option<Unit> {
         Type::Boolean => ("Boolean", "false"),
         Type::Text | Type::Any => ("Text", ""),
         // An empty-list constant: `list` with no inputs computes to `[]`.
-        Type::List => return Some(constant("list", vec![], unit.output.clone())),
+        Type::List(_) => return Some(constant("list", vec![], unit.output.clone())),
         // A sourced leaf never outputs an Effect (effects are constructed by sinks, the
         // performed side, not the sourced side) — so there is nothing to mock.
         Type::Effect => return None,

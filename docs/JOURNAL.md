@@ -2296,3 +2296,44 @@ clean.
 **Next inch.** Boundary-input fields — supply an open composite's promoted inputs at eval time, to run
 reusable units through their interface. Then variadic-arity editing of `list`/`add`/… (gated on core
 marking which leaves are variadic — the `interface_of` discipline).
+
+---
+
+## 2026-06-30 · P1.3.2 inch 1 — the composed-type-expression language (`List<T>`) · *(identity)*
+
+**Built (core).** `Type` is now **recursive** — `List(Box<Type>)` — so it is `Clone`, not `Copy`.
+The encoder/decoder recurse (a `List` tag is followed by its element type); `ENCODING_VERSION → 2`;
+and a **fail-closed decode depth bound** (`MAX_TYPE_DEPTH = 32`, `DecodeError::TypeTooDeep`) closes the
+one new attack surface a recursive decoder opens over untrusted bytes. `compatible` is lifted to
+`(&Type, &Type)`: **structural equality + the `Any` wildcard, recursive** (`List<A>` fits `List<B>` iff
+`A` fits `B`) — §5's rule nested, no inference, no subtyping. The catalog maps every bare list to
+`List<Any>` (`Type::list_any()`) — **behaviour-identical**. `derive_and_freeze` now clones inner port
+types, so **bottom-up promotion carries composed types faithfully** (I4). The wasm bridge stays flat
+(`List<T> → WType::List → List<Any>`) — lossless now, since core only holds `List<Any>`; the recursive
+`WType` is the editor inch.
+
+**Scope — `List<T>` only (a grounded reconsideration of the L4).** The L4 had said land `List`/
+`Product`/`Sum` types together to avoid a second version bump. Grounding the real code dissolved that:
+the de-Copy is paid by `List` *alone*, and a second `ENCODING_VERSION` bump is **free** while the corpus
+is empty. So landing `Product`/`Sum` types speculatively bought nothing and would be machinery ahead of
+use (no constructor can produce one yet). They fold into their value-constructor inches instead.
+
+**Identity — "settle before you mint" held.** Nothing persisted, so the `v1→v2` bump moved every hash
+for free; no genesis-hash manifest needed re-pinning (none existed — a hash-assertion test would have
+gone red). The proof of safety: **all 208 prior tests pass unchanged under the re-encoding** —
+`List<Any>` is behaviour-identical to the old bare `List`. The new capability moved identity without
+moving meaning.
+
+**The de-Copy ripple.** ~20 mechanical sites across the workspace — almost all `Type::List →
+Type::list_any()` in test fixtures, plus two `E0507` clones the compiler pinpointed (`p.output.clone()`
+in a hash collision test; `unit.output.clone()` in `promote::open_param`). All compiler-guided; closed
+in two rounds.
+
+**Tests prove.** **212 native** (167 core — **+4**: `list_type_round_trips`,
+`bare_list_encodes_as_list_any`, `deep_type_is_rejected`, `compatible_is_structural`; 38 host; 7
+wasm-native) / **12 wasm-target**, all green. `wasm-pack build` + `tsc -b` clean.
+
+**Next.** The value-constructor inches — `pair`/tuple (`Product`, rides the `List` value) then
+`Sum`/`Option` (the tagged value kind) — each a free re-bump; or the editor inch (recursive `WType` +
+type-as-colour + boundary-input fields). The composable type *language* is present; the constructors
+light up the remaining generators.
