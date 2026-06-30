@@ -14,7 +14,7 @@
 
 **LOCAL-FIRST P3 MARKETPLACE COMPLETE:** **P3.1.1 ✅** publish · **P3.2.1 ✅** inspect · **P3.3.1 ✅** memoize · **P3.5.1 ✅** fork · **P3.6.1 ✅** advise — the full local-first operation set, green, built almost entirely from pre-existing invariants (exposure not invention), over the P3.8.1 store.
 
-**Deferred — networked tier:** shared trustless cache (P3.3.2, the differentiator; key-derivation half built), reputation-by-adoption (P3.4.1), author-identity (P3.7.1), networked CAS (P3.8.2). Foundations all in place. **Accumulated refactor:** a `Store`→`Resolver` adapter (cleans fork's `materialize`, enables a 2-line host `advise(hash)`) — appeared 4× now, earned. Both stabilize the trust root; the fork is deferred since R1–R5 are required either way. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin (needs L4) → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
+**Deferred — networked tier:** shared trustless cache (P3.3.2, the differentiator; key-derivation half built), reputation-by-adoption (P3.4.1), author-identity (P3.7.1), networked CAS (P3.8.2). Foundations all in place. **`Store`→`Resolver` ownership fork — SET ASIDE with a trigger** (see `P3-store-resolver-fork-L4.md`): a literal adapter can't exist (trait borrows `&Unit`, store yields owned), the duplication is *one* place not four (rule of one), and the `Cow`-trait change it'd require is a *perf optimization for lazy `eval`-against-store*, not debt — reach for it only when a deploy-from-store path exists AND eager `materialize` profiles as the bottleneck; otherwise the cheap eager `materialize` helper covers it. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
 
 ---
 
@@ -847,7 +847,7 @@ future change can tell a real defect from an invariant doing its job.
 - **Compile fix:** `to_hex` ungated from #[cfg(test)] (fork is first library fn-param *writer*).
 - **Tests (+5 core=140, +2 host=29):** direct-child / deep+sharing / fn-param / replace-all /
   not-in-closure→None; fork-repins-and-republishes / target-not-in-closure-errors.
-- **Deferred:** provenance tracking, param-forking (promote's domain), Store→Resolver adapter.
+- **Deferred:** provenance tracking, param-forking (promote's domain); the Store→Resolver fork (set aside — see P3-store-resolver-fork-L4.md).
 
 ---
 
@@ -856,7 +856,7 @@ future change can tell a real defect from an invariant doing its job.
   `capabilities` (saturated set), `is_pure`, `is_replayable`, `dependency_count` (closure size).
   Advisory = facts not gates; derived (I8), can't lie. Pure exposure, no new mechanism.
 - **Decision:** core `advise` over a Resolver only; no host `Registry::advise(hash)` wrapper yet
-  (wants the store→resolver materialize — defer to the adapter refactor).
+  (wants the store→resolver materialize — set aside; see P3-store-resolver-fork-L4.md).
 - **Tests (+5 core = 145):** pure-leaf / sink-impure-with-cap / driver-impure-but-replayable /
   state-not-replayable / dependency-count = closure size.
 
@@ -867,8 +867,15 @@ Operations: publish · inspect · memoize · fork · advise (+ store P3.8.1). 17
 (145 core + 29 host). Built almost entirely from invariants that predate them.
 
 **Next agenda (when resumed):**
-1. `Store`→`Resolver` adapter refactor (cleans fork `materialize`; enables host `advise(hash)`,
-   `inspect(hash)`, etc. as 2-liners). Earned by 4 appearances of the duality.
+1. **`Store`→`Resolver` ownership fork — SET ASIDE with a trigger** (see
+   `P3-store-resolver-fork-L4.md`). NOT an adapter (trait borrows `&Unit`, store yields owned —
+   impossible as named); NOT accruing debt (the materialize glue is in *one* place, fork — rule of
+   one). It's a `Cow`-trait change that's a *perf optimization for lazy `eval`-against-store* only.
+   **Trigger (all three):** a deploy-from-store path that runs `eval` against the `Store` exists;
+   programs are large/branchy enough that `select`/`fold` pruning skips a meaningful fraction;
+   eager `materialize` *profiles* as the bottleneck. Until then, when a 2nd caller of the closure
+   walk lands (host `advise(hash)`/`inspect(hash)`), extract the cheap eager `materialize` helper —
+   that covers the whole-closure ops; `Cow` buys them nothing.
 2. Networked tier: P3.3.2 shared trustless cache (the differentiator — key-derivation done in
    P3.3.1), P3.4.1 reputation-by-adoption, P3.7.1 author-identity, P3.8.2 networked CAS.
 3. (Parallel) P4 editor (WASM/canvas).
