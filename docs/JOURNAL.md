@@ -2147,3 +2147,47 @@ prediction (it dropped ~18%, not "barely"), and the adapter regression above.
 **Lesson.** A new control that routes around a problem the refactor itself introduced is the signal
 to stop, not to patch. Measure the actual goal before committing; an unmeasured speculative win does
 not earn structural complexity.
+
+---
+
+## 2026-06-30 · projection — canvas → composite (the provable path) · *(P4.1)*
+
+**Built.** `Evaluator::project` (holon-wasm) = core's `default_spec` ∘ `derive_and_freeze` over the
+evaluator's own workspace resolver, returning the composite `WUnit`; a JS-free `project_core` heart so
+it tests on both targets. Editor (`App.tsx`): an on-demand **project** button marshals the wired
+canvas — children by index (drop view-only `id`/`position`), wires → core `Edge`s by index (handle
+*name* → port *index*, from the catalog interface each node already carries) — calls `project`, and
+shows the composite's content hash (or a surfaced `EncapError`). `holon.ts` needed no change: it
+already exports `Evaluator`, `buildPreimage`, and `WEdge`/`WUnit`, and `insert` returns the hash.
+
+**The one decision.** The editor marshals *structure only*; core derives everything that is identity
+or interface — which inputs promote, the exposed output, the `BOUNDARY` edges, the types — and
+validates and freezes. The editor re-decides none of it (one decider). `default_spec`/
+`derive_and_freeze` already existed and were tested in core (P1.5.1); the bridge method is exactly
+those two calls, nothing reimplemented in TS.
+
+**Leaf closed.** The cosmetic/structural seam the design doc names is now operational: a visually-built
+graph has a real content address. The editor mints units; identity is presentation-invariant.
+
+**Proven.** +1 native (`project_native`) + 2 wasm-target (`project_wasm` parity;
+`project_crosses_js_boundary` — the full JS round-trip equals the JS-free `project_core`, same
+canonical bytes, and evals to 5) → **163c + 38h + 7w = 208 native; 12 wasm-target**. core/host
+unchanged (bridge only). The canvas behaviour is **browser-confirmed** (no React runner): a lone `add`
+→ a hash with 2 inputs; **move it → same hash** (I5, cosmetic); a second unwired `add` → an
+**ambiguous error**, surfaced not guessed; wire the two → a **new hash**, 3 inputs.
+
+**Forks / decisions pinned.**
+- **Combined, not split.** `project` exposes only the canonical proposal then freeze. The *split* —
+  expose `default_spec` + `derive_and_freeze` separately so the UI can reorder/rename promoted inputs
+  and choose the exposed output — is earned by the encapsulation-UX inch (**P4.3**; recorded in the
+  PLAN `P4.3.1` leaf). Until then an ambiguous boundary is a **surfaced error, never auto-resolved**
+  (no heuristic control over a systemic choice).
+- **On-demand, not live.** A button; live-on-change is a render nicety for later.
+- **`from_port` hard-zero.** Every genesis primitive has one output (the `"out"` handle); multi-output
+  composites are a deferred fork, and that is the single line that learns output-handle-name → index
+  when they arrive.
+- **One persistent `Evaluator` per canvas** (`useMemo`): re-inserting a node is idempotent (same unit
+  ⇒ same hash), and the projected composite stays inserted — exactly what the live-eval inch needs.
+
+**Next inch.** Live eval through the one `Evaluator` (run the projected composite — already inserted —
+whole-graph; per-node values deferred), then param editing.

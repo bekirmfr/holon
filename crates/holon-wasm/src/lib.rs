@@ -17,8 +17,8 @@
 //!   keys and `===`-comparable, which `Uint8Array` is not.
 
 use holon_core::{
-    decode_preimage, encode_preimage, genesis_units, hash_unit, parse_hash, Edge, Hash, MapResolver,
-    Param, Port, Type, Unit, UnitBody, Value,
+    decode_preimage, default_spec, derive_and_freeze, encode_preimage, genesis_units, hash_unit,
+    parse_hash, Edge, EncapError, Hash, MapResolver, Param, Port, Type, Unit, UnitBody, Value,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -350,6 +350,43 @@ impl Evaluator {
         let wout = out.as_ref().map(WValue::from_core);
         serde_wasm_bindgen::to_value(&wout).map_err(|e| JsError::new(&format!("output: {e}")))
     }
+
+    /// Project a placed graph into a composite (the editor's "compute this graph's unit + hash").
+    /// `children` = the inserted nodes' hex hashes; `edges` = inner child→child `WEdge[]`. Core
+    /// derives the boundary (`default_spec`) and freezes (`derive_and_freeze`) — never reimplemented
+    /// in TS (one decider). Returns the composite `WUnit`; the editor hashes it through the existing
+    /// `build_preimage` / `hash_unit_hex` path and later evaluates it. Fails closed: an ambiguous
+    /// output, or any validation error (cycle, duplicate source, type mismatch), throws.
+    pub fn project(&self, children: Vec<String>, edges: JsValue) -> Result<JsValue, JsError> {
+        let hashes: Vec<Hash> = children
+            .iter()
+            .map(|c| parse_hash(c).ok_or_else(|| JsError::new(&format!("bad child hash: {c}"))))
+            .collect::<Result<_, JsError>>()?;
+        let wedges: Vec<WEdge> = serde_wasm_bindgen::from_value(edges)
+            .map_err(|e| JsError::new(&format!("edges: {e}")))?;
+        let core_edges: Vec<Edge> = wedges
+            .into_iter()
+            .map(|e| Edge {
+                from_child: e.from_child,
+                from_port: e.from_port,
+                to_child: e.to_child,
+                to_port: e.to_port,
+            })
+            .collect();
+        let composite = self
+            .project_core(hashes, core_edges)
+            .map_err(|e| JsError::new(&format!("project: {e:?}")))?;
+        serde_wasm_bindgen::to_value(&WUnit::from_core(&composite))
+            .map_err(|e| JsError::new(&format!("unit: {e}")))
+    }
+
+    /// The JS-free heart of [`Evaluator::project`], so it runs on both targets: derive the canonical
+    /// boundary then freeze, both core's. `children` are inserted child hashes; `edges` are inner
+    /// child→child.
+    fn project_core(&self, children: Vec<Hash>, edges: Vec<Edge>) -> Result<Unit, EncapError> {
+        let spec = default_spec(&children, &edges, &self.resolver)?;
+        derive_and_freeze(children, edges, &spec, &self.resolver)
+    }
 }
 
 impl Default for Evaluator {
@@ -376,6 +413,46 @@ fn konst(v: &str) -> Unit {
         inputs: vec![],
         output: Some(Type::Number),
     }
+}
+
+#[cfg(test)]
+fn binop(name: &str) -> Unit {
+    Unit {
+        body: UnitBody::Primitive { name: name.into() },
+        params: vec![],
+        inputs: vec![
+            Port { name: "a".into(), ty: Type::Number },
+            Port { name: "b".into(), ty: Type::Number },
+        ],
+        output: Some(Type::Number),
+    }
+}
+
+#[cfg(test)]
+fn check_project() {
+    // Insert a binary `add`, project the one-node graph (no inner edges): default_spec promotes
+    // both inputs (a, b), derive_and_freeze exposes add's output — the composite is valid and runs.
+    let mut ev = Evaluator::new();
+    let add_pre = encode_preimage(&binop("add")).unwrap();
+    let hex = ev.insert(&add_pre).unwrap();
+    let h = parse_hash(&hex).unwrap();
+
+    let composite = ev.project_core(vec![h], vec![]).unwrap();
+    assert!(matches!(composite.body, UnitBody::Composite { .. }));
+    assert_eq!(composite.inputs.len(), 2); // a, b promoted to the boundary
+    assert_eq!(composite.output, Some(Type::Number));
+    assert!(holon_core::validate(&composite, &ev.resolver).is_ok());
+    assert_eq!(
+        holon_core::eval(
+            &composite,
+            &[Some(Value::Number(2.0)), Some(Value::Number(3.0))],
+            &ev.resolver,
+        ),
+        Some(Value::Number(5.0)),
+    );
+
+    // Two independent adds ⇒ two free outputs ⇒ no canonical output: surfaced as an error.
+    assert!(ev.project_core(vec![h, h], vec![]).is_err());
 }
 
 #[cfg(test)]
@@ -499,6 +576,8 @@ mod native_tests {
     fn primitive_catalog_native() { check_primitive_catalog(); }
     #[test]
     fn compatible_native() { check_compatible(); }
+    #[test]
+    fn project_native() { check_project(); }
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]
@@ -518,6 +597,36 @@ mod wasm_tests {
     fn primitive_catalog_wasm() { check_primitive_catalog(); }
     #[wasm_bindgen_test]
     fn compatible_wasm() { check_compatible(); }
+    #[wasm_bindgen_test]
+    fn project_wasm() { check_project(); }
+
+    // The full editor path across the JS boundary: insert an add, project the one-node graph, get the
+    // composite WUnit back, confirm it equals the JS-free project_core (same canonical bytes) and
+    // evaluates to 5.
+    #[wasm_bindgen_test]
+    fn project_crosses_js_boundary() {
+        let mut ev = Evaluator::new();
+        let add_pre = encode_preimage(&binop("add")).unwrap();
+        let hex = ev.insert(&add_pre).unwrap();
+
+        let edges_js = serde_wasm_bindgen::to_value(&Vec::<WEdge>::new()).unwrap();
+        let wcomp_js = ev.project(vec![hex.clone()], edges_js).unwrap();
+        let wcomp: WUnit = serde_wasm_bindgen::from_value(wcomp_js).unwrap();
+        let bridged = wcomp.into_core().unwrap();
+
+        let h = parse_hash(&hex).unwrap();
+        let native = ev.project_core(vec![h], vec![]).unwrap();
+        assert_eq!(encode_preimage(&bridged).unwrap(), encode_preimage(&native).unwrap());
+
+        assert_eq!(
+            holon_core::eval(
+                &bridged,
+                &[Some(Value::Number(2.0)), Some(Value::Number(3.0))],
+                &ev.resolver,
+            ),
+            Some(Value::Number(5.0)),
+        );
+    }
 
     // Eval through the JS boundary: JS inputs → Evaluator::eval → core eval → JS output.
     #[wasm_bindgen_test]

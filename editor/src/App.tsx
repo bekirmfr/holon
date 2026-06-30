@@ -10,6 +10,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  Panel,
   useNodesState,
   useEdgesState,
   useReactFlow,
@@ -20,7 +21,15 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { ensureReady, primitiveCatalog, compatible, type WUnit } from "./holon";
+import {
+  ensureReady,
+  primitiveCatalog,
+  compatible,
+  buildPreimage,
+  Evaluator,
+  type WUnit,
+  type WEdge,
+} from "./holon";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
@@ -107,6 +116,58 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
     [getNode, setEdges],
   );
 
+  // ── Projection ────────────────────────────────────────────────────────────────────────────────
+  // On demand, turn the wired canvas into a real core composite and show its content hash. The editor
+  // only marshals STRUCTURE — children by index, edges by index, handle name → port index — then
+  // hands it to core's default_spec + derive_and_freeze (behind Evaluator.project), which derive the
+  // boundary, validate, and freeze. The editor re-decides none of it (one decider). Cosmetic move ⇒
+  // same hash; rewire ⇒ new hash; an ambiguous or invalid graph ⇒ a surfaced error, never a guess.
+  const ev = useMemo(() => new Evaluator(), []);
+  const [projection, setProjection] = useState<{ hash: string; inputs: number } | null>(null);
+  const [projError, setProjError] = useState<string>("");
+
+  const onProject = useCallback(() => {
+    try {
+      // Child index = position in `nodes` — arbitrary, because core canonicalizes child order, so a
+      // cosmetic reorder cannot move the hash (I5). `id`/`position` are dropped here.
+      const indexOf = new Map(nodes.map((n, i) => [n.id, i]));
+
+      // Each node is the catalog primitive it was placed as → pinned child hashes (I3), index order.
+      const children = nodes.map((n) => {
+        const wunit: WUnit = {
+          body: { kind: "Primitive", name: n.data.name },
+          params: n.data.params,
+          inputs: n.data.inputs,
+          output: n.data.output,
+        };
+        return ev.insert(buildPreimage(wunit));
+      });
+
+      // Canvas wire → core edge by index. from_port is 0 (single output, the "out" handle); to_port
+      // is the named input's position in the target's interface (the editor holds that interface).
+      const wedges: WEdge[] = edges.map((e) => {
+        const from = indexOf.get(e.source);
+        const to = indexOf.get(e.target);
+        if (from === undefined || to === undefined) {
+          throw new Error("a wire references an unknown node");
+        }
+        const toPort = nodes[to].data.inputs.findIndex((p) => p.name === e.targetHandle);
+        if (toPort < 0) throw new Error(`unknown target port "${String(e.targetHandle)}"`);
+        return { from_child: from, from_port: 0, to_child: to, to_port: toPort };
+      });
+
+      // Core derives the boundary and freezes; insert returns the composite's content hash (and pins
+      // it for the live-eval inch). An EncapError — ambiguous output, cycle, type mismatch — throws.
+      const composite = ev.project(children, wedges) as WUnit;
+      const hash = ev.insert(buildPreimage(composite));
+      setProjection({ hash, inputs: composite.inputs?.length ?? 0 });
+      setProjError("");
+    } catch (err) {
+      setProjection(null);
+      setProjError(err instanceof Error ? err.message : String(err));
+    }
+  }, [nodes, edges, ev]);
+
   return (
     <div className="hl-canvas" onDrop={onDrop} onDragOver={onDragOver}>
       <ReactFlow<PrimitiveNodeType>
@@ -125,6 +186,43 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
       >
         <Background variant={BackgroundVariant.Lines} gap={26} color="#1b2a45" />
         <Controls showInteractive={false} />
+        <Panel position="top-right">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+            <button
+              onClick={onProject}
+              disabled={nodes.length === 0}
+              style={{
+                font: "inherit",
+                fontSize: 12,
+                letterSpacing: "0.04em",
+                padding: "5px 12px",
+                color: "#0e1a2f",
+                background: "#6fd3e0",
+                border: "none",
+                borderRadius: 3,
+                cursor: nodes.length === 0 ? "default" : "pointer",
+                opacity: nodes.length === 0 ? 0.4 : 1,
+              }}
+            >
+              project
+            </button>
+            {projection && (
+              <div style={{ fontSize: 12, color: "#9fb4d4", textAlign: "right", lineHeight: 1.4 }}>
+                <div style={{ color: "#6fd3e0" }} title={projection.hash}>
+                  {projection.hash.slice(0, 12)}…
+                </div>
+                <div>
+                  {projection.inputs} input{projection.inputs === 1 ? "" : "s"}
+                </div>
+              </div>
+            )}
+            {projError && (
+              <div style={{ fontSize: 12, color: "#e0916f", maxWidth: 240, textAlign: "right" }}>
+                {projError}
+              </div>
+            )}
+          </div>
+        </Panel>
       </ReactFlow>
       {nodes.length === 0 && (
         <div className="hl-canvas__empty">drag a primitive here to place it</div>
