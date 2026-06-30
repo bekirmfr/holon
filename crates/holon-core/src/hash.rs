@@ -26,9 +26,9 @@ use crate::BOUNDARY;
 
 /// Bumped whenever the canonical encoding changes in any way. Mixed into every
 /// preimage so a unit hashed under one version can never collide with the same
-/// unit hashed under another. v2: `Type` became recursive (`List<T>` carries an
-/// element type), so the type encoding gained a recursive tail (P1.3.2).
-pub const ENCODING_VERSION: u8 = 2;
+/// unit hashed under another. v2: `List<T>` carries an element type. v3: `Product`
+/// (positional n-ary tuple) joins the recursive type encoding (P1.3.2).
+pub const ENCODING_VERSION: u8 = 3;
 
 /// A 32-byte content hash. This is a unit's identity; the version label in the
 /// registry is merely a friendly alias that resolves *to* one of these.
@@ -60,6 +60,11 @@ pub enum Type {
     Text,
     /// A homogeneous list of `T`. The bare/legacy list is `List<Any>` ([`Type::list_any`]).
     List(Box<Type>),
+    /// A positional, n-ary product (tuple). `Pair<A,B>` = `Product([A, B])`; `Unit` = `Product([])`.
+    /// Compared by **arity + position** — no field names, so no width/depth subtyping. A product
+    /// *value* rides the list value (eval is untyped); only the declared type distinguishes it from
+    /// a `List`. `Dictionary<K,V>` is sugar for `List<Product([K, V])>`.
+    Product(Vec<Type>),
     /// A settled effect *request* (representation B) — the type of a sink's output. It
     /// matches only itself (or `Any`), so an effect can flow to a boundary output or into
     /// `map`, but **never into a sink's payload slot**: a request cannot be re-consumed as
@@ -86,12 +91,14 @@ impl Type {
             Type::List(_) => 4,
             Type::Any => 5,
             Type::Effect => 6, // appended last — tags 1-5 unchanged, so no existing hash moves
+            Type::Product(_) => 7, // n-ary, recursive — element types follow the tag, like List
         }
     }
 
     /// Inverse of [`tag`](Self::tag) for the **nullary** types only. `None` for a byte
-    /// that names no known nullary type — including `4` (`List`), which is recursive and
-    /// is decoded by [`Decoder::ty`], not here. Must mirror `tag` for the nullary cases.
+    /// that names no known nullary type — including `4` (`List`) and `7` (`Product`), which
+    /// carry element types and are decoded by [`Decoder::ty`], not here. Must mirror `tag`
+    /// for the nullary cases.
     fn from_tag(tag: u8) -> Option<Type> {
         match tag {
             1 => Some(Type::Number),
@@ -99,7 +106,7 @@ impl Type {
             3 => Some(Type::Text),
             5 => Some(Type::Any),
             6 => Some(Type::Effect),
-            _ => None, // 4 (List) carries an element type — the decoder reads it recursively
+            _ => None, // 4 (List) / 7 (Product) carry element types — the decoder reads them
         }
     }
 }
@@ -260,14 +267,24 @@ impl Encoder {
         self.bytes(s.as_bytes())
     }
 
-    /// Write a type: its head tag, then — for `List<T>` — its element type, recursively.
-    /// In-memory types come from `decode` (depth-bounded) or trusted core construction
-    /// (shallow), so the encoder is not depth-limited; the untrusted entry point is `decode`.
-    fn ty(&mut self, t: &Type) {
+    /// Write a type: its head tag, then — for the recursive constructors — its element type(s).
+    /// `List<T>` writes one inner type; `Product([T…])` writes a `u32` count then each element.
+    /// In-memory types come from `decode` (depth-bounded) or trusted core construction (shallow),
+    /// so the encoder is not depth-limited; the untrusted entry point is `decode`. Fallible only
+    /// to refuse a product wider than the `u32` budget (it never silently truncates).
+    fn ty(&mut self, t: &Type) -> Result<(), EncodeError> {
         self.buf.push(t.tag());
-        if let Type::List(inner) = t {
-            self.ty(inner);
+        match t {
+            Type::List(inner) => self.ty(inner)?,
+            Type::Product(elems) => {
+                self.u32(elems.len().try_into().map_err(|_| EncodeError::FieldTooLong)?);
+                for el in elems {
+                    self.ty(el)?;
+                }
+            }
+            _ => {}
         }
+        Ok(())
     }
 }
 
@@ -480,12 +497,12 @@ pub fn encode_preimage(unit: &Unit) -> Result<Vec<u8>, EncodeError> {
     for port in &unit.inputs {
         e.tag(TAG_PORT);
         e.str(&port.name)?;
-        e.ty(&port.ty);
+        e.ty(&port.ty)?;
     }
     match &unit.output {
         Some(t) => {
             e.buf.push(1);
-            e.ty(t);
+            e.ty(t)?;
         }
         None => e.buf.push(0),
     }
@@ -570,11 +587,23 @@ impl<'a> Decoder<'a> {
             return Err(DecodeError::TypeTooDeep);
         }
         let t = self.u8()?;
-        if t == 4 {
-            // List: tag 4 (must match Type::tag) is followed by the element type.
-            Ok(Type::List(Box::new(self.ty_at(depth + 1)?)))
-        } else {
-            Type::from_tag(t).ok_or(DecodeError::BadType(t))
+        match t {
+            4 => {
+                // List: tag 4 (must match Type::tag) is followed by the element type.
+                Ok(Type::List(Box::new(self.ty_at(depth + 1)?)))
+            }
+            7 => {
+                // Product: tag 7 is followed by a u32 element count, then that many types. The
+                // count is untrusted, so elements are pushed as read (never pre-allocated) — a
+                // lying count hits UnexpectedEof, and each element is depth-bounded.
+                let n = self.u32()?;
+                let mut elems = Vec::new();
+                for _ in 0..n {
+                    elems.push(self.ty_at(depth + 1)?);
+                }
+                Ok(Type::Product(elems))
+            }
+            _ => Type::from_tag(t).ok_or(DecodeError::BadType(t)),
         }
     }
 }
@@ -920,6 +949,18 @@ mod tests {
         let mut u = prim("add");
         u.inputs[0].ty = Type::List(Box::new(Type::List(Box::new(Type::Number))));
         u.output = Some(Type::list_any());
+        let bytes = encode_preimage(&u).unwrap();
+        assert_eq!(decode_preimage(&bytes).unwrap(), u);
+        assert_eq!(encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn product_type_round_trips() {
+        // A Product on a port (Product([Number, List<Any>])) and the empty product (Unit) as output
+        // survive encode∘decode byte-for-byte and structurally.
+        let mut u = prim("add");
+        u.inputs[0].ty = Type::Product(vec![Type::Number, Type::list_any()]);
+        u.output = Some(Type::Product(vec![])); // Unit = the 0-ary product
         let bytes = encode_preimage(&u).unwrap();
         assert_eq!(decode_preimage(&bytes).unwrap(), u);
         assert_eq!(encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap(), bytes);

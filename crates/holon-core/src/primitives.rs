@@ -162,6 +162,15 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             Some(Value::Boolean(as_list(l)?.is_empty()))
         }
 
+        // ── product (P1.3.2 inch 2): pair is the binary Product constructor. A product VALUE rides
+        // the list value (eval is untyped) — pair(a,b) builds the same Value::List a 2-list does;
+        // only the declared TYPE differs (Product([A,B]) vs List<T>), and the recursive checker keeps
+        // them apart. So Dictionary<K,V> is List<Pair<K,V>>, expressible with no new value kind. ──
+        "pair" => {
+            let [a, b] = inputs else { return None };
+            Some(Value::List(vec![(*a).clone(), (*b).clone()]))
+        }
+
         // ── boundary sink (Fork B): a sink purely *constructs its request* — representation
         // B: a self-describing `Effect { sink-name, payload }`. The capability is *derived*
         // from the name by the host (`capabilities_of`), never stored in the value. Because
@@ -386,6 +395,13 @@ mod tests {
         );
         assert_eq!(compute("ingress", &[], &[]), None); // ingress is sourced, not computed
     }
+    #[test]
+    fn pair_builds_a_pair() {
+        // A product value rides the list value: pair(a,b) is a 2-list. Wrong arity ⇒ None.
+        assert_eq!(compute("pair", &[&num(1.0), &txt("x")], &[]), Some(list(vec![num(1.0), txt("x")])));
+        assert_eq!(compute("pair", &[&num(1.0)], &[]), None);
+    }
+
     #[test]
     fn unknown_is_none() {
         assert_eq!(compute("frobnicate", &[], &[]), None);

@@ -6,7 +6,7 @@
 //! so the genesis set is defined *by code*, not re-asserted by hand in every test and (next) the
 //! editor's palette. Same fail-closed contract: an unknown name yields `None`.
 //!
-//! The 34 leaves and their grouping are §13a of the design doc. The *types* are read off `compute`'s
+//! The 35 leaves and their grouping are §13a of the design doc. The *types* are read off `compute`'s
 //! arity/coercions and `eval`'s higher-order handling: variadic leaves (`add`, `and`, `concat`,
 //! `list`, …) get their canonical arity 2 (true variadic editing is a later editor concern);
 //! polymorphic leaves use [`Type::Any`] (the wiring check already treats `Any` as compatible);
@@ -25,6 +25,8 @@ pub const GENESIS: &[&str] = &[
     "concat", "uppercase", "lowercase", "text_length", "slice", "index_of",
     // pure — list convenience, demotion-deferred (6)
     "list", "get", "append", "length", "sum", "join",
+    // pure — product constructor (1)
+    "pair",
     // drivers — sourced, no compute (3)
     "clock", "random", "ingress",
     // state cell (2)
@@ -96,8 +98,17 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "get" => prim(vec![port("list", Type::list_any()), port("index", Number)], vec![], Any),
         "append" => prim(vec![port("list", Type::list_any()), port("item", Any)], vec![], Type::list_any()),
         "length" => prim(vec![port("list", Type::list_any())], vec![], Number),
-        "sum" => prim(vec![port("list", Type::list_any())], vec![], Number),
-        "join" => prim(vec![port("list", Type::list_any()), port("sep", Text)], vec![], Text),
+        // sum/join are monomorphic in their element, so they declare it precisely: a typed
+        // List<Text> is now refused by sum at wire time (core validate), caught earlier than the
+        // old runtime None. A constructed List<Any> still bridges in (the Any wildcard).
+        "sum" => prim(vec![port("list", Type::List(Box::new(Number)))], vec![], Number),
+        "join" => prim(vec![port("list", Type::List(Box::new(Text))), port("sep", Text)], vec![], Text),
+
+        // ── pure — product ──
+        // pair: the binary Product constructor. Output Product([Any, Any]); the value rides the list
+        // value, so its compute is list-of-two — only the declared TYPE differs from `list`, and the
+        // recursive checker keeps Product and List apart. Dictionary<K,V> is sugar for List<Pair>.
+        "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
 
         // ── drivers — sourced (no inputs; host-supplied). Concrete where unambiguous, `Any` where
         //    the payload is genuinely polymorphic (the editor may specialize later). ──
@@ -125,7 +136,7 @@ pub fn genesis_units() -> Vec<Unit> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{capabilities_of, eval, MapResolver, Value};
+    use crate::{capabilities_of, compatible, eval, MapResolver, Value};
 
     #[test]
     fn interface_of_unknown_is_none() {
@@ -136,9 +147,9 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_34_leaves() {
+    fn genesis_has_35_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
-        assert_eq!(GENESIS.len(), 34);
+        assert_eq!(GENESIS.len(), 35);
     }
 
     #[test]
@@ -179,5 +190,28 @@ mod tests {
 
         let not = interface_of("not").unwrap();
         assert_eq!(eval(&not, &[Some(Value::Boolean(true))], &r), Some(Value::Boolean(false)));
+    }
+
+    #[test]
+    fn sum_and_join_are_element_typed() {
+        // The monomorphic list leaves declare their element type precisely (P1.3.2 inch 1 follow-on).
+        let sum = interface_of("sum").unwrap();
+        assert_eq!(sum.inputs[0].ty, Type::List(Box::new(Type::Number)));
+        let join = interface_of("join").unwrap();
+        assert_eq!(join.inputs[0].ty, Type::List(Box::new(Type::Text)));
+
+        // The tightening bites: a typed List<Text> is refused by sum, but a constructed List<Any>
+        // (what the `list` constructor produces) still bridges in — so existing graphs keep working.
+        assert!(!compatible(&Type::List(Box::new(Type::Text)), &sum.inputs[0].ty));
+        assert!(compatible(&Type::list_any(), &sum.inputs[0].ty));
+    }
+
+    #[test]
+    fn pair_declares_a_product() {
+        // The binary product constructor declares Product([Any, Any]) — its value rides the list
+        // value, but its type is a Product, kept distinct from List by the checker.
+        let pair = interface_of("pair").unwrap();
+        assert_eq!(pair.inputs.len(), 2);
+        assert_eq!(pair.output, Some(Type::Product(vec![Type::Any, Type::Any])));
     }
 }

@@ -59,6 +59,7 @@ fn sourced_mock(unit: &Unit) -> Option<Unit> {
         // A sourced leaf never outputs an Effect (effects are constructed by sinks, the
         // performed side, not the sourced side) — so there is nothing to mock.
         Type::Effect => return None,
+        Type::Product(_) => return None,
     };
     Some(constant(
         "const",

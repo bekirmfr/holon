@@ -53,6 +53,9 @@ pub fn compatible(src: &Type, dst: &Type) -> bool {
     match (src, dst) {
         (_, Type::Any) | (Type::Any, _) => true,
         (Type::List(a), Type::List(b)) => compatible(a, b),
+        (Type::Product(a), Type::Product(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| compatible(x, y))
+        }
         _ => src == dst, // scalar equality (Number / Boolean / Text / Effect)
     }
 }
@@ -255,6 +258,12 @@ mod tests {
         assert!(!compatible(&list(list(Text)), &list(list(Number))));
         // A list is not a scalar.
         assert!(!compatible(&list(Number), &Number));
+        // Product: arity + position, Any wildcard at each slot; a Product is not a List.
+        let pair = |a: Type, b: Type| Type::Product(vec![a, b]);
+        assert!(compatible(&pair(Number, Text), &pair(Number, Any)));
+        assert!(!compatible(&pair(Number, Text), &pair(Number, Number)));
+        assert!(!compatible(&pair(Number, Text), &Type::Product(vec![Number]))); // arity
+        assert!(!compatible(&pair(Number, Text), &list(Number))); // Product ≠ List
     }
 
     #[test]
