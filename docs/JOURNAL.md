@@ -2113,3 +2113,37 @@ and its own before/after numbers, not braided in here.
 
 **Next.** Decide whether the `eval_composite` by-reference inch is worth taking, or return to the
 P4 projection frontier.
+
+---
+
+## 2026-06-30 · eval_composite by reference — tried and reverted (a dead end, kept for the record)
+
+**What we tried.** Push the firing-rule inch's by-reference gather *into* `eval_composite`, so a
+composed inspector (`head`/`sum` inside a composite) is O(1), not just a bare one — and as a bonus
+stop `map`/`fold` cloning each list element. Shape: keep the public `eval(&[Option<Value>])`, add a
+private `eval_ref(&[Option<&Value>])` worker that composite gather, `map`, and `fold` recurse
+through; the composite scratch is borrowed, not cloned.
+
+**It was correct** (163/38/6 + 10 wasm-target green). The borrow-checker fear was unfounded: `eval`
+returns an owned `Value`, so the scratch borrow that feeds a child is released before the next write.
+
+**But the bench said no.** The first cut regressed *every* primitive eval by ~24 ns (≈40 → 64 ns,
+flat across sizes): the `eval` adapter allocated a `Vec<Option<&Value>>` on every call, on top of
+the primitive arm's own `Vec<&Value>`. A fast-path in `eval` (bare primitives gather straight from
+owned inputs, skipping the adapter) restored the floor — but that patch was the tell. The
+eval/eval_ref split *created* the allocation, and the fast-path was a control bolted on to route
+around it: a hedge against the owned public `eval`, not a fix to a real defect.
+
+**And the win never justified the cost.** The stated goal — composed inspectors O(1) — stayed
+unmeasured (no composite-wrapped bench case existed), and memoization blunts it anyway: the O(n)
+clone is paid once, then served from cache. The one cleanly-attributable gain — `map`/`fold`
+skipping the per-element clone — was ~5–10%. Not enough to earn a split in the evaluator (the most
+invariant-critical file) plus a symptom-quieting fast-path.
+
+**Reverted.** Kept the firing-rule inch (bare inspectors O(1), `native_sum` −91%); evaluator left
+simple. Two missteps along the way, both caught by measurement and owned: a wrong `wrapping_add`
+prediction (it dropped ~18%, not "barely"), and the adapter regression above.
+
+**Lesson.** A new control that routes around a problem the refactor itself introduced is the signal
+to stop, not to patch. Measure the actual goal before committing; an unmeasured speculative win does
+not earn structural complexity.
