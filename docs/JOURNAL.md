@@ -2337,3 +2337,49 @@ wasm-native) / **12 wasm-target**, all green. `wasm-pack build` + `tsc -b` clean
 `Sum`/`Option` (the tagged value kind) — each a free re-bump; or the editor inch (recursive `WType` +
 type-as-colour + boundary-input fields). The composable type *language* is present; the constructors
 light up the remaining generators.
+
+---
+
+## 2026-07-01 · P1.3.2 inch 2 — `Product` (the positional tuple) + the `pair` constructor · *(types compose)*
+
+**Built (core).** `Type` gains a second recursive constructor — `Product(Vec<Type>)` (tag 7): a
+`u32`-count-prefixed list of element types, decoded under the same `MAX_TYPE_DEPTH` bound and with **no
+pre-allocation from the untrusted count** (a lying count hits `UnexpectedEof`). `compatible` gets the
+product arm — **arity + position, `Any` at each slot, recursive** — and a `Product` is never a `List`.
+`Encoder::ty` turned fallible (`Result<(), EncodeError>`) so a product wider than the `u32` budget is
+**refused, not silently truncated** — the `FieldTooLong` discipline the child/edge counts already use.
+`ENCODING_VERSION → 3`.
+
+**`pair` — a new genesis leaf (34 → 35).** The binary product constructor: pure (∅ manifest), declares
+`(a: Any, b: Any) -> Product([Any, Any])`. Its compute **rides the list value** — `pair(a,b)` builds the
+same `Value::List` a 2-list does — so there is **no new `Value` variant, no memo encoding change, no
+`value.rs` change at all**. Only the declared *type* tells a pair from a list, and the recursive checker
+keeps them apart. The payoff: **`Dictionary<K,V>` = `List<Product([K, V])>`** — the composable shape this
+fork set out to reach, with zero new runtime machinery.
+
+**Type-mostly, by design.** The whole capability lives in the type language (declare / encode / check /
+promote) plus one constructor; the value layer is untouched. That is the line the L4 drew — `Product`
+rides `List`; `Sum` (next inch) is the one that earns a genuinely new value kind (the runtime tag).
+
+**Inch-1 follow-on, folded in.** `sum` and `join` tightened from `List<Any>` to **`List<Number>` /
+`List<Text>`** — the first place `List<T>`'s precision bites: a typed `List<Text>` is now refused by `sum`
+at wire time (core `validate`), while a constructed `List<Any>` still bridges in (the `Any` wildcard), so
+every existing `list → sum` graph keeps working.
+
+**Editor stays coarse.** The flat bridge maps `Product → WType::List` (forced by exhaustiveness, and
+honest — a product is list-shaped), so an editor-placed `pair` behaves like `list` until the
+recursive-`WType` editor inch. Element types are precise in core's `validate` now, in the editor then —
+the same core-precise / editor-coarse staging as `sum`/`join`.
+
+**Ripple.** Two compiler-named edits: `simulate.rs` gained `Type::Product(_) => return None` (no sourced
+leaf outputs a product — unreachable, fail-closed like the `Effect` arm), and the two wasm catalog-count
+assertions moved 34 → 35. The `v2→v3` bump moved every hash again, free (nothing persisted, no manifest;
+parity tests compare values to each other, not fixed hex).
+
+**Tests prove.** **216 native** — 171 core (**+4** since inch 1: `sum_and_join_are_element_typed`,
+`product_type_round_trips`, `pair_declares_a_product`, `pair_builds_a_pair`; `compatible_is_structural`
+extended), 38 host, 7 wasm-native — / **12 wasm-target**, all green.
+
+**Next.** `Sum`/`Option` — the one inch in this fork that adds a genuinely new **value kind** (a runtime
+tag): it touches `value.rs` and the memo value-encoding, unlike `pair`. Then the editor inch (recursive
+`WType` + type-as-colour + boundary-input fields).

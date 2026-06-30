@@ -244,12 +244,36 @@ moves to **P2.4**. The Language is eager; the OS decides when effects fire.
 
 ---
 
+### P1.3.2 · inch 2 — `Product` (the positional tuple) + the `pair` constructor (DONE; types compose, green)
+- **`Type::Product(Vec<Type>)`** (tag 7) — `u32`-count-prefixed recursive encode/decode, same
+  `MAX_TYPE_DEPTH` bound, no pre-alloc from the untrusted count; `Encoder::ty` now fallible
+  (`FieldTooLong` over the `u32` budget, never truncates); `ENCODING_VERSION = 3`.
+- **`compatible`** product arm — arity + position, `Any` at each slot, recursive; a `Product` is not a
+  `List`. **`pair`** = the binary constructor, a **new genesis leaf (34 → 35)**, pure, declares
+  `(Any, Any) -> Product([Any, Any])` — its value **rides `Value::List`**, so no new value kind, no
+  `value.rs`/memo change. ⇒ **`Dictionary<K,V>` = `List<Product([K, V])>`**.
+- **Inch-1 follow-on:** `sum`/`join` tightened to `List<Number>`/`List<Text>` — `List<T>`'s first bite
+  (a typed `List<Text>` is refused by `sum` in core `validate`; a constructed `List<Any>` still bridges).
+- **Editor coarse:** the flat bridge maps `Product → WType::List` (a `pair` behaves like `list` until the
+  recursive-`WType` editor inch) — the same core-precise / editor-coarse staging as `sum`/`join`.
+- **Ripple:** `simulate.rs` `Type::Product(_) => return None` (unreachable; fail-closed); two wasm
+  catalog-count assertions 34 → 35; the `v2→v3` bump moved every hash, free (nothing persisted, no manifest).
+- **Tests:** 216 native (171 core — +4: `sum_and_join_are_element_typed`, `product_type_round_trips`,
+  `pair_declares_a_product`, `pair_builds_a_pair`; 38 host; 7 wasm-native) / 12 wasm-target, all green.
+
+> **`Product` is type-mostly.** The capability lives in the type language + one constructor; the value
+> layer is untouched (a pair rides the list value). `Sum`/`Option` — the runtime tag — is the one
+> generator that earns a new value kind, and the editor's recursive `WType` the inch after.
+
+---
+
 **In progress:** generics / parametric types
-P1.3.2 (parametric types): inch 1 (the List<T> type-expression language)
-DONE (see the DONE block above + L4 §8); remaining inches — Product then Sum value
-constructors, then the editor's recursive WType + boundary-input fields — are scoped in
-P1.3.2-parametric-types-L4.md. (The "largest checker-complexity jump" was paid as the one-time
-de-Copy; the checker stays structural — no inference, no subtyping.)
+P1.3.2 (parametric types): inches 1–2 DONE — the List<T> type-expression language, then
+Product + the pair constructor (Dictionary<K,V> = List<Pair>; see the DONE blocks above + L4 §8).
+Remaining: Sum/Option (the one inch that adds a runtime value kind — the tag), then the editor's
+recursive WType + boundary-input fields. Both scoped in P1.3.2-parametric-types-L4.md. (The "largest
+checker-complexity jump" was paid as the one-time de-Copy; the checker stays structural — no inference,
+no subtyping.)
 
 **Consistency check vs design-doc §10.** §10 named *param promotion* as the next step
 after content-hashing. The deduction corrects this: §10 tacitly assumed an evaluator,
