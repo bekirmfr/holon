@@ -22,8 +22,9 @@ use std::io;
 use std::path::PathBuf;
 
 use holon_core::{
-    capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval, hash_unit,
-    Capability, DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
+    capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval,
+    hash_unit, memo_key, Capability, DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit,
+    UnitBody, Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -427,6 +428,121 @@ fn verify_closure<S: Store>(unit: &Unit, store: &S) -> Result<(), PublishError> 
         verify_closure(&referenced, store)?;
     }
     Ok(())
+}
+
+// ── P3.3.1 Local memoization — the cache thesis, made real ───────────────────
+/// A memoizing evaluator: a content-addressed cache of pure units' results. The thesis (§8)
+/// is that a pure, content-pinned unit is a function from inputs to output that never changes,
+/// so its result is cacheable and re-servable, keyed by `(unit-hash, inputs)`. The cache *is*
+/// a state cell keyed by a content hash ([`memo_key`]) — the recursion the design points at:
+/// the OS's universal donor (a state cell) storing the language's pure results.
+///
+/// **Soundness guard:** only [`is_pure`](holon_core::Capabilities::is_pure) units (∅
+/// capabilities) are cached. A driver (`clock`/`random`) is not a function of its inputs (it
+/// varies per call); a sink (`egress`/`store_write`) *performs* — serving a cached value would
+/// skip the effect. Impure units fall through to ordinary [`eval`], uncached.
+///
+/// Scope (P3.3.1): in-memory (no persistence); top-level only (the root pure unit, not every
+/// pure sub-node within one eval); no networking (the shared cache, P3.3.2, is the actual
+/// differentiator, still deferred). The purity walk and the re-hash per call are honest
+/// overhead — this inch is about correctness, not yet speed.
+#[derive(Default)]
+pub struct Memo {
+    cache: BTreeMap<Hash, Value>,
+}
+
+impl Memo {
+    /// An empty cache.
+    pub fn new() -> Self {
+        Memo::default()
+    }
+
+    /// Evaluate `unit` on `inputs`, serving a cached result when the unit is pure and this
+    /// `(unit-hash, inputs)` key has been seen. Impure units are never cached. Behaviourally
+    /// identical to [`eval`] — memoization is a pure optimization.
+    pub fn eval(
+        &mut self,
+        unit: &Unit,
+        inputs: &[Option<Value>],
+        resolver: &impl Resolver,
+    ) -> Option<Value> {
+        if !capabilities(unit, resolver).is_pure() {
+            return eval(unit, inputs, resolver); // impure ⇒ never cached
+        }
+        // Un-keyable (un-hashable unit, or an input too large to encode) ⇒ just evaluate.
+        let key = match hash_unit(unit).ok().and_then(|h| memo_key(&h, inputs).ok()) {
+            Some(k) => k,
+            None => return eval(unit, inputs, resolver),
+        };
+        if let Some(hit) = self.cache.get(&key) {
+            return Some(hit.clone());
+        }
+        let out = eval(unit, inputs, resolver)?;
+        self.cache.insert(key, out.clone());
+        Some(out)
+    }
+
+    /// Number of cached results.
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Whether the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::*;
+    use holon_core::{MapResolver, Port};
+
+    fn prim(name: &str, n_in: usize, out: Type) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: name.into() },
+            params: vec![],
+            inputs: (0..n_in).map(|i| Port { name: format!("in{i}"), ty: Type::Any }).collect(),
+            output: Some(out),
+        }
+    }
+    fn num(n: f64) -> Value {
+        Value::Number(n)
+    }
+
+    #[test]
+    fn pure_unit_is_cached() {
+        let add = prim("add", 2, Type::Number);
+        let r = MapResolver::new();
+        let mut memo = Memo::new();
+        assert!(memo.is_empty());
+        assert_eq!(memo.eval(&add, &[Some(num(2.0)), Some(num(3.0))], &r), Some(num(5.0)));
+        assert_eq!(memo.len(), 1); // result cached
+        assert_eq!(memo.eval(&add, &[Some(num(2.0)), Some(num(3.0))], &r), Some(num(5.0)));
+        assert_eq!(memo.len(), 1); // a hit — no new entry
+    }
+
+    #[test]
+    fn different_inputs_make_different_entries() {
+        let add = prim("add", 2, Type::Number);
+        let r = MapResolver::new();
+        let mut memo = Memo::new();
+        memo.eval(&add, &[Some(num(2.0)), Some(num(3.0))], &r);
+        memo.eval(&add, &[Some(num(2.0)), Some(num(4.0))], &r);
+        assert_eq!(memo.len(), 2);
+    }
+
+    #[test]
+    fn impure_unit_is_not_cached() {
+        // `egress` is a sink (NetworkEgress): it *performs*, so serving a cached value would
+        // skip the effect. It evaluates (constructs an Effect) but is never cached.
+        let egress = prim("egress", 1, Type::Effect);
+        let r = MapResolver::new();
+        let mut memo = Memo::new();
+        let out = memo.eval(&egress, &[Some(Value::Text("hi".into()))], &r);
+        assert!(matches!(out, Some(Value::Effect { .. })));
+        assert!(memo.is_empty()); // impure ⇒ not cached, regardless of result
+    }
 }
 
 #[cfg(test)]

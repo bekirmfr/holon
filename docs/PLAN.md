@@ -12,7 +12,7 @@
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`).
 > **Next — genesis reconciliation arc (`P3-genesis-reconciliation-L4`), then `P3.1.1` (registry).** Reconciling the native set to `§13` *before* the registry's first publish freezes the trust root. A breaking arc done one green inch at a time: **R1 ✅ R2 ✅ R3 ✅** (the additive run — pure kit, text kit, `random` driver; no existing hash moved) → **R4 ✅** (clock/ingress/egress) → **R5 ✅** (one `const`) → **R6 ✅ DECISION** (freeze the as-built trust root — Branch B; demotion-to-stdlib deferred to its own pillar; gate stays active; 34-leaf genesis manifest pinned in §13a). **GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape — the hygiene prerequisite before the registry's first publish is met.
 
-**Next — P3 local-first:** **P3.1.1 ✅** (publish boundary, closure-verified) → **P3.2.1 ✅** (inspection — `dependencies` transitive view; the `child_refs` unification dissolved 3 divergent closure-walks into one, fixing a latent capability-misclassification) → **P3.3.1 local memo** (cache thesis made real: pure hash+inputs ⇒ output forever; new piece = canonical `Value` encoder; needs L4) → fork/re-pin (P3.5.1, needs L4) → advisory (P3.6.1). Networked tier (shared trustless cache P3.3.2, reputation, identity) deferred. Both stabilize the trust root; the fork is deferred since R1–R5 are required either way. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin (needs L4) → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
+**Next — P3 local-first:** **P3.1.1 ✅** (publish boundary) → **P3.2.1 ✅** (inspection + child_refs unification) → **P3.3.1 ✅** (local memo — `memo_key`=BLAKE3(unit_hash‖canonical inputs) in core, `Memo` state-cell cache in host; is_pure guard; f64 canonicalized) → **P3.5.1 fork/re-pin** (needs L4) → P3.6.1 advisory. Networked tier (shared trustless cache P3.3.2 — key-derivation half now built — reputation, identity) deferred. Both stabilize the trust root; the fork is deferred since R1–R5 are required either way. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin (needs L4) → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
 
 ---
 
@@ -809,3 +809,21 @@ future change can tell a real defect from an invariant doing its job.
   non-fn param; dependencies transitive / follow-fn-and-dedup / leaf-empty. Host 24 unchanged
   (registry refactor behavior-preserving).
 - **Future:** a 2nd hash-valued param now slots into `child_refs` in exactly one place.
+
+---
+
+### P3.3.1 — local memoization (DONE)
+- **L4:** P3.3.1-local-memo-L4.md. Cache thesis made real; key = content hash of (unit, inputs).
+- **Core `memo.rs`:** `memo_key(unit_hash, inputs)->Result<Hash,EncodeError>` = BLAKE3(unit_hash ‖
+  canonical_encode(inputs)). Canonical `Value` encoder: tagged + u32-LE length-prefixed
+  (collision-free); f64 → NaN-canonical + signed-zero-collapsed + IEEE-bits-LE (I2); Option slots
+  tagged absent/present. Resolver not in key (unit_hash captures the closure).
+- **Host `Memo`:** state-cell cache `BTreeMap<Hash,Value>`; `eval(&mut, unit, inputs, resolver)`
+  caches iff `capabilities(unit).is_pure()`, else plain eval. Behaviourally identical to eval.
+- **Decisions:** canonicalize NaN/±0.0 (sound — eval treats them identically); key=hash (networked-
+  ready); cache stores Value (in-memory); guard=is_pure NOT is_replayable (drivers vary, sinks
+  perform); top-level scope only. FCIS: pure key-derivation=core, stateful cache=host.
+- **Tests (+5 core=135, +3 host=27):** encode determinism / signed-zero / all-NaN-canonical /
+  no-type-collision / order+presence; memo hit / different-inputs / impure(egress)-not-cached.
+- **Overhead (noted):** per-call purity walk + re-hash; a later inch threads the hash through.
+- **Deferred:** persistence, recursive sub-node memo, eviction, the shared cache (P3.3.2).

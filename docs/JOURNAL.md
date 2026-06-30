@@ -1487,3 +1487,37 @@ now-unused `parse_hash` imports; updated the P3.1.1 registry doc from "future re
 forever, so cache and re-serve without re-eval. New piece: a **canonical `Value` encoder** (the
 cache key needs inputs in a stable hashable form; Value derives only PartialEq). Real design call
 — what makes two inputs "the same" for caching — so it gets an L4 first.
+
+---
+
+## 2026-06-29 · P3.3.1 — local memoization (the cache thesis, made real)
+
+**The moat turns from a property into a mechanism (162 green = 135c + 27h, +5 core encoder, +3 host
+memo).** Cache key = `BLAKE3(unit_hash ‖ canonical_encode(inputs))` — a content hash of (unit,
+inputs), derived identically on any machine. The resolver never enters the key: a pure unit's hash
+already captures its whole transitive closure (I6), so (unit_hash, inputs) fully determines the
+output. Same derivation will key the shared cache (P3.3.2) and let any party verify by re-hashing.
+
+**FCIS split:** the pure, decision-heavy half — canonical `Value` encoder + `memo_key` — in core
+(`memo.rs`); the cache itself a `Memo` state cell in host. The thesis made literal: the trustless
+cache is a state cell keyed by a content hash (the OS's universal donor storing the language's pure
+results).
+
+**The f64 canonicalization (the one real decision, an I2 matter):** NaN (any bit pattern) → one
+fixed encoding; both signed zeros → +0.0; else IEEE bits LE. Both collapses sound because eval
+treats the collapsed values identically (IEEE ops/comparisons are NaN-payload-agnostic; -0.0==+0.0).
+NaN/inf can't enter as literals (const rejects non-finite) but ARE reachable computed (1e308² → inf,
+inf-inf → NaN), so the encoder must handle them. Tagged + u32-LE length-prefixed (mirrors preimage
+encoder) ⇒ collision-free across types. Tests pin: 2 different NaN patterns → same key; ±0.0 → same;
+4 types distinct; order + presence matter.
+
+**Soundness guard — only is_pure units cached** (∅ caps), NOT is_replayable. A driver's output
+isn't a function of inputs (varies per call); a sink *performs* — caching would skip the effect.
+The `impure_unit_is_not_cached` test uses `egress` deliberately: it evaluates (constructs an Effect)
+but is never cached, so the effect can't be silently skipped. Impure ⇒ falls through to plain eval.
+
+**Honest overhead (correctness-first):** per-call purity walk + per-call re-hash. A later inch
+threads the hash through rather than recomputing. **Local-first P3 nearly complete.**
+
+**Next — P3.5.1 fork/re-pin** (needs L4) then P3.6.1 advisory. The shared trustless cache (P3.3.2,
+the actual differentiator) stays deferred, but its key-derivation half now exists and is tested.
