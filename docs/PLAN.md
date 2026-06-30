@@ -1076,7 +1076,20 @@ bit-identical native vs wasm, CI-guarded. core unchanged throughout. **Frontend 
 
 ---
 
+### Primitive-catalog bridge (DONE; the palette's source crosses to JS)
+- **`primitive_catalog() -> JsValue`** (holon-wasm) — core's genesis interfaces (`genesis_units`) as
+  an array of `WUnit`, the single source the editor's palette is *derived* from (I1). Returned whole
+  in one crossing; the editor builds its palette + name→interface map from it.
+- **Reuses `WUnit::from_core`** (the mirror `load_unit` already uses) — no second core→JS converter to
+  drift. One whole-catalog call, not per-name (the palette needs all 34 at once; a single-name need is
+  a filter over the array already held).
+- **Tests:** +1 native (`primitive_catalog_native`) + 2 wasm (`primitive_catalog_wasm` parity,
+  `primitive_catalog_crosses_js_boundary` for the `Vec<WUnit>` JsValue crossing) → 163c + 38h + 5w =
+  206 native; 8 wasm-target. core unchanged.
+
+---
+
 ### P4.1 — the authoring canvas (NEXT; L4 written: P4.1-authoring-canvas-L4.md)
 Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
 fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
-(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). **Next concrete inch:** the wasm `primitive_catalog()` bridge — small, and testable on the wasm target before any UI leans on it — then the palette UI deriving real nodes from it.
+(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The wasm `primitive_catalog()` bridge is now **DONE** (preceding block); **next concrete inch:** the palette UI — custom nodes derived from the catalog, drag-to-place — then wiring + `isValidConnection` (the type check, fail-closed), then projection + live eval.

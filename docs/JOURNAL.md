@@ -1974,3 +1974,34 @@ add(2,3)→5, not(true)→false).
 **Scope held (KISS).** Core-only this inch — the wasm `primitive_catalog()` bridge and the palette UI
 go next, where they're tested by use. Migrating the `prim()` test-helper duplication to derive from
 the catalog is a noted follow-up, not done here.
+
+---
+
+## 2026-06-30 · primitive_catalog() bridge — the palette's source crosses to JS
+
+**Built.** `primitive_catalog() -> JsValue` in `holon-wasm` — core's genesis interface catalog
+(`genesis_units`) as an array of `WUnit`, the single source the editor's palette is *derived* from
+(never a hand-written TS copy that could drift, I1). Returned whole in one crossing; the editor builds
+its palette list and its name→interface map from it.
+
+**Leaf closed.** The bridge half of P4.1's palette: core's authoritative interfaces are now reachable
+from JS, proven to cross intact, before any UI depends on them.
+
+**Grounded first.** `load_unit` already factors the core→JS mirror (`WUnit::from_core`), so
+`primitive_catalog` reuses that exact function over the catalog — a *second* converter would be a
+parallel mechanism free to drift from the first, the precise thing the one-encoder/one-evaluator
+discipline forbids. One whole-catalog call, not a per-name `primitive_interface`: the palette needs
+all 34 at once to render; N crossings would tempt the editor to cache its own copy (drift again); a
+single-name need is just a filter over the array already held.
+
+**Tests prove** (+1 native → 5 wasm-native = 206 native; +2 wasm-target → 8): `primitive_catalog_native`
+and `primitive_catalog_wasm` run the shared `check_primitive_catalog` body on both targets (34 entries;
+`add` = (a:Number, b:Number) → Number; `map` keeps its open `fn` param — all surviving the `Unit`→
+`WUnit` mirror); `primitive_catalog_crosses_js_boundary` proves the `Vec<WUnit>` actually serializes
+across the boundary — the new risk a single-`WUnit` `load_unit` test didn't cover. Interface
+*correctness* stays owned by core's catalog tests; these only prove the crossing.
+
+**Owned in the doing.** First wired `check_primitive_catalog` to the native test only — a dead-code
+warning on the wasm build, where `native_tests` is cfg'd out and nothing else called it. Fixed by
+adding the `_wasm` parity test, restoring the "one body, run on both targets" pattern every other
+`check_` fn follows. core unchanged throughout.
