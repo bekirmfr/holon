@@ -1899,3 +1899,78 @@ gitignored — the bytes always come from `crates/holon-wasm` so the editor's co
 those are P4.1 proper, each its own inch. Next: real nodes from a palette, draggable, with
 `isValidConnection` enforcing the wire-time type check (I1), projecting to a composite and evaluating
 live through this same path.
+
+---
+
+## 2026-06-30 · child-order canonicalization — identity = structure, not presentation
+
+**Built.** `encode_preimage` now normalizes a composite's *child order*, closing the last place
+presentation leaked into identity. `hash.rs` gains `canonical_composite` (+ helpers `factorial`,
+`enumerate_orderings`, `permute`, `apply_child_order`, `order_key`) and `EncodeError::TooSymmetric`.
+Children are ordered by hash; equal-hash (interchangeable) children are ordered by minimizing the
+`children ++ remapped-sorted-edges` serialization over within-group permutations — presentation-
+invariant by construction; edges are remapped to the new indices (`BOUNDARY` fixed) and sorted.
+Bounded by `MAX_CHILD_SYMMETRY` (8!), failing closed beyond it.
+
+**Leaf closed.** A core-identity refinement, taken *before* the editor mints composites in volume
+(*settle identity before you mint* — the genesis-reconciliation precedent), on the still-empty corpus.
+
+**Grounded first.** The linchpin is in `eval_composite`: it topo-orders by *edges* and uses a child's
+index only to resolve which `Unit` a slot holds, so reordering children (edges remapped) changes no
+value — child order is inert exactly like edge order, which the encoder already sorted. Encoding it
+into identity was therefore a bug.
+
+**Tests prove** (+2 core → 158c · 38h · 4w = 200 native; 6 wasm-target): `child_order_is_cosmetic`
+(same wiring, opposite child order ⇒ equal hash); `duplicate_children_canonicalize` (two same-hash
+children in different roles ⇒ one deterministic, presentation-invariant hash). Amended:
+`decode_round_trips_a_composite_with_params` (authors canonical children — decode∘encode is identity
+only on canonical input now); `fork_repins_and_republishes` (children asserted set-wise, since the
+store round-trips through canonical order).
+
+**Forks pinned.**
+- Canonicalize in `encode_preimage` (the one boundary every caller inherits), not a separate caller-
+  invoked pass — consistent with edge-order normalization, impossible to forget.
+- `ENCODING_VERSION` stays **1**: the change only *restricts* the encoder to canonical forms (output
+  set ⊆ the old range; primitives + already-canonical composites byte-identical), so no cross-version
+  collision is introduced and no existing hash needlessly churns.
+- **Deferred (with trigger):** wiring-based refinement (WL coloring) to shrink duplicate-hash groups
+  and lift the symmetry cap — trigger: a real composite hits `MAX_CHILD_SYMMETRY`.
+- **Noted, not done:** `MapResolver` returns units as-inserted (so possibly non-canonical child
+  order) while their hash is canonical — eval-inert, so it stands; only the on-disk `Store`
+  round-trips through canonical order.
+
+---
+
+## 2026-06-30 · primitive-interface catalog — core's third per-name axis
+
+**Built.** `catalog::interface_of(name) -> Option<Unit>` (new `holon-core/src/catalog.rs`) — the
+authoritative typed interface (named input ports, output type, default params) of each §13a genesis
+leaf. The third per-name axis beside `compute` (behaviour) and `capabilities_of` (capability), same
+fail-closed contract (unknown ⇒ None). `GENESIS` enumerates the 34 names; `genesis_units()` is the
+list the editor's palette will derive from.
+
+**Leaf closed.** The foundation P4.1's palette stands on: core states its atoms' interfaces in one
+place, so the editor can *derive* the palette rather than hand-writing a TypeScript copy that would
+drift from core (an I1 parity break).
+
+**Grounded first.** `compute` defines behaviour and implies arity (`let [a,b] = inputs`) but states no
+types or port names; those lived only in §13a prose and were re-hand-written in every `prim()` test
+helper. The catalog is §13a as code, names matched exactly to `compute`/`eval`.
+
+**Calls pinned.** Variadic leaves (`add`, `and`, `concat`, `list`…) get canonical arity 2 (variadic
+editing is an editor concern); polymorphic leaves use `Any` (the wiring check already treats it as
+compatible); `map`/`fold` carry their function as an open `fn` param, matching the evaluator; sourced
+leaves get honest types (`clock`/`random` Number, `ingress`/`store_read` Any); `interface_of` returns
+a default-configured unit (`const` at Number 0, `compare` at `op="eq"`) so the palette drops a usable,
+valid node.
+
+**Tests prove** (+5 core → 163c · 38h · 4w = 205 native; 6 wasm-target): `interface_of_unknown_is_none`
+(fail-closed); `genesis_has_34_leaves` (the §13a count, a tripwire); `every_genesis_name_resolves`
+(each name resolves and its body name matches — no enumeration/match drift); `the_two_catalogs_agree`
+(interface and capability axes cover the same atom set — neither can drift from the other);
+`catalogued_units_evaluate` (interfaces proven against real behaviour by *running* them: const→0,
+add(2,3)→5, not(true)→false).
+
+**Scope held (KISS).** Core-only this inch — the wasm `primitive_catalog()` bridge and the palette UI
+go next, where they're tested by use. Migrating the `prim()` test-helper duplication to derive from
+the catalog is a noted follow-up, not done here.

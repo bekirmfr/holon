@@ -1035,8 +1035,48 @@ bit-identical native vs wasm, CI-guarded. core unchanged throughout. **Frontend 
   fresh clone runs `wasm-pack build` once before `npm run dev`.
 - Heartbeat only — NOT the canvas (no palette / custom nodes / wiring UI).
 
+---
+
+### Child-order canonicalization (DONE; identity = structure, not presentation)
+- **`encode_preimage` normalizes composite child order** — the last place presentation leaked into
+  identity. `canonical_composite` orders children by hash; same-hash (interchangeable) children by
+  minimizing the `children++sorted-edges` serialization over within-group permutations (presentation-
+  invariant); edges remapped (`BOUNDARY` fixed) + sorted. `EncodeError::TooSymmetric` fails closed
+  beyond `MAX_CHILD_SYMMETRY` (8!).
+- **Grounded:** `eval_composite` topo-orders by edges and uses a child's index only to resolve which
+  unit a slot holds — child order is inert, exactly like edge order (already sorted). Encoding it into
+  identity was a bug.
+- **`ENCODING_VERSION` stays 1** — the change only restricts the encoder to canonical forms (output
+  ⊆ old range; primitives + canonical composites byte-identical), no new collision, no needless churn.
+- **Done now, empty corpus** — *settle identity before you mint* (genesis-reconciliation precedent),
+  before the canvas mints composites in volume. (Supersedes the old "deferred to P4.3" note.)
+- **Deferred (trigger):** WL-refinement of duplicate-hash groups to lift the symmetry cap — when a
+  real composite hits it.
+- **Tests:** +2 core (`child_order_is_cosmetic`, `duplicate_children_canonicalize`); amended two that
+  encoded the old property → 158c + 38h + 4w = 200 native; 6 wasm-target.
+
+---
+
+### Primitive-interface catalog (DONE; core's third per-name axis)
+- **`catalog::interface_of(name) -> Option<Unit>`** (new `catalog.rs`) — the authoritative typed
+  interface (named ports, output type, default params) of every §13a genesis leaf. Third axis beside
+  `compute` (behaviour) and `capabilities_of` (capability); fail-closed (unknown ⇒ None). `GENESIS`
+  enumerates the 34; `genesis_units()` is what the palette derives from.
+- **Why:** the palette must *derive* its nodes from core, not a hand-written TS copy that would drift
+  (I1). `compute` gives behaviour, not types/port-names — those lived only in §13a prose + `prim()`
+  test helpers. The catalog is §13a as code.
+- **Calls:** variadic leaves → canonical arity 2; polymorphic → `Any`; `map`/`fold` → open `fn`
+  param; sourced → honest types (clock/random Number, ingress/store_read Any); `interface_of` returns
+  a default-configured, valid unit.
+- **Scope held:** core-only — the wasm `primitive_catalog()` bridge + palette UI go next (tested by
+  use); `prim()`-helper migration is a noted follow-up.
+- **Tests:** +5 core — `the_two_catalogs_agree` (interface vs capability axes can't diverge) and
+  `catalogued_units_evaluate` (interfaces run, not just trusted) the load-bearing two → 163c + 38h +
+  4w = 205 native; 6 wasm-target.
+
+---
+
 ### P4.1 — the authoring canvas (NEXT; L4 written: P4.1-authoring-canvas-L4.md)
 Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
 fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
-(whole-graph baseline; per-node values deferred). Each a separate inch. Canonical child-order stays
-deferred to the publish boundary (P4.3+), in core — never an ad-hoc canvas fix.
+(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). **Next concrete inch:** the wasm `primitive_catalog()` bridge — small, and testable on the wasm target before any UI leans on it — then the palette UI deriving real nodes from it.
