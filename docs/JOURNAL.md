@@ -1652,3 +1652,39 @@ then watches the trustless read reject it.
 reputation (P3.4.1), proofs, or quorum. All three now have this substrate to stand on. Next genuine
 step: P3.4.1 reputation-by-adoption, or P3.8.2 networked CAS (the transport; cheap entry_key check
 ready for it).
+
+---
+
+## 2026-06-29 · P3.4.1 — reputation-by-adoption (the navigation layer)
+
+**Adoption = inbound citations in the published DAG (191 green = 156c + 35h, +5 core +3 host).**
+Core `adoption_counts(corpus)` — pure tally over `child_refs`: for each referenced hash, how many
+*distinct* corpus units cite it (a unit citing U twice counts once). Host `Registry::adoption()` —
+the `verify_closure` walk collecting instead of checking: gathers the published universe (every unit
+in any published root's closure), then calls the core tally.
+
+**Load-bearing: derived, not asserted (I8).** Adoption is recomputed from the actual DAG every call,
+NEVER a stored counter. So it can't be inflated except by publishing real, inspectable referring
+units. The thesis extends once more: content-addressing made memoization *trustless* (P3.3.2); now
+it makes reputation *unfakeable-by-assertion*. Same move — you can't lie because the truth is in the
+content. Why it's trust and not mere popularity: adopting U = pinning its exact hash = committing to
+its frozen, fully-inspected behavior forever (I5+I9); a far stronger signal than a mutable-world star.
+
+**Framing correction (recorded in the L4):** I'd earlier called P3.4.1 "result-trust" (skip compute
+on a stranger's word). Wrong: a result is *objectively* verifiable (re-exec settles it; determinism
+makes the correct V the unique honest attractor), but counting endorsements needs distinct parties =
+Sybil-resistance = identity. So result-trust is **re-scoped onto P3.7.1**. What's buildable now,
+identity-free, is *unit* adoption (a unit's quality is NOT objectively verifiable, so an aggregate
+signal genuinely informs) — and it's the more useful half anyway.
+
+**TWO DEFERRALS, documented in PLAN with triggers:**
+1. **Sybil-resistance (recursive/eigenvector weighting, PageRank-style).** Flat citation count is
+   inflatable by junk referrers (cheap but inspectable). Fix weights a citation by the citer's own
+   adoption (junk ≈0 ⇒ contributes ≈0). Heavier (global iteration). **Trigger:** corpus large enough
+   that flat counts are noisy, OR Sybil inflation actually observed.
+2. **Result-trust ("skip compute on a stranger's word").** Needs identity (P3.7.1) to count distinct
+   endorsers, or stake. The determinism-attractor groundwork is laid; the mechanism waits on
+   identity. **Trigger:** P3.7.1 identity lands.
+
+**Decisions confirmed:** (A) scope = unit-adoption-by-citation, result-trust → P3.7.1; (B) ordering =
+adoption-first (identity later hardens + extends). Next: P3.7.1 author-identity or P3.8.2 networked CAS.

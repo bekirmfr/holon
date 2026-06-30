@@ -45,7 +45,7 @@ pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::eval;
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
-pub use inspect::{child_refs, dependencies};
+pub use inspect::{adoption_counts, child_refs, dependencies};
 pub use memo::{entry_key, memo_key, verify_entry, CacheEntry};
 pub use hash::{
     decode_preimage, encode_preimage, hash_unit, parse_hash, DecodeError, Edge, EncodeError, Hash,

@@ -12,9 +12,13 @@
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`).
 > **Next — genesis reconciliation arc (`P3-genesis-reconciliation-L4`), then `P3.1.1` (registry).** Reconciling the native set to `§13` *before* the registry's first publish freezes the trust root. A breaking arc done one green inch at a time: **R1 ✅ R2 ✅ R3 ✅** (the additive run — pure kit, text kit, `random` driver; no existing hash moved) → **R4 ✅** (clock/ingress/egress) → **R5 ✅** (one `const`) → **R6 ✅ DECISION** (freeze the as-built trust root — Branch B; demotion-to-stdlib deferred to its own pillar; gate stays active; 34-leaf genesis manifest pinned in §13a). **GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape — the hygiene prerequisite before the registry's first publish is met.
 
-**LOCAL-FIRST P3 COMPLETE + networked tier begun:** **P3.1.1 ✅** publish · **P3.2.1 ✅** inspect · **P3.3.1 ✅** memoize · **P3.5.1 ✅** fork · **P3.6.1 ✅** advise · **P3.3.2 ✅** shared trustless cache (the differentiator: `CacheEntry` + `verify_entry` re-execution oracle, `SharedCache` get/get_verified; canonical output compare for cross-machine NaN; checkable because pure+total+content-pinned). **183 green (151 core + 32 host).**
+**LOCAL-FIRST P3 COMPLETE + networked tier begun:** **P3.1.1 ✅** publish · **P3.2.1 ✅** inspect · **P3.3.1 ✅** memoize · **P3.5.1 ✅** fork · **P3.6.1 ✅** advise · **P3.3.2 ✅** shared trustless cache (the differentiator) · **P3.4.1 ✅** reputation-by-adoption (citation count over the published DAG; derived-not-asserted I8; unit-discovery, NOT result-trust). **191 green (156 core + 35 host).**
 
-**Deferred — rest of networked tier:** reputation-by-adoption (P3.4.1), author-identity (P3.7.1), networked CAS / transport (P3.8.2 — cheap `entry_key` integrity check built, ready for peer-supplied keys). "Skip compute on a stranger's word" needs reputation/proofs/quorum — each its own pillar, all now standing on the P3.3.2 substrate. **`Store`→`Resolver` ownership fork — SET ASIDE with a trigger** (see `P3-store-resolver-fork-L4.md`): a literal adapter can't exist (trait borrows `&Unit`, store yields owned), the duplication is *one* place not four, and the `Cow`-trait change it'd require is a *perf optimization for lazy `eval`-against-store*, not debt — reach for it only when a deploy-from-store path exists AND eager `materialize` profiles as the bottleneck; otherwise the cheap eager `materialize` helper covers it.
+**Deferred — rest of networked tier:** author-identity (P3.7.1), networked CAS / transport (P3.8.2 — cheap `entry_key` integrity check built, ready for peer-supplied keys).
+
+**Two P3.4.1 deferrals, with triggers (don't lose these):** (1) **Sybil-resistance** — flat citation count is inflatable by junk referrers; fix = recursive/eigenvector weighting (a citation weighted by the citer's own adoption; junk ≈0). Heavier (global iteration). *Trigger:* corpus large enough that flat counts are noisy, OR Sybil inflation observed. (2) **Result-trust** ("skip compute on a stranger's word") — needs identity (P3.7.1) to count distinct endorsers, or stake; the determinism-attractor groundwork is laid, mechanism waits. *Trigger:* P3.7.1 lands.
+
+**`Store`→`Resolver` ownership fork — SET ASIDE with a trigger** (see `P3-store-resolver-fork-L4.md`): a `Cow`-trait perf change for lazy `eval`-against-store; reach for it only when a deploy-from-store path exists AND eager `materialize` profiles as the bottleneck.
 
 ---
 
@@ -900,3 +904,22 @@ Operations: publish · inspect · memoize · fork · advise (+ store P3.8.1). 17
   honest / get_verified catches a liar.
 - **Deferred:** compute-savings-without-trust (reputation P3.4.1, proofs, quorum); network transport
   (P3.8.2); purity memoization (optimization); overflow saturation (separate primitive question).
+
+---
+
+### P3.4.1 — reputation-by-adoption (DONE; the navigation layer)
+- **L4:** P3.4.1-reputation-L4.md. Adoption = inbound citation count in the published DAG. Trust,
+  not popularity: adopting U = pinning its exact hash = committing to frozen, inspected behavior
+  forever (I5+I9). **Derived from the DAG, never a stored counter (I8)** — unfakeable except by
+  publishing real units.
+- **Core `adoption_counts(corpus)`** (inspect.rs): pure tally over `child_refs`; distinct referrers
+  (a unit citing U twice counts once); direct citations only.
+- **Host `Registry::adoption()`**: the `verify_closure` walk collecting instead of checking →
+  published universe (all units in any published root's closure) → core tally. Derived fresh.
+- **Decisions:** (A) unit-adoption-by-citation, result-trust → P3.7.1; (B) adoption-first.
+- **Framing correction:** earlier called this "result-trust" — wrong (that needs identity); it's
+  unit-discovery-trust.
+- **Tests (+5 core = 156, +3 host = 35):** empty / one referrer / distinct accumulate / double-cite
+  dedups / fn-param counted; published-root-cites-child / two-roots-sum / deep-library-counted.
+- **DEFERRED (triggers in header):** Sybil-resistance (recursive weighting — junk citers ≈0);
+  result-trust (needs identity P3.7.1). Both groundwork laid; mechanisms wait.

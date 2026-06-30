@@ -70,6 +70,29 @@ fn collect<'r, R: Resolver>(unit: &Unit, resolver: &'r R, acc: &mut BTreeMap<Has
     }
 }
 
+/// Inbound direct-citation counts over a `corpus`: for each hash referenced by some unit in the
+/// corpus, how many **distinct** corpus units reference it (P3.4.1). Pure — a function of the
+/// content graph alone, **never a stored tally** (I8), so adoption cannot be inflated except by
+/// publishing real, inspectable referring units. This is the marketplace's discovery signal: which
+/// units are widely built upon, derived from the only thing that can't be faked — the DAG itself.
+///
+/// "Distinct" is per *referrer*: a unit citing `U` in two slots counts once — the signal is "how
+/// many units adopted `U`", not "how many edges point at it". **Direct** citations only; transitive
+/// reach and recursive (Sybil-resistant) weighting are deliberately deferred (see the P3.4.1 L4 —
+/// flat counts are not Sybil-resistant, and hardening is its own inch).
+pub fn adoption_counts<'a>(corpus: impl IntoIterator<Item = &'a Unit>) -> BTreeMap<Hash, usize> {
+    let mut counts = BTreeMap::new();
+    for unit in corpus {
+        let mut refs = child_refs(unit);
+        refs.sort_unstable();
+        refs.dedup(); // one unit adopting `U` counts once, however many slots it cites it in
+        for h in refs {
+            *counts.entry(h).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +192,49 @@ mod tests {
     fn dependencies_of_a_leaf_are_empty() {
         let r = MapResolver::new();
         assert!(dependencies(&prim("add"), &r).is_empty());
+    }
+
+    // ── P3.4.1: adoption (inbound citation count) ──
+
+    #[test]
+    fn adoption_of_empty_corpus_is_empty() {
+        let corpus: Vec<&Unit> = vec![];
+        assert!(adoption_counts(corpus).is_empty());
+    }
+
+    #[test]
+    fn one_referrer_counts_one() {
+        let mut r = MapResolver::new();
+        let u = r.insert(prim("add")).unwrap();
+        let referrer = composite(vec![u]);
+        assert_eq!(adoption_counts(vec![&referrer]).get(&u), Some(&1));
+    }
+
+    #[test]
+    fn distinct_referrers_accumulate() {
+        let mut r = MapResolver::new();
+        let u = r.insert(prim("add")).unwrap();
+        let r1 = composite(vec![u]);
+        let r2 = composite(vec![u, u]); // a *different* unit (two slots) that also cites u
+        let counts = adoption_counts(vec![&r1, &r2]);
+        assert_eq!(counts.get(&u), Some(&2)); // two distinct referrers
+    }
+
+    #[test]
+    fn a_double_citation_counts_once() {
+        let mut r = MapResolver::new();
+        let u = r.insert(prim("add")).unwrap();
+        let referrer = composite(vec![u, u]); // one unit, two slots
+        assert_eq!(adoption_counts(vec![&referrer]).get(&u), Some(&1)); // distinct referrer, not edges
+    }
+
+    #[test]
+    fn a_fn_param_citation_is_counted() {
+        // adoption sees combinators too, because it routes through `child_refs` (which follows
+        // the `fn` param) — a `map(f)` adopts `f`.
+        let mut r = MapResolver::new();
+        let f = r.insert(prim("add")).unwrap();
+        let m = map_over(&f);
+        assert_eq!(adoption_counts(vec![&m]).get(&f), Some(&1));
     }
 }

@@ -23,8 +23,8 @@ use std::path::PathBuf;
 
 use holon_core::{
     capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval,
-    entry_key, hash_unit, memo_key, refork, verify_entry, CacheEntry, MapResolver, Refork,
-    Capability, DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
+    entry_key, hash_unit, memo_key, refork, verify_entry, adoption_counts, CacheEntry, MapResolver,
+    Refork, Capability, DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -485,6 +485,36 @@ impl<S: Store> Registry<S> {
         }
         Ok(())
     }
+
+    /// Adoption over the **published universe** (every unit in any published root's closure): for
+    /// each unit, how many *distinct* units cite it. **Derived fresh from the store on every call —
+    /// never a stored tally** (I8), so adoption cannot be inflated except by publishing real,
+    /// inspectable units. The marketplace's discovery signal: which units are widely built upon.
+    /// (Flat citation count — not Sybil-resistant; recursive weighting is deferred, see the L4.)
+    pub fn adoption(&self) -> Result<BTreeMap<Hash, usize>, StoreError> {
+        let mut corpus = BTreeMap::new();
+        for root in &self.published {
+            self.collect_closure(root, &mut corpus)?;
+        }
+        Ok(adoption_counts(corpus.values()))
+    }
+
+    /// Collect a hash's transitive closure (it + everything it reaches) from the store into `acc` —
+    /// the `verify_closure` walk, collecting instead of checking. A published root's closure is
+    /// complete (P3.1.1), so this never finds a gap.
+    fn collect_closure(&self, h: &Hash, acc: &mut BTreeMap<Hash, Unit>) -> Result<(), StoreError> {
+        if acc.contains_key(h) {
+            return Ok(()); // a DAG reaches the same unit by many paths
+        }
+        if let Some(u) = self.store.get(h)? {
+            let refs = child_refs(&u);
+            acc.insert(*h, u);
+            for r in refs {
+                self.collect_closure(&r, acc)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Walk a unit's transitive closure via the shared [`holon_core::child_refs`] (children +
@@ -845,6 +875,52 @@ mod registry_tests {
             Err(ForkError::TargetNotInClosure(h)) => assert_eq!(h, absent),
             other => panic!("expected TargetNotInClosure, got {other:?}"),
         }
+    }
+
+    // ── P3.4.1: adoption over the published universe ──
+
+    #[test]
+    fn a_published_root_cites_its_child() {
+        let mut store = MemStore::new();
+        let ch = store.put(&num_const("1")).unwrap();
+        let root = passthrough(ch);
+        store.put(&root).unwrap();
+        let mut reg = Registry::new(store);
+        reg.publish(&root).unwrap();
+        assert_eq!(reg.adoption().unwrap().get(&ch), Some(&1));
+    }
+
+    #[test]
+    fn two_roots_citing_one_child_sum() {
+        let mut store = MemStore::new();
+        let ch = store.put(&num_const("1")).unwrap();
+        let ch2 = store.put(&num_const("2")).unwrap();
+        let r1 = passthrough(ch); // cites ch
+        let r2 = two_child(ch, ch2); // cites ch and ch2 — a distinct root
+        store.put(&r1).unwrap();
+        store.put(&r2).unwrap();
+        let mut reg = Registry::new(store);
+        reg.publish(&r1).unwrap();
+        reg.publish(&r2).unwrap();
+        let adoption = reg.adoption().unwrap();
+        assert_eq!(adoption.get(&ch), Some(&2)); // r1 and r2
+        assert_eq!(adoption.get(&ch2), Some(&1)); // r2 only
+    }
+
+    #[test]
+    fn a_deep_library_unit_is_counted() {
+        // root → lib → leaf. The leaf is cited by `lib` (an intermediate, not the root). Adoption
+        // is over the whole published universe, so that citation still counts.
+        let mut store = MemStore::new();
+        let leaf = store.put(&num_const("1")).unwrap();
+        let lib = store.put(&passthrough(leaf)).unwrap(); // lib cites leaf
+        let root = passthrough(lib); // root cites lib
+        store.put(&root).unwrap();
+        let mut reg = Registry::new(store);
+        reg.publish(&root).unwrap();
+        let adoption = reg.adoption().unwrap();
+        assert_eq!(adoption.get(&lib), Some(&1)); // cited by root
+        assert_eq!(adoption.get(&leaf), Some(&1)); // cited by a non-root — still counted
     }
 }
 
