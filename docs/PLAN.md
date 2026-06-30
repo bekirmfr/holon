@@ -1,925 +1,1730 @@
-# Holon — Implementation Plan
+# Holon — Implementation Journal
 
-> **Companion to `COMPOSABLE_VM_DESIGN.md`** (the north star). The design doc says
-> *what is true and why*; this plan is **deduced from it** and says *what we must
-> therefore build, in what order*. It is detailed **progressively** — level by
-> level across the whole tree, then leaf by leaf — and is not a build target until
-> we judge it thorough.
->
-> **Build status:** **P1 (Language) and P2 (OS) COMPLETE; P3 (Marketplace) underway — `P3.8.1` (the content-addressed store) done.** Two of three spine pillars closed, the third begun. The store is where units live, keyed by their 32-byte hash: a `Store` trait (not a `Resolver` — it returns *owned* units, so eval never touches disk and IO stays host-side) with `MemStore` + on-disk `FileStore` backends, **verify-on-read = pure content-addressing** (the stored bytes are the hash preimage; a blob is trusted only because it re-hashes to the key it was filed under — `I5` made operational, no `blake3` in the host). The one genuinely-new piece is core's `decode_preimage`, the byte-exact inverse of `encode_preimage`. **136 tests (117 core + 19 host).**
-> **Current resolution:** trunk + all four pillars at L3 **frozen**; the genesis primitive set + admission gate pinned in design `§13` (trust root; reconcile to it just before the registry's first publish). L4s built across P1/P2: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, `sink-as-pure-request`, `P2.4.1-deploy-firing`, `P2.6.1-state-cell`, `A-to-B-effect-value`, `drive-sourced-resolver`, `P2.5.1-correlation-token`. **The phase's lesson:** pin the right boundary once and downstream "features" become theorems. **P3 so far confirms the plan's prediction** — the store *consumes* the content-addressing P3 forced at the very start: exposure, not invention.
-> **Decisions pinned (P3):** the genesis primitive set is the trust root (`§13`), admission-gated (native iff slower-by-class / hot-and-pervasive / an effect / genuinely inexpressible), totality already secured by refusing `while`; the **local-first** marketplace core (store, registry, inspection, local memo, fork, advisory) needs **no server** — only `P3.3.2`/`P3.4.1`/`P3.7.1`/`P3.8.2` are networked/deferred. `Store ≠ Resolver`; the byte format **is** the hash preimage (one canonical encoding, now with a decoder); verify-on-read is content-addressing, not a separate check.
-> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`).
-> **Next — genesis reconciliation arc (`P3-genesis-reconciliation-L4`), then `P3.1.1` (registry).** Reconciling the native set to `§13` *before* the registry's first publish freezes the trust root. A breaking arc done one green inch at a time: **R1 ✅ R2 ✅ R3 ✅** (the additive run — pure kit, text kit, `random` driver; no existing hash moved) → **R4 ✅** (clock/ingress/egress) → **R5 ✅** (one `const`) → **R6 ✅ DECISION** (freeze the as-built trust root — Branch B; demotion-to-stdlib deferred to its own pillar; gate stays active; 34-leaf genesis manifest pinned in §13a). **GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape — the hygiene prerequisite before the registry's first publish is met.
-
-**LOCAL-FIRST P3 COMPLETE + networked tier begun:** **P3.1.1 ✅** publish · **P3.2.1 ✅** inspect · **P3.3.1 ✅** memoize · **P3.5.1 ✅** fork · **P3.6.1 ✅** advise · **P3.3.2 ✅** shared trustless cache (the differentiator) · **P3.4.1 ✅** reputation-by-adoption (citation count over the published DAG; derived-not-asserted I8; unit-discovery, NOT result-trust). **191 green (156 core + 35 host).**
-
-**Deferred — rest of networked tier:** author-identity (P3.7.1), networked CAS / transport (P3.8.2 — cheap `entry_key` integrity check built, ready for peer-supplied keys).
-
-**Two P3.4.1 deferrals, with triggers (don't lose these):** (1) **Sybil-resistance** — flat citation count is inflatable by junk referrers; fix = recursive/eigenvector weighting (a citation weighted by the citer's own adoption; junk ≈0). Heavier (global iteration). *Trigger:* corpus large enough that flat counts are noisy, OR Sybil inflation observed. (2) **Result-trust** ("skip compute on a stranger's word") — needs identity (P3.7.1) to count distinct endorsers, or stake; the determinism-attractor groundwork is laid, mechanism waits. *Trigger:* P3.7.1 lands.
-
-**`Store`→`Resolver` ownership fork — SET ASIDE with a trigger** (see `P3-store-resolver-fork-L4.md`): a `Cow`-trait perf change for lazy `eval`-against-store; reach for it only when a deploy-from-store path exists AND eager `materialize` profiles as the bottleneck.
+> Companion to `PLAN.md` and `COMPOSABLE_VM_DESIGN.md`. **One entry per inch**, each
+> recording *what was built · which leaf it closed · what the tests proved · any fork
+> pinned or surfaced in the doing.* The journal is the retroactive audit trail that
+> makes "understand design intent before changing it" possible.
 
 ---
 
-## Method — deduction from the end state
+## 2026-06-29 · P1.4.1 — Value model · *(Phase A, inch 1)*
 
-We build the plan top-down by **necessity**, not by task list:
+**Built.** `holon-core::Value` — the runtime datum that flows on wires:
+`Number(f64) | Boolean(bool) | Text(String) | List(Vec<Value>)`. Immutable, value-
+semantics (`Clone`, `PartialEq`, `Debug`). `Value::ty(&self) -> Type` projects a value
+to its concrete type. Added the `value` module and re-exported `Value`.
 
-1. The **root** is the end-state, one sentence.
-2. Each child is an **entailed requirement**: *for the parent to be true, this must
-   hold.* If a child could be deleted and the parent still held, it does not belong.
-3. Every node carries an **ID**, the **governing invariant** it serves (from §3 of
-   the design doc), a **status**, and a **decision-state**. A node with no invariant
-   behind it is cosmetic or mis-derived — flag it.
-4. We track two **orthogonal axes**: *necessity* (what must exist) vs. *choice* (how
-   we realize it). They are different questions and get different marks.
-5. Recurse until leaves are **concrete, testable, buildable** units of work.
-6. **Topologically sort the leaves** → that is the build order, and it must agree
-   with design-doc §10. If the deductive order and §10 disagree, one is wrong.
+**Leaf closed.** **P1.4.1.** First step out of "identity but not evaluation": the core
+could hash structure but could not hold a value. Now it can.
 
-A standing rule observed already: **requirements flow downward as well as up.** A
-property the marketplace needs in order to be *trustless* lands as a hard constraint
-on the core — which is why content-hashing was built before the evaluator was even
-ported. Expect more of this; anything P3 needs to be trustless becomes a P1 law.
+**Tests prove** (4): `ty_agrees_with_type`; `no_value_is_any` (`Any` is wire-time only);
+`value_semantics_clone_is_independent`; `equality_is_structural` (incl. nested lists).
 
-### Legend
-- **Status:** ✅ proven (in engine or prototype) · ◐ partial · ○ open
-- **Decision:** ▣ pinned · ◇ fork-open
-- **Refs:** `I1`–`I9` = invariants; `§n` = design-doc section
+**Forks pinned.**
+- `Number` is one type, `f64` — no int/float split (§5).
+- `Value` derives `PartialEq` but not `Eq`/`Hash` (`f64`/NaN). Canonical *value* hashing
+  (for P3.3.1) will be a deliberate encoder, not `derive(Hash)`; float discipline → P1.4.4.
+- `ty()` is total over concrete types — never `Any`.
 
 ---
 
-## Level 0 — Root
+## 2026-06-29 · P1.3.1 — Graph validation · *(Phase A, inch 2)*
 
-> A recursively-composable, content-addressed computation fabric whose **pure
-> interior is a functional language** and whose **effectful edges are a
-> capability-gated OS**, exposed through a **permissionless, trustless-by-hashing,
-> network-effected marketplace**.
+**Built.** Two modules in `holon-core`:
+- `resolve` — the `Resolver` trait (`hash → &Unit`) + `MapResolver` (in-memory
+  `BTreeMap`, populated as units are built; the on-disk store, P3.8.1, will be another
+  `Resolver` behind the same trait).
+- `validate` — `validate(unit, resolver) -> Result<(), Vec<ValidationError>>`: three
+  checks over a composite's inner child→child wiring — **well-formedness** (edge child /
+  port indices exist), **acyclicity** (Kahn's algorithm), **type compatibility**
+  (`compatible(src, dst) = dst==Any || src==Any || src==dst`, §5). Errors are
+  **collected**, not first-and-stop, so the editor can surface all at once.
 
-The root is a conjunction of three pillars with a strict entailment order. Read
-`A ⊳ B` as "A is presupposed by B" — A must be real before B is even meaningful.
+**Leaf closed.** **P1.3.1** *(inner-wiring scope — see finding)*. Validation is the gate
+upstream of evaluation: the evaluator may now assume a clean, acyclic, type-sound DAG.
 
----
+**Tests prove** (8): `compatibility_rule`; `primitive_always_valid`;
+`valid_composite_passes`; `out_of_range_child_rejected`; `cycle_rejected`;
+`type_mismatch_rejected`; `output_port_out_of_range_rejected`; `unresolved_child_rejected`;
+`collects_multiple_errors` (a cycle + a type mismatch reported together).
 
-## Level 1 — The three pillars
+**Forks pinned.**
+- **`Resolver` moved one leaf earlier.** It was scoped to the evaluator (P1.4.3), but
+  type-checking an edge needs the child's interface, so resolving-by-hash is required at
+  validation. Introduced now; the evaluator reuses it unchanged.
+- **Errors collect-all** (`Vec<ValidationError>`), not first-error — chosen for the
+  editor's benefit.
 
-**P1 · The Language ⊳ P2 · The OS ⊳ P3 · The Marketplace**
+**Fork SURFACED (not yet pinned) — the next decision.** The `Unit` model has **no
+representation of the interface↔inner-graph binding**: which composite inputs feed which
+inner ports, and which inner output is exposed. The v3 prototype had this (`inPorts`,
+`outNode`); the Rust model does not. Consequences:
+- Validation currently covers only inner child→child wiring; the promotion binding can't
+  be validated until it exists.
+- **The evaluator (P1.4.3) needs this binding** to inject promoted inputs and read the
+  exposed output — so it must land **before** P1.4.3, and it is **structural** (affects
+  the hash + the canonical encoder).
+- Two candidate representations to decide: **(a)** a sentinel "boundary" node so external
+  inputs/outputs are ordinary edges, or **(b)** explicit binding fields on `Composite`
+  (`input_bindings`, `output_binding`). Decision deferred to the next inch.
 
-- **P1 — The Language.** The pure composable core. Presupposes nothing; it is the base.
-- **P2 — The OS.** The effect boundary. Presupposes P1 — effects sit at the edges *of*
-  a pure graph; there is no "edge" without an interior.
-- **P3 — The Marketplace.** The ecosystem. Presupposes P1 and P2 — it distributes
-  units, and once units can be services (P2), it distributes those too.
-
-This order is logical dependency, not preference: the spine (P1) must be finished
-before P2 or P3 are anything but speculation. Both P2 and P3 are *theorems of P1*.
-
-**P4 · The Editor — a parallel pillar, not in the spine.** It presupposes P1 (you
-cannot author units without the unit model) and is an *optional client* of P3 (the
-registry), but P2 and P3 do not presuppose *it*. It sits beside the spine because
-it is the human authoring/inspection surface — convenience, not foundation.
-
-**Deployment / runtime hosting — deliberately *not* a pillar.** Scoped to a **local
-process**: `holon-host` (P2) run on localhost via `cargo run`. There is no
-networked-hosting concern until we ever choose to add one. Recorded as a decision,
-not an omission.
-
----
-
-## Level 2 — Entailed requirements
-
-### P1 · The Language — *for a recursively composable fabric to exist:*
-- **P1.1** Uniform unit contract `evaluate(inputs,params)→outputs` — `I1` · ✅ ▣
-- **P1.2** Interface parity: composite ≡ primitive at the interface — `I1` · ◐ ▣
-  *(parity holds at the type/hash level in core; evaluation parity awaits P1.4)*
-- **P1.3** Composition-checking type system — `§5` · ◐ ◇
-  *(mono + `any` proven in prototype; not in core; generics fork-open)*
-- **P1.4** A **deterministic** evaluator — `I2` · ◐ ◇
-  *(exists only as throwaway JS prototype; not yet in `holon-core`; async/quiescence fork-open)*
-- **P1.5** Encapsulation: derive-then-freeze a flow into a unit — `I4` · ◐ ◇
-  *(proven in prototype; param-promotion representation is the open fork)*
-- **P1.6** Content addressing + transitive pinning — `I5`/`I6` · ✅ ▣
-  *(**landed in `holon-core`** — canonical hashing + closure commitment)*
-
-### P2 · The OS — *for the effect boundary to be safe and legible:*
-- **P2.1** Driver / state / sink taxonomy (the reversibility seam) — `I7` · ✅ ▣
-- **P2.2** Derived, not asserted, labels (kind = union of children) — `I8` · ✅ ▣
-- **P2.3** Capability declaration + union up the closure, surfaced before import — `I7` · ✅ ▣
-- **P2.4** Effect-firing model: quiescence / settle-gate before irreversible sinks — `§6` · ◐ ▣ *(design + deploy-minimal built; `drive`, state, B-fan-out, async remain)*
-  *(the central unsolved boundary)*
-- **P2.5** Effect contracts: idempotency, transactional read-then-write, req/resp correlation — `§4` · ○ ◇
-- **P2.6** State-cell semantics under replay / fork / pin — `§7` · ○ ◇
-
-### P3 · The Marketplace — *for a trustless, network-effected ecosystem:*
-- **P3.1** Registry: alias→hash resolution, publish, immutability — `I5` · ○ ▣
-  *(alias-resolves-to-hash decided; rest open)*
-- **P3.2** Transitive inspection to the leaves — `I9` · ○ ▣
-- **P3.3** Universal memoization: shared `(closure-hash, input-hash)` cache — `§8` · ○ ▣
-  *(mechanism pinned; **preconditions P1.4 + P1.6 now half-met**)*
-- **P3.4** Reputation by adoption, not raw usage — `§8` · ○ ▣
-- **P3.5** Copy-on-write forking + explicit re-pin (no silent update channel) — `§8` · ○ ▣
-- **P3.6** Advisory / yank channel: flag a hash, never mutate frozen bytes — `§8` · ○ ▣
-- **P3.7** Author identity, costly to forge — `§9` · ○ ◇
-- **P3.8** Content-addressed store to distribute units — `I5` · ○ ◇
-
-### P4 · The Editor (parallel) — *for humans to author, inspect, and run units conveniently:*
-*Presupposes P1; optional client of P3; not in the spine.*
-- **P4.1** Graph authoring canvas: place units, wire ports, set params; wire-time type checking — `§5`/`I1` · ◐ ▣
-  *(proven in JS prototypes v1–v3; not yet in the real stack)*
-- **P4.2** Live evaluation that **embeds `holon-core` (WASM)** — one evaluator, never a second, so editor results are bit-identical to native — `I5`/`I2` · ○ ▣
-  *(the load-bearing constraint; see findings)*
-- **P4.3** Encapsulation UX: group a selection into a unit; expand to inspect — `I4`/`I9` · ◐ ▣
-  *(proven in v3)*
-- **P4.4** Transitive inspection UI: descend a composite to its leaf primitives — `I9` · ○ ▣
-  *(the human face of P3.2)*
-- **P4.5** Registry client: browse / import-as-pin / publish — `§8` · ○ ◇
-  *(needs P3; deferred until the marketplace exists)*
+**Next inch.** Pin the interface↔inner binding representation (a vs b), then it feeds both
+the encoder extension and P1.4.3.
 
 ---
 
-## Level 3 — P1 · The Language, expanded to leaves
+## 2026-06-29 · Interface↔inner binding — boundary-as-node · *(Phase A, inch 3)*
 
-*Each leaf carries: **pre** (precondition leaves) · **inv** (invariant served) ·
-**test** (the proof it is done) · **effort** (S/M/L). They are listed in build order
-— the topological sort of their preconditions.*
+**Resolves the fork surfaced in inch 2.** Chose **(a) boundary-as-node**, realized as a
+**reserved edge endpoint** rather than new struct fields.
 
-**Fork resolved before descent.** P1.4's eager-vs-async fork is settled by
-*relocation*, not choice: the core evaluator is **eager and synchronous**
-(glitch-free, simplest, already proven in prototypes). Async / autonomous cells only
-matter where a glitch can do harm — the irreversible effect boundary — so that fork
-moves to **P2.4**. The Language is eager; the OS decides when effects fire.
+**Built.**
+- `holon-core::BOUNDARY` (`= u32::MAX`): an edge `from_child == BOUNDARY` carries a
+  composite *input* inward (`from_port` = input index); an edge `to_child == BOUNDARY`
+  exposes an inner output as the composite *output* (`to_port` = output index).
+- Boundary-aware `validate`: a unified per-edge type check where each endpoint is either
+  a child or the boundary, plus two new range checks (`BoundaryInputOutOfRange`,
+  `BoundaryOutputOutOfRange`) and a new well-formedness rule
+  (`DuplicateInputEdge` — at most one source per destination port).
 
-1. **P1.4.1 · Value model** — the runtime `Value` (`Number`/`Boolean`/`Text`/`List`),
-   immutable, value-semantics.
-   *pre:* none (foundational) · *inv:* `I2` · *test:* `type_of(value)` agrees with the
-   `Type` tag; clone/equality are by value · *effort:* **S**
+**Why this realization.** The binding is captured entirely by ordinary, **already-hashed**
+edges — so **no encoder change** and **no new structural fields**. One wiring mechanism,
+as (a) intended; even an identity composite (input wired straight to output) validates
+for free.
 
-2. **P1.3.1 · Graph validation** — well-formedness (edge indices in range, no dangling
-   ports), **acyclicity** (the evaluator presupposes a DAG), and wire-time **type
-   compatibility** (`dst=any ∨ src=any ∨ src=dst`).
-   *pre:* Unit model + `Type` (done) · *inv:* `§5`/`I1` · *test:* a valid graph passes;
-   a type-mismatched edge, a cycle, and an out-of-range edge are each rejected ·
-   *effort:* **M**
-   *Deductive note:* validation is **upstream of** evaluation — a graph must be proven
-   acyclic and type-sound before it can be evaluated.
+**Tests prove** (6 new, 15 in `validate`): `boundary_wiring_valid`;
+`boundary_input_type_mismatch`; `boundary_input_out_of_range`;
+`boundary_output_out_of_range`; `duplicate_input_edge_rejected`;
+`boundary_does_not_create_false_cycle` (a normal `BOUNDARY→…→BOUNDARY` flow is *not* a
+cycle).
 
-3. **P1.4.2 · Primitive registry + native compute** — `name → fn(inputs,params)→Value`
-   for the initial pure set. The complete set (small + orthogonal, KISS):
-   *constants* `Number` `Text` `Boolean`; *arithmetic* `Add` `Subtract` `Multiply`
-   `Divide`; *comparison* `Compare` (op param: `> < ≥ ≤ =`); *logic* `And` `Or` `Not`;
-   *control-as-data* `Select(cond,a,b)`; *text* `Concat` `Uppercase`; *list* `List`
-   `Get` `Append` `Length` `Sum` `Join`. That is **22 primitives**; the 23rd, the
-   higher-order **`Map(list, fn)`**, is gated behind P1.5.1 (its `fn` is a *unit
-   reference*) and lands last. `Filter`/`Reduce` are deferred (§10 step 3).
-   *Deliberately absent:* `Timer` / `Endpoint` / `Store` / `Email` — those are P2
-   boundary units (driver/state/sink), a different kind, not pure vocabulary.
-   *pre:* P1.4.1 · *inv:* `I1`/`I2` · *test:* each primitive matches expectation
-   (`Add[3,7,5]=15`) and is deterministic · *effort:* **M**
+**Forks pinned.**
+- **Boundary = source for inputs, sink for outputs.** This inversion is why it can never
+  form a cycle; `has_cycle` already ignores boundary edges (an endpoint `== BOUNDARY` is
+  not `< n`), so no special case was needed.
+- **One source per input port.** Fan-in to a single port is rejected; variadic units use
+  multiple ports, not multi-wire-one-port. The evaluator may now assume each port has ≤1
+  source.
+- **Single exposed output** falls out of the duplicate rule (two edges to `(BOUNDARY, 0)`
+  is a duplicate). Multi-output stays deferred.
 
-4. **P1.4.3 · Eager graph evaluator** — resolve a composite's inner DAG in topological
-   order, inject promoted inputs, read the exposed output, **recurse** for nested
-   composites; a primitive and a composite are evaluated through the identical path.
-   *pre:* P1.4.1, P1.4.2, P1.3.1 · *inv:* `I1`/`I2`/`I3` · *test:* port the v3 seed
-   (`list→Map(Double)→[6,14,10]`, `list→Sum→15`) to Rust and reproduce it; a nested
-   composite evaluates; children resolve as black boxes · *effort:* **L**
-   *→ **L4 detailed** in `P1.4.3-evaluator-L4.md`. Headline: the firing rule **splits** —
-   the pure core handles `required/optional/default`; `consume`/`persist` (port memory,
-   firing rounds) defer to the state boundary and async model (P2.4.2). Eager = a single
-   topological pass; children resolved by hash via a `Resolver` trait.*
-
-5. **P1.4.4 · Determinism harness** — ordered structures only (`BTreeMap`/`IndexMap`,
-   never `HashMap` iteration), pinned float behaviour, cross-run/cross-target identity.
-   This is the precondition P3.3 (shared cache) stands on.
-   *pre:* P1.4.3 · *inv:* `I2`/`I5` · *test:* repeated — and later native-vs-WASM —
-   evaluation of one graph yields identical results; fuzzed · *effort:* **M**
-
-6. **P1.2.1 · Interface-parity proof** — an equivalence test, not new machinery: a
-   primitive and a composite with the same interface are substitutable everywhere.
-   *pre:* P1.4.3 · *inv:* `I1` · *test:* swap a primitive for an equivalent composite
-   in a host graph; identical results, no special-casing · *effort:* **S**
-
-7. **P1.5.1 · Encapsulation (derive-then-freeze)** — given children + edges + a
-   promotion spec, derive the interface (unbound inputs promote, chosen output
-   exposed, **kind = union of children**) and freeze it into a hashed `Unit`.
-   *pre:* P1.6 (done), P1.3.1, P1.4.1 · *inv:* `I4`/`I8` · *test:* derived interface
-   matches expectation; a selection containing a sink yields sink-kind; derivation is
-   deterministic · *effort:* **M**
-   *→ **L4 detailed** in `P1.5.1-encapsulation-L4.md`. Headline: derive-vs-choose split —
-   types + boundary edges are **derived**; which inputs promote, their **order** (= identity),
-   names, and the exposed output are **chosen** (in `EncapSpec`). `derive_and_freeze`
-   generates exactly the `BOUNDARY` edges eval/validate consume; `default_spec` gives the
-   canonical proposal. Kind-derivation stays P2; param promotion stays P1.5.2.*
-
-8. **P1.5.2 · Param promotion** — `Param = Frozen(value) | Open(name)` + a binding
-   table on the composite; the encoder tags the two states; the evaluator injects
-   supplied params into open slots.
-   *→ **L4 detailed** in `P1.5.2-param-promotion-L4.md`. Refines the L3 sketch:
-   **instantiate-time specialization** (not eval-time injection) — `instantiate(template,
-   bindings)` produces a new concrete content-addressed unit; binding is **by name** (no
-   binding-table field); the open-param interface is **derived**. Encoder change = a
-   one-byte Frozen/Open tag on params.*
-   *pre:* P1.4.3, P1.5.1, P1.6 · *inv:* `I4`/`I5` · *test:* `Double`(b=2) and
-   `MultiplyByN`(b=open) hash differently; a promoted composite evaluates with the
-   supplied value · *effort:* **M**
-
-**Deferred out of P1 (fork-open, not leaves now):** generics / parametric types
-(`P1.3.2` — the largest checker-complexity jump, `§5`); async firing + quiescence
-(relocated to `P2.4`).
-
-**Consistency check vs design-doc §10.** §10 named *param promotion* as the next step
-after content-hashing. The deduction corrects this: §10 tacitly assumed an evaluator,
-but the only evaluator is throwaway JS — so **porting a deterministic evaluator into
-Rust (P1.4.x) precedes param promotion (P1.5.2)**. §10 was under-specified, not wrong
-in spirit; this plan supersedes its ordering. *(The method working as intended: the
-deductive sort caught a gap in the hand-written roadmap.)*
+**Next inch.** **P1.4.3 — the evaluator** (design pinned in `P1.4.3-evaluator-L4.md`).
+The binding it presupposed now exists: inject promoted inputs via `BOUNDARY→child` edges,
+read the exposed output via the `child→BOUNDARY` edge.
 
 ---
 
-## Level 3 — P2 · The OS (effect boundary), expanded to leaves
+## 2026-06-29 · P1.4.2 — Primitive registry + native compute · *(Phase A, inch 4)*
 
-P2 changes *what the engine is*: P1's evaluator runs and returns; P2 makes it a
-**runtime that runs** — something owns the clock, holds connections, performs
-consequences. So the crate split does real work here:
+**Built.** `holon-core::primitives::compute(name, inputs, params) -> Option<Value>` —
+the pure first-order vocabulary, dispatched by name:
+- constants `number` `boolean` `text` (value from a param);
+- arithmetic `add` `multiply` (variadic), `subtract` `divide` (binary; divide guards ÷0);
+- `compare` (op param `> < >= <= = !=`);
+- logic `and` `or` (variadic) `not`;
+- `select` (control-as-data); text `concat` `uppercase`;
+- list `list` `get` `append` `length` `sum` `join`.
 
-> **Classification is pure analysis → `holon-core`. Execution — drivers, sinks,
-> state storage, the firing loop → `holon-host`.** The crate graph keeps "the core
-> cannot perform an effect" a compile-time fact even as the effect layer is built.
+**Leaf closed.** **P1.4.2.** The evaluator (next) now has native leaves to dispatch to.
 
-**The async fork lands here — and is immediately deferred.** P1.4's relocated
-eager-vs-async fork becomes P2.4. The deduction resolves it: in the **eager** model
-the graph runs to a fixed point *before* any sink fires, so the settled value *is*
-the value the sink sees — **quiescence is free.** §6's "central unsolved boundary"
-only bites in the async/autonomous-cell future. Near-term P2 is entirely eager;
-async is a fork-open leaf we do not need yet.
+**Tests prove** (16): each primitive matches expectation (`add[3,7,5]=15`,
+`compare(72,70,">")=true`, `sum([3,7,5])=15`, `join(["a","b","c"],"-")="a-b-c"`, …);
+unknown name → `None`; runtime type mismatch through an `any` port → `None`;
+determinism.
 
-*Build order (topological); core/host placement noted per leaf:*
+**Forks pinned.**
+- **`None` = not computable** (unknown name, wrong arity, or runtime type mismatch). The
+  evaluator will treat this as `None`-propagation; wire-time checking (P1.3.1) already
+  rules out everything except `any`-port mismatches, which `compute` guards at runtime.
+- **First-order only.** `compute` takes `&[Value]` and ignores any eval context — it has
+  none yet. `Map` (the 21st primitive) and the `ctx` it needs are gated behind P1.5.1, so
+  the signature stays first-order until then.
+- **Variadic vs binary is per-primitive** (`add`/`multiply`/`and`/`or`/`concat`/`list`
+  fold over all inputs; `subtract`/`divide`/`compare`/`get`/`append`/`join` are
+  fixed-arity). Arity is enforced by slice patterns; the firing rule (required/optional)
+  is the evaluator's job, not `compute`'s.
 
-1. **P2.1.1 · Kind taxonomy** *(core)* — `Kind = Pure | Driver | State | Sink`. Kind is
-   **informative, not identity**: it is a *computed view*, never a stored or hashed
-   field. A primitive's kind follows authoritatively from its name (already in the
-   hash); a composite's is derived (P2.2.1). Nothing to forge, nothing to drift.
-   *pre:* P1.4.2 · *inv:* `I7` · *test:* the registry resolves the correct kind per
-   primitive (pure ops → Pure, `Store` → State, `Email` → Sink) · *effort:* **S**
+**Correction banked.** The plan calls the pure set "22 primitives" (and `Map` "the
+23rd"); the enumerated set is in fact **20** (`Map` is the 21st). Off-by-two in the
+roadmap text, not in the build — noted here, the set is otherwise exactly as listed.
 
-2. **P2.6.1 · State-cell primitive** *(core decl / host storage)* — **complete ✅.** The cell
-   as **two leaves** (`store_read` driver-like + `store_write` Fork-B sink); the one fenced
-   place purity ends; kind = State. The **donor primitive** for all effect contracts (P2.5).
-   Core: the split, `store_write` identity `compute`, `Capability::is_sourced` (input/output
-   axis), `mock_of` mocks the sourced side. Host: `StateHost` threads one anonymous cell —
-   `fire` performs `!is_sourced`, a read-substituting resolver injects the snapshot, the
-   snapshot→fire→apply round; **the counter climbs 0→1→2→3**. No `eval`/`validate` change, no
-   graph cycle (storage is the register). One anonymous scalar cell; keys / non-scalar
-   deferred.
-   *pre:* P1.4.2, P2.1.1 · *inv:* `§7`/`I7` · *test:* `store_read` mockable, `store_write`
-   pure; cell-bearing closure non-replayable; **the counter remembers across firings** ·
-   *effort:* **M** *(done)*
-   *→ **L4** in `P2.6.1-state-cell-L4.md`: two-leaf, storage = register, snapshot-apply.*
-
-3. **P2.2.1 · Derived-kind computation** *(core)* — `kind(composite) = union of children`,
-   computed over the closure each time it is asked; **never stored.** Because there is
-   no kind field to set, laundering an effect into a "pure" label is not *prevented* —
-   it is *inexpressible*.
-   *pre:* P2.1.1, P1.4.3 · *inv:* `I8` · *test:* a composite with one `Sink` leaf at any
-   depth computes to Sink-kind; a pure-only closure computes Pure · *effort:* **M**
-
-4. **P2.3.1 · Capability model** *(core)* — the fine-grained, security-relevant manifest
-   of what an effect *touches*: `NetworkEgress(host)`, `FileRead/Write(path)`,
-   `SecretAccess(name)`, `Clock`, `Spawn`, … A pure primitive declares the **empty set**
-   — a positive, checkable claim that it touches nothing outside its inputs. (Kind is
-   the four-bucket *projection* of this: "has any irreversible capability" ≈ Sink.)
-   *pre:* P2.1.1 · *inv:* `I7` · *test:* an effectful primitive declares its caps; pure
-   ones declare ∅ · *effort:* **M**
-
-5. **P2.3.2 · Capability union, surfaced before import** *(core)* — a composite's caps =
-   union of its closure's, **computed not stored** (same principle as kind), exposed
-   *before* a unit is run or imported.
-   *pre:* P2.3.1, P2.2.1 · *inv:* `I7`/`I9` · *test:* a `NetworkEgress` capability buried
-   deep in the closure surfaces at the top before import — **nothing exfiltrates
-   silently** · *effort:* **M**
-
-6. **P2.4.1 · Eager effect-firing** — **split into two modes by the substituting-resolver
-   insight (L4 rev. 2).**
-   - **Design mode** *(pure `holon-core` — built)*: effect leaves are substituted by pure
-     mocks **at the resolver**, and the closure runs under core `eval` — deterministic,
-     replayable, memoizable. `mock_of` + `Simulated` + `design_eval`; the "loop" *is* `eval`,
-     and the core never learns a mode exists.
-   - **Deploy mode** *(host — minimal built ✅):* the runtime loop in `holon-host` — `fire`
-     settles the graph (core `eval`) and the `Host` performs the request its **output**
-     carries (the one impurity). Minimal = a single terminal sink (representation A);
-     `drive` (real driver sourcing), state threading, and B-fan-out remain.
-   *pre:* P1.4.3, P2.1.1 *(design)* · P2.6.1 *(deploy — state threading)* · *inv:* `§6`/`I7`
-   · *test (design, ✅):* a graph with a **driver** evaluates purely (drivers mocked at any
-   depth); a **sink** evaluates directly (pure under Fork B); classification still reports
-   the real effects (the guardrail) · *test (deploy):* the host performs each sink's
-   *(capability, payload)* exactly once per settled trigger · *effort:* **M** *(design half done)*
-   *→ **L4** in `P2.4.1-firing-loop-L4.md` (rev. 2) + `sink-as-pure-request-L4.md` (Fork B):
-   substituting-resolver frame for drivers; sinks are pure request-constructors; α′ demoted
-   to a deploy sink-observation option; state is host-threaded (P2.6.1).*
-
-7. **P2.6.3 · State-cell replay/fork/pin semantics** *(core + host)* — **complete ✅ (by
-   dissolution).** Every sub-part is a corollary of P2.6.1's host-storage decision: **value-not-
-   hashed** is *unrepresentable to violate* (`hash_unit` takes a `Unit`; the value lives in the
-   host — `Value` isn't in the preimage); **cell-bearing ⇒ non-replayable** is tested
-   (`state_graph_is_not_replayable`, the positive form on `is_replayable`); **fork = copy-on-
-   write** is a new host over a cloned storage (tested — original→8, fork→7 diverge); **pin**
-   pins structure, state stays runtime → drifts to **P3** (pinning configured-stateful units is
-   a marketplace concern).
-   *pre:* P2.6.1, P1.6 · *inv:* `§7`/`I5` · *test:* fork CoW diverges; non-replayable (existing);
-   value-not-hashed holds by construction · *effort:* **M** *(done — one demo test, no prod code)*
-
-8. **P2.6.2 · Transactional read-then-write** *(host)* — **complete ✅ (by dissolution).** The
-   round *is* the transaction: `&mut self` serializes rounds, and snapshot → fire → apply is
-   atomic by construction, so the write lands computed from the value read with no exploitable
-   gap. A conditional read-modify-write **composes** (`store_read → compare → select →
-   store_write`) — falsifying the leaf's "cannot be composed" premise. The genuine adversary
-   (a *concurrent* writer / *shared external* state) is multi-process, and there "transactional"
-   is the **backing store's** primitive (DB txn / CAS) carried through the `Host` seam — **not a
-   core primitive** → deferred to platform hosting.
-   *pre:* P2.6.1 · *inv:* `§7` · *test:* saturating counter `0→1→2→2→2` — one atomic conditional
-   update · *effort:* **M** *(done — one demo test, no prod code)*
-
-9. **P2.5.1 · Correlation token in the value model** *(core + host)* — **complete ✅.** Resolved
-   *against* its own framing: the token is **not** an isolation mechanism — **non-crossing is a
-   theorem of purity** (independent requests, independent pure paths, no shared channel; only a
-   *state cell* can mix them, by the user's choice). The token is only a **boundary label** (which
-   open connection to reply on), carried as **explicit data** in the `[token, reply]` payload — no
-   `Value` change (implicit would *be* the shared channel non-crossing's freedom forbids). Caps:
-   `request → NetworkIngress`, `respond → NetworkEgress`; a `request→respond` closure is
-   effect-bearing yet **replayable**. Demo: `map(respond, ·)` over two `[token,data]` requests —
-   tokens don't cross. Deferred: real socket routing (platform host), client-await (async/`P2.4.2`),
-   ingress batch sourcing (non-scalar `constant_unit`).
-   *pre:* P1.4.1, P2.4.1 · *inv:* `§4` · *test:* two concurrent requests routed correctly, none
-   cross · *effort:* **M** *(done)*
-   *→ **L4** in `P2.5.1-correlation-token-L4.md`.*
-
-10. **P2.5.2 · Idempotency-key affordance on sinks** *(host)* — **complete ✅.** The key is plain
-    data in the `[key, body]` payload (no core change; `perform` already carries it). It works by
-    the *opposite* of correlation: purity makes a re-fire **reproduce** the effect, and determinism
-    (P1.4.4) makes the re-fire rebuild the **same key** — turning a double-fire into a dedup-able
-    event. Engine guarantees stability (= determinism); user derives the key from intent (must be
-    **replayable** — a driver/`State` key would vary; `is_replayable` could guard, future). Dedup
-    is the external system's (`DedupeHost` models it; real → platform host).
-    *pre:* P2.6.1, P2.4.1 · *inv:* `§4` · *test:* same intent fired twice → performed once · *effort:*
-    **M** *(done)*
-
-**Execution modes (design / deploy) — simulation doubles at the seam:**
-
-11. **P2.7.1 · Simulation doubles — drivers only** *(core decl)* — **revised by Fork B.**
-    Only a **driver** needs a design-mode mock (it is external input the host supplies; the
-    mock *injects* a scripted stimulus). A **sink** needs none — under Fork B it purely
-    *constructs its request* (identity-on-payload), so `eval` runs it directly. **State**
-    is host-threaded, not mockable. Pure primitives are their own mock. **The mock is never
-    part of the content hash.**
-    **[Built with `P2.4.1` + the Fork B reconciliation:** `mock_of(unit)` substitutes a
-    driver with a type-zero constant; `Sink | State | Pure ⇒ None`. The earlier sink
-    passthrough mock was retired (it assumed Fork A). Remainder — custom stimuli / ephemeral
-    test-context doubles — stays open.**]**
-    *pre:* P2.1.1, P1.4.2 · *inv:* `I5`/`§4` · *test:* a driver exposes a mock; a sink does
-    not (it evaluates purely); the mock is never in any hash · *effort:* **M** *(done)*
-
-12. **P2.7.2 · Mode-aware firing (design / deploy)** *(host)* — **complete ✅ (the last P2 leaf).**
-    `Mode{Design,Deploy}` + `run` name the choice the host already had: `design_eval` (mocks
-    drivers → whole graph pure → performs nothing, a safe preview) vs `fire_sourced` (real,
-    performs). `fire`/`fire_sourced` now *return* the settled output, so design hands back the
-    preview value. The **core never learns of modes** — both call the one `eval`; the mode only
-    chooses what the resolver injects and whether effects fire. Test: one `timer→email` graph
-    previews `Effect{email,0}` (nothing sent) in design, performs `(NetworkEgress, 42)` in deploy.
-    *Decision pinned:* mocks are a **leaf property** — composites always inherit, never
-    carry their own. Custom mocks / stimuli are allowed only as **ephemeral test-context
-    overrides** a user sets for a session, never baked into a unit's identity.
-    *Naming:* this is a *simulation double* (run safely), distinct from a future
-    *assertion test* (checked expectation, "output should equal 15"); keep them named apart.
-
-**Guardrail (constraint, not a leaf):** **kind and capabilities are always computed from
-the *real* units, never the mocks.** Design mode is never the basis of a trust decision —
-otherwise a malicious unit could ship a benign mock around a real effect (a laundering
-channel). The capability surface (P2.3.2) reflects what *deploy* mode will actually do, so
-a unit can simulate as innocent yet still be forced to declare its real `NetworkEgress`
-before import. *Design mode tests your wiring; the capability surface lets you trust the unit.*
-
-**Deferred out of near-term P2 (fork-open, not leaves now):**
-- **P2.4.2 · Async firing + quiescence gate** — autonomous cells; an explicit
-  settle/commit gate in front of irreversible sinks; never a debounce smeared across
-  the graph. Unsolved + unnecessary while eager (see above). `§6` · *effort:* **L**
-
-**P2 deductive findings (banked):**
-- **Quiescence is free in the eager model** — the hardest open problem in the design
-  (§6) does not block the effect boundary; it defers to the async future.
-- **The trust story is pure code.** Derived labels (I8) and capability-union-before-
-  import (I7/I9) are *analysis over structure* — they live in `holon-core` and are
-  provable **without executing a single effect.** Only the firing loop and the actual
-  consequences live in `holon-host`.
-- **State forces a value/identity split.** A cell's runtime value is excluded from its
-  content hash (P2.6.3), which is the clean resolution that keeps I5 intact in the
-  presence of state.
-- **Derivable ⟹ derived (never stored).** Kind and capabilities are pure functions of
-  the hashed structure (primitive name + child hashes), so they are **computed views,
-  never fields in the preimage.** A general principle for the whole project: anything
-  recomputable from the closure is computed, not committed — which is *why* forgery is
-  inexpressible rather than merely guarded against.
-- **Engine provides the donor; the user composes the disciplines.** The P2.6/P2.5 line,
-  named precisely: **P2.6** is *what the engine provides* — one stateful primitive plus
-  its honest semantics. **P2.5** is *what the user composes with it* — idempotency,
-  reconciliation, correlation — the safety disciplines the engine deliberately does
-  **not** build in. The engine's sole addition to P2.5 is *carrying* the plumbing the
-  user cannot thread purely (correlation token, idempotency key in the value envelope).
-  This is "minimal unopinionated engine; user owns correctness; engine makes correctness
-  *constructible*" expressed as a build boundary.
-
-**Consistency check vs design-doc §10.** §10 ordered: state semantics → async →
-effect contracts. The deduction refines this: the state *primitive* (P2.6.1) must
-come **earlier** than §10 implied, because capabilities and effect contracts
-presuppose it; and **async (P2.4.2) is deferrable**, because eager evaluation makes
-quiescence free. Consistent in spirit, sharpened in order.
+**Next inch.** **P1.4.3 — the evaluator** (`P1.4.3-evaluator-L4.md`): resolve a
+composite's DAG in topological order, inject promoted inputs via `BOUNDARY→child` edges,
+dispatch primitives to `compute`, read the exposed output via the `child→BOUNDARY` edge,
+recurse for nested composites. `None` propagates.
 
 ---
 
-## Level 3 — P3 · The Marketplace, expanded to leaves
+## 2026-06-29 · P1.4.3 — Eager graph evaluator · *(Phase A, inch 5 — the load-bearing leaf)*
 
-P3 is where holon becomes an ecosystem — but scoped to **run locally**, it splits in
-two, and the split is the main finding:
+**Built.** `holon-core::eval(unit, inputs, resolver) -> Option<Value>`. A primitive
+dispatches to `primitives::compute`; a composite resolves its inner DAG **by reference**,
+in a **single topological pass** (acyclicity from P1.3.1 ⇒ one pass suffices), injecting
+promoted inputs via `BOUNDARY→child` edges and reading the exposed output via the
+`child→BOUNDARY` edge. Primitive and composite share the **identical** entry point (I1).
+Each composite call gets a fresh scratch (nested / repeated composites never collide).
+`None` propagates.
 
-> A **local-first core** (single machine, no server) buildable right after P1/P2, and
-> a **networked / social layer** deferred until the local system is real and there is
-> a reason to network it. Most of P3 is **exposure, not invention**: its hard
-> preconditions — content-addressing (P1.6 ✅), determinism (P1.4.4), derived
-> kind/caps (P2.2/P2.3) — are already derived. Each leaf mostly *surfaces a property a
-> lower pillar already produces.*
+**Leaf closed.** **P1.4.3** — and **P1.2.1** (interface parity) discharged by test. The
+"identity but not evaluation" gap is **closed**: `holon-core` now computes, not just hashes.
+Phase A is effectively complete (only the determinism harness P1.4.4 remains, and the
+evaluator already uses ordered structures throughout).
 
-**Local-first leaves (buildable on one machine, in build order):**
+**Tests prove** (7): `eval_primitive_add` (`add[3,7,5]=15`); `eval_composite_add`;
+`eval_composite_sum` (the v3 seed minus `Map`: `list(a,b,c)→sum→15`); `eval_nested_composite`
+(recursion); `none_propagates` (binary `subtract`, one operand absent ⇒ `None`);
+`interface_parity_primitive_eq_composite` (a primitive and an equivalent composite are
+substitutable); `deterministic`.
 
-1. **P3.8.1 · Content-addressed store (local CAS)** *(host; verify in core)* — **complete ✅.**
-   `Store` trait (owned `put`/`get` — **not** a `Resolver`, so eval never touches disk),
-   `MemStore` + on-disk `FileStore` sharing one encode/key/verify/decode path. The byte
-   format **is** the hash preimage; core gained `decode_preimage` (byte-exact inverse of
-   `encode_preimage`) + `Type::from_tag`. Verify-on-read = re-hash the decoded unit, refuse
-   unless it equals its key (`I5` operational; no `blake3` in host). 136 green (117c + 19h).
-   *pre:* P1.6 · *inv:* `I5` · *test:* `store(unit)→hash`; `fetch(hash)→` identical unit;
-   a tampered/mismatched blob is rejected · *effort:* **M**
+**Forks pinned.**
+- **Firing rule = compute's arity check, for now.** The evaluator gathers *present* inputs
+  in port order and lets `compute` decide. For the current vocabulary this realizes
+  `required/optional` exactly (a fixed-arity op with a gap ⇒ wrong count ⇒ `None`; a
+  variadic op folds whatever is present), and skipping an absent port never yields a
+  *wrong* value — only `None` or the correct one. The explicit per-port
+  `required/optional/default` field (an encoder change) is **deferred** until a primitive
+  needs a positional optional with a default. `persist`/`consume` remain out of the pure
+  core (state boundary / async, P2.4.2).
+- **Eager = one topological pass** (`topo_order`, Kahn's, ties broken by ascending child
+  index for determinism). No iteration; the prototype's repeated passes were a shortcut.
+- **`Map`/`ctx` still deferred** to P1.5.1: `compute` is first-order; the evaluator will
+  be the provider of the `apply(hash, inputs)` context when `Map` lands.
 
-2. **P3.1.1 · Registry: alias→hash, publish, immutability (local)** *(host)* — a
-   `name@version` alias resolves to a hash; publish writes unit→store + alias→hash;
-   **a published alias is immutable** (resolves to one hash forever).
-   *pre:* P3.8.1 · *inv:* `I5` · *test:* publish `rsi@1.0`→hash; resolve →same hash;
-   republishing `rsi@1.0` to a different hash is refused · *effort:* **M**
-
-3. **P3.2.1 · Transitive inspection to the leaves** *(core traversal / host fetch)* —
-   descend a closure by the same pins that guarantee execution, to the leaf primitives,
-   annotated at every level with derived kind + capabilities.
-   *pre:* P3.8.1, P2.2.1, P2.3.2 · *inv:* `I9` · *test:* descend a 3-level composite to
-   its primitives; a sink/capability buried deep is reachable and visible; inspection
-   never stops one level short · *effort:* **M**
-
-4. **P3.3.1 · Memoization cache, keyed `(closure-hash, input-hash)` (local)** *(host)* —
-   cache a **pure** unit's result; reuse on hit. Sound *only* for pure subgraphs — a
-   State-bearing closure is never cached.
-   *pre:* P1.4.4, P1.4.1, P1.6, P2.2.1, P3.8.1 · *inv:* `§8`/`I5` · *test:* same pure unit
-   + same inputs hits cache, identical bytes; a State-bearing subgraph is not cached ·
-   *effort:* **M**
-   *Deductive note:* the cache's trustlessness is **inherited**, not asserted — it holds
-   because units are content-addressed (P1.6), evaluation is deterministic (P1.4.4), and
-   only pure closures are keyed (P2.2.1). This is the loop closing: P3.3 is the
-   requirement that *forced* P1.6 + P1.4.4 at the start, now consuming exactly them.
-
-5. **P3.5.1 · Copy-on-write fork + explicit re-pin (local)** *(core derive / host)* —
-   inspect freely; editing a depended-upon unit yields a **new hash** (original
-   immutable); "pull an upstream fix" is an explicit re-pin (bump child hash → re-derive
-   parent → new parent hash), never a silent channel.
-   *pre:* P3.1.1, P1.5.1, P1.6 · *inv:* `§8`/`I3`/`I5` · *test:* forking a pinned unit
-   yields a new hash, original untouched; re-pinning a child produces a new, reviewable
-   parent hash · *effort:* **M**
-
-6. **P3.6.1 · Advisory / yank channel (local)** *(host)* — flag a hash as advised-against
-   and point to a fixed version; **never mutate the frozen bytes**. A closure containing
-   a flagged hash surfaces the advisory.
-   *pre:* P3.8.1, P3.2.1 · *inv:* `§8`/`I5` · *test:* flag a hash; a unit whose closure
-   contains it reports the advisory + suggested replacement; the flagged bytes remain
-   unchanged and resolvable · *effort:* **M**
-
-**Networked / social layer (deferred, fork-open — needs a server + multiple participants):**
-
-7. **P3.3.2 · Shared trustless cache** — the local cache, shared across users; trustless
-   because the hash is the proof. *pre:* P3.3.1 + network · `§8` · *effort:* **L**
-8. **P3.4.1 · Reputation by adoption** — count *independent units/authors* that compose a
-   unit (the dependency graph counting itself; expensive to forge); show both raw usage
-   and adoption, know which is trust. *pre:* populated ecosystem + P3.7.1 · `§8` · *effort:* **L**
-9. **P3.7.1 · Author identity, costly to forge** — the adoption metric is only as
-   forgeable as the cheapest fake author; the identity model itself is undecided.
-   *pre:* networked registry · `§9` · *effort:* **L** *(fork-open)*
-10. **P3.8.2 · Networked content-addressed store** — distribute units across machines.
-    *pre:* P3.8.1 + network · `I5` · *effort:* **M–L**
-
-**P3 deductive findings (banked):**
-- **The marketplace's core is single-user.** Store, registry, inspection, local
-  memoization, copy-on-write fork, and advisories all run on one machine with **no
-  server**. The social features are a later expansion, not a precondition — so P3 is
-  reachable right after P1/P2, not a far-future pillar. (Aligns with "run locally.")
-- **P3 is mostly exposure, not invention.** Memoization = key the cache by hashes P1.6
-  already computes. Inspection = render the closure P1.4.3 already traverses, annotated
-  with kind/caps P2 already derives. Adoption = count dependency edges the pinned
-  closure already stores. Its preconditions being done is *most* of the work.
-- **The deduction's loop is closed.** At L1 we banked "P3.3 forces P1.6 + P1.4.4."
-  Descending P3 confirms P3.3 *consumes* exactly those. The top of the tree dictated the
-  floor; the floor now supports the top. End-to-end consistent.
-
-**Consistency check vs design-doc §10.** §10 lumped the whole marketplace into one late
-step (#7). The deduction **splits** it: the *local* mechanics are near-term (right after
-P1/P2); only the *networked/social* layer is genuinely late. §10 under-ordered by
-treating "marketplace" as monolithic.
+**Next inch.** **P1.4.4 — determinism harness** (ordered structures already in use; add
+the repeated-/cross-run identity tests and a fuzz check), then Phase B (**P1.5.1
+encapsulation**, where `Map` and `ctx` finally land).
 
 ---
 
-## Level 3 — P4 · The Editor, expanded to leaves
+## 2026-06-29 · P1.4.4 — Determinism harness · *(Phase A, inch 6 — closes Phase A)*
 
-P4 is a **client of the core**, and its deductive signature is *delegation*: every
-decision — is this wire legal, what does this evaluate to, what is this composite's
-interface / hash / kind / capabilities — is answered by `holon-core` (via WASM),
-never reimplemented. The editor's genuine job is **presentation, interaction, and the
-cosmetic layer** (positions, labels) the core deliberately does not know about.
+**Built.** `holon-core::is_finite_number` (the float-discipline predicate) + the
+`determinism` harness. The `number` constant now **rejects non-finite values** (NaN,
+±inf) — the one place they could enter from user data — so the value domain stays finite
+and equality / future canonical hashing are total.
 
-*Build order; layer = TS/React editor over WASM core:*
+**Leaf closed.** **P1.4.4** — and with it **Phase A** (Evaluation) is complete:
+`P1.4.1 → P1.3.1 → P1.4.2 → P1.4.3 → P1.4.4`, plus P1.2.1 discharged. `holon-core` holds
+values, validates graphs, computes, and is provably deterministic.
 
-1. **P4.2.1 · `holon-core` → WASM bindings** *(the load-bearing leaf)* — compile the
-   core to WASM; expose its API (validate, evaluate, hash, derive-interface,
-   derived-kind/caps) to the editor. One evaluator, one decider.
-   *pre:* P1.4.3, P1.4.4, P1.6 · *inv:* `I5`/`I2` · *test:* a graph evaluated via the
-   WASM core in-editor returns bytes **identical** to the native core · *effort:* **M**
+**Tests prove** (3, total now ~52): `golden_nested_arithmetic` (`(2+3)*(10-4)=30`, a
+pinned multi-level answer); `deterministic_over_random_graphs` (200 random nested
+arithmetic trees, each evaluated **twice** for determinism *and* against a direct Rust
+computation for correctness — kept in the exact-integer range so eval must match
+bit-for-bit); `non_finite_constants_rejected`.
 
-2. **P4.1.1 · Authoring canvas** — palette, place/move (cosmetic), wire ports, set
-   params; the editor's model (with cosmetics) **projects** to the core's structural
-   `Unit`.
-   *pre:* P4.2.1 · *inv:* `I1`/`§5` · *test:* a visually-built graph projects to a valid
-   core `Unit`; a cosmetic move changes the editor model but **not** the projected hash ·
-   *effort:* **L**
+**Forks pinned.**
+- **Determinism is structural, not bolted on.** The evaluator already uses only ordered
+  structures (`BTreeMap`/`BTreeSet`, index-keyed scratch); the harness *proves* it rather
+  than enforcing it after the fact.
+- **Float discipline = finite-only domain.** NaN/±inf rejected at the constant boundary;
+  division already guards ÷0. This keeps `Value` equality total — the property the shared
+  cache (P3.3) inherits.
+- **Cross-target identity deferred to P4.2.1.** Native-vs-WASM bit-identity is the other
+  half of I5; it needs the WASM bindings to exist. Single-target determinism is
+  established here; the harness is ready to run against WASM later.
+- **No external dep for fuzzing.** A tiny inline LCG generates the random graphs — the
+  pure core keeps its only dependency (`blake3`).
 
-3. **P4.1.2 · Wire-time type check (via core)** — wiring calls the core's compatibility
-   check (P1.3.1); the editor renders the rejection, never re-judges.
-   *pre:* P4.1.1, P1.3.1 · *inv:* `§5` · *test:* a type-mismatched wire is refused
-   in-editor with the *core's* answer · *effort:* **S**
-
-4. **P4.3.1 · Encapsulation UX** — select a subgraph → group (editor calls core's
-   derive-then-freeze P1.5.1, receives the new `Unit` + hash); expand to inspect.
-   *pre:* P4.1.1, P1.5.1 · *inv:* `I4`/`I9` · *test:* grouping in-editor yields a unit
-   whose interface + hash match the core's derivation; expand round-trips · *effort:* **M**
-
-5. **P4.4.1 · Transitive inspection UI** — render the closure tree P3.2.1 produces,
-   annotated with derived kind + capabilities at every level, to the leaves.
-   *pre:* P4.1.1, P3.2.1 · *inv:* `I9` · *test:* inspect a 3-level composite; every level
-   to the primitives shows correct kind/caps; nothing stops one level short · *effort:* **M**
-
-6. **P4.4.2 · Capability-consent gate** — before importing/running a unit, surface its
-   capability union (P2.3.2) and require explicit consent. The human face of
-   "capabilities surfaced before import."
-   *pre:* P4.4.1, P2.3.2 · *inv:* `I7`/`I9` · *test:* importing a unit with `NetworkEgress`
-   shows the capability and blocks until acknowledged · *effort:* **S–M**
-
-7. **P4.5.1 · Registry client** — browse; import-as-pin (alias→hash→fetch→pin); publish
-   (derive→freeze→store→alias).
-   *pre:* P4.1.1, P3.1.1, P3.8.1 · *inv:* `§8` · *test:* import by alias → pinned by hash;
-   publish → resolvable by its new alias · *effort:* **M**
-
-8. **P4.6.1 · Design / Deploy mode toggle + mock editing** *(editor)* — a mode switch on
-   the canvas; in **design** the graph runs with mocks + driver stimuli and results
-   display live (safe, glitch-free); in **deploy** real effects fire. The user can set
-   custom mocks / stimuli as ephemeral test-context.
-   *pre:* P4.1.1, P2.7.2 · *inv:* `§6` · *test:* toggling to design runs the graph with
-   mocks and shows results; a custom mock/stimulus affects the design run but **not** the
-   unit's hash · *effort:* **M**
-
-**P4 deductive findings (banked):**
-- **The editor invents almost nothing.** It is a *view*; the core is the *model*. Any
-  logic duplicated in the editor (a second type-checker, a second evaluator, a second
-  interface-deriver) is a future divergence bug. The sideways "one evaluator"
-  constraint generalizes to **one decider**.
-- **The cosmetic/structural boundary lives in P4's projection.** The editor is the only
-  pillar that holds cosmetics; its project-to-core step is where "if it changes the
-  result it's structural, else cosmetic" becomes tangible — moving a node changes the
-  editor model but not the hash. P4 is where P1.6's normalization is felt by a human.
-- **P4 has no new invariant-level difficulty.** Its hardest leaf (the WASM marshalling
-  boundary) is engineering, not design — as expected: the editor is convenience, the
-  spine is foundation. *(P4 is also a pillar §10 omitted entirely; the plan fills that gap.)*
+**Phase A complete. Next: Phase B — P1.5.1 (encapsulation: derive-then-freeze).** This is
+where a selection of wired units becomes a new hashed `Unit` with an auto-derived
+interface (unbound inputs promote, the chosen output is exposed, kind = union of
+children) — and, right after, where **`Map`** and the evaluation **`ctx`** finally land.
 
 ---
 
-## Cross-cutting findings (banked)
+## 2026-06-29 · Addendum — P1.2.1 parity properly discharged
 
-- **Design mode is the seam doing its job.** Substituting mocks at the effectful leaves
-  turns the *whole* graph pure, so a design-mode run inherits every pure-graph property
-  at once — deterministic, replayable, glitch-free, safe. It is **compositional** (mock
-  at leaves; simulation propagates up the closure like kind and capabilities) and it
-  costs the pure core nothing — it is a host concept; the core never learns about modes.
-  Safety, though, is *always* read from the real units, never the mocks.
-- **Requirements flow downward.** P3.3 (trustless shared cache) is sound *only if*
-  P1.4 is bit-deterministic and P1.6 is content-addressed — so two "language design
-  choices" are in fact **forced by the marketplace**. The top of the tree dictates
-  the floor.
-- **The real frontier is narrower than it feels.** Exactly one P1 node is fully
-  landed in the production engine (**P1.6**). The evaluator (P1.4) still lives only
-  as JS. Deductively, `holon-core` today has **identity but not evaluation** — the
-  spine is not done. Porting a deterministic evaluator into Rust is therefore more
-  load-bearing than the more exciting param-promotion work, and likely comes first.
-- **Requirements also flow *sideways*.** P4.2 forces the Editor to embed
-  `holon-core` compiled to WASM rather than reimplement evaluation in JS. Two
-  evaluators would eventually disagree, and the instant they do, I5 is false and the
-  shared cache (P3.3) is poisoned. So "compile the core to WASM" is a hard
-  requirement the **Editor places on the Language** — and a reason P1.4 must be
-  built WASM-targetable from its first line (which `holon-core` already is).
+**Correction.** Inch 5 claimed P1.2.1 "discharged," but its test only showed *standalone*
+equality (`eval(prim) == eval(comp)` for one input) — that demonstrates the idea, not the
+substitutability I1 actually asserts.
+
+**Strengthened.** Renamed the old test `parity_standalone_primitive_eq_composite` and added
+`substitution_in_host_is_invisible`: one host computes `(x + y) * z` through a swappable
+"add-like" child; evaluated once with a **primitive** `add` and once with a
+**composite-wrapping-add** as that child. The two children hash **differently** (asserted),
+so it is a genuine substitution — and the host's output is identical. That is the I1 claim,
+now proven, not asserted. (eval tests: 7 → 8.)
+
+**Why parity is robust (banked).** It is structural: primitive and composite are the same
+`Unit` type with the same interface fields and one `eval` entry point; a faithful 1:1
+wrapper reconstructs the exact input vector (Nones preserved positionally) and delegates,
+so identity holds by construction. The primitive path's `flatten` vs the composite path's
+positional gather cannot diverge, because the flatten always happens at the primitive leaf
+— the same place, both ways. The only future case that could matter (a positional optional
+input with a default) is exactly the deferred feature, and faithful-wrapper parity survives
+it.
 
 ---
 
-## Master build order — the topological sort of all leaves
+## 2026-06-29 · P1.5.1 — Encapsulation (derive-then-freeze) · *(Phase B, inch 1)*
 
-The method's payoff (step 6): with every pillar at leaf resolution, the leaves sort by
-dependency into **phases**. Within a phase, order is flexible; phases are strict. A
-single brittle 1..N list would over-claim precision — the phases are the real contract.
+**Built.** `holon-core::encapsulate` — `derive_and_freeze(children, inner_edges, spec,
+resolver) -> Result<Unit, EncapError>` plus `default_spec(...)`. Turns a self-contained
+selection into a new hashed composite: **derives** interface types from inner ports,
+**generates** the `BOUNDARY` edges, and honors the spec's **choices** (which inputs
+promote, their order, names, the exposed output). `default_spec` gives the canonical
+proposal (promote all unbound in `(child, port)` order; expose the unique free output).
 
-- **Phase A · Evaluation** *(pure `holon-core`)* — `P1.4.1 → P1.3.1 → P1.4.2 → P1.4.3 →
-  P1.4.4 → P1.2.1`. Closes the "identity but not evaluation" gap. **Starts now;
-  `P1.4.1` is the first inch.**
-- **Phase B · Encapsulation** *(pure `holon-core`)* — `P1.5.1 → (Map lands) → P1.5.2`.
-  Full recursion + genuinely reusable units.
-- **Phase C · Effect boundary** *(`core` classify + `host` execute)* — planned:
-  `P2.1.1 → P2.6.1 → P2.2.1 → P2.3.1 → P2.3.2 → P2.4.1 → P2.6.3 → P2.6.2 → P2.5.1 →
-  P2.5.2 → P2.7.1 → P2.7.2`.
-  *(P2.7 adds design/deploy modes — the whole graph runs purely in design mode.)*
-  **Realized so far:** `P2.1.1 → P2.2.1 → P2.3.1 → P2.3.2 → P2.4.1(design) + P2.7.1(minimal)
-  → sink reconciliation (Fork B: sinks pure, effect-bearing⊥replayable) → P2.4.1(deploy-minimal):
-  holon-host real, the purity seam crossed → P2.6.1(core half): state cell = two leaves,
-  is_sourced (sourced⊥performed) → P2.6.1(complete): StateHost threads one cell, the counter
-  remembers 0→1→2→3 → A→B: Value::Effect{name,payload} (self-describing, no inversion),
-  Type::Effect; map fans out to N sends, write+send in one round — the one-effect ceiling lifted
-  → drive: SourcedResolver injects any sourced value (store_read was a driver all along), round
-  threads storage AND drivers — the Elm runtime closes (Model/update/Cmd/Sub) on a pure core
-  → P2.6.3: cell identity dissolved by host-storage (value-not-hashed unrepresentable,
-  non-replayable already held, fork=CoW tested, pin→P3) → P2.6.2: transactional read-then-write
-  dissolved — the round IS the transaction (atomic snapshot→fire→apply; conditional RMW composes
-  via select; saturating counter 0→1→2→2→2); concurrent-txn → platform host, not core
-  → P2.5.1: correlation token = boundary label (explicit data, no Value change); non-crossing is
-  purity's theorem (map(respond,·) keeps tokens paired); real routing/await defer
-  → P2.5.2: idempotency key = data; determinism (P1.4.4) makes a re-fire rebuild the same key →
-  dedup-able (DedupeHost performs once); user derives key from intent (must be replayable)
-  → P2.7.2: Mode{Design,Deploy}+run; fire returns the settled output; same graph previews in
-  design (nothing performed) / fires in deploy — **P2 COMPLETE** (P1 ⊳ P2 closed; P3 next)
-  → §13: genesis primitive set + admission gate pinned (trust root; reconcile before first publish)
-  → P3.8.1: content-addressed store — Store≠Resolver (owned units, eval never touches disk),
-  Mem+File backends, byte format IS the preimage (+decode_preimage inverse), verify-on-read =
-  re-hash the decoded unit against its key (I5 operational, no blake3 in host) — **P3 begins**
-  → genesis reconciliation (arc, L4): R1a — cons/head/tail/is_empty added (additive, no hash
-  moved); head/tail of [] ⇒ None (get-OOB convention); two-table rule (compute + capabilities_of)
-  → R1b — fold (the one iteration primitive, in eval.rs beside map; fn=param, init+list=inputs,
-  left-fold fn(acc,elem); fold([])=init). Control flow now provably select+fold, no while ⇒
-  total by construction. **R1 (pure irreducibles) complete**
-  → R2 — text irreducibles (Text opaque): lowercase/text_length/slice/index_of, char-based,
-  casing locale-free (I2), index_of -1 sentinel (not-found is total, not None). Additive
-  → R3 — random driver (one capabilities_of row; no compute/simulate change — sourced_mock is
-  type-generic). **Additive run R1–R3 complete; no existing hash moved.** Next: breaking renames
-  → R4a — timer→clock, request→ingress (first breaking inch; hashes move). Survey-first caught
-  `request`-primitive vs `request`-the-word (Fork B); scoped rename, word preserved
-  → R4b — email+respond→ONE egress sink (merge; host dispatches on capability not name, so clean).
-  Deduped collapsed match arms by hand; 3 explanatory comments preserved; caught email_hash via
-  substring grep. **R4 complete: all effects carry §13 names (clock/ingress/egress).** Next: R5
-  → R5 — number/boolean/text/true/false → one `const` (reads value+type params; declares type,
-  never infers; true/false were never real primitives — removed). 8 files (constants minted
-  everywhere). **RECONCILIATION ARC R1–R5 COMPLETE — native set matches §13 on every axis.**
-  → R6 — DECISION (no code): freeze the as-built trust root (Branch B), defer demotion-to-stdlib
-  to its own pillar (revisit when stdlib mechanism + auditor exist). Gate stays active for future.
-  Frozen 34-leaf genesis manifest pinned in §13a. **GENESIS RECONCILIATION COMPLETE (R1–R6).**
-  Next: back to P3 local-first (registry → inspection → memo → fork → advisory), now unblocked`,
-  all pure core. **`P2.6.1` (state) was deferred to the deploy crossing** rather than built
-  before firing: the substituting-resolver insight made design-mode firing pure and
-  buildable without state, so the purity seam is crossed once, at deploy, not twice.
-- **Phase D · Local marketplace** *(`host`)* — `P3.8.1 → P3.1.1 → P3.2.1 → P3.3.1 →
-  P3.5.1 → P3.6.1`. (`P3.8.1` needs only P1.6 — done — so it can begin early in parallel.)
-- **Phase E · Editor** *(TS/React over WASM)* — `P4.2.1 → P4.1.1 → P4.1.2 → P4.3.1 →
-  P4.4.1 → P4.4.2 → P4.5.1 → P4.6.1`. Gated on Phase A (the WASM core must exist).
-- **Deferred (fork-open, no near-term trigger):** generics `P1.3.2`; async + quiescence
-  `P2.4.2`; networked/social `P3.3.2`, `P3.4.1`, `P3.7.1`, `P3.8.2`.
+**Leaf closed.** **P1.5.1.** Encapsulation is the inverse of evaluation — it *produces*
+the boundary edges P1.4.3/P1.3.1 *consume* — so the two are now provably in lockstep.
+The system is recursive in practice: a flow can become a referenceable unit.
 
-Phases A–B are the spine and are pure core — they can proceed with no host, no editor,
-no network. The plan is **thorough enough at the frontier (Phase A) to begin building**
-while deeper phases are detailed just-in-time.
+**Tests prove** (8, total now ~61): `encapsulates_single_unit_to_expected_hash` (wrapping
+a bare `add` yields **exactly** the hand-built add2 — equal hashes, edge order normalized);
+`encapsulated_evaluates_correctly` (`(a+b)*q` selection evaluates to 20 — behavior
+preserved); `default_spec_promotes_unbound_canonically`; `order_is_identity` (same ports,
+different order ⇒ **different hashes**); `rejects_promoting_bound_port`;
+`rejects_invalid_output`; `ambiguous_default_output`; `derived_unit_validates`.
+
+**Forks pinned.**
+- **Derive vs choose.** Types + boundary edges derived; promotion subset/order/names +
+  exposed output chosen (in `EncapSpec`). Order is identity — the `order_is_identity` test
+  makes that concrete.
+- **"Freeze" is construct-and-hash**, not a flag. Re-deriving from edited children yields a
+  different hash by I5; nothing can drift.
+- **Defensive validation.** `derive_and_freeze` validates its own output, so encapsulation
+  can never emit an invalid unit (the test confirms it always passes).
+- **Empty params / no kind yet.** Param promotion is P1.5.2; kind = union of children is
+  P2.2.1. P1.5.1 derives the *type* interface only.
+
+**Next inch.** **`Map`** (the 21st primitive) + the eval **`ctx`**: `compute` gains
+`ctx.apply(&Hash, &[Value]) -> Option<Value>` (the evaluator provides it); `Map` takes its
+function as a param hash and applies it per list element. Then **P1.5.2** (param promotion).
 
 ---
 
-## Level-4 readiness — which leaves must descend before building
+## 2026-06-29 · `map` (higher-order) · *(Phase B, inch 2)*
 
-A leaf needs L4 only if it is **large** *or* hides an **unresolved design sub-decision**
-(not mere implementation). Most leaves — the analysis-over-structure ones — are buildable
-directly from L3. The exceptions, each flagged with the sub-decision L4 must resolve:
+**Built.** `map` handled **in `eval`** (not `compute`): input 0 is a list, the `fn` param
+holds the hex hash of the unit to apply; the evaluator resolves `fn` and applies it per
+element through its own recursion. Added `eval_map` + `parse_hash` (hex→`Hash`). `compute`
+and the 20 first-order primitives are unchanged.
 
-- **P1.4.3 · Evaluator** *(frontier — descend next)* — per-input firing policies
-  (required/optional · consume/persist/default, §6), the eager fixed-point strategy,
-  promoted-input injection, composite recursion. **The load-bearing leaf of the plan.**
-- **P1.5.2 · Param promotion** — touches the canonical encoder (the most hash-sensitive
-  code): the `Frozen | Open` encoding + binding-table representation, domain-separated.
-- **P2.3.1 · Capability model** — the capability *set* must be enumerated (a design
-  decision, as the primitive set was).
-- **P2.4.1 · Effect-firing host loop** — the host runtime architecture (event source →
-  eval trigger → sink dispatch) is genuinely new structure.
-- **P2.5.1 · Correlation token** — whether/how every value carries routing identity is a
-  cross-cutting change to the value envelope.
-- **P3.5.1 · Copy-on-write re-pin** — the ancestor re-derivation algorithm (bump child →
-  re-derive every parent up the closure).
-- **P4.2.1 · WASM bindings** — the API surface + TS↔Rust marshalling of the `Unit` model.
-- **P4.1.1 · Authoring canvas** *(L)* — large; mostly a porting plan from the prototypes,
-  not novel design.
+**Leaf closed.** `map` — the 21st primitive. The higher-order story is complete: the v3
+seed `list(3,7,5) → Map(Double) → [6,14,10]` now runs end-to-end.
 
-**Buildable directly at L3 (no L4):** P1.4.1, P1.3.1, P1.4.2, P1.4.4, P1.2.1, P1.5.1,
-P2.1.1, P2.2.1, P2.3.2, P2.6.1/2/3, P2.7.1/2, P3.8.1, P3.1.1, P3.2.1, P3.3.1, P3.6.1,
-P4.1.2, P4.3.1, P4.4.1/2, P4.5.1, P4.6.1.
+**Tests prove** (2, total ~63): `map_doubles_list` (the v3 seed); `map_none_propagates`
+(`Double` on a `Text` element fails ⇒ the whole map is `None`).
 
-**Just-in-time rule.** We do *not* descend all eight now. The frontier is Phase A:
-`P1.4.1 → P1.3.1 → P1.4.2` are buildable immediately; **`P1.4.3` is the first leaf that
-needs L4**, so it is the only descent required before building begins. The other seven
-descend as the build reaches them.
+**Deviation from the L4 (banked).** The L4 planned a `ctx` threaded into `compute` so a
+first-order `compute` could call back into `eval`. Building showed that is backwards:
+`map` *invokes* the evaluator, so it belongs **in `eval`**, where recursion already lives —
+which keeps `compute` purely first-order. No `ctx` trait, no signature change, no churn to
+the first-order tests. Clean boundary: **`compute` = first-order leaves; `eval` = graph +
+higher-order.**
 
----
+**Fork surfaced (for P3.2.1).** `map`'s `fn` is referenced by a **param-hash** (hex),
+outside the `children` channel. Transitive **pinning** holds — the param is in the preimage,
+so `map`'s hash depends on `fn`'s hash (I6 ✓). Transitive **inspection** (P3.2.1) must
+additionally treat hash-valued params as references:
+`referenced_hashes(unit) = children ∪ {hash-valued params}`. Recorded; needed at P3.2.1.
 
-## Descent control
+**Deferred.** Higher-order **type checking** (does `fn`'s signature fit the element type?)
+is not done — `fn` is applied dynamically, `None` on mismatch; and `Type::List` carries no
+element type. Both acceptable for now.
 
-How we deepen this plan, and in what order:
-
-1. **P1 → Level 3 first** (it is the entailed base; P2/P3/P4 all presuppose it).
-   Within P1, the open frontier is P1.3 (types), P1.4 (evaluator), P1.5
-   (encapsulation + param promotion) — with their own internal order to be derived.
-2. Then **P2 → Level 3**, then **P3 → Level 3**. **P4** descends in parallel once
-   P1.4 exists, since the Editor embeds the core it evaluates with.
-3. Each Level-3 leaf is specified as: *precondition leaves* · *the invariant it
-   serves* · *the test that proves it* · *a rough effort note*. A leaf is "ready"
-   only when those four are filled.
-4. **Trunk-review checkpoints** gate each descent: before expanding a pillar we
-   confirm its Level-2 set is complete and correctly entailed.
-
-### Resolution log
-| Branch | Detailed to | Frozen? |
-|---|---|---|
-| Root (L0) | L0 | ✅ frozen |
-| Pillars (L1) | L1 | ✅ frozen |
-| P1 / P2 / P3 / P4 (L2) | L2 | ✅ frozen |
-| P1 leaves (L3) | L3 | ✅ frozen |
-| P2 leaves (L3) | L3 | ✅ frozen |
-| P3 leaves (L3) | L3 | ✅ frozen |
-| P4 leaves (L3) | L3 | ✅ frozen |
-| P1.4.3 · evaluator | L4 | design note (`P1.4.3-evaluator-L4.md`) |
-| P1.5.1 · encapsulation | L4 | design note (`P1.5.1-encapsulation-L4.md`) |
-| P1.5.2 · param promotion | L4 | design note (`P1.5.2-param-promotion-L4.md`) |
-
-*Level 3 ratified and frozen across all four pillars. Master build order derived.*
-*Selected leaves descend to L4 just-in-time (see "Level-4 readiness"). First descent: P1.4.3.*
-
-*(Open trunk-review question: is anything in the Level-0 end-state **not** covered
-by exactly one pillar? If yes, the trunk is incomplete and must change before descent.)*
+**Next inch.** **P1.5.2 — param promotion** (`Param = Frozen | Open` + a binding table;
+touches the encoder), which closes Phase B.
 
 ---
 
-## Implementation journal (begins only when the plan is judged thorough)
+## 2026-06-29 · P1.5.2a — `Param = Frozen | Open` + encoder tag · *(Phase B, inch 3a)*
 
-When we start building, we keep `JOURNAL.md` alongside this plan: dated entries, one
-per inch, each recording **what was built · which leaf it closed · what the tests
-proved · any fork that got pinned in the doing**. The journal is the retroactive
-audit trail that makes "understand design intent before changing it" actually
-possible — it is where the *why* of each implementation choice is preserved, so a
-future change can tell a real defect from an invariant doing its job.
----
+**Built.** `Param` is now an enum — `Frozen { name, value } | Open { name }` — with
+constructors (`frozen`/`open`) and accessors (`name`/`value`/`is_open`). The canonical
+encoder tags the variant in the preimage (`PARAM_FROZEN = 0x00`, `PARAM_OPEN = 0x01`), so a
+frozen and an open param of the same name hash differently. All readers now use `value()`
+(which is `None` for a hole) and all constructors use `Param::frozen`.
 
-### P3.1.1 — registry (DONE)
-- **L4:** P3.1.1-registry-L4.md. The publish boundary; one invariant — closure-completeness (I6).
-- **Shape:** `Registry<S: Store>` in holon-host; `publish(&Unit)->Result<Hash, PublishError>`
-  verifies the closure (children + `fn` param) via the store, fails closed on `DanglingReference`,
-  then commits (put + record). `is_published`/`published`/`store` accessors. Verify-first-then-commit.
-- **Decisions:** hash-only (F1); in-memory published record (F2, persistence = short follow-on);
-  re-publish idempotent (F3); only the root is a published entry, closure is verified-present (F4).
-  Reference detection keys on the `fn` param **name** (eval's convention), not a parse heuristic
-  (which false-positives on hash-like literal text). `parse_hash` widened pub for the host.
-- **Tests (+5 host = 24):** leaf publishes; composite-with-stored-children publishes; **dangling
-  child refused**; **dangling `fn` param refused** (the I6 subtlety); re-publish idempotent.
-- **Deferred from here:** names/discovery, catalog persistence, networking, a shared
-  `child_refs(unit)` core helper (warranted once a 2nd hash-valued param exists).
+**Scope.** Sub-leaf **(a)** of P1.5.2 — the representation + encoder change, **in isolation
+and behavior-preserving**. Every param is still `Frozen`, so the system computes exactly as
+before. `open_param` / `open_params` / `instantiate` (sub-leaves b, c) follow next.
 
----
+**Encoder discipline.** The first encoder change since the foundations. The variant tag is
+domain-separated and length-prefixed like everything else. Param-bearing unit hashes change
+(the preimage gained a tag byte) — pre-release, so no migration; `ENCODING_VERSION` stays 1.
 
-### P3.2.1 — inspection + child_refs unification (DONE)
-- **Core `inspect.rs`:** `child_refs(unit) -> Vec<Hash>` (THE single definition of direct refs:
-  composite children + the `fn`-named param) and `dependencies(root, resolver) -> BTreeMap<Hash,
-  &Unit>` (transitive closure below root, deduped, hash-ordered; lenient on unresolvable —
-  completeness is the registry's guarantee). Exported from lib.
-- **Decision:** flat reachable-set, not a tree (composite bodies already encode structure; flat is
-  what audit wants). Hash-valued param identified by NAME `fn` (eval's convention), not parse —
-  removes the parse-heuristic false-positive (a 64-hex-char Text value is data, not a reference).
-- **Unification:** `collect_caps` (kind), `collect_mocks` (simulate), registry `verify_closure`
-  (host) all refactored to consult `child_refs`. Fixed a latent fail-closed-wrong bug: the
-  parse-heuristic would mis-saturate a hash-shaped Text const's capabilities. Removed 2 unused
-  `parse_hash` imports.
-- **Tests (+7 core = 130):** child_refs of primitive/composite/map; child_refs ignores hash-shaped
-  non-fn param; dependencies transitive / follow-fn-and-dedup / leaf-empty. Host 24 unchanged
-  (registry refactor behavior-preserving).
-- **Future:** a 2nd hash-valued param now slots into `child_refs` in exactly one place.
+**Tests prove.** No new tests this sub-inch — the proof of safety is that **all 63 existing
+tests still pass under the re-encoding**. They are all *relative* (determinism, `=`, `≠`, the
+encapsulation hash-equality test, the `map` hash round-trip), so a uniform encoding change
+leaves them intact. That is exactly why the encoder change was isolated first.
+
+**Next.** **P1.5.2 b/c** — `open_param` (frozen→open, make a template), `open_params` (the
+derived open interface), `instantiate` (open→frozen, specialize bottom-up and re-hash). Then
+Phase B closes.
 
 ---
 
-### P3.3.1 — local memoization (DONE)
-- **L4:** P3.3.1-local-memo-L4.md. Cache thesis made real; key = content hash of (unit, inputs).
-- **Core `memo.rs`:** `memo_key(unit_hash, inputs)->Result<Hash,EncodeError>` = BLAKE3(unit_hash ‖
-  canonical_encode(inputs)). Canonical `Value` encoder: tagged + u32-LE length-prefixed
-  (collision-free); f64 → NaN-canonical + signed-zero-collapsed + IEEE-bits-LE (I2); Option slots
-  tagged absent/present. Resolver not in key (unit_hash captures the closure).
-- **Host `Memo`:** state-cell cache `BTreeMap<Hash,Value>`; `eval(&mut, unit, inputs, resolver)`
-  caches iff `capabilities(unit).is_pure()`, else plain eval. Behaviourally identical to eval.
-- **Decisions:** canonicalize NaN/±0.0 (sound — eval treats them identically); key=hash (networked-
-  ready); cache stores Value (in-memory); guard=is_pure NOT is_replayable (drivers vary, sinks
-  perform); top-level scope only. FCIS: pure key-derivation=core, stateful cache=host.
-- **Tests (+5 core=135, +3 host=27):** encode determinism / signed-zero / all-NaN-canonical /
-  no-type-collision / order+presence; memo hit / different-inputs / impure(egress)-not-cached.
-- **Overhead (noted):** per-call purity walk + re-hash; a later inch threads the hash through.
-- **Deferred:** persistence, recursive sub-node memo, eviction, the shared cache (P3.3.2).
+## 2026-06-29 · P1.5.2 b/c — open / instantiate · *(Phase B, inch 3 b/c — closes Phase B)*
+
+**Built.** `holon-core::promote` —
+- `open_param(unit, name, bind)`: turn a frozen param into a hole (creates a template);
+- `open_params(unit, resolver)`: the **derived** open interface — the set of `bind` keys
+  across the closure (union over children), never stored (I8);
+- `instantiate(template, bindings, store)`: specialize — substitute `bind→value` throughout
+  the closure, re-hash bottom-up, insert new concrete units, return the top hash. Partial
+  binding leaves the rest open.
+
+**Representation fixed (found while building).** Sub-leaf (a) shipped `Open { name }`, but
+`instantiate` revealed a hole needs **two** names: the *role* `name` (`"value"`, what
+`compute` looks up once filled) and a separate *bind* key (`"K"`, what `instantiate` fills
+by) — otherwise two holes sharing a role name couldn't be set independently. Revised to
+`Open { name, bind }` (encoder + accessor `bind()`). Nothing had constructed `Open` yet, so
+the fix was clean and the 63 stayed green.
+
+**Leaf closed → Phase B complete.** `P1.5.1 → Map → P1.5.2`. The language pillar's
+composition story is whole: encapsulate flows into units, apply units higher-order (`map`),
+and parameterize units into families.
+
+**Tests prove** (5, total now ~68): `open_then_instantiate_is_identity` (open `number(5)`
+as `K`, bind `K=5` ⇒ **hash equals** the original `number(5)` — open and bind are true
+inverses); `family_by_hash` (`K=2` vs `K=3` ⇒ different units, eval to 2 vs 3);
+`open_params_is_derived` (`MultiplyByK`'s open interface is `{"K"}`, derived);
+`template_not_evaluable_until_instantiated` (template ⇒ `None`; `MultiplyBy3(7)=21` after);
+`partial_instantiation_leaves_rest_open`.
+
+**Forks pinned.**
+- **Instantiate-time (B) confirmed.** Instances are first-class content-addressed units;
+  eval and the cache treat them like any other unit — no param channel in either.
+- **Always-recurse.** `instantiate` rebuilds every child; an unaffected subtree rebuilds to
+  the **same hash** (content-addressing), so it's correct, just unoptimized. Skipping
+  subtrees with no bound open param is a deferred optimization.
+- **`instantiate` is coupled to `MapResolver`** (it needs `insert`). A `MutableStore` trait
+  would generalize it to the on-disk store (P3.8.1); deferred.
+
+**Next: Phase C — the effect boundary (P2).** Kinds, the state cell, derived kind +
+capabilities, eager effect-firing, design/deploy modes. The pure core is done; P2 builds the
+OS around it (in `holon-host`, never in `holon-core`).
 
 ---
 
-### P3.5.1 — fork / re-pin (DONE)
-- **L4:** P3.5.1-fork-repin-L4.md. The one operation that creates a new identity.
-- **Core `fork.rs`:** `refork(root, target, replacement, resolver) -> Option<Refork>` (Refork =
-  {new_root, minted}). Path-copying re-pin: only ancestors of the changed node re-minted, off-path
-  shared by hash. Uniform with child_refs (child = hash swap; fn param = Param::frozen("fn",
-  to_hex(repl))). Pure transform; None if target not in closure.
-- **Host `Registry::fork(root_hash, target, replacement) -> Result<Hash, ForkError>`:** resolve
-  root, store replacement, materialize closure into MapResolver, refork, store minted spine,
-  publish(new_root). Inherits publish's dangling gate (closure complete by construction).
-  `materialize` = walk child_refs from store into a resolver (store↔resolver glue).
-- **Decisions:** replace-all (hash=identity); transitive path-copy; provenance external/none;
-  replacement passed as Unit (stored), refork takes its hash; target-not-found→None.
-- **Compile fix:** `to_hex` ungated from #[cfg(test)] (fork is first library fn-param *writer*).
-- **Tests (+5 core=140, +2 host=29):** direct-child / deep+sharing / fn-param / replace-all /
-  not-in-closure→None; fork-repins-and-republishes / target-not-in-closure-errors.
-- **Deferred:** provenance tracking, param-forking (promote's domain); the Store→Resolver fork (set aside — see P3-store-resolver-fork-L4.md).
+## 2026-06-29 · Addendum — "template not evaluable" is consumer-dependent
+
+**Correction.** The P1.5.2 b/c entry claimed a template evaluates to `None`. A test caught
+that this is only true at the **primitive** level. A number with an open hole *does* eval to
+`None` (the hole makes `compute` fail). But a **composite** template whose hole feeds a
+**variadic** consumer (`multiply`/`add`) does **not** hard-fail — the missing operand is
+simply absent, so `multiply([7]) = 7`, not `None`. Variadic firing tolerates the gap.
+
+**Fixed.** Split the over-strong test into `primitive_template_is_not_evaluable` (a hole ⇒
+`None`, then instantiates and computes) and `instantiate_composite_specializes`
+(`MultiplyBy3(7)=21`, no false `None` claim). promote tests: 5 → 6; total ~69.
+
+**Pinned.** Templates are **"evaluate only after instantiation" by contract**, not by a
+hard eval-time guard. A universal guard (eval rejects any unit with open params in its
+closure) would cost a closure walk per eval and is **deferred**; the cheap primitive-level
+truth (an open hole ⇒ `compute` ⇒ `None`) already holds for the actual vocabulary, since
+every current primitive reads the param it would open.
 
 ---
 
-### P3.6.1 — advisory (DONE; completes local-first P3)
-- **Core `advisory.rs`:** `advise(unit, resolver) -> Advisory` bundles derived signals:
-  `capabilities` (saturated set), `is_pure`, `is_replayable`, `dependency_count` (closure size).
-  Advisory = facts not gates; derived (I8), can't lie. Pure exposure, no new mechanism.
-- **Decision:** core `advise` over a Resolver only; no host `Registry::advise(hash)` wrapper yet
-  (wants the store→resolver materialize — set aside; see P3-store-resolver-fork-L4.md).
-- **Tests (+5 core = 145):** pure-leaf / sink-impure-with-cap / driver-impure-but-replayable /
-  state-not-replayable / dependency-count = closure size.
+## 2026-06-29 · P2.1.1 — Kind taxonomy (Phase C opens)
+
+**Built.** `kind.rs`: `Kind = Pure | Driver | State | Sink` + `kind_of(name) -> Option<Kind>`,
+the leaf classifier that is the **trust basis** of the effect layer. New module wired into
+`lib.rs` (mod + doc + re-export). 75 tests (69 → +6).
+
+**Shape (settled in the kind-sourcing sketch).** A *closed core table*: all 23 pure leaves
+(the `compute` vocabulary + higher-order `map`) → `Pure`; three effectful exemplars
+(`store → State`, `timer → Driver`, `email → Sink`) classification-only, no `compute` —
+core *declares* their kind without being able to *run* them (execution is host-side).
+
+**Why a closed table, not an open registry.** The marketplace ships only *composites*
+(kind derives, no declaration → no trust surface); new *leaves* (effects) arrive only as
+trusted host releases ("syscalls"). So the leaf set is closed+trusted and core can own the
+classification outright. An open registry would buy extensibility we don't need and smuggle
+back an asserted-label surface I8 forbids.
+
+**Fail-closed.** Unknown leaf → `None` (never `Some(Pure)`); callers treat `None` ≥ `Sink`.
+`unknown_is_none` pins the one direction that would be a laundering hole.
+
+**Pinned for later.** Two boundary invariants live in the module header, untestable until
+host execution exists (P2.4.1 / P2.6.1): (1) *disjointness* — a leaf is pure-in-core xor
+effect-in-host; (2) *no effect without classification* — every host-fired name classifies
+non-`Pure`. Tested the in-core half now (`effectful_exemplars_are_not_pure` = the security
+direction); the cross-crate containment lands as a real test with the host, not as an empty
+`#[ignore]`. **Follow-on noted:** `validate` rejecting unknown leaf names (the leaf-analogue
+of its existing unresolved-child rejection) — closes the hole at *import*; separate inch.
+
+**Kind is a derived view, never a field** — nothing stored or hashed, so mislabel is
+inexpressible, not merely forbidden (I8).
 
 ---
 
-## P3 LOCAL-FIRST: COMPLETE
-Operations: publish · inspect · memoize · fork · advise (+ store P3.8.1). 174 tests green
-(145 core + 29 host). Built almost entirely from invariants that predate them.
+## 2026-06-29 · P2.2.1 — Derived-kind (Effects set over the closure)
 
-**Next agenda (when resumed):**
-1. **`Store`→`Resolver` ownership fork — SET ASIDE with a trigger** (see
-   `P3-store-resolver-fork-L4.md`). NOT an adapter (trait borrows `&Unit`, store yields owned —
-   impossible as named); NOT accruing debt (the materialize glue is in *one* place, fork — rule of
-   one). It's a `Cow`-trait change that's a *perf optimization for lazy `eval`-against-store* only.
-   **Trigger (all three):** a deploy-from-store path that runs `eval` against the `Store` exists;
-   programs are large/branchy enough that `select`/`fold` pruning skips a meaningful fraction;
-   eager `materialize` *profiles* as the bottleneck. Until then, when a 2nd caller of the closure
-   walk lands (host `advise(hash)`/`inspect(hash)`), extract the cheap eager `materialize` helper —
-   that covers the whole-closure ops; `Cow` buys them nothing.
-2. Networked tier: P3.3.2 shared trustless cache (the differentiator — key-derivation done in
-   P3.3.1), P3.4.1 reputation-by-adoption, P3.7.1 author-identity, P3.8.2 networked CAS.
-3. (Parallel) P4 editor (WASM/canvas).
-4. (Deferred, gated) R6 demotion pillar — only when stdlib mechanism + auditor exist.
+**Built.** `effects_of(unit, resolver) -> Effects` in `kind.rs` — the leaf classifier
+lifted to whole graphs. 83 tests (75 → +8).
 
----
+**Combine rule: a set, not a "worst" bucket.** The three effect kinds are independent
+*axes* (read / retain / commit), not degrees of one quantity, so collapsing to a single
+`Kind` would conceal real axes — a soft cousin of laundering. `Effects(BTreeSet<Kind>)`,
+**`Pure` is the empty set** (never a member; `is_pure() == is_empty()`), a **may-touch
+upper bound**. `mixed_axes_are_preserved_not_collapsed` proves `timer+email ⇒ {Driver,Sink}`.
+This is the shape capability-union (P2.3.2) reuses verbatim.
 
-### P3.3.2 — shared trustless cache (DONE; the differentiator)
-- **L4:** P3.3.2-shared-cache-L4.md. "Trustless" at this layer = universal keys (done P3.3.1) +
-  a **re-execution verification oracle** + a portable self-describing entry. NOT compute-savings-
-  without-trust (that's reputation/proofs/quorum — deferred, each its own pillar).
-- **Core (extends `memo.rs`, reuses private `encode_value`):** `CacheEntry {unit_hash, inputs,
-  output}`; `entry_key` (= memo_key of the fields; cheap structural integrity); `verify_entry`
-  (resolve + is_pure + re-eval + **canonical** compare; fail-closed). Rests on I5+I2+totality.
-- **Host:** `SharedCache` — untrusted store; `put` dumb-inserts under derived key; `get`
-  (fast/trust-source); `get_verified` (re-executes, refuses a liar).
-- **Grounded:** `eval` can emit NaN (overflow→inf→inf-inf); `Value` is only PartialEq (NaN≠NaN);
-  canonical comparison via `encode_value` makes verification machine-independent. The
-  `nan_output_verifies_canonically` test proves it (inf as inputs to a pure `subtract`).
-- **Tests (+6 core = 151, +3 host = 32):** entry_key=memo_key / honest verifies / tampered fails /
-  unresolvable fails / impure fails / NaN verifies canonically; put round-trips / get_verified
-  honest / get_verified catches a liar.
-- **Deferred:** compute-savings-without-trust (reputation P3.4.1, proofs, quorum); network transport
-  (P3.8.2); purity memoization (optimization); overflow saturation (separate primitive question).
+**Fail-closed, self-contained.** Unknown leaf, unresolvable child, and hash-shaped param that
+won't resolve each *saturate* to all axes. Over-approximating danger is sound; the only
+forbidden move (under-approximating to `Pure`) is unreachable. The analysis does not assume
+`validate` ran first.
+
+**`map` laundering hole closed.** The walk follows `children ∪ hash-valued params`, so a `map`
+(itself `Pure`) over an `email`-bearing `fn` reads `{Sink}` — `map_over_effectful_fn_is_effectful`.
+Per §12, content-pinning the `fn` ref is exactly what sidesteps Unison's hardest open problem
+("when to infer concrete effects"): the reference is always concrete at authoring.
+
+**Refactor at the natural boundary.** `parse_hash` was private to `eval` but the hex⇄`Hash`
+mapping is a `hash.rs` concern and now has two production callers (`eval`, `kind`), so it moved
+there as `pub(crate)` (+ symmetric `to_hex`) — not reached for across an odd `kind→eval` edge.
+
+**`Kind` gained `Ord`** purely for deterministic `BTreeSet` storage (disclaimed in-code as
+*storage order, not a danger priority* — we explicitly do not rank the axes).
 
 ---
 
-### P3.4.1 — reputation-by-adoption (DONE; the navigation layer)
-- **L4:** P3.4.1-reputation-L4.md. Adoption = inbound citation count in the published DAG. Trust,
-  not popularity: adopting U = pinning its exact hash = committing to frozen, inspected behavior
-  forever (I5+I9). **Derived from the DAG, never a stored counter (I8)** — unfakeable except by
-  publishing real units.
-- **Core `adoption_counts(corpus)`** (inspect.rs): pure tally over `child_refs`; distinct referrers
-  (a unit citing U twice counts once); direct citations only.
-- **Host `Registry::adoption()`**: the `verify_closure` walk collecting instead of checking →
-  published universe (all units in any published root's closure) → core tally. Derived fresh.
-- **Decisions:** (A) unit-adoption-by-citation, result-trust → P3.7.1; (B) adoption-first.
-- **Framing correction:** earlier called this "result-trust" — wrong (that needs identity); it's
-  unit-discovery-trust.
-- **Tests (+5 core = 156, +3 host = 35):** empty / one referrer / distinct accumulate / double-cite
-  dedups / fn-param counted; published-root-cites-child / two-roots-sum / deep-library-counted.
-- **DEFERRED (triggers in header):** Sybil-resistance (recursive weighting — junk citers ≈0);
-  result-trust (needs identity P3.7.1). Both groundwork laid; mechanisms wait.
+## 2026-06-29 · P2.3.1 — Capability model (primary classification; kind becomes a projection)
+
+**Built.** `Capability` (10 atomic categories) + `Capability::kind()` projection,
+`Capabilities` newtype (mirrors `Effects`), and `capabilities_of(name) -> Option<Capabilities>`
+in `kind.rs`. 89 tests (83 → +6).
+
+**The inversion (the decision that mattered).** Capabilities are now the **primary** leaf
+classification; `kind_of` and `effects_of` are **projections** of it. Caps are fine, kind is
+coarse — project fine→coarse, never the reverse — so by *derivable ⟹ derived* the coarse view
+is computed from the fine one and the two cannot drift. `kind_of(name)` = single-bucket
+projection of `capabilities_of`; `effects_of`'s leaf branch inserts each capability's `.kind()`.
+
+**Why caps exist (the motivating test).** `fine_distinguishes_what_coarse_loses`: `Clock` and
+`SecretAccess` **both** project to `Driver`, yet are distinct capabilities — the gap kind
+discards and a consent gate cannot live without ("reads the clock" vs "reads your credentials").
+
+**Staging α was behaviour-preserving.** The leaf branch switched `kind_of → capabilities_of`
+projection; for the current vocabulary outputs are identical, so the proof is the **entire
+P2.1.1 + P2.2.1 suite (14 tests) staying green** beside the 6 new ones. Source moved, behaviour
+did not. Recorded caveat: `kind_of`'s single-`Kind` return is exact only for today's ≤1-axis
+leaves; a multi-axis leaf makes leaf-kind a *set* and the convenience yields to `Effects` (§4).
+
+**Set: atomic, fail-closed, ∅⇒pure** — `email→{NetworkEgress}`, `store→{StateRead,StateWrite}`,
+`timer→{Clock}`; pure leaves declare the positive empty manifest; unknown ⇒ `None` ⇒ saturate.
+Parameterized resources (`NetworkEgress(host)`), Role-1/Role-2 param invocation, and
+"disclosure attaches to running not naming" are pinned in the P2.3.1 L4 §9 for later.
+
+**One fix:** a tail-expression `match` over `caps.iter().next()` outlived `caps` (E0597);
+bound `next()` to a local (owned `Option<Capability>`, `Copy`) so the iterator drops first.
+
+---
+
+## 2026-06-29 · P2.3.2 — Capability union (single walk; effects_of becomes a projection)
+
+**Built.** `capabilities(unit, resolver) -> Capabilities` — the security manifest, union
+over the closure, **computed not stored**, surfaced before import (I9). 95 tests (89 → +6).
+
+**The consolidation (the structural win).** There is now **one** closure walk, not two.
+`effects_of` was reduced to `capabilities(...).iter().map(|c| c.kind()).collect()` — the
+kind-set is literally the capability-set projected through `Capability::kind()`. The old
+kind-walk (`collect`/`saturate`) is deleted. So the primary/projection relationship holds all
+the way down: capabilities are the single source of truth, kind is the view, one place the
+closure is traversed, one place the fail-closed rule lives. Removed the drift surface rather
+than adding a parallel walk (the option chosen over duplicating the fold).
+
+**Behaviour-preserving, proven structurally.** The saturated capability set (all 10) projects
+to exactly `{Driver, State, Sink}`, so `effects_of`'s fail-closed output is unchanged; the
+P2.2.1 suite stays green beside the new union tests. `effects_is_the_projection_of_capabilities`
+pins the relationship as a regression guard.
+
+**Governing test (I9).** `buried_egress_surfaces_before_import`: a `NetworkEgress` three levels
+down surfaces at the top — nothing exfiltrates silently. `map_fn_capabilities_surface`: a
+capability routed through a `map` fn-param cannot hide either. Fail-closed: an unknown leaf in
+the closure saturates to all 10 capabilities.
+
+**Milestone: the classification half of P2 is complete.** kind (P2.1.1) + derived-kind (P2.2.1)
++ capability model (P2.3.1) + capability union (P2.3.2) — all pure core, all derived, all
+surfaced, none assertable. Next the frontier crosses the purity seam into `holon-host`:
+P2.6.1 (state cell) and P2.4.1 (eager firing loop, needs L4).
+
+---
+
+## 2026-06-29 · P2.4.1 — Design-mode firing (+ minimal P2.7.1); an eval defect fixed on the way in
+
+**Built.** Design-mode firing, and it is **pure `holon-core`** — `mock_of(unit)`,
+the `Simulated` substituting resolver, and `design_eval`. 103 tests (95 → +8: 7 in
+`simulate`, 1 regression in `eval`).
+
+**The decision that held.** An effect leaf has no pure `compute`, so a graph
+containing one is unevaluable. Design mode makes it evaluable by substituting each
+effect leaf with a *pure mock* (the minimal P2.7.1) — **at the resolver**, since
+`eval` already resolves every child by hash before running it. So firing's design
+mode is not a second evaluator and not a host shell: it is ordinary core `eval`
+against a `Simulated` resolver. Core stays mode-ignorant; the resolver is the only
+thing that differs. α′ (boundary-promotion) is demoted to a deploy-time sink-
+observation option — `resolve` returns structure, never IO, so it can swap inputs at
+any depth but cannot *fire* a sink; design mode never needs to.
+
+**The structural consequence (the win).** Following the insight all the way kept the
+buildable inch **on the pure side of the seam**. `mock_of` + the substituting
+resolver + `design_eval` are all pure core; only deploy (real `drive`/`emit`) crosses
+into `holon-host`, and it is deferred with real IO. The effect layer's first runnable
+slice cost zero impurity.
+
+**Mocks, by kind.** Driver ⇒ a constant of its output type (scripted stimulus;
+type-zero default, custom stimuli deferred to P2.7). Sink ⇒ a passthrough that echoes
+its settled input (absorb → plausible result). **State ⇒ no pure mock** — its value
+depends on prior writes, so it is host-threaded ephemeral memory, which is exactly why
+P2.6.1 stays its own leaf. Pure/unknown ⇒ no substitution.
+
+**Guardrail, enforced structurally.** `simulate` depends on `kind`; the classifiers
+never depend on `simulate`. So `capabilities()`/`effects_of()` are computed from the
+**real** units and never see a mock — `classification_ignores_mocks` pins that a
+mocked-away `timer` still surfaces `Clock`, and the mock (a different unit) is never in
+any content hash. Simulating innocent buys nothing at the trust boundary.
+
+**A real eval defect, surfaced by the sink mock.** The sink mock is a passthrough
+composite — output fed directly by a promoted input (`BOUNDARY→BOUNDARY`). No prior
+graph had used that shape, and `eval` had a latent gap: line 82 let a promoted input
+feed a *child's* input, but the output resolver let it feed only a *child's* output,
+so it indexed the scratch by `BOUNDARY` and panicked. `validate` accepts the shape
+(it is the identity passthrough), so `eval` was simply non-total over a valid graph.
+Fixed by adding the symmetric arm — the composite output may be fed by a promoted
+input too. Not a mock artifact: any composite exposing an input unchanged as its
+output would have hit it. `promoted_input_routes_straight_to_output` pins it in
+`eval`'s own suite. This is the dividend of building the effect layer on the pure
+core — it stresses shapes the arithmetic tests never reached.
+
+**Governing tests.** `effect_leaf_makes_graph_evaluable_in_design` (the unevaluable
+becomes evaluable under substitution); `effect_leaf_at_depth_is_substituted` (depth-
+agnostic, where α′ could not reach); `sink_mock_echoes_settled_input` (the sink sees
+the value `eval`'s single pass settles); `classification_ignores_mocks` (the
+guardrail); `state_leaf_has_no_pure_mock` (the exception is explicit).
+
+**Next.** Deploy-mode firing crosses the seam into `holon-host`: the `Host`/`drive`/
+`emit` shell, real sink observation, and state threading (P2.6.1) — all with real IO,
+all deferred until now. The pure core's effect layer is design-runnable; deploy is the
+remaining half.
+
+---
+
+## 2026-06-29 · Fork B — sinks become pure request-constructors (reconciling code to design intent)
+
+**Built.** The sink-model reconciliation, pure core: `email` gains a one-line pure
+`compute` (identity on payload), `Capabilities` gains `is_replayable` (no `State` in
+the closure), and the sink mock retires. 107 tests (103 → +1 in `primitives`, net +3
+in `simulate`).
+
+**The decision (and why it was a *reconciliation*, not a new design).** A fork hid in
+the deploy crossing: is a sink an *impure leaf observed in place* (Fork A) or a *pure
+request-constructor the host performs* (Fork B)? We chose **Fork B**, and the deciding
+frame was the end-state, not local taste: the product is a trustless, content-addressed,
+universally-memoized fabric, so **purity is the currency — the pure surface *is* the
+product.** Fork A makes impurity contagious (every graph that ultimately *does*
+something falls out of the cacheable/shareable surface); Fork B confines impurity to one
+point, the host. Grounding confirmed the design doc already committed to B —
+*"the state cell, the one explicit place purity ends"*, FCIS/Roc named as the model to
+adopt. The **code had drifted**: `email` had no pure `compute` and `is_effectful` was
+`!= Pure`, quietly asserting a *second* place purity ends. Fork B reconciles the
+implementation back to intent that was already correct.
+
+**The split that carries it.** `is_effectful = (self != Pure)` conflated two questions.
+They are now distinct: **effect-bearing** (the capability manifest — does this *describe*
+an effect the host must perform? Driver/State/Sink yes) stays exactly as-is; and
+**replayable** (`is_replayable` = no `State` capability — is the output deterministic
+across firings?) is new, and is the one the design doc actually ties caching to. Mapped
+across the four kinds, only `State` breaks replayability — drivers are *inputs*, sinks
+purely *construct requests*. The headline test, `sink_graph_is_effect_bearing_and_
+replayable`: a `Timer → Email` graph reports `{NetworkEgress}` **and** `is_replayable`
+at once — the combination Fork A made structurally inexpressible ("bears an effect" and
+"is cacheable" were the same bit). `sink_is_eval_pure` pins the other half: `eval` now
+succeeds over a sink-bearing graph under the *real* resolver, no design mode.
+
+**The value-representation answer (solved carefully, not reflexively).** A request is the
+pair *(capability, payload)*: the capability is **structural** (derived from the leaf,
+already in the manifest), the payload is **ordinary data** (the `Text`/`List` the pure
+interior composed). So **no `Value::Request` variant** — the "command-ness" lives in the
+structural manifest, never in the `Value` that pure arithmetic shares, and the hash
+preimage doesn't move (runtime `Value` was never hashed). A sink is therefore
+*identity-on-payload + a structural capability* (option **A**). The richer alternative —
+a first-class `Value::Effect` enabling **computed, data-driven effect fan-out** (one
+`map` producing `List[Effect]`, the "welcome email per signup" pattern, Elm/Roc `Cmd`) —
+is **B**, deferred to the host inch where the case is concrete. Key finding that makes
+the deferral free: **A → B touches no content address** — a primitive's `compute` is
+keyed by name *outside* the hashed preimage, so switching later re-hashes nobody's
+graphs. We pay the `Value→Capability` layering cost only when deploy evidence justifies
+the cut, not on spec.
+
+**Retired.** The sink mock and `sink_mock_echoes_settled_input` — they were Fork A
+leaking into the P2.4.1 L4 (rev. 2), which treated sinks as impure leaves needing a pure
+stand-in. A pure sink needs none. `mock_of` now substitutes **only drivers**; sinks
+evaluate directly, state stays host-threaded. The eval fix from that inch was correct on
+its own and survives untouched.
+
+**The payoff (the end-state argument, concrete).** The marketplace's keyed surface just
+grew from "arithmetic" to "anything whose only impurity is the final send." A
+`Timer → compose → Email` graph is now eval-pure, replayable, cacheable, and trustlessly
+shareable — its manifest shows the egress *before import* (I9), yet computing *what* to
+send is pure and memoizable. Exactly one thing — a `State` cell — pulls a graph out of
+that surface, exactly as the doc always said.
+
+**Next.** Deploy firing in `holon-host`, now genuinely thin: source driver values,
+`eval` the fully-pure graph, collect *(capability, settled payload)* per sink (a pure
+"pending effects" computation — inspectable before running), and *perform* them (the
+only impure act). The `(state, effects)` round shape, batching, and the A→B value
+upgrade all live there, with real IO.
+
+---
+
+## 2026-06-29 · Deploy-mode firing — the host crossing (holon-host stops being a stub)
+
+**Built.** Deploy-mode firing in `holon-host`: a `Host` trait, `fire`, and a recording
+host. The crate now depends on `holon-core`. 110 tests (107 core + **3 host**) — the
+first tests outside the pure core.
+
+**The seam is real.** Until now everything was pure `holon-core`. `holon-host` now
+depends on it, and that edge — **host → core, never the reverse** — *is* the purity
+boundary, enforced by Cargo, not by discipline. `holon-core` still has exactly one
+dependency (`blake3`); the day it grows an IO/async crate is the day the invariant
+breaks, and the crate graph will say so out loud. There is exactly **one impure
+function in the whole system**: `Host::perform`.
+
+**The design choice that shaped it: effects are output-carried, not collected from
+inside the evaluator.** The alternative was an observer hook firing as each sink settles
+(capture at any depth). Rejected for two non-aesthetic reasons: it would give the one
+evaluator a second job and a hook every caller must reason about (`I5`/P4.2 — the
+editor's `eval` and the host's must stay bit-identical), and it contradicts the doc's
+geometry, *"consequences exit at the bottom."* So `fire` calls the same `eval`
+everything uses, then performs the request the **output** carries. `eval` is untouched;
+no hook exists. Consequence, made explicit and *correct*: the capability manifest is a
+conservative **may** (surfaced at any depth, the trust story before import), and a
+request **fires** only when it reaches the output — a buried request wired nowhere is
+dead code that correctly does nothing. *Can egress* ≠ *will egress on this wiring*, and
+keeping them distinct is right.
+
+**Multiplicity rides the A→B axis, not a loop change.** Minimal (A) = a single terminal
+sink: the settled output *is* the payload, the manifest names the egress, the host
+performs once. Fan-out (B) = `Value::Effect` / `List[Effect]` at the output, performed
+by iterating — taken when the per-signup case is concrete. `fire` never changes; only
+the output *shape* does. (Flagged honestly: under A a multi-sink graph would perform one
+payload per sink — which is *why* genuine fan-out waits for B rather than being faked.)
+
+**The tests pin the load-bearing claims.** `bare_sink_is_performed_once_with_settled_
+payload`: the egress happens **once**, with the value `eval` settled, and **only** at
+the host (core performed nothing). `sink_in_a_composite_is_performed`: the same through
+a layer of composition — the consequence exits at the bottom and the host picks it up.
+`pure_graph_performs_nothing`: no sink in the manifest ⇒ the host is never called; the
+pure surface stays inert until something actually egresses.
+
+**Deferred, not hidden.** No driver leaves yet — inputs are handed in directly, standing
+in for what `drive` will source from the world. State (the `Model` half of the round's
+`(Model, Cmd)`) is host-threaded and its own leaf (`P2.6.1`). Real platform hosts (an
+actual mail/file/network `Host`) wait until there is a platform to target.
+
+**Next.** `drive` (source real driver values) and the **state cell** (`P2.6.1`) — the
+`(Model, Cmd)` round — then the **A→B** value upgrade when computed fan-out is concrete.
+The purity seam now has a crate on each side of it.
+
+---
+
+## 2026-06-29 · State cell, core half — two leaves, the sourced/performed split (P2.6.1)
+
+**Built.** The pure `holon-core` half of the state cell: `store` splits into two leaves,
+the classifier gains the input/output axis, and `mock_of` sharpens. 111 core tests
+(107 → +1 `primitives`, +1 `kind`, net +2 `simulate`). Host untouched (3); workspace 114.
+
+**The realization driving it (pinned in `P2.6.1-state-cell-L4.md`).** A cell needs almost
+no new machinery: a **read** is a driver (host-supplied), a **write** is a Fork-B sink
+(its output *is* the new value; the host performs it by *storing*). Two leaves, not one,
+which dissolves three problems at once — no graph cycle (the feedback goes through the
+host's storage *between rounds*, so `validate` is untouched), no `eval` change (the write
+is output-carried), and the `(Model, Cmd)` round falls out (storage is the `Model`;
+`StateWrite` is a loop-back effect). The editor (P4) will present one "Store" widget over
+the pair; the mechanism stays two clean leaves.
+
+**This inch (core only).** `"store" => [StateRead, StateWrite]` became `"store_read" =>
+[StateRead]` + `"store_write" => [StateWrite]`. `store_write` got an identity `compute`
+(a Fork-B sink, like `email`); `store_read` has none (sourced). The keystone is
+`Capability::is_sourced()` — the **sourced** (input-side: `Clock`, `FileRead`, …,
+**`StateRead`**) vs **performed** (output-side: `NetworkEgress`, …, **`StateWrite`**)
+split. With it, two predicates sharpen rather than two get invented: `mock_of` mocks the
+sourced side (so `StateRead` joins the drivers), and — next inch — `fire` will perform
+the non-sourced side (so `StateWrite` joins the sinks). `StateRead ≠ StateWrite` was
+always two capabilities; this just lets the two ends be sourced and performed.
+
+**Tests.** `is_sourced_splits_input_from_output` pins that `State` divides across the
+line. `store_read_is_mockable` / `store_write_has_no_mock` are the old single
+`state_leaf_has_no_pure_mock` *split in two* — the read is supplied, the write is
+constructed, which is the model getting more correct. `state_read_graph_design_evals`:
+a read-bearing graph runs purely in design mode via the scripted mock, exactly like a
+driver. `store_write_is_pure_identity` pins the `compute`.
+
+**Honest scope.** Nothing here threads state. A `store_read` mocks to a type-zero
+constant (always `0` in design mode); a `store_write`'s value just reaches the output.
+Correct for this inch — it makes the leaves real and classified. Memory across firings is
+the **host inch**.
+
+**Next.** The host round: a single-slot `storage` (the `Model`), a read-substituting
+resolver (injects the snapshot for `store_read`), `fire` performing `!is_sourced` (so
+`StateWrite` stores), and the snapshot→fire→apply loop — with the counter that finally
+remembers across firings.
+
+---
+
+## 2026-06-29 · State cell, host round — the cell remembers (P2.6.1 complete)
+
+**Built.** The host half of the state cell: `StateHost` threads one anonymous cell across
+firing rounds. 5 host tests (3 → +`state_write_is_performed`, +`counter_remembers_across_
+firings`); workspace 116 (111 core + 5 host). **P2.6.1 is complete.**
+
+**The counter remembers.** `store_read → +1 → store_write`, three rounds, storage climbs
+`0 → 1 → 2 → 3`. That proves the whole P2.6.1 design — and it cost `eval` **zero** changes,
+`validate` **zero** changes, and needed **no graph cycle**. The feedback that looked like a
+loop (`cell → … → cell`) is the host's storage *between rounds*; the register that breaks
+the combinational cycle is storage, not a `validate` exemption.
+
+**Three pieces, all in `holon-host`.** `fire` flipped from `kind == Sink` to
+`!cap.is_sourced()`, so `StateWrite` is performed alongside egress (`state_write_is_
+performed` pins it; the three email/pure tests confirm backward-compatibility — egress is
+non-sourced). A `StateResolver` injects the round-start snapshot at every `store_read`
+leaf (it *owns* the constant, since `resolve` hands out `&Unit`). And `StateHost::round`
+is Elm's `update(old) → (new, cmds)`: snapshot → fire → apply the write — reads see the
+round-start value, the write lands at round-end and loops back. The borrow knot (resolver
+reads storage, the round writes it) dissolves because the snapshot is a clone the resolver
+owns, leaving `self` free to be the `&mut Host`, and the apply uses `mem::take`.
+
+**The classification paid off in full.** Two orthogonal axes now decide everything the
+host needs: **effect-bearing ⊥ replayable** (Fork B) and **sourced ⊥ performed** (this
+arc). `State` sits on the interesting side of every line — effect-bearing, *not*
+replayable, and it *straddles* sourced/performed (read sourced, write performed). The
+host acts on exactly those bits: source the sourced, perform the performed, store the
+`StateWrite`, never cache a `State`-bearing graph. "One fenced place purity ends" is now
+a structural fact the code enforces, not a sentence in the doc.
+
+**Honest scope.** One anonymous scalar cell. The injection masks `store_read` to a pure
+constant in the resolver `fire` sees (harmless — reads are sourced, never performed;
+sinks/`store_write` are never masked, so the performed manifest is intact). Keyed/multiple
+cells (`StateWrite(key)`, the parameterized capability resource), non-scalar state, and
+`drive` (sourcing real *external* driver values, vs state reading its own slot) remain.
+
+**Next.** `drive` (real driver sourcing from the world), then the **A→B** value upgrade
+(`Value::Effect` / `List[Effect]`) when computed fan-out — a `StateWrite` *and* an egress
+in one round, or N effects — becomes concrete. `P2.6.2` (transactional) and `P2.6.3`
+(fork/pin; the non-replayable half already holds) compose from this donor cell.
+
+---
+
+## 2026-06-29 · A→B — the effect *value*, computed fan-out (representation B complete)
+
+**Built (two slices, 118 green = 111 core + 7 host).** Representation **B**: an effect is now a
+self-describing value, `Value::Effect { sink: String, payload: Box<Value> }`, so an output can
+carry *many*. The one-effect ceiling — a round could write state **or** send a mail, never both,
+and "a welcome email **per** signup" couldn't be said at all — is gone.
+
+**The realization that made it cheap: the value carries the *name*, not the capability.** I had
+quoted this as forcing a layering inversion — `value.rs` learning about `Capability`, the sink's
+`compute` too. Wrong. The effect value holds the sink's **name** (a `String`); the capability is
+*derived* from it (`capabilities_of`), so nothing is lost and **no layer learns anything it
+didn't already key on**. `value.rs` needs no `kind` import; `primitives.rs` constructs the effect
+with the name it's already matching on; `fire` derives the capability from the name, so the
+`Host` trait never moves. The name *is* the structural identity; the capability is a projection
+(`I8` again — derived, not asserted). B cost less than A's own framing implied.
+
+**Slice 1 — representation swap, behavior identical.** Two sink lines flipped from identity to
+`sink_effect` construction; `Type::Effect` appended (tag 6 — existing hashes unmoved); `fire`
+now performs from the **output** (`perform_effects` unwraps the `Effect`) rather than the
+manifest. Same 116 tests, same count, same performs — only the internal representation changed.
+A clean refactor-shaped inch. Adding a `Value` variant rippled into three exhaustive matches
+(`ty`, `sourced_mock`, the host's `constant_unit`) — each got an honest arm: a sourced leaf
+*never* outputs an effect (`sourced_mock` → `None`); a state cell *never* holds one
+(`constant_unit` → `unreachable!`, an asserted invariant, not a fabricated value).
+
+**Slice 2 — the fan-out walk.** One additive change: `perform_effects` recurses through a
+`List`. `map(email, [a,b,c])` ⇒ `List[Effect{email,·}]` ⇒ **three sends** — fan-out is just
+`map` doing what it already did. And a single output carrying `[Effect{store_write,v},
+Effect{email,msg}]` fires **both** a write and a send in one round, **with no multi-output
+composite** — the self-describing `List[Effect]` is what lets two *different* effects exit one
+output. That fork stays deferred, dissolved rather than built.
+
+**A bonus invariant from `Type::Effect`.** validate's compat (`src==dst || Any`) absorbs `Effect`
+with zero code change, and because `Effect` matches only `Effect`, **a request cannot be wired
+into a sink's payload slot** — effects flow down and out, never back in. A typing fact now, not
+a convention.
+
+**What stood still:** no `eval` rewrite (an `Effect` flows like any value; `map` already
+iterates), no `Host` trait change, no `validate` rewrite, **no existing content address** (`compute`
+keyed by name, outside the preimage; `Type::Effect` appended last). Performing is driven by the
+output (*does*); the manifest stays the disclosure (*may*) — and "fires what reaches the output"
+became literally true rather than approximately so.
+
+**Next.** `drive` — source real *external* driver values from the world (`Clock`, ingress).
+It generalizes the read-substituting resolver from "state reads its own slot" to "a driver reads
+the world," turning a `round` from a test-loop call into something an event can trigger.
+
+---
+
+## 2026-06-29 · `drive` — source the world (the Sub half; the Elm runtime closes)
+
+**Built (host-only, 120 green = 111 core + 9 host).** Deploy can now source a driver from
+outside the pure core — a `timer` (Clock) gets its value injected and the graph reacts. No core
+change: classification, `is_sourced`, the driver table, `constant_unit` already existed. `drive`
+was *recognition*, not construction.
+
+**The recognition: `store_read` was a driver all along.** `is_sourced()` already grouped
+`StateRead` with `Clock | NetworkIngress | …` — they share the one property that matters: the
+value enters from outside. So `StateResolver` (which substitutes `StateRead`) and a driver
+resolver are **one machine with a wider key**. Generalized it to `SourcedResolver`: a map
+`(capability → constant)` that injects at *any* sourced leaf. `fire_sourced` is the single entry
+every mode funnels through; `round` now assembles its sourced set as storage-for-`StateRead`
+(internal, threaded) plus this round's `drivers` (external, the event's inputs).
+
+**The two boundaries stayed in their two layers.** `StateRead` and a driver differ for real —
+internal/threaded/write-paired vs external/sampled/unpaired — but that difference never lived in
+the resolver; it lives in the round. The resolver answers one uniform question ("sourced? inject
+the constant"); the round assembles values from storage vs event and commits *only* the
+`StateWrite` back. Unification removed an accidental narrowness without conflating a real
+distinction — reads injected by the resolver, writes committed by the round, no overlap.
+
+**Per-capability keying — the principled default, three ways.** One value per sourced *kind*
+(one anonymous clock, like the one anonymous cell): (1) it makes the round a *consistent
+snapshot* — every leaf reading `Clock` sees the same instant, so a smeared round is
+unrepresentable, not merely discouraged; (2) it stages identically to the state cell, so keyed
+drivers lift with the same mechanism keyed cells will; (3) it's what the *atomic* capability
+model can express — per-leaf keying needs parameterized capabilities (`Clock(id)`), the same
+extension `StateWrite(key)` needs, so choosing it now would drag that work forward out of order.
+
+**Deploy's honest asymmetry.** `an_undriven_driver_yields_nothing`: with no `Clock` supplied, the
+driver has no compute, the graph evaluates to `None`, nothing performs — no silent default. Design
+mode answers "what *would* happen" (it mocks a type-default for preview); deploy answers "what
+*does* happen," and the honest answer to a clock-dependent graph with no time given is nothing,
+not zero.
+
+**The Elm runtime is structurally complete, on a pure core:**
+
+| Elm | Holon |
+|---|---|
+| `Model`  | the host's storage (threaded `StateRead`/`StateWrite`) |
+| `update` | the graph (pure `eval`) |
+| `Cmd`    | sinks → `Value::Effect`, performed by the host |
+| `Sub`    | drivers → sourced values, injected by the host |
+
+And `round` is no longer a test convenience: once a driver value arrives **from an event**, that
+event *is* the round trigger — `round` is the event loop's body. The pure interior reacts; only
+the host touches a clock or a socket.
+
+**Deferred (unchanged):** *real* world-reading (`SystemTime::now`, an actual socket) is a platform
+host — the same seam as real `email`. Keyed/multiple drivers, multi-sourced leaves, and event
+scheduling / quiescence (`P2.4.2`) wait on real need.
+
+**Next.** The effect *contracts* that compose from the donor cell: `P2.6.2` transactional
+read-then-write, or `P2.5.x` correlation / idempotency. The runtime shape is done; what remains is
+making individual effects well-behaved.
+
+---
+
+## 2026-06-29 · P2.6.3 — the cell's identity, dissolved by host-storage (complete)
+
+**One demonstration test, no production code (121 green = 111 core + 10 host).** P2.6.3 —
+"a cell's value is runtime state, not identity; cell-bearing ⇒ non-replayable; fork is
+copy-on-write; pin" — turns out to be **entirely a corollary of P2.6.1's decision to put storage
+in the host, not the unit.** Each sub-part:
+
+- **value-not-hashed** — not merely tested but **unrepresentable to violate.** `hash_unit` takes a
+  `Unit`; the runtime value lives in `StateHost.storage`; there is no input you could hand the
+  hasher that carries it. (`Value` appears in `hash.rs` only in a comment.) The architecture is
+  the proof; a test would be vacuous.
+- **cell-bearing ⇒ non-replayable** — already proven by `state_graph_is_not_replayable`, and
+  `is_replayable`'s own doc names it as exactly P2.6.3's positive form. Landed with Fork B.
+- **fork = copy-on-write** — the one sub-part with observable behavior, and it needed no new
+  mechanism: a fork is a new `StateHost` over a *clone* of the current storage. `forking_a_cells_
+  state_is_copy_on_write` forks a counter at 6, runs the original to 8 and the fork to 7, and
+  watches them diverge. Identity shared (one `&counter`), state per-host.
+- **pin** — the value-not-hashed split once more: pinning a cell-bearing unit pins its *structure*
+  (hash); state stays runtime. Drifts to **P3**, where pinning *configured-stateful* units is an
+  actual marketplace concern.
+
+**The shape of the result.** This is the "dissolved more than built" pattern in its purest form:
+a single load-bearing decision (host-threaded storage) paid four debts at once, and P2.6.3's job
+was to *recognize* that, add the one test fork actually has, and book pin to P3. Naming an inch
+"already true by construction" honestly beats padding it with vacuous tests.
+
+**Housekeeping.** Extracted `counter_graph()` — the canonical one-cell counter — shared now by
+the state and fork tests.
+
+**Next.** `P2.6.2` — transactional read-then-write. I expect "transactional" to want a careful
+look first at what concurrency even *means* in a single-process eager host (the round is already
+atomic: snapshot → fire → apply, no interleaving) before any code; the contract may be largely
+present, or may need a precise modeled adversary to be worth stating.
+
+---
+
+## 2026-06-29 · P2.6.2 — transactional read-then-write, dissolved (the round is the transaction)
+
+**One demonstration test, no production code (122 green = 111 core + 11 host).** Grounding
+falsified the leaf's own premise. It called transactional read-then-write "the isolation
+guarantee that *cannot* be composed from separate read + write units" — but in a single-process
+eager host it **can**, and the round already provides the isolation.
+
+**Why there's no adversary.** `round` is `&mut self`, so rounds are *serialized by the borrow
+checker* — none overlap. The body is snapshot (`clone`) → `fire_sourced` (pure `eval`, nothing
+committed) → apply (`StateWrite → storage`); nothing observes intermediate state. So a round is
+atomic by construction: the write that lands is computed from the value read, with no gap an
+interleaving writer could exploit — because there is no other writer and no mid-round observation.
+The interleaved read-modify-write the leaf imagined simply cannot occur.
+
+**Conditional updates compose.** `compare → Bool` and `select(cond, a, b)` already exist, so a
+read-modify-write is an ordinary graph: `store_read → compare(N, cap) → select(·, N+1, N) →
+store_write`. `saturating_counter_is_one_atomic_conditional_update` runs it five times and watches
+`0 → 1 → 2 → 2 → 2`: the saturation at 2 *is* the proof the conditional branched on a consistent
+snapshot. No transaction primitive — the composition is the transaction.
+
+**The deferral, stated honestly.** The genuine transactional adversary — a *concurrent* writer, or
+*shared external* state two processes both touch — only appears with real multi-process hosting.
+And when it does, "transactional" there will **not** be a Holon core primitive: it will be
+whatever the backing store offers (a DB transaction, a CAS on a key), carried through the `Host`
+seam — the same deferral as real `email`/socket. P2.6.2's real future home is *inside a platform
+host*, not the round or the core.
+
+**Three in a row — no longer a coincidence.** P2.6.1 (storage in the host), then P2.6.3 (identity)
+and P2.6.2 (transaction) each dissolved into it rather than building atop it. That single design
+choice — *the cell's value is host runtime state, threaded between atomic rounds, never in the
+unit* — turned out unusually load-bearing: value-not-hashed, non-replayable, fork-CoW, pin, and
+now read-then-write isolation are all corollaries of it. The lesson is the project's own thesis
+turned inward: pin the right boundary once and the "features" downstream become theorems.
+
+**Next.** `P2.5.1` correlation token — and it is *genuinely different in kind*. It touches the
+**value model** and request identity, not state, so it will not dissolve into host-storage the way
+these three did. It is the design-forward fork (does every value carry routing identity, or is the
+token explicit?) and wants its own L4.
+
+---
+
+## 2026-06-29 · P2.5.1 — correlation as a boundary label (isolation is purity's theorem)
+
+**Two caps, one sink-compute, two tests (124 green = 112 core + 12 host).** The leaf asked for a
+correlation mechanism — machinery to keep request A's reply from reaching caller B. Grounding
+found that machinery is a **trap**: we already have it, as a theorem of purity, and building it
+again would be the bad kind of duplication.
+
+**Why non-crossing is free.** For two replies to cross, request A's data must bleed into request
+B's path — i.e. *shared mutable state*. But the interior is pure: independent requests flow down
+independent data paths, `eval` has no ambient channel, no global. The only place two requests can
+mix is a *state cell*, a merge the user deliberately writes. So "two concurrent requests, none
+cross" is the **same purity** that gives replay and memoization, seen sideways. The demo
+(`concurrent_requests_keep_their_tokens_no_crossing`) is `map(respond, [[1,"alpha"],[2,"beta"]])`
+→ each reply keeps its own token, and it *looks* like a `map` test because that **is** the point:
+correlation is purity preserving independence, not special machinery.
+
+**So the token isn't the isolation — it's a boundary label.** It is only what survives the
+round-trip so the *host* knows which open connection to write the reply on. That settled the
+explicit-vs-implicit fork from two directions at once: explicit (the token is ordinary data in the
+`[token, reply]` payload — no `Value` change, since `Effect`'s payload is any `Value`) is not just
+cleaner but the *only shape consistent with non-crossing being free* — an implicit ambient token
+would itself be the shared channel two requests could cross on. Keeping the token as data keeps
+the theorem true. (Same `I8` move yet again: derive/route by data, don't store identity in the
+value model.)
+
+**The surface, and a noticed corollary.** `request → [NetworkIngress]`, `respond →
+[NetworkEgress]` make the in/out pair real; `respond` constructs an `Effect` like any Fork-B sink;
+`request` is a sourced driver (no compute). The classification test pins something nice: a
+`request → respond` closure is **effect-bearing yet replayable** — it bears egress but has no
+`State`, so it stays cacheable. (Egress doesn't forfeit replay; only `State` does.)
+
+**Deferred, honestly.** Real routing (token → an actual socket) is a **platform host**, same seam
+as real `email`. Client-flavor *await* (fire a request, suspend, resume when the response arrives)
+is a graph state-machine across rounds — async-adjacent (`P2.4.2`). And sourcing a request *batch*
+as an ingress driver hits `constant_unit`'s non-scalar limit, so the demo models the batch as an
+input — the same non-scalar deferral state already carries; the correlation point is identical.
+
+**Next.** `P2.5.2` idempotency (a key on a sink so the external system dedupes a double-fire —
+"engine carries the key, user composes the policy"), then `P2.7.2` mode-aware firing (consolidate
+design/deploy under one host surface). Two inches from a closed P2.
+
+---
+
+## 2026-06-29 · P2.5.2 — idempotency = determinism + a data key + external dedup
+
+**One demonstration test, no core change (125 green = 112 core + 13 host).** Like correlation, the
+key is plain data in the `[key, body]` payload and `Host::perform` already carries it — but the
+*reason it works* is the opposite of correlation's, and that's the point worth recording.
+
+**Purity is the source of the problem and the fix.** Correlation's isolation was free because
+purity prevents crossing. Idempotency is about a **double-fire**, and that is not an interior
+property — it's caused by re-running the graph (a retry, a resubmit, a replay). Purity makes
+re-running *expected*: a replayable graph re-evaluated reconstructs the same `email`/`respond`
+again, by design. So determinism (P1.4.4 — proven: identical `(unit, inputs)` ⇒ identical output)
+turns "the same effect fires twice" from a bug into a **dedup-able event** — the re-fire rebuilds
+the *identical key*, and an external system that remembers keys recognizes it. The demo
+(`an_idempotency_key_dedupes_a_refire`) fires the same intent (`"order-42"`) twice; `DedupeHost`
+performs once, because the second fire's key matched the first.
+
+**Where the guarantee lives — two halves, neither a new mechanism.** The engine guarantees the key
+is *stable* — but that's just determinism, already proven. The user guarantees the key *tracks
+intent* — by deriving it from intent data with pure primitives. That responsibility has teeth: a
+key derived from a `Clock` driver or a `State` counter would **vary** across re-fires and defeat
+the dedup. So an idempotency-key subgraph must be **replayable** (`is_replayable` already expresses
+exactly this) — a future guardrail could enforce it; for now it's the user's discipline, noted.
+The dedup itself is the external system's (modeled by `DedupeHost`; real → platform host).
+
+**The P2.5 pattern, stated once.** Both effect contracts dissolve to the same shape: *a label
+rides as ordinary data; the engine carries it without interpreting; the boundary acts on it; the
+real boundary defers to a platform host.* Correlation's label is "which connection" (isolation is
+purity's); idempotency's label is "which intent" (stability is determinism's). Neither needed a
+`Value` change, an `eval` change, or a `Host` change — the value model stayed clean, exactly as
+Fork B and A→B set it up to.
+
+**Next.** `P2.7.2` — mode-aware firing, the **last leaf in P2.** Pure consolidation: `design_eval`
+(core) and `fire`/`fire_sourced` (host) both exist; P2.7.2 is one host surface that picks between
+them, with a test that the *same* graph mocks an effect in design and fires it for real in deploy,
+the core staying mode-blind throughout. Then P2 closes.
+
+---
+
+## 2026-06-29 · P2.7.2 — mode-aware firing, and **P2 closes**
+
+**One host surface, two modes (126 green = 112 core + 14 host).** `Mode{Design, Deploy}` + `run`
+name a choice the host already had: `design_eval` (core — mocks drivers, the whole graph goes
+pure, performs nothing) vs `fire_sourced` (host — real drivers, effects performed). The only real
+change is that `fire`/`fire_sourced` now *return* the settled output, so design mode can hand back
+a **preview** — the same `timer → email` graph returns `Effect{email, 0}` with the driver mocked
+and **nothing sent**, then performs `(NetworkEgress, 42)` for real in deploy. The core never sees a
+`Mode`: design substitutes mocks at resolve time, deploy supplies real values, both through the
+**one** evaluator (`I2`/`I5` intact).
+
+---
+
+## ▣▣▣ MILESTONE — P2 (The OS / effect boundary) is COMPLETE ▣▣▣
+
+Twelve leaves, every one built or **honestly dissolved**. What stands:
+
+- **Classification** (`P2.1`–`P2.3`): `Kind{Pure,Driver,State,Sink}` derived not asserted;
+  10 atomic `Capability`s; the manifest unions up the closure and surfaces before import; fail
+  closed on the unknown. Two orthogonal axes — **effect-bearing ⊥ replayable**, **sourced ⊥
+  performed** — decide everything the host needs.
+- **Firing** (`P2.4`, `P2.7`): one evaluator, two modes. Design = `eval` over a substituting
+  resolver (mocks); deploy = the host shell. Effects **output-carried, self-describing**
+  (`Value::Effect{sink-name, payload}`) — `map` fans out to N, heterogeneous effects ride one
+  output, no multi-output composite. The only impurity is `Host::perform`.
+- **State** (`P2.6`): one host-threaded cell. `P2.6.1` built it; `P2.6.2` (transactional) and
+  `P2.6.3` (identity/replay/fork/pin) **dissolved into it** — the round *is* the transaction,
+  value-not-hashed is unrepresentable-to-violate, fork is CoW, non-replayable is tested.
+- **Effect contracts** (`P2.5`): correlation and idempotency, both **a label riding as data**;
+  the engine carries it, the boundary acts on it. Correlation's non-crossing is purity's theorem;
+  idempotency's key-stability is determinism's. Neither touched `Value`.
+
+**The Elm runtime is closed on a pure core:** `Model` = host storage, `update` = the graph,
+`Cmd` = sinks→effects, `Sub` = drivers→sourced values — and the entire effectful surface reduces
+to one impure function.
+
+**The lesson of the phase.** Pin the right boundary once and the downstream "features" become
+theorems. P2.6.1's host-storage decision dissolved three leaves; purity dissolved correlation's
+isolation; determinism dissolved idempotency's stability. Of twelve leaves, the genuinely *new*
+code was small and the recurring move was recognition — the system's own thesis (derive, don't
+assert; keep the core pure) turned back on its own roadmap.
+
+**Honestly deferred (not gaps — decisions):** real platform hosts (real `email`/clock/socket,
+token→socket routing, external dedup — all behind the one `Host` seam); keyed cells/drivers and
+non-scalar sourcing (parameterized capabilities + list `constant_unit`); async/await + quiescence
+(`P2.4.2` — eager makes it unnecessary now); the replayable-key guardrail (`is_replayable` on an
+idempotency key).
+
+---
+
+**Next — P3, The Marketplace.** The trustless memo cache where `is_replayable` stops being a
+predicate and becomes **the product**: pure + content-pinned ⟹ universal, shareable memoization.
+This is the project's actual thesis and a far larger design arc than any P2 leaf — it will want
+real grounding and its own L4 sequence, not an inch. The spine so far: P1 (language) ⊳ P2 (OS)
+both closed; P3 is the third and final spine pillar.
+
+---
+
+## 2026-06-29 · The genesis primitive set & the admission gate (design inch, no code)
+
+A design-only inch, written into `COMPOSABLE_VM_DESIGN.md` §13 — pinning the atom set
+as the trust root before P3 makes it permanent.
+
+**The frame that did the work.** The primitives are the *leaves of the hash DAG*
+(confirmed in `hash.rs`: composites encode children by hash, primitives by name). So
+the atom set is the entire surface of *trusted semantics* — everything above it is
+verifiable by re-hashing, nothing above it must be trusted. That reframed "how many
+primitives" into "how small can the privileged, unforkable centre be," which is the
+permissionless thesis itself.
+
+**The gate (decidable, not taste).** Native iff a composite couldn't match it:
+worse complexity class, or hot-and-pervasive (finer than memo grain), or impossible
+(an effect = a capability), or genuinely inexpressible (the constructive test: a `for`
+loop *builds* as `fold`, so it's surface syntax, not an atom; iteration itself does
+*not* build, so `fold` is native; `while` is refused — it would forfeit totality).
+Everything failing the gate is a blessed stdlib composite that, by I1, *feels* native.
+Convenience is served one tier out, in the open, for free — and the gate is what stops
+the native set ballooning over the years.
+
+**The set: 27 frozen atoms** — 15 language core (incl. the two control atoms `select`
++ `fold`, and `cons`/`head`/`tail`/`is_empty`), 6 text (Text kept *opaque*; casing
+native via locale-independent Unicode default mapping — a determinism/I2 call, since
+Turkish-i-style locale tailoring would poison every downstream hash), 6 effects
+(`email`/`respond` merged into `egress`); `spawn` deferred, append-only.
+
+**Two donors, two payoffs.** `fold` (language) and the state cell (OS) generate almost
+everything above them. Control flow = `select` + `fold` only ⇒ **everything is total by
+construction** ⇒ the memo thesis is airtight (no verifier ever asked to confirm a result
+that might not halt). And the demotions (subtract's inverse, the list lib, typed
+constants, email/respond) are the one breaking move — re-hashing — hence genesis-timed;
+appends stay free forever.
+
+**Status:** no code, no tests touched (126 green unchanged). This is the trust-root
+characterization + admission gate; the *act* of freezing the canonical set, and the
+totality decision it rests on, are the natural first preconditions when we ground P3.
+
+---
+
+## 2026-06-29 · P3.8.1 — content-addressed store (local CAS); P3 begins
+
+**The first leaf of the Marketplace pillar (136 green = 117 core + 19 host).** Where
+units live, keyed by their 32-byte hash. Chose the additive path (prove the machinery on
+the current primitive set; defer the breaking genesis reconciliation to just before the
+registry), so this inch moves nothing's hash.
+
+**The one genuinely-new piece is in core: `decode_preimage`,** the exact inverse of
+`encode_preimage`. The preimage was already length-prefixed, tagged, and counted, so the
+decoder is mechanical — but identity-critical, so every read is bounds-checked and counts
+from the (untrusted) stream are never pre-allocated (a blob that lies about a length hits
+`UnexpectedEof`, not an allocation). Five tests pin the property: `encode∘decode` is
+byte-exact, the hash survives the round-trip, malformed bytes are rejected with a reason.
+Added `Type::from_tag` as the mirror of `Type::tag` (one append-only table, both directions).
+
+**Two boundaries did the load-bearing work on the host side.** (1) **`Store` is not
+`Resolver`** — the store returns *owned* units for persistence; `Resolver` hands out
+borrows for the eval hot path. So evaluation never reaches for disk, and IO stays cleanly
+on the host side of the purity boundary. (2) **Verify-on-read is pure content-addressing**
+— the stored bytes *are* the hash preimage, so `get` decodes, re-hashes the decoded unit,
+and refuses it unless it equals the key it was filed under (`I5` made operational: a blob
+is trusted only because it hashes to its own name). This needed no `blake3` in the host —
+the crate-dependency boundary holds, `holon-core` still at one dependency.
+
+`MemStore` and `FileStore` share the exact encode/key/verify/decode path, differing only
+in the byte backend — which is what makes the deferred networked CAS (`P3.8.2`) a third
+backend, not a rewrite. The leaf's test stands: `store(unit)→hash`; `fetch(hash)→` the
+identical unit; a tampered blob is rejected.
+
+**The loop the plan predicted is visible here:** P3.3 *forced* content-addressing at the
+very start; the store is the first place that pin is *consumed* — units addressed by the
+hash P1.6 already computes. Exposure, not invention.
+
+**Next — `P3.1.1`, the registry:** a `name@version` alias resolving to a hash, publish
+(unit→store + alias→hash), and the immutability rule (a published alias resolves to one
+hash forever). It's the first place a hash becomes a *permanent public commitment* — so
+the genesis reconciliation (§13) is the thing to settle in the same neighbourhood, before
+the first publish fragments the trust root.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R1a — list-structure irreducibles (cons/head/tail/is_empty)
+
+**The reconciliation to §13 is an arc, not an inch** — most of it (effect renames, the
+five-constants→`const` merge, demoting the list library to `fold`-composites) re-hashes
+existing units, and the demotions need a stdlib mechanism first. Wrote
+`P3-genesis-reconciliation-L4.md` to sequence it into six independently-green inches
+(R1–R6): additive first (no hash moves), breaking-but-localized renames next, the heavy
+demotions last behind an open fork. **The fork (decide at R6):** full §13 (build the stdlib,
+demote, minimal trust root) vs trust-root-freeze (add the irreducibles, clean names, keep the
+convenience derivables native, let the admission *gate* stop future bloat). Both give the
+registry a stable trust root; deferred because R1–R5 are required either way.
+
+**R1a (additive, 137 green = 118c + 19h):** added `cons`/`head`/`tail`/`is_empty` to `compute`.
+O(1) build/inspect — the irreducibles §13 was missing; every demoted op (sum/map/filter…)
+will be a `fold`-composite over these. `head`/`tail` of `[]` ⇒ `None`, reusing the existing
+`get`-out-of-bounds convention (partial-via-`None`; it halts, just yields no value, so
+totality is intact); `is_empty` is total. No existing hash moved.
+
+**Re-confirmed the two-table rule:** a pure primitive lands in `compute` (primitives.rs) **and**
+the pure allowlist in `capabilities_of` (kind.rs); the enumerated `pure_leaves_are_pure` test
+was extended in place so any drift between table and list fails loudly. No `eval`/`simulate`/
+`validate` change — pure leaves flow through `compute`, aren't sourced, carry no capability.
+
+**Next — R1b · `fold`:** the one iteration primitive and the universal list donor. Higher-order
+(reads a `fn`-hash param, threads an accumulator over a list), so it's the first reconciliation
+inch to reach into `eval.rs`, beside `map`.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R1b — `fold` (closes R1: pure irreducibles)
+
+**The keystone primitive (140 green = 121c + 19h).** `fold` is the second higher-order
+primitive, so it lives in `eval.rs` beside `map` (it needs the resolver to look up the
+combiner by hash — `compute` can't). Shape committed: `fn` is a param (the combiner's hash,
+structural), `init` + `list` are inputs (runtime), combiner applied left-to-right as
+`fn(acc, elem)` — the conventional left fold. `fold(init, []) = init` (total); any `None`
+propagates (like `map`). The test shows the payoff directly: `fold(add, 0, [3,7,5]) = 15` is
+`sum` as a fold — exactly how every demoted list op (R6) will be rebuilt.
+
+**Control flow is now provably two primitives — `select` (choice) + `fold` (iteration) —
+and nothing in the vocabulary can express unbounded looping** (`fold` is bounded by its
+list; `while` was refused at the gate). The language is total *by construction*, visible in
+code, not just the design doc. That totality is what the P3 trustless cache leans on: a
+verifier is never asked to confirm a result that might not halt.
+
+Same two-table discipline: `fold` registered pure (higher-order, effect-free) in both
+`capabilities_of` and the enumerated `pure_leaves_are_pure` test. Additive — no hash moved.
+
+**R1 (pure irreducibles) complete.** Next — **R2 · text irreducibles** (`text_length`,
+`slice`, `index_of`, `lowercase`), `Text` stays opaque; the one real call is casing =
+locale-independent Unicode default mapping (an `I2` determinism decision — locale tailoring
+would poison every downstream hash).
+
+---
+
+## 2026-06-29 · Genesis reconciliation R2 — text irreducibles (Text opaque)
+
+**Four native text ops (141 green = 122c + 19h), additive.** `Text` stays opaque (not a list
+of char-codes — that would regress UTF-8 to O(n) and launder text through `List`). Added the
+ops that must touch the encoding: `lowercase` (mirror of `uppercase`), `text_length`, `slice`,
+`index_of`. Three decisions baked in:
+
+- **Char-based throughout** (Unicode scalar values): `text_length` counts chars, `slice` indexes
+  in chars, `index_of` re-counts chars before a byte-level `find`. The three never disagree; a
+  multibyte char is never split. (Tested with `"ab\u{00e7}"` = 3 chars / 4 bytes.)
+- **Casing is locale-free by construction.** Rust's `to_lower/uppercase` are Unicode *default*
+  case conversion, not locale-tailored — so the same text hashes the same on every machine. This
+  is the `I2` call (locale tailoring, e.g. Turkish dotted/dotless i, would poison every
+  downstream hash and break the trustless-sharing thesis).
+- **`index_of` returns a -1 sentinel**, not `None`: "not found" is a normal, total answer, not a
+  computation failure — it must not propagate as `None` and collapse the graph. `slice` is total
+  too (start past end ⇒ empty).
+
+The rest of the text surface (`contains`/`starts_with`/`split`/`replace`/`trim`/`join`) composes
+from these four + `compare`/`fold` — stdlib, not native. Two-table rule held (allowlist + test).
+
+**Next — R3 · `random` driver** (sourced like `clock`; capability `Random` already defined),
+the last additive inch. Then the trust root starts moving: R4 (effect renames) + R5 (const merge).
+
+---
+
+## 2026-06-29 · Genesis reconciliation R3 — `random` driver (closes the additive run)
+
+**The smallest inch, and the point is its smallness (142 green = 123c + 19h).** Adding a new
+driver to the language was **one line of real code**: a single `capabilities_of` row,
+`random → [Random]`. Everything else is generic. No `compute` arm — a driver has no pure
+computation (entropy is host-sourced at deploy), so `random` falls through `_ => None`. No
+`simulate.rs` change — `sourced_mock` keys on a leaf's *output type*, not its name, so `random`
+(output Number) mocks to 0 in design mode through the exact path `timer` uses. Classification,
+sourcing, mocking, design preview — all worked the moment the capability was declared. `I8`
+(derived-not-asserted) + the two-axis model paying off: the engine learned a new way to touch
+the world by being told one fact about it.
+
+**The additive run (R1–R3) is complete; not one existing hash has moved.** The native set now
+holds every irreducible §13 specifies — pure kit, text kit, drivers. The trust root has only
+grown, never shifted.
+
+**Next — the breaking inches.** R4 (`timer→clock`, `request→ingress`, `email`+`respond`→`egress`)
+and R5 (five constants → `const`) change the dispatch names ⇒ the preimage ⇒ hashes. Each is a
+multi-file lockstep rename (compute/sink_effect names, `capabilities_of` rows AND the enumerated
+tests, `simulate.rs` helpers, host tests). Discipline: survey *every* occurrence first, move them
+together. Approach R4 by grepping the workspace for each old name before touching anything.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R4a — timer→clock, request→ingress (first breaking inch)
+
+**The first inch where hashes deliberately move (142 green = 123c + 19h, count unchanged — a
+rename adds no tests).** Two clean 1:1 renames to §13 names. `clock` and `ingress` now hash
+differently than `timer`/`request` did; no test asserts a golden hash, so the suite holds.
+
+**Survey-first paid off immediately.** Grepping every occurrence first revealed `request` is two
+things: the *primitive* (→ `ingress`) and the *word* (Fork-B "the request a sink constructs",
+correct terminology that had to stay). A naive find-replace would have corrupted the vocabulary —
+so the rename was scoped to quoted strings for the primitive, leaving the word (still 8× in
+primitives.rs, correctly). `timer` was unambiguous (every occurrence the primitive), so it cleaned
+all the way to helper-fn and variable names.
+
+**Why R4 split.** `clock`/`ingress` are 1:1: one table arm in, one out, nothing collides. R4b
+(`email`+`respond`→`egress`) is a *merge* — after renaming, `capabilities_of` and `compute` would
+each hold two identical `egress` arms (duplicate patterns, a compile error). R4b's real work is
+deduplicating those collapsed arms + merging the two sink tests + rewriting the request/response
+comment block left intact here. Hence its own inch.
+
+**Next — R4b · the egress merge.** Survey `email`/`respond`, collapse to one native `egress` sink
+(both already NetworkEgress; the host dispatches on capability, not sink name, so the merge is
+clean host-side), dedup the arms, rewrite the P2.5.1 comment.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R4b — email+respond→egress merge (completes R4)
+
+**The structural rename: two sink primitives collapse into one (142 green = 123c + 19h, count
+unchanged — the two sink tests were renamed, not removed).** `email`/`respond` → a single native
+`egress`. Safe because of the capability/name split built in P2: **the host dispatches on the
+*capability* (NetworkEgress), never the sink name.** Both were always NetworkEgress; the name only
+fed `capabilities_of` to *derive* it. So unifying to `egress` changes nothing the host does — what
+distinguished "send mail" from "send a reply" now lives where §13 says it belongs: in the payload
+(a mailbox, or the `[token, reply]` pair the correlation test still checks). The reply lost nothing
+— its token was already plain data, non-crossing already purity's theorem.
+
+**Three site-types needed care beyond a blanket sed** (the checklist for R5):
+1. *Collapsing match arms* — `capabilities_of` and `compute` each ended with two identical `egress`
+   arms (duplicate patterns = compile error); deduped by hand to one. A duplicate `let egress` cap
+   check (email + respond → same leaf) also dropped.
+2. *Explanatory comments* — three comments name `email`/`respond` on purpose (documenting the
+   merge); they must survive the rename, so primitives.rs was edited by hand, not sed'd.
+3. *Embedded identifiers* — `email_hash`, `map_fans_out_one_email_per_element`: a trailing `_`
+   defeats `\bemail\b`, so a substring grep caught them after the word-boundary pass.
+
+**R4 complete: all effects carry §13 names** (clock, ingress, egress). **Next — R5 · const merge**:
+number/boolean/text/true/false → one `const` reading value+type from params. Same species as R4b
+(N primitives → 1), so the same three-site checklist applies. Then the R6 fork (demotions).
+
+---
+
+## 2026-06-29 · Genesis reconciliation R5 — const merge (COMPLETES the arc R1–R5)
+
+**Five constants → one data-driven `const` (142 green = 123c + 19h, count unchanged).** The most
+*spread-out* inch — eight files — because constants are minted in more places than any effect:
+eval/determinism/promote/validate fixtures, the design-mode mock (`sourced_mock`), and the host's
+state-cell injector (`constant_unit`/`scalar`) all build scalar units. But the change is the
+cleanest consolidation: `number`/`boolean`/`text` (+ the niladic `true`/`false`) fold into one
+`const` reading `value` + `type` params.
+
+**Key decision held: `const` *declares* its type, never infers it.** `const(Number,"true")` ⇒ None
+(no coercion); `const(Boolean,"true")` ⇒ the bool; a literal `"true"` string ⇒ `const(Text,"true")`
+— three unambiguous units, three distinct hashes, exactly what content-addressing needs (I5). Test
+pins it: value-not-parsing-for-type ⇒ None, and a type with no literal form (List) ⇒ None.
+
+**Disposed of a latent inconsistency:** `true`/`false` were never real primitives — allowlist +
+purity-test entries with no `compute` arm, a "pure leaf" that couldn't produce a value. Gone now (a
+boolean literal is just `const(Boolean,…)`). Trust root is smaller *and* more honest.
+
+**RECONCILIATION ARC R1–R5 COMPLETE.** The native set matches §13 on every axis: pure irreducibles
+(cons/head/tail/is_empty + fold), text (lowercase/text_length/slice/index_of, Text opaque), drivers
+(clock/random/ingress, store_read), effects (one egress + store_write), constants (one const). Only
+R6 remains — and R6 is a genuine design *fork* (demote to stdlib vs trust-root-freeze), not a
+mechanical inch. To be discussed, not just executed.
+
+---
+
+## 2026-06-29 · Genesis reconciliation R6 — DECISION: freeze the trust root (Branch B), defer demotion
+
+**No code (the native set is already at 142 green); this inch is a decision pinned in writing.**
+The R6 fork was: shrink to the theoretical-minimal trust root by demoting convenience leaves to a
+blessed stdlib (Branch A), *vs* freeze the as-built set and let the admission gate bar future bloat
+(Branch B). **Chose B as the interim state, deferring A to its own pillar.**
+
+Reasoning: Branch A's payoff — the smallest surface for an auditor to verify — only accrues *once
+there is an auditor*, i.e. the networked trustless cache (deferred P3 tier). No auditor today, and A
+additionally needs the blessed-stdlib distribution mechanism invented first (a pillar's worth of
+design, not a cleanup). So the minimal-trust-root principle is acknowledged and deferred, revisited
+when stdlib mechanism + auditing use-case both exist. The gate stays fully active as
+gatekeeper-for-the-future: the set is grandfathered, not derived, but it never grows by habit again.
+
+**Pinned in COMPOSABLE_VM_DESIGN.md §13a** — the frozen genesis manifest, 34 leaves (the entire
+trusted-semantics surface, append-only hereafter): 16 pure language core, 6 text (Text opaque), 6
+list-convenience (demotion-deferred — the concrete leaves a future pillar moves to stdlib), 3
+drivers, 2 state, 1 sink. Totality (select+fold, no while) unchanged by the larger freeze.
+
+**GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape, reached one
+green inch at a time, breaking hashes only where designed. This was the hygiene prerequisite before
+the registry's first publish (the first permanent public commitment of a hash).
+
+**Next — back to P3 local-first**, now unblocked: registry (P3.1.1) → inspection (P3.2.1) → local
+memo (P3.3.1, the canonical-Value encoder is the new piece) → fork/re-pin (P3.5.1, needs L4) →
+advisory (P3.6.1). Networked tier (shared cache P3.3.2, reputation, identity) still deferred.
+
+---
+
+## 2026-06-29 · P3.1.1 — the registry (the first permanent publish boundary)
+
+**First P3 inch after the reconciliation; the marketplace's trust model is first anchored here
+(147 green = 123c + 24h, +5 host registry tests).** `Registry<S: Store>` over the P3.8.1 store, in
+holon-host. `publish(root)` has exactly one load-bearing job: **closure-completeness (I6 at the
+boundary)** — walk the unit's children *and* its `fn` param, and **fail closed** (`DanglingReference`)
+on any reference the store can't resolve. A dangling hash would be fetchable yet un-evaluable,
+poisoning the trust root the instant it's committed. Verify-first-then-commit ⇒ a refused publish
+leaves nothing extra. The store's verify-on-read means every resolved reference is the right bytes,
+so the closure check integrity-checks for free.
+
+**The two tests that matter are the dangling cases:** an unstored child, and a `map` whose `fn` hash
+was never stored — the I6 subtlety a children-only walk silently misses, hence its own test.
+
+**Judgment call — identifying a hash-valued param.** The mock-walker's lenient heuristic ("follow
+any value that parses as a hash") is *wrong* for publishing: a literal Text const whose value is 64
+hex chars would parse-as-hash, fail to resolve, and wrongly reject a valid unit. So the registry keys
+on the param **name `fn`** — the exact convention `eval` already uses to find the combiner. Not an
+arbitrary special-case; aligning to the evaluator's reference convention. Limitation noted in code:
+when a 2nd hash-valued param appears, this wants a shared `child_refs(unit)` helper in core that eval,
+mock-walker, and registry all consult (single source of truth). Future refactor, not needed yet.
+
+**One core change:** `parse_hash` widened `pub(crate)`→`pub` so the host can follow a `fn` hash —
+legitimate public API, symmetric with `hash_unit`, widening is safe.
+
+**Scope honest:** hash-only (no names — hash *is* identity); published *record* in memory (units are
+persisted by the store; persisting the record is a short follow-on); no networking.
+
+**Next — P3.2.1 inspection:** surface a unit's full transitive structure (same closure shape) so a
+consumer audits what they're about to depend on *before* pinning — I9 full-inspectability made concrete.
+
+---
+
+## 2026-06-29 · P3.2.1 — inspection + the child_refs unification
+
+**More consolidation than new surface (154 green = 130c + 24h, +7 core inspect tests).** New
+core module `inspect.rs`: `dependencies(root, resolver)` — the transitive closure below a root,
+deduped and hash-ordered, so a consumer audits exactly what they'd depend on before pinning (I9
+made an operation). Flat reachable-set, not a tree: each composite already lists its children, so
+flat + bodies *is* the structure, and flat is what an audit ("is every node pure?") wants.
+
+**The substantive work: dissolving three divergent closure-walks into one `child_refs`.**
+`collect_caps` (kind), `collect_mocks` (simulate), and registry `verify_closure` (host) each had
+their own answer to "what does a unit reference." Two used the **parse-heuristic** (follow any
+value that parses as a hash) — a latent fail-closed-wrong bug: a `const(Text, value="<64 hex>")`
+would make `collect_caps` saturate and report a *pure text constant as maximally capable* (a
+security-relevant misclassification), and `collect_mocks` would try to mock a string. No unit
+triggers it today, so nothing was red — but it was real. `child_refs` keys on the param **name
+`fn`** (eval's convention), removing the whole class; pinned by `child_refs_ignores_a_hash_shaped_
+non_fn_param` (value = 64 valid hex chars, correctly ignored).
+
+All four walks — capability classification, mocking, publish, inspection — now consult one
+definition; they can't drift, and a 2nd hash-valued param is added in exactly one place. The
+"align to the natural boundary" principle doing concrete work: the boundary was "what does a unit
+reference," it had three contradictory impls, dissolving them was the fix. (Also removed two
+now-unused `parse_hash` imports; updated the P3.1.1 registry doc from "future refactor" to done.)
+
+**Next — P3.3.1 local memo** (the cache thesis made real): a pure unit's hash + inputs ⇒ output
+forever, so cache and re-serve without re-eval. New piece: a **canonical `Value` encoder** (the
+cache key needs inputs in a stable hashable form; Value derives only PartialEq). Real design call
+— what makes two inputs "the same" for caching — so it gets an L4 first.
+
+---
+
+## 2026-06-29 · P3.3.1 — local memoization (the cache thesis, made real)
+
+**The moat turns from a property into a mechanism (162 green = 135c + 27h, +5 core encoder, +3 host
+memo).** Cache key = `BLAKE3(unit_hash ‖ canonical_encode(inputs))` — a content hash of (unit,
+inputs), derived identically on any machine. The resolver never enters the key: a pure unit's hash
+already captures its whole transitive closure (I6), so (unit_hash, inputs) fully determines the
+output. Same derivation will key the shared cache (P3.3.2) and let any party verify by re-hashing.
+
+**FCIS split:** the pure, decision-heavy half — canonical `Value` encoder + `memo_key` — in core
+(`memo.rs`); the cache itself a `Memo` state cell in host. The thesis made literal: the trustless
+cache is a state cell keyed by a content hash (the OS's universal donor storing the language's pure
+results).
+
+**The f64 canonicalization (the one real decision, an I2 matter):** NaN (any bit pattern) → one
+fixed encoding; both signed zeros → +0.0; else IEEE bits LE. Both collapses sound because eval
+treats the collapsed values identically (IEEE ops/comparisons are NaN-payload-agnostic; -0.0==+0.0).
+NaN/inf can't enter as literals (const rejects non-finite) but ARE reachable computed (1e308² → inf,
+inf-inf → NaN), so the encoder must handle them. Tagged + u32-LE length-prefixed (mirrors preimage
+encoder) ⇒ collision-free across types. Tests pin: 2 different NaN patterns → same key; ±0.0 → same;
+4 types distinct; order + presence matter.
+
+**Soundness guard — only is_pure units cached** (∅ caps), NOT is_replayable. A driver's output
+isn't a function of inputs (varies per call); a sink *performs* — caching would skip the effect.
+The `impure_unit_is_not_cached` test uses `egress` deliberately: it evaluates (constructs an Effect)
+but is never cached, so the effect can't be silently skipped. Impure ⇒ falls through to plain eval.
+
+**Honest overhead (correctness-first):** per-call purity walk + per-call re-hash. A later inch
+threads the hash through rather than recomputing. **Local-first P3 nearly complete.**
+
+**Next — P3.5.1 fork/re-pin** (needs L4) then P3.6.1 advisory. The shared trustless cache (P3.3.2,
+the actual differentiator) stays deferred, but its key-derivation half now exists and is tested.
+
+---
+
+## 2026-06-29 · P3.5.1 — fork / re-pin (the sanctioned creation of a new identity)
+
+**The marketplace's generative act (169 green = 140c + 29h, +5 core fork, +2 host).** Everything
+prior *preserves* identity; fork *derives* a new one. Core `fork.rs`: `refork(root, target,
+replacement, resolver) -> Option<Refork>` re-pins every reference to `target` → `replacement`,
+**path-copying** — only the changed node's ancestors are re-minted; every off-path subtree keeps
+its hash and is shared. The `repins_deep_and_shares_off_path` test proves it concretely:
+root→[A,B], A→[C,D], replace D ⇒ minted.len()==2 (A, root), B and C asserted NOT in minted. A
+one-node change costs one spine, not a deep copy — content-addressing's payoff made visible.
+
+**Re-pinning is uniform with `child_refs`** (P3.2.1 paying off again): a child is a hash swap; a
+`fn` param becomes `Param::frozen("fn", to_hex(replacement))` — the inverse of the `parse_hash`
+eval uses to read it. The same references inspection reads, fork rewrites. Pure transform (FCIS:
+mints units, returns them; host stores). Provenance: NONE in the unit — content-addressing makes
+the fork independent; any derives-from link is external, deferred.
+
+**Host `fork` inherits the publish invariant for free:** refork → store the minted spine →
+`Registry::publish(new_root)`. The forked closure is complete by construction (minted ∪ shared-
+already-stored ∪ replacement), so the existing `DanglingReference` gate covers it with zero new
+checking. The one new glue: `materialize` (walk the closure from store into a MapResolver, since
+refork wants a Resolver) — the store↔resolver duality's 3rd appearance (registry, inspection,
+fork); a Store→Resolver adapter is an increasingly-earned future tidy.
+
+**Compile fix (cargo caught):** `to_hex` was `#[cfg(test)]`-gated (only test callers until now);
+fork is the first *library* code to *write* a `fn` param, so ungated it. `parse_hash` (read) and
+`to_hex` (write) now both library-available — matching the read/write pair child_refs/refork form.
+
+**Next — P3.6.1 advisory** (last local-first inch): surface derived advisory signals before
+depending (capability summary, purity, closure size) — all already computable (capabilities,
+is_pure, dependencies). Exposure, not mechanism. Then local-first P3 is complete.
+
+---
+
+## 2026-06-29 · P3.6.1 — advisory signals (COMPLETES local-first P3)
+
+**The lightest inch — pure exposure, no new mechanism (174 green = 145c + 29h, +5 core).** Core
+`advise(unit, resolver) -> Advisory` bundles the four signals a consumer wants before depending:
+`capabilities` (what it can touch — saturated, fail-closed), `is_pure` (cacheable), `is_replayable`
+(no state), `dependency_count` (supply-chain weight). All already computable; advisory just packages
+them.
+
+**"Advisory" is load-bearing: facts, not gates.** Nothing forbids anything — a unit touching the
+network or pulling 50 deps isn't blocked; the consumer reads and decides. Fits the marketplace
+philosophy (make everything inspectable, let participants choose). Signals are derived (I8, never
+asserted), so they can't lie — `capabilities` is saturated from the real closure.
+
+**No host wrapper this inch:** a `Registry::advise(hash)` wants the same store→resolver materialize
+that fork uses. That duality has now appeared 4× (registry, inspection, fork, advisory) — the right
+move is a `Store`→`Resolver` adapter as its own small refactor, after which host `advise(hash)` is a
+2-line convenience. Core `advise` over a Resolver is the genuine capability.
+
+**LOCAL-FIRST P3 MARKETPLACE COMPLETE.** publish (P3.1.1) · inspect (P3.2.1) · memoize (P3.3.1) ·
+fork (P3.5.1) · advise (P3.6.1) — the full set of local-first operations, all green, all built
+almost entirely from invariants that predate them ("exposure, not invention"). The store (P3.8.1)
+underlies them.
+
+**Deferred (networked tier):** the shared trustless cache (P3.3.2 — the actual differentiator;
+key-derivation half built in P3.3.1), reputation-by-adoption (P3.4.1), author-identity (P3.7.1),
+networked CAS (P3.8.2). Foundations (content-addressed keys, closure verification, derived signals)
+all in place + tested. **Accumulated refactor note:** the `Store`→`Resolver` adapter (would clean
+fork's materialize + enable host advise(hash) cheaply).
+
+---
+
+## 2026-06-29 · `Store`→`Resolver` ownership fork — examined, SET ASIDE (no code)
+
+Pressure-tested my own repeated note ("adapter refactor … appeared 4×, earned") before acting on
+it. It was wrong three ways, now corrected in PLAN + captured in `P3-store-resolver-fork-L4.md`:
+
+1. **Not an adapter — impossible as named.** `Resolver::resolve` returns a borrow (`&Unit`);
+   `Store::get` yields owned units (decoded fresh, verify-on-read). No `&self`-lived `&Unit` to
+   lend; `RefCell` can't return a reference past its guard. A store→resolver *must* eagerly
+   materialize into an owned `MapResolver` — which is fork's `materialize`. An adapter renames the
+   glue, not dissolves it.
+2. **Not 4×.** The materialize glue is in *one* place (fork). `verify_closure` walks the store
+   checking presence; `dependencies`/`advise` are pure-core over a Resolver with no host wrapper.
+   Rule of *one*, not three — extract the helper when a 2nd real caller lands, not before.
+3. **Not debt — a perf optimization.** The only real change would be the `Resolver` trait →
+   `Option<Cow<'_, Unit>>` (the only form that keeps the in-memory path zero-copy; `Option<Unit>`
+   clones the hot eval path, `Rc` changes MapResolver's repr for nothing extra). Bounded blast
+   radius: 2 impls, ~14 sites (half already-clone test sites), 1 real return-type change
+   (`dependencies` → owned map, which *drops* the `'r` param). And it buys **only** lazy
+   `eval`-against-store (select/fold pruning skips unvisited units) — a saving that's currently
+   *unrealizable* (eval runs against in-memory MapResolvers; the Store is publish/registry).
+
+**Trigger recorded** (all three): a deploy-from-store eval path exists; programs large/branchy
+enough that pruning skips a meaningful fraction; eager `materialize` *profiles* as the bottleneck.
+Decision rule when the deploy tier lands: whole-closure op (advise/inspect a hash) → cheap eager
+materialize helper; lazy eval of a big branchy stored program → the `Cow` change. Until then:
+nothing. Next genuine step is the networked tier (P3.3.2 shared trustless cache).
+
+---
+
+## 2026-06-29 · P3.3.2 — the shared trustless cache (the differentiator)
+
+**The thesis made operational (183 green = 151c + 32h, +6 core +3 host).** P3.3.1 made memoization
+local; P3.3.2 makes a result one party computed *checkable by anyone*. Core (extends `memo.rs`,
+reusing the private `encode_value`): `CacheEntry {unit_hash, inputs, output}` (self-describing so a
+recipient who didn't compute it can verify it); `entry_key` (= `memo_key` of the fields — cheap
+structural integrity, the "which computation" check); `verify_entry` (the **trustless oracle**:
+resolve + is_pure + re-eval + **canonical** output compare). Host: `SharedCache` (untrusted store;
+`put` dumb-inserts under the derived key, `get` is the fast/trust-the-source path, `get_verified`
+re-executes and refuses a liar).
+
+**Why it's the thesis: three invariants converge in `verify_entry`.** Content-addressing ⇒ the
+claim names one immutable computation (can't be swapped). Determinism (I2) ⇒ re-execution is
+*decisive* (one correct answer). Totality (no `while`; control = select+fold) ⇒ the oracle always
+*terminates* (a verifier that could hang is no verifier). A memo is checkable exactly because the VM
+is pure, total, content-pinned.
+
+**Grounded NaN finding (would have been a silent hole):** `eval` can reach `inf`
+(multiply/add don't guard overflow) and thus `NaN` (`divide`/`subtract` of inf). `Value` is only
+`PartialEq` (NaN≠NaN), so a naive `==` fails an honest NaN result *on the same machine*, and NaN bit
+patterns aren't portable across machines. So `verify_entry` compares **canonically** via
+`encode_value` — the same fold `memo_key` applies to inputs — making verification machine-
+independent. The `nan_output_verifies_canonically` test (inf-inf via a pure `subtract`, inputs carry
+the inf so no composite needed) is the proof.
+
+**Cheap/expensive split mirrors the Store:** `entry_key` cheap structural (re-hash analogue,
+always-on, earns its keep at the network boundary P3.8.2); `verify_entry` expensive semantic
+(re-execute, opt-in). **Honesty in the API:** `get` (trust source) vs `get_verified` (trust no one);
+the liar test stores a wrong output under the right key, confirms it's stored (cache untrusted),
+then watches the trustless read reject it.
+
+**What this does NOT do (deferred, each its own pillar):** skip compute on a stranger's word — needs
+reputation (P3.4.1), proofs, or quorum. All three now have this substrate to stand on. Next genuine
+step: P3.4.1 reputation-by-adoption, or P3.8.2 networked CAS (the transport; cheap entry_key check
+ready for it).
+
+---
+
+## 2026-06-29 · P3.4.1 — reputation-by-adoption (the navigation layer)
+
+**Adoption = inbound citations in the published DAG (191 green = 156c + 35h, +5 core +3 host).**
+Core `adoption_counts(corpus)` — pure tally over `child_refs`: for each referenced hash, how many
+*distinct* corpus units cite it (a unit citing U twice counts once). Host `Registry::adoption()` —
+the `verify_closure` walk collecting instead of checking: gathers the published universe (every unit
+in any published root's closure), then calls the core tally.
+
+**Load-bearing: derived, not asserted (I8).** Adoption is recomputed from the actual DAG every call,
+NEVER a stored counter. So it can't be inflated except by publishing real, inspectable referring
+units. The thesis extends once more: content-addressing made memoization *trustless* (P3.3.2); now
+it makes reputation *unfakeable-by-assertion*. Same move — you can't lie because the truth is in the
+content. Why it's trust and not mere popularity: adopting U = pinning its exact hash = committing to
+its frozen, fully-inspected behavior forever (I5+I9); a far stronger signal than a mutable-world star.
+
+**Framing correction (recorded in the L4):** I'd earlier called P3.4.1 "result-trust" (skip compute
+on a stranger's word). Wrong: a result is *objectively* verifiable (re-exec settles it; determinism
+makes the correct V the unique honest attractor), but counting endorsements needs distinct parties =
+Sybil-resistance = identity. So result-trust is **re-scoped onto P3.7.1**. What's buildable now,
+identity-free, is *unit* adoption (a unit's quality is NOT objectively verifiable, so an aggregate
+signal genuinely informs) — and it's the more useful half anyway.
+
+**TWO DEFERRALS, documented in PLAN with triggers:**
+1. **Sybil-resistance (recursive/eigenvector weighting, PageRank-style).** Flat citation count is
+   inflatable by junk referrers (cheap but inspectable). Fix weights a citation by the citer's own
+   adoption (junk ≈0 ⇒ contributes ≈0). Heavier (global iteration). **Trigger:** corpus large enough
+   that flat counts are noisy, OR Sybil inflation actually observed.
+2. **Result-trust ("skip compute on a stranger's word").** Needs identity (P3.7.1) to count distinct
+   endorsers, or stake. The determinism-attractor groundwork is laid; the mechanism waits on
+   identity. **Trigger:** P3.7.1 identity lands.
+
+**Decisions confirmed:** (A) scope = unit-adoption-by-citation, result-trust → P3.7.1; (B) ordering =
+adoption-first (identity later hardens + extends). Next: P3.7.1 author-identity or P3.8.2 networked CAS.
+
+---
+
+## 2026-06-29 · P3.7.1 author-identity — DROPPED (no code; decision)
+
+**Caught over-engineering before building it.** I had identity/crypto/attestation in the plan as a
+"keystone" and wrote an elaborate L4 (Ed25519, signed attestations over hashes, Signer/verify). The
+push that killed it: *why do we need any of this — this is an open free market.* Right. The
+keystone holds up nothing; the arches were already standing on **verifiability**.
+
+**The principle:** trust here is from *verifiability, not identity.* Content-addressing + purity +
+totality means you never trust anyone — inspect a unit (I9), verify a result by re-running it
+(P3.3.2; totality ⇒ the check terminates, determinism ⇒ it's decisive). Identity is what you reach
+for *when verification fails or is too costly*; in a system where verification always works, reaching
+for it **hedges against the foundation** and smuggles back the gatekeepers an open market exists to
+avoid. Trust/identity/reputation/gatekeeping are the machinery of systems that can't let you check
+for yourself.
+
+**The three motivations dissolve identity-free:**
+- Sybil-resistance of adoption → **recursive weighting** (citation weighted by citer's own adoption;
+  junk ≈0) — a content-graph property, no identity. And adoption is an advisory hint, not a gate.
+- Result-trust → results are **objectively verifiable**; a wrong result is caught regardless of who
+  signed. The only real (narrow) problem is *expensive*-to-verify computations → **validity proofs**
+  (zk) or **re-verification/spot-checking** — identity-free. Sign-and-burn is one mechanism, neither
+  necessary nor most aligned, and only bites in a mature market that doesn't exist.
+- Authorship/reputation → the unit speaks for itself (fully inspectable); credit is a social nicety,
+  quality-by-reputation a crutch for the unverifiable (a thin sliver here).
+
+**Net:** the open free market needs **zero identity** — publish without a gatekeeper, inspect
+anything, verify any result, fork, discover by adoption, all present and identity-free. Missing only
+**transport** (P3.8.2), which also needs no identity (fetch by hash + verify by re-hash; fetch a
+result + verify by re-execution; the cheap `entry_key` check is already waiting).
+
+**Preserved (if ever revisited):** identity must be optional, external, an attestation *over* hashes,
+never in the preimage; core stays identity-free and trustless. (The one correct constraint from the
+killed design; archived in `P3.7.1-identity-L4.md`.)
+
+**Corrected the two P3.4.1 deferrals** to their identity-free resolutions (PLAN header). **Next:
+P3.8.2 networked CAS / transport** — the literal "open market": content + verifiable results flowing
+between strangers, nobody's identity required.
