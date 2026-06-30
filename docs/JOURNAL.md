@@ -2005,3 +2005,36 @@ across the boundary — the new risk a single-`WUnit` `load_unit` test didn't co
 warning on the wasm build, where `native_tests` is cfg'd out and nothing else called it. Fixed by
 adding the `_wasm` parity test, restoring the "one body, run on both targets" pattern every other
 `check_` fn follows. core unchanged throughout.
+
+---
+
+## 2026-06-30 · palette + custom nodes (P4.1, first visual inch) — the editor places real atoms
+
+**Built.** The authoring canvas's first surface: a **palette** built from `primitive_catalog()` (not a
+hand-written list) and a custom React Flow node that renders a primitive's typed ports straight from
+the catalog interface; **drag a primitive onto the blueprint canvas** to place a typed node. New
+`editor/src/{theme,PrimitiveNode,Palette}.tsx` + `styles.css`; `holon.ts` gains `primitiveCatalog()`;
+`App.tsx` becomes the editor (palette + canvas + drag-drop, replacing the heartbeat).
+
+**Leaf closed.** The placement half of P4.1: core's authoritative interfaces now appear as draggable,
+typed blocks. Wiring, projection/eval, and param editing are each their own next inch.
+
+**The load-bearing rule, made structural (I1).** A node's handles come ONLY from what the catalog
+returned (`data.inputs`/`data.output`), never hand-asserted — the editor never says “add has two
+number ports,” it reads them from core. This is why the bridge inch came first; confirmed visually
+(add → two amber Number inputs, amber out; select → cyan Boolean + two slate Any; egress → slate Any
+in, coral Effect out; fold → its open `fn` param + Any/List inputs).
+
+**State model.** A canvas node is a placed instance whose `id`/`position` are **view-only**, excluded
+from identity (I5); handle ids are the port names — the references the wiring inch turns into `Edge`s.
+
+**Design — type as color.** The editor's one bold, grounded choice: a wire type *is* a color (six
+types, six hues), the whole palette derived from core's type system, chrome kept near-monochrome
+blueprint-ink. This also makes the type check legible next inch — a legal wire is two ports of one hue
+(or `Any`, the neutral). All in IBM Plex Mono; an instrument that edits code-like atoms speaks in mono.
+
+**Proven, honestly.** No React test runner in `editor/`, so the visual claims (ports match core) are
+**browser-confirmed** — the green here is a rendered canvas, not a count. The *provable* path
+(project → eval through the one `Evaluator`) returns in a later inch. Verified what's verifiable:
+strict `tsc` and `tsc -b` clean. Also removed a pre-existing `noEmit` in `tsconfig.node.json` that
+broke `npm run build`. core/host/wasm unchanged — 206 native, 8 wasm-target.

@@ -1089,7 +1089,25 @@ bit-identical native vs wasm, CI-guarded. core unchanged throughout. **Frontend 
 
 ---
 
+### P4.1 · palette + custom nodes (DONE; the editor places real atoms — browser-confirmed)
+- **Palette from `primitive_catalog()`** (not a hand-written list) + a custom node rendering a
+  primitive's typed ports straight from the catalog interface; **drag-to-place** on a blueprint canvas.
+  New `editor/src/{theme,PrimitiveNode,Palette}.tsx` + `styles.css`; `holon.ts` gains
+  `primitiveCatalog()`; `App.tsx` becomes the editor.
+- **I1, structural:** a node's handles come only from `data.inputs`/`data.output` (the catalog), never
+  hand-asserted. Confirmed visually — add (2 amber Number in, amber out), select (cyan Boolean + 2
+  slate Any), egress (slate Any in, coral Effect out), fold (open `fn` param, Any/List in).
+- **View-only `id`/`position`** excluded from identity (I5); handle ids = port names (the wiring inch's
+  `Edge` references).
+- **Design:** wire-type-as-color (6 types, 6 hues), the palette derived from core's type system; mono
+  (IBM Plex Mono), blueprint-ink chrome — sets up the type check to be visually obvious next inch.
+- **Confirmation:** no React test runner in `editor/` ⇒ browser-confirmed (a rendered canvas, not a
+  count). Strict `tsc` + `tsc -b` clean. Fixed a pre-existing `noEmit` in `tsconfig.node.json` that
+  broke `npm run build`. core/host/wasm unchanged — 206 native, 8 wasm-target.
+
+---
+
 ### P4.1 — the authoring canvas (NEXT; L4 written: P4.1-authoring-canvas-L4.md)
 Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
 fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
-(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The wasm `primitive_catalog()` bridge is now **DONE** (preceding block); **next concrete inch:** the palette UI — custom nodes derived from the catalog, drag-to-place — then wiring + `isValidConnection` (the type check, fail-closed), then projection + live eval.
+(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge and the palette + custom nodes are now **DONE** (preceding blocks); **next concrete inch:** wiring — `onConnect` + `isValidConnection` calling the type rule (compatible iff same type or either `Any`, fail-closed), the type-colored ports making it legible — then projection (canvas → composite via `default_spec`) + live eval through the one `Evaluator`.
