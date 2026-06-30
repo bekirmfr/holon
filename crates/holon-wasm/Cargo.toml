@@ -1,0 +1,19 @@
+[package]
+name = "holon-wasm"
+version = "0.1.0"
+edition = "2024"
+
+# A cdylib for the browser/JS (wasm-pack output) AND an rlib so the bridge can be unit-tested
+# natively with plain `cargo test`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The bridge depends on the PURE core ONLY — never holon-host. The host's native I/O
+# (FileStore / std::fs) has no place in a browser, and this single edge keeps it out,
+# Cargo-enforced (the purity boundary, extended to wasm).
+holon-core = { path = "../holon-core" }
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

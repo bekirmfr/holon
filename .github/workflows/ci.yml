@@ -1,0 +1,35 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  # 1. The whole workspace must pass native tests (this covers holon-core AND holon-host).
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+
+  # 2. The pure core + bridge must COMPILE to wasm32 (catches a dependency that isn't
+  #    wasm-compatible — the most common first surprise).
+  wasm-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo build -p holon-wasm --target wasm32-unknown-unknown
+
+  # 3. The guardrail: run the parity body UNDER wasm and assert it matches the core. Together with
+  #    the native run in job (1), this proves wasm-core hashes bit-identically to native-core.
+  wasm-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - run: wasm-pack test --node crates/holon-wasm

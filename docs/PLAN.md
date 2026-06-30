@@ -9,7 +9,7 @@
 > **Build status:** **P1 (Language) and P2 (OS) COMPLETE; P3 (Marketplace) underway — `P3.8.1` (the content-addressed store) done.** Two of three spine pillars closed, the third begun. The store is where units live, keyed by their 32-byte hash: a `Store` trait (not a `Resolver` — it returns *owned* units, so eval never touches disk and IO stays host-side) with `MemStore` + on-disk `FileStore` backends, **verify-on-read = pure content-addressing** (the stored bytes are the hash preimage; a blob is trusted only because it re-hashes to the key it was filed under — `I5` made operational, no `blake3` in the host). The one genuinely-new piece is core's `decode_preimage`, the byte-exact inverse of `encode_preimage`. **136 tests (117 core + 19 host).**
 > **Current resolution:** trunk + all four pillars at L3 **frozen**; the genesis primitive set + admission gate pinned in design `§13` (trust root; reconcile to it just before the registry's first publish). L4s built across P1/P2: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, `sink-as-pure-request`, `P2.4.1-deploy-firing`, `P2.6.1-state-cell`, `A-to-B-effect-value`, `drive-sourced-resolver`, `P2.5.1-correlation-token`. **The phase's lesson:** pin the right boundary once and downstream "features" become theorems. **P3 so far confirms the plan's prediction** — the store *consumes* the content-addressing P3 forced at the very start: exposure, not invention.
 > **Decisions pinned (P3):** the genesis primitive set is the trust root (`§13`), admission-gated (native iff slower-by-class / hot-and-pervasive / an effect / genuinely inexpressible), totality already secured by refusing `while`; the **local-first** marketplace core (store, registry, inspection, local memo, fork, advisory) needs **no server** — only `P3.3.2`/`P3.4.1`/`P3.8.2` are networked (`P3.7.1` identity dropped). `Store ≠ Resolver`; the byte format **is** the hash preimage (one canonical encoding, now with a decoder); verify-on-read is content-addressing, not a separate check.
-> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`).
+> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**, all complete) + one parallel pillar (P4 · Editor, **begun**). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`). **P4 added a 2nd build target:** `holon-wasm` (cdylib, depends on core ONLY) compiles the pure core to wasm32 with zero changes; CI proves the wasm-core hashes **bit-identically** to native (the editor's load-bearing invariant, now a gate not a hope). Dependency rule extended: host→core, **wasm→core**, never sideways/up.
 > **Next — genesis reconciliation arc (`P3-genesis-reconciliation-L4`), then `P3.1.1` (registry).** Reconciling the native set to `§13` *before* the registry's first publish freezes the trust root. A breaking arc done one green inch at a time: **R1 ✅ R2 ✅ R3 ✅** (the additive run — pure kit, text kit, `random` driver; no existing hash moved) → **R4 ✅** (clock/ingress/egress) → **R5 ✅** (one `const`) → **R6 ✅ DECISION** (freeze the as-built trust root — Branch B; demotion-to-stdlib deferred to its own pillar; gate stays active; 34-leaf genesis manifest pinned in §13a). **GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape — the hygiene prerequisite before the registry's first publish is met.
 
 **LOCAL-FIRST P3 COMPLETE + networked tier begun:** **P3.1.1 ✅** publish · **P3.2.1 ✅** inspect · **P3.3.1 ✅** memoize · **P3.5.1 ✅** fork · **P3.6.1 ✅** advise · **P3.3.2 ✅** shared trustless cache (the differentiator) · **P3.4.1 ✅** reputation-by-adoption (citation count over the published DAG; derived-not-asserted I8; unit-discovery, NOT result-trust) · **P3.8.2 ✅** transport-trustlessness (the boundary was already secured by content-addressing; built the one gap — `SharedCache::ingest`, the cache's verify-on-read analogue; the wire itself is deferred infra). **NETWORKED-TIER LOGIC COMPLETE. 194 green (156 core + 38 host).**
@@ -955,3 +955,21 @@ secured by content-addressing, never by trusting anyone.
 3. **(Parallel) P4 editor** — WASM/canvas; not spine.
 4. **Identity-free hardening, if/when triggered:** adoption recursive-weighting (Sybil); expensive-
    result-trust via proofs/spot-checking. Both have triggers in the header; neither is identity.
+
+---
+
+### P4.2a — wasm bridge + CI (DONE; the editor's foundation)
+- **New crate `holon-wasm`** (cdylib + rlib), deps: `holon-core` ONLY + `wasm-bindgen`. Exposes
+  bytes→bytes ops: `hash_unit_bytes` (decode_preimage→hash_unit), `canonicalize_preimage`.
+- **CI** (`.github/workflows/ci.yml`): native `cargo test --workspace` + `cargo build --target
+  wasm32-unknown-unknown -p holon-wasm` + `wasm-pack test --node` (the parity guardrail).
+- **Proven:** core compiles to wasm32 with ZERO changes (purity payoff); content-addressing is
+  bit-identical native vs wasm (`hash_parity` runs on both targets; BLAKE3 determinism + u32-only
+  encoder ⇒ no divergence). The bit-identical-core invariant is now a CI gate.
+- **Tests:** +1 native (`hash_parity_native`) → workspace native green = 156c + 38h + 1w = 195;
+  +1 wasm (`hash_parity_wasm`, via wasm-pack).
+- **Next P4.2b:** the `eval` bridge — JS `Value` boundary (lean: `holon-wasm`-local serde type ↔
+  `core::Value`, keep core blake3-only) + NaN/±0.0 canonicalization + eval parity.
+- **Deferred (triggered):** extract the target-agnostic marketplace layer (Store/Registry/Memo/
+  SharedCache) out of host into a wasm-capable crate — only when the editor needs in-browser
+  marketplace ops.

@@ -1765,3 +1765,35 @@ adoption, exchange units + results with strangers — all identity-free, all sec
 content-addressing, never by trusting anyone. What remains is plumbing (the wire) + the gated R6
 demotion pillar + (parallel) the P4 editor. The architecture was designed so transport is nearly
 trivial; this inch confirmed it and closed the last asymmetry.
+
+---
+
+## 2026-06-29 · P4.2a — the wasm bridge + CI (the editor's foundation, enforced)
+
+**P4 begins; second build target; bit-identical-core invariant now CI-enforced (195 native green
+[156c + 38h + 1 wasm] + 1 wasm-target parity).** New crate `holon-wasm` (cdylib + rlib), depends on
+`holon-core` ONLY (never host — the purity boundary extended to wasm, Cargo-enforced). Exposes
+bytes→bytes ops via `wasm-bindgen`: `hash_unit_bytes` (decode_preimage → hash_unit) and
+`canonicalize_preimage`. CI (`.github/workflows/ci.yml`): native `cargo test --workspace` + `cargo
+build --target wasm32` + `wasm-pack test --node` (the parity guardrail).
+
+**Proven:** (1) the pure core **compiles to wasm32 with ZERO changes** — blake3 + core, clean. The
+purity discipline (FCIS, no I/O in core) held all project = the core is portable for free; a pure
+core has no platform. (2) **content-addressing is bit-identical native vs wasm** — `hash_parity`
+runs on both targets (native `#[test]` + wasm `#[wasm_bindgen_test]`), each asserting bridge ==
+direct core hash; BLAKE3 byte-determinism + u32-only preimage encoder (no usize-width/float hazard)
+⇒ native-core hash == wasm-core hash. The invariant the whole editor rests on is now a CI gate, not
+a hope.
+
+**Decomposition:** P4.2 split into **P4.2a (this — build + hash parity; dodges the Value fork by
+bridging only bytes→bytes)** and **P4.2b (next — the `eval` bridge: the JS `Value` boundary +
+NaN/±0.0 canonicalization + eval parity).** P4.2b's one fork: how `Value` crosses JS↔WASM — lean is
+a `holon-wasm`-local serde type converting to/from `core::Value`, keeping `holon-core` on its single
+`blake3` dep (no serde derive in core).
+
+**Structure decided (prior turns):** monorepo / one Cargo workspace; `holon-core` the shared pure
+root both host and wasm compile from; dependency rule extended (host→core, wasm→core, never sideways
+/ up); frontend `editor/` (TS) a same-repo client of the wasm pkg; CI the continuous proof the two
+core-compilations stay identical. **Deferred (triggered):** extracting the target-agnostic
+marketplace layer (Store/Registry/Memo/SharedCache) out of host into its own wasm-capable crate —
+only when the editor needs in-browser marketplace ops, not preemptively.
