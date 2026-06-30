@@ -23,8 +23,8 @@ use std::path::PathBuf;
 
 use holon_core::{
     capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval,
-    hash_unit, memo_key, Capability, DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit,
-    UnitBody, Value,
+    hash_unit, memo_key, refork, MapResolver, Refork, Capability, DecodeError, EncodeError, Hash,
+    Param, Resolver, Type, Unit, UnitBody, Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -377,6 +377,24 @@ pub enum PublishError {
     DanglingReference(Hash),
 }
 
+/// Why a [`Registry::fork`] failed.
+#[derive(Debug)]
+pub enum ForkError {
+    /// The store failed to read or write.
+    Store(StoreError),
+    /// A re-pinned unit could not be encoded for the resolver (input too large).
+    Encode(EncodeError),
+    /// Publishing the forked root failed (e.g. a dangling reference).
+    Publish(PublishError),
+    /// No unit is stored at the given root hash.
+    RootNotFound(Hash),
+    /// `target` is not referenced anywhere in the root's closure — nothing to fork.
+    TargetNotInClosure(Hash),
+    /// The root's own closure was incomplete in the store (a reference did not resolve). A
+    /// published root cannot hit this; an unpublished/partial one can.
+    DanglingInClosure(Hash),
+}
+
 /// A published catalog backed by a content-addressed [`Store`].
 pub struct Registry<S: Store> {
     store: S,
@@ -413,6 +431,59 @@ impl<S: Store> Registry<S> {
     /// The backing store (read-only) — for resolving a published unit's closure.
     pub fn store(&self) -> &S {
         &self.store
+    }
+
+    /// Fork a published unit: re-pin every reference to `target` → `replacement` in the unit at
+    /// `root_hash`, then store the re-pinned spine and **publish** the new root. The new root's
+    /// closure is complete by construction (minted spine ∪ shared-unchanged ∪ the replacement),
+    /// so publishing reuses [`Registry::publish`]'s dangling gate verbatim. Returns the new
+    /// root's hash — a clean, independent identity (no provenance link; see the L4).
+    pub fn fork(
+        &mut self,
+        root_hash: &Hash,
+        target: &Hash,
+        replacement: &Unit,
+    ) -> Result<Hash, ForkError> {
+        let root = self
+            .store
+            .get(root_hash)
+            .map_err(ForkError::Store)?
+            .ok_or(ForkError::RootNotFound(*root_hash))?;
+        let replacement_hash = self.store.put(replacement).map_err(ForkError::Store)?;
+
+        // The store yields owned units (`get`); `refork` wants a `Resolver`. Materialize the
+        // root's bounded closure into one. (For a published root this is always complete.)
+        let mut resolver = MapResolver::new();
+        self.materialize(&root, &mut resolver)?;
+
+        let Refork { new_root, minted } = refork(&root, target, &replacement_hash, &resolver)
+            .ok_or(ForkError::TargetNotInClosure(*target))?;
+
+        for unit in minted.values() {
+            self.store.put(unit).map_err(ForkError::Store)?;
+        }
+        // `new_root` is always a key in `minted`; publishing it reuses the closure gate.
+        let new_root_unit = minted.get(&new_root).ok_or(ForkError::TargetNotInClosure(*target))?;
+        self.publish(new_root_unit).map_err(ForkError::Publish)?;
+        Ok(new_root)
+    }
+
+    /// Load a unit's transitive closure from the store into `resolver` (via the shared
+    /// `child_refs`). A published root's closure is complete, so this never finds a gap.
+    fn materialize(&self, unit: &Unit, resolver: &mut MapResolver) -> Result<(), ForkError> {
+        for h in child_refs(unit) {
+            if resolver.resolve(&h).is_some() {
+                continue; // already materialized (a DAG can reach a node by many paths)
+            }
+            let u = self
+                .store
+                .get(&h)
+                .map_err(ForkError::Store)?
+                .ok_or(ForkError::DanglingInClosure(h))?;
+            resolver.insert(u.clone()).map_err(ForkError::Encode)?;
+            self.materialize(&u, resolver)?;
+        }
+        Ok(())
     }
 }
 
@@ -626,6 +697,62 @@ mod registry_tests {
         let h2 = reg.publish(&leaf).unwrap();
         assert_eq!(h1, h2);
         assert_eq!(reg.published().count(), 1); // one entry, not two
+    }
+
+    fn two_child(a: Hash, b: Hash) -> Unit {
+        Unit {
+            body: UnitBody::Composite {
+                children: vec![a, b],
+                edges: vec![Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }],
+            },
+            params: vec![],
+            inputs: vec![],
+            output: Some(Type::Number),
+        }
+    }
+    fn children_of(u: &Unit) -> Vec<Hash> {
+        match &u.body {
+            UnitBody::Composite { children, .. } => children.clone(),
+            _ => vec![],
+        }
+    }
+
+    #[test]
+    fn fork_repins_and_republishes() {
+        let mut store = MemStore::new();
+        let ca = store.put(&num_const("1")).unwrap();
+        let cb = store.put(&num_const("2")).unwrap();
+        let root = two_child(ca, cb);
+        let root_hash = store.put(&root).unwrap();
+        let mut reg = Registry::new(store);
+        reg.publish(&root).unwrap();
+
+        // fork: replace child A with a new const.
+        let cc = num_const("3");
+        let new_root = reg.fork(&root_hash, &ca, &cc).unwrap();
+
+        assert_ne!(new_root, root_hash); // a new identity
+        assert!(reg.is_published(&new_root)); // and it's published
+        let nr = reg.store().get(&new_root).unwrap().unwrap();
+        let cc_hash = hash_unit(&cc).unwrap();
+        assert_eq!(children_of(&nr), vec![cc_hash, cb]); // A→C, B shared
+    }
+
+    #[test]
+    fn fork_target_not_in_closure_errors() {
+        let mut store = MemStore::new();
+        let ca = store.put(&num_const("1")).unwrap();
+        let root = passthrough(ca);
+        let root_hash = store.put(&root).unwrap();
+        let mut reg = Registry::new(store);
+        reg.publish(&root).unwrap();
+
+        let absent = hash_unit(&num_const("99")).unwrap();
+        let repl = num_const("3");
+        match reg.fork(&root_hash, &absent, &repl) {
+            Err(ForkError::TargetNotInClosure(h)) => assert_eq!(h, absent),
+            other => panic!("expected TargetNotInClosure, got {other:?}"),
+        }
     }
 }
 

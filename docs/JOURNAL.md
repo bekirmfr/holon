@@ -1521,3 +1521,36 @@ threads the hash through rather than recomputing. **Local-first P3 nearly comple
 
 **Next — P3.5.1 fork/re-pin** (needs L4) then P3.6.1 advisory. The shared trustless cache (P3.3.2,
 the actual differentiator) stays deferred, but its key-derivation half now exists and is tested.
+
+---
+
+## 2026-06-29 · P3.5.1 — fork / re-pin (the sanctioned creation of a new identity)
+
+**The marketplace's generative act (169 green = 140c + 29h, +5 core fork, +2 host).** Everything
+prior *preserves* identity; fork *derives* a new one. Core `fork.rs`: `refork(root, target,
+replacement, resolver) -> Option<Refork>` re-pins every reference to `target` → `replacement`,
+**path-copying** — only the changed node's ancestors are re-minted; every off-path subtree keeps
+its hash and is shared. The `repins_deep_and_shares_off_path` test proves it concretely:
+root→[A,B], A→[C,D], replace D ⇒ minted.len()==2 (A, root), B and C asserted NOT in minted. A
+one-node change costs one spine, not a deep copy — content-addressing's payoff made visible.
+
+**Re-pinning is uniform with `child_refs`** (P3.2.1 paying off again): a child is a hash swap; a
+`fn` param becomes `Param::frozen("fn", to_hex(replacement))` — the inverse of the `parse_hash`
+eval uses to read it. The same references inspection reads, fork rewrites. Pure transform (FCIS:
+mints units, returns them; host stores). Provenance: NONE in the unit — content-addressing makes
+the fork independent; any derives-from link is external, deferred.
+
+**Host `fork` inherits the publish invariant for free:** refork → store the minted spine →
+`Registry::publish(new_root)`. The forked closure is complete by construction (minted ∪ shared-
+already-stored ∪ replacement), so the existing `DanglingReference` gate covers it with zero new
+checking. The one new glue: `materialize` (walk the closure from store into a MapResolver, since
+refork wants a Resolver) — the store↔resolver duality's 3rd appearance (registry, inspection,
+fork); a Store→Resolver adapter is an increasingly-earned future tidy.
+
+**Compile fix (cargo caught):** `to_hex` was `#[cfg(test)]`-gated (only test callers until now);
+fork is the first *library* code to *write* a `fn` param, so ungated it. `parse_hash` (read) and
+`to_hex` (write) now both library-available — matching the read/write pair child_refs/refork form.
+
+**Next — P3.6.1 advisory** (last local-first inch): surface derived advisory signals before
+depending (capability summary, purity, closure size) — all already computable (capabilities,
+is_pure, dependencies). Exposure, not mechanism. Then local-first P3 is complete.

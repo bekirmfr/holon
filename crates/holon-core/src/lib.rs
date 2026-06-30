@@ -25,6 +25,7 @@
 mod determinism;
 mod encapsulate;
 mod eval;
+mod fork;
 mod kind;
 mod memo;
 mod promote;
@@ -41,6 +42,7 @@ pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::eval;
+pub use fork::{refork, Refork};
 pub use inspect::{child_refs, dependencies};
 pub use memo::memo_key;
 pub use hash::{

@@ -496,8 +496,8 @@ pub fn parse_hash(hex: &str) -> Option<Hash> {
 }
 
 /// Encode a [`Hash`] as a 64-char lowercase hex string (the inverse of
-/// [`parse_hash`]). Used when constructing a hash-valued param (e.g. `map`'s `fn`).
-#[cfg(test)]
+/// [`parse_hash`]). Used when constructing a hash-valued param (e.g. `map`'s `fn`),
+/// and when re-pinning one during a fork.
 pub(crate) fn to_hex(h: &Hash) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
 }
