@@ -1107,7 +1107,23 @@ bit-identical native vs wasm, CI-guarded. core unchanged throughout. **Frontend 
 
 ---
 
+### P4.1 · wiring (DONE; type-checked connections, browser-confirmed)
+- **`compatible(src, dst) -> bool`** in `holon-wasm` exposes core's `validate::compatible` across the
+  bridge (deserialize 2 type strings → `WType` → `into_core` → `holon_core::compatible`). The editor's
+  wire-time check calls **core's** rule, never a TS copy — the I1 discipline keeping the canvas and
+  `validate` from disagreeing, even though the rule is one trivial line today.
+- **`isValidConnection`** (`App.tsx`) resolves the upstream output type + downstream named-input type
+  from catalog-built node data → `compatible`; missing type ⇒ refused (fail closed). One source per
+  input guarded as edge-bookkeeping (core's `validate` is the real gate at projection). Cycles not
+  checked here — projection's job. Connected edges colored by the source port's hue.
+- **Tests:** +1 native (`compatible_native`) + 2 wasm (`compatible_wasm` parity,
+  `compatible_crosses_js_boundary`) → 163c + 38h + 6w = **207 native**; **10 wasm-target**. Canvas
+  behavior browser-confirmed (match connects, mismatch/double-feed refused, `Any` either way); strict
+  `tsc`/`tsc -b` clean.
+
+---
+
 ### P4.1 — the authoring canvas (NEXT; L4 written: P4.1-authoring-canvas-L4.md)
 Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
 fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
-(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge and the palette + custom nodes are now **DONE** (preceding blocks); **next concrete inch:** wiring — `onConnect` + `isValidConnection` calling the type rule (compatible iff same type or either `Any`, fail-closed), the type-colored ports making it legible — then projection (canvas → composite via `default_spec`) + live eval through the one `Evaluator`.
+(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge, the palette + custom nodes, and **wiring** are now **DONE** (preceding blocks); **next concrete inch:** projection — canvas → composite by child *index* (drop view-only `id`/`position`; canvas edges → core `Edge` as `from_child`/`from_port` → `to_child`/`to_port`), then live eval through the one `Evaluator` (restoring the provable path), then param editing.

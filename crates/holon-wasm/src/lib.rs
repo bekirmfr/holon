@@ -290,6 +290,25 @@ fn catalog_wunits() -> Vec<WUnit> {
     genesis_units().iter().map(WUnit::from_core).collect()
 }
 
+/// Wire-time type compatibility (§5), straight from core's rule — the editor's `isValidConnection`
+/// asks THIS, never a TS reimplementation, so the canvas and `validate` can't disagree (I1). `src` is
+/// the upstream output type, `dst` the downstream input type, each a bare type string ("Number").
+#[wasm_bindgen]
+pub fn compatible(src: JsValue, dst: JsValue) -> Result<bool, JsError> {
+    let s: WType =
+        serde_wasm_bindgen::from_value(src).map_err(|e| JsError::new(&format!("src: {e}")))?;
+    let d: WType =
+        serde_wasm_bindgen::from_value(dst).map_err(|e| JsError::new(&format!("dst: {e}")))?;
+    Ok(types_compatible(s, d))
+}
+
+/// The rule itself, on `WType` (shared by the bridge fn and its tests): map to core `Type` via the
+/// one `into_core` and delegate to `holon_core::compatible`. Fully-qualified so it does not collide
+/// with the exported `compatible` above.
+fn types_compatible(s: WType, d: WType) -> bool {
+    holon_core::compatible(s.into_core(), d.into_core())
+}
+
 // ── The evaluator ────────────────────────────────────────────────────────────────────────────
 // Stateful on purpose: the editor maintains a workspace of units; the bridge mirrors it as a
 // populated resolver. Insert units (children), then eval a unit against them — a live editor needn't
@@ -455,6 +474,16 @@ fn check_primitive_catalog() {
     assert!(map.params.iter().any(|p| matches!(p, WParam::Open { name, .. } if name == "fn")));
 }
 
+#[cfg(test)]
+fn check_compatible() {
+    // Core's §5 rule, reached through the bridge helper: equal types or either `Any`.
+    assert!(types_compatible(WType::Number, WType::Number));
+    assert!(types_compatible(WType::Any, WType::Number));
+    assert!(types_compatible(WType::Number, WType::Any));
+    assert!(!types_compatible(WType::Number, WType::Text));
+    assert!(!types_compatible(WType::Effect, WType::List));
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod native_tests {
     use super::*;
@@ -468,6 +497,8 @@ mod native_tests {
     fn wunit_roundtrip_native() { check_wunit_roundtrip(); }
     #[test]
     fn primitive_catalog_native() { check_primitive_catalog(); }
+    #[test]
+    fn compatible_native() { check_compatible(); }
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]
@@ -485,6 +516,8 @@ mod wasm_tests {
     fn wunit_roundtrip_wasm() { check_wunit_roundtrip(); }
     #[wasm_bindgen_test]
     fn primitive_catalog_wasm() { check_primitive_catalog(); }
+    #[wasm_bindgen_test]
+    fn compatible_wasm() { check_compatible(); }
 
     // Eval through the JS boundary: JS inputs → Evaluator::eval → core eval → JS output.
     #[wasm_bindgen_test]
@@ -546,5 +579,15 @@ mod wasm_tests {
         assert!(cat
             .iter()
             .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));
+    }
+
+    // The compatibility rule crosses as (type string, type string) → bool: the editor's wire-time
+    // check calls exactly this.
+    #[wasm_bindgen_test]
+    fn compatible_crosses_js_boundary() {
+        let s = |t: &str| serde_wasm_bindgen::to_value(t).unwrap();
+        assert!(compatible(s("Number"), s("Number")).unwrap());
+        assert!(compatible(s("Number"), s("Any")).unwrap());
+        assert!(!compatible(s("Number"), s("Text")).unwrap());
     }
 }

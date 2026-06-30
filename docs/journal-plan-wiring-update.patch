@@ -1,0 +1,64 @@
+--- a/JOURNAL.md
++++ b/JOURNAL.md
+@@ -2038,3 +2038,32 @@
+ (project → eval through the one `Evaluator`) returns in a later inch. Verified what's verifiable:
+ strict `tsc` and `tsc -b` clean. Also removed a pre-existing `noEmit` in `tsconfig.node.json` that
+ broke `npm run build`. core/host/wasm unchanged — 206 native, 8 wasm-target.
++
++---
++
++### P4.1 · wiring — type-checked connections (DONE; the type system is now enforced, and visible)
++
++**The inch.** Connect placed nodes, with the §5 type rule enforced *as you wire*. A wire is legal iff
++the upstream output type and the downstream input type are `compatible` — and that rule is **core's**,
++reached across the bridge, never a TS copy.
++
++**Where the rule lives (I1).** `validate::compatible` (`dst==Any || src==Any || src==dst`) already
++existed; it is now exposed as `compatible(src, dst) -> bool` in `holon-wasm` — deserialize two bare
++type strings to `WType`, map to core `Type` via the one `into_core`, delegate to
++`holon_core::compatible`. The pull to inline a one-line TS copy was real *because* the rule is trivial
++today — which is exactly the trap: a copy diverges silently the moment the rule grows, and the editor
++would start allowing wires `validate` rejects. The editor must never be a second authority on type
++semantics — the same discipline that derives the palette from the catalog.
++
++**The canvas check.** `isValidConnection` resolves the source node's output type and the target node's
++named input type from the catalog-built node data, and returns core's `compatible`; missing either type
++⇒ refused (fail closed). One-source-per-input (core's `duplicate_input_edge_rejected`) is guarded at
++wire-time as bookkeeping over the editor's own edges — core's `validate` stays the real gate at
++projection. Cycle/self-loop rejection is deliberately *not* here; that's projection's job, not built
++ahead of its trigger. A connected wire is colored by its source port's hue — the wire carries a type.
++
++**Proven.** `compatible` parity on both targets + a JS-boundary crossing — 163c + 38h + 6w = **207
++native** (cargo-green). **10 wasm-target** — compiled, and the crossing is confirmed *live* by the
++canvas itself returning correct answers across the real JS boundary (the stronger proof). Behavior
++browser-confirmed: matching connects, mismatched refused, double-feed refused, `Any` accepts either
++way. Strict `tsc`/`tsc -b` clean. core/host unchanged in count beyond the one wasm-native test.
+--- a/PLAN.md
++++ b/PLAN.md
+@@ -1107,7 +1107,23 @@
+ 
+ ---
+ 
++### P4.1 · wiring (DONE; type-checked connections, browser-confirmed)
++- **`compatible(src, dst) -> bool`** in `holon-wasm` exposes core's `validate::compatible` across the
++  bridge (deserialize 2 type strings → `WType` → `into_core` → `holon_core::compatible`). The editor's
++  wire-time check calls **core's** rule, never a TS copy — the I1 discipline keeping the canvas and
++  `validate` from disagreeing, even though the rule is one trivial line today.
++- **`isValidConnection`** (`App.tsx`) resolves the upstream output type + downstream named-input type
++  from catalog-built node data → `compatible`; missing type ⇒ refused (fail closed). One source per
++  input guarded as edge-bookkeeping (core's `validate` is the real gate at projection). Cycles not
++  checked here — projection's job. Connected edges colored by the source port's hue.
++- **Tests:** +1 native (`compatible_native`) + 2 wasm (`compatible_wasm` parity,
++  `compatible_crosses_js_boundary`) → 163c + 38h + 6w = **207 native**; **10 wasm-target**. Canvas
++  behavior browser-confirmed (match connects, mismatch/double-feed refused, `Any` either way); strict
++  `tsc`/`tsc -b` clean.
++
++---
++
+ ### P4.1 — the authoring canvas (NEXT; L4 written: P4.1-authoring-canvas-L4.md)
+ Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
+ fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
+-(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge and the palette + custom nodes are now **DONE** (preceding blocks); **next concrete inch:** wiring — `onConnect` + `isValidConnection` calling the type rule (compatible iff same type or either `Any`, fail-closed), the type-colored ports making it legible — then projection (canvas → composite via `default_spec`) + live eval through the one `Evaluator`.
+\ No newline at end of file
++(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge, the palette + custom nodes, and **wiring** are now **DONE** (preceding blocks); **next concrete inch:** projection — canvas → composite by child *index* (drop view-only `id`/`position`; canvas edges → core `Edge` as `from_child`/`from_port` → `to_child`/`to_port`), then live eval through the one `Evaluator` (restoring the provable path), then param editing.
+\ No newline at end of file

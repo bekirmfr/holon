@@ -2038,3 +2038,32 @@ blueprint-ink. This also makes the type check legible next inch — a legal wire
 (project → eval through the one `Evaluator`) returns in a later inch. Verified what's verifiable:
 strict `tsc` and `tsc -b` clean. Also removed a pre-existing `noEmit` in `tsconfig.node.json` that
 broke `npm run build`. core/host/wasm unchanged — 206 native, 8 wasm-target.
+
+---
+
+### P4.1 · wiring — type-checked connections (DONE; the type system is now enforced, and visible)
+
+**The inch.** Connect placed nodes, with the §5 type rule enforced *as you wire*. A wire is legal iff
+the upstream output type and the downstream input type are `compatible` — and that rule is **core's**,
+reached across the bridge, never a TS copy.
+
+**Where the rule lives (I1).** `validate::compatible` (`dst==Any || src==Any || src==dst`) already
+existed; it is now exposed as `compatible(src, dst) -> bool` in `holon-wasm` — deserialize two bare
+type strings to `WType`, map to core `Type` via the one `into_core`, delegate to
+`holon_core::compatible`. The pull to inline a one-line TS copy was real *because* the rule is trivial
+today — which is exactly the trap: a copy diverges silently the moment the rule grows, and the editor
+would start allowing wires `validate` rejects. The editor must never be a second authority on type
+semantics — the same discipline that derives the palette from the catalog.
+
+**The canvas check.** `isValidConnection` resolves the source node's output type and the target node's
+named input type from the catalog-built node data, and returns core's `compatible`; missing either type
+⇒ refused (fail closed). One-source-per-input (core's `duplicate_input_edge_rejected`) is guarded at
+wire-time as bookkeeping over the editor's own edges — core's `validate` stays the real gate at
+projection. Cycle/self-loop rejection is deliberately *not* here; that's projection's job, not built
+ahead of its trigger. A connected wire is colored by its source port's hue — the wire carries a type.
+
+**Proven.** `compatible` parity on both targets + a JS-boundary crossing — 163c + 38h + 6w = **207
+native** (cargo-green). **10 wasm-target** — compiled, and the crossing is confirmed *live* by the
+canvas itself returning correct answers across the real JS boundary (the stronger proof). Behavior
+browser-confirmed: matching connects, mismatched refused, double-feed refused, `Any` accepts either
+way. Strict `tsc`/`tsc -b` clean. core/host unchanged in count beyond the one wasm-native test.

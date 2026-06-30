@@ -9,7 +9,12 @@
 // The `wasm/` package is generated — never edit it. Rebuild it whenever the Rust bridge changes:
 //   cd crates/holon-wasm && wasm-pack build --target web --out-dir ../../editor/wasm
 
-import init, { Evaluator, build_preimage, primitive_catalog } from "../wasm/holon_wasm.js";
+import init, {
+  Evaluator,
+  build_preimage,
+  primitive_catalog,
+  compatible as wasm_compatible,
+} from "../wasm/holon_wasm.js";
 
 export { Evaluator };
 
@@ -75,4 +80,13 @@ export function buildPreimage(unit: WUnit): Uint8Array {
  */
 export function primitiveCatalog(): WUnit[] {
   return primitive_catalog() as WUnit[];
+}
+
+/**
+ * Wire-time type compatibility (§5), answered by core's `validate::compatible` across the bridge —
+ * never a TS reimplementation, so the canvas and core can't disagree about what may connect (I1).
+ * `src` is the upstream output type, `dst` the downstream input type. Call after {@link ensureReady}.
+ */
+export function compatible(src: WType, dst: WType): boolean {
+  return wasm_compatible(src, dst) as boolean;
 }

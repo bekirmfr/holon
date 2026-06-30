@@ -11,12 +11,17 @@ import {
   BackgroundVariant,
   Controls,
   useNodesState,
+  useEdgesState,
   useReactFlow,
+  addEdge,
   type NodeTypes,
+  type Connection,
+  type Edge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { ensureReady, primitiveCatalog, type WUnit } from "./holon";
+import { ensureReady, primitiveCatalog, compatible, type WUnit } from "./holon";
+import { outputColor } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 
@@ -28,7 +33,8 @@ function primitiveName(u: WUnit): string | null {
 
 function Canvas({ catalog }: { catalog: WUnit[] }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
-  const { screenToFlowPosition } = useReactFlow();
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const { screenToFlowPosition, getNode, getEdges } = useReactFlow<PrimitiveNodeType>();
   const idRef = useRef(0);
 
   const byName = useMemo(() => {
@@ -70,13 +76,48 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
     [byName, screenToFlowPosition, setNodes],
   );
 
+  // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
+  // and the input isn't already fed. The type rule is core's — `compatible` bridges to
+  // `validate::compatible`, the canvas never re-decides it (I1). The single-source guard is UI
+  // bookkeeping over our own edge state; core's `validate` stays the real gate at projection.
+  const isValidConnection = useCallback(
+    (c: Connection | Edge): boolean => {
+      const source = getNode(c.source);
+      const target = getNode(c.target);
+      if (!source || !target) return false;
+      const srcTy = source.data.output;
+      const dstPort = target.data.inputs.find((p) => p.name === c.targetHandle);
+      if (!srcTy || !dstPort) return false;
+      const alreadyFed = getEdges().some(
+        (e) => e.target === c.target && e.targetHandle === c.targetHandle,
+      );
+      if (alreadyFed) return false;
+      return compatible(srcTy, dstPort.ty);
+    },
+    [getNode, getEdges],
+  );
+
+  // The wire carries a type: colour it by the upstream output's hue — the same legend the ports use.
+  const onConnect = useCallback(
+    (c: Connection) => {
+      const srcTy = getNode(c.source)?.data.output ?? null;
+      const edge = { ...c, style: { stroke: outputColor(srcTy), strokeWidth: 1.6 } };
+      setEdges((es) => addEdge(edge, es));
+    },
+    [getNode, setEdges],
+  );
+
   return (
     <div className="hl-canvas" onDrop={onDrop} onDragOver={onDragOver}>
       <ReactFlow<PrimitiveNodeType>
         nodes={nodes}
         onNodesChange={onNodesChange}
+        edges={edges}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        isValidConnection={isValidConnection}
         nodeTypes={nodeTypes}
-        edges={[]}
+        connectionLineStyle={{ stroke: "#6fd3e0", strokeWidth: 1.6 }}
         fitView={false}
         minZoom={0.4}
         maxZoom={2}
