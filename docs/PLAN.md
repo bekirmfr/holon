@@ -9,7 +9,7 @@
 > **Build status:** **P1 (Language) and P2 (OS) COMPLETE; P3 (Marketplace) underway — `P3.8.1` (the content-addressed store) done.** Two of three spine pillars closed, the third begun. The store is where units live, keyed by their 32-byte hash: a `Store` trait (not a `Resolver` — it returns *owned* units, so eval never touches disk and IO stays host-side) with `MemStore` + on-disk `FileStore` backends, **verify-on-read = pure content-addressing** (the stored bytes are the hash preimage; a blob is trusted only because it re-hashes to the key it was filed under — `I5` made operational, no `blake3` in the host). The one genuinely-new piece is core's `decode_preimage`, the byte-exact inverse of `encode_preimage`. **136 tests (117 core + 19 host).**
 > **Current resolution:** trunk + all four pillars at L3 **frozen**; the genesis primitive set + admission gate pinned in design `§13` (trust root; reconcile to it just before the registry's first publish). L4s built across P1/P2: `P1.4.3`/`P1.5.1`/`P1.5.2`/`P2.3.1`/`P2.4.1`, `sink-as-pure-request`, `P2.4.1-deploy-firing`, `P2.6.1-state-cell`, `A-to-B-effect-value`, `drive-sourced-resolver`, `P2.5.1-correlation-token`. **The phase's lesson:** pin the right boundary once and downstream "features" become theorems. **P3 so far confirms the plan's prediction** — the store *consumes* the content-addressing P3 forced at the very start: exposure, not invention.
 > **Decisions pinned (P3):** the genesis primitive set is the trust root (`§13`), admission-gated (native iff slower-by-class / hot-and-pervasive / an effect / genuinely inexpressible), totality already secured by refusing `while`; the **local-first** marketplace core (store, registry, inspection, local memo, fork, advisory) needs **no server** — only `P3.3.2`/`P3.4.1`/`P3.8.2` are networked (`P3.7.1` identity dropped). `Store ≠ Resolver`; the byte format **is** the hash preimage (one canonical encoding, now with a decoder); verify-on-read is content-addressing, not a separate check.
-> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**, all complete) + one parallel pillar (P4 · Editor, **begun**). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`). **P4 added a 2nd build target:** `holon-wasm` (cdylib, depends on core ONLY) compiles the pure core to wasm32 with zero changes; CI proves the wasm-core hashes **bit-identically** to native (the editor's load-bearing invariant, now a gate not a hope). Dependency rule extended: host→core, **wasm→core**, never sideways/up.
+> **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**, all complete) + one parallel pillar (P4 · Editor, **begun**). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`). **P4 added a 2nd build target:** `holon-wasm` (cdylib, depends on core ONLY) compiles the pure core to wasm32 with zero changes; both **hashing and evaluation** cross to JS via the bridge, proven **bit-identical** to native and CI-guarded (the editor's load-bearing invariant — one evaluator, never a second). Dependency rule extended: host→core, **wasm→core**, never sideways/up. The editor *surface* (canvas, wiring, inspection UI) is the remaining P4 work.
 > **Next — genesis reconciliation arc (`P3-genesis-reconciliation-L4`), then `P3.1.1` (registry).** Reconciling the native set to `§13` *before* the registry's first publish freezes the trust root. A breaking arc done one green inch at a time: **R1 ✅ R2 ✅ R3 ✅** (the additive run — pure kit, text kit, `random` driver; no existing hash moved) → **R4 ✅** (clock/ingress/egress) → **R5 ✅** (one `const`) → **R6 ✅ DECISION** (freeze the as-built trust root — Branch B; demotion-to-stdlib deferred to its own pillar; gate stays active; 34-leaf genesis manifest pinned in §13a). **GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape — the hygiene prerequisite before the registry's first publish is met.
 
 **LOCAL-FIRST P3 COMPLETE + networked tier begun:** **P3.1.1 ✅** publish · **P3.2.1 ✅** inspect · **P3.3.1 ✅** memoize · **P3.5.1 ✅** fork · **P3.6.1 ✅** advise · **P3.3.2 ✅** shared trustless cache (the differentiator) · **P3.4.1 ✅** reputation-by-adoption (citation count over the published DAG; derived-not-asserted I8; unit-discovery, NOT result-trust) · **P3.8.2 ✅** transport-trustlessness (the boundary was already secured by content-addressing; built the one gap — `SharedCache::ingest`, the cache's verify-on-read analogue; the wire itself is deferred infra). **NETWORKED-TIER LOGIC COMPLETE. 194 green (156 core + 38 host).**
@@ -973,3 +973,31 @@ secured by content-addressing, never by trusting anyone.
 - **Deferred (triggered):** extract the target-agnostic marketplace layer (Store/Registry/Memo/
   SharedCache) out of host into a wasm-capable crate — only when the editor needs in-browser
   marketplace ops.
+
+---
+
+### P4.2b — the eval bridge (DONE; the editor can run programs)
+- **`WValue`** — bridge-local serde mirror of `core::Value` (core stays blake3-only); adjacently
+  tagged `{ type, value }`; lossless from_core/into_core.
+- **`Evaluator`** (stateful, #[wasm_bindgen]) — `insert(preimage)→hash` (builds a MapResolver) +
+  `eval(preimage, inputs)→output`. Wraps the SAME core MapResolver+eval (no 2nd evaluator); `null`
+  output = not-ready. Stateful = a live editor needn't re-ship the closure each keystroke.
+- **Decisions:** serde-wasm-bindgen not JSON (eval yields NaN/Inf, JSON can't carry them, JS f64
+  can); NaN parity via is_nan not bits (the canonical view across the native/wasm seam).
+- **Proven:** eval bit-identical native vs wasm (`check_eval_parity`: finite/composite/NaN on both
+  targets) + the real JS boundary end-to-end (`evaluator_evals_through_js_boundary`).
+- **Tests:** +2 native (eval, wvalue) → workspace native = 156c + 38h + 3w = 197; +3 wasm (eval,
+  wvalue, evaluator-e2e) → 4 wasm-target total.
+
+---
+
+## P4 EVAL BRIDGE COMPLETE — the surface is next
+Hashing (P4.2a) + evaluation (P4.2b) both cross to JS, both bit-identical native vs wasm, both
+CI-guarded. The core needed ZERO changes (purity payoff). **What's next (the editor surface, a
+different kind of work — needs a frontend-stack decision first):**
+- **P4.1** Graph authoring canvas — place units, wire ports, wire-time type check (`§5`/`I1`).
+- **P4.3** Encapsulation UX — group a selection into a unit; expand to inspect (`I4`/`I9`).
+- **P4.4** Transitive inspection UI — descend a composite to its leaves (`I9`).
+- **P4.5** Registry client — browse / import-as-pin / publish (`§8`; needs P3 — now exists).
+All evaluate live through the `Evaluator`. **Frontend-stack fork (open):** canvas vs SVG, framework,
+state model — to decide before writing P4.1.

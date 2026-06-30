@@ -1797,3 +1797,36 @@ root both host and wasm compile from; dependency rule extended (host→core, was
 core-compilations stay identical. **Deferred (triggered):** extracting the target-agnostic
 marketplace layer (Store/Registry/Memo/SharedCache) out of host into its own wasm-capable crate —
 only when the editor needs in-browser marketplace ops, not preemptively.
+
+---
+
+## 2026-06-29 · P4.2b — the eval bridge (the editor can now run programs)
+
+**Eval crosses to JS, bit-identical native vs wasm; the bridge is functionally complete (197
+native green [156c + 38h + 3w] + 4 wasm-target).** Added to `holon-wasm`:
+- **`WValue`** — a bridge-local serde mirror of `core::Value` (core stays blake3-only). Adjacently
+  tagged: every value is `{ type, value }` in JS — uniform, recursion-friendly. Lossless
+  `from_core`/`into_core`.
+- **`Evaluator`** (stateful) — `insert(preimage) → hash` builds a `MapResolver`; `eval(preimage,
+  inputs) → output`. Wraps the SAME core `MapResolver` + `eval` — no second evaluator. Stateful so a
+  live editor doesn't re-ship the closure each keystroke; `null` output = "not ready", not an error.
+
+**Two decisions, both grounded:**
+1. **serde-wasm-bindgen, not JSON.** Straight out of P3.3.2's NaN work: eval can yield `NaN`/`Inf`
+   (overflow), JSON can't carry them (→ error/null, silent corruption), but JS numbers are IEEE-754
+   f64 and carry them intact. The same non-finite concern that forced canonical compare forced the
+   serialization choice — the foundation's quirks propagate consistently.
+2. **NaN parity by `is_nan()`, not bits.** Which payload bits a NaN carries is target-dependent and
+   meaningless; "it's some NaN" IS the canonical view — the cache's equivalence, applied across the
+   native/wasm seam.
+
+**Proven:** `check_eval_parity` runs on both targets (finite arithmetic pinned exact, a composite
+through the resolver, the inf−inf NaN case) → eval bit-identical native vs wasm. And
+`evaluator_evals_through_js_boundary` (wasm) proves the real path end-to-end: JS array of `WValue`
+→ `Evaluator::eval` → core eval → JS output → 5. serde-wasm-bindgen handshake works first try.
+
+**Bridge status:** hashing (P4.2a) + evaluation (P4.2b) both cross to JS, both bit-identical, both
+CI-guarded. The core needed ZERO changes for any of it — the purity discipline is the whole reason.
+**Next: the surface** — P4.1 canvas (place units, wire ports, wire-time type check), evaluating live
+through this `Evaluator`. Needs a frontend-stack decision (canvas vs SVG, framework, state model)
+before code — a genuinely different kind of work from the pure-Rust loop.

@@ -3,17 +3,19 @@ name = "holon-wasm"
 version = "0.1.0"
 edition = "2024"
 
-# A cdylib for the browser/JS (wasm-pack output) AND an rlib so the bridge can be unit-tested
-# natively with plain `cargo test`.
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # The bridge depends on the PURE core ONLY — never holon-host. The host's native I/O
-# (FileStore / std::fs) has no place in a browser, and this single edge keeps it out,
-# Cargo-enforced (the purity boundary, extended to wasm).
+# (FileStore / std::fs) has no place in a browser; this single edge keeps it out, Cargo-enforced.
 holon-core = { path = "../holon-core" }
 wasm-bindgen = "0.2"
+# The JS <-> WASM Value boundary. serde lives HERE, not in holon-core (which stays blake3-only):
+# `WValue` is a bridge-local serde mirror of `core::Value`. serde-wasm-bindgen (not JSON) because
+# eval can yield NaN/Infinity, which JSON cannot represent but JS numbers (IEEE-754 f64) can.
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
