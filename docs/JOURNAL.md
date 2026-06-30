@@ -1830,3 +1830,41 @@ CI-guarded. The core needed ZERO changes for any of it — the purity discipline
 **Next: the surface** — P4.1 canvas (place units, wire ports, wire-time type check), evaluating live
 through this `Evaluator`. Needs a frontend-stack decision (canvas vs SVG, framework, state model)
 before code — a genuinely different kind of work from the pure-Rust loop.
+
+---
+
+## 2026-06-29 · P4.2c — the construction bridge (the editor can build units, not just eval them)
+
+**Grounding the eval path caught a prerequisite I'd glossed:** the `Evaluator` takes a *preimage*,
+and the only producer of preimages was `encode_preimage` in core. For the editor to place a `const`
+node or wire a composite it must get those bytes — and the two ways are (a) reimplement the canonical
+encoder in TypeScript (a SECOND encoder, free to drift — the exact thing this architecture refuses)
+or (b) a construction path in the bridge. So this inch is (b), and it came *before* the frontend
+scaffold to stay in the testable Rust loop one more step. (198 native green [156c + 38h + 4w] + 6
+wasm-target.)
+
+Added to `holon-wasm`:
+- **`WUnit`** (+ `WBody`/`WParam`/`WPort`/`WEdge`/`WType`) — a serde mirror of `core::Unit`, the way
+  `WValue` mirrors `Value`. A node is a plain JS object: `{ body: { kind:"Primitive", name }, params,
+  inputs, output }`. Children cross as hex hashes, types as bare strings (`"Number"`).
+- **`build_preimage(WUnit) → bytes`** — the editor's "compile this node to canonical bytes", through
+  the ONE core encoder. **`load_unit(bytes) → WUnit`** — the inverse, for loading a unit's structure
+  onto the canvas and (later) descending into a composite to inspect it (I9).
+- **Hashes now cross as lowercase hex strings** (`hash_unit_bytes`→`hash_unit_hex`; `Evaluator.insert`
+  returns hex). `Uint8Array` can't be a JS map key or `===`-compared; a 64-char hex string can, and
+  the editor uses hashes as node identity constantly. Small revision to just-shipped P4.2a/b, made
+  before any consumer locked in bytes.
+
+**Decision watched, then cleared:** `WBody`/`WParam` use serde *internally-tagged* (`tag="kind"`) for
+nicer JS shape. That's the historically finicky case with serde-wasm-bindgen; the adjacently-tagged
+fallback (`content="value"`) was ready. `construction_through_js_boundary` passed on wasm ⇒ 0.6.5
+handles it, no fallback needed.
+
+**Proven:** `wunit_roundtrip` (native+wasm) — `WUnit` mirrors `Unit` losslessly, same value AND same
+canonical bytes (so same hash). `construction_through_js_boundary` (wasm) — the FULL editor path:
+build a `const(7)` and a composite from plain JS objects, through the encoder, insert, wire to
+boundary, eval ⇒ 7. That is exactly what P4.1's canvas walks.
+
+**Bridge status:** hash + eval + **construct** all cross to JS, through the one encoder / one
+evaluator, bit-identical native vs wasm, CI-guarded. The frontend scaffold is now unblocked — and
+small, because every hard part it stands on is proven on both targets.
