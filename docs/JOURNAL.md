@@ -1688,3 +1688,80 @@ signal genuinely informs) — and it's the more useful half anyway.
 
 **Decisions confirmed:** (A) scope = unit-adoption-by-citation, result-trust → P3.7.1; (B) ordering =
 adoption-first (identity later hardens + extends). Next: P3.7.1 author-identity or P3.8.2 networked CAS.
+
+---
+
+## 2026-06-29 · P3.7.1 author-identity — DROPPED (no code; decision)
+
+**Caught over-engineering before building it.** I had identity/crypto/attestation in the plan as a
+"keystone" and wrote an elaborate L4 (Ed25519, signed attestations over hashes, Signer/verify). The
+push that killed it: *why do we need any of this — this is an open free market.* Right. The
+keystone holds up nothing; the arches were already standing on **verifiability**.
+
+**The principle:** trust here is from *verifiability, not identity.* Content-addressing + purity +
+totality means you never trust anyone — inspect a unit (I9), verify a result by re-running it
+(P3.3.2; totality ⇒ the check terminates, determinism ⇒ it's decisive). Identity is what you reach
+for *when verification fails or is too costly*; in a system where verification always works, reaching
+for it **hedges against the foundation** and smuggles back the gatekeepers an open market exists to
+avoid. Trust/identity/reputation/gatekeeping are the machinery of systems that can't let you check
+for yourself.
+
+**The three motivations dissolve identity-free:**
+- Sybil-resistance of adoption → **recursive weighting** (citation weighted by citer's own adoption;
+  junk ≈0) — a content-graph property, no identity. And adoption is an advisory hint, not a gate.
+- Result-trust → results are **objectively verifiable**; a wrong result is caught regardless of who
+  signed. The only real (narrow) problem is *expensive*-to-verify computations → **validity proofs**
+  (zk) or **re-verification/spot-checking** — identity-free. Sign-and-burn is one mechanism, neither
+  necessary nor most aligned, and only bites in a mature market that doesn't exist.
+- Authorship/reputation → the unit speaks for itself (fully inspectable); credit is a social nicety,
+  quality-by-reputation a crutch for the unverifiable (a thin sliver here).
+
+**Net:** the open free market needs **zero identity** — publish without a gatekeeper, inspect
+anything, verify any result, fork, discover by adoption, all present and identity-free. Missing only
+**transport** (P3.8.2), which also needs no identity (fetch by hash + verify by re-hash; fetch a
+result + verify by re-execution; the cheap `entry_key` check is already waiting).
+
+**Preserved (if ever revisited):** identity must be optional, external, an attestation *over* hashes,
+never in the preimage; core stays identity-free and trustless. (The one correct constraint from the
+killed design; archived in `P3.7.1-identity-L4.md`.)
+
+**Corrected the two P3.4.1 deferrals** to their identity-free resolutions (PLAN header). **Next:
+P3.8.2 networked CAS / transport** — the literal "open market": content + verifiable results flowing
+between strangers, nobody's identity required.
+
+---
+
+## 2026-06-29 · P3.8.2 — networked transport (the architecture already secured it)
+
+**The finding, not the build, was the work (194 green = 156c + 38h, +3 host).** Grounding "networked
+CAS" showed content-addressing **already** secured the network boundary. A stranger hands you data
+claiming it's X; trustless transport = check the claim against content, never the stranger:
+- **unit** (bytes claimed = hash H): `decode_verified(key, bytes)` — decode, re-hash, reject if ≠.
+  **Already built**, used by every `Store::get`; a networked Store reuses it verbatim.
+- **cache result** (output for K): `verify_entry` re-executes — **already built** (`get_verified`).
+- **cache key** (entry claimed at K): `entry_key(entry) == K` — primitive built (P3.3.2), but the
+  *ingest using it* was the one gap.
+
+**Built the one gap: `SharedCache::ingest(claimed_key, entry)`** + `CacheIngestError`. The cache's
+analogue of the Store's verify-on-read: cheap structural check (does the entry hash to the key it's
+offered under?), rejecting a peer lying about *which computation* an entry is for. `put` derives the
+key (can't model a claimed key); `ingest` is how an entry from *elsewhere* (a peer, a cache dump)
+enters. Two tiers, same as everywhere: cheap admission on ingest, expensive trust on read
+(`get_verified`). The third test proves it — a right-key/wrong-output entry passes ingest, caught by
+get_verified. Exposure of a check the foundation already provided (`entry_key` finally earns the keep
+P3.3.2 promised it), not new machinery.
+
+**Deferred — and NOT a gap, correct sequencing:** the wire itself (TCP/HTTP/libp2p, async runtime,
+peer discovery, framing). Its **security is already handled** by the above, so it's *plumbing* — a
+different kind of work (large dep surface, async I/O, untestable in this crate's pure-unit-test
+discipline), belonging to a deployment/infra phase behind whatever transport a deployment picks. Also
+deferred (YAGNI): a `Remote`/`Peer` trait (speculative until a 2nd transport), a networked `Store`
+impl (when built, a `Store` whose `get` fetches bytes + calls existing `decode_verified` — no new
+trust logic).
+
+**MILESTONE — networked-tier LOGIC complete.** The whole open market stands, trustlessly: publish
+without a gatekeeper, inspect anything, verify any result, fork/build on anything, discover by
+adoption, exchange units + results with strangers — all identity-free, all secured by
+content-addressing, never by trusting anyone. What remains is plumbing (the wire) + the gated R6
+demotion pillar + (parallel) the P4 editor. The architecture was designed so transport is nearly
+trivial; this inch confirmed it and closed the last asymmetry.

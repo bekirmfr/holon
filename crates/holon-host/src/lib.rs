@@ -635,6 +635,34 @@ impl SharedCache {
             None
         }
     }
+
+    /// Trustless **ingest** of a peer-supplied entry claimed to live at `claimed_key` (P3.8.2 —
+    /// the network boundary `entry_key` was built for). The cheap *structural* check: does the
+    /// entry actually hash to the key it's offered under? Rejects a peer lying about *which
+    /// computation* an entry is for — the cache's analogue of the `Store`'s verify-on-read.
+    /// Semantic correctness (the *output*) remains the consumer's `get_verified` (re-execution):
+    /// `ingest` is the cheap admission gate, not the trust decision, so a structurally-valid but
+    /// wrong-output entry is admitted here and caught there. (Local `put` derives the key, so it
+    /// can't model a claimed key; `ingest` is how an entry from *elsewhere* enters — a peer, or a
+    /// cache dump.)
+    pub fn ingest(&mut self, claimed_key: Hash, entry: CacheEntry) -> Result<(), CacheIngestError> {
+        let actual = entry_key(&entry).map_err(CacheIngestError::Encode)?;
+        if actual != claimed_key {
+            return Err(CacheIngestError::KeyMismatch { claimed: claimed_key, actual });
+        }
+        self.entries.insert(claimed_key, entry);
+        Ok(())
+    }
+}
+
+/// Why a [`SharedCache::ingest`] was refused.
+#[derive(Debug)]
+pub enum CacheIngestError {
+    /// The entry could not be encoded to derive its key (input too large).
+    Encode(EncodeError),
+    /// The entry does not hash to the key it was offered under — the peer mis-keyed it (lied about
+    /// which computation it is for). The cache's analogue of `StoreError::Corrupt`.
+    KeyMismatch { claimed: Hash, actual: Hash },
 }
 
 #[cfg(test)]
@@ -735,6 +763,44 @@ mod shared_cache_tests {
             .unwrap();
         assert!(cache.get(&key).is_some()); // the lie *is* stored — the cache is untrusted
         assert_eq!(cache.get_verified(&key, &r), None); // but the trustless read refuses it
+    }
+
+    #[test]
+    fn ingest_accepts_a_correctly_keyed_entry() {
+        let mut r = MapResolver::new();
+        let h = r.insert(const_num("4")).unwrap();
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(4.0) };
+        let key = entry_key(&entry).unwrap(); // the peer offers the honest key
+        let mut cache = SharedCache::new();
+        cache.ingest(key, entry).unwrap();
+        assert_eq!(cache.get_verified(&key, &r), Some(Value::Number(4.0))); // behaves like a put
+    }
+
+    #[test]
+    fn ingest_rejects_a_mis_keyed_entry() {
+        // a peer offers an entry under a key it does not hash to (lying about which computation).
+        let mut r = MapResolver::new();
+        let h = r.insert(const_num("4")).unwrap();
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(4.0) };
+        let wrong_key = [0u8; 32]; // not entry_key(&entry)
+        let mut cache = SharedCache::new();
+        match cache.ingest(wrong_key, entry) {
+            Err(CacheIngestError::KeyMismatch { claimed, .. }) => assert_eq!(claimed, wrong_key),
+            other => panic!("expected KeyMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ingest_admits_structurally_valid_but_get_verified_catches_wrong_output() {
+        // The two tiers: ingest is the cheap structural gate (right key), get_verified the expensive
+        // semantic one (right output). A correctly-keyed entry with a wrong output passes ingest...
+        let mut r = MapResolver::new();
+        let h = r.insert(const_num("4")).unwrap();
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(999.0) };
+        let key = entry_key(&entry).unwrap(); // correctly keyed for the (unit, inputs)...
+        let mut cache = SharedCache::new();
+        cache.ingest(key, entry).unwrap(); // ...so ingest admits it
+        assert_eq!(cache.get_verified(&key, &r), None); // ...but re-execution catches the wrong output
     }
 }
 
