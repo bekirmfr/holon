@@ -23,8 +23,8 @@ use std::path::PathBuf;
 
 use holon_core::{
     capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval,
-    hash_unit, memo_key, refork, MapResolver, Refork, Capability, DecodeError, EncodeError, Hash,
-    Param, Resolver, Type, Unit, UnitBody, Value,
+    entry_key, hash_unit, memo_key, refork, verify_entry, CacheEntry, MapResolver, Refork,
+    Capability, DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -564,6 +564,49 @@ impl Memo {
     }
 }
 
+/// A shared, **trustless** memo cache (P3.3.2): portable [`CacheEntry`]s filed under their
+/// universal [`entry_key`]. The cache itself is *untrusted* — `put` is a dumb insert, and trust is
+/// established on **read** via [`SharedCache::get_verified`], never assumed. This is what turns the
+/// private local [`Memo`] (bare values it trusts because it computed them) into something a result
+/// one party computed another can look up and *check*. (Local in-memory now; a networked backing is
+/// P3.8.2, where the cheap `entry_key` integrity check earns its keep against a peer-supplied key.)
+#[derive(Default)]
+pub struct SharedCache {
+    entries: BTreeMap<Hash, CacheEntry>,
+}
+
+impl SharedCache {
+    pub fn new() -> Self {
+        SharedCache { entries: BTreeMap::new() }
+    }
+
+    /// File an entry under its derived universal key (returned). **Dumb on purpose:** the store
+    /// makes no correctness claim — readers verify. (Key integrity holds by construction here,
+    /// since the key is *derived* from the entry, not taken on a peer's word.)
+    pub fn put(&mut self, entry: CacheEntry) -> Result<Hash, EncodeError> {
+        let key = entry_key(&entry)?;
+        self.entries.insert(key, entry);
+        Ok(key)
+    }
+
+    /// Fast path: the raw entry as filed, **unverified**. The caller is choosing to trust the
+    /// source (or will verify separately).
+    pub fn get(&self, key: &Hash) -> Option<&CacheEntry> {
+        self.entries.get(key)
+    }
+
+    /// Trustless path: the output, returned **only if it re-executes correctly** against
+    /// `resolver`. A liar — a wrong output filed under the right key — yields `None`.
+    pub fn get_verified(&self, key: &Hash, resolver: &impl Resolver) -> Option<Value> {
+        let entry = self.entries.get(key)?;
+        if verify_entry(entry, resolver) {
+            Some(entry.output.clone())
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod memo_tests {
     use super::*;
@@ -613,6 +656,55 @@ mod memo_tests {
         let out = memo.eval(&egress, &[Some(Value::Text("hi".into()))], &r);
         assert!(matches!(out, Some(Value::Effect { .. })));
         assert!(memo.is_empty()); // impure ⇒ not cached, regardless of result
+    }
+}
+
+#[cfg(test)]
+mod shared_cache_tests {
+    use super::*;
+    use holon_core::{MapResolver, Param, Type};
+
+    fn const_num(n: &str) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: "const".into() },
+            params: vec![Param::frozen("value", n), Param::frozen("type", "Number")],
+            inputs: vec![],
+            output: Some(Type::Number),
+        }
+    }
+
+    #[test]
+    fn put_files_under_the_universal_key_and_round_trips() {
+        let mut r = MapResolver::new();
+        let h = r.insert(const_num("4")).unwrap();
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(4.0) };
+        let mut cache = SharedCache::new();
+        let key = cache.put(entry.clone()).unwrap();
+        assert_eq!(cache.get(&key), Some(&entry));
+    }
+
+    #[test]
+    fn get_verified_returns_an_honest_output() {
+        let mut r = MapResolver::new();
+        let h = r.insert(const_num("4")).unwrap();
+        let mut cache = SharedCache::new();
+        let key = cache
+            .put(CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(4.0) })
+            .unwrap();
+        assert_eq!(cache.get_verified(&key, &r), Some(Value::Number(4.0)));
+    }
+
+    #[test]
+    fn get_verified_catches_a_liar() {
+        let mut r = MapResolver::new();
+        let h = r.insert(const_num("4")).unwrap();
+        // right computation key, wrong output.
+        let mut cache = SharedCache::new();
+        let key = cache
+            .put(CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(999.0) })
+            .unwrap();
+        assert!(cache.get(&key).is_some()); // the lie *is* stored — the cache is untrusted
+        assert_eq!(cache.get_verified(&key, &r), None); // but the trustless read refuses it
     }
 }
 

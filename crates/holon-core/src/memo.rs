@@ -1,4 +1,5 @@
-//! Memoization key derivation (P3.3.1) — the pure half of the cache thesis.
+//! Memoization key derivation (P3.3.1) + the shared trustless cache's core (P3.3.2) — the pure
+//! half of the cache thesis.
 //!
 //! A pure, content-pinned unit is a function from inputs to output that never changes, so its
 //! result is cacheable, keyed by `(unit-hash, inputs)`. This module derives that key:
@@ -25,7 +26,7 @@
 //!   payload-agnostic, so all `NaN` inputs produce the same output);
 //! - `-0.0` and `+0.0` → the same encoding (`-0.0 == +0.0`, and eval agrees).
 
-use crate::{EncodeError, Hash, Value, ENCODING_VERSION};
+use crate::{capabilities, eval, EncodeError, Hash, Resolver, Value, ENCODING_VERSION};
 use blake3::Hasher;
 
 // Value type tags — distinct, so a `Number 0`, a `Boolean false`, and an empty `Text` can never
@@ -66,6 +67,55 @@ pub fn memo_key(unit_hash: &Hash, inputs: &[Option<Value>]) -> Result<Hash, Enco
     Ok(*h.finalize().as_bytes())
 }
 
+/// A portable, self-describing memo entry (P3.3.2): the claim that evaluating `unit_hash` on
+/// `inputs` yields `output`. Self-describing *precisely* so a recipient who did not compute it can
+/// verify it — unlike the private local `Memo`'s bare `Value`s, which it trusts because it produced
+/// them. This is the unit of exchange in the shared trustless cache.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CacheEntry {
+    pub unit_hash: Hash,
+    pub inputs: Vec<Option<Value>>,
+    pub output: Value,
+}
+
+/// The universal key this entry must be filed under: `memo_key(unit_hash, inputs)`. Cheap — one
+/// hash over the canonical encoding. The **output is deliberately not in the key**: the key names
+/// the *computation*, and a pure computation has exactly one correct output, so the key is the
+/// coordinate and the output is what is looked up — and verified — against it. (This cheap check is
+/// the cache's analogue of the `Store`'s verify-on-read re-hash; it earns its keep at the network
+/// boundary, where a peer supplies the claimed key.)
+pub fn entry_key(entry: &CacheEntry) -> Result<Hash, EncodeError> {
+    memo_key(&entry.unit_hash, &entry.inputs)
+}
+
+/// The trustless verification oracle (P3.3.2): re-execute and confirm. `true` iff `unit_hash`
+/// resolves, the unit is **pure** (only a pure unit's output is a stable function of its inputs —
+/// I2), and re-evaluating reproduces `output`. The output is compared **canonically** (the same
+/// NaN/±0.0 folding `memo_key` applies to inputs), so a `NaN`-producing computation verifies across
+/// machines despite non-portable NaN bit patterns — and because `Value` is only `PartialEq`
+/// (NaN ≠ NaN), canonical comparison is also what lets a legitimate NaN result verify at all.
+///
+/// The oracle is **decisive** (one correct answer, by determinism) and **always terminates** (the
+/// VM is total — no `while`; control is `select` + `fold`); a verifier that could hang would be no
+/// verifier. Fail-closed: unresolvable, impure, or unencodable ⇒ `false`. This is the thesis made
+/// operational — a memo is checkable by anyone *exactly because* the VM is pure, total, and
+/// content-addressed.
+pub fn verify_entry(entry: &CacheEntry, resolver: &impl Resolver) -> bool {
+    let Some(unit) = resolver.resolve(&entry.unit_hash) else {
+        return false; // can't resolve the unit ⇒ can't check the claim ⇒ refuse (fail closed)
+    };
+    if !capabilities(unit, resolver).is_pure() {
+        return false; // impure ⇒ output is not a stable function of inputs ⇒ not cacheable
+    }
+    let Some(produced) = eval(unit, &entry.inputs, resolver) else {
+        return false; // the unit yields no value on these inputs
+    };
+    match (canonical_bytes(&produced), canonical_bytes(&entry.output)) {
+        (Ok(a), Ok(b)) => a == b, // canonical equality = "same result", machine-independent
+        _ => false,               // unencodable ⇒ cannot compare ⇒ fail closed
+    }
+}
+
 /// Canonical, collision-free encoding of a `Value` appended to `buf`.
 fn encode_value(buf: &mut Vec<u8>, v: &Value) -> Result<(), EncodeError> {
     match v {
@@ -102,6 +152,15 @@ fn encode_value(buf: &mut Vec<u8>, v: &Value) -> Result<(), EncodeError> {
         }
     }
     Ok(())
+}
+
+/// The canonical bytes of a single value — `encode_value` into a fresh buffer. Two values are the
+/// "same result" for the cache iff these agree: the equality `memo_key` uses for inputs, extended
+/// to outputs so verification agrees across machines (every NaN folded together, ±0.0 together).
+fn canonical_bytes(v: &Value) -> Result<Vec<u8>, EncodeError> {
+    let mut buf = Vec::new();
+    encode_value(&mut buf, v)?;
+    Ok(buf)
 }
 
 fn put_len(buf: &mut Vec<u8>, n: usize) -> Result<(), EncodeError> {
@@ -170,5 +229,82 @@ mod tests {
         let b = key(&[Some(Value::List(vec![Value::Number(2.0), Value::Number(1.0)]))]);
         assert_ne!(a, b); // [1,2] != [2,1]
         assert_ne!(key(&[None]), key(&[Some(Value::Number(0.0))])); // absent != present
+    }
+
+    // ── P3.3.2: the entry + the trustless oracle ──
+    use crate::{MapResolver, Param, Type, Unit, UnitBody};
+
+    fn const_num(n: &str) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: "const".into() },
+            params: vec![Param::frozen("value", n), Param::frozen("type", "Number")],
+            inputs: vec![],
+            output: Some(Type::Number),
+        }
+    }
+    fn prim(name: &str) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: name.into() },
+            params: vec![],
+            inputs: vec![],
+            output: Some(Type::Number),
+        }
+    }
+
+    #[test]
+    fn entry_key_is_the_memo_key() {
+        let entry = CacheEntry {
+            unit_hash: H,
+            inputs: vec![Some(Value::Number(3.0))],
+            output: Value::Number(9.0),
+        };
+        assert_eq!(entry_key(&entry).unwrap(), memo_key(&H, &entry.inputs).unwrap());
+    }
+
+    #[test]
+    fn honest_entry_verifies() {
+        let mut r = MapResolver::new();
+        let h = r.insert(const_num("3")).unwrap();
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(3.0) };
+        assert!(verify_entry(&entry, &r));
+    }
+
+    #[test]
+    fn tampered_output_fails() {
+        let mut r = MapResolver::new();
+        let h = r.insert(const_num("3")).unwrap();
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(99.0) };
+        assert!(!verify_entry(&entry, &r)); // re-execution catches the lie
+    }
+
+    #[test]
+    fn unresolvable_unit_fails() {
+        let r = MapResolver::new(); // empty — H resolves to nothing
+        let entry = CacheEntry { unit_hash: H, inputs: vec![], output: Value::Number(3.0) };
+        assert!(!verify_entry(&entry, &r)); // can't check ⇒ refuse
+    }
+
+    #[test]
+    fn impure_unit_fails() {
+        let mut r = MapResolver::new();
+        let h = r.insert(prim("clock")).unwrap(); // a driver (capability Clock) ⇒ not pure
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(0.0) };
+        assert!(!verify_entry(&entry, &r)); // impure outputs aren't stable ⇒ uncacheable
+    }
+
+    #[test]
+    fn nan_output_verifies_canonically() {
+        // inf - inf = NaN. `Value` is only `PartialEq` (NaN ≠ NaN), so this verifies ONLY because
+        // the oracle compares canonically — the very property that makes a NaN result checkable
+        // across machines (whose NaN bit patterns may differ).
+        let mut r = MapResolver::new();
+        let h = r.insert(prim("subtract")).unwrap();
+        let inf = f64::INFINITY;
+        let entry = CacheEntry {
+            unit_hash: h,
+            inputs: vec![Some(Value::Number(inf)), Some(Value::Number(inf))],
+            output: Value::Number(f64::NAN),
+        };
+        assert!(verify_entry(&entry, &r));
     }
 }

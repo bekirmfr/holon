@@ -1614,3 +1614,41 @@ enough that pruning skips a meaningful fraction; eager `materialize` *profiles* 
 Decision rule when the deploy tier lands: whole-closure op (advise/inspect a hash) → cheap eager
 materialize helper; lazy eval of a big branchy stored program → the `Cow` change. Until then:
 nothing. Next genuine step is the networked tier (P3.3.2 shared trustless cache).
+
+---
+
+## 2026-06-29 · P3.3.2 — the shared trustless cache (the differentiator)
+
+**The thesis made operational (183 green = 151c + 32h, +6 core +3 host).** P3.3.1 made memoization
+local; P3.3.2 makes a result one party computed *checkable by anyone*. Core (extends `memo.rs`,
+reusing the private `encode_value`): `CacheEntry {unit_hash, inputs, output}` (self-describing so a
+recipient who didn't compute it can verify it); `entry_key` (= `memo_key` of the fields — cheap
+structural integrity, the "which computation" check); `verify_entry` (the **trustless oracle**:
+resolve + is_pure + re-eval + **canonical** output compare). Host: `SharedCache` (untrusted store;
+`put` dumb-inserts under the derived key, `get` is the fast/trust-the-source path, `get_verified`
+re-executes and refuses a liar).
+
+**Why it's the thesis: three invariants converge in `verify_entry`.** Content-addressing ⇒ the
+claim names one immutable computation (can't be swapped). Determinism (I2) ⇒ re-execution is
+*decisive* (one correct answer). Totality (no `while`; control = select+fold) ⇒ the oracle always
+*terminates* (a verifier that could hang is no verifier). A memo is checkable exactly because the VM
+is pure, total, content-pinned.
+
+**Grounded NaN finding (would have been a silent hole):** `eval` can reach `inf`
+(multiply/add don't guard overflow) and thus `NaN` (`divide`/`subtract` of inf). `Value` is only
+`PartialEq` (NaN≠NaN), so a naive `==` fails an honest NaN result *on the same machine*, and NaN bit
+patterns aren't portable across machines. So `verify_entry` compares **canonically** via
+`encode_value` — the same fold `memo_key` applies to inputs — making verification machine-
+independent. The `nan_output_verifies_canonically` test (inf-inf via a pure `subtract`, inputs carry
+the inf so no composite needed) is the proof.
+
+**Cheap/expensive split mirrors the Store:** `entry_key` cheap structural (re-hash analogue,
+always-on, earns its keep at the network boundary P3.8.2); `verify_entry` expensive semantic
+(re-execute, opt-in). **Honesty in the API:** `get` (trust source) vs `get_verified` (trust no one);
+the liar test stores a wrong output under the right key, confirms it's stored (cache untrusted),
+then watches the trustless read reject it.
+
+**What this does NOT do (deferred, each its own pillar):** skip compute on a stranger's word — needs
+reputation (P3.4.1), proofs, or quorum. All three now have this substrate to stand on. Next genuine
+step: P3.4.1 reputation-by-adoption, or P3.8.2 networked CAS (the transport; cheap entry_key check
+ready for it).

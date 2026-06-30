@@ -12,9 +12,9 @@
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`).
 > **Next — genesis reconciliation arc (`P3-genesis-reconciliation-L4`), then `P3.1.1` (registry).** Reconciling the native set to `§13` *before* the registry's first publish freezes the trust root. A breaking arc done one green inch at a time: **R1 ✅ R2 ✅ R3 ✅** (the additive run — pure kit, text kit, `random` driver; no existing hash moved) → **R4 ✅** (clock/ingress/egress) → **R5 ✅** (one `const`) → **R6 ✅ DECISION** (freeze the as-built trust root — Branch B; demotion-to-stdlib deferred to its own pillar; gate stays active; 34-leaf genesis manifest pinned in §13a). **GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape — the hygiene prerequisite before the registry's first publish is met.
 
-**LOCAL-FIRST P3 MARKETPLACE COMPLETE:** **P3.1.1 ✅** publish · **P3.2.1 ✅** inspect · **P3.3.1 ✅** memoize · **P3.5.1 ✅** fork · **P3.6.1 ✅** advise — the full local-first operation set, green, built almost entirely from pre-existing invariants (exposure not invention), over the P3.8.1 store.
+**LOCAL-FIRST P3 COMPLETE + networked tier begun:** **P3.1.1 ✅** publish · **P3.2.1 ✅** inspect · **P3.3.1 ✅** memoize · **P3.5.1 ✅** fork · **P3.6.1 ✅** advise · **P3.3.2 ✅** shared trustless cache (the differentiator: `CacheEntry` + `verify_entry` re-execution oracle, `SharedCache` get/get_verified; canonical output compare for cross-machine NaN; checkable because pure+total+content-pinned). **183 green (151 core + 32 host).**
 
-**Deferred — networked tier:** shared trustless cache (P3.3.2, the differentiator; key-derivation half built), reputation-by-adoption (P3.4.1), author-identity (P3.7.1), networked CAS (P3.8.2). Foundations all in place. **`Store`→`Resolver` ownership fork — SET ASIDE with a trigger** (see `P3-store-resolver-fork-L4.md`): a literal adapter can't exist (trait borrows `&Unit`, store yields owned), the duplication is *one* place not four (rule of one), and the `Cow`-trait change it'd require is a *perf optimization for lazy `eval`-against-store*, not debt — reach for it only when a deploy-from-store path exists AND eager `materialize` profiles as the bottleneck; otherwise the cheap eager `materialize` helper covers it. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
+**Deferred — rest of networked tier:** reputation-by-adoption (P3.4.1), author-identity (P3.7.1), networked CAS / transport (P3.8.2 — cheap `entry_key` integrity check built, ready for peer-supplied keys). "Skip compute on a stranger's word" needs reputation/proofs/quorum — each its own pillar, all now standing on the P3.3.2 substrate. **`Store`→`Resolver` ownership fork — SET ASIDE with a trigger** (see `P3-store-resolver-fork-L4.md`): a literal adapter can't exist (trait borrows `&Unit`, store yields owned), the duplication is *one* place not four, and the `Cow`-trait change it'd require is a *perf optimization for lazy `eval`-against-store*, not debt — reach for it only when a deploy-from-store path exists AND eager `materialize` profiles as the bottleneck; otherwise the cheap eager `materialize` helper covers it.
 
 ---
 
@@ -880,3 +880,23 @@ Operations: publish · inspect · memoize · fork · advise (+ store P3.8.1). 17
    P3.3.1), P3.4.1 reputation-by-adoption, P3.7.1 author-identity, P3.8.2 networked CAS.
 3. (Parallel) P4 editor (WASM/canvas).
 4. (Deferred, gated) R6 demotion pillar — only when stdlib mechanism + auditor exist.
+
+---
+
+### P3.3.2 — shared trustless cache (DONE; the differentiator)
+- **L4:** P3.3.2-shared-cache-L4.md. "Trustless" at this layer = universal keys (done P3.3.1) +
+  a **re-execution verification oracle** + a portable self-describing entry. NOT compute-savings-
+  without-trust (that's reputation/proofs/quorum — deferred, each its own pillar).
+- **Core (extends `memo.rs`, reuses private `encode_value`):** `CacheEntry {unit_hash, inputs,
+  output}`; `entry_key` (= memo_key of the fields; cheap structural integrity); `verify_entry`
+  (resolve + is_pure + re-eval + **canonical** compare; fail-closed). Rests on I5+I2+totality.
+- **Host:** `SharedCache` — untrusted store; `put` dumb-inserts under derived key; `get`
+  (fast/trust-source); `get_verified` (re-executes, refuses a liar).
+- **Grounded:** `eval` can emit NaN (overflow→inf→inf-inf); `Value` is only PartialEq (NaN≠NaN);
+  canonical comparison via `encode_value` makes verification machine-independent. The
+  `nan_output_verifies_canonically` test proves it (inf as inputs to a pure `subtract`).
+- **Tests (+6 core = 151, +3 host = 32):** entry_key=memo_key / honest verifies / tampered fails /
+  unresolvable fails / impure fails / NaN verifies canonically; put round-trips / get_verified
+  honest / get_verified catches a liar.
+- **Deferred:** compute-savings-without-trust (reputation P3.4.1, proofs, quorum); network transport
+  (P3.8.2); purity memoization (optimization); overflow saturation (separate primitive question).

@@ -46,7 +46,7 @@ pub use eval::eval;
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
 pub use inspect::{child_refs, dependencies};
-pub use memo::memo_key;
+pub use memo::{entry_key, memo_key, verify_entry, CacheEntry};
 pub use hash::{
     decode_preimage, encode_preimage, hash_unit, parse_hash, DecodeError, Edge, EncodeError, Hash,
     Param, Port, Type, Unit, UnitBody, ENCODING_VERSION,
