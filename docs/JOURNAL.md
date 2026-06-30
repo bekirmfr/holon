@@ -2191,3 +2191,64 @@ unchanged (bridge only). The canvas behaviour is **browser-confirmed** (no React
 
 **Next inch.** Live eval through the one `Evaluator` (run the projected composite — already inserted —
 whole-graph; per-node values deferred), then param editing.
+
+---
+
+## 2026-06-30 · param editing — frozen values configurable; const's type re-types the node · *(P4.1)*
+
+**Built (editor only).** `PrimitiveNode.tsx`: frozen param values become editable text fields, and
+`const`'s `type` becomes a selector over **Number / Boolean / Text**. Changing a value writes back
+through `updateNodeData`; changing a const's type also updates the node's **declared output** (so the
+handle re-colours and `compatible` re-judges what it may wire into) and **drops wires from that output
+whose target no longer accepts the new type** — fail-closed, via `setEdges`. The node owns all of this
+through `useReactFlow` (`updateNodeData` / `setEdges` / `getNode`); `App.tsx`, `holon.ts`, the bridge,
+and core are untouched.
+
+**The decision that matters — declaring a type is not deciding types.** Core never derives a const's
+output from its `type` param anywhere; the catalog *sets* `output: Number` for the default and trusts
+it. That "output == type param" consistency is a **construction-time contract** whoever builds the
+const upholds — the catalog for the default, the editor when you change the type. The editor is
+fulfilling its constructor role, exactly as the catalog does, not usurping authority: `compatible`
+stays the sole judge of what connects.
+
+**Grounded in core, not assumed.** A `const` can be exactly the three types its `compute` parses from
+a text value — Number / Boolean / Text (`primitives.rs`; `constants_from_params` pins
+`const(type="List") ⇒ None`). List / Effect / Any have *no literal form*, so the selector offers
+exactly three, the real boundary — which is *why* a string const refuses to wire into a List input.
+
+**List literals are a constructor, not a new primitive (decision).** A list constant is `list(…)` /
+`cons(item, list)` — `list`'s `compute` is genuinely variadic. `const` excludes List by the *same*
+decision that gives it a text literal form (R5 collapsed all scalars into one `const`). Adding a
+"series literal" would re-smuggle the inference `const` refuses (parsing structure from `"[3,7,5]"`)
+and duplicate `list` (a KISS violation, two ways to build one thing). So the editor exposes the
+constructor, not a literal. *Deferred follow-up:* ergonomic **variadic-arity editing** of
+`list`/`add`/`and`/`concat` (grow/shrink element ports), gated on core marking *which* leaves are
+variadic — a small fourth catalog fact, the same I1 discipline that put `interface_of` in core so the
+palette derives rather than guesses. `list` today is canonical arity 2; `cons` chains cover longer
+lists until then.
+
+**Values stay plain text (KISS).** Core parses a frozen value; a bad entry just fails soft at eval.
+Type-aware inputs (a number spinner, an `op` dropdown) would need a per-param value-domain table in
+TS — core knowledge the catalog doesn't expose, so duplicating it would invite drift. Only `type`
+graduates to a selector, because it is both a *closed core enum* and *interface-affecting*.
+
+**Proven.** Editor-only ⇒ browser-confirmed (no React runner): a value edit moves the projected hash
+(core's `param_value_changes_hash`, now through the canvas); `Number → Text` re-colours the output and
+flips wire compatibility; a stale wire drops when its source type changes. Leans entirely on tested
+core; **208 native / 12 wasm-target unchanged** (no Rust touched). `tsc`/`tsc -b` clean.
+
+**Reorder (banked).** Param editing was pulled **ahead of live eval** (the projection block's NEXT had
+eval first). Why: eval-before-params can't show a *varying* result — every placed `const` carries the
+same catalog default, so the only way to change an output would be swapping a primitive. Params-first
+makes the small **closed-graph** eval fully expressive (set two consts, run `(2)+(3) ⇒ 5`, edit one,
+the result moves) *and* cleanly separates a node's **config** (frozen params — identity) from a
+composite's **interface inputs** (supplied at eval — not identity). The heavier "boundary-input
+fields" inch then lands in its natural spot (running an open composite through its interface), not
+forced early just to make eval demonstrable. A roadmap sharpening, recorded like the others.
+
+**Scope held.** Edits *frozen* values + the const type selector. Param **promotion** (open params →
+composite interface, `open_param`/`instantiate`) is encapsulation-UX, untouched.
+
+**Next inch.** Live eval through the one `Evaluator` — now expressive: a closed graph (consts feeding
+pure ops) projects and runs, and editing a const moves the value. Then variadic-arity editing and
+boundary-input fields for open composites.

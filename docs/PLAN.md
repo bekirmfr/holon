@@ -1131,7 +1131,7 @@ bit-identical native vs wasm, CI-guarded. core unchanged throughout. **Frontend 
 ### P4.1 — the authoring canvas (NEXT; L4 written: P4.1-authoring-canvas-L4.md)
 Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
 fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
-(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge, the palette + custom nodes, and **wiring** are now **DONE** (preceding blocks); **next concrete inch:** projection — canvas → composite by child *index* (drop view-only `id`/`position`; canvas edges → core `Edge` as `from_child`/`from_port` → `to_child`/`to_port`), then live eval through the one `Evaluator` (restoring the provable path), then param editing.
+(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge, the palette + custom nodes, and **wiring** are now **DONE** (preceding blocks); **next concrete inch:** live eval through the one Evaluator (run the projected composite — already inserted by project — whole-graph; per-node values deferred), now expressive since consts are settable: a closed graph const → add ← const runs and editing a const moves the result. Then variadic-arity editing (gated on a core variadicity signal) and boundary-input fields for open composites. (Projection + param editing landed — see the DONE blocks above; params were pulled ahead of eval so closed-graph eval is expressive.)
 ---
 
 ### eval input-gathering by reference (DONE; the "O(1)" inspectors are O(1) again)
@@ -1151,3 +1151,28 @@ fail closed); project the canvas → a composite via `default_spec`; evaluate li
   (the `native_vs_composite` bench is the standing guard). `eval_composite`'s scratch-gather clone
   is **deliberately deferred** to its own inch (borrow-checker work; composed inspectors stay O(n)
   until then).
+  
+---
+
+### P4.1 · param editing (DONE; frozen values configurable, const type-polymorphic, browser-confirmed)
+- **`PrimitiveNode.tsx`:** frozen param values → editable text fields (core parses; bad input fails
+  soft at eval). `const`'s `type` → a selector over the three forms its `compute` supports —
+  **Number / Boolean / Text** (`primitives.rs`; List/Effect/Any have no literal form). The node owns
+  edits via `useReactFlow` (`updateNodeData`/`setEdges`/`getNode`); no bridge/`holon.ts`/core change.
+- **const is the one type-polymorphic atom:** changing `type` re-types the node — updates the param
+  AND the declared output (re-colours the handle, flips `compatible`), and **drops now-incompatible
+  out-edges** (fail-closed; core's `validate` at projection is the real gate). The editor upholds
+  const's "output == type param" contract as a *constructor*, exactly as the catalog does for the
+  default — it does not decide types; `compatible` stays the sole wire judge.
+- **List literals = the `list` constructor, not a new primitive** (const excludes List by the same R5
+  decision that gives it a text literal form). *Deferred:* ergonomic variadic-arity editing of
+  `list`/`add`/… — gated on core marking which leaves are variadic (a 4th catalog fact, the
+  `interface_of` discipline). Param **promotion** (open→interface) stays encapsulation-UX (P4.3).
+- **Reorder:** pulled ahead of live eval, so closed-graph eval is expressive (settable consts) and a
+  node's config (identity) is separated from a composite's interface inputs (eval-time). Roadmap
+  sharpening, recorded.
+- **Tests:** editor-only, browser-confirmed (value edit moves the hash — `param_value_changes_hash`
+  via the canvas; type re-colours + re-judges wires; stale wire drops). **208 native / 12 wasm-target
+  unchanged** (no Rust). `tsc`/`tsc -b` clean.
+
+---
