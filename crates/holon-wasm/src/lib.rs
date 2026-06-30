@@ -17,8 +17,8 @@
 //!   keys and `===`-comparable, which `Uint8Array` is not.
 
 use holon_core::{
-    decode_preimage, encode_preimage, hash_unit, parse_hash, Edge, Hash, MapResolver, Param, Port,
-    Type, Unit, UnitBody, Value,
+    decode_preimage, encode_preimage, genesis_units, hash_unit, parse_hash, Edge, Hash, MapResolver,
+    Param, Port, Type, Unit, UnitBody, Value,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -274,6 +274,22 @@ pub fn load_unit(preimage: &[u8]) -> Result<JsValue, JsError> {
         .map_err(|e| JsError::new(&format!("unit: {e}")))
 }
 
+/// The genesis primitive catalog as JS [`WUnit`]s — the authoritative typed interface of every §13a
+/// leaf (names, ports, output types, default params), the single source the editor's palette is
+/// *derived* from (never a hand-written TS copy that could drift, I1). Returned whole, in one
+/// crossing; the editor builds its palette and its name→interface map from this array.
+#[wasm_bindgen]
+pub fn primitive_catalog() -> Result<JsValue, JsError> {
+    serde_wasm_bindgen::to_value(&catalog_wunits())
+        .map_err(|e| JsError::new(&format!("catalog: {e}")))
+}
+
+/// Core's genesis interfaces mirrored to `WUnit` via the *same* `from_core` `load_unit` uses — no
+/// second core→JS converter. Shared by the bridge fn and its tests.
+fn catalog_wunits() -> Vec<WUnit> {
+    genesis_units().iter().map(WUnit::from_core).collect()
+}
+
 // ── The evaluator ────────────────────────────────────────────────────────────────────────────
 // Stateful on purpose: the editor maintains a workspace of units; the bridge mirrors it as a
 // populated resolver. Insert units (children), then eval a unit against them — a live editor needn't
@@ -418,6 +434,27 @@ fn check_wunit_roundtrip() {
     }
 }
 
+#[cfg(test)]
+fn check_primitive_catalog() {
+    let cat = catalog_wunits();
+    // The §13a count crosses the mirror intact.
+    assert_eq!(cat.len(), 34);
+    // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
+    let add = cat
+        .iter()
+        .find(|w| matches!(&w.body, WBody::Primitive { name } if name == "add"))
+        .expect("add in catalog");
+    assert_eq!(add.inputs.len(), 2);
+    assert!(add.inputs.iter().all(|p| p.ty == WType::Number));
+    assert_eq!(add.output, Some(WType::Number));
+    // A higher-order leaf keeps its function param: map carries an open `fn`.
+    let map = cat
+        .iter()
+        .find(|w| matches!(&w.body, WBody::Primitive { name } if name == "map"))
+        .expect("map in catalog");
+    assert!(map.params.iter().any(|p| matches!(p, WParam::Open { name, .. } if name == "fn")));
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod native_tests {
     use super::*;
@@ -429,6 +466,8 @@ mod native_tests {
     fn wvalue_roundtrip_native() { check_wvalue_roundtrip(); }
     #[test]
     fn wunit_roundtrip_native() { check_wunit_roundtrip(); }
+    #[test]
+    fn primitive_catalog_native() { check_primitive_catalog(); }
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]
@@ -444,6 +483,8 @@ mod wasm_tests {
     fn wvalue_roundtrip_wasm() { check_wvalue_roundtrip(); }
     #[wasm_bindgen_test]
     fn wunit_roundtrip_wasm() { check_wunit_roundtrip(); }
+    #[wasm_bindgen_test]
+    fn primitive_catalog_wasm() { check_primitive_catalog(); }
 
     // Eval through the JS boundary: JS inputs → Evaluator::eval → core eval → JS output.
     #[wasm_bindgen_test]
@@ -493,5 +534,17 @@ mod wasm_tests {
         let out = ev.eval(&comp_pre, no_inputs).unwrap();
         let wout: Option<WValue> = serde_wasm_bindgen::from_value(out).unwrap();
         assert_eq!(wout, Some(WValue::Number(7.0)));
+    }
+
+    // The catalog crosses the JS boundary as an array of WUnit, intact — the new risk the
+    // single-WUnit load_unit tests didn't cover.
+    #[wasm_bindgen_test]
+    fn primitive_catalog_crosses_js_boundary() {
+        let js = primitive_catalog().unwrap();
+        let cat: Vec<WUnit> = serde_wasm_bindgen::from_value(js).unwrap();
+        assert_eq!(cat.len(), 34);
+        assert!(cat
+            .iter()
+            .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));
     }
 }
