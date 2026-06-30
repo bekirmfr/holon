@@ -29,6 +29,7 @@ import {
   Evaluator,
   type WUnit,
   type WEdge,
+  type WValue,
 } from "./holon";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
@@ -38,6 +39,23 @@ const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
 function primitiveName(u: WUnit): string | null {
   return u.body.kind === "Primitive" ? u.body.name : null;
+}
+
+// Render an evaluated value for the readout. This is core's *pure* evaluator, so a sink shows as the
+// Effect it constructs (it doesn't fire here), and a driver / unparsed-const graph comes back null.
+function formatValue(v: WValue): string {
+  switch (v.type) {
+    case "Number":
+      return String(v.value);
+    case "Boolean":
+      return v.value ? "true" : "false";
+    case "Text":
+      return `"${v.value}"`;
+    case "List":
+      return `[${v.value.map(formatValue).join(", ")}]`;
+    case "Effect":
+      return `effect(${v.value.sink})`;
+  }
 }
 
 function Canvas({ catalog }: { catalog: WUnit[] }) {
@@ -123,7 +141,9 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
   // boundary, validate, and freeze. The editor re-decides none of it (one decider). Cosmetic move ⇒
   // same hash; rewire ⇒ new hash; an ambiguous or invalid graph ⇒ a surfaced error, never a guess.
   const ev = useMemo(() => new Evaluator(), []);
-  const [projection, setProjection] = useState<{ hash: string; inputs: number } | null>(null);
+  const [projection, setProjection] = useState<
+    { hash: string; inputs: number; value: WValue | null } | null
+  >(null);
   const [projError, setProjError] = useState<string>("");
 
   const onProject = useCallback(() => {
@@ -156,11 +176,19 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
         return { from_child: from, from_port: 0, to_child: to, to_port: toPort };
       });
 
-      // Core derives the boundary and freezes; insert returns the composite's content hash (and pins
-      // it for the live-eval inch). An EncapError — ambiguous output, cycle, type mismatch — throws.
+      // Core derives the boundary and freezes; an EncapError — ambiguous output, cycle, type mismatch
+      // — throws. `insert` returns the composite's content hash and pins it.
       const composite = ev.project(children, wedges) as WUnit;
-      const hash = ev.insert(buildPreimage(composite));
-      setProjection({ hash, inputs: composite.inputs?.length ?? 0 });
+      const pre = buildPreimage(composite);
+      const hash = ev.insert(pre);
+
+      // Run it through the one Evaluator — but only when it is CLOSED (no promoted inputs): a closed
+      // graph (consts feeding pure ops) needs nothing supplied. An open composite waits for the
+      // boundary-input-fields inch. null ⇒ not ready (an unparsed const, a divide-by-zero, or an
+      // unsupplied driver); a sink graph yields the Effect it constructs (pure eval doesn't fire it).
+      const inputs = composite.inputs?.length ?? 0;
+      const value = inputs === 0 ? (ev.eval(pre, []) as WValue | null) : null;
+      setProjection({ hash, inputs, value });
       setProjError("");
     } catch (err) {
       setProjection(null);
@@ -211,9 +239,15 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
                 <div style={{ color: "#6fd3e0" }} title={projection.hash}>
                   {projection.hash.slice(0, 12)}…
                 </div>
-                <div>
-                  {projection.inputs} input{projection.inputs === 1 ? "" : "s"}
-                </div>
+                {projection.inputs === 0 ? (
+                  <div style={{ color: "#9ad29f" }}>
+                    = {projection.value ? formatValue(projection.value) : "not ready"}
+                  </div>
+                ) : (
+                  <div>
+                    {projection.inputs} input{projection.inputs === 1 ? "" : "s"} — supply to run
+                  </div>
+                )}
               </div>
             )}
             {projError && (

@@ -2252,3 +2252,47 @@ composite interface, `open_param`/`instantiate`) is encapsulation-UX, untouched.
 **Next inch.** Live eval through the one `Evaluator` — now expressive: a closed graph (consts feeding
 pure ops) projects and runs, and editing a const moves the value. Then variadic-arity editing and
 boundary-input fields for open composites.
+
+---
+
+## 2026-06-30 · live eval — closed graphs run through the one Evaluator · *(P4.1)*
+
+**Built (editor only).** `onProject` (`App.tsx`) now reuses the composite preimage it already builds
+for the hash and, when the composite is **closed** (no promoted inputs), runs it through the *same
+persistent* `Evaluator`: `ev.eval(pre, [])`. The panel shows `= <value>` under the hash for a closed
+graph, `not ready` when eval returns null, or `N inputs — supply to run` for an open composite. A
+small `formatValue` renders the five `WValue` shapes (a sink as `effect(sink)`). No bridge / `holon.ts`
+/ core change; no wasm rebuild — `eval` has been there since P4.2b.
+
+**The provable path is now closed end-to-end.** The canvas mints a content-addressed unit *and*
+computes its value — both through the one core, no second evaluator and no mock (this is core's pure
+`eval`). Project gives identity; eval gives meaning; they run off the same inserted workspace.
+
+**Why the inch was small — everything hard was already proven.** `eval` was bit-identical native vs
+wasm and JS-boundary-tested in P4.2b (`eval_parity`, `evaluator_evals_through_js_boundary`,
+`construction_through_js_boundary`); `project` already left the children inserted; param editing made
+consts settable so a closed graph computes a value that *moves*. So this is the heartbeat's
+`build → eval → render`, now on the real projected composite — nothing new to test.
+
+**Honest edges (it is the pure evaluator, not design mode).**
+- **Closed graphs only** — zero promoted inputs. An open composite shows `supply to run`; the
+  boundary-input-fields inch fills that seam.
+- A **sink** graph (`egress`/`store_write`) evaluates to the `Effect` it *constructs* — shown
+  `effect(egress)` — it does not fire; firing is the host's deploy mode.
+- A **driver** graph (`clock`/`random`/`ingress`/`store_read`) returns `null` = not ready (drivers are
+  sourced, unsupplied here); running them needs design-mode mocking (`design_eval`), a later concern.
+- A bad const value or divide-by-zero ⇒ `null` = not ready, fail-soft.
+
+**On "live."** On-demand, folded into the project button — re-evaluating per keystroke would mean
+auto-projecting on every change, reintroducing the cosmetic-move noise we avoided. "Live" = through
+the live stateful `Evaluator`, not per-keystroke; auto-refresh is a later nicety.
+
+**Proven.** Editor-only ⇒ browser-confirmed: `const 2 → add ← const 3` projects to a hash and `= 5`;
+edit a const to 10 → re-project → new hash and `= 13` (the value tracks config — the params-first
+payoff); a lone `add` shows `2 inputs — supply to run`; `const → egress` shows `effect(egress)`.
+Leans entirely on tested `eval`; **208 native / 12 wasm-target unchanged** (no Rust). `tsc`/`tsc -b`
+clean.
+
+**Next inch.** Boundary-input fields — supply an open composite's promoted inputs at eval time, to run
+reusable units through their interface. Then variadic-arity editing of `list`/`add`/… (gated on core
+marking which leaves are variadic — the `interface_of` discipline).

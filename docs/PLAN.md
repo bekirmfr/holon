@@ -1131,7 +1131,7 @@ bit-identical native vs wasm, CI-guarded. core unchanged throughout. **Frontend 
 ### P4.1 — the authoring canvas (NEXT; L4 written: P4.1-authoring-canvas-L4.md)
 Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
 fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
-(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge, the palette + custom nodes, and **wiring** are now **DONE** (preceding blocks); **next concrete inch:** live eval through the one Evaluator (run the projected composite — already inserted by project — whole-graph; per-node values deferred), now expressive since consts are settable: a closed graph const → add ← const runs and editing a const moves the result. Then variadic-arity editing (gated on a core variadicity signal) and boundary-input fields for open composites. (Projection + param editing landed — see the DONE blocks above; params were pulled ahead of eval so closed-graph eval is expressive.)
+(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge, the palette + custom nodes, and **wiring** are now **DONE** (preceding blocks); **next concrete inch:** boundary-input fields — supply an open composite's promoted inputs at eval time (typed fields per composite.inputs), so reusable units run through their interface, not just closed graphs. Then variadic-arity editing of list/add/and/concat (grow/shrink element ports), gated on core marking which leaves are variadic — a small 4th catalog fact, the interface_of discipline. (Place · wire · project · configure · run all landed — see the DONE blocks above; the authoring-canvas arc is foundation-complete.)
 ---
 
 ### eval input-gathering by reference (DONE; the "O(1)" inspectors are O(1) again)
@@ -1174,5 +1174,27 @@ fail closed); project the canvas → a composite via `default_spec`; evaluate li
 - **Tests:** editor-only, browser-confirmed (value edit moves the hash — `param_value_changes_hash`
   via the canvas; type re-colours + re-judges wires; stale wire drops). **208 native / 12 wasm-target
   unchanged** (no Rust). `tsc`/`tsc -b` clean.
+
+---
+
+### P4.1 · live eval (DONE; closed graphs run through the one Evaluator, browser-confirmed)
+- **`onProject` (`App.tsx`)** reuses the composite preimage and, when the composite is **closed** (no
+  promoted inputs), runs it through the same persistent `Evaluator` (`ev.eval(pre, [])`). Panel shows
+  `= <value>` / `not ready` / `N inputs — supply to run`; `formatValue` renders the five `WValue`
+  shapes (sink ⇒ `effect(sink)`). No bridge/`holon.ts`/core change; no wasm rebuild.
+- **The provable path is closed end-to-end:** the canvas mints a content-addressed unit AND computes
+  its value, both through the one core — pure `eval`, no second evaluator, no mock. Small because
+  every hard part was pre-proven (`eval` parity since P4.2b; `project` leaves children inserted;
+  settable consts make a closed graph compute a moving value).
+- **Edges (pure evaluator, not design mode):** sinks show the `Effect` they construct (don't fire);
+  drivers ⇒ `not ready` (sourced, unsupplied — `design_eval` mocking is later); bad const / div-zero
+  ⇒ `not ready`, fail-soft. On-demand (folded into project), not per-keystroke.
+- **Tests:** editor-only, browser-confirmed (`const 2 → add ← const 3` ⇒ hash + `= 5`; edit a const ⇒
+  new hash + new value; lone `add` ⇒ supply-to-run; `const → egress` ⇒ `effect(egress)`). Leans on
+  tested `eval`. **208 native / 12 wasm-target unchanged** (no Rust). `tsc`/`tsc -b` clean.
+
+> **P4.1 authoring-canvas arc substantially complete:** place (palette) · wire (type-checked) ·
+> project (canvas → content-addressed composite) · configure (param editing) · **run** (eval through
+> the one Evaluator). What remains is reach, not foundation: boundary-input fields and variadic editing.
 
 ---
