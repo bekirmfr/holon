@@ -13,7 +13,7 @@
 use crate::{Param, Value};
 
 /// Dispatch a primitive by name to its native computation.
-pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> {
+pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value> {
     match name {
         // ── const (§13): the one literal constructor. `value` is the literal as text; `type`
         // (Number/Boolean/Text) declares how to read it — no inference, so the unit is
@@ -58,7 +58,7 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
         // ── control-as-data ──
         "select" => {
             let [c, a, b] = inputs else { return None };
-            Some(if as_bool(c)? { a.clone() } else { b.clone() })
+            Some(if as_bool(c)? { (*a).clone() } else { (*b).clone() })
         }
 
         // ── text ──
@@ -104,7 +104,7 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
         }
 
         // ── list ──
-        "list" => Some(Value::List(inputs.to_vec())),
+        "list" => Some(Value::List(inputs.iter().map(|v| (*v).clone()).collect())),
         "get" => {
             let [l, i] = inputs else { return None };
             as_list(l)?.get(as_index(i)?).cloned()
@@ -112,7 +112,7 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
         "append" => {
             let [l, item] = inputs else { return None };
             let mut xs = as_list(l)?.to_vec();
-            xs.push(item.clone());
+            xs.push((*item).clone());
             Some(Value::List(xs))
         }
         "length" => {
@@ -145,7 +145,7 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
             let [x, l] = inputs else { return None };
             let tail = as_list(l)?;
             let mut xs = Vec::with_capacity(tail.len() + 1);
-            xs.push(x.clone());
+            xs.push((*x).clone());
             xs.extend_from_slice(tail);
             Some(Value::List(xs))
         }
@@ -186,8 +186,8 @@ pub fn compute(name: &str, inputs: &[Value], params: &[Param]) -> Option<Value> 
 /// Construct a sink's settled request: `Effect { sink-name, payload }`. The payload is the
 /// first (and only) input it was given; no input ⇒ nothing to construct. The capability is
 /// derived from the name downstream, never stored here.
-fn sink_effect(sink: &str, inputs: &[Value]) -> Option<Value> {
-    inputs.first().map(|p| Value::Effect { sink: sink.into(), payload: Box::new(p.clone()) })
+fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
+    inputs.first().map(|p| Value::Effect { sink: sink.into(), payload: Box::new((*p).clone()) })
 }
 
 // ── extractors (runtime type guards) ────────────────────────────────────────
@@ -220,21 +220,21 @@ fn parse_bool(s: &str) -> Option<bool> {
         _ => None,
     }
 }
-fn fold_numbers(inputs: &[Value], init: f64, f: fn(f64, f64) -> f64) -> Option<Value> {
+fn fold_numbers(inputs: &[&Value], init: f64, f: fn(f64, f64) -> f64) -> Option<Value> {
     let mut acc = init;
     for v in inputs {
         acc = f(acc, as_number(v)?);
     }
     Some(Value::Number(acc))
 }
-fn fold_bools(inputs: &[Value], init: bool, f: fn(bool, bool) -> bool) -> Option<Value> {
+fn fold_bools(inputs: &[&Value], init: bool, f: fn(bool, bool) -> bool) -> Option<Value> {
     let mut acc = init;
     for v in inputs {
         acc = f(acc, as_bool(v)?);
     }
     Some(Value::Boolean(acc))
 }
-fn bin_numbers(inputs: &[Value]) -> Option<(f64, f64)> {
+fn bin_numbers(inputs: &[&Value]) -> Option<(f64, f64)> {
     let [a, b] = inputs else { return None };
     Some((as_number(a)?, as_number(b)?))
 }
@@ -262,89 +262,89 @@ mod tests {
 
     #[test]
     fn add_sums() {
-        assert_eq!(compute("add", &[num(3.0), num(7.0), num(5.0)], &[]), Some(num(15.0)));
+        assert_eq!(compute("add", &[&num(3.0), &num(7.0), &num(5.0)], &[]), Some(num(15.0)));
     }
     #[test]
     fn multiply_products() {
-        assert_eq!(compute("multiply", &[num(2.0), num(3.0), num(4.0)], &[]), Some(num(24.0)));
+        assert_eq!(compute("multiply", &[&num(2.0), &num(3.0), &num(4.0)], &[]), Some(num(24.0)));
     }
     #[test]
     fn subtract_is_binary() {
-        assert_eq!(compute("subtract", &[num(10.0), num(3.0)], &[]), Some(num(7.0)));
-        assert_eq!(compute("subtract", &[num(1.0)], &[]), None);
+        assert_eq!(compute("subtract", &[&num(10.0), &num(3.0)], &[]), Some(num(7.0)));
+        assert_eq!(compute("subtract", &[&num(1.0)], &[]), None);
     }
     #[test]
     fn divide_guards_zero() {
-        assert_eq!(compute("divide", &[num(10.0), num(2.0)], &[]), Some(num(5.0)));
-        assert_eq!(compute("divide", &[num(1.0), num(0.0)], &[]), None);
+        assert_eq!(compute("divide", &[&num(10.0), &num(2.0)], &[]), Some(num(5.0)));
+        assert_eq!(compute("divide", &[&num(1.0), &num(0.0)], &[]), None);
     }
     #[test]
     fn compare_uses_op_param() {
-        assert_eq!(compute("compare", &[num(72.0), num(70.0)], &[p("op", ">")]), Some(boo(true)));
-        assert_eq!(compute("compare", &[num(1.0), num(2.0)], &[p("op", ">=")]), Some(boo(false)));
-        assert_eq!(compute("compare", &[num(5.0), num(5.0)], &[p("op", "=")]), Some(boo(true)));
+        assert_eq!(compute("compare", &[&num(72.0), &num(70.0)], &[p("op", ">")]), Some(boo(true)));
+        assert_eq!(compute("compare", &[&num(1.0), &num(2.0)], &[p("op", ">=")]), Some(boo(false)));
+        assert_eq!(compute("compare", &[&num(5.0), &num(5.0)], &[p("op", "=")]), Some(boo(true)));
     }
     #[test]
     fn logic_ops() {
-        assert_eq!(compute("and", &[boo(true), boo(true)], &[]), Some(boo(true)));
-        assert_eq!(compute("and", &[boo(true), boo(false)], &[]), Some(boo(false)));
-        assert_eq!(compute("or", &[boo(false), boo(true)], &[]), Some(boo(true)));
-        assert_eq!(compute("not", &[boo(true)], &[]), Some(boo(false)));
+        assert_eq!(compute("and", &[&boo(true), &boo(true)], &[]), Some(boo(true)));
+        assert_eq!(compute("and", &[&boo(true), &boo(false)], &[]), Some(boo(false)));
+        assert_eq!(compute("or", &[&boo(false), &boo(true)], &[]), Some(boo(true)));
+        assert_eq!(compute("not", &[&boo(true)], &[]), Some(boo(false)));
     }
     #[test]
     fn select_chooses() {
-        assert_eq!(compute("select", &[boo(true), txt("yes"), txt("no")], &[]), Some(txt("yes")));
-        assert_eq!(compute("select", &[boo(false), txt("yes"), txt("no")], &[]), Some(txt("no")));
+        assert_eq!(compute("select", &[&boo(true), &txt("yes"), &txt("no")], &[]), Some(txt("yes")));
+        assert_eq!(compute("select", &[&boo(false), &txt("yes"), &txt("no")], &[]), Some(txt("no")));
     }
     #[test]
     fn text_ops() {
-        assert_eq!(compute("concat", &[txt("foo"), txt("bar")], &[]), Some(txt("foobar")));
-        assert_eq!(compute("uppercase", &[txt("abc")], &[]), Some(txt("ABC")));
+        assert_eq!(compute("concat", &[&txt("foo"), &txt("bar")], &[]), Some(txt("foobar")));
+        assert_eq!(compute("uppercase", &[&txt("abc")], &[]), Some(txt("ABC")));
     }
     #[test]
     fn text_irreducibles() {
-        assert_eq!(compute("lowercase", &[txt("AbC")], &[]), Some(txt("abc")));
+        assert_eq!(compute("lowercase", &[&txt("AbC")], &[]), Some(txt("abc")));
         // char-based (Unicode scalar values), not byte-based: "ab\u{00e7}" is 3 chars / 4 bytes.
-        assert_eq!(compute("text_length", &[txt("ab\u{00e7}")], &[]), Some(num(3.0)));
-        assert_eq!(compute("slice", &[txt("hello"), num(1.0), num(3.0)], &[]), Some(txt("ell")));
+        assert_eq!(compute("text_length", &[&txt("ab\u{00e7}")], &[]), Some(num(3.0)));
+        assert_eq!(compute("slice", &[&txt("hello"), &num(1.0), &num(3.0)], &[]), Some(txt("ell")));
         // start past the end ⇒ empty (total, never None for valid types).
-        assert_eq!(compute("slice", &[txt("hi"), num(5.0), num(2.0)], &[]), Some(txt("")));
-        assert_eq!(compute("index_of", &[txt("hello"), txt("ll")], &[]), Some(num(2.0)));
-        assert_eq!(compute("index_of", &[txt("hello"), txt("z")], &[]), Some(num(-1.0)));
+        assert_eq!(compute("slice", &[&txt("hi"), &num(5.0), &num(2.0)], &[]), Some(txt("")));
+        assert_eq!(compute("index_of", &[&txt("hello"), &txt("ll")], &[]), Some(num(2.0)));
+        assert_eq!(compute("index_of", &[&txt("hello"), &txt("z")], &[]), Some(num(-1.0)));
     }
     #[test]
     fn list_construct_and_query() {
-        let l = compute("list", &[num(3.0), num(7.0), num(5.0)], &[]).unwrap();
+        let l = compute("list", &[&num(3.0), &num(7.0), &num(5.0)], &[]).unwrap();
         assert_eq!(l, list(vec![num(3.0), num(7.0), num(5.0)]));
-        assert_eq!(compute("length", &[l.clone()], &[]), Some(num(3.0)));
-        assert_eq!(compute("get", &[l.clone(), num(1.0)], &[]), Some(num(7.0)));
-        assert_eq!(compute("get", &[l.clone(), num(9.0)], &[]), None);
-        assert_eq!(compute("sum", &[l.clone()], &[]), Some(num(15.0)));
+        assert_eq!(compute("length", &[&l], &[]), Some(num(3.0)));
+        assert_eq!(compute("get", &[&l, &num(1.0)], &[]), Some(num(7.0)));
+        assert_eq!(compute("get", &[&l, &num(9.0)], &[]), None);
+        assert_eq!(compute("sum", &[&l], &[]), Some(num(15.0)));
         assert_eq!(
-            compute("append", &[l, num(9.0)], &[]),
+            compute("append", &[&l, &num(9.0)], &[]),
             Some(list(vec![num(3.0), num(7.0), num(5.0), num(9.0)]))
         );
     }
     #[test]
     fn join_strings() {
         let l = list(vec![txt("a"), txt("b"), txt("c")]);
-        assert_eq!(compute("join", &[l, txt("-")], &[]), Some(txt("a-b-c")));
+        assert_eq!(compute("join", &[&l, &txt("-")], &[]), Some(txt("a-b-c")));
     }
     #[test]
     fn list_structure_primitives() {
         let l = list(vec![num(1.0), num(2.0), num(3.0)]);
         assert_eq!(
-            compute("cons", &[num(0.0), l.clone()], &[]),
+            compute("cons", &[&num(0.0), &l], &[]),
             Some(list(vec![num(0.0), num(1.0), num(2.0), num(3.0)]))
         );
-        assert_eq!(compute("head", &[l.clone()], &[]), Some(num(1.0)));
-        assert_eq!(compute("tail", &[l.clone()], &[]), Some(list(vec![num(2.0), num(3.0)])));
-        assert_eq!(compute("is_empty", &[l], &[]), Some(boo(false)));
+        assert_eq!(compute("head", &[&l], &[]), Some(num(1.0)));
+        assert_eq!(compute("tail", &[&l], &[]), Some(list(vec![num(2.0), num(3.0)])));
+        assert_eq!(compute("is_empty", &[&l], &[]), Some(boo(false)));
         // Empty: head/tail are partial (None — the get-out-of-bounds convention); is_empty is total.
         let empty = list(vec![]);
-        assert_eq!(compute("head", &[empty.clone()], &[]), None);
-        assert_eq!(compute("tail", &[empty.clone()], &[]), None);
-        assert_eq!(compute("is_empty", &[empty], &[]), Some(boo(true)));
+        assert_eq!(compute("head", &[&empty], &[]), None);
+        assert_eq!(compute("tail", &[&empty], &[]), None);
+        assert_eq!(compute("is_empty", &[&empty], &[]), Some(boo(true)));
     }
     #[test]
     fn constants_from_params() {
@@ -361,7 +361,7 @@ mod tests {
         // Representation B: a sink constructs a self-describing request, not an identity.
         // *Which* effect it is lives in the name; the host derives the capability from it.
         assert_eq!(
-            compute("egress", &[txt("hello")], &[]),
+            compute("egress", &[&txt("hello")], &[]),
             Some(Value::Effect { sink: "egress".into(), payload: Box::new(txt("hello")) })
         );
         assert_eq!(compute("egress", &[], &[]), None); // no payload ⇒ nothing to construct
@@ -370,7 +370,7 @@ mod tests {
     fn store_write_constructs_an_effect() {
         // A state write is a Fork-B sink too: it constructs a `store_write` request.
         assert_eq!(
-            compute("store_write", &[num(7.0)], &[]),
+            compute("store_write", &[&num(7.0)], &[]),
             Some(Value::Effect { sink: "store_write".into(), payload: Box::new(num(7.0)) })
         );
         assert_eq!(compute("store_read", &[], &[]), None); // read is sourced, not computed
@@ -381,7 +381,7 @@ mod tests {
         // data alongside the body — the merged `email`/`respond` sink handles both shapes.
         let payload = list(vec![num(1.0), txt("ok")]);
         assert_eq!(
-            compute("egress", &[payload.clone()], &[]),
+            compute("egress", &[&payload], &[]),
             Some(Value::Effect { sink: "egress".into(), payload: Box::new(payload) })
         );
         assert_eq!(compute("ingress", &[], &[]), None); // ingress is sourced, not computed
@@ -393,13 +393,14 @@ mod tests {
     #[test]
     fn runtime_type_mismatch_is_none() {
         // An `any` port could feed a wrong runtime type; compute guards it.
-        assert_eq!(compute("add", &[num(1.0), txt("x")], &[]), None);
-        assert_eq!(compute("not", &[num(1.0)], &[]), None);
-        assert_eq!(compute("sum", &[list(vec![num(1.0), txt("x")])], &[]), None);
+        assert_eq!(compute("add", &[&num(1.0), &txt("x")], &[]), None);
+        assert_eq!(compute("not", &[&num(1.0)], &[]), None);
+        assert_eq!(compute("sum", &[&list(vec![num(1.0), txt("x")])], &[]), None);
     }
     #[test]
     fn deterministic() {
-        let inputs = [num(3.0), num(7.0), num(5.0)];
+        let owned = [num(3.0), num(7.0), num(5.0)];
+        let inputs: Vec<&Value> = owned.iter().collect();
         assert_eq!(compute("add", &inputs, &[]), compute("add", &inputs, &[]));
     }
 }

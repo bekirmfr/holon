@@ -37,8 +37,10 @@ pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> 
         // so it lives here too. It threads an accumulator, which `map` does not.
         UnitBody::Primitive { name } if name == "fold" => eval_fold(inputs, &unit.params, resolver),
         UnitBody::Primitive { name } => {
-            // Gather present values in port order; compute's arity check is the firing rule.
-            let present: Vec<Value> = inputs.iter().flatten().cloned().collect();
+            // Gather present values in port order **by reference** — `compute` borrows them,
+            // so an O(1) reader (head/length/is_empty) copies only what it returns, not the
+            // whole input list. compute's arity check is still the firing rule.
+            let present: Vec<&Value> = inputs.iter().flatten().collect();
             primitives::compute(name, &present, &unit.params)
         }
         UnitBody::Composite { children, edges } => {
