@@ -1585,3 +1585,32 @@ key-derivation half built in P3.3.1), reputation-by-adoption (P3.4.1), author-id
 networked CAS (P3.8.2). Foundations (content-addressed keys, closure verification, derived signals)
 all in place + tested. **Accumulated refactor note:** the `Store`→`Resolver` adapter (would clean
 fork's materialize + enable host advise(hash) cheaply).
+
+---
+
+## 2026-06-29 · `Store`→`Resolver` ownership fork — examined, SET ASIDE (no code)
+
+Pressure-tested my own repeated note ("adapter refactor … appeared 4×, earned") before acting on
+it. It was wrong three ways, now corrected in PLAN + captured in `P3-store-resolver-fork-L4.md`:
+
+1. **Not an adapter — impossible as named.** `Resolver::resolve` returns a borrow (`&Unit`);
+   `Store::get` yields owned units (decoded fresh, verify-on-read). No `&self`-lived `&Unit` to
+   lend; `RefCell` can't return a reference past its guard. A store→resolver *must* eagerly
+   materialize into an owned `MapResolver` — which is fork's `materialize`. An adapter renames the
+   glue, not dissolves it.
+2. **Not 4×.** The materialize glue is in *one* place (fork). `verify_closure` walks the store
+   checking presence; `dependencies`/`advise` are pure-core over a Resolver with no host wrapper.
+   Rule of *one*, not three — extract the helper when a 2nd real caller lands, not before.
+3. **Not debt — a perf optimization.** The only real change would be the `Resolver` trait →
+   `Option<Cow<'_, Unit>>` (the only form that keeps the in-memory path zero-copy; `Option<Unit>`
+   clones the hot eval path, `Rc` changes MapResolver's repr for nothing extra). Bounded blast
+   radius: 2 impls, ~14 sites (half already-clone test sites), 1 real return-type change
+   (`dependencies` → owned map, which *drops* the `'r` param). And it buys **only** lazy
+   `eval`-against-store (select/fold pruning skips unvisited units) — a saving that's currently
+   *unrealizable* (eval runs against in-memory MapResolvers; the Store is publish/registry).
+
+**Trigger recorded** (all three): a deploy-from-store eval path exists; programs large/branchy
+enough that pruning skips a meaningful fraction; eager `materialize` *profiles* as the bottleneck.
+Decision rule when the deploy tier lands: whole-closure op (advise/inspect a hash) → cheap eager
+materialize helper; lazy eval of a big branchy stored program → the `Cow` change. Until then:
+nothing. Next genuine step is the networked tier (P3.3.2 shared trustless cache).
