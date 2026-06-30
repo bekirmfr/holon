@@ -1021,3 +1021,22 @@ state model — to decide before writing P4.1.
 
 **BRIDGE COMPLETE: hash + eval + construct** all cross to JS through the one encoder / one evaluator,
 bit-identical native vs wasm, CI-guarded. core unchanged throughout. **Frontend scaffold unblocked.**
+
+---
+
+### P4.1.0 — the editor's first heartbeat (DONE; toolchain proven)
+- `editor/` = Vite + React + TS (strict) + `@xyflow/react`; `holon-wasm` built in via
+  `wasm-pack build --target web --out-dir ../../editor/wasm`.
+- A hardcoded `const(7) → boundary` graph evaluates **to 7 in the browser**, built from plain TS
+  objects through the one encoder + one evaluator; the `const` content hash renders too.
+- **Retires the only P4 risk untestable natively:** the bridge loads and runs in a browser.
+- `src/holon.ts` = the typed boundary (TS discriminated unions mirroring the Rust serde types).
+- `wasm/` + `node_modules/` gitignored (bytes always regenerate from `crates/holon-wasm` — no drift);
+  fresh clone runs `wasm-pack build` once before `npm run dev`.
+- Heartbeat only — NOT the canvas (no palette / custom nodes / wiring UI).
+
+### P4.1 — the authoring canvas (NEXT; L4 written: P4.1-authoring-canvas-L4.md)
+Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
+fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
+(whole-graph baseline; per-node values deferred). Each a separate inch. Canonical child-order stays
+deferred to the publish boundary (P4.3+), in core — never an ad-hoc canvas fix.

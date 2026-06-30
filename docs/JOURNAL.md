@@ -1868,3 +1868,34 @@ boundary, eval ⇒ 7. That is exactly what P4.1's canvas walks.
 **Bridge status:** hash + eval + **construct** all cross to JS, through the one encoder / one
 evaluator, bit-identical native vs wasm, CI-guarded. The frontend scaffold is now unblocked — and
 small, because every hard part it stands on is proven on both targets.
+
+---
+
+## 2026-06-29 · P4.1.0 — the editor's first heartbeat (the toolchain carries a real eval)
+
+**Green by a rendered number, not a test.** Stood up `editor/` (Vite + React + TypeScript strict +
+`@xyflow/react`), built `holon-wasm` into it via `wasm-pack build --target web`, and a hardcoded
+`const(7) → boundary` graph evaluates **to 7 in the browser** — built from plain TS objects, through
+the one core encoder (`build_preimage`), inserted, wired, and evaluated through the one evaluator
+(`Evaluator`). The `const` hash (`3ec55bcc…`) rendered too: content-addressing ran in-browser and
+produced the same address the native host would. The whole chain — Rust core → wasm-pack → npm →
+Vite → browser → eval → back — works. This retires the only P4 risk I could not test natively: does
+the bridge actually load and run in a browser.
+
+Scaffold (11 committed files: 10 hand-written + `package-lock.json`; `wasm/` and `node_modules/`
+gitignored — the bytes always come from `crates/holon-wasm` so the editor's copy can never drift):
+- `src/holon.ts` — the **typed boundary**. Its `WUnit`/`WValue`/`WParam`/… are discriminated unions
+  mirroring the Rust serde types exactly; the editor codes against a real contract the compiler
+  checks. (The reason we chose TypeScript, made concrete — wasm-pack's `.d.ts` types the JsValue
+  crossings as `any`, and this file makes them honest.)
+- `src/App.tsx` — walks the exact path P4.1's canvas will (build → insert → eval → render), with a
+  hardcoded graph instead of a draggable one. React Flow draws the same graph beside the result so a
+  failure in either half is visually separable.
+- `--target web` + relative import + `init()`: dev needs no wasm plugin (it fetches its own `.wasm`,
+  served by Vite because `editor/wasm/` sits inside the project root). Production `vite build` may
+  later want `vite-plugin-wasm` — deferred.
+
+**This is the heartbeat, deliberately NOT the canvas.** No palette, no custom nodes, no wiring UI —
+those are P4.1 proper, each its own inch. Next: real nodes from a palette, draggable, with
+`isValidConnection` enforcing the wire-time type check (I1), projecting to a composite and evaluating
+live through this same path.
