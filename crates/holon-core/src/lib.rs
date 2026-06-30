@@ -24,6 +24,7 @@
 
 mod determinism;
 mod advisory;
+mod catalog;
 mod encapsulate;
 mod eval;
 mod fork;
@@ -45,6 +46,7 @@ pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::eval;
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
+pub use catalog::{genesis_units, interface_of, GENESIS};
 pub use inspect::{adoption_counts, child_refs, dependencies};
 pub use memo::{entry_key, memo_key, verify_entry, CacheEntry};
 pub use hash::{
