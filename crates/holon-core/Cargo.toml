@@ -5,3 +5,10 @@ edition = "2021"
 
 [dependencies]
 blake3 = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "native_vs_composite"
+harness = false

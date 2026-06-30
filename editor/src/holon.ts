@@ -9,7 +9,7 @@
 // The `wasm/` package is generated — never edit it. Rebuild it whenever the Rust bridge changes:
 //   cd crates/holon-wasm && wasm-pack build --target web --out-dir ../../editor/wasm
 
-import init, { Evaluator, build_preimage } from "../wasm/holon_wasm.js";
+import init, { Evaluator, build_preimage, primitive_catalog } from "../wasm/holon_wasm.js";
 
 export { Evaluator };
 
@@ -67,4 +67,12 @@ export function ensureReady(): Promise<void> {
 /** Compile a unit to its canonical preimage bytes through the ONE core encoder. */
 export function buildPreimage(unit: WUnit): Uint8Array {
   return build_preimage(unit);
+}
+
+/**
+ * The authoritative interface of every genesis primitive (§13a), straight from core — the source the
+ * palette is derived from, never a hand-written copy (I1). Call after {@link ensureReady}.
+ */
+export function primitiveCatalog(): WUnit[] {
+  return primitive_catalog() as WUnit[];
 }

@@ -1,0 +1,157 @@
+/* Holon authoring — blueprint substrate. Structural color (bg, hairlines, ink) lives here as tokens;
+   the type hues are data-driven and applied inline (see theme.ts). One family, IBM Plex Mono — an
+   instrument that edits code-like atoms speaks in mono; hierarchy is weight + size, not a 2nd face. */
+
+:root {
+  --bg: #0b1220;
+  --panel: #131d31;
+  --panel-2: #0f1728;
+  --line: #273a59;
+  --line-soft: #1b2a45;
+  --ink: #e8eef7;
+  --ink-dim: #7e8ea8;
+  --accent: #6fd3e0;
+
+  --r: 6px;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.hl-app { display: flex; flex-direction: column; height: 100%; }
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.hl-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  flex: 0 0 auto;
+}
+.hl-header__brand { font-weight: 600; letter-spacing: 0.04em; color: var(--ink); }
+.hl-header__sep { color: var(--ink-dim); }
+.hl-header__mode { color: var(--ink-dim); }
+.hl-header__count { margin-left: auto; color: var(--accent); font-size: 12px; }
+
+.hl-body { display: flex; flex: 1 1 auto; min-height: 0; }
+.hl-error { color: #ff6f6f; padding: 16px; white-space: pre-wrap; }
+
+/* ── Palette ────────────────────────────────────────────────────────────── */
+.hl-palette {
+  flex: 0 0 200px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--panel-2);
+  min-height: 0;
+}
+.hl-palette__head {
+  padding: 10px 14px 8px;
+  color: var(--ink-dim);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.hl-palette__list { overflow-y: auto; padding: 0 8px 12px; }
+.hl-palette__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 8px;
+  border-radius: var(--r);
+  cursor: grab;
+  user-select: none;
+  color: var(--ink);
+}
+.hl-palette__item:hover { background: var(--panel); }
+.hl-palette__item:active { cursor: grabbing; }
+.hl-palette__swatch {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 2px var(--panel-2);
+}
+.hl-palette__name { font-size: 13px; }
+
+/* ── Canvas ─────────────────────────────────────────────────────────────── */
+.hl-canvas { position: relative; flex: 1 1 auto; min-width: 0; background: var(--bg); }
+.hl-canvas__empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-dim); font-size: 13px;
+  pointer-events: none; letter-spacing: 0.02em;
+}
+
+.react-flow { background: transparent; }
+.react-flow__attribution { display: none; }
+.react-flow__controls {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+  box-shadow: none;
+}
+.react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  fill: var(--ink);
+}
+.react-flow__controls-button:hover { background: var(--panel-2); }
+
+/* ── Node ───────────────────────────────────────────────────────────────── */
+.hl-node {
+  min-width: 116px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--ink);
+  font-family: var(--mono);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+.hl-node__title {
+  padding: 6px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.hl-node__params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 5px 12px 0;
+  color: var(--ink-dim);
+  font-size: 10px;
+}
+.hl-node__body { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0 9px; }
+.hl-node__col { display: flex; flex-direction: column; gap: 7px; }
+.hl-node__col--out { align-items: flex-end; }
+
+.hl-port { position: relative; display: flex; align-items: center; min-height: 14px; }
+.hl-node__col--out .hl-port { justify-content: flex-end; }
+.hl-port__label { font-size: 11px; line-height: 1; }
+.hl-node__col--in .hl-port__label { padding-left: 13px; }
+.hl-node__col--out .hl-port__label { padding-right: 13px; }
+
+/* Type-colored handles: a clean dot ringed in the substrate so it reads on the node border.
+   The background (hue) is set inline from the port's wire type. */
+.react-flow__handle.hl-handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  min-width: 0;
+  min-height: 0;
+}
+.react-flow__handle.hl-handle:hover { box-shadow: 0 0 0 3px rgba(111, 211, 224, 0.18); }
+.react-flow__edge-path { stroke: var(--line); stroke-width: 1.5; }
