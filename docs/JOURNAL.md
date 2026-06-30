@@ -2067,3 +2067,49 @@ native** (cargo-green). **10 wasm-target** — compiled, and the crossing is con
 canvas itself returning correct answers across the real JS boundary (the stronger proof). Behavior
 browser-confirmed: matching connects, mismatched refused, double-feed refused, `Any` accepts either
 way. Strict `tsc`/`tsc -b` clean. core/host unchanged in count beyond the one wasm-native test.
+
+---
+
+## 2026-06-30 · eval — gather primitive inputs by reference (a measured perf fix; gate untouched)
+
+**The defect, grounded.** The `native_vs_composite` bench (the standing guard for §13's
+speed-justified atoms) showed the "O(1)" inspectors `head`/`length`/`is_empty` climbing
+linearly with list size — O(n) *as evaluated*. Reading the firing rule found the cause in one
+line of `eval`: `let present: Vec<Value> = inputs.iter().flatten().cloned().collect();` — the
+evaluator **deep-cloned a primitive's whole input list** before `compute` ever looked at it.
+`head` then read one element of the copy. The gate's "head is O(1)" was true of the *primitive*
+and false of *evaluated head* — a defect in the evaluator, not the gate.
+
+**Built.** `eval` now gathers present inputs **by reference** (`Vec<&Value>`, no `.cloned()`),
+and `primitives::compute` borrows them (`&[&Value]`). Reading arms are unchanged — they ride
+deref coercion (`&&Value → &Value`). The compiler forced an explicit `(*x).clone()` at exactly
+the five arms that *retain* an input — `cons`, `select`, `append`, `list`, `sink_effect` — so
+"clone only what you keep" is enforced structurally, not by discipline. No cache, no
+special-case, no control around the symptom; no IO added (I2 intact); the §13 gate is untouched.
+
+**Behaviour identical.** All **163 core** tests green unchanged (the test module's direct
+`compute(...)` call sites were rewrapped to `&[&Value]`; assertions untouched). 38 host, 6
+wasm-native, 10 wasm-target unchanged — **207 native** total.
+
+**Measured (release; re-run of the same bench).** The O(1)-vs-O(n) split the design promised is
+now visible: `head`/`length`/`is_empty` flat at the ~40 ns floor across n = 1…4096 (was climbing
+to ~20 µs at 4096 — −99.8%). `native_sum` **−91%** at n=4096 (21 µs → 1.8 µs): it stops copying
+the list then summing, and just sums the borrow — it now scales as real O(n) work, not as a copy.
+`fold_sum` unmoved (it is intercepted before the firing-rule arm, so it never paid this clone).
+
+**A prediction corrected, honestly.** I predicted `wrapping_add` would "barely move" (reasoning:
+two scalar inputs, nothing to deep-copy). It dropped ~15–20% (native_add 47→41 ns, composite_add
+432→348 ns). I under-weighted that `Value` is a fat enum, so eliminating even two scalar clones
+*plus* allocating a `Vec<&Value>` instead of an owning `Vec<Value>` saves measurably at the
+~40 ns scale, and the composite's inner `add` benefits from the same arm. The wrapping *ratio*
+held (9.2× → 8.5×), so the tax that justifies keeping arithmetic native is intact — but "barely
+move" was wrong; "drops somewhat" (the original findings' call) was the better prediction.
+
+**Deliberately deferred (its own inch).** `eval_composite`'s scratch/boundary gather still
+clones (`scratch[fc].clone()`, `inputs.get(fp).cloned()`), so an inspector *inside a composite*
+still pays O(n) until that is addressed. Passing references through the scratch fights the borrow
+checker (borrow earlier slots while assigning later ones) — a real, separate inch with its own L4
+and its own before/after numbers, not braided in here.
+
+**Next.** Decide whether the `eval_composite` by-reference inch is worth taking, or return to the
+P4 projection frontier.

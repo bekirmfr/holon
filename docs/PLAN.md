@@ -1127,3 +1127,22 @@ bit-identical native vs wasm, CI-guarded. core unchanged throughout. **Frontend 
 Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
 fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
 (whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge, the palette + custom nodes, and **wiring** are now **DONE** (preceding blocks); **next concrete inch:** projection — canvas → composite by child *index* (drop view-only `id`/`position`; canvas edges → core `Edge` as `from_child`/`from_port` → `to_child`/`to_port`), then live eval through the one `Evaluator` (restoring the provable path), then param editing.
+---
+
+### eval input-gathering by reference (DONE; the "O(1)" inspectors are O(1) again)
+- **The defect:** `eval`'s firing rule deep-cloned a primitive's whole input list
+  (`inputs.iter().flatten().cloned().collect()`) before `compute` read it, so `head`/`length`/
+  `is_empty` were O(n) *as evaluated* and `native_sum` paid a redundant whole-list copy. The §13
+  gate's "head is O(1)" was true of the primitive, false of evaluated-head — an evaluator defect,
+  not a gate one.
+- **The fix:** gather by reference (`Vec<&Value>`); `compute` borrows (`&[&Value]`). Reading arms
+  unchanged (deref coercion); the five retaining arms (`cons`/`select`/`append`/`list`/
+  `sink_effect`) clone only what they keep — enforced by the compiler. No cache/control/special-
+  case; I2 intact; gate untouched.
+- **Measured (bench re-run):** inspectors flat at the ~40 ns floor across n=1…4096 (−99.8% at
+  4096); `native_sum` −91% at n=4096; `fold_sum` unmoved (intercepted before the firing arm);
+  `wrapping_add` −15–20% (ratio held 9.2×→8.5×, so the native-arithmetic tax is intact).
+- **Tests:** behaviour identical — **163c + 38h + 6w = 207 native; 10 wasm-target, unchanged**
+  (the `native_vs_composite` bench is the standing guard). `eval_composite`'s scratch-gather clone
+  is **deliberately deferred** to its own inch (borrow-checker work; composed inspectors stay O(n)
+  until then).
