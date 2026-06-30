@@ -12,7 +12,9 @@
 > **Trunk shape:** three spine pillars (P1 ⊳ P2 ⊳ **P3**) + one parallel pillar (P4 · Editor). The crate graph (`holon-host → holon-core`, never reverse) **is** the purity boundary, Cargo-enforced; `holon-core` still has exactly one dependency (`blake3`).
 > **Next — genesis reconciliation arc (`P3-genesis-reconciliation-L4`), then `P3.1.1` (registry).** Reconciling the native set to `§13` *before* the registry's first publish freezes the trust root. A breaking arc done one green inch at a time: **R1 ✅ R2 ✅ R3 ✅** (the additive run — pure kit, text kit, `random` driver; no existing hash moved) → **R4 ✅** (clock/ingress/egress) → **R5 ✅** (one `const`) → **R6 ✅ DECISION** (freeze the as-built trust root — Branch B; demotion-to-stdlib deferred to its own pillar; gate stays active; 34-leaf genesis manifest pinned in §13a). **GENESIS RECONCILIATION COMPLETE (R1–R6).** The trust root is frozen in the §13 shape — the hygiene prerequisite before the registry's first publish is met.
 
-**Next — P3 local-first:** **P3.1.1 ✅** (publish) → **P3.2.1 ✅** (inspection + child_refs unification) → **P3.3.1 ✅** (local memo) → **P3.5.1 ✅** (fork/re-pin — `refork` path-copying transform in core, `Registry::fork` in host inheriting publish's dangling gate; provenance external) → **P3.6.1 advisory** (LAST local-first inch: surface derived signals — capability summary, purity, closure size — all already computable; exposure not mechanism). Then local-first P3 complete. Networked tier (shared trustless cache P3.3.2, reputation, identity) deferred. Both stabilize the trust root; the fork is deferred since R1–R5 are required either way. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin (needs L4) → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
+**LOCAL-FIRST P3 MARKETPLACE COMPLETE:** **P3.1.1 ✅** publish · **P3.2.1 ✅** inspect · **P3.3.1 ✅** memoize · **P3.5.1 ✅** fork · **P3.6.1 ✅** advise — the full local-first operation set, green, built almost entirely from pre-existing invariants (exposure not invention), over the P3.8.1 store.
+
+**Deferred — networked tier:** shared trustless cache (P3.3.2, the differentiator; key-derivation half built), reputation-by-adoption (P3.4.1), author-identity (P3.7.1), networked CAS (P3.8.2). Foundations all in place. **Accumulated refactor:** a `Store`→`Resolver` adapter (cleans fork's `materialize`, enables a 2-line host `advise(hash)`) — appeared 4× now, earned. Both stabilize the trust root; the fork is deferred since R1–R5 are required either way. Then `P3.1.1` registry → `P3.2.1` inspection → `P3.3.1` local memo (canonical-`Value` encoder is the new piece) → `P3.5.1` fork/re-pin (needs L4) → `P3.6.1` advisory. Networked tier (`P3.3.2` the differentiator, `P3.4.1`, `P3.7.1`, `P3.8.2`) deferred.
 
 ---
 
@@ -846,3 +848,28 @@ future change can tell a real defect from an invariant doing its job.
 - **Tests (+5 core=140, +2 host=29):** direct-child / deep+sharing / fn-param / replace-all /
   not-in-closure→None; fork-repins-and-republishes / target-not-in-closure-errors.
 - **Deferred:** provenance tracking, param-forking (promote's domain), Store→Resolver adapter.
+
+---
+
+### P3.6.1 — advisory (DONE; completes local-first P3)
+- **Core `advisory.rs`:** `advise(unit, resolver) -> Advisory` bundles derived signals:
+  `capabilities` (saturated set), `is_pure`, `is_replayable`, `dependency_count` (closure size).
+  Advisory = facts not gates; derived (I8), can't lie. Pure exposure, no new mechanism.
+- **Decision:** core `advise` over a Resolver only; no host `Registry::advise(hash)` wrapper yet
+  (wants the store→resolver materialize — defer to the adapter refactor).
+- **Tests (+5 core = 145):** pure-leaf / sink-impure-with-cap / driver-impure-but-replayable /
+  state-not-replayable / dependency-count = closure size.
+
+---
+
+## P3 LOCAL-FIRST: COMPLETE
+Operations: publish · inspect · memoize · fork · advise (+ store P3.8.1). 174 tests green
+(145 core + 29 host). Built almost entirely from invariants that predate them.
+
+**Next agenda (when resumed):**
+1. `Store`→`Resolver` adapter refactor (cleans fork `materialize`; enables host `advise(hash)`,
+   `inspect(hash)`, etc. as 2-liners). Earned by 4 appearances of the duality.
+2. Networked tier: P3.3.2 shared trustless cache (the differentiator — key-derivation done in
+   P3.3.1), P3.4.1 reputation-by-adoption, P3.7.1 author-identity, P3.8.2 networked CAS.
+3. (Parallel) P4 editor (WASM/canvas).
+4. (Deferred, gated) R6 demotion pillar — only when stdlib mechanism + auditor exist.

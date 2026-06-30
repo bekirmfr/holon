@@ -1554,3 +1554,34 @@ fork is the first *library* code to *write* a `fn` param, so ungated it. `parse_
 **Next — P3.6.1 advisory** (last local-first inch): surface derived advisory signals before
 depending (capability summary, purity, closure size) — all already computable (capabilities,
 is_pure, dependencies). Exposure, not mechanism. Then local-first P3 is complete.
+
+---
+
+## 2026-06-29 · P3.6.1 — advisory signals (COMPLETES local-first P3)
+
+**The lightest inch — pure exposure, no new mechanism (174 green = 145c + 29h, +5 core).** Core
+`advise(unit, resolver) -> Advisory` bundles the four signals a consumer wants before depending:
+`capabilities` (what it can touch — saturated, fail-closed), `is_pure` (cacheable), `is_replayable`
+(no state), `dependency_count` (supply-chain weight). All already computable; advisory just packages
+them.
+
+**"Advisory" is load-bearing: facts, not gates.** Nothing forbids anything — a unit touching the
+network or pulling 50 deps isn't blocked; the consumer reads and decides. Fits the marketplace
+philosophy (make everything inspectable, let participants choose). Signals are derived (I8, never
+asserted), so they can't lie — `capabilities` is saturated from the real closure.
+
+**No host wrapper this inch:** a `Registry::advise(hash)` wants the same store→resolver materialize
+that fork uses. That duality has now appeared 4× (registry, inspection, fork, advisory) — the right
+move is a `Store`→`Resolver` adapter as its own small refactor, after which host `advise(hash)` is a
+2-line convenience. Core `advise` over a Resolver is the genuine capability.
+
+**LOCAL-FIRST P3 MARKETPLACE COMPLETE.** publish (P3.1.1) · inspect (P3.2.1) · memoize (P3.3.1) ·
+fork (P3.5.1) · advise (P3.6.1) — the full set of local-first operations, all green, all built
+almost entirely from invariants that predate them ("exposure, not invention"). The store (P3.8.1)
+underlies them.
+
+**Deferred (networked tier):** the shared trustless cache (P3.3.2 — the actual differentiator;
+key-derivation half built in P3.3.1), reputation-by-adoption (P3.4.1), author-identity (P3.7.1),
+networked CAS (P3.8.2). Foundations (content-addressed keys, closure verification, derived signals)
+all in place + tested. **Accumulated refactor note:** the `Store`→`Resolver` adapter (would clean
+fork's materialize + enable host advise(hash) cheaply).

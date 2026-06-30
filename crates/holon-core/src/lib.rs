@@ -23,6 +23,7 @@
 //!   derived over a closure (P2.2.1); the trust basis of the effect layer.
 
 mod determinism;
+mod advisory;
 mod encapsulate;
 mod eval;
 mod fork;
@@ -43,6 +44,7 @@ pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Pr
 pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::eval;
 pub use fork::{refork, Refork};
+pub use advisory::{advise, Advisory};
 pub use inspect::{child_refs, dependencies};
 pub use memo::memo_key;
 pub use hash::{
