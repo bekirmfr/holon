@@ -211,6 +211,12 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
         minZoom={0.4}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
+        // Select a node or wire, then Backspace or Delete removes it — React Flow's own built-in
+        // mechanism (deleting a node also cleans up any wires attached to it; nothing hand-rolled
+        // here). The default is Backspace only; Delete is added because it's the key most people
+        // reach for first, especially on Windows. React Flow itself skips this handling while a
+        // text input/select inside a node has focus, so editing a const's value or type is safe.
+        deleteKeyCode={["Backspace", "Delete"]}
       >
         <Background variant={BackgroundVariant.Lines} gap={26} color="#1b2a45" />
         <Controls showInteractive={false} />

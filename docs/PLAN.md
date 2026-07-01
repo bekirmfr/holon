@@ -300,10 +300,38 @@ moves to **P2.4**. The Language is eager; the OS decides when effects fire.
 
 ---
 
+### P1.3.2 · inch 4a — the recursive `WType` bridge (DONE; precise on both sides, browser-confirmed)
+- **`WType` mirrors `core::Type`** — `List`/`Product`/`Sum` carry real element type(s) now, not a
+  bare tag. `sum`/`join` cross as `List<Number>`/`List<Text>`, `pair` as `Product<Any,Any>`,
+  `Option` as `Sum<Any,Product<>>`. No new serde attribute — the existing default (external
+  tagging) gives scalars-as-strings / composed-as-single-key-object for free.
+- **`into_core` depth-bounded** — reuses core's own `MAX_TYPE_DEPTH` (made `pub`), not a duplicate;
+  `compatible`/`build_preimage` are public `#[wasm_bindgen]` fns reachable by any JS on the page, a
+  genuine untrusted-input boundary now that `WType` nests.
+- **Two pre-existing latent bugs found and fixed at the root:** `holon.ts`'s `WType` union was
+  missing `"Sum"` since inch 3 (an already-unsound type, an invisible swatch); `CONST_TYPES`/
+  `setConstType` were typed as the full `WType` when their true domain was always the three scalar
+  literals — given their own `ConstType` alias instead of a cast.
+- **`theme.ts`:** `typeKind`/`typeColor`/`typeLabel` — walks a composed type to draw it (hue +
+  bracketed label), never to judge it; `compatible()` stays the sole wire-legality call. `Product`/
+  `Sum` get real hues (rose, blue).
+- **Also:** `deleteKeyCode` → `["Backspace","Delete"]` (React Flow's own selected-element deletion +
+  connected-edge cleanup, just widened by one key) — confirmed live that editing a `const`'s text
+  field doesn't trigger it.
+- **Tests:** 176 core / 39 host / 8 wasm-native / 14 wasm-target, all green; `tsc -b` clean.
+  Browser-confirmed: 37 genesis atoms, `pair`/`some`/`none` render with correct hue + label,
+  wiring/deletion/edge-cleanup all behave live.
+
+> **P1.3.2's value-constructor work (1–3) and the editor's recursive `WType` (4a) are both
+> complete.** Only boundary-input fields (4b) remain — see `P1.3.2-parametric-types-L4.md` §8.
+
+---
+
 **In progress:** generics / parametric types
-P1.3.2 (parametric types): inches 1–3 DONE — the List<T> type-expression language, then Product +
-pair, then Sum + some/none (Dictionary<K,V> = List<Pair>; Option<T> = Sum<T,Unit>; see the DONE blocks
-above + L4 §8). Remaining: the editor inch — recursive WType + boundary-input fields — scoped in
+P1.3.2 (parametric types): inches 1–4a DONE — the List<T> type-expression language, Product + pair,
+Sum + some/none, and the editor's recursive WType bridge (see the DONE blocks above + L4 §8).
+Remaining: boundary-input fields (4b) — supply an open composite's promoted inputs at eval time,
+now against precise composed types instead of flat ones — scoped in
 P1.3.2-parametric-types-L4.md. (The "largest checker-complexity jump" was paid as the one-time
 de-Copy; the checker stays structural — no inference, no subtyping.)
 

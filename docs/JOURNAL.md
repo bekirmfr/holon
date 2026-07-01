@@ -2488,3 +2488,68 @@ deferred, out of scope this inch.)
 
 **Next.** The editor inch — recursive `WType` (so `Product`/`Sum` stop bridging coarse) + the
 boundary-input fields that started this whole detour. Scoped in `P1.3.2-parametric-types-L4.md` §8.
+
+---
+
+## 2026-07-01 · P1.3.2 inch 4a — the recursive `WType` bridge · *(precise on both sides, at last)*
+
+**Built.** `WType` now mirrors `core::Type` exactly — `List`/`Product`/`Sum` carry their real element
+type(s) across the bridge instead of flattening to a bare tag. `sum`/`join`'s input now crosses as
+`List<Number>`/`List<Text>`, `pair`'s output as `Product<Any,Any>`, `Option` as `Sum<Any,Product<>>` —
+precise on both sides for the first time since P1.3.2 started.
+
+**Wire shape, no new serde attribute.** `WType`'s variants were all nullary before, so serde's own
+default (external tagging) already rendered every scalar as a bare string. Adding data to
+`List`/`Product`/`Sum` keeps every scalar exactly as it was and turns just those three into
+single-key objects (`{"List": "Number"}`, `{"Product": [...]}`, `{"Sum": [...]}`) for free — no
+Rust-side config. Considered matching `WValue`'s adjacent-tagging convention for consistency;
+rejected it, since that would wrap every scalar in an object too, breaking every currently-working
+scalar comparison across the editor for no real gain.
+
+**`into_core` is depth-bounded now** — `MAX_TYPE_DEPTH`, made `pub` and reused verbatim from core's
+own decoder, not duplicated. `compatible()`/`build_preimage()` are public `#[wasm_bindgen]`
+functions reachable by any JS on the page, and `WType` can now nest, so this became a genuine
+untrusted-input boundary the moment it stopped being flat — the same class of concern that
+justified the decoder's own bound at inch 1.
+
+**Two real, pre-existing latent bugs surfaced while grounding, neither introduced this inch.**
+`holon.ts`'s `WType` union had silently drifted — it never gained `"Sum"` when inch 3 added the
+bare tag, so `some`/`none`'s output type was already unsound TypeScript and rendered with an
+`undefined` (invisible) swatch. And `PrimitiveNode.tsx`'s `CONST_TYPES`/`setConstType` were typed
+as the full `WType` when their true domain was always just the three literal scalar forms — it
+only ever type-checked because the old flat `WType` happened to be a subtype of `string`; recursive
+`WType` correctly ended that coincidence. Both fixed at the root, not patched with a cast.
+
+**`theme.ts` gained `typeKind`/`typeColor`/`typeLabel`** — the one place the editor walks a composed
+type to draw it (hue, bracketed label), never to judge it; `compatible()` stays the only
+wire-legality decision, asked of core every time. `Product`/`Sum` earned real hues (rose, blue)
+instead of an invisible or miscolored fallback.
+
+**Also, while verifying in-browser:** `deleteKeyCode` extended to `["Backspace", "Delete"]`
+(`App.tsx`) — React Flow already deletes a selected node or edge and cleans up any wires attached
+to it by default, on Backspace; `Delete` is the key most people reach for first and wasn't wired.
+One line, nothing hand-rolled. Confirmed live: editing a `const`'s text field with Backspace stays
+scoped to the input and does not delete the node.
+
+**Compile-fix loop, recorded honestly.** Guessed once that marking `MAX_TYPE_DEPTH` `pub` inside
+`hash.rs` would make it reachable as `holon_core::MAX_TYPE_DEPTH`, based on how `compatible()` was
+already used elsewhere — without reading `holon-core`'s `lib.rs`. Wrong: `hash` is a private
+module; everything it exposes crosses through one curated, item-by-item `pub use` list at the crate
+root, and the constant simply hadn't been added to it. Fixed once the real file was read, not
+guessed again. Separately, `JsError::new` can't be constructed outside the wasm32 target (a
+wasm-bindgen FFI stub with no native implementation), so the one test that deliberately drives
+`into_core`'s failure path moved to wasm-only — the property it proves is unchanged, only where
+`JsError` itself can exist. Every other loop (`tsc`'s module-resolution error, `wasm-pack`'s
+missing-`Cargo.toml` error, `cd editor` from inside `editor/`) turned out to be a wrong shell or
+wrong directory, not a code defect — confirmed, not just asserted, by `npx tsc -b` returning clean
+in both PowerShell and WSL once pointed at the right place.
+
+**Tests prove.** **176 core / 39 host / 8 wasm-native / 14 wasm-target**, all green. `tsc -b` clean.
+**Browser-confirmed:** 37 genesis atoms; `pair` renders rose with a `product<any,any>` label;
+`some`/`none` render blue (previously invisible) with `sum<any,product<>>`; `sum`/`join`'s list
+inputs show `list<number>`/`list<text>` on hover; wiring, deletion, and connected-edge cleanup all
+behave correctly live.
+
+**P1.3.2's value-constructor work (inches 1–3) plus the editor's recursive `WType` (4a) are both
+complete.** Only boundary-input fields (4b) remain — the capability that started this whole
+detour, now able to render precise composed types instead of flat ones.

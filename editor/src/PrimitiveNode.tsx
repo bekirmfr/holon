@@ -6,7 +6,7 @@
 import { memo, type CSSProperties } from "react";
 import { Handle, Position, useReactFlow, type NodeProps, type Node } from "@xyflow/react";
 import { compatible, type WParam, type WPort, type WType } from "./holon";
-import { TYPE_COLOR, outputColor } from "./theme";
+import { typeColor, typeLabel, outputColor } from "./theme";
 
 /** What a placed primitive node carries. Mirrors the catalog interface; `position`/`id` (view-only) live on the React Flow node, not here. */
 export type PrimitiveData = {
@@ -19,9 +19,16 @@ export type PrimitiveData = {
 export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
 
 /** `const` is the one type-polymorphic atom: its `type` param IS its output type. Core supports
- *  exactly these three literal forms (`primitives.rs` `const`); List/Effect/Any have no literal form
- *  — a list is built with the `list` constructor, not typed as text. */
-const CONST_TYPES: WType[] = ["Number", "Boolean", "Text"];
+ *  exactly these three literal forms (`primitives.rs` `const`); List/Product/Sum/Effect/Any have no
+ *  literal form — a list is built with the `list` constructor, not typed as text. This was always
+ *  the true domain of `CONST_TYPES`/`setConstType`; typing them as the full `WType` only ever
+ *  type-checked by accident, because the old flat `WType` was a plain string union and TS widens a
+ *  narrower string-literal type into `string` for free. Recursive `WType` (P1.3.2 editor inch)
+ *  correctly ended that coincidence — a real latent imprecision the compiler just caught, not
+ *  something the recursion broke. Narrowing to the true domain fixes it at the root: `const`
+ *  genuinely can never be `{ List: ... }`, so the type should never have said it could. */
+type ConstType = "Number" | "Boolean" | "Text";
+const CONST_TYPES: readonly ConstType[] = ["Number", "Boolean", "Text"];
 
 const fieldStyle: CSSProperties = {
   font: "inherit",
@@ -52,7 +59,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
   // the default — it does not decide types; `compatible` stays the sole wire judge. Wires from this
   // output whose target no longer accepts the new type are dropped — fail-closed, the same rule that
   // refused them at connect time; core's `validate` at projection is the real gate behind this.
-  const setConstType = (ty: WType) => {
+  const setConstType = (ty: ConstType) => {
     const next = params.map((p) =>
       p.kind === "Frozen" && p.name === "type" ? { ...p, value: ty } : p,
     );
@@ -89,7 +96,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                     className="nodrag"
                     style={fieldStyle}
                     value={p.value}
-                    onChange={(e) => setConstType(e.target.value as WType)}
+                    onChange={(e) => setConstType(e.target.value as ConstType)}
                   >
                     {CONST_TYPES.map((t) => (
                       <option key={t} value={t}>
@@ -120,9 +127,13 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                 position={Position.Left}
                 id={port.name}
                 className="hl-handle"
-                style={{ background: TYPE_COLOR[port.ty] }}
+                style={{ background: typeColor(port.ty) }}
               />
-              <span className="hl-port__label" style={{ color: TYPE_COLOR[port.ty] }}>
+              <span
+                className="hl-port__label"
+                style={{ color: typeColor(port.ty) }}
+                title={typeLabel(port.ty)}
+              >
                 {port.name}
               </span>
             </div>
@@ -133,7 +144,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
           {output && (
             <div className="hl-port hl-port--out">
               <span className="hl-port__label" style={{ color: outputColor(output) }}>
-                {output.toLowerCase()}
+                {typeLabel(output)}
               </span>
               <Handle
                 type="source"

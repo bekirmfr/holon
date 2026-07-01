@@ -19,6 +19,7 @@
 use holon_core::{
     decode_preimage, default_spec, derive_and_freeze, encode_preimage, genesis_units, hash_unit,
     parse_hash, Edge, EncapError, Hash, MapResolver, Param, Port, Type, Unit, UnitBody, Value,
+    MAX_TYPE_DEPTH,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -58,9 +59,10 @@ pub enum WValue {
     Text(String),
     List(Vec<WValue>),
     Effect { sink: String, payload: Box<WValue> },
-    /// Mirrors `core::Value::Sum` losslessly — unlike the `Type`/`WType` bridge (still flat at
-    /// this inch), the *value* bridge is already a faithful one-to-one mirror, so a tagged choice
-    /// crosses intact: `{ "type": "Sum", "value": { "arm": 0, "payload": {...} } }`.
+    /// Mirrors `core::Value::Sum` losslessly — the *value* bridge was already a faithful
+    /// one-to-one mirror when `Sum` first crossed it (P1.3.2 inch 3, before `WType` itself
+    /// became recursive), so a tagged choice crosses intact:
+    /// `{ "type": "Sum", "value": { "arm": 0, "payload": {...} } }`.
     Sum { arm: usize, payload: Box<WValue> },
 }
 
@@ -102,54 +104,78 @@ impl WValue {
 // `WUnit` mirrors `core::Unit` so the editor describes a node as a plain JS object and the bridge
 // encodes it with the ONE core encoder. Children cross as hex hashes; types as plain strings.
 
-/// JS-facing wire type — a bare string in JS: `"Number"`, `"Any"`, …
+/// JS-facing wire type. Mirrors `core::Type` exactly, including its recursive shape
+/// (P1.3.2 editor inch). No `#[serde(tag=...)]` needed: serde's own default (external
+/// tagging) already gives the right shape for free — a nullary variant serializes as a
+/// bare string (`"Number"`), a variant carrying data serializes as a single-key object
+/// (`{"List": "Number"}`, `{"Product": ["Number","Text"]}`). Every existing scalar-only
+/// TS call site (`p.ty === "Number"`, `Record<WType,string>` keyed by the flat cases,
+/// …) is untouched by this — only `List`/`Product`/`Sum` change shape, from a bare tag
+/// to a tagged object, because they are the only variants that now carry a payload.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum WType {
     Number,
     Boolean,
     Text,
-    List,
+    /// A homogeneous list of `T`. `{"List": "Number"}`.
+    List(Box<WType>),
+    /// A positional n-ary tuple. `Pair<A,B>` = `{"Product": [A, B]}`; `Unit` = `{"Product": []}`.
+    Product(Vec<WType>),
+    /// A tagged choice. `Option<T>` = `{"Sum": [T, {"Product": []}]}`.
+    Sum(Vec<WType>),
     Effect,
     Any,
-    /// A tagged choice (P1.3.2 inch 3). Unlike `Product`, a `Sum` value is genuinely **not**
-    /// list-shaped (`WValue::Sum`, not `WValue::List`) — mapping it to `WType::List` would lie
-    /// about the value the editor will actually receive. So it earns its own bare tag, same shape
-    /// as `List`/`Effect`: the editor knows "this port is Option-shaped," not yet which types its
-    /// arms hold (that precision is the same deferred recursive-`WType` editor inch).
-    Sum,
 }
 
 impl WType {
-    // At inch 1, core's only composed type is List<Any> (the catalog), so the editor-facing
-    // WType stays flat: a core List<T> maps to WType::List (the element rides along unseen) and
-    // WType::List reconstructs as List<Any>. A recursive WType that preserves the element type
-    // is the editor inch (P1.3.2 step 4), when precise list types first reach a port.
     fn from_core(t: &Type) -> WType {
         match t {
             Type::Number => WType::Number,
             Type::Boolean => WType::Boolean,
             Type::Text => WType::Text,
-            Type::List(_) => WType::List,
-            Type::Product(_) => WType::List, // a product is list-shaped; the recursive WType that
-                                             // preserves its element types is the editor inch
-            Type::Sum(_) => WType::Sum,
+            Type::List(inner) => WType::List(Box::new(WType::from_core(inner))),
+            Type::Product(elems) => WType::Product(elems.iter().map(WType::from_core).collect()),
+            Type::Sum(elems) => WType::Sum(elems.iter().map(WType::from_core).collect()),
             Type::Effect => WType::Effect,
             Type::Any => WType::Any,
         }
     }
-    fn into_core(self) -> Type {
-        match self {
+
+    /// The public entry point: depth 0.
+    fn into_core(self) -> Result<Type, JsError> {
+        self.into_core_at(0)
+    }
+
+    /// Depth-bounded, mirroring core's own `Decoder::ty_at` and for the identical reason: this is
+    /// now a genuinely untrusted-input boundary. `compatible`/`build_preimage` are public
+    /// `#[wasm_bindgen]` functions reachable by any JS on the page (not only this editor's own
+    /// React code), and `WType` can now nest — so a JS caller can hand this a deeply (or
+    /// adversarially) nested object the same way a hostile byte blob could target the decoder.
+    /// Reuses `MAX_TYPE_DEPTH` rather than a parallel bound that could drift from core's.
+    fn into_core_at(self, depth: u32) -> Result<Type, JsError> {
+        if depth > MAX_TYPE_DEPTH {
+            return Err(JsError::new("type nested too deep"));
+        }
+        Ok(match self {
             WType::Number => Type::Number,
             WType::Boolean => Type::Boolean,
             WType::Text => Type::Text,
-            WType::List => Type::list_any(),
-            // Option is the only Sum shape genesis can produce, so this is the same honest-default
-            // move `List => list_any()` already makes: reconstruct the one concrete shape that
-            // exists, not a guess at some other arity.
-            WType::Sum => Type::Sum(vec![Type::Any, Type::Any]),
+            WType::List(inner) => Type::List(Box::new(inner.into_core_at(depth + 1)?)),
+            WType::Product(elems) => Type::Product(
+                elems
+                    .into_iter()
+                    .map(|e| e.into_core_at(depth + 1))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            WType::Sum(elems) => Type::Sum(
+                elems
+                    .into_iter()
+                    .map(|e| e.into_core_at(depth + 1))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
             WType::Effect => Type::Effect,
             WType::Any => Type::Any,
-        }
+        })
     }
 }
 
@@ -275,9 +301,9 @@ impl WUnit {
             inputs: self
                 .inputs
                 .into_iter()
-                .map(|p| Port { name: p.name, ty: p.ty.into_core() })
-                .collect(),
-            output: self.output.map(WType::into_core),
+                .map(|p| Ok(Port { name: p.name, ty: p.ty.into_core()? }))
+                .collect::<Result<Vec<_>, JsError>>()?,
+            output: self.output.map(WType::into_core).transpose()?,
         })
     }
 }
@@ -326,14 +352,14 @@ pub fn compatible(src: JsValue, dst: JsValue) -> Result<bool, JsError> {
         serde_wasm_bindgen::from_value(src).map_err(|e| JsError::new(&format!("src: {e}")))?;
     let d: WType =
         serde_wasm_bindgen::from_value(dst).map_err(|e| JsError::new(&format!("dst: {e}")))?;
-    Ok(types_compatible(s, d))
+    types_compatible(s, d)
 }
 
 /// The rule itself, on `WType` (shared by the bridge fn and its tests): map to core `Type` via the
 /// one `into_core` and delegate to `holon_core::compatible`. Fully-qualified so it does not collide
-/// with the exported `compatible` above.
-fn types_compatible(s: WType, d: WType) -> bool {
-    holon_core::compatible(&s.into_core(), &d.into_core())
+/// with the exported `compatible` above. Fallible now that `into_core` is depth-bounded.
+fn types_compatible(s: WType, d: WType) -> Result<bool, JsError> {
+    Ok(holon_core::compatible(&s.into_core()?, &d.into_core()?))
 }
 
 // ── The evaluator ────────────────────────────────────────────────────────────────────────────
@@ -583,11 +609,68 @@ fn check_primitive_catalog() {
 #[cfg(test)]
 fn check_compatible() {
     // Core's §5 rule, reached through the bridge helper: equal types or either `Any`.
-    assert!(types_compatible(WType::Number, WType::Number));
-    assert!(types_compatible(WType::Any, WType::Number));
-    assert!(types_compatible(WType::Number, WType::Any));
-    assert!(!types_compatible(WType::Number, WType::Text));
-    assert!(!types_compatible(WType::Effect, WType::List));
+    assert!(types_compatible(WType::Number, WType::Number).unwrap());
+    assert!(types_compatible(WType::Any, WType::Number).unwrap());
+    assert!(types_compatible(WType::Number, WType::Any).unwrap());
+    assert!(!types_compatible(WType::Number, WType::Text).unwrap());
+    assert!(!types_compatible(WType::Effect, WType::List(Box::new(WType::Any))).unwrap());
+    // Recursive now: List<Number> fits List<Any>, but not List<Text> — the whole point of this inch.
+    assert!(types_compatible(
+        WType::List(Box::new(WType::Number)),
+        WType::List(Box::new(WType::Any))
+    )
+    .unwrap());
+    assert!(!types_compatible(
+        WType::List(Box::new(WType::Number)),
+        WType::List(Box::new(WType::Text))
+    )
+    .unwrap());
+}
+
+#[cfg(test)]
+fn check_wtype_roundtrip() {
+    // Every shape round-trips through from_core -> into_core, not just List — Product and Sum are
+    // the two constructors this inch actually adds precision for.
+    let cases = [
+        Type::Number,
+        Type::list_any(),
+        Type::List(Box::new(Type::Number)), // the precise element type now survives the bridge
+        Type::Product(vec![Type::Number, Type::Text]),
+        Type::Sum(vec![Type::Number, Type::Product(vec![])]), // Option<Number>
+        // Nested: Product<List<Number>, Sum<Text, Unit>> — the two n-ary constructors compose,
+        // and so does List inside them, exactly mirroring core's own sum_type_round_trips.
+        Type::Product(vec![
+            Type::List(Box::new(Type::Number)),
+            Type::Sum(vec![Type::Text, Type::Product(vec![])]),
+        ]),
+    ];
+    for t in cases {
+        let w = WType::from_core(&t);
+        assert_eq!(w.into_core().expect("into_core"), t);
+    }
+}
+
+// wasm32-only, matching its sole caller (wasm_tests, below): its failure path constructs a
+// JsError, which only has a real implementation under the wasm target — see the comment at its
+// call site in native_tests for why. Gating the definition itself, not just the registration,
+// so a native build has no dead, never-callable function sitting in it.
+#[cfg(all(test, target_arch = "wasm32"))]
+fn check_wtype_depth_bound() {
+    // WType::into_core is now a genuinely untrusted-input boundary (compatible/build_preimage are
+    // public #[wasm_bindgen] fns) — an adversarially deep WType must be refused, not overflow the
+    // stack. Mirrors core's own deep_type_is_rejected.
+    let mut deep = WType::Any;
+    for _ in 0..(MAX_TYPE_DEPTH + 5) {
+        deep = WType::List(Box::new(deep));
+    }
+    assert!(deep.into_core().is_err());
+
+    // A depth well within the bound still succeeds — this isn't accidentally rejecting everything.
+    let mut shallow = WType::Any;
+    for _ in 0..3 {
+        shallow = WType::List(Box::new(shallow));
+    }
+    assert!(shallow.into_core().is_ok());
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -601,6 +684,13 @@ mod native_tests {
     fn wvalue_roundtrip_native() { check_wvalue_roundtrip(); }
     #[test]
     fn wunit_roundtrip_native() { check_wunit_roundtrip(); }
+    #[test]
+    fn wtype_roundtrip_native() { check_wtype_roundtrip(); }
+    // wtype_depth_bound is wasm-only (below): its failure path constructs a JsError, a
+    // wasm-bindgen FFI stub with no native implementation — invoking it outside wasm32 panics
+    // unconditionally ("cannot call wasm-bindgen imported functions on non-wasm targets"), not a
+    // property of the depth-bound logic itself. The bound and its rejection are still proven —
+    // just where JsError can actually exist.
     #[test]
     fn primitive_catalog_native() { check_primitive_catalog(); }
     #[test]
@@ -622,6 +712,10 @@ mod wasm_tests {
     fn wvalue_roundtrip_wasm() { check_wvalue_roundtrip(); }
     #[wasm_bindgen_test]
     fn wunit_roundtrip_wasm() { check_wunit_roundtrip(); }
+    #[wasm_bindgen_test]
+    fn wtype_roundtrip_wasm() { check_wtype_roundtrip(); }
+    #[wasm_bindgen_test]
+    fn wtype_depth_bound_wasm() { check_wtype_depth_bound(); }
     #[wasm_bindgen_test]
     fn primitive_catalog_wasm() { check_primitive_catalog(); }
     #[wasm_bindgen_test]

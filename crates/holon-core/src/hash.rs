@@ -537,7 +537,13 @@ pub fn hash_unit(unit: &Unit) -> Result<Hash, EncodeError> {
 /// legitimate type (real types are depth 1-3) and far below stack exhaustion. A blob
 /// nesting deeper is rejected with [`DecodeError::TypeTooDeep`] — depth is the one new
 /// attack surface a recursive type decoder opens over untrusted bytes.
-const MAX_TYPE_DEPTH: u32 = 32;
+///
+/// `pub`: the wasm bridge's `WType::into_core` (P1.3.2 editor inch) faces the same
+/// attack surface for the same reason — `compatible`/`build_preimage` are public
+/// `#[wasm_bindgen]` entry points, reachable by any JS on the page, and `WType` is now
+/// recursive too. It reuses this exact bound rather than defining a parallel one that
+/// could silently drift out of sync.
+pub const MAX_TYPE_DEPTH: u32 = 32;
 
 struct Decoder<'a> {
     buf: &'a [u8],

@@ -51,7 +51,7 @@ pub use inspect::{adoption_counts, child_refs, dependencies};
 pub use memo::{entry_key, memo_key, verify_entry, CacheEntry};
 pub use hash::{
     decode_preimage, encode_preimage, hash_unit, parse_hash, DecodeError, Edge, EncodeError, Hash,
-    Param, Port, Type, Unit, UnitBody, ENCODING_VERSION,
+    Param, Port, Type, Unit, UnitBody, ENCODING_VERSION, MAX_TYPE_DEPTH,
 };
 pub use kind::{
     capabilities, capabilities_of, effects_of, kind_of, Capabilities, Capability,

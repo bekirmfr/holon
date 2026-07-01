@@ -18,8 +18,25 @@ import init, {
 
 export { Evaluator };
 
-/** A wire type. Mirrors `core::Type` (as `WType`). */
-export type WType = "Number" | "Boolean" | "Text" | "List" | "Effect" | "Any";
+/**
+ * A wire type. Mirrors `core::Type` (as `WType`) — now recursive (P1.3.2 editor inch): `List`,
+ * `Product`, and `Sum` carry their element type(s). This mirrors serde's own DEFAULT shape for a
+ * mixed Rust enum (no `#[serde(tag=...)]` on the Rust side): a nullary variant crosses as a bare
+ * string (`"Number"`), a variant carrying data crosses as a single-key object
+ * (`{ List: "Number" }`, `{ Product: ["Number", "Text"] }`, `{ Sum: [T, { Product: [] }] }` for
+ * `Option<T>`). Every scalar-only comparison in the editor (`ty === "Number"`, the `const`-type
+ * dropdown, …) keeps working unchanged — only the three composed shapes changed, from a bare tag
+ * to a tagged object, because they're the only variants that now carry a payload.
+ */
+export type WType =
+  | "Number"
+  | "Boolean"
+  | "Text"
+  | "Effect"
+  | "Any"
+  | { List: WType }
+  | { Product: WType[] }
+  | { Sum: WType[] };
 
 /** A parameter: a frozen value, or an open hole filled at instantiate time. Mirrors `core::Param`. */
 export type WParam =
