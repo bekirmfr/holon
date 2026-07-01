@@ -34,14 +34,13 @@ import {
   type WValue,
   type WPort,
   type WType,
-  type WEncapError,
   type WEncapSpec,
-  type WValidationError,
 } from "./holon";
 import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
+import { boundaryLabels, isWEncapError, encapErrorNodeIndices } from "./diagnostics";
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
@@ -114,26 +113,9 @@ const boundaryFieldStyle: CSSProperties = {
 // literal form (the same boundary CONST_TYPES already draws) and shows "wire in", not a guess.
 // Colour comes from theme.ts — the same "type is colour" legend the canvas nodes already use.
 
-// Boundary port labels: `default_spec` names a promoted input after its INNER port's own name
-// (core's own choice, P1.5.1), with no uniqueness guarantee across different children — two
-// unrelated unwired "b" ports (extremely common; "a"/"b" are this catalog's standard binary-op
-// names) can promote to the same bare name. Earlier version of this comment claimed the editor
-// "genuinely cannot say which child this came from without a core change" — that was wrong: the
-// composite's own boundary edges (from_child === BOUNDARY) already carry exactly that mapping,
-// computed by derive_and_freeze and returned in composite.body; onProject just wasn't reading
-// it. So this prefers TRUE provenance ("add · b") over the bare name. Occurrence-counting is
-// only a last-resort tiebreaker for the one case even provenance can't separate: two placed
-// instances of the SAME primitive, unconfigured, hence the SAME content hash (I3 — identical
-// computation genuinely IS the same identity, not a gap), both left unwired on the same port.
-function boundaryLabels(ports: WPort[], source: (string | null)[]): string[] {
-  const withProvenance = ports.map((p, i) => (source[i] ? `${source[i]} · ${p.name}` : p.name));
-  const seen = new Map<string, number>();
-  return withProvenance.map((label) => {
-    const n = (seen.get(label) ?? 0) + 1;
-    seen.set(label, n);
-    return n === 1 ? label : `${label} (${n})`;
-  });
-}
+// boundaryLabels / isWEncapError / validationErrorNodeIndices / encapErrorNodeIndices moved to
+// ./diagnostics (2026-07-02) — they need nothing from this file, and extracting them keeps them
+// testable without pulling in this file's own top-level value import of Evaluator from ./holon.
 
 // A placed node's own hash, for use as a child in project/group (P4.3.1). A genesis primitive
 // is rebuilt fresh from its catalog name+interface — I3 (the same primitive always yields the
@@ -151,66 +133,6 @@ function unitFor(n: PrimitiveNodeType, ev: Evaluator): string {
     outputs: n.data.outputs,
   };
   return ev.insert(buildPreimage(wunit));
-}
-
-// `project()` throws the structured error object itself on an EncapError/ValidationError path
-// (not a generic Error) — this is a loose but adequate runtime check: nothing else in this app
-// produces an object with both a string `kind` and a string `message`. It doesn't verify every
-// field matches a known variant; an unrecognized `kind` would fail the exhaustiveness check
-// below at the type level, and the try/catch around the caller keeps that from crashing anything
-// user-visible — highlighting is a nicety, never allowed to break error display itself.
-function isWEncapError(x: unknown): x is WEncapError {
-  return typeof x === "object" && x !== null && "kind" in x && "message" in x;
-}
-
-// Which PLACED NODE indices (into `children`/`nodes` — they share the same order) a
-// ValidationError implicates. Most variants carry a `child` directly. `TypeMismatch` only
-// carries an `edge` index — resolved here via the SAME `wedges` array the editor already built
-// and submitted, so no core-side change was needed just to turn an edge index back into its
-// endpoints. `Cycle` and the two `Boundary*OutOfRange` variants carry no attributable node at
-// all — see WValidationError's own doc comment for why that's a real, named limit, not an
-// oversight: tracing which edges form a cycle is new algorithmic work, out of this inch's scope.
-function validationErrorNodeIndices(err: WValidationError, wedges: WEdge[]): number[] {
-  switch (err.kind) {
-    case "ChildOutOfRange":
-    case "UnresolvedChild":
-    case "OutputPortOutOfRange":
-    case "InputPortOutOfRange":
-      return [err.child];
-    case "DuplicateInputEdge":
-      return [err.to_child];
-    case "TypeMismatch": {
-      const e = wedges[err.edge];
-      return e ? [e.from_child, e.to_child].filter((c) => c !== BOUNDARY) : [];
-    }
-    case "BoundaryInputOutOfRange":
-    case "BoundaryOutputOutOfRange":
-    case "Cycle":
-      return [];
-  }
-  const exhaustive: never = err;
-  return exhaustive;
-}
-
-// Same idea, one level up: an EncapError's own `child` fields, or — for `Invalid` — every
-// wrapped ValidationError's indices, flattened. No `AmbiguousDefaultOutput` case anymore
-// (P4.3, fork 2): default_spec no longer errors on multiple free outputs, so that variant —
-// and the candidate-list highlighting it drove — is gone on both sides now.
-function encapErrorNodeIndices(err: WEncapError, wedges: WEdge[]): number[] {
-  switch (err.kind) {
-    case "UnresolvedChild":
-    case "PromoteChildOutOfRange":
-    case "PromotePortOutOfRange":
-    case "PromoteAlreadyBound":
-    case "DuplicatePromotion":
-    case "ExposeChildOutOfRange":
-    case "ExposePortInvalid":
-      return [err.child];
-    case "Invalid":
-      return err.errors.flatMap((e) => validationErrorNodeIndices(e, wedges));
-  }
-  const exhaustive: never = err;
-  return exhaustive;
 }
 
 function BoundaryField({

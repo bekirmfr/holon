@@ -3180,3 +3180,88 @@ mechanical front — all its stated preconditions are already met, and it's the 
 "import as pin" / "publish" naturally extends this inch's inspect-before-import framing from the
 design doc's own trust model. The testing gap remains the other standing candidate, now on its
 fourth deferral.
+
+---
+
+## 2026-07-02 · Frontend test infrastructure — the testing debt, closed · *(named across fork 3, grouping, expand, and inspection; addressed here, not deferred a fifth time)*
+
+**Context.** Named after fork 3, named again after grouping, named a third time with an explicit
+"shouldn't get a fifth free pass" after inspection. When the choice between addressing it and
+continuing feature work was actually put on the table, `P4.4.1` was picked — deliberately, with
+the debt explicitly still owed. This inch pays it.
+
+**Setup.**
+- `vitest ^3.2.6` — not the latest (`4.1.9`, which requires Vite `6`/`7`/`8`), checked directly
+  against the npm registry rather than assumed. Forcing an unrelated Vite major-version bump as
+  a side effect of adding tests would have been a bigger, riskier change than asked for; `3.2.6`
+  is the newest release still compatible with this project's existing Vite `5.x`.
+- `jsdom ^29.1.1`, `vite.config.ts` switched to `vitest/config`'s `defineConfig` (re-exports
+  Vite's own, typed with the `test` field included — one config, not a second, parallel
+  `vitest.config.ts` that could drift from it).
+
+**A real course-correction, not a clean build from the start.** The original plan was the
+simplest one: add `export` to four pure functions already living in `App.tsx`
+(`boundaryLabels`, `isWEncapError`, `validationErrorNodeIndices`, `encapErrorNodeIndices`) and
+test them in place. Tracing the actual import graph before writing the test file caught a real
+problem: `App.tsx` has a top-level *value* import of `Evaluator` from `holon.ts`, which itself
+imports the real wasm package (`../wasm/holon_wasm.js`, built for `--target web`, browser-
+oriented). Importing anything from `App.tsx` — even four unrelated pure functions — would
+evaluate that whole chain. Rather than gamble on whether that happens to work under a test
+runner, or paper over it with a `vi.mock` that could silently go stale the moment `holon.ts`
+gains a new real export some other file starts using, the four functions were extracted into a
+new module, `diagnostics.ts` — genuinely the more correct move, not just a workaround, since
+none of them ever needed anything from `holon.ts` except types. Only type-only imports remain,
+which TypeScript erases entirely, so the new module has zero runtime dependency on `holon.ts` or
+the wasm package. `theme.ts`'s functions needed no such extraction — already exported, already
+free of any risky import.
+
+**First batch: 25 tests, two files.** `theme.test.ts` (8 tests) — `typeKind`/`typeColor`/
+`outputColor`/`typeLabel`, including that every declared kind gets a genuinely distinct color,
+not just a plausible one. `diagnostics.test.ts` (17 tests) — the centerpiece is
+`encapErrorNodeIndices`, deliberately exercised against its *current* variant names
+(`ExposeChildOutOfRange`/`ExposePortInvalid`, no `AmbiguousDefaultOutput` at all): this is
+exactly the check that would have caught the stale-`WEncapError`-names bug immediately earlier
+this session, instead of by manual review.
+
+**A real compile error, caught and fixed honestly, not just silenced.** `npx tsc -b` failed on
+`encapErrorNodeIndices`'s own test: a `cases` array typed as `WEncapError[]` (the full
+discriminated union, including `Invalid`, which has no `child` field) couldn't support
+`err.child` even though every literal actually in the array genuinely has one — TypeScript
+doesn't narrow a declared array type from its contents. Fixed via
+`Array<Extract<WEncapError, { child: number }>>`, which narrows to exactly the variants that
+structurally carry `child` while staying checked against the real union — a misspelled `kind` or
+a missing field still fails to compile, preserving the actual protective point of typing the
+array explicitly, not just making the error go away.
+
+**Environment cleanup: a real, quiet risk, named and resolved, not assumed harmless.**
+`vite.config.js` and `vite.config.d.ts` turned out to be stale compiled artifacts sitting beside
+the real `vite.config.ts` (the `.d.ts` in particular is unambiguous — it only exists as `tsc`
+build output). Left in place, Vite's config resolution could have silently preferred the stale
+`.js` over the `.ts` carrying the new `test` field, producing a confusing failure that looked
+unrelated to its actual cause. Both confirmed deleted.
+
+**Verified, not just asserted.** `npm test`: 25/25. `npx tsc -b`: clean. `npm run dev`: starts
+and serves normally. Re-ran the full suite again after the `Extract` fix specifically to confirm
+a type-only change hadn't altered runtime behavior — it hadn't (`Extract` is compile-time only),
+still 25/25.
+
+**One live finding, named rather than silently fixed or silently ignored: `npm audit`'s
+esbuild/vite advisory.** `esbuild <=0.24.2` (bundled via `vite <=6.4.2`) — a moderate/high
+finding whose actual exposure is narrow: a malicious website, visited in a browser while the dev
+server happens to be running, can send it requests and read the response — dev-server-only,
+never shipped in a production build, and only reachable if the dev server is exposed beyond
+localhost (not this project's default). The available fix isn't a patch — `esbuild`'s fix ships
+bundled inside `vite@8.1.2`, three majors up, so taking it would mean reversing the exact
+version constraint just chosen above to avoid an unrelated major bump. Deliberately left as-is,
+with two explicit triggers for revisiting named rather than left implicit: immediately, if the
+dev server is ever run with `--host` (exposed beyond localhost); or opportunistically, whenever
+this project's own Vite upgrade happens for unrelated reasons, taking the `esbuild` fix along
+with it rather than going looking for it separately.
+
+**No `PLAN.md` change.** This inch isn't tied to any `P1`-`P4` leaf — a cross-cutting session
+finding resolved, not a leaf closed.
+
+**Next inch.** Per the order already agreed: the `SmallVec` perf item from `P4.7` next (its own
+stated trigger — an actual multi-output composite existing to benchmark against — has been
+satisfied since the `P4.3` forks landed), then the `P4.5.1`/`P4.6.1` host+registry transport
+scoping pass.
