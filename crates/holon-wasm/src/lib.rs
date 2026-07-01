@@ -19,7 +19,7 @@
 use holon_core::{
     decode_preimage, default_spec, derive_and_freeze, encode_preimage, genesis_units, hash_unit,
     parse_hash, Edge, EncapError, Hash, MapResolver, Param, Port, Type, Unit, UnitBody, Value,
-    MAX_TYPE_DEPTH,
+    ValidationError, MAX_TYPE_DEPTH,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -337,6 +337,16 @@ pub fn primitive_catalog() -> Result<JsValue, JsError> {
         .map_err(|e| JsError::new(&format!("catalog: {e}")))
 }
 
+/// The genesis primitive names the editor may grow a *placed* node's port count past the
+/// catalog's declared default (e.g. `add` beyond its usual 2 inputs) — core's 4th catalog fact
+/// (`catalog::VARIADIC`), mirrored here so the editor derives this from core instead of
+/// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
+/// A bare `string[]`, not `WUnit`-shaped data — this is a classification, not an interface.
+#[wasm_bindgen]
+pub fn variadic_primitives() -> Vec<String> {
+    holon_core::VARIADIC.iter().map(|s| s.to_string()).collect()
+}
+
 /// Core's genesis interfaces mirrored to `WUnit` via the *same* `from_core` `load_unit` uses — no
 /// second core→JS converter. Shared by the bridge fn and its tests.
 fn catalog_wunits() -> Vec<WUnit> {
@@ -374,6 +384,116 @@ pub struct Evaluator {
     resolver: MapResolver,
 }
 
+/// A structural validation failure — mirrors `core::ValidationError`. Every variant carries
+/// a `message` (core's own `Display` impl, `.to_string()`'d here — one decider for the
+/// wording, not a second copy hand-maintained in the bridge) alongside the structured
+/// fields the editor needs to highlight the actual node(s) at fault: `child`/`edge` indices
+/// the editor already holds locally (it built the `children`/`edges` arrays it sent to
+/// `project`), so it resolves them back to a specific placed node without core needing to
+/// know anything about the canvas. `src`/`dst` cross as real `WType`s (not just text) so the
+/// editor can render them with its own `typeLabel`, the same as everywhere else.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "kind")]
+pub enum WValidationError {
+    ChildOutOfRange { edge: usize, child: u32, message: String },
+    UnresolvedChild { child: u32, message: String },
+    OutputPortOutOfRange { edge: usize, child: u32, port: u32, message: String },
+    InputPortOutOfRange { edge: usize, child: u32, port: u32, message: String },
+    BoundaryInputOutOfRange { edge: usize, port: u32, message: String },
+    BoundaryOutputOutOfRange { edge: usize, port: u32, message: String },
+    DuplicateInputEdge { to_child: u32, to_port: u32, message: String },
+    Cycle { message: String },
+    TypeMismatch { edge: usize, src: WType, dst: WType, message: String },
+}
+
+impl WValidationError {
+    fn from_core(e: &ValidationError) -> WValidationError {
+        let message = e.to_string();
+        match e {
+            ValidationError::ChildOutOfRange { edge, child } => {
+                WValidationError::ChildOutOfRange { edge: *edge, child: *child, message }
+            }
+            ValidationError::UnresolvedChild { child } => {
+                WValidationError::UnresolvedChild { child: *child, message }
+            }
+            ValidationError::OutputPortOutOfRange { edge, child, port } => {
+                WValidationError::OutputPortOutOfRange { edge: *edge, child: *child, port: *port, message }
+            }
+            ValidationError::InputPortOutOfRange { edge, child, port } => {
+                WValidationError::InputPortOutOfRange { edge: *edge, child: *child, port: *port, message }
+            }
+            ValidationError::BoundaryInputOutOfRange { edge, port } => {
+                WValidationError::BoundaryInputOutOfRange { edge: *edge, port: *port, message }
+            }
+            ValidationError::BoundaryOutputOutOfRange { edge, port } => {
+                WValidationError::BoundaryOutputOutOfRange { edge: *edge, port: *port, message }
+            }
+            ValidationError::DuplicateInputEdge { to_child, to_port } => {
+                WValidationError::DuplicateInputEdge { to_child: *to_child, to_port: *to_port, message }
+            }
+            ValidationError::Cycle => WValidationError::Cycle { message },
+            ValidationError::TypeMismatch { edge, src, dst } => WValidationError::TypeMismatch {
+                edge: *edge,
+                src: WType::from_core(src),
+                dst: WType::from_core(dst),
+                message,
+            },
+        }
+    }
+}
+
+/// An encapsulation failure — mirrors `core::EncapError`. Same shape and reasoning as
+/// `WValidationError`: structured fields for highlighting, plus core's own `message`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "kind")]
+pub enum WEncapError {
+    UnresolvedChild { child: u32, message: String },
+    PromoteChildOutOfRange { child: u32, message: String },
+    PromotePortOutOfRange { child: u32, port: u32, message: String },
+    PromoteAlreadyBound { child: u32, port: u32, message: String },
+    DuplicatePromotion { child: u32, port: u32, message: String },
+    OutputChildOutOfRange { child: u32, message: String },
+    OutputPortInvalid { child: u32, port: u32, message: String },
+    /// The candidate children `default_spec` found (empty ⇒ none free; 2+ ⇒ ambiguous) —
+    /// core's own `AmbiguousDefaultOutput(Vec<u32>)`, crossed intact.
+    AmbiguousDefaultOutput { candidates: Vec<u32>, message: String },
+    Invalid { errors: Vec<WValidationError>, message: String },
+}
+
+impl WEncapError {
+    fn from_core(e: &EncapError) -> WEncapError {
+        let message = e.to_string();
+        match e {
+            EncapError::UnresolvedChild(c) => WEncapError::UnresolvedChild { child: *c, message },
+            EncapError::PromoteChildOutOfRange(c) => {
+                WEncapError::PromoteChildOutOfRange { child: *c, message }
+            }
+            EncapError::PromotePortOutOfRange { child, port } => {
+                WEncapError::PromotePortOutOfRange { child: *child, port: *port, message }
+            }
+            EncapError::PromoteAlreadyBound { child, port } => {
+                WEncapError::PromoteAlreadyBound { child: *child, port: *port, message }
+            }
+            EncapError::DuplicatePromotion { child, port } => {
+                WEncapError::DuplicatePromotion { child: *child, port: *port, message }
+            }
+            EncapError::OutputChildOutOfRange(c) => {
+                WEncapError::OutputChildOutOfRange { child: *c, message }
+            }
+            EncapError::OutputPortInvalid { child, port } => {
+                WEncapError::OutputPortInvalid { child: *child, port: *port, message }
+            }
+            EncapError::AmbiguousDefaultOutput(candidates) => {
+                WEncapError::AmbiguousDefaultOutput { candidates: candidates.clone(), message }
+            }
+            EncapError::Invalid(errs) => WEncapError::Invalid {
+                errors: errs.iter().map(WValidationError::from_core).collect(),
+                message,
+            },
+        }
+    }
+}
+
 #[wasm_bindgen]
 impl Evaluator {
     #[wasm_bindgen(constructor)]
@@ -409,14 +529,18 @@ impl Evaluator {
     /// derives the boundary (`default_spec`) and freezes (`derive_and_freeze`) — never reimplemented
     /// in TS (one decider). Returns the composite `WUnit`; the editor hashes it through the existing
     /// `build_preimage` / `hash_unit_hex` path and later evaluates it. Fails closed: an ambiguous
-    /// output, or any validation error (cycle, duplicate source, type mismatch), throws.
-    pub fn project(&self, children: Vec<String>, edges: JsValue) -> Result<JsValue, JsError> {
+    /// output, or any validation error (cycle, duplicate source, type mismatch), throws — as a
+    /// structured `WEncapError`, not a flattened string, so the editor can highlight the actual
+    /// offending node(s) instead of just displaying text. Malformed *input* (a bad hex hash, edges
+    /// that don't even deserialize) is a different failure mode — the editor's own marshalling
+    /// should never trigger it — and stays a plain string, not part of this structured family.
+    pub fn project(&self, children: Vec<String>, edges: JsValue) -> Result<JsValue, JsValue> {
         let hashes: Vec<Hash> = children
             .iter()
-            .map(|c| parse_hash(c).ok_or_else(|| JsError::new(&format!("bad child hash: {c}"))))
-            .collect::<Result<_, JsError>>()?;
+            .map(|c| parse_hash(c).ok_or_else(|| JsValue::from_str(&format!("bad child hash: {c}"))))
+            .collect::<Result<_, JsValue>>()?;
         let wedges: Vec<WEdge> = serde_wasm_bindgen::from_value(edges)
-            .map_err(|e| JsError::new(&format!("edges: {e}")))?;
+            .map_err(|e| JsValue::from_str(&format!("edges: {e}")))?;
         let core_edges: Vec<Edge> = wedges
             .into_iter()
             .map(|e| Edge {
@@ -426,11 +550,15 @@ impl Evaluator {
                 to_port: e.to_port,
             })
             .collect();
-        let composite = self
-            .project_core(hashes, core_edges)
-            .map_err(|e| JsError::new(&format!("project: {e:?}")))?;
+        // The structured path: build a WEncapError core's own Display already put into words
+        // (`e.to_string()`, inside from_core) — not a second, hand-maintained message here. Falls
+        // back to a plain string only if serializing the structured error itself somehow fails.
+        let composite = self.project_core(hashes, core_edges).map_err(|e| {
+            serde_wasm_bindgen::to_value(&WEncapError::from_core(&e))
+                .unwrap_or_else(|_| JsValue::from_str(&format!("project: {e}")))
+        })?;
         serde_wasm_bindgen::to_value(&WUnit::from_core(&composite))
-            .map_err(|e| JsError::new(&format!("unit: {e}")))
+            .map_err(|e| JsValue::from_str(&format!("unit: {e}")))
     }
 
     /// The JS-free heart of [`Evaluator::project`], so it runs on both targets: derive the canonical
@@ -506,6 +634,46 @@ fn check_project() {
 
     // Two independent adds ⇒ two free outputs ⇒ no canonical output: surfaced as an error.
     assert!(ev.project_core(vec![h, h], vec![]).is_err());
+}
+
+#[cfg(test)]
+fn check_encap_error_structure() {
+    // WEncapError::from_core must carry the SAME structured data core's own EncapError does, not
+    // just a stringified message — proven directly, no JsValue crossing needed here (the actual
+    // serde_wasm_bindgen serialization is the same already-proven mechanism WValue/WType/WUnit use
+    // everywhere else in this file).
+    let mut ev = Evaluator::new();
+    let add_pre = encode_preimage(&binop("add")).unwrap();
+    let hex = ev.insert(&add_pre).unwrap();
+    let h = parse_hash(&hex).unwrap();
+
+    // Two independent adds ⇒ two free outputs ⇒ AmbiguousDefaultOutput([0, 1]) — the candidate
+    // list this whole inch exists to stop discarding.
+    let err = ev.project_core(vec![h, h], vec![]).unwrap_err();
+    match WEncapError::from_core(&err) {
+        WEncapError::AmbiguousDefaultOutput { candidates, message } => {
+            assert_eq!(candidates, vec![0, 1]);
+            assert!(!message.is_empty()); // core's own Display, not silently blank
+        }
+        other => panic!("expected AmbiguousDefaultOutput, got {other:?}"),
+    }
+}
+
+#[cfg(test)]
+fn check_validation_error_structure() {
+    // The nested case: EncapError::Invalid wraps ValidationError — proving TypeMismatch's src/dst
+    // cross as real WTypes (so the editor renders them with its own typeLabel), not just text
+    // buried in a message string.
+    let inner = ValidationError::TypeMismatch { edge: 2, src: Type::Number, dst: Type::Text };
+    match WValidationError::from_core(&inner) {
+        WValidationError::TypeMismatch { edge, src, dst, message } => {
+            assert_eq!(edge, 2);
+            assert_eq!(src, WType::Number);
+            assert_eq!(dst, WType::Text);
+            assert!(!message.is_empty());
+        }
+        other => panic!("expected TypeMismatch, got {other:?}"),
+    }
 }
 
 #[cfg(test)]
@@ -607,6 +775,18 @@ fn check_primitive_catalog() {
 }
 
 #[cfg(test)]
+fn check_variadic_primitives() {
+    let names = variadic_primitives();
+    // The exact set — a tripwire against silent drift between core's list and what crosses.
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(sorted, vec!["add", "and", "concat", "list", "multiply", "or"]);
+    // subtract shares add's catalog interface line but must NOT be offered as growable — it's
+    // not associative, core gives it no N-ary meaning.
+    assert!(!names.contains(&"subtract".to_string()));
+}
+
+#[cfg(test)]
 fn check_compatible() {
     // Core's §5 rule, reached through the bridge helper: equal types or either `Any`.
     assert!(types_compatible(WType::Number, WType::Number).unwrap());
@@ -694,9 +874,15 @@ mod native_tests {
     #[test]
     fn primitive_catalog_native() { check_primitive_catalog(); }
     #[test]
+    fn variadic_primitives_native() { check_variadic_primitives(); }
+    #[test]
     fn compatible_native() { check_compatible(); }
     #[test]
     fn project_native() { check_project(); }
+    #[test]
+    fn encap_error_structure_native() { check_encap_error_structure(); }
+    #[test]
+    fn validation_error_structure_native() { check_validation_error_structure(); }
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]
@@ -719,9 +905,15 @@ mod wasm_tests {
     #[wasm_bindgen_test]
     fn primitive_catalog_wasm() { check_primitive_catalog(); }
     #[wasm_bindgen_test]
+    fn variadic_primitives_wasm() { check_variadic_primitives(); }
+    #[wasm_bindgen_test]
     fn compatible_wasm() { check_compatible(); }
     #[wasm_bindgen_test]
     fn project_wasm() { check_project(); }
+    #[wasm_bindgen_test]
+    fn encap_error_structure_wasm() { check_encap_error_structure(); }
+    #[wasm_bindgen_test]
+    fn validation_error_structure_wasm() { check_validation_error_structure(); }
 
     // The full editor path across the JS boundary: insert an add, project the one-node graph, get the
     // composite WUnit back, confirm it equals the JS-free project_core (same canonical bytes) and

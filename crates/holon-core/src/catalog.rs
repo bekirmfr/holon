@@ -37,6 +37,27 @@ pub const GENESIS: &[&str] = &[
     "egress",
 ];
 
+/// Genesis leaves whose `compute` genuinely tolerates any input count — `fold_numbers` /
+/// `fold_bools` / an unbounded loop over `inputs` in `primitives.rs` — not the fixed-arity
+/// `let [a, b] = inputs else { return None }` pattern most leaves use. `add`/`multiply` fold with
+/// identity `0`/`1`; `and`/`or` fold with identity `true`/`false`; `concat`/`list` loop with no
+/// count check at all. Every one is well-defined at ANY count, including zero.
+///
+/// `subtract`/`divide`/`compare` are deliberately excluded even though they share `add`'s catalog
+/// line: subtraction and division aren't associative, so "variadic subtract" has no natural
+/// meaning core has chosen to give it — this list names only the leaves where growing arity is
+/// unambiguous, not "everything binary-shaped."
+///
+/// The 4th catalog fact, alongside `compute` / `capabilities_of` / `interface_of`. Purely an
+/// editor concern: growing a *placed* node's port count past the catalog's declared default (2,
+/// same as every other leaf below) — core neither needs nor enforces this list to evaluate
+/// correctly. A `Unit`'s declared `inputs` is free-form data; nothing in `validate`/`hash_unit`
+/// checks it against some external "canonical" shape, and these six leaves' `compute` already
+/// handles whatever count of values it's actually given. This constant exists so the editor
+/// derives "which leaves may grow" from core, the same way it derives everything else, instead of
+/// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
+pub const VARIADIC: &[&str] = &["add", "multiply", "and", "or", "concat", "list"];
+
 /// The canonical genesis interface for `name`, or `None` if it is not a genesis primitive
 /// (fail-closed, mirroring [`crate::capabilities_of`]).
 pub fn interface_of(name: &str) -> Option<Unit> {
@@ -161,6 +182,44 @@ mod tests {
     fn genesis_has_37_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         assert_eq!(GENESIS.len(), 37);
+    }
+
+    #[test]
+    fn variadic_names_are_genesis_leaves() {
+        // The 4th catalog fact must name real leaves — a typo here would silently make the
+        // editor offer to grow a port on a primitive that doesn't exist.
+        for &name in VARIADIC {
+            assert!(GENESIS.contains(&name), "{name} is in VARIADIC but not GENESIS");
+        }
+    }
+
+    #[test]
+    fn variadic_leaves_actually_tolerate_more_than_two_inputs() {
+        // Not just trusting the classification: prove every VARIADIC name's compute genuinely
+        // folds 3 inputs correctly, and that a strictly-binary sibling (subtract, sharing add's
+        // catalog line) correctly refuses to, via the arity mismatch in its own destructure.
+        use crate::primitives::compute;
+        let n = |x: f64| Value::Number(x);
+        let b = |x: bool| Value::Boolean(x);
+        let t = |x: &str| Value::Text(x.to_string());
+
+        assert_eq!(compute("add", &[&n(1.0), &n(2.0), &n(3.0)], &[]), Some(n(6.0)));
+        assert_eq!(compute("multiply", &[&n(2.0), &n(3.0), &n(4.0)], &[]), Some(n(24.0)));
+        assert_eq!(compute("and", &[&b(true), &b(true), &b(false)], &[]), Some(b(false)));
+        assert_eq!(compute("or", &[&b(false), &b(false), &b(true)], &[]), Some(b(true)));
+        assert_eq!(
+            compute("concat", &[&t("a"), &t("b"), &t("c")], &[]),
+            Some(t("abc"))
+        );
+        assert_eq!(
+            compute("list", &[&n(1.0), &n(2.0), &n(3.0)], &[]),
+            Some(Value::List(vec![n(1.0), n(2.0), n(3.0)]))
+        );
+
+        // subtract shares add's catalog interface line but is NOT variadic — not associative, so
+        // core gives it no N-ary meaning. Its own strict-binary destructure refuses 3 inputs.
+        assert!(!VARIADIC.contains(&"subtract"));
+        assert_eq!(compute("subtract", &[&n(1.0), &n(2.0), &n(3.0)], &[]), None);
     }
 
     #[test]

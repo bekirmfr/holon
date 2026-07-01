@@ -13,6 +13,7 @@ import init, {
   Evaluator,
   build_preimage,
   primitive_catalog,
+  variadic_primitives,
   compatible as wasm_compatible,
 } from "../wasm/holon_wasm.js";
 
@@ -65,6 +66,46 @@ export type WUnit = {
   output?: WType | null;
 };
 
+/**
+ * A structural validation failure. Mirrors `core::ValidationError` via the bridge's
+ * `WValidationError`. Every variant carries a `message` (core's own wording — one decider,
+ * not a second copy hand-maintained here) plus the structured fields the editor needs to
+ * find the actual node(s) at fault: `child`/`edge` indices the editor already has local
+ * data for (it built the `children`/`edges` arrays it sent to `project`), so it resolves
+ * them back to a specific placed node without core needing to know anything about the
+ * canvas. `src`/`dst` on `TypeMismatch` cross as real `WType`s, not text, so they render
+ * with the same `typeLabel` every other type in the editor uses.
+ */
+export type WValidationError =
+  | { kind: "ChildOutOfRange"; edge: number; child: number; message: string }
+  | { kind: "UnresolvedChild"; child: number; message: string }
+  | { kind: "OutputPortOutOfRange"; edge: number; child: number; port: number; message: string }
+  | { kind: "InputPortOutOfRange"; edge: number; child: number; port: number; message: string }
+  | { kind: "BoundaryInputOutOfRange"; edge: number; port: number; message: string }
+  | { kind: "BoundaryOutputOutOfRange"; edge: number; port: number; message: string }
+  | { kind: "DuplicateInputEdge"; to_child: number; to_port: number; message: string }
+  | { kind: "Cycle"; message: string }
+  | { kind: "TypeMismatch"; edge: number; src: WType; dst: WType; message: string };
+
+/**
+ * An encapsulation failure — mirrors `core::EncapError` via `WEncapError`. Thrown by
+ * {@link Evaluator.project} (as the structured object itself, not wrapped in a generic
+ * `Error`) so the editor can highlight the actual offending node(s) instead of just
+ * displaying text. `AmbiguousDefaultOutput`'s `candidates` are the free-output child
+ * indices `default_spec` found (empty ⇒ none free; 2+ ⇒ pick one) — previously discarded
+ * by core, now the only way the editor knows which nodes to point at.
+ */
+export type WEncapError =
+  | { kind: "UnresolvedChild"; child: number; message: string }
+  | { kind: "PromoteChildOutOfRange"; child: number; message: string }
+  | { kind: "PromotePortOutOfRange"; child: number; port: number; message: string }
+  | { kind: "PromoteAlreadyBound"; child: number; port: number; message: string }
+  | { kind: "DuplicatePromotion"; child: number; port: number; message: string }
+  | { kind: "OutputChildOutOfRange"; child: number; message: string }
+  | { kind: "OutputPortInvalid"; child: number; port: number; message: string }
+  | { kind: "AmbiguousDefaultOutput"; candidates: number[]; message: string }
+  | { kind: "Invalid"; errors: WValidationError[]; message: string };
+
 /** A runtime value crossing the boundary. Mirrors `core::Value` (as `WValue`). `Sum` mirrors
  *  `Value::Sum { arm, payload }` — `arm` says which alternative was taken, `payload` is its value;
  *  the untaken alternatives aren't carried (a tagged choice, not a tuple — see `Type::Sum`/`WType`'s
@@ -101,6 +142,16 @@ export function buildPreimage(unit: WUnit): Uint8Array {
  */
 export function primitiveCatalog(): WUnit[] {
   return primitive_catalog() as WUnit[];
+}
+
+/**
+ * The genesis primitive names whose *placed* port count the editor may grow past the catalog's
+ * declared default — core's 4th catalog fact (`catalog::VARIADIC`), derived from whether each
+ * leaf's `compute` genuinely tolerates any input count. A `Set` (not an array) since the only
+ * use is membership testing — `variadicPrimitives().has(name)`. Call after {@link ensureReady}.
+ */
+export function variadicPrimitives(): Set<string> {
+  return new Set(variadic_primitives() as string[]);
 }
 
 /**

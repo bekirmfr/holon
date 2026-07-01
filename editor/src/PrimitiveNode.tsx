@@ -6,14 +6,24 @@
 import { memo, type CSSProperties } from "react";
 import { Handle, Position, useReactFlow, type NodeProps, type Node } from "@xyflow/react";
 import { compatible, type WParam, type WPort, type WType } from "./holon";
-import { typeColor, typeLabel, outputColor } from "./theme";
+import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
 
-/** What a placed primitive node carries. Mirrors the catalog interface; `position`/`id` (view-only) live on the React Flow node, not here. */
+/** What a placed primitive node carries. Mirrors the catalog interface; `position`/`id` (view-only) live on the React Flow node, not here.
+ *  `variadic`/`minInputs` are P4.1's variadic-arity editing: whether this leaf's port count may
+ *  grow past the catalog's declared default, and what that default was (the shrink floor) —
+ *  both set once at drop time from core's own `VARIADIC` list, never guessed here. */
 export type PrimitiveData = {
   name: string;
   inputs: WPort[];
   output: WType | null;
   params: WParam[];
+  variadic: boolean;
+  minInputs: number;
+  /** Purely a rendering flag set by App.tsx's decoratedNodes (see there) after a failed
+   *  projection — never set at drop time, never read by onProject/hashing. Optional and
+   *  absent on every normal node; present and true only while this node is implicated in
+   *  the last projection error. */
+  error?: boolean;
 };
 
 export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
@@ -30,6 +40,19 @@ export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
 type ConstType = "Number" | "Boolean" | "Text";
 const CONST_TYPES: readonly ConstType[] = ["Number", "Boolean", "Text"];
 
+// The next port name for a variadic node, continuing the catalog's own single-letter convention
+// ("a", "b", …) every current variadic leaf uses. Falls back to a numbered name if that
+// convention isn't met — defensive, not expected to trigger for any genesis leaf today, but
+// cheaper than assuming the convention holds forever.
+function nextPortName(existing: string[]): string {
+  const isSingleLetter = existing.length > 0 && existing.every((n) => /^[a-z]$/.test(n));
+  if (isSingleLetter) {
+    const max = Math.max(...existing.map((n) => n.charCodeAt(0)));
+    if (max < "z".charCodeAt(0)) return String.fromCharCode(max + 1);
+  }
+  return `in${existing.length + 1}`;
+}
+
 const fieldStyle: CSSProperties = {
   font: "inherit",
   fontSize: 11,
@@ -40,9 +63,42 @@ const fieldStyle: CSSProperties = {
   padding: "1px 4px",
 };
 
+const portButtonStyle: CSSProperties = {
+  font: "inherit",
+  fontSize: 10,
+  lineHeight: 1,
+  color: "#9fb4d4",
+  background: "#0e1a2f",
+  border: "1px solid #1b2a45",
+  borderRadius: 3,
+  width: 16,
+  height: 16,
+  padding: 0,
+  cursor: "pointer",
+};
+
 function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
-  const { name, inputs, output, params } = data;
+  const { name, inputs, output, params, variadic, minInputs, error } = data;
   const { updateNodeData, setEdges, getNode } = useReactFlow<PrimitiveNodeType>();
+
+  // Grow/shrink a variadic node's port count (P4.1: variadic-arity editing). Every port a
+  // variadic leaf declares is the same type — add/multiply/and/or/concat/list each have uniform
+  // ports — so a new one just copies the last port's type; no type decision is made here. Never
+  // shrinks below `minInputs`, the catalog's own declared default (derived at drop time, not a
+  // hardcoded floor — see PrimitiveData's own doc for why).
+  const addPort = () => {
+    const last = inputs[inputs.length - 1];
+    const port: WPort = { name: nextPortName(inputs.map((p) => p.name)), ty: last?.ty ?? "Any" };
+    updateNodeData(id, { inputs: [...inputs, port] });
+  };
+  const removePort = () => {
+    if (inputs.length <= minInputs) return;
+    const removed = inputs[inputs.length - 1];
+    updateNodeData(id, { inputs: inputs.slice(0, -1) });
+    // Drop any wire that fed the removed port — fail-closed, the same rule setConstType already
+    // applies when a change makes an existing wire's target port stop existing.
+    setEdges((eds) => eds.filter((e) => !(e.target === id && e.targetHandle === removed.name)));
+  };
 
   // Edit a frozen value (text). Core parses it; a bad entry fails soft at eval. The value is in the
   // preimage, so this changes identity — core's `param_value_changes_hash`, now via the canvas.
@@ -74,7 +130,10 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
   };
 
   return (
-    <div className="hl-node">
+    <div
+      className="hl-node"
+      style={error ? { borderColor: TYPE_COLOR.Effect, boxShadow: `0 0 0 1px ${TYPE_COLOR.Effect}` } : undefined}
+    >
       <div className="hl-node__title">{name}</div>
 
       {params.length > 0 && (
@@ -138,6 +197,27 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
               </span>
             </div>
           ))}
+          {variadic && (
+            <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+              <button
+                className="nodrag"
+                onClick={addPort}
+                style={portButtonStyle}
+                title="add input"
+              >
+                +
+              </button>
+              <button
+                className="nodrag"
+                onClick={removePort}
+                disabled={inputs.length <= minInputs}
+                style={{ ...portButtonStyle, opacity: inputs.length <= minInputs ? 0.3 : 1 }}
+                title="remove last input"
+              >
+                −
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="hl-node__col hl-node__col--out">

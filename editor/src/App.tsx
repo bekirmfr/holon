@@ -24,14 +24,18 @@ import "@xyflow/react/dist/style.css";
 import {
   ensureReady,
   primitiveCatalog,
+  variadicPrimitives,
   compatible,
   buildPreimage,
   Evaluator,
+  BOUNDARY,
   type WUnit,
   type WEdge,
   type WValue,
   type WPort,
   type WType,
+  type WEncapError,
+  type WValidationError,
 } from "./holon";
 import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
@@ -107,19 +111,104 @@ const boundaryFieldStyle: CSSProperties = {
 // it through core's own string parser the way a frozen param has to. A non-scalar honestly has no
 // literal form (the same boundary CONST_TYPES already draws) and shows "wire in", not a guess.
 // Colour comes from theme.ts — the same "type is colour" legend the canvas nodes already use.
+
+// Boundary port labels: `default_spec` names a promoted input after its INNER port's own name
+// (core's own choice, P1.5.1), with no uniqueness guarantee across different children — two
+// unrelated unwired "b" ports (extremely common; "a"/"b" are this catalog's standard binary-op
+// names) can promote to the same bare name. Earlier version of this comment claimed the editor
+// "genuinely cannot say which child this came from without a core change" — that was wrong: the
+// composite's own boundary edges (from_child === BOUNDARY) already carry exactly that mapping,
+// computed by derive_and_freeze and returned in composite.body; onProject just wasn't reading
+// it. So this prefers TRUE provenance ("add · b") over the bare name. Occurrence-counting is
+// only a last-resort tiebreaker for the one case even provenance can't separate: two placed
+// instances of the SAME primitive, unconfigured, hence the SAME content hash (I3 — identical
+// computation genuinely IS the same identity, not a gap), both left unwired on the same port.
+function boundaryLabels(ports: WPort[], source: (string | null)[]): string[] {
+  const withProvenance = ports.map((p, i) => (source[i] ? `${source[i]} · ${p.name}` : p.name));
+  const seen = new Map<string, number>();
+  return withProvenance.map((label) => {
+    const n = (seen.get(label) ?? 0) + 1;
+    seen.set(label, n);
+    return n === 1 ? label : `${label} (${n})`;
+  });
+}
+
+// `project()` throws the structured error object itself on an EncapError/ValidationError path
+// (not a generic Error) — this is a loose but adequate runtime check: nothing else in this app
+// produces an object with both a string `kind` and a string `message`. It doesn't verify every
+// field matches a known variant; an unrecognized `kind` would fail the exhaustiveness check
+// below at the type level, and the try/catch around the caller keeps that from crashing anything
+// user-visible — highlighting is a nicety, never allowed to break error display itself.
+function isWEncapError(x: unknown): x is WEncapError {
+  return typeof x === "object" && x !== null && "kind" in x && "message" in x;
+}
+
+// Which PLACED NODE indices (into `children`/`nodes` — they share the same order) a
+// ValidationError implicates. Most variants carry a `child` directly. `TypeMismatch` only
+// carries an `edge` index — resolved here via the SAME `wedges` array the editor already built
+// and submitted, so no core-side change was needed just to turn an edge index back into its
+// endpoints. `Cycle` and the two `Boundary*OutOfRange` variants carry no attributable node at
+// all — see WValidationError's own doc comment for why that's a real, named limit, not an
+// oversight: tracing which edges form a cycle is new algorithmic work, out of this inch's scope.
+function validationErrorNodeIndices(err: WValidationError, wedges: WEdge[]): number[] {
+  switch (err.kind) {
+    case "ChildOutOfRange":
+    case "UnresolvedChild":
+    case "OutputPortOutOfRange":
+    case "InputPortOutOfRange":
+      return [err.child];
+    case "DuplicateInputEdge":
+      return [err.to_child];
+    case "TypeMismatch": {
+      const e = wedges[err.edge];
+      return e ? [e.from_child, e.to_child].filter((c) => c !== BOUNDARY) : [];
+    }
+    case "BoundaryInputOutOfRange":
+    case "BoundaryOutputOutOfRange":
+    case "Cycle":
+      return [];
+  }
+  const exhaustive: never = err;
+  return exhaustive;
+}
+
+// Same idea, one level up: an EncapError's own `child` fields, or — for `Invalid` — every
+// wrapped ValidationError's indices, flattened. `AmbiguousDefaultOutput`'s candidates are
+// exactly the node indices to highlight — the fix this whole inch exists for.
+function encapErrorNodeIndices(err: WEncapError, wedges: WEdge[]): number[] {
+  switch (err.kind) {
+    case "UnresolvedChild":
+    case "PromoteChildOutOfRange":
+    case "PromotePortOutOfRange":
+    case "PromoteAlreadyBound":
+    case "DuplicatePromotion":
+    case "OutputChildOutOfRange":
+    case "OutputPortInvalid":
+      return [err.child];
+    case "AmbiguousDefaultOutput":
+      return err.candidates;
+    case "Invalid":
+      return err.errors.flatMap((e) => validationErrorNodeIndices(e, wedges));
+  }
+  const exhaustive: never = err;
+  return exhaustive;
+}
+
 function BoundaryField({
   port,
+  label: displayLabel,
   value,
   onChange,
 }: {
   port: WPort;
+  label: string;
   value: WValue | null;
   onChange: (v: WValue | null) => void;
 }) {
   const row: CSSProperties = { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 };
   const label = (
     <span style={{ color: typeColor(port.ty), fontSize: 11 }} title={typeLabel(port.ty)}>
-      {port.name}
+      {displayLabel}
     </span>
   );
 
@@ -176,7 +265,7 @@ function BoundaryField({
   );
 }
 
-function Canvas({ catalog }: { catalog: WUnit[] }) {
+function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string> }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { screenToFlowPosition, getNode, getEdges } = useReactFlow<PrimitiveNodeType>();
@@ -204,11 +293,18 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
       if (!u || !name) return;
 
       const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const inputs = u.inputs ?? [];
       const data: PrimitiveData = {
         name,
-        inputs: u.inputs ?? [],
+        inputs,
         output: u.output ?? null,
         params: u.params ?? [],
+        // The catalog's own declared arity is the floor a variadic node may shrink back to —
+        // never below what core actually declared, derived here rather than hardcoded, so a
+        // future catalog change to one of these leaves' default arity can't silently drift from
+        // what the "−" button enforces.
+        variadic: variadic.has(name),
+        minInputs: inputs.length,
       };
       const node: PrimitiveNodeType = {
         id: `${name}-${idRef.current++}`,
@@ -261,19 +357,31 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
   //
   // A composite's promoted inputs (`ports`) and the values currently supplied for them (`values`,
   // same length/order, `null` = unsupplied) are held alongside the frozen preimage (`pre`) so a
-  // boundary field's onChange can re-eval without re-projecting. A CLOSED composite is just the
+  // boundary field's onChange can re-eval without re-projecting. `source[i]` is which PLACED NODE
+  // promoted input `i` actually came from — read directly off the composite's own boundary edges
+  // (`from_child === BOUNDARY`), not guessed: core already computes this mapping and returns it,
+  // the editor just wasn't reading `composite.body` before. A CLOSED composite is just the
   // zero-input case of this same shape — `ports: []`, nothing special-cased.
   const ev = useMemo(() => new Evaluator(), []);
   const [projection, setProjection] = useState<{
     hash: string;
     pre: Uint8Array;
     ports: WPort[];
+    source: (string | null)[];
     values: (WValue | null)[];
     result: WValue | null;
   } | null>(null);
   const [projError, setProjError] = useState<string>("");
+  // Which placed nodes a projection error implicates — derived from the structured error's own
+  // indices (see encapErrorNodeIndices), not guessed. Purely presentational: never read by
+  // onProject/onDrop, never affects hashing — a node's identity doesn't know it's "wrong."
+  const [errorNodeIds, setErrorNodeIds] = useState<Set<string>>(new Set());
 
   const onProject = useCallback(() => {
+    // Hoisted out of the try block on purpose: TypeMismatch only carries an `edge` index, and
+    // resolving it back to actual node ids (in the catch block below) needs this same array —
+    // a `const` declared inside `try {}` isn't visible inside its own `catch {}` in JS.
+    let wedges: WEdge[] = [];
     try {
       // Child index = position in `nodes` — arbitrary, because core canonicalizes child order, so a
       // cosmetic reorder cannot move the hash (I5). `id`/`position` are dropped here.
@@ -292,7 +400,7 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
 
       // Canvas wire → core edge by index. from_port is 0 (single output, the "out" handle); to_port
       // is the named input's position in the target's interface (the editor holds that interface).
-      const wedges: WEdge[] = edges.map((e) => {
+      wedges = edges.map((e) => {
         const from = indexOf.get(e.source);
         const to = indexOf.get(e.target);
         if (from === undefined || to === undefined) {
@@ -303,8 +411,9 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
         return { from_child: from, from_port: 0, to_child: to, to_port: toPort };
       });
 
-      // Core derives the boundary and freezes; an EncapError — ambiguous output, cycle, type mismatch
-      // — throws. `insert` returns the composite's content hash and pins it.
+      // Core derives the boundary and freezes; an EncapError — ambiguous output, cycle, type
+      // mismatch — throws the structured error object itself (see WEncapError), not a generic
+      // Error, so the catch block below can point at the actual node(s) at fault.
       const composite = ev.project(children, wedges) as WUnit;
       const pre = buildPreimage(composite);
       const hash = ev.insert(pre);
@@ -315,13 +424,34 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
       // the result ⇒ not ready (an unfilled non-scalar port, a divide-by-zero, an unsupplied driver);
       // a sink graph yields the Effect it constructs (pure eval doesn't fire it).
       const ports = composite.inputs ?? [];
+      // Which PLACED NODE each promoted input actually came from — read directly off the
+      // composite's own boundary edges (from_child === BOUNDARY), not guessed and not
+      // re-derived: derive_and_freeze already computed exactly this mapping and returned it in
+      // composite.body; the editor was only reading composite.inputs/.output before and
+      // discarding the rest. `nodes[to_child]` is safe because `children` (above) was built from
+      // `nodes` in the same order, so the indices line up by construction.
+      const boundaryEdges = composite.body.kind === "Composite" ? composite.body.edges : [];
+      const source: (string | null)[] = ports.map((_, i) => {
+        const edge = boundaryEdges.find((e) => e.from_child === BOUNDARY && e.from_port === i);
+        return edge ? (nodes[edge.to_child]?.data.name ?? null) : null;
+      });
       const values = ports.map((p) => defaultBoundaryValue(p.ty));
       const result = ev.eval(pre, values) as WValue | null;
-      setProjection({ hash, pre, ports, values, result });
+      setProjection({ hash, pre, ports, source, values, result });
       setProjError("");
+      setErrorNodeIds(new Set());
     } catch (err) {
       setProjection(null);
-      setProjError(err instanceof Error ? err.message : String(err));
+      setProjError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
+      // Highlighting is a nicety layered on top of the (already-set) error message — never let
+      // it break error display itself if a shape ever slips past isWEncapError unexpectedly.
+      try {
+        const indices = isWEncapError(err) ? encapErrorNodeIndices(err, wedges) : [];
+        const ids = indices.map((i) => nodes[i]?.id).filter((id): id is string => id !== undefined);
+        setErrorNodeIds(new Set(ids));
+      } catch {
+        setErrorNodeIds(new Set());
+      }
     }
   }, [nodes, edges, ev]);
 
@@ -339,10 +469,23 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
     [ev],
   );
 
+  // Purely a rendering decoration for React Flow — never touches the underlying `nodes` state
+  // that onProject/onDrop read and write, so flagging a node as errored has zero effect on
+  // hashing or identity (the same "cosmetic vs. structural" line I5 already draws elsewhere).
+  const decoratedNodes = useMemo(
+    () =>
+      errorNodeIds.size === 0
+        ? nodes
+        : nodes.map((n) =>
+            errorNodeIds.has(n.id) ? { ...n, data: { ...n.data, error: true } } : n,
+          ),
+    [nodes, errorNodeIds],
+  );
+
   return (
     <div className="hl-canvas" onDrop={onDrop} onDragOver={onDragOver}>
       <ReactFlow<PrimitiveNodeType>
-        nodes={nodes}
+        nodes={decoratedNodes}
         onNodesChange={onNodesChange}
         edges={edges}
         onEdgesChange={onEdgesChange}
@@ -398,10 +541,11 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
                       alignItems: "flex-end",
                     }}
                   >
-                    {projection.ports.map((port, i) => (
+                    {boundaryLabels(projection.ports, projection.source).map((label, i) => (
                       <BoundaryField
                         key={i}
-                        port={port}
+                        port={projection.ports[i]}
+                        label={label}
                         value={projection.values[i]}
                         onChange={(v) => setBoundaryValue(i, v)}
                       />
@@ -430,12 +574,14 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
 
 function Editor() {
   const [catalog, setCatalog] = useState<WUnit[] | null>(null);
+  const [variadic, setVariadic] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>("");
 
   useEffect(() => {
     (async () => {
       await ensureReady();
       setCatalog(primitiveCatalog());
+      setVariadic(variadicPrimitives());
     })().catch((e: unknown) => setError(String(e)));
   }, []);
 
@@ -456,7 +602,7 @@ function Editor() {
         <div className="hl-body">
           {catalog && <Palette catalog={catalog} />}
           <ReactFlowProvider>
-            {catalog && <Canvas catalog={catalog} />}
+            {catalog && <Canvas catalog={catalog} variadic={variadic} />}
           </ReactFlowProvider>
         </div>
       )}

@@ -47,10 +47,53 @@ pub enum EncapError {
     /// The output port isn't 0, or the child has no output.
     OutputPortInvalid { child: u32, port: u32 },
     /// `default_spec` found zero or more than one free output — the author must choose.
-    AmbiguousDefaultOutput,
+    /// Carries the candidate child indices `default_spec` already computed (empty ⇒ none
+    /// free; 2+ ⇒ ambiguous) — this was previously computed then thrown away; surfacing it
+    /// costs nothing new, it's the editor's only way to know *which* nodes to highlight.
+    AmbiguousDefaultOutput(Vec<u32>),
     /// The derived unit failed validation (should be impossible by construction).
     Invalid(Vec<ValidationError>),
 }
+
+impl std::fmt::Display for EncapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EncapError::UnresolvedChild(c) => write!(f, "child {c} couldn't be resolved"),
+            EncapError::PromoteChildOutOfRange(c) => {
+                write!(f, "promotion references child {c}, which doesn't exist")
+            }
+            EncapError::PromotePortOutOfRange { child, port } => {
+                write!(f, "promotion references input port {port} of child {child}, which doesn't exist")
+            }
+            EncapError::PromoteAlreadyBound { child, port } => write!(
+                f,
+                "input port {port} of child {child} is already wired internally and can't also be promoted"
+            ),
+            EncapError::DuplicatePromotion { child, port } => {
+                write!(f, "input port {port} of child {child} is promoted more than once")
+            }
+            EncapError::OutputChildOutOfRange(c) => {
+                write!(f, "the exposed output references child {c}, which doesn't exist")
+            }
+            EncapError::OutputPortInvalid { child, port } => {
+                write!(f, "child {child} has no output at port {port}")
+            }
+            EncapError::AmbiguousDefaultOutput(candidates) if candidates.is_empty() => {
+                write!(f, "no child has a free output to expose")
+            }
+            EncapError::AmbiguousDefaultOutput(candidates) => write!(
+                f,
+                "{} children have a free output ({candidates:?}) — choose which to expose",
+                candidates.len()
+            ),
+            EncapError::Invalid(errs) => {
+                write!(f, "the derived unit failed validation: {} error(s)", errs.len())
+            }
+        }
+    }
+}
+
+impl std::error::Error for EncapError {}
 
 /// Derive a unit from a selection and a spec: validate the choices, derive the interface
 /// types, generate the boundary edges, assemble, and validate the result.
@@ -99,8 +142,8 @@ pub fn derive_and_freeze(
     if oc as usize >= k {
         return Err(EncapError::OutputChildOutOfRange(oc));
     }
-    let out_ty = match (op, &resolved[oc as usize].output) {
-        (0, Some(t)) => t.clone(),
+    let out_ty = match (op, resolved[oc as usize].output.clone()) {
+        (0, Some(t)) => t,
         _ => return Err(EncapError::OutputPortInvalid { child: oc, port: op }),
     };
 
@@ -163,7 +206,7 @@ pub fn default_spec(
         .filter(|c| !consumed.contains(c) && resolved[*c as usize].output.is_some())
         .collect();
     if free.len() != 1 {
-        return Err(EncapError::AmbiguousDefaultOutput);
+        return Err(EncapError::AmbiguousDefaultOutput(free));
     }
     let output = (free.pop().unwrap(), 0);
 
@@ -294,11 +337,31 @@ mod tests {
 
     #[test]
     fn ambiguous_default_output() {
-        // Two independent (unconsumed) children ⇒ no unique free output.
+        // Two independent (unconsumed) children ⇒ no unique free output. Both candidate
+        // indices are now in the error — previously discarded, now the only way the editor
+        // can know which two nodes to highlight.
         let mut r = MapResolver::new();
         let hadd = r.insert(binop("add", "a", "b")).unwrap();
         let err = default_spec(&[hadd, hadd], &[], &r).unwrap_err();
-        assert_eq!(err, EncapError::AmbiguousDefaultOutput);
+        assert_eq!(err, EncapError::AmbiguousDefaultOutput(vec![0, 1]));
+    }
+
+    #[test]
+    fn no_free_output_is_distinguishable_from_ambiguous() {
+        // Before this inch, "zero free outputs" and "two free outputs" were the exact same
+        // bare variant — indistinguishable to a caller. An empty candidate list is now the
+        // honest, distinct signal for "nothing to expose" (no child has an output at all),
+        // not conflated with "too many, pick one."
+        let mut r = MapResolver::new();
+        let no_output = Unit {
+            body: UnitBody::Primitive { name: "store_write".into() },
+            params: vec![],
+            inputs: vec![Port { name: "value".into(), ty: Type::Any }],
+            output: None,
+        };
+        let h = r.insert(no_output).unwrap();
+        let err = default_spec(&[h], &[], &r).unwrap_err();
+        assert_eq!(err, EncapError::AmbiguousDefaultOutput(vec![]));
     }
 
     #[test]

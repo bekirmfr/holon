@@ -1266,10 +1266,81 @@ bit-identical native vs wasm, CI-guarded. core unchanged throughout. **Frontend 
 
 ---
 
-### P4.1 — the authoring canvas (NEXT; L4 written: P4.1-authoring-canvas-L4.md)
+### P4.1 — the authoring canvas (DONE; the full arc — see below)
 Real nodes from a palette, draggable; `isValidConnection` enforcing the wire-time type check (I1,
 fail closed); project the canvas → a composite via `default_spec`; evaluate live through `Evaluator`
-(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge, the palette + custom nodes, and **wiring** are now **DONE** (preceding blocks); **next concrete inch:** boundary-input fields — supply an open composite's promoted inputs at eval time (typed fields per composite.inputs), so reusable units run through their interface, not just closed graphs. Then variadic-arity editing of list/add/and/concat (grow/shrink element ports), gated on core marking which leaves are variadic — a small 4th catalog fact, the interface_of discipline. (Place · wire · project · configure · run all landed — see the DONE blocks above; the authoring-canvas arc is foundation-complete.)
+(whole-graph baseline; per-node values deferred). Each a separate inch. **Two core foundations landed first** (the two preceding blocks): **child-order canonicalization** (identity no longer leaks presentation — pulled forward from P4.3 onto the empty corpus) and the **primitive-interface catalog** (the palette's authoritative source). The bridge, the palette + custom nodes, and **wiring** were the first DONE blocks (above); **place · wire · project · configure · run** all landed next. Boundary-input fields landed as part of the P1.3.2 detour (see that section's inch 4b — a composite's promoted inputs are filled and evaluated through precise composed types). The two blocks below close the arc: **variadic-arity editing** (grow/shrink a placed leaf's port count) and **error-surfacing** (structured, node-level projection errors instead of flat text).
+
+---
+
+### P4.1 · variadic-arity editing (DONE; the last piece of the authoring-canvas arc, browser-confirmed)
+- **A placed `add`/`multiply`/`and`/`or`/`concat`/`list` node can grow past the catalog's default of
+  2 ports** (`+`/`−` in `PrimitiveNode.tsx`). Checked first, not assumed: `primitives.rs` shows these
+  six leaves already fold/loop over `inputs: &[&Value]` with **no arity check** — correct for any
+  count including zero. `subtract`/`divide`/`compare` (sharing `add`'s catalog line) use a strict
+  binary destructure on purpose — not associative, so core gives them no N-ary meaning. **Zero
+  changes to any compute function** — the whole inch is telling the editor which six names are safe.
+- **`catalog::VARIADIC`** — the 4th catalog fact (alongside `compute`/`capabilities_of`/
+  `interface_of`), exposed via the bridge's `variadic_primitives()`. Deliberately not hand-listed in
+  TypeScript — the same "second decider that can drift" mistake already made twice with `Sum`.
+- **Growing copies the last port's type; shrinking never goes below the catalog's own default**
+  (derived per-node, not hardcoded) and drops any wire that fed the removed port — the same
+  fail-closed cleanup `setConstType` already does.
+- **One real miss caught by the compiler:** added `is_variadic()` as a natural-seeming companion to
+  `VARIADIC`; nothing actually called it. Removed rather than inventing a use to justify keeping it.
+- **Tests:** 178 core (+2: `variadic_names_are_genesis_leaves`,
+  `variadic_leaves_actually_tolerate_more_than_two_inputs` — the second one calls `compute` directly
+  with 3 inputs, not trusting the classification) / 39 host / 9 wasm-native (+1) / 16 wasm-target
+  (+1), all green. Browser-confirmed: `+`/`−` on `add`, not on `subtract`; grow to 3, wire, project,
+  correct sum; shrink re-disables `−` at exactly 2.
+
+---
+
+### P4.1 · error-surfacing (DONE; structured errors, highlighted nodes, browser-confirmed)
+- **Scoped deliberately separate from native multi-output** (the reflection that raised the idea) —
+  `AmbiguousDefaultOutput` specifically was likely to *dissolve* under multi-output, but checking
+  `validate.rs`'s real `ValidationError` showed every variant except `Cycle` already carries a
+  `child`/`edge` index — the whole structural error surface, almost none of it output-count-related.
+- **The gap was the bridge, not core:** `project()` collapsed the entire `EncapError` through
+  `{e:?}` into one string before it reached JS — core's own indices, computed and thrown away. Same
+  pattern as the `_fp` discard in `eval.rs` found earlier this session.
+- **`AmbiguousDefaultOutput(Vec<u32>)`** — `default_spec` already computes the exact candidate list
+  (`free`) and was discarding it on the error path; now carried through. Side effect: "zero free"
+  and "two or more free" are distinguishable for the first time (new test). `Cycle` stays untouched
+  on purpose — tracing which edges form a cycle is new algorithmic work, named as this inch's one
+  real scope boundary, not silently skipped.
+- **`Display`/`Error` added to `ValidationError`/`EncapError` in core** — a real core-level
+  improvement, not bridge-specific; the bridge's `message` is `.to_string()`, one decider for wording.
+- **`WValidationError`/`WEncapError`** cross the bridge structured (same tagged-union convention as
+  `WValue`/`WType`), `TypeMismatch`'s `src`/`dst` as real `WType`s via the already-built
+  `WType::from_core`. `project()`'s error channel: `Result<JsValue, JsError>` →
+  `Result<JsValue, JsValue>` — `JsError` can only flatten to text, the wrong tool once there's
+  structure to carry.
+- **Two real mistakes caught mid-inch:** edited a stale, pre-de-Copy upload of `encapsulate.rs`
+  without checking it against everything else fixed this session, reintroducing a bug that had been
+  solved for days (caught by the compiler; process changed going forward — verify a whole uploaded
+  file against known session-wide changes, not just the one relevant fragment). Separately, moved
+  the new error types out of `impl Evaluator` by anchoring on `impl Evaluator {` itself, which landed
+  them between that line and the `#[wasm_bindgen]` attribute sitting above it — silently stealing
+  the attribute onto the new enum. Root-caused via actual attribute-to-item adjacency, a check equal
+  brace-counts can't provide.
+- **The editor resolves node identity from data it already has:** `TypeMismatch`'s `edge` index
+  resolves via the same `wedges` array already built locally — no new core surface needed.
+  Highlighting is a pure rendering decoration, never touching the real `nodes` state that hashing
+  depends on (the same I5 cosmetic/structural line). Wrapped in its own `try`/`catch` — a
+  highlighting nicety can never break the error message itself.
+- **Tests:** 179 core (+1) / 39 host / 11 wasm-native (+2) / 17 wasm-target (+2), all green.
+  Browser-confirmed against a real `AmbiguousDefaultOutput`: banner shows core's exact wording
+  ("2 children have a free output ([1, 2]) — choose which to expose"), and precisely the two
+  implicated nodes (not the consumed one) show the coral outline.
+- **Named, not silently deferred:** native multi-output itself is still an open, undecided fork;
+  `Cycle` path-tracing needs new algorithmic work; the split `default_spec`/`derive_and_freeze`
+  surface that would let the UI *choose* an output belongs to P4.3, not here.
+
+> **The authoring-canvas arc (P4.1) is now genuinely foundation-complete** — place · wire · project ·
+> configure · run, boundary-input fields, variadic-arity editing, and error-surfacing, all landed and
+> browser-proven.
+
 ---
 
 ### eval input-gathering by reference (DONE; the "O(1)" inspectors are O(1) again)

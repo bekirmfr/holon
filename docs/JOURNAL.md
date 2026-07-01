@@ -2615,3 +2615,146 @@ needed for this inch's mechanism.
 (3), the editor's recursive `WType` bridge (4a), and boundary-input fields (4b). `Dictionary<K,V>`,
 `Option<T>`, and every composed type in between are real, checkable, constructible, storable, and
 now runnable through the editor's own interface.
+
+---
+
+## 2026-07-01 · P4.1 — variadic-arity editing · *(the last piece of the authoring-canvas arc)*
+
+**Built.** A placed `add`/`multiply`/`and`/`or`/`concat`/`list` node can grow past the catalog's
+declared default of 2 ports (a `+`/`−` control in `PrimitiveNode.tsx`), so the editor can actually
+build the N-ary graphs these leaves were always capable of running. This was the one item still
+open from the whole authoring-canvas arc, deferred at param editing specifically so core could mark
+*which* leaves this applies to before the editor guessed.
+
+**The core question, checked before anything else: does `add`'s compute actually accept more than
+two inputs, or does the catalog's "arity 2" just look fixed?** Read `primitives.rs` directly rather
+than assume: `add`/`multiply`/`and`/`or` all call shared `fold_numbers`/`fold_bools` helpers over
+`inputs: &[&Value]` with **no arity check at all** — already correct for any count, including zero
+(the fold's identity element). `concat` loops the same way. `subtract`/`divide`/`compare` — sharing
+`add`'s own catalog interface line — use `bin_numbers`, a strict `let [a, b] = inputs else return
+None`, on purpose: subtraction and division aren't associative, so core gives "variadic subtract" no
+meaning. This is exactly why the plan only ever named `add`/`and`/`concat`/`list`, never the whole
+arithmetic group. **Net result: zero changes to any compute function** — the entire inch is telling
+the editor which six names are safe to grow.
+
+**The 4th catalog fact, not a hand-maintained TS list.** `catalog::VARIADIC` + the wasm bridge's
+`variadic_primitives()` — a name-keyed classification, exactly parallel to `capabilities_of`, not
+baked into `Unit`'s own shape (a `Unit`'s declared `inputs` is free-form data; nothing in
+`validate`/`hash_unit` checks it against some "canonical" arity). Deliberately *not* hand-listed in
+TypeScript: that would be the exact "second decider that can silently drift" mistake made twice
+already this session with `Sum` — if core's classification of a leaf ever changed, a hand-maintained
+list wouldn't know.
+
+**Growing copies the last port's type** (every variadic leaf is uniform-typed); naming continues the
+catalog's own `a, b, c, …` convention. Shrinking never goes below the catalog's own declared default
+(derived per-node at drop time, not a hardcoded floor) and drops any wire that fed the removed port —
+the same fail-closed cleanup `setConstType` already does when a type change orphans a wire.
+
+**Tests prove the classification, not just the plumbing:** `variadic_leaves_actually_tolerate_more_
+than_two_inputs` calls `compute` directly with 3 inputs for every variadic name (not trusting the
+label) and confirms `subtract` correctly refuses. `variadic_names_are_genesis_leaves` guards against
+a typo silently offering to grow a primitive that doesn't exist.
+
+**One real miss, caught by the compiler, not skipped past.** Added `is_variadic(name) -> bool` as a
+natural-seeming companion to `VARIADIC` — then found nothing anywhere actually called it (the bridge
+iterates `VARIADIC` directly; only my own test used the wrapper). Removed it rather than force a use
+into existence just to justify keeping it — a small, honest example of "build the least the
+architecture needs" catching its own author.
+
+**Tests:** 178 core (+2: `variadic_names_are_genesis_leaves`,
+`variadic_leaves_actually_tolerate_more_than_two_inputs`) / 39 host / 9 wasm-native (+1:
+`variadic_primitives_native`) / 16 wasm-target (+1: `variadic_primitives_wasm`), all green.
+Browser-confirmed: `+`/`−` render on `add` and not on `subtract`; growing `add` to three inputs,
+wiring all three, and projecting yields their actual sum; shrinking re-disables `−` exactly at 2.
+
+**The authoring-canvas arc (P4.1) is now genuinely foundation-complete** — place · wire · project ·
+configure · run, boundary-input fields, and variadic-arity editing, all landed and browser-proven.
+
+---
+
+## 2026-07-01 · P4.1 — error-surfacing: structured errors, highlighted nodes · *(scoped as its own inch, deliberately not folded into multi-output)*
+
+**Context.** Raised while reflecting on native multi-output support: instead of
+`AmbiguousDefaultOutput` as a flat error banner, could the editor show errors *on* the units and
+highlight them? Scoped and built as its own inch, separate from multi-output itself, since nearly
+every error it improves already exists today and has nothing to do with output count.
+
+**The real finding, before writing anything:** `AmbiguousDefaultOutput` was likely to *dissolve*
+once native multi-output lands — "2 free outputs" stops being an error and becomes "expose both,"
+the same way inputs already work with no ambiguity check at all. Building bespoke UI for that one
+error specifically would have aimed at a problem about to disappear. But checking `validate.rs`'s
+real `ValidationError` enum showed every variant except `Cycle` already carries a `child`/`edge`
+index — the *entire* structural error surface, almost none of which is output-count-related. The
+actual gap was much bigger and much older than the one error that prompted the question.
+
+**The gap was the bridge, not core.** `project()`'s failure path collapsed the whole `EncapError`
+through `{e:?}` (Rust's `Debug` format) into a single string before it ever reached JS — core's
+`child`/`port` data was computed, real, and thrown away at the boundary. The exact same pattern as
+the `_fp` discard in `eval.rs` found earlier this session: the right answer already existed, nothing
+downstream was reading it.
+
+**`AmbiguousDefaultOutput` enriched at the source.** `default_spec` already computes `free: Vec<u32>`
+— the exact candidate list — checks its length, and then discarded the vector on the error path.
+Changed to `AmbiguousDefaultOutput(Vec<u32>)`, carrying data that was already being computed; zero
+new traversal. As a genuine side effect, "zero free outputs" and "two or more" are now distinguishable
+for the first time — they were silently the same bare variant before (new test:
+`no_free_output_is_distinguishable_from_ambiguous`). `Cycle` stays untouched, on purpose: tracing
+*which* edges form a cycle is real new algorithmic work, not "stop discarding what's already there" —
+named honestly as this inch's one real scope boundary, not silently skipped.
+
+**`Display`/`Error` given to `ValidationError` and `EncapError` in core** — a genuine core-level
+improvement (any consumer benefits, not just the bridge), and it means the bridge's `message` field
+is `.to_string()`, not a second, separately-worded copy of what an error says. One decider for
+wording, same principle as everywhere else.
+
+**The bridge crosses structure now, not text.** `WValidationError`/`WEncapError` mirror types (the
+same tagged-union convention already used for `WValue`/`WType`), each carrying the structured fields
+*and* core's own message. `TypeMismatch`'s `src`/`dst` cross as real `WType`s (reusing the already-
+built `WType::from_core`), so the editor renders them with its own `typeLabel` instead of Rust's
+`Debug` output. `project()`'s error channel changed from `Result<JsValue, JsError>` to
+`Result<JsValue, JsValue>` — `JsError` is inherently a flatten-to-text type, the wrong tool once
+there's real structure to carry. Malformed *input* (a bad hex hash, edges that don't even
+deserialize) stays a plain string on purpose — a different, shouldn't-happen failure mode, not part
+of the structured family.
+
+**Two real mistakes made and caught mid-inch, not smoothed over:**
+- Edited a `Jun 30`-dated upload of `encapsulate.rs` without checking it was fully current against
+  everything else fixed this session — it predated the `Type`-loses-`Copy` change from the very
+  start of the parametric-types work, and handing it back overwrote a file that had been correctly
+  compiling for days. Caught by the compiler immediately; fixed; the actual process change adopted
+  going forward — diff or spot-check an uploaded file against known session-wide changes before
+  treating it as ground truth, not just the one fragment relevant to the task at hand.
+- Moved the new `WValidationError`/`WEncapError` types out of `impl Evaluator` (Rust doesn't allow
+  defining enums inside an `impl` block) by anchoring the edit on `impl Evaluator {` itself — which
+  landed the block *between* that line and the `#[wasm_bindgen]` attribute sitting directly above
+  it. Since attributes attach to the next real item regardless of doc comments in between, this
+  silently stole the attribute onto the new enum, breaking wasm-bindgen's macro expansion for the
+  actual `impl Evaluator` block. Root-caused precisely (not patched around) by checking actual
+  attribute-to-item adjacency — a check equal brace-counts can't provide, since they say nothing
+  about whether an attribute paired with the right item.
+
+**The editor resolves node identity from data it already has — no new core surface needed for
+this.** `TypeMismatch` only carries an `edge` index; the editor resolves it back to real endpoints
+using the *same* `wedges` array it already builds locally before calling `project`, the same
+"local data, no re-derivation" principle used earlier for boundary-field provenance.
+`AmbiguousDefaultOutput`'s candidates map directly to node indices — the fix this whole inch exists
+for. Highlighting is purely a rendering decoration (`decoratedNodes` in `App.tsx`) that never
+touches the real `nodes` state `onProject`/`onDrop` read and write — flagging a node as errored has
+zero effect on hashing, the same cosmetic/structural line I5 already draws for position. Wrapped in
+its own inner `try`/`catch`: if index-extraction ever hits an unexpected runtime shape (TypeScript's
+types don't validate what actually crosses the JS boundary), the error message still displays
+correctly — a nicety is never allowed to break the thing that actually matters.
+
+**Tests:** 179 core (+1: `no_free_output_is_distinguishable_from_ambiguous`) / 39 host / 11
+wasm-native (+2: `encap_error_structure_native`, `validation_error_structure_native`) / 17
+wasm-target (+2: the wasm-target twins), all green. `tsc -b` clean. Browser-confirmed against a real
+`AmbiguousDefaultOutput` case: the banner shows core's own wording verbatim ("2 children have a free
+output ([1, 2]) — choose which to expose"), and exactly the two implicated nodes — not the consumed
+one — show the coral outline.
+
+**Deliberately out of scope, named rather than silently deferred:** native multi-output itself
+(the reflection that started this) — Product-as-bundle vs. real multiple output ports is still an
+open, undecided fork; `Cycle`'s path-tracing (needs new algorithmic work, not just exposing existing
+data); and the split `default_spec`/`derive_and_freeze` bridge surface that would let the UI actually
+*choose* which output to expose (P4.3's job, not this one's — this inch only makes the existing
+combined `project()` call's failures legible, it doesn't add a way to resolve them interactively).

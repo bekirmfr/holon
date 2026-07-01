@@ -45,6 +45,42 @@ pub enum ValidationError {
     TypeMismatch { edge: usize, src: Type, dst: Type },
 }
 
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValidationError::ChildOutOfRange { edge, child } => {
+                write!(f, "edge {edge} references child {child}, which doesn't exist")
+            }
+            ValidationError::UnresolvedChild { child } => {
+                write!(f, "child {child} couldn't be resolved")
+            }
+            ValidationError::OutputPortOutOfRange { edge, child, port } => write!(
+                f,
+                "edge {edge} reads output port {port} of child {child}, which has no such output"
+            ),
+            ValidationError::InputPortOutOfRange { edge, child, port } => write!(
+                f,
+                "edge {edge} targets input port {port} of child {child}, which has no such input"
+            ),
+            ValidationError::BoundaryInputOutOfRange { edge, port } => {
+                write!(f, "edge {edge} names composite-input port {port}, which doesn't exist")
+            }
+            ValidationError::BoundaryOutputOutOfRange { edge, port } => {
+                write!(f, "edge {edge} names composite-output port {port}, which doesn't exist")
+            }
+            ValidationError::DuplicateInputEdge { to_child, to_port } => {
+                write!(f, "child {to_child}'s input port {to_port} has more than one source")
+            }
+            ValidationError::Cycle => write!(f, "the wiring contains a cycle"),
+            ValidationError::TypeMismatch { edge, src, dst } => {
+                write!(f, "edge {edge} connects incompatible types: {src:?} does not fit {dst:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
 /// Wire-time type compatibility (§5) — structural equality plus the single `Any`
 /// escape hatch, made recursive over `List<T>`: `List<A>` fits `List<B>` iff `A` fits
 /// `B`, and `Any` matches anything at any level. No inference, no subtyping — the §5
