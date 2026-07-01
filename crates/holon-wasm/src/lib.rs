@@ -19,7 +19,7 @@
 use holon_core::{
     decode_preimage, default_spec, derive_and_freeze, encode_preimage, genesis_units, hash_unit,
     parse_hash, Edge, EncapError, EncapSpec, Expose, Hash, MapResolver, Param, Port, Promote,
-    Type, Unit, UnitBody, Value, ValidationError, MAX_TYPE_DEPTH,
+    Resolver, Type, Unit, UnitBody, Value, ValidationError, MAX_TYPE_DEPTH,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -600,6 +600,27 @@ impl Evaluator {
         serde_wasm_bindgen::to_value(&out).map_err(|e| JsError::new(&format!("output: {e}")))
     }
 
+    /// Look up an already-resolved unit by hash, straight from this Evaluator's own resolver —
+    /// no preimage round-trip (P4.3.1, expand-to-inspect's actual primitive). A grouped
+    /// composite's preimage bytes are computed once inside the editor's own grouping step and
+    /// then discarded — only the hash survives, on the placed node itself — so `load_unit`
+    /// can't do this job: it decodes bytes handed in from *outside* this session (a file, the
+    /// registry), not something already sitting in this resolver's own memory since it was
+    /// inserted. `MapResolver::resolve` already does exactly the lookup needed; this is just
+    /// that, crossed to JS. Fails as a plain string, not a structured error — there's no
+    /// EncapError/ValidationError family a "not found" belongs to — for either a malformed hex
+    /// hash or a hash never inserted in this session (a stale reference, or one from a
+    /// different `Evaluator` instance).
+    pub fn get_unit(&self, hash: &str) -> Result<JsValue, JsError> {
+        let h = parse_hash(hash).ok_or_else(|| JsError::new(&format!("bad hash: {hash}")))?;
+        let unit = self
+            .resolver
+            .resolve(&h)
+            .ok_or_else(|| JsError::new(&format!("unresolved: {hash}")))?;
+        serde_wasm_bindgen::to_value(&WUnit::from_core(unit))
+            .map_err(|e| JsError::new(&format!("unit: {e}")))
+    }
+
     /// Project a placed graph into a composite (the editor's "compute this graph's unit + hash").
     /// `children` = the inserted nodes' hex hashes; `edges` = inner child→child `WEdge[]`. Core
     /// derives the boundary (`default_spec`) and freezes (`derive_and_freeze`) — never reimplemented
@@ -1096,6 +1117,40 @@ mod wasm_tests {
             ),
             vec![Some(Value::Number(5.0))],
         );
+    }
+
+    // get_unit (P4.3.1, expand-to-inspect's actual primitive): a hash already resolved in this
+    // session — a primitive AND a composite, since expand specifically needs the latter — comes
+    // back as the exact same structure, no preimage involved anywhere in the call. A hash never
+    // inserted here fails as a plain string, not a structured error.
+    #[wasm_bindgen_test]
+    fn get_unit_crosses_js_boundary() {
+        let mut ev = Evaluator::new();
+        let add_pre = encode_preimage(&binop("add")).unwrap();
+        let hex = ev.insert(&add_pre).unwrap();
+
+        let prim_js = ev.get_unit(&hex).unwrap();
+        let prim_w: WUnit = serde_wasm_bindgen::from_value(prim_js).unwrap();
+        assert!(matches!(prim_w.body, WBody::Primitive { ref name } if name == "add"));
+        assert_eq!(prim_w.inputs.len(), 2);
+
+        // A composite hash too — get_unit's own doc names this as the actual reason it exists
+        // (a grouped node's preimage is discarded after grouping; only the hash survives).
+        let h = parse_hash(&hex).unwrap();
+        let composite = ev.project_core(vec![h], vec![]).unwrap();
+        let comp_pre = encode_preimage(&composite).unwrap();
+        let comp_hex = ev.insert(&comp_pre).unwrap();
+
+        let comp_js = ev.get_unit(&comp_hex).unwrap();
+        let comp_w: WUnit = serde_wasm_bindgen::from_value(comp_js).unwrap();
+        assert!(matches!(comp_w.body, WBody::Composite { .. }));
+        assert_eq!(comp_w.inputs.len(), 2); // a, b promoted
+
+        // A hash never inserted in this session — a plain string failure, not WEncapError or
+        // any other structured family; there's nothing structured a "not found" belongs to.
+        let never_inserted: Hash = [9u8; 32];
+        let never_hex = never_inserted.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert!(ev.get_unit(&never_hex).is_err());
     }
 
     // The split encapsulation seam (P4.3, fork 3): propose across the JS boundary, edit the

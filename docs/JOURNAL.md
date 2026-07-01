@@ -3024,3 +3024,91 @@ here, its own scoping pass when it's actually next.
 **Next inch.** Whatever's next is independent of this one. The two most directly-related
 candidates: expand-to-inspect (closes P4.3.1 completely), or P4.4.1 (transitive inspection UI),
 whose own precondition — a placed composite node existing at all — this inch just satisfied.
+
+---
+
+## 2026-07-01 · P4.3.1 — expand-to-inspect, the leaf's last piece · *(P4.3.1 is now fully closed: select, group, and expand all browser-confirmed)*
+
+**Context — a course-correction worth recording plainly.** The original plan was to wire the
+bridge's existing `load_unit` (preimage → `WUnit`) into the editor as expand's primitive.
+Tracing the actual data flow first caught that this was wrong: a grouped composite's preimage
+is computed once inside `onGroup` and discarded immediately after `ev.insert()`; only its hash
+survives, on the placed node itself. `load_unit` needs bytes nothing in the editor still has by
+the time anyone clicks "expand." What was actually needed was simpler, not more complex —
+`Evaluator.resolver` already implements `Resolver::resolve(&hash) -> Option<&Unit>` directly,
+so the composite is already sitting in memory, reachable by the hash alone.
+
+**Built — `get_unit` (the bridge primitive, its own step).**
+- New `Evaluator.get_unit(hash: &str) -> Result<JsValue, JsError>`: parses the hex hash, calls
+  `self.resolver.resolve(&h)` directly, converts to `WUnit`. No preimage anywhere in the call.
+  `Resolver` added to the bridge's import list — it wasn't in scope before, needed just to call
+  `.resolve()`.
+- `holon.ts` needed zero changes to make this callable — `get_unit` is a method on the already-
+  exported `Evaluator` class (unlike `load_unit`, a standalone function, which *would* have
+  needed an explicit wrapper). `WUnit` was already fully defined. The entire scope of "wiring
+  get_unit" turned out to live on the Rust side alone.
+- New wasm-only test, `get_unit_crosses_js_boundary`: round-trips both a primitive and a
+  composite hash correctly, and fails as a plain string (no structured error family a "not
+  found" belongs to) for a hash never inserted in this session. `cargo test --workspace`:
+  185/39/11 unchanged. `wasm-pack test`: 18 → 19 (+1, this test).
+
+**Built — `onExpand` (the editor half, the actual dual of `onGroup`).**
+- Reads a composite node's own `body.hash`, calls `get_unit`, pulls `body.children`/`body.edges`
+  straight from the result — the same structure `derive_and_freeze` produced at grouping time.
+- Reconstructs each child fresh: a primitive regains full editability, checked against the same
+  `variadicPrimitives()` set `onDrop` already uses, with its arity floor read from the *catalog's*
+  declared default (`byName`), not the child's own current — possibly grown-then-frozen — input
+  count. A nested composite child (the case where a previously-grouped node got grouped again)
+  stays a placed, collapsed reference — expand goes **one level only**, deliberately; deep,
+  recursive, annotated descent is `P4.4.1`'s separate job, not this leaf's.
+- Rewires every canvas edge that pointed at the old composite node to the correct new child's
+  handle, resolved by reading the composite's own boundary edges — the identical "don't guess,
+  read what core already computed" discipline `onGroup`'s own rewiring already used, walked in
+  the opposite direction.
+- Rebuilds the composite's internal wiring as real new canvas edges, through `addEdge` (the same
+  utility `onConnect` already uses) rather than bare objects — so reconstructed wires get real
+  ids and the same type-colored styling every other wire on the canvas has.
+- No renaming or dedup needed here the way grouping needed `boundaryLabels`, and it's worth being
+  precise about why not, not just asserting it: grouping *combines* several children's ports into
+  one new interface, where collisions are possible; expanding *splits* one already-frozen
+  interface whose names were already unique when it was built. Nothing to disambiguate.
+- New "expand" button beside "group," enabled only for exactly one selected composite node —
+  mirrors "group"'s own count-based guard rather than inventing a new per-node interaction
+  `PrimitiveNode.tsx` doesn't otherwise have.
+
+**Leaf status: `P4.3.1` is fully closed.** Select (free, React Flow's own), group, and expand
+are all built and browser-confirmed. Two boundaries worth stating plainly, not silently:
+expand's one-level restriction (a scope decision, not a gap — `P4.4.1` owns deep descent), and
+that this is a **structural** round-trip, not a positional one — original node ids and canvas
+positions were never kept anywhere, so expanding a group gives back the same children and wiring,
+freshly laid out, not the exact prior canvas state. "Choose the exposed output" is still
+exclude-only, not full reorder/rename — a real, smaller, separately-named limit from fork 3, not
+part of what this leaf itself ever promised.
+
+**Tests prove — still honestly manual, not automated.** No frontend test infrastructure exists.
+Four scenarios, all confirmed: (1) a wired pair grouped then immediately expanded, internal wire
+restored; (2) an *external* wire connected before grouping, confirmed landing on the correct
+child's handle after expanding — the actual proof of the rewiring logic, mirroring grouping's
+own most load-bearing scenario; (3) a composite grouped again with a third node, then the
+*outer* one expanded, confirming the inner composite comes back still collapsed — the one-level
+rule genuinely holding, not just asserted; (4) a variadic primitive grown to 3 inputs before
+grouping, then expanded, confirming its floor reverts to the catalog's declared 2, not the
+frozen 3 — the catalog-derived-floor decision genuinely holding.
+
+**Named, not silently accepted — the risk has now compounded three times.** This is the third
+consecutive substantial editor inch (fork 3's exclude UI, grouping, now expand) verified by
+browser confirmation alone, with zero automated coverage across any of them. Two inches ago this
+was flagged as worth deciding deliberately; it wasn't decided, and a third inch landed on top of
+it anyway. This isn't a new finding so much as the same one, now with more weight behind it —
+worth treating as a real blocker to more editor work, not a recurring footnote.
+
+**Deferred.** `P4.4.1` (transitive inspection UI) is now genuinely ready to start on one front —
+its own precondition, a placed composite node existing at all, is satisfied, and `get_unit` is
+already the shared foundation both this leaf and `P4.4.1` need, built and tested once. It still
+separately needs `kind_of`/`capabilities_of` bridge exposure — neither exists anywhere in the
+wasm bridge yet, a real, additional piece of new work `P4.4.1` doesn't get for free from this
+inch, named when the two leaves were first compared and still true now.
+
+**Next inch.** `P4.4.1` is the most directly-related, genuinely-unblocked candidate on the
+mechanical front. The un-tested-editor-surface risk, named three times now, is the other real
+candidate — whichever gets picked, it shouldn't be silently carried into a fourth inch.

@@ -152,23 +152,6 @@ function unitFor(n: PrimitiveNodeType, ev: Evaluator): string {
   return ev.insert(buildPreimage(wunit));
 }
 
-// default_spec names each promoted/exposed port after its inner port's own name, with no
-// uniqueness guarantee across different children — two unrelated "b" ports are common
-// (boundaryLabels above already handles this for DISPLAY, via provenance). But a grouped
-// composite's ports become real handle ids on the new node (P4.3.1), and wiring resolves
-// handles by NAME (findIndex) — a genuine collision there would silently miswire the second
-// port to the first's handle, not just look ambiguous in a label. This disambiguates the
-// actual names before they become handle ids, the same occurrence-counting boundaryLabels
-// already uses as its own last-resort tiebreaker.
-function dedupePortNames(ports: WPort[]): WPort[] {
-  const seen = new Map<string, number>();
-  return ports.map((p) => {
-    const n = (seen.get(p.name) ?? 0) + 1;
-    seen.set(p.name, n);
-    return n === 1 ? p : { ...p, name: `${p.name}_${n}` };
-  });
-}
-
 // `project()` throws the structured error object itself on an EncapError/ValidationError path
 // (not a generic Error) — this is a loose but adequate runtime check: nothing else in this app
 // produces an object with both a string `kind` and a string `message`. It doesn't verify every
@@ -565,24 +548,40 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
       const pre = buildPreimage(composite);
       const hash = ev.insert(pre);
 
-      // Disambiguate default-derived port names before they become this new node's actual
-      // handle ids — see dedupePortNames' own doc for why this differs from boundaryLabels'
-      // display-only disambiguation.
-      const inputs = dedupePortNames(composite.inputs ?? []);
-      const outputs = dedupePortNames(composite.outputs ?? []);
       const boundaryEdges = composite.body.kind === "Composite" ? composite.body.edges : [];
+      const rawInputs = composite.inputs ?? [];
+      const rawOutputs = composite.outputs ?? [];
 
       // Which (selected-node, port) each promoted input / exposed output came from — read
-      // directly off the boundary edges core already computed, not guessed, so an external
-      // wire that crossed the selection can be re-pointed at the RIGHT new handle below.
-      const promotedFrom = inputs.map((_, i) => {
+      // directly off the boundary edges core already computed, not guessed. Purely
+      // index-based (from_port/to_port against BOUNDARY), so this works on the RAW,
+      // possibly-colliding ports straight from ev.project — naming below doesn't change it,
+      // it only feeds it.
+      const promotedFrom = rawInputs.map((_, i) => {
         const be = boundaryEdges.find((e) => e.from_child === BOUNDARY && e.from_port === i);
         return be ? { child: be.to_child, port: be.to_port } : null;
       });
-      const exposedFrom = outputs.map((_, i) => {
+      const exposedFrom = rawOutputs.map((_, i) => {
         const be = boundaryEdges.find((e) => e.to_child === BOUNDARY && e.to_port === i);
         return be ? { child: be.from_child, port: be.from_port } : null;
       });
+
+      // Name the new node's ports by provenance, reusing boundaryLabels' own algorithm rather
+      // than a second, plainer disambiguation — "add · b" instead of a bare "b_2". These
+      // labels become the ports' REAL name (this node's actual handle ids), not just a
+      // display string layered on top: composite.inputs/outputs are renamed here, after
+      // ev.project already returned and the hash is already computed, so this can never
+      // affect the composite's identity — the same "renaming is purely local view-state"
+      // property the plain-suffix version already had. Falls back to occurrence-counting only
+      // when provenance itself doesn't separate two ports — two unconfigured instances of the
+      // literally same primitive, genuinely identical — exactly boundaryLabels' own last
+      // resort for the promoted-input side.
+      const inputSource = promotedFrom.map((x) => (x ? selected[x.child]?.data.name ?? null : null));
+      const outputSource = exposedFrom.map((x) => (x ? selected[x.child]?.data.name ?? null : null));
+      const inputLabels = boundaryLabels(rawInputs, inputSource);
+      const outputLabels = boundaryLabels(rawOutputs, outputSource);
+      const inputs = rawInputs.map((p, i) => ({ ...p, name: inputLabels[i] }));
+      const outputs = rawOutputs.map((p, i) => ({ ...p, name: outputLabels[i] }));
 
       const groupId = `composite-${idRef.current++}-${hash.slice(0, 8)}`;
       const centroid = {
@@ -644,6 +643,130 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
       }
     }
   }, [nodes, edges, ev, setNodes, setEdges]);
+
+  // Expand a placed composite node back into its children (P4.3.1's last piece — the dual of
+  // onGroup). One level only, deliberately: a nested composite child is revealed still
+  // collapsed, as its own composite node, not recursively unpacked — the same restraint
+  // grouping already has (it only ever acts on the current selection, never implicitly
+  // nesting). Deep, read-only, annotated descent is P4.4.1's own, separate job.
+  const onExpand = useCallback(() => {
+    const selected = nodes.filter((n) => n.selected);
+    if (selected.length !== 1) return; // mirrors the button's own disabled guard, defensively
+    const target = selected[0];
+    if (target.data.body.kind !== "Composite") return;
+    const hash = target.data.body.hash;
+
+    try {
+      const wunit = ev.get_unit(hash) as WUnit;
+      // get_unit reads back exactly what derive_and_freeze produced at grouping time, which is
+      // always a Composite — but WBody is a discriminated union either way, so this check is
+      // required to narrow it, not just a defensive nicety.
+      if (wunit.body.kind !== "Composite") throw new Error("expand: not a composite");
+      const childHashes = wunit.body.children;
+      const innerEdges = wunit.body.edges;
+
+      // Reconstruct each child fresh — a primitive regains full editability (checked against
+      // the same variadicPrimitives() set onDrop uses, so an expanded node is indistinguishable
+      // from one just dropped from the palette), a nested composite stays a placed reference
+      // (P4.3.1's own one-level rule above). No renaming/dedup needed here the way grouping
+      // needed boundaryLabels: expanding SPLITS one already-frozen interface whose names were
+      // already unique when it was built, it doesn't COMBINE several into one new one.
+      const spacing = 220;
+      const startX = target.position.x - ((childHashes.length - 1) * spacing) / 2;
+      const newNodes: PrimitiveNodeType[] = childHashes.map((h, i) => {
+        const cu = ev.get_unit(h) as WUnit;
+        const position = { x: startX + i * spacing, y: target.position.y };
+        const data: PrimitiveData =
+          cu.body.kind === "Primitive"
+            ? {
+                name: cu.body.name,
+                body: { kind: "Primitive" },
+                inputs: cu.inputs ?? [],
+                outputs: cu.outputs ?? [],
+                params: cu.params ?? [],
+                variadic: variadic.has(cu.body.name),
+                // The catalog's own declared arity, not this (possibly grown-then-frozen)
+                // child's current one — same floor onDrop's own placement already enforces.
+                // Falls back to the child's own arity only if the catalog lookup somehow
+                // misses, rather than crashing.
+                minInputs: (byName.get(cu.body.name)?.inputs ?? cu.inputs ?? []).length,
+              }
+            : {
+                name: h.slice(0, 8),
+                body: { kind: "Composite", hash: h },
+                inputs: cu.inputs ?? [],
+                outputs: cu.outputs ?? [],
+                params: [],
+                variadic: false,
+                minInputs: 0,
+              };
+        const id =
+          cu.body.kind === "Primitive"
+            ? `${cu.body.name}-${idRef.current++}`
+            : `composite-${idRef.current++}-${h.slice(0, 8)}`;
+        return { id, type: "primitive", position, data };
+      });
+
+      // Canvas edges that pointed at the composite's own ports get re-pointed at the right new
+      // child's handle instead — resolved the same "read what core already computed" way
+      // onGroup's own rewiring works, just walked in the opposite direction: find which
+      // boundary edge core built for this port, follow it to the (child, port) it actually
+      // came from.
+      const rewired: Edge[] = edges.flatMap((e): Edge[] => {
+        if (e.target === target.id) {
+          const inIdx = target.data.inputs.findIndex((p) => p.name === e.targetHandle);
+          const be = innerEdges.find((x) => x.from_child === BOUNDARY && x.from_port === inIdx);
+          if (!be) return []; // shouldn't happen against an honest unit; drop defensively
+          const child = newNodes[be.to_child];
+          const handle = child.data.inputs[be.to_port]?.name;
+          if (!handle) return [];
+          return [{ ...e, target: child.id, targetHandle: handle }];
+        }
+        if (e.source === target.id) {
+          const outIdx = target.data.outputs.findIndex((p) => p.name === e.sourceHandle);
+          const be = innerEdges.find((x) => x.to_child === BOUNDARY && x.to_port === outIdx);
+          if (!be) return [];
+          const child = newNodes[be.from_child];
+          const handle = child.data.outputs[be.from_port]?.name;
+          if (!handle) return [];
+          return [{ ...e, source: child.id, sourceHandle: handle }];
+        }
+        return [e];
+      });
+
+      // The composite's own inner wiring (both endpoints are children, not BOUNDARY) becomes
+      // real canvas edges between the new nodes — through addEdge, same as onConnect, so these
+      // get real ids and the same type-colored styling every other wire on the canvas has,
+      // not a bare, unstyled object.
+      const withInner = innerEdges
+        .filter((e) => e.from_child !== BOUNDARY && e.to_child !== BOUNDARY)
+        .reduce((acc: Edge[], e) => {
+          const srcNode = newNodes[e.from_child];
+          const tgtNode = newNodes[e.to_child];
+          const srcPort = srcNode.data.outputs[e.from_port];
+          const tgtHandle = tgtNode.data.inputs[e.to_port]?.name;
+          if (!srcPort || !tgtHandle) return acc;
+          const conn = {
+            source: srcNode.id,
+            sourceHandle: srcPort.name,
+            target: tgtNode.id,
+            targetHandle: tgtHandle,
+          };
+          return addEdge({ ...conn, style: { stroke: outputColor(srcPort.ty), strokeWidth: 1.6 } }, acc);
+        }, rewired);
+
+      setNodes((ns) => [...ns.filter((n) => n.id !== target.id), ...newNodes]);
+      setEdges(withInner);
+      setProjError("");
+      setErrorNodeIds(new Set());
+    } catch (err) {
+      // get_unit only ever fails as a plain string (no structured error family a "not found"
+      // belongs to), and every hash reached here was already resolved when the composite was
+      // frozen — so there's no clean "which node is at fault" the way an EncapError has;
+      // nothing to highlight, just the message.
+      setProjError(err instanceof Error ? err.message : String(err));
+    }
+  }, [nodes, edges, ev, byName, setNodes, setEdges]);
 
   // A boundary field changed: update its slot and re-eval live. Safe to be reactive (unlike
   // projecting itself) because a boundary value is never part of the composite's hash — it's a
@@ -709,6 +832,10 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
   // (shift-click / drag-box), already live for delete, now also gating the "group" button
   // (P4.3.1). Cheap enough over a canvas-sized node list not to need memoizing.
   const selectedCount = nodes.filter((n) => n.selected).length;
+  // "Expand" is the dual of "group": only meaningful for exactly one selected composite node —
+  // mirrors group's own selectedCount<2 guard rather than a new per-node interaction
+  // PrimitiveNode.tsx doesn't otherwise have for whole-node operations.
+  const canExpand = selectedCount === 1 && nodes.some((n) => n.selected && n.data.body.kind === "Composite");
 
   return (
     <div className="hl-canvas" onDrop={onDrop} onDragOver={onDragOver}>
@@ -772,6 +899,25 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
               }}
             >
               group
+            </button>
+            <button
+              onClick={onExpand}
+              disabled={!canExpand}
+              title={canExpand ? "expand this composite" : "select one composite node to expand"}
+              style={{
+                font: "inherit",
+                fontSize: 12,
+                letterSpacing: "0.04em",
+                padding: "5px 12px",
+                color: "#0e1a2f",
+                background: "#6fd3e0",
+                border: "none",
+                borderRadius: 3,
+                cursor: canExpand ? "pointer" : "default",
+                opacity: canExpand ? 1 : 0.4,
+              }}
+            >
+              expand
             </button>
             {projection && (
               <div style={{ fontSize: 12, color: "#9fb4d4", textAlign: "right", lineHeight: 1.4 }}>

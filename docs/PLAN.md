@@ -129,8 +129,9 @@ not an omission.
   *(proven in JS prototypes v1–v3; not yet in the real stack)*
 - **P4.2** Live evaluation that **embeds `holon-core` (WASM)** — one evaluator, never a second, so editor results are bit-identical to native — `I5`/`I2` · ○ ▣
   *(the load-bearing constraint; see findings)*
-- **P4.3** Encapsulation UX: group a selection into a unit; expand to inspect — `I4`/`I9` · ◐ ▣
-  *(proven in v3)*
+- **P4.3** Encapsulation UX: group a selection into a unit; expand to inspect — `I4`/`I9` · ✅ ▣
+  *(now real in the actual stack, not just v3 — select/group/expand all browser-confirmed, no
+  automated coverage; see P4.3.1 below and JOURNAL.md, 2026-07-01, both P4.3.1 entries)*
 - **P4.4** Transitive inspection UI: descend a composite to its leaf primitives — `I9` · ○ ▣
   *(the human face of P3.2)*
 - **P4.5** Registry client: browse / import-as-pin / publish — `§8` · ○ ◇
@@ -551,15 +552,17 @@ cosmetic layer** (positions, labels) the core deliberately does not know about.
    derive-then-freeze P1.5.1, receives the new `Unit` + hash); expand to inspect.
    *pre:* P4.1.1, P1.5.1 · *inv:* `I4`/`I9` · *test:* grouping in-editor yields a unit
    whose interface + hash match the core's derivation; expand round-trips · *effort:* **M**
-*→ **Bridge surface — DONE** (`Evaluator.propose_encapsulation` / `freeze_encapsulation`, split
-   exactly as this note asked for; `project()` itself untouched, still the combined single-call
-   path). **Select + group — DONE** (browser-confirmed, no automated coverage — see JOURNAL.md,
-   2026-07-01 · P4.3.1): React Flow's own selection, already live for delete, now also drives
-   grouping a subset of the canvas into one placed, hash-referenced composite node, with
-   boundary-crossing wires correctly re-pointed at its new handles. **Earned so far on choosing
-   an output: exclude, not choose** — the editor can drop a proposed output (a genuine re-freeze,
-   new hash) but cannot reorder or rename them. **Still open, the one remaining piece: expand a
-   placed composite back to inspect its children** — the dual of grouping, not yet started.*
+*→ **This leaf is DONE** — select, group, and expand all browser-confirmed; no automated
+   coverage yet, named explicitly in JOURNAL.md rather than silently carried forward (2026-07-01
+   · P4.3.1, both entries). **Bridge:** `propose_encapsulation`/`freeze_encapsulation` (split,
+   as this note originally asked for) plus `get_unit` (a direct resolver lookup by hash, not a
+   preimage round-trip — `load_unit` turned out to be the wrong primitive for this once the
+   actual data flow was traced). `project()` itself untouched throughout. **Two deliberate
+   boundaries, not gaps:** expand goes one level only (a nested composite child stays collapsed —
+   deep, annotated descent is `P4.4.1`'s job); it's a structural round-trip, not a positional one
+   (node ids/canvas positions were never kept, so expand reconstructs the same children/wiring,
+   freshly laid out). "Choose the exposed output" is still exclude-only (fork 3), not full
+   reorder/rename — a separate, smaller, already-named limit, not part of this leaf's own scope.*
 
 5. **P4.4.1 · Transitive inspection UI** — render the closure tree P3.2.1 produces,
    annotated with derived kind + capabilities at every level, to the leaves.
