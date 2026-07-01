@@ -327,13 +327,43 @@ moves to **P2.4**. The Language is eager; the OS decides when effects fire.
 
 ---
 
-**In progress:** generics / parametric types
-P1.3.2 (parametric types): inches 1–4a DONE — the List<T> type-expression language, Product + pair,
-Sum + some/none, and the editor's recursive WType bridge (see the DONE blocks above + L4 §8).
-Remaining: boundary-input fields (4b) — supply an open composite's promoted inputs at eval time,
-now against precise composed types instead of flat ones — scoped in
-P1.3.2-parametric-types-L4.md. (The "largest checker-complexity jump" was paid as the one-time
-de-Copy; the checker stays structural — no inference, no subtyping.)
+### P1.3.2 · inch 4b — boundary-input fields (DONE; P1.3.2 complete, browser-confirmed)
+- **An open composite's promoted inputs can be filled and evaluated through its interface** — the
+  capability that started the whole detour, now against precise composed types (4a). `App.tsx`
+  only; no Rust/wasm change. `eval`'s `WValue | null`-per-slot input array (confirmed in the bridge
+  source, not assumed) was already the exact mechanism needed.
+- **Scalar inputs get real, type-native controls** (number/checkbox/text) — not string parsing like
+  `const`, since a boundary value is never hashed, unlike a frozen param. **Non-scalar inputs** get
+  an honest "wire in" placeholder, matching `const`'s own literal-form boundary.
+- **Zero-value defaults** — reuses `const`'s own default / `sourced_mock`'s convention (0/false/"")
+  rather than inventing a third. **Live re-eval on field change** — safe, unlike projecting itself,
+  since a boundary value never touches the hash. Closed/open unify into one path.
+- **A real system fact surfaced and documented:** a `null` input slot doesn't mean "eval blocks" —
+  core's `eval` drops absent slots before `compute` runs (`inputs.iter().flatten()`); whether that
+  reads as "not ready" depends on the target primitive's own arity (`add` fails its arity match;
+  `list` has none, so it happily builds `[]` from nothing). Confirmed by checking `eval.rs` after a
+  browser result didn't match prediction — the design was right, the prediction was wrong.
+- **Two gaps closed, one an honest miss:** `formatValue` never gained a `Sum` case (silent
+  `undefined`, since `noImplicitReturns` isn't on) — fixed with a `never`-exhaustiveness guard.
+  `holon.ts`'s `WValue` (unlike `WType`, fixed at 4a) never gained `Sum` either — a miss carried
+  from assuming instead of checking the file; fixed, and swept for any other instance (none found).
+- **Browser-confirmed:** `add` unfilled → `0`/`0` → `= 0`; live edit updates without re-projecting;
+  mixed wired/field graphs combine correctly; `list` unfilled → `= []` (correct, not a bug);
+  `none()` → `= sum#1([])` (the `WValue` fix, proven live).
+- **Tests:** `tsc -b` clean (via `npx`, both PowerShell and WSL). No Rust/wasm rebuild this inch.
+
+> **P1.3.2 is complete.** The type language, `Product`+`pair`, `Sum`+`some`/`none`, the recursive
+> `WType` bridge, and boundary-input fields. `Dictionary<K,V>`, `Option<T>`, and every composed type
+> in between are real, checkable, constructible, storable, and runnable through the editor itself.
+
+---
+
+**In progress:** generics / parametric types — **P1.3.2 COMPLETE.**
+All five inches DONE: the List<T> type-expression language, Product + pair, Sum + some/none, the
+editor's recursive WType bridge, and boundary-input fields (see the DONE blocks above + L4 §8).
+Dictionary<K,V> = List<Pair>; Option<T> = Sum<T,Unit>; both fully composable, checkable, and
+runnable end to end, editor included. (The "largest checker-complexity jump" was paid as the
+one-time de-Copy at inch 1; the checker stayed structural throughout — no inference, no subtyping.)
 
 **Consistency check vs design-doc §10.** §10 named *param promotion* as the next step
 after content-hashing. The deduction corrects this: §10 tacitly assumed an evaluator,

@@ -3,7 +3,7 @@
 // projection/eval are later inches (P4.1-palette-L4 §1). Nothing here re-asserts a primitive's shape;
 // every placed node reads its ports from the catalog interface (I1).
 
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -30,8 +30,10 @@ import {
   type WUnit,
   type WEdge,
   type WValue,
+  type WPort,
+  type WType,
 } from "./holon";
-import { outputColor } from "./theme";
+import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 
@@ -55,7 +57,123 @@ function formatValue(v: WValue): string {
       return `[${v.value.map(formatValue).join(", ")}]`;
     case "Effect":
       return `effect(${v.value.sink})`;
+    case "Sum":
+      // No core signal says which arm means "Some" vs "None" (a value carries only its taken arm's
+      // index, never a name — the same honesty theme.ts's typeLabel already holds to for the TYPE
+      // side, not guessing "this looks like Option"). Show the arm plainly instead of guessing.
+      return `sum#${v.value.arm}(${formatValue(v.value.payload)})`;
   }
+  // Exhaustiveness: this project's tsconfig doesn't enable noImplicitReturns, so a missing case here
+  // was previously a silent runtime "undefined", not a compile error — exactly the gap that let
+  // `Sum` go unhandled since it was added. A future WValue shape is now a compile error instead.
+  const exhaustive: never = v;
+  return exhaustive;
+}
+
+// A promoted input's starting value: the type's zero value for the three scalar forms that have
+// one (Number→0, Boolean→false, Text→"") — the SAME convention `const`'s own default and core's
+// `sourced_mock` already use, reused rather than invented fresh. Everything else (List/Product/Sum/
+// Effect/Any) has no literal form — same boundary `const`'s CONST_TYPES already draws — so it starts
+// `null` ("wire in": honestly unsupplied, not a guessed default).
+//
+// A `null` slot does NOT mean "eval blocks" — core's `eval` drops absent slots before `compute` ever
+// runs (`inputs.iter().flatten()`; "compute's arity check is the firing rule" per eval.rs's own
+// comment), uniformly for every primitive, no special-casing here or there. Whether that reads as
+// "not ready" depends entirely on the target primitive: `add` destructures exactly 2 values, so a
+// dropped slot fails its own arity match ⇒ not ready. `list` has no arity requirement at all, so it
+// happily builds from however many values are actually present — including zero, `[]`. Both are
+// correct; neither needs different handling in this file.
+function defaultBoundaryValue(ty: WType): WValue | null {
+  if (ty === "Number") return { type: "Number", value: 0 };
+  if (ty === "Boolean") return { type: "Boolean", value: false };
+  if (ty === "Text") return { type: "Text", value: "" };
+  return null;
+}
+
+const boundaryFieldStyle: CSSProperties = {
+  font: "inherit",
+  fontSize: 11,
+  color: "#cfe3ff",
+  background: "#0e1a2f",
+  border: "1px solid #1b2a45",
+  borderRadius: 3,
+  padding: "1px 4px",
+  width: 64,
+};
+
+// One promoted input's field. A scalar gets a real, type-native control — a number input, a
+// checkbox, a text input — not a generic text box needing string parsing: unlike `const`, a
+// boundary value is never hashed (it's a pure eval-time argument), so there's no reason to route
+// it through core's own string parser the way a frozen param has to. A non-scalar honestly has no
+// literal form (the same boundary CONST_TYPES already draws) and shows "wire in", not a guess.
+// Colour comes from theme.ts — the same "type is colour" legend the canvas nodes already use.
+function BoundaryField({
+  port,
+  value,
+  onChange,
+}: {
+  port: WPort;
+  value: WValue | null;
+  onChange: (v: WValue | null) => void;
+}) {
+  const row: CSSProperties = { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 };
+  const label = (
+    <span style={{ color: typeColor(port.ty), fontSize: 11 }} title={typeLabel(port.ty)}>
+      {port.name}
+    </span>
+  );
+
+  if (port.ty === "Number") {
+    const raw = value?.type === "Number" ? String(value.value) : "";
+    return (
+      <div style={row}>
+        {label}
+        <input
+          type="number"
+          style={boundaryFieldStyle}
+          value={raw}
+          onChange={(e) => {
+            const v = e.target.value;
+            onChange(v === "" ? null : { type: "Number", value: Number(v) });
+          }}
+        />
+      </div>
+    );
+  }
+  if (port.ty === "Boolean") {
+    const checked = value?.type === "Boolean" ? value.value : false;
+    return (
+      <div style={row}>
+        {label}
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onChange({ type: "Boolean", value: e.target.checked })}
+        />
+      </div>
+    );
+  }
+  if (port.ty === "Text") {
+    const raw = value?.type === "Text" ? value.value : "";
+    return (
+      <div style={row}>
+        {label}
+        <input
+          type="text"
+          style={{ ...boundaryFieldStyle, width: 84 }}
+          value={raw}
+          onChange={(e) => onChange({ type: "Text", value: e.target.value })}
+        />
+      </div>
+    );
+  }
+  // List / Product / Sum / Effect / Any — no literal form. Honestly unsupplied, not defaulted.
+  return (
+    <div style={row}>
+      {label}
+      <span style={{ ...boundaryFieldStyle, color: "#5a6d8c", textAlign: "center" }}>wire in</span>
+    </div>
+  );
 }
 
 function Canvas({ catalog }: { catalog: WUnit[] }) {
@@ -140,10 +258,19 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
   // hands it to core's default_spec + derive_and_freeze (behind Evaluator.project), which derive the
   // boundary, validate, and freeze. The editor re-decides none of it (one decider). Cosmetic move ⇒
   // same hash; rewire ⇒ new hash; an ambiguous or invalid graph ⇒ a surfaced error, never a guess.
+  //
+  // A composite's promoted inputs (`ports`) and the values currently supplied for them (`values`,
+  // same length/order, `null` = unsupplied) are held alongside the frozen preimage (`pre`) so a
+  // boundary field's onChange can re-eval without re-projecting. A CLOSED composite is just the
+  // zero-input case of this same shape — `ports: []`, nothing special-cased.
   const ev = useMemo(() => new Evaluator(), []);
-  const [projection, setProjection] = useState<
-    { hash: string; inputs: number; value: WValue | null } | null
-  >(null);
+  const [projection, setProjection] = useState<{
+    hash: string;
+    pre: Uint8Array;
+    ports: WPort[];
+    values: (WValue | null)[];
+    result: WValue | null;
+  } | null>(null);
   const [projError, setProjError] = useState<string>("");
 
   const onProject = useCallback(() => {
@@ -182,19 +309,35 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
       const pre = buildPreimage(composite);
       const hash = ev.insert(pre);
 
-      // Run it through the one Evaluator — but only when it is CLOSED (no promoted inputs): a closed
-      // graph (consts feeding pure ops) needs nothing supplied. An open composite waits for the
-      // boundary-input-fields inch. null ⇒ not ready (an unparsed const, a divide-by-zero, or an
-      // unsupplied driver); a sink graph yields the Effect it constructs (pure eval doesn't fire it).
-      const inputs = composite.inputs?.length ?? 0;
-      const value = inputs === 0 ? (ev.eval(pre, []) as WValue | null) : null;
-      setProjection({ hash, inputs, value });
+      // Run it through the one Evaluator, starting from each promoted input's zero value (or `null`
+      // for a non-scalar port — "wire in", nothing to default to). A closed graph is `ports: []`,
+      // `ev.eval(pre, [])` — exactly its old behaviour, just no longer a separate branch. `null` in
+      // the result ⇒ not ready (an unfilled non-scalar port, a divide-by-zero, an unsupplied driver);
+      // a sink graph yields the Effect it constructs (pure eval doesn't fire it).
+      const ports = composite.inputs ?? [];
+      const values = ports.map((p) => defaultBoundaryValue(p.ty));
+      const result = ev.eval(pre, values) as WValue | null;
+      setProjection({ hash, pre, ports, values, result });
       setProjError("");
     } catch (err) {
       setProjection(null);
       setProjError(err instanceof Error ? err.message : String(err));
     }
   }, [nodes, edges, ev]);
+
+  // A boundary field changed: update its slot and re-eval live. Safe to be reactive (unlike
+  // projecting itself) because a boundary value is never part of the composite's hash — it's a
+  // pure eval-time argument, not identity — so there is no "cosmetic move" noise to avoid here.
+  const setBoundaryValue = useCallback(
+    (index: number, value: WValue | null) => {
+      setProjection((p) => {
+        if (!p) return p;
+        const values = p.values.map((v, i) => (i === index ? value : v));
+        return { ...p, values, result: ev.eval(p.pre, values) as WValue | null };
+      });
+    },
+    [ev],
+  );
 
   return (
     <div className="hl-canvas" onDrop={onDrop} onDragOver={onDragOver}>
@@ -245,15 +388,29 @@ function Canvas({ catalog }: { catalog: WUnit[] }) {
                 <div style={{ color: "#6fd3e0" }} title={projection.hash}>
                   {projection.hash.slice(0, 12)}…
                 </div>
-                {projection.inputs === 0 ? (
-                  <div style={{ color: "#9ad29f" }}>
-                    = {projection.value ? formatValue(projection.value) : "not ready"}
-                  </div>
-                ) : (
-                  <div>
-                    {projection.inputs} input{projection.inputs === 1 ? "" : "s"} — supply to run
+                {projection.ports.length > 0 && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                      margin: "6px 0",
+                      alignItems: "flex-end",
+                    }}
+                  >
+                    {projection.ports.map((port, i) => (
+                      <BoundaryField
+                        key={i}
+                        port={port}
+                        value={projection.values[i]}
+                        onChange={(v) => setBoundaryValue(i, v)}
+                      />
+                    ))}
                   </div>
                 )}
+                <div style={{ color: "#9ad29f" }}>
+                  = {projection.result ? formatValue(projection.result) : "not ready"}
+                </div>
               </div>
             )}
             {projError && (

@@ -2553,3 +2553,65 @@ behave correctly live.
 **P1.3.2's value-constructor work (inches 1–3) plus the editor's recursive `WType` (4a) are both
 complete.** Only boundary-input fields (4b) remain — the capability that started this whole
 detour, now able to render precise composed types instead of flat ones.
+
+---
+
+## 2026-07-01 · P1.3.2 inch 4b — boundary-input fields · *(P1.3.2 complete)*
+
+**Built.** An open composite's promoted inputs can now be filled and evaluated through its
+interface — the capability that started the whole parametric-types detour, landing on top of the
+precise composed types 4a made possible. `App.tsx` only; no Rust or wasm change.
+
+**Mechanism.** Core's `eval` already accepts `WValue | null` per input slot (`null` = absent) —
+confirmed directly in the wasm bridge source before writing any TS, not assumed. Scalar promoted
+inputs (`Number`/`Boolean`/`Text`) get a real, type-native control — a number input, a checkbox, a
+text input — not a generic text field needing string parsing. Deliberately different from `const`'s
+own value editing: `const`'s value is baked into a frozen, hashed `Unit`, so core has to parse it
+from a string at eval time; a boundary input is never hashed — a pure, ephemeral eval-time argument
+— so routing it through core's parser would be pointless indirection. The browser's own type
+coercion is unambiguous and sufficient. Non-scalar inputs get an honest, disabled "wire in"
+placeholder, matching the exact precedent `const`'s own three-literal-form boundary already set.
+
+**Zero-value defaults, reused not invented.** Fields start pre-filled with each type's zero value
+(`0`/`false`/`""`) — the same convention already established twice elsewhere (`const`'s own
+default, core's `sourced_mock`). A freshly-projected open composite is immediately evaluable, not
+stuck on "supply to run." Filling a field re-evaluates live — safe to be reactive, unlike
+projecting itself, because a boundary value is never part of the composite's hash. The old
+closed/open branch in the projection panel is gone; a closed composite is just the zero-input case
+of one unified path now.
+
+**A real, non-obvious system fact surfaced and documented, not special-cased.** A `null` input slot
+does not mean "eval blocks." Core's `eval` drops absent slots *before* `compute` ever runs
+(`inputs.iter().flatten()` — "compute's arity check is the firing rule," per `eval.rs`'s own
+comment), uniformly for every primitive. Whether that reads as "not ready" depends entirely on the
+target primitive's own arity: `add` destructures exactly 2 values, so a dropped slot fails its own
+arity match; `list` has no arity requirement at all, so it happily builds from however many values
+are present — including zero, `[]`. Both correct. Discovered by checking the real `eval.rs` after a
+browser screenshot showed `list` with both inputs unwired evaluating to `[]` instead of the "not
+ready" that had been predicted — grounding the surprise instead of "fixing" it mattered here: the
+design was right, the prediction was the only thing wrong.
+
+**Two real gaps closed, one an honest miss.** `formatValue` never gained a `Sum` case when core
+added `Value::Sum` — silent runtime `undefined`, not a compile error, since this project's
+tsconfig doesn't enable `noImplicitReturns`. Fixed, with the same `never`-exhaustiveness guard
+`theme.ts` already uses. Separately: `holon.ts` has two type definitions mirroring Rust enums that
+both gained `Sum` at inch 3 — `WType` and `WValue`. Inch 4a fixed `WType`'s gap; `WValue`'s was
+never checked, and adding `formatValue`'s `Sum` case assumed the type already supported it instead
+of verifying the file — the same "reasoning from assumption" mistake the gap itself came from.
+Fixed once the compiler caught it; swept every other file afterward to confirm `formatValue` was
+the only exhaustive switch over `WValue.type` in the codebase.
+
+**Browser-confirmed, not just compiled.** `add` with both inputs unwired shows two fields
+pre-filled `0`/`0`, `= 0` immediately; editing one live-updates the result without re-clicking
+project; a mixed graph (one input wired to a `const`, one left as a field) combines both correctly;
+`list` with both non-scalar inputs unwired evaluates to `[]` exactly as `eval.rs`'s design
+predicts; a lone `none()` renders `= sum#1([])` — live proof the `WValue` fix works, not just
+compiles.
+
+**Tests.** `tsc -b` clean (confirmed via `npx` in both PowerShell and WSL). No Rust/wasm rebuild
+needed for this inch's mechanism.
+
+**P1.3.2 is complete.** The composable type language (1), `Product`+`pair` (2), `Sum`+`some`/`none`
+(3), the editor's recursive `WType` bridge (4a), and boundary-input fields (4b). `Dictionary<K,V>`,
+`Option<T>`, and every composed type in between are real, checkable, constructible, storable, and
+now runnable through the editor's own interface.

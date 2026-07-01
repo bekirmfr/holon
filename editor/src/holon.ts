@@ -65,13 +65,17 @@ export type WUnit = {
   output?: WType | null;
 };
 
-/** A runtime value crossing the boundary. Mirrors `core::Value` (as `WValue`). */
+/** A runtime value crossing the boundary. Mirrors `core::Value` (as `WValue`). `Sum` mirrors
+ *  `Value::Sum { arm, payload }` — `arm` says which alternative was taken, `payload` is its value;
+ *  the untaken alternatives aren't carried (a tagged choice, not a tuple — see `Type::Sum`/`WType`'s
+ *  `Sum` case, the type-level sibling of this). */
 export type WValue =
   | { type: "Number"; value: number }
   | { type: "Boolean"; value: boolean }
   | { type: "Text"; value: string }
   | { type: "List"; value: WValue[] }
-  | { type: "Effect"; value: { sink: string; payload: WValue } };
+  | { type: "Effect"; value: { sink: string; payload: WValue } }
+  | { type: "Sum"; value: { arm: number; payload: WValue } };
 
 /** The composite's own boundary index (u32::MAX) — its inputs feed children; one child feeds out. */
 export const BOUNDARY = 4294967295;
