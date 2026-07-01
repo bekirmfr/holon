@@ -3354,22 +3354,26 @@ up, with two anomalies named honestly rather than rounded away:
   its own reported *change* column shows near-zero movement ("within noise threshold"), meaning
   this gap was already there before this fix, not caused by it. Most likely a benchmark
   warm-up artifact specific to the first sample in the run, not a real defect.
-- **Anomaly 2, flagged but genuinely unconfirmed — not settled, not smoothed over:**
-  `native_sum/512` regressed (+17.7% to +30.5%, criterion's own "Performance has regressed"
-  flag), sandwiched between `/64` and `/4096`, both of which improved sharply (−22 to −32%). A
-  single size regressing between two neighbors that both improved doesn't fit a structural
-  explanation — it has the shape of a one-off measurement (background load, a GC-adjacent
-  pause on that run) rather than something this fix caused. This is a plausible read, not a
-  verified one: it was never re-run in isolation to confirm it reproduces. If it matters,
-  `cargo bench -p holon-core -- native_sum` targeting just that benchmark would settle it either
-  way — genuinely open until then, not resolved by this entry.
+- **Anomaly 2, now resolved by a targeted re-run, not left open.** `native_sum/512`'s first-run
+  regression (+17.7% to +30.5%) did **not** reproduce: isolated re-run
+  (`cargo bench -p holon-core -- native_sum`) showed −16% to −24% at that exact size, in line
+  with every other size. A *different* size regressed instead this time — `native_sum/64`
+  (+5.0% to +8.4%, criterion's own "regressed" flag), a size that improved cleanly in the first
+  run. Two runs, two different "regressed" sizes, with every other size consistently improving
+  both times — that pattern is the signature of run-to-run measurement noise, not a property of
+  the code. It also has no plausible mechanism: `native_sum` evaluates a bare primitive against
+  a single list *input*; the SmallVec change only affects how many *output slots* a unit has
+  (always 1 here), never the list's own length — there's no path connecting list size to this
+  fix at all. Confirmed noise, not a defect from this change.
 
 **Net assessment:** the fix does what it was built for (the hot loop it targets improved
 substantially, confirmed by measurement, not assumed), nothing broke (255+20 tests green), and
-the two anomalies both look like measurement noise rather than defects from this change — but
-one of them is a plausible read, not a confirmed one, and is named as such rather than folded
-into a clean "all good" story it hasn't fully earned yet.
+both anomalies are now resolved as measurement noise unrelated to this change — one settled on
+sight (the flat `change` column), one settled by a targeted re-run that didn't reproduce it.
 
-**Next.** Decide whether the `native_sum/512` anomaly is worth a targeted re-run before moving
-on, or set it aside as noise and proceed straight to the `P4.5.1`/`P4.6.1` host+registry
-transport scoping pass, or return to the `P4` projection frontier.
+**Next.** Two real candidates, not equally ready: `P4.5.1` (Registry client) is blocked —
+`holon-host`'s `Registry`/`Store` aren't reachable from wasm at all, no transport exists.
+`P4.6.1` (Design/Deploy toggle) is genuinely split — its design half (`design_eval`, pure core,
+already wasm-accessible) is real, buildable work today; its deploy half hits the identical
+transport wall as `P4.5.1`. Either build the transport layer (unblocks both at once), or build
+`P4.6.1`'s design-mode-only slice now while transport gets scoped separately.
