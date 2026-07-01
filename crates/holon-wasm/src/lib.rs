@@ -18,8 +18,8 @@
 
 use holon_core::{
     decode_preimage, default_spec, derive_and_freeze, encode_preimage, genesis_units, hash_unit,
-    parse_hash, Edge, EncapError, Hash, MapResolver, Param, Port, Type, Unit, UnitBody, Value,
-    ValidationError, MAX_TYPE_DEPTH,
+    parse_hash, Edge, EncapError, EncapSpec, Expose, Hash, MapResolver, Param, Port, Promote,
+    Type, Unit, UnitBody, Value, ValidationError, MAX_TYPE_DEPTH,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -450,6 +450,68 @@ impl WValidationError {
     }
 }
 
+/// A promotion choice crossing to JS. Mirrors `core::Promote`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct WPromote {
+    child: u32,
+    port: u32,
+    name: String,
+}
+
+impl WPromote {
+    fn from_core(p: &Promote) -> WPromote {
+        WPromote { child: p.child, port: p.port, name: p.name.clone() }
+    }
+    fn into_core(self) -> Promote {
+        Promote { child: self.child, port: self.port, name: self.name }
+    }
+}
+
+/// An exposure choice crossing to JS. Mirrors `core::Expose`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct WExpose {
+    child: u32,
+    port: u32,
+    name: String,
+}
+
+impl WExpose {
+    fn from_core(e: &Expose) -> WExpose {
+        WExpose { child: e.child, port: e.port, name: e.name.clone() }
+    }
+    fn into_core(self) -> Expose {
+        Expose { child: self.child, port: self.port, name: self.name }
+    }
+}
+
+/// The canonical encapsulation proposal, crossing to JS. Mirrors `core::EncapSpec` (P4.3,
+/// fork 3). The editor may accept `expose` as-is — `project()` below does exactly that, in one
+/// call, unchanged — or edit it first: excluding some of the automatically-proposed free
+/// outputs from the composite's final interface, via `propose_encapsulation` +
+/// `freeze_encapsulation` below. `promote` crosses too but isn't editable yet on the editor
+/// side — no UI exists to rename or reorder promoted inputs either, so giving outputs more
+/// editing power than inputs currently have would be asymmetric for no reason.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct WEncapSpec {
+    promote: Vec<WPromote>,
+    expose: Vec<WExpose>,
+}
+
+impl WEncapSpec {
+    fn from_core(s: &EncapSpec) -> WEncapSpec {
+        WEncapSpec {
+            promote: s.promote.iter().map(WPromote::from_core).collect(),
+            expose: s.expose.iter().map(WExpose::from_core).collect(),
+        }
+    }
+    fn into_core(self) -> EncapSpec {
+        EncapSpec {
+            promote: self.promote.into_iter().map(WPromote::into_core).collect(),
+            expose: self.expose.into_iter().map(WExpose::into_core).collect(),
+        }
+    }
+}
+
 /// An encapsulation failure — mirrors `core::EncapError`. Same shape and reasoning as
 /// `WValidationError`: structured fields for highlighting, plus core's own `message`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -460,11 +522,8 @@ pub enum WEncapError {
     PromotePortOutOfRange { child: u32, port: u32, message: String },
     PromoteAlreadyBound { child: u32, port: u32, message: String },
     DuplicatePromotion { child: u32, port: u32, message: String },
-    OutputChildOutOfRange { child: u32, message: String },
-    OutputPortInvalid { child: u32, port: u32, message: String },
-    /// The candidate children `default_spec` found (empty ⇒ none free; 2+ ⇒ ambiguous) —
-    /// core's own `AmbiguousDefaultOutput(Vec<u32>)`, crossed intact.
-    AmbiguousDefaultOutput { candidates: Vec<u32>, message: String },
+    ExposeChildOutOfRange { child: u32, message: String },
+    ExposePortInvalid { child: u32, port: u32, message: String },
     Invalid { errors: Vec<WValidationError>, message: String },
 }
 
@@ -485,14 +544,11 @@ impl WEncapError {
             EncapError::DuplicatePromotion { child, port } => {
                 WEncapError::DuplicatePromotion { child: *child, port: *port, message }
             }
-            EncapError::OutputChildOutOfRange(c) => {
-                WEncapError::OutputChildOutOfRange { child: *c, message }
+            EncapError::ExposeChildOutOfRange(c) => {
+                WEncapError::ExposeChildOutOfRange { child: *c, message }
             }
-            EncapError::OutputPortInvalid { child, port } => {
-                WEncapError::OutputPortInvalid { child: *child, port: *port, message }
-            }
-            EncapError::AmbiguousDefaultOutput(candidates) => {
-                WEncapError::AmbiguousDefaultOutput { candidates: candidates.clone(), message }
+            EncapError::ExposePortInvalid { child, port } => {
+                WEncapError::ExposePortInvalid { child: *child, port: *port, message }
             }
             EncapError::Invalid(errs) => WEncapError::Invalid {
                 errors: errs.iter().map(WValidationError::from_core).collect(),
@@ -518,25 +574,30 @@ impl Evaluator {
         Ok(to_hex(&hash))
     }
 
-    /// Evaluate the unit (from its preimage) on `inputs` against the inserted workspace. `inputs` is
-    /// a JS array of `WValue | null` (null = an absent input slot). Returns the output `WValue`, or
-    /// `null` if the unit did not evaluate — a normal "not ready" outcome for a live editor.
+    /// Evaluate the unit (from its preimage) on `inputs` against the inserted workspace. `inputs`
+    /// is a JS array of `WValue | null` (null = an absent input slot). Returns an ARRAY of
+    /// `WValue | null` — one slot per the unit's declared output, in order, each independently
+    /// present or absent — not a single value. A single-output unit still returns a one-element
+    /// array; read `[0]`.
     ///
-    /// Uses `eval_one`, not core's `eval` directly (P4.7: `eval` now returns
-    /// `Vec<Option<Value>>`, since multi-output is a composite capability). Deliberately kept
-    /// single-`WValue`-crossing here, not widened to an array: the editor cannot construct a
-    /// multi-output composite yet — that's its own scoped sub-leaf, not this one — so nothing
-    /// real is lost by keeping today's contract, and `eval_one` fails closed (not "take the
-    /// first") if a multi-output unit ever does reach here before that lands.
+    /// Widened from a single value to the full array (P4.3, fork 2): `default_spec` now proposes
+    /// every free output automatically, so a person who leaves two independent primitives
+    /// unconsumed on the canvas gets a genuine two-output composite from an ordinary `project()`
+    /// call — an everyday case, not an exotic one. This crosses core's real `eval` result now,
+    /// not `eval_one`'s narrowed single value: narrowing here would silently show "not ready"
+    /// (null) for a completely valid, common composite, which is worse than the missing feature
+    /// it used to be a placeholder for.
     pub fn eval(&self, preimage: &[u8], inputs: JsValue) -> Result<JsValue, JsError> {
         let unit = decode_preimage(preimage).map_err(|e| JsError::new(&format!("decode: {e:?}")))?;
         let winputs: Vec<Option<WValue>> = serde_wasm_bindgen::from_value(inputs)
             .map_err(|e| JsError::new(&format!("inputs: {e}")))?;
         let core_inputs: Vec<Option<Value>> =
             winputs.into_iter().map(|o| o.map(WValue::into_core)).collect();
-        let out = holon_core::eval_one(&unit, &core_inputs, &self.resolver);
-        let wout = out.as_ref().map(WValue::from_core);
-        serde_wasm_bindgen::to_value(&wout).map_err(|e| JsError::new(&format!("output: {e}")))
+        let out: Vec<Option<WValue>> = holon_core::eval(&unit, &core_inputs, &self.resolver)
+            .iter()
+            .map(|o| o.as_ref().map(WValue::from_core))
+            .collect();
+        serde_wasm_bindgen::to_value(&out).map_err(|e| JsError::new(&format!("output: {e}")))
     }
 
     /// Project a placed graph into a composite (the editor's "compute this graph's unit + hash").
@@ -549,7 +610,80 @@ impl Evaluator {
     /// offending node(s) instead of just displaying text. Malformed *input* (a bad hex hash, edges
     /// that don't even deserialize) is a different failure mode — the editor's own marshalling
     /// should never trigger it — and stays a plain string, not part of this structured family.
+    ///
+    /// Unchanged by P4.3's fork 3, on purpose: this is still `default_spec` then
+    /// `derive_and_freeze`, combined, in one call, with zero editing in between — the path for
+    /// anyone who never touches the new seam below. `propose_encapsulation` +
+    /// `freeze_encapsulation` are the *same two core calls*, just split apart so a person can
+    /// look at the proposal and edit `expose` before freezing — not a second implementation.
     pub fn project(&self, children: Vec<String>, edges: JsValue) -> Result<JsValue, JsValue> {
+        let (hashes, core_edges) = Self::parse_children_and_edges(&children, edges)?;
+        // The structured path: build a WEncapError core's own Display already put into words
+        // (`e.to_string()`, inside from_core) — not a second, hand-maintained message here. Falls
+        // back to a plain string only if serializing the structured error itself somehow fails.
+        let composite = self.project_core(hashes, core_edges).map_err(|e| {
+            serde_wasm_bindgen::to_value(&WEncapError::from_core(&e))
+                .unwrap_or_else(|_| JsValue::from_str(&format!("project: {e}")))
+        })?;
+        serde_wasm_bindgen::to_value(&WUnit::from_core(&composite))
+            .map_err(|e| JsValue::from_str(&format!("unit: {e}")))
+    }
+
+    /// Propose the canonical encapsulation spec for a selection — core's `default_spec`, crossed
+    /// intact (P4.3, fork 3). Pair with `freeze_encapsulation` below: propose, let a person edit
+    /// `expose` (excluding some of the automatically-proposed free outputs), freeze the result.
+    /// Same structured-error behavior as `project` — `default_spec`'s only error is an
+    /// unresolvable child, everything else about *this* call is unfailable by construction.
+    pub fn propose_encapsulation(&self, children: Vec<String>, edges: JsValue) -> Result<JsValue, JsValue> {
+        let (hashes, core_edges) = Self::parse_children_and_edges(&children, edges)?;
+        let spec = default_spec(&hashes, &core_edges, &self.resolver).map_err(|e| {
+            serde_wasm_bindgen::to_value(&WEncapError::from_core(&e))
+                .unwrap_or_else(|_| JsValue::from_str(&format!("propose: {e}")))
+        })?;
+        serde_wasm_bindgen::to_value(&WEncapSpec::from_core(&spec))
+            .map_err(|e| JsValue::from_str(&format!("spec: {e}")))
+    }
+
+    /// Freeze a (possibly edited) encapsulation spec into a composite — core's
+    /// `derive_and_freeze` directly, no `default_spec` call inside (P4.3, fork 3). The
+    /// `children`/`edges` here must be the exact same values passed to
+    /// `propose_encapsulation` above — `spec`'s child/port indices are only meaningful against
+    /// that same selection. Same structured-error and hashing behavior as `project`, which is
+    /// really just `propose_encapsulation` then this, glued together with zero editing allowed
+    /// in between.
+    pub fn freeze_encapsulation(
+        &self,
+        children: Vec<String>,
+        edges: JsValue,
+        spec: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let (hashes, core_edges) = Self::parse_children_and_edges(&children, edges)?;
+        let wspec: WEncapSpec = serde_wasm_bindgen::from_value(spec)
+            .map_err(|e| JsValue::from_str(&format!("spec: {e}")))?;
+        let composite = derive_and_freeze(hashes, core_edges, &wspec.into_core(), &self.resolver)
+            .map_err(|e| {
+                serde_wasm_bindgen::to_value(&WEncapError::from_core(&e))
+                    .unwrap_or_else(|_| JsValue::from_str(&format!("freeze: {e}")))
+            })?;
+        serde_wasm_bindgen::to_value(&WUnit::from_core(&composite))
+            .map_err(|e| JsValue::from_str(&format!("unit: {e}")))
+    }
+
+    /// The JS-free heart of [`Evaluator::project`], so it runs on both targets: derive the canonical
+    /// boundary then freeze, both core's. `children` are inserted child hashes; `edges` are inner
+    /// child→child.
+    fn project_core(&self, children: Vec<Hash>, edges: Vec<Edge>) -> Result<Unit, EncapError> {
+        let spec = default_spec(&children, &edges, &self.resolver)?;
+        derive_and_freeze(children, edges, &spec, &self.resolver)
+    }
+
+    /// Parse hex child hashes + a JS `WEdge[]` into their core forms — the exact marshalling
+    /// `project`, `propose_encapsulation`, and `freeze_encapsulation` all need identically.
+    /// Factored out once three call sites needed it, not before.
+    fn parse_children_and_edges(
+        children: &[String],
+        edges: JsValue,
+    ) -> Result<(Vec<Hash>, Vec<Edge>), JsValue> {
         let hashes: Vec<Hash> = children
             .iter()
             .map(|c| parse_hash(c).ok_or_else(|| JsValue::from_str(&format!("bad child hash: {c}"))))
@@ -565,23 +699,7 @@ impl Evaluator {
                 to_port: e.to_port,
             })
             .collect();
-        // The structured path: build a WEncapError core's own Display already put into words
-        // (`e.to_string()`, inside from_core) — not a second, hand-maintained message here. Falls
-        // back to a plain string only if serializing the structured error itself somehow fails.
-        let composite = self.project_core(hashes, core_edges).map_err(|e| {
-            serde_wasm_bindgen::to_value(&WEncapError::from_core(&e))
-                .unwrap_or_else(|_| JsValue::from_str(&format!("project: {e}")))
-        })?;
-        serde_wasm_bindgen::to_value(&WUnit::from_core(&composite))
-            .map_err(|e| JsValue::from_str(&format!("unit: {e}")))
-    }
-
-    /// The JS-free heart of [`Evaluator::project`], so it runs on both targets: derive the canonical
-    /// boundary then freeze, both core's. `children` are inserted child hashes; `edges` are inner
-    /// child→child.
-    fn project_core(&self, children: Vec<Hash>, edges: Vec<Edge>) -> Result<Unit, EncapError> {
-        let spec = default_spec(&children, &edges, &self.resolver)?;
-        derive_and_freeze(children, edges, &spec, &self.resolver)
+        Ok((hashes, core_edges))
     }
 }
 
@@ -652,8 +770,24 @@ fn check_project() {
         vec![Some(Value::Number(5.0))],
     );
 
-    // Two independent adds ⇒ two free outputs ⇒ no canonical output: surfaced as an error.
-    assert!(ev.project_core(vec![h, h], vec![]).is_err());
+    // Two independent adds ⇒ both free outputs are now exposed automatically — a valid
+    // two-output composite, not an error. (Before this inch, this was the exact case
+    // that triggered AmbiguousDefaultOutput; that variant is gone now.)
+    let two = ev.project_core(vec![h, h], vec![]).unwrap();
+    assert_eq!(two.outputs.len(), 2);
+    assert_eq!(
+        holon_core::eval(
+            &two,
+            &[
+                Some(Value::Number(2.0)),
+                Some(Value::Number(3.0)),
+                Some(Value::Number(10.0)),
+                Some(Value::Number(20.0)),
+            ],
+            &ev.resolver,
+        ),
+        vec![Some(Value::Number(5.0)), Some(Value::Number(30.0))],
+    );
 }
 
 #[cfg(test)]
@@ -662,20 +796,21 @@ fn check_encap_error_structure() {
     // just a stringified message — proven directly, no JsValue crossing needed here (the actual
     // serde_wasm_bindgen serialization is the same already-proven mechanism WValue/WType/WUnit use
     // everywhere else in this file).
-    let mut ev = Evaluator::new();
-    let add_pre = encode_preimage(&binop("add")).unwrap();
-    let hex = ev.insert(&add_pre).unwrap();
-    let h = parse_hash(&hex).unwrap();
+    //
+    // Scenario: a child hash that was never inserted ⇒ UnresolvedChild. (Previously this test used
+    // "two independent adds", which triggered AmbiguousDefaultOutput — that variant no longer
+    // exists: default_spec now exposes every free output automatically instead of erroring on
+    // more than one. UnresolvedChild is still a live, simple error to trigger structurally.)
+    let ev = Evaluator::new();
+    let never_inserted: Hash = [7u8; 32];
 
-    // Two independent adds ⇒ two free outputs ⇒ AmbiguousDefaultOutput([0, 1]) — the candidate
-    // list this whole inch exists to stop discarding.
-    let err = ev.project_core(vec![h, h], vec![]).unwrap_err();
+    let err = ev.project_core(vec![never_inserted], vec![]).unwrap_err();
     match WEncapError::from_core(&err) {
-        WEncapError::AmbiguousDefaultOutput { candidates, message } => {
-            assert_eq!(candidates, vec![0, 1]);
+        WEncapError::UnresolvedChild { child, message } => {
+            assert_eq!(child, 0);
             assert!(!message.is_empty()); // core's own Display, not silently blank
         }
-        other => panic!("expected AmbiguousDefaultOutput, got {other:?}"),
+        other => panic!("expected UnresolvedChild, got {other:?}"),
     }
 }
 
@@ -959,8 +1094,60 @@ mod wasm_tests {
                 &[Some(Value::Number(2.0)), Some(Value::Number(3.0))],
                 &ev.resolver,
             ),
-            Some(Value::Number(5.0)),
+            vec![Some(Value::Number(5.0))],
         );
+    }
+
+    // The split encapsulation seam (P4.3, fork 3): propose across the JS boundary, edit the
+    // proposal (exclude one of two free outputs), freeze the edited spec — proving a person can
+    // genuinely change what the final composite exposes, not just preview it.
+    #[wasm_bindgen_test]
+    fn propose_and_freeze_encapsulation_crosses_js_boundary() {
+        let mut ev = Evaluator::new();
+        let add_pre = encode_preimage(&binop("add")).unwrap();
+        let hex = ev.insert(&add_pre).unwrap();
+        let children = vec![hex.clone(), hex.clone()]; // two independent adds ⇒ two free outputs
+        let no_edges = || serde_wasm_bindgen::to_value(&Vec::<WEdge>::new()).unwrap();
+
+        // Propose: default_spec's full proposal, crossed intact — both children exposed.
+        let spec_js = ev.propose_encapsulation(children.clone(), no_edges()).unwrap();
+        let mut spec: WEncapSpec = serde_wasm_bindgen::from_value(spec_js).unwrap();
+        assert_eq!(spec.expose.len(), 2);
+        assert_eq!(spec.promote.len(), 4); // a, b for each of the two adds
+
+        // Edit: exclude the second exposed output — the actual point of this seam.
+        spec.expose.truncate(1);
+
+        // Freeze the edited spec: the resulting composite has ONE output, not two.
+        let spec_edited_js = serde_wasm_bindgen::to_value(&spec).unwrap();
+        let composite_js =
+            ev.freeze_encapsulation(children.clone(), no_edges(), spec_edited_js).unwrap();
+        let composite: WUnit = serde_wasm_bindgen::from_value(composite_js).unwrap();
+        let bridged = composite.into_core().unwrap();
+        assert_eq!(bridged.outputs.len(), 1);
+
+        // It still evaluates correctly — the excluded output is gone from the interface, not
+        // silently broken.
+        assert_eq!(
+            holon_core::eval(
+                &bridged,
+                &[
+                    Some(Value::Number(2.0)),
+                    Some(Value::Number(3.0)),
+                    Some(Value::Number(10.0)),
+                    Some(Value::Number(20.0)),
+                ],
+                &ev.resolver,
+            ),
+            vec![Some(Value::Number(5.0))],
+        );
+
+        // project() itself is genuinely unchanged: called directly on the same two adds, it
+        // still produces the full two-output composite — the new seam doesn't alter the
+        // existing path.
+        let full_js = ev.project(children, no_edges()).unwrap();
+        let full: WUnit = serde_wasm_bindgen::from_value(full_js).unwrap();
+        assert_eq!(full.outputs.len(), 2);
     }
 
     // Eval through the JS boundary: JS inputs → Evaluator::eval → core eval → JS output.
@@ -974,8 +1161,8 @@ mod wasm_tests {
         ])
         .unwrap();
         let out = ev.eval(&add_bytes, inputs).unwrap();
-        let wout: Option<WValue> = serde_wasm_bindgen::from_value(out).unwrap();
-        assert_eq!(wout, Some(WValue::Number(5.0)));
+        let wout: Vec<Option<WValue>> = serde_wasm_bindgen::from_value(out).unwrap();
+        assert_eq!(wout, vec![Some(WValue::Number(5.0))]);
     }
 
     // The FULL editor path: build a const(7) and a composite from plain JS objects (through the one
@@ -1009,8 +1196,8 @@ mod wasm_tests {
 
         let no_inputs = serde_wasm_bindgen::to_value(&Vec::<Option<WValue>>::new()).unwrap();
         let out = ev.eval(&comp_pre, no_inputs).unwrap();
-        let wout: Option<WValue> = serde_wasm_bindgen::from_value(out).unwrap();
-        assert_eq!(wout, Some(WValue::Number(7.0)));
+        let wout: Vec<Option<WValue>> = serde_wasm_bindgen::from_value(out).unwrap();
+        assert_eq!(wout, vec![Some(WValue::Number(7.0))]);
     }
 
     // The catalog crosses the JS boundary as an array of WUnit, intact — the new risk the

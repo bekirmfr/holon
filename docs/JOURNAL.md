@@ -2828,3 +2828,105 @@ verify with `tsc -b` once `Palette.tsx`'s sibling files are in place.
 **Next inch.** Neither of the two items above is scheduled yet — both are named forks awaiting a
 decision, not a queued next step. Whatever comes next on the overall plan is independent of P4.7,
 which is now fully closed.
+
+---
+
+## 2026-07-01 · P4.3 — output exposure: from automatic-and-fixed to automatic-and-editable · *(forks 1-3, browser-confirmed; the leaf's actual scope — subgraph selection/grouping — still untouched)*
+
+**Context.** P4.7's own deferred-forks list named this directly: `EncapSpec.expose: Vec<Expose>`
+— letting an author choose several outputs, generalizing the single-choice `EncapSpec.output` —
+was explicitly not built there. Separately, `P4.3.1`'s own leaf definition already anticipated
+the bridge-split half of this work almost exactly: "expose `default_spec` + `derive_and_freeze`
+as two calls, so the UI can... choose the exposed output." Three forks, scoped and confirmed one
+at a time rather than built together.
+
+**Built.**
+- **Fork 1 (core capability).** `Expose { child, port, name }` — structurally identical to
+  `Promote`, kept as its own type so swapping `promote`/`expose` at a call site is a compile
+  error, not a silent bug. `EncapSpec.output: (u32, u32)` → `expose: Vec<Expose>`.
+  `derive_and_freeze` generalized to loop over `spec.expose` symmetrically with the existing
+  `spec.promote` loop — N output ports, N boundary edges, `to_port = i`. `default_spec` stays
+  behaviorally unchanged (still exactly one required free output) — only its internal
+  construction changed mechanically.
+- **Fork 2 (`default_spec` generalizes).** `default_spec`'s output-side scan changed from
+  per-*child* tracking (`consumed: BTreeSet<u32>`, hardcoded port 0) to per-`(child, port)`
+  tracking, symmetric with the promote loop — propose every free output automatically, zero
+  ambiguity check, matching how the input side already promotes every unbound input. This
+  wasn't a separate patch: the correct symmetric loop simply has no room for the old bug, which
+  would have mattered the moment a multi-output child (fork 1's own capability) got fed back in.
+  `EncapError::AmbiguousDefaultOutput` removed entirely as dead code, not left inert — no case
+  produces it anymore. Consequence that isn't optional: the wasm bridge's `Evaluator::eval()`
+  had used `eval_one` (narrowed to a single value) on the reasoning that the editor couldn't yet
+  build multi-output composites — fork 2 removes that precondition immediately (any two
+  unconsumed primitives now project to two outputs automatically), so `eval()` was widened to
+  cross the genuine `Vec<Option<WValue>>` array. Shipping the `default_spec` change alone would
+  have been a regression, not a gap: the old `AmbiguousDefaultOutput` gave a clear, structured,
+  node-highlighting error for this exact case; without the `eval()` fix it would have silently
+  shown "not ready," indistinguishable from a broken graph. `App.tsx`'s results panel updated to
+  the plural shape, labeled via `boundaryLabels` — reused directly, not reimplemented, since it
+  turned out to already be fully generic (provenance + occurrence-counting, never actually
+  input-specific).
+- **Fork 3 (the editable seam).** Two new `Evaluator` methods, named after the exact core
+  functions they wrap: `propose_encapsulation` (wraps `default_spec` alone) and
+  `freeze_encapsulation` (wraps `derive_and_freeze` alone). `project()` itself untouched — still
+  the single-call combined path for anyone who never intervenes. New `WPromote`/`WExpose`/
+  `WEncapSpec` bridge types mirroring their core counterparts. `App.tsx`: `onProject` now calls
+  propose then freeze explicitly, storing `children`/`wedges`/`spec` so exclusion can re-freeze
+  without re-deriving from the (possibly since-changed) canvas. New `excludeOutput` handler — a
+  genuine re-freeze (new spec → new hash → new preimage → re-eval), not a display filter, because
+  unlike a boundary value, which output is exposed changes what the composite's interface
+  actually declares. Deliberately narrow: exclude only, no rename, no reorder, no re-include
+  without re-projecting (already a single click) — matching the promoted-input side's own
+  current lack of rename/reorder, so outputs don't get more editing power than inputs have.
+
+**Leaf closed.** Forks 1-3 of the output-exposure work only. **`P4.3.1`'s actual scope — select a
+*subgraph* (today `project` always takes the whole canvas, never a partial selection), group it
+into a placed, collapsed node, expand a placed composite back to inspect its children — remains
+completely unbuilt.** The bridge split this arc delivered was a prerequisite `P4.3.1`'s own notes
+already called out, earned early — not the leaf itself. Worth naming plainly rather than let
+"P4.3" quietly stand in for the bigger, separate feature.
+
+**Tests prove** (183→185 core: net +1 from fork 1's `multi_output_composite_exposes_several_
+independently`, then -2 dead scenarios removed / +3 new for fork 2's generalization; 39 host
+unchanged; 11 wasm-native unchanged; 17→18 wasm, fork 3's own test): `default_spec_exposes_
+every_free_output` and `default_spec_with_no_free_output_exposes_nothing` prove the ambiguity
+check is genuinely gone in both directions, not just the "two free" case. `default_spec_tracks_
+free_outputs_per_port_not_per_child` proves the exact bug the symmetric generalization fixes: a
+child with one consumed and one free output still surfaces the free one. `propose_and_freeze_
+encapsulation_crosses_js_boundary` (wasm-only) proves the full seam end to end — propose two
+free outputs, edit the proposal down to one, freeze it, confirm one real output that still
+evaluates correctly, and confirm `project()` called directly still produces the full two-output
+composite, unaffected. **Browser-confirmed directly, not just test-confirmed:** two independent
+`add`/`select` nodes project to two results under one hash; excluding one drops to a single
+result under a genuinely different hash — the re-freeze, not a filter.
+
+**Forks pinned.**
+- Multi-output exposure is opt-out (exclude from an automatic maximal proposal), not opt-in —
+  matching how input promotion already works, not a new interaction model.
+- Excluding an output is identity-affecting (a real re-freeze), never a client-side display
+  filter over an already-frozen result.
+- `project()` stays the single-call default path permanently, unless deliberately changed later
+  — the split methods are an addition beside it, not a replacement.
+
+**Named, not silently found — three real gaps caught by grounding rather than assumed fixed:**
+1. `#[cfg(all(test, target_arch = "wasm32"))]` gates the entire `wasm_tests` module (plus three
+   hand-written `#[wasm_bindgen_test]` functions) out of every `cargo test --workspace` run —
+   meaning that whole class of tests had never actually been compiled this session until
+   `wasm-pack test` was finally run successfully from the repo root. Three genuine type
+   mismatches from the original P4.7 pass were found and fixed there, previously undetected.
+2. `holon.ts`'s `WEncapError` type and `App.tsx`'s `encapErrorNodeIndices` still referenced
+   `OutputChildOutOfRange`/`OutputPortInvalid`/`AmbiguousDefaultOutput` — variants renamed or
+   removed on the Rust side across the two prior inches, never updated on the TypeScript side.
+   A real `switch` with real (now-stale) case labels, not just an unused type.
+3. `Expose` (and, separately, `EncapSpec`'s own re-export) had never been added to
+   `holon-core`'s curated `pub use` list in `lib.rs` — the same class of gap as `eval_one`
+   earlier in the P4.7 arc, caught this time before it reached the wasm bridge instead of after.
+
+**Deferred, named:** reorder/rename of promoted inputs or exposed outputs; re-including an
+excluded output without re-projecting; and — the largest, most honest one — subgraph selection,
+grouping a selection into a placed node, and expand-to-inspect, which is `P4.3.1`'s actual scope
+and hasn't been started.
+
+**Next inch.** Whatever's next is independent of this arc, which is closed at forks 1-3. The
+`SmallVec` perf item from P4.7 remains separately deferred, pending an actual multi-output
+composite existing in the wild to benchmark against — which, as of this inch, one now does.

@@ -551,11 +551,16 @@ cosmetic layer** (positions, labels) the core deliberately does not know about.
    derive-then-freeze P1.5.1, receives the new `Unit` + hash); expand to inspect.
    *pre:* P4.1.1, P1.5.1 · *inv:* `I4`/`I9` · *test:* grouping in-editor yields a unit
    whose interface + hash match the core's derivation; expand round-trips · *effort:* **M**
-   *→ **Bridge surface, deferred from the projection inch:** projection exposes only the combined
-   `Evaluator.project` (= `default_spec` ∘ `derive_and_freeze`). **P4.3 earns splitting it** — expose
-   `default_spec` (propose the canonical boundary) + `derive_and_freeze` (freeze a possibly-adjusted
-   `EncapSpec`) as two calls, so the UI can reorder/rename promoted inputs and choose the exposed
-   output. Until then an ambiguous boundary is a surfaced error, never auto-resolved.*
+   *→ **Bridge surface — DONE** (`Evaluator.propose_encapsulation` / `freeze_encapsulation`, split
+   exactly as this note asked for; `project()` itself untouched, still the combined single-call
+   path). **Earned so far: exclude, not choose** — the editor can drop a proposed output (a
+   genuine re-freeze, new hash) but cannot reorder or rename them, and excluding is one-way
+   within a projection, recovered only by re-running "project." "An ambiguous boundary is a
+   surfaced error" is now obsolete — `default_spec` has no ambiguous case left; it proposes every
+   free output automatically. Still entirely unbuilt, and this is the leaf's actual scope: select
+   a *subgraph* (`project` still always takes the whole canvas), group it into a placed node,
+   expand a placed composite back to inspect its children. Full account: JOURNAL.md, 2026-07-01
+   · P4.3.*
 
 5. **P4.4.1 · Transitive inspection UI** — render the closure tree P3.2.1 produces,
    annotated with derived kind + capabilities at every level, to the leaves.

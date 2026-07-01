@@ -41,7 +41,7 @@ mod value;
 pub mod primitives;
 
 pub use determinism::is_finite_number;
-pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Promote};
+pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::{eval, eval_one};
 pub use fork::{refork, Refork};

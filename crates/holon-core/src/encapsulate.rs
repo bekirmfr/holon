@@ -2,7 +2,7 @@
 //!
 //! Turn a self-contained selection `(children, inner_edges)` into a new hashed `Unit`
 //! whose interface is **derived** (types, boundary edges) and whose **choices** (which
-//! inputs promote, their order = identity, their names, which output is exposed) come
+//! inputs promote, their order = identity, their names, which outputs are exposed) come
 //! from an [`EncapSpec`]. `derive_and_freeze` generates exactly the `BOUNDARY` edges the
 //! evaluator and validator already consume — encapsulation is their inverse.
 //!
@@ -26,15 +26,33 @@ pub struct Promote {
     pub name: String,
 }
 
+/// A choice to expose an inner `(child, port)` *output* at the new unit's interface, with
+/// the interface port `name`. The **order** of these in [`EncapSpec::expose`] is the
+/// interface output order — and therefore part of identity (P4.7: exposing several is now
+/// possible, mirroring `Promote` on the input side).
+///
+/// Structurally identical to [`Promote`] on purpose kept as its own type, not a reuse:
+/// swapping `promote`/`expose` at a call site is then a compile error, not a silent bug —
+/// the same "let the compiler enforce it" discipline `eval_one`/`eval` already lean on.
+///
+/// Unlike `Promote`, exposing the same `(child, port)` twice under different names is not
+/// rejected — there is no structural conflict the way there is on the input side (an input
+/// port has at most one source, so promoting it twice would create one; an output can
+/// already fan out to many consumers, so exposing it under two names is just two more
+/// consumers, not a new capability). Not a missed check — there is nothing to check.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Expose {
+    pub child: u32,
+    pub port: u32,
+    pub name: String,
+}
+
 /// The authoring choices encapsulation cannot derive: which inputs to promote (ordered)
-/// and which inner output to expose.
+/// and which inner outputs to expose (ordered).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EncapSpec {
     pub promote: Vec<Promote>,
-    pub output: (u32, u32), // (child, port) — one choice for now; P4.7 sub-leaf (b) generalizes
-    // this to Vec<Expose> so several outputs can be chosen at once. The port itself already
-    // indexes the child's real outputs (derive_and_freeze checks it against outputs.len()),
-    // not hardcoded to 0 — today's single-choice limit is this field's shape, not that check.
+    pub expose: Vec<Expose>,
 }
 
 /// Why an encapsulation was rejected.
@@ -46,14 +64,9 @@ pub enum EncapError {
     /// The promoted port already has an incoming inner edge (would be a second source).
     PromoteAlreadyBound { child: u32, port: u32 },
     DuplicatePromotion { child: u32, port: u32 },
-    OutputChildOutOfRange(u32),
-    /// The output port is out of range for however many outputs the chosen child declares.
-    OutputPortInvalid { child: u32, port: u32 },
-    /// `default_spec` found zero or more than one free output — the author must choose.
-    /// Carries the candidate child indices `default_spec` already computed (empty ⇒ none
-    /// free; 2+ ⇒ ambiguous) — this was previously computed then thrown away; surfacing it
-    /// costs nothing new, it's the editor's only way to know *which* nodes to highlight.
-    AmbiguousDefaultOutput(Vec<u32>),
+    ExposeChildOutOfRange(u32),
+    /// The exposed port is out of range for however many outputs the chosen child declares.
+    ExposePortInvalid { child: u32, port: u32 },
     /// The derived unit failed validation (should be impossible by construction).
     Invalid(Vec<ValidationError>),
 }
@@ -75,20 +88,12 @@ impl std::fmt::Display for EncapError {
             EncapError::DuplicatePromotion { child, port } => {
                 write!(f, "input port {port} of child {child} is promoted more than once")
             }
-            EncapError::OutputChildOutOfRange(c) => {
+            EncapError::ExposeChildOutOfRange(c) => {
                 write!(f, "the exposed output references child {c}, which doesn't exist")
             }
-            EncapError::OutputPortInvalid { child, port } => {
+            EncapError::ExposePortInvalid { child, port } => {
                 write!(f, "child {child} has no output at port {port}")
             }
-            EncapError::AmbiguousDefaultOutput(candidates) if candidates.is_empty() => {
-                write!(f, "no child has a free output to expose")
-            }
-            EncapError::AmbiguousDefaultOutput(candidates) => write!(
-                f,
-                "{} children have a free output ({candidates:?}) — choose which to expose",
-                candidates.len()
-            ),
             EncapError::Invalid(errs) => {
                 write!(f, "the derived unit failed validation: {} error(s)", errs.len())
             }
@@ -140,28 +145,37 @@ pub fn derive_and_freeze(
         inputs.push(Port { name: pr.name.clone(), ty: resolved[ci].inputs[pp].ty.clone() });
     }
 
-    // Validate the exposed output and derive its type.
-    let (oc, op) = spec.output;
-    if oc as usize >= k {
-        return Err(EncapError::OutputChildOutOfRange(oc));
+    // Validate each exposed output and derive its type — the dual of the promote loop
+    // above. No `seen`/duplicate check here on purpose: see Expose's own doc comment for
+    // why exposing the same (child, port) twice isn't a structural conflict the way
+    // promoting the same input twice is.
+    let mut outputs: Vec<Port> = Vec::with_capacity(spec.expose.len());
+    for ex in &spec.expose {
+        let ci = ex.child as usize;
+        if ci >= k {
+            return Err(EncapError::ExposeChildOutOfRange(ex.child));
+        }
+        let ty = match resolved[ci].outputs.get(ex.port as usize) {
+            Some(p) => p.ty.clone(),
+            None => return Err(EncapError::ExposePortInvalid { child: ex.child, port: ex.port }),
+        };
+        outputs.push(Port { name: ex.name.clone(), ty });
     }
-    let out_ty = match resolved[oc as usize].outputs.get(op as usize) {
-        Some(p) => p.ty.clone(),
-        None => return Err(EncapError::OutputPortInvalid { child: oc, port: op }),
-    };
 
     // Generate boundary edges (the dual of how eval reads them).
     let mut edges = inner_edges;
     for (i, pr) in spec.promote.iter().enumerate() {
         edges.push(Edge { from_child: BOUNDARY, from_port: i as u32, to_child: pr.child, to_port: pr.port });
     }
-    edges.push(Edge { from_child: oc, from_port: op, to_child: BOUNDARY, to_port: 0 });
+    for (i, ex) in spec.expose.iter().enumerate() {
+        edges.push(Edge { from_child: ex.child, from_port: ex.port, to_child: BOUNDARY, to_port: i as u32 });
+    }
 
     let unit = Unit {
         body: UnitBody::Composite { children, edges },
         params: vec![],
         inputs,
-        outputs: vec![Port { name: "out".into(), ty: out_ty }],
+        outputs,
     };
 
     match validate(&unit, resolver) {
@@ -170,9 +184,20 @@ pub fn derive_and_freeze(
     }
 }
 
-/// The canonical proposal: promote every unbound inner input in `(child, port)` order
-/// (named after its inner port), and expose the unique child whose output is unconsumed.
-/// `AmbiguousDefaultOutput` when that child is not unique — the author must choose.
+/// The canonical proposal: promote every unbound inner input, and expose every free inner
+/// output — both walked in `(child, port)` order, both named after their inner port, both
+/// with zero ambiguity check. Symmetric with the input side on purpose: an input with no
+/// inner source becomes a boundary input; an output with no inner destination becomes a
+/// boundary output. Neither side asks "is there exactly one" — a closed composite with
+/// zero free inputs already promotes nothing, and this now does the same for outputs
+/// (zero free outputs ⇒ `expose: vec![]`, a composite whose effects are discarded — an
+/// honest fact, not a gap, the same reasoning `eval`'s own P4.7 design settled).
+///
+/// `default_spec` cannot itself decide *which* of several free outputs an author actually
+/// wants surfaced as "the" result of a graph — that's a real choice, deliberately left to
+/// a later, separately-scoped editor inch (letting a person pick, rather than always
+/// getting everything free). This function only ever proposes the maximal, fully
+/// automatic answer: whatever's free, all of it.
 pub fn default_spec(
     children: &[Hash],
     inner_edges: &[Edge],
@@ -204,16 +229,26 @@ pub fn default_spec(
         }
     }
 
-    let consumed: BTreeSet<u32> = inner_edges.iter().map(|e| e.from_child).collect();
-    let mut free: Vec<u32> = (0..k as u32)
-        .filter(|c| !consumed.contains(c) && !resolved[*c as usize].outputs.is_empty())
-        .collect();
-    if free.len() != 1 {
-        return Err(EncapError::AmbiguousDefaultOutput(free));
-    }
-    let output = (free.pop().unwrap(), 0);
+    // The dual of `bound` above: which (child, port) OUTPUTS already feed some inner
+    // destination. Tracked by the full pair, not just `from_child` — a child with two
+    // outputs, one consumed and one free, must still surface the free one.
+    let consumed: BTreeSet<(u32, u32)> =
+        inner_edges.iter().map(|e| (e.from_child, e.from_port)).collect();
 
-    Ok(EncapSpec { promote, output })
+    let mut expose = Vec::new();
+    for ci in 0..k {
+        for p in 0..resolved[ci].outputs.len() {
+            if !consumed.contains(&(ci as u32, p as u32)) {
+                expose.push(Expose {
+                    child: ci as u32,
+                    port: p as u32,
+                    name: resolved[ci].outputs[p].name.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(EncapSpec { promote, expose })
 }
 
 #[cfg(test)]
@@ -271,7 +306,7 @@ mod tests {
         let spec = default_spec(&children, &inner, &r).unwrap();
         // default promotes add.a, add.b, mul.q (mul.p is bound); exposes mul.
         assert_eq!(spec.promote.len(), 3);
-        assert_eq!(spec.output, (1, 0));
+        assert_eq!(spec.expose, vec![Expose { child: 1, port: 0, name: "out".into() }]);
 
         let derived = derive_and_freeze(children, inner, &spec, &r).unwrap();
         // (2 + 3) * 4 = 20
@@ -290,7 +325,7 @@ mod tests {
         let promoted: Vec<(u32, u32, &str)> =
             spec.promote.iter().map(|p| (p.child, p.port, p.name.as_str())).collect();
         assert_eq!(promoted, vec![(0, 0, "a"), (0, 1, "b"), (1, 1, "q")]);
-        assert_eq!(spec.output, (1, 0));
+        assert_eq!(spec.expose, vec![Expose { child: 1, port: 0, name: "out".into() }]);
     }
 
     #[test]
@@ -302,14 +337,14 @@ mod tests {
                 Promote { child: 0, port: 0, name: "a".into() },
                 Promote { child: 0, port: 1, name: "b".into() },
             ],
-            output: (0, 0),
+            expose: vec![Expose { child: 0, port: 0, name: "out".into() }],
         };
         let spec_ba = EncapSpec {
             promote: vec![
                 Promote { child: 0, port: 1, name: "b".into() },
                 Promote { child: 0, port: 0, name: "a".into() },
             ],
-            output: (0, 0),
+            expose: vec![Expose { child: 0, port: 0, name: "out".into() }],
         };
         let d_ab = derive_and_freeze(vec![hadd], vec![], &spec_ab, &r).unwrap();
         let d_ba = derive_and_freeze(vec![hadd], vec![], &spec_ba, &r).unwrap();
@@ -323,38 +358,43 @@ mod tests {
         let hmul = r.insert(binop("multiply", "p", "q")).unwrap();
         let spec = EncapSpec {
             promote: vec![Promote { child: 1, port: 0, name: "p".into() }], // mul.0 is bound
-            output: (1, 0),
+            expose: vec![Expose { child: 1, port: 0, name: "out".into() }],
         };
         let err = derive_and_freeze(vec![hadd, hmul], vec![e(0, 0, 1, 0)], &spec, &r).unwrap_err();
         assert_eq!(err, EncapError::PromoteAlreadyBound { child: 1, port: 0 });
     }
 
     #[test]
-    fn rejects_invalid_output() {
+    fn rejects_invalid_expose() {
         let mut r = MapResolver::new();
         let hadd = r.insert(binop("add", "a", "b")).unwrap();
-        let spec = EncapSpec { promote: vec![], output: (0, 3) }; // port 3 invalid
+        let spec = EncapSpec {
+            promote: vec![],
+            expose: vec![Expose { child: 0, port: 3, name: "out".into() }], // port 3 invalid
+        };
         let err = derive_and_freeze(vec![hadd], vec![], &spec, &r).unwrap_err();
-        assert_eq!(err, EncapError::OutputPortInvalid { child: 0, port: 3 });
+        assert_eq!(err, EncapError::ExposePortInvalid { child: 0, port: 3 });
     }
 
     #[test]
-    fn ambiguous_default_output() {
-        // Two independent (unconsumed) children ⇒ no unique free output. Both candidate
-        // indices are now in the error — previously discarded, now the only way the editor
-        // can know which two nodes to highlight.
+    fn default_spec_exposes_every_free_output() {
+        // Two independent (unconsumed) children ⇒ both are now exposed automatically — no
+        // error, no ambiguity. Symmetric with how the input side already promotes every
+        // unbound input with zero ambiguity check.
         let mut r = MapResolver::new();
-        let hadd = r.insert(binop("add", "a", "b")).unwrap();
-        let err = default_spec(&[hadd, hadd], &[], &r).unwrap_err();
-        assert_eq!(err, EncapError::AmbiguousDefaultOutput(vec![0, 1]));
+        let hadd1 = r.insert(binop("add", "a", "b")).unwrap();
+        let hadd2 = r.insert(binop("add", "a", "b")).unwrap();
+        let spec = default_spec(&[hadd1, hadd2], &[], &r).unwrap();
+        let exposed: Vec<(u32, u32, &str)> =
+            spec.expose.iter().map(|x| (x.child, x.port, x.name.as_str())).collect();
+        assert_eq!(exposed, vec![(0, 0, "out"), (1, 0, "out")]);
     }
 
     #[test]
-    fn no_free_output_is_distinguishable_from_ambiguous() {
-        // Before this inch, "zero free outputs" and "two free outputs" were the exact same
-        // bare variant — indistinguishable to a caller. An empty candidate list is now the
-        // honest, distinct signal for "nothing to expose" (no child has an output at all),
-        // not conflated with "too many, pick one."
+    fn default_spec_with_no_free_output_exposes_nothing() {
+        // A child with no output at all ⇒ expose: vec![] — a valid, ordinary proposal
+        // (a composite whose effects are discarded, an honest fact per eval's own P4.7
+        // design, not an error to reject).
         let mut r = MapResolver::new();
         let no_output = Unit {
             body: UnitBody::Primitive { name: "store_write".into() },
@@ -363,8 +403,38 @@ mod tests {
             outputs: vec![],
         };
         let h = r.insert(no_output).unwrap();
-        let err = default_spec(&[h], &[], &r).unwrap_err();
-        assert_eq!(err, EncapError::AmbiguousDefaultOutput(vec![]));
+        let spec = default_spec(&[h], &[], &r).unwrap();
+        assert_eq!(spec.expose, vec![]);
+    }
+
+    #[test]
+    fn default_spec_tracks_free_outputs_per_port_not_per_child() {
+        // A child with TWO outputs, one consumed internally (feeds another child) and one
+        // free, proves the exposure scan tracks (child, port), not just child — the exact
+        // bug the old per-child `consumed: BTreeSet<u32>` would have hit the moment a
+        // multi-output child existed. This generalization fixes it as a consequence of
+        // the correct symmetric loop, not as a separate patch.
+        let mut r = MapResolver::new();
+        let dual = Unit {
+            body: UnitBody::Primitive { name: "dual".into() },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![
+                Port { name: "x".into(), ty: Type::Number },
+                Port { name: "y".into(), ty: Type::Number },
+            ],
+        };
+        let hdual = r.insert(dual).unwrap();
+        let hadd = r.insert(binop("add", "a", "b")).unwrap();
+        let children = vec![hdual, hadd];
+        let inner = vec![e(0, 0, 1, 0)]; // dual.x (port 0) → add.a; dual.y (port 1) stays free
+
+        let spec = default_spec(&children, &inner, &r).unwrap();
+        let exposed: Vec<(u32, u32, &str)> =
+            spec.expose.iter().map(|x| (x.child, x.port, x.name.as_str())).collect();
+        // dual.y is free and exposed despite dual.x being consumed on the SAME child;
+        // add's own output is free too.
+        assert_eq!(exposed, vec![(0, 1, "y"), (1, 0, "out")]);
     }
 
     #[test]
@@ -374,5 +444,59 @@ mod tests {
         let spec = default_spec(&[hadd], &[], &r).unwrap();
         let derived = derive_and_freeze(vec![hadd], vec![], &spec, &r).unwrap();
         assert!(validate(&derived, &r).is_ok());
+    }
+
+    #[test]
+    fn multi_output_composite_exposes_several_independently() {
+        // add(a,b) and divide(a,b) as two independent children — neither wired to the
+        // other — both exposed as separate composite outputs via a hand-built EncapSpec.
+        // The actual point of this inch: `default_spec` still only ever proposes one
+        // (deliberately unchanged, see its own doc comment), but `derive_and_freeze`
+        // itself now accepts any number of exposed outputs — proven end to end here
+        // (derived types, boundary wiring, eval), not just type-checked. Mirrors eval.rs's
+        // own `multi_output_partial_success`, but through this real, public API surface,
+        // not eval's internal one.
+        let mut r = MapResolver::new();
+        let hadd = r.insert(binop("add", "a", "b")).unwrap();
+        let hdiv = r.insert(binop("divide", "a", "b")).unwrap();
+        let children = vec![hadd, hdiv];
+
+        let spec = EncapSpec {
+            promote: vec![
+                Promote { child: 0, port: 0, name: "add_a".into() },
+                Promote { child: 0, port: 1, name: "add_b".into() },
+                Promote { child: 1, port: 0, name: "div_a".into() },
+                Promote { child: 1, port: 1, name: "div_b".into() },
+            ],
+            expose: vec![
+                Expose { child: 0, port: 0, name: "sum".into() },
+                Expose { child: 1, port: 0, name: "quotient".into() },
+            ],
+        };
+        let derived = derive_and_freeze(children, vec![], &spec, &r).unwrap();
+
+        // Interface derived correctly: two named, typed output ports, in expose order.
+        assert_eq!(
+            derived.outputs,
+            vec![
+                Port { name: "sum".into(), ty: Type::Number },
+                Port { name: "quotient".into(), ty: Type::Number },
+            ]
+        );
+
+        // Honest success: 3+4=7, 12/4=3 — both slots present.
+        assert_eq!(
+            eval(&derived, &[Some(num(3.0)), Some(num(4.0)), Some(num(12.0)), Some(num(4.0))], &r),
+            vec![Some(num(7.0)), Some(num(3.0))]
+        );
+
+        // Partial success: divide-by-zero fails ONLY the quotient slot; sum is
+        // unaffected — the whole point of Vec<Option<Value>> over Option<Vec<Value>>
+        // (P4.7's original foundation), now proven through a unit this module actually
+        // built, not just eval's own internal fixtures.
+        assert_eq!(
+            eval(&derived, &[Some(num(3.0)), Some(num(4.0)), Some(num(12.0)), Some(num(0.0))], &r),
+            vec![Some(num(7.0)), None]
+        );
     }
 }

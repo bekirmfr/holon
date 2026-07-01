@@ -35,6 +35,7 @@ import {
   type WPort,
   type WType,
   type WEncapError,
+  type WEncapSpec,
   type WValidationError,
 } from "./holon";
 import { outputColor, typeColor, typeLabel } from "./theme";
@@ -173,8 +174,9 @@ function validationErrorNodeIndices(err: WValidationError, wedges: WEdge[]): num
 }
 
 // Same idea, one level up: an EncapError's own `child` fields, or — for `Invalid` — every
-// wrapped ValidationError's indices, flattened. `AmbiguousDefaultOutput`'s candidates are
-// exactly the node indices to highlight — the fix this whole inch exists for.
+// wrapped ValidationError's indices, flattened. No `AmbiguousDefaultOutput` case anymore
+// (P4.3, fork 2): default_spec no longer errors on multiple free outputs, so that variant —
+// and the candidate-list highlighting it drove — is gone on both sides now.
 function encapErrorNodeIndices(err: WEncapError, wedges: WEdge[]): number[] {
   switch (err.kind) {
     case "UnresolvedChild":
@@ -182,11 +184,9 @@ function encapErrorNodeIndices(err: WEncapError, wedges: WEdge[]): number[] {
     case "PromotePortOutOfRange":
     case "PromoteAlreadyBound":
     case "DuplicatePromotion":
-    case "OutputChildOutOfRange":
-    case "OutputPortInvalid":
+    case "ExposeChildOutOfRange":
+    case "ExposePortInvalid":
       return [err.child];
-    case "AmbiguousDefaultOutput":
-      return err.candidates;
     case "Invalid":
       return err.errors.flatMap((e) => validationErrorNodeIndices(e, wedges));
   }
@@ -368,6 +368,11 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
   // (`from_child === BOUNDARY`), not guessed: core already computes this mapping and returns it,
   // the editor just wasn't reading `composite.body` before. A CLOSED composite is just the
   // zero-input case of this same shape — `ports: []`, nothing special-cased.
+  //
+  // `outputs`/`resultSource`/`results` are the exact dual, on the output side (P4.3, fork 2):
+  // `default_spec` now proposes every free output automatically, so `results` may hold several
+  // values, not one — a composite with zero free outputs is likewise just the empty case of this
+  // same shape (`outputs: []`), not an error state.
   const ev = useMemo(() => new Evaluator(), []);
   const [projection, setProjection] = useState<{
     hash: string;
@@ -375,7 +380,15 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
     ports: WPort[];
     source: (string | null)[];
     values: (WValue | null)[];
-    result: WValue | null;
+    outputs: WPort[];
+    resultSource: (string | null)[];
+    results: (WValue | null)[];
+    // The exact inputs this projection was built from, held so excludeOutput below can
+    // re-freeze without re-deriving from the (possibly since-changed) canvas — the same
+    // "frozen at project time" reasoning `pre` already follows for boundary re-eval.
+    children: string[];
+    wedges: WEdge[];
+    spec: WEncapSpec;
   } | null>(null);
   const [projError, setProjError] = useState<string>("");
   // Which placed nodes a projection error implicates — derived from the structured error's own
@@ -420,18 +433,26 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
         return { from_child: from, from_port: fromPort, to_child: to, to_port: toPort };
       });
 
-      // Core derives the boundary and freezes; an EncapError — ambiguous output, cycle, type
-      // mismatch — throws the structured error object itself (see WEncapError), not a generic
-      // Error, so the catch block below can point at the actual node(s) at fault.
-      const composite = ev.project(children, wedges) as WUnit;
+      // Core proposes the boundary (default_spec) and — unedited — freezes it
+      // (derive_and_freeze), matching project()'s combined behavior exactly for anyone who
+      // never excludes anything. Split apart (not project() itself, which stays untouched
+      // below for anyone who calls it directly) so excludeOutput below can re-freeze with
+      // fewer exposed outputs without re-deriving the proposal from scratch (P4.3, fork 3).
+      // An EncapError — cycle, type mismatch, an unresolvable child — throws the structured
+      // error object itself (see WEncapError), not a generic Error, so the catch block below
+      // can point at the actual node(s) at fault.
+      const spec = ev.propose_encapsulation(children, wedges) as WEncapSpec;
+      const composite = ev.freeze_encapsulation(children, wedges, spec) as WUnit;
       const pre = buildPreimage(composite);
       const hash = ev.insert(pre);
 
       // Run it through the one Evaluator, starting from each promoted input's zero value (or `null`
       // for a non-scalar port — "wire in", nothing to default to). A closed graph is `ports: []`,
-      // `ev.eval(pre, [])` — exactly its old behaviour, just no longer a separate branch. `null` in
-      // the result ⇒ not ready (an unfilled non-scalar port, a divide-by-zero, an unsupplied driver);
-      // a sink graph yields the Effect it constructs (pure eval doesn't fire it).
+      // `ev.eval(pre, [])` — exactly its old behaviour, just no longer a separate branch. `results`
+      // now holds one slot per declared output (P4.3, fork 2 — default_spec proposes every free
+      // output automatically); `null` in a slot ⇒ that output isn't ready (an unfilled non-scalar
+      // port, a divide-by-zero, an unsupplied driver), independently of its siblings — a sink
+      // graph yields the Effect it constructs (pure eval doesn't fire it).
       const ports = composite.inputs ?? [];
       // Which PLACED NODE each promoted input actually came from — read directly off the
       // composite's own boundary edges (from_child === BOUNDARY), not guessed and not
@@ -445,8 +466,23 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
         return edge ? (nodes[edge.to_child]?.data.name ?? null) : null;
       });
       const values = ports.map((p) => defaultBoundaryValue(p.ty));
-      const result = ev.eval(pre, values) as WValue | null;
-      setProjection({ hash, pre, ports, source, values, result });
+
+      // The output side (P4.3, fork 2): default_spec now proposes every free output, so
+      // `composite.outputs` may hold several — symmetric with `ports`/`source` above, just
+      // with the boundary edge direction reversed (to_child === BOUNDARY, the dual of
+      // from_child === BOUNDARY for inputs, exactly as derive_and_freeze's own comment
+      // already calls the boundary edges "the dual of how eval reads them"). Reusing
+      // boundaryLabels below rather than writing a second disambiguation function — it was
+      // already fully generic, never actually input-specific.
+      const outputs = composite.outputs ?? [];
+      const resultSource: (string | null)[] = outputs.map((_, i) => {
+        const edge = boundaryEdges.find((e) => e.to_child === BOUNDARY && e.to_port === i);
+        return edge ? (nodes[edge.from_child]?.data.name ?? null) : null;
+      });
+      const results = ev.eval(pre, values) as (WValue | null)[];
+      setProjection({
+        hash, pre, ports, source, values, outputs, resultSource, results, children, wedges, spec,
+      });
       setProjError("");
       setErrorNodeIds(new Set());
     } catch (err) {
@@ -472,7 +508,40 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
       setProjection((p) => {
         if (!p) return p;
         const values = p.values.map((v, i) => (i === index ? value : v));
-        return { ...p, values, result: ev.eval(p.pre, values) as WValue | null };
+        return { ...p, values, results: ev.eval(p.pre, values) as (WValue | null)[] };
+      });
+    },
+    [ev],
+  );
+
+  // Exclude one currently-exposed output and re-freeze (P4.3, fork 3). Unlike setBoundaryValue
+  // above, this is NOT a lightweight re-eval: excluding an output is a real authoring choice
+  // that changes what the composite's interface declares, so it changes the hash too — a
+  // genuine re-freeze through derive_and_freeze, not a display filter over the old one.
+  // `outputs`/`resultSource` line up 1:1 with `spec.expose` by construction (derive_and_freeze
+  // builds them from it in order), so filtering all three by the same index keeps them in
+  // sync without re-deriving provenance from composite.body again. No "re-include": the
+  // original proposal is recovered by pressing "project" again, already a single click.
+  const excludeOutput = useCallback(
+    (index: number) => {
+      setProjection((p) => {
+        if (!p) return p;
+        try {
+          const expose = p.spec.expose.filter((_, i) => i !== index);
+          const spec: WEncapSpec = { promote: p.spec.promote, expose };
+          const composite = ev.freeze_encapsulation(p.children, p.wedges, spec) as WUnit;
+          const pre = buildPreimage(composite);
+          const hash = ev.insert(pre);
+          const outputs = p.outputs.filter((_, i) => i !== index);
+          const resultSource = p.resultSource.filter((_, i) => i !== index);
+          const results = ev.eval(pre, p.values) as (WValue | null)[];
+          return { ...p, hash, pre, outputs, resultSource, results, spec };
+        } catch {
+          // Dropping one entry from an already-valid spec can't create a new validation
+          // failure — nothing here should throw. If it somehow does, leave the projection
+          // exactly as it was rather than silently corrupt it.
+          return p;
+        }
       });
     },
     [ev],
@@ -561,9 +630,46 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
                     ))}
                   </div>
                 )}
-                <div style={{ color: "#9ad29f" }}>
-                  = {projection.result ? formatValue(projection.result) : "not ready"}
-                </div>
+                {projection.results.length > 0 && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 2,
+                      alignItems: "flex-end",
+                      color: "#9ad29f",
+                    }}
+                  >
+                    {boundaryLabels(projection.outputs, projection.resultSource).map((label, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>
+                          {label} ={" "}
+                          {projection.results[i] ? formatValue(projection.results[i]!) : "not ready"}
+                        </span>
+                        <button
+                          className="nodrag"
+                          onClick={() => excludeOutput(i)}
+                          title={`exclude "${label}" from this composite's interface`}
+                          style={{
+                            font: "inherit",
+                            fontSize: 10,
+                            lineHeight: 1,
+                            color: "#9fb4d4",
+                            background: "#0e1a2f",
+                            border: "1px solid #1b2a45",
+                            borderRadius: 3,
+                            width: 14,
+                            height: 14,
+                            padding: 0,
+                            cursor: "pointer",
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             {projError && (

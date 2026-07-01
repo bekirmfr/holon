@@ -87,13 +87,34 @@ export type WValidationError =
   | { kind: "Cycle"; message: string }
   | { kind: "TypeMismatch"; edge: number; src: WType; dst: WType; message: string };
 
+/** A promotion choice: which inner (child, port) input becomes a boundary input, and what
+ *  it's named. Mirrors `core::Promote`. */
+export type WPromote = { child: number; port: number; name: string };
+
+/** An exposure choice: which inner (child, port) output becomes a boundary output, and what
+ *  it's named. Mirrors `core::Expose`. */
+export type WExpose = { child: number; port: number; name: string };
+
+/**
+ * The canonical encapsulation proposal. Mirrors `core::EncapSpec` via the bridge's
+ * `WEncapSpec` (P4.3, fork 3). Returned by {@link Evaluator.propose_encapsulation} — core's
+ * `default_spec`, crossed intact — for a person to review before freezing. Editing `expose`
+ * (dropping entries) excludes those outputs from the final composite's interface when the
+ * edited spec is passed to {@link Evaluator.freeze_encapsulation}. `promote` isn't editable
+ * yet in this editor: no UI exists to rename or reorder promoted inputs either, so exposing
+ * more editing power on outputs than inputs currently have would be asymmetric for no reason.
+ */
+export type WEncapSpec = { promote: WPromote[]; expose: WExpose[] };
+
 /**
  * An encapsulation failure — mirrors `core::EncapError` via `WEncapError`. Thrown by
  * {@link Evaluator.project} (as the structured object itself, not wrapped in a generic
  * `Error`) so the editor can highlight the actual offending node(s) instead of just
- * displaying text. `AmbiguousDefaultOutput`'s `candidates` are the free-output child
- * indices `default_spec` found (empty ⇒ none free; 2+ ⇒ pick one) — previously discarded
- * by core, now the only way the editor knows which nodes to point at.
+ * displaying text.
+ *
+ * No `AmbiguousDefaultOutput` (P4.3, fork 2): `default_spec` now proposes every free output
+ * automatically instead of erroring when there's more than one, so that variant is gone —
+ * dead code removed on the Rust side, not just unused here.
  */
 export type WEncapError =
   | { kind: "UnresolvedChild"; child: number; message: string }
@@ -101,9 +122,8 @@ export type WEncapError =
   | { kind: "PromotePortOutOfRange"; child: number; port: number; message: string }
   | { kind: "PromoteAlreadyBound"; child: number; port: number; message: string }
   | { kind: "DuplicatePromotion"; child: number; port: number; message: string }
-  | { kind: "OutputChildOutOfRange"; child: number; message: string }
-  | { kind: "OutputPortInvalid"; child: number; port: number; message: string }
-  | { kind: "AmbiguousDefaultOutput"; candidates: number[]; message: string }
+  | { kind: "ExposeChildOutOfRange"; child: number; message: string }
+  | { kind: "ExposePortInvalid"; child: number; port: number; message: string }
   | { kind: "Invalid"; errors: WValidationError[]; message: string };
 
 /** A runtime value crossing the boundary. Mirrors `core::Value` (as `WValue`). `Sum` mirrors
