@@ -267,13 +267,45 @@ moves to **P2.4**. The Language is eager; the OS decides when effects fire.
 
 ---
 
+### P1.3.2 · inch 3 — `Sum` (`Option`) + a real host bug it caught (DONE; value-constructor half complete, green)
+- **`Value::Sum { arm: usize, payload: Box<Value> }`** — genuinely new (unlike `Product`, which rides
+  `List`, a sum carries only its taken arm; the rest are erased). **`Type::Sum(Vec<Type>)`** (tag 8)
+  shares `Product`'s encode/decode shape exactly; `compatible` arm matches; a `Sum` ≠ a same-shaped
+  `Product`. `ENCODING_VERSION = 4`. `memo.rs` gets `TAG_SUM`, arm mixed into the key (proven:
+  `sum_arm_changes_the_key`).
+- **`some`/`none`** — genesis **35 → 37**, `Option<T> = Sum([T, Unit])`, arm 0 / arm 1 hard-coded by
+  which primitive is called (not a generic `inject`, which `compute()` can't support — no declared-arity
+  channel — deferred until something other than `Option` needs it).
+- **`Value::ty()`** for `Sum`: `Sum(vec![Any, Any])`, documented as an **honest coarsening, not a sound
+  one** — true only because `Option` is the only `Sum` shape that exists; flagged with a revisit trigger.
+- **Wasm bridge, two decisions:** `WValue` was already lossless (`Sum` crosses free, shaped like
+  `Effect`); `WType` is flat, and `Product`'s `→ WType::List` precedent does **not** carry over (a `Sum`
+  value isn't list-shaped — that mapping would lie to the editor) — `WType` gained a real new bare-tag
+  variant, `WType::Sum`.
+- **A real bug caught, not invented:** `holon-host`'s `constant_unit` (reconstructs held state as a
+  literal at the `store_read` boundary) — `store_read`/`store_write` are `Any`-typed, so a `Sum` **can**
+  reach state; the only niladic `Sum` ctor is `none()`, so a naive fallback would have **silently
+  flipped a stored `Some` into a `None`**. Fixed: `constant_unit` is now fallible; the failure routes
+  through the **existing** "unsupplied capability ⇒ evaluates to nothing" seam — no new control.
+  Proven end to end: `sum_in_state_fails_honestly_not_fabricated`. (`List`'s parallel, lower-stakes gap —
+  a stored non-empty list degrades to `[]` — is pre-existing, already flagged deferred, untouched.)
+- **Ripple:** `simulate.rs` `Type::Sum(_) => None` (unreachable; fail-closed, same as `Product`).
+- **Tests:** 176 core (+5: `sum_type_round_trips`, `some_and_none_declare_an_option`,
+  `some_and_none_tag_their_arm`, `sum_arm_changes_the_key`, `sum_arm_is_part_of_identity`) / 39 host
+  (+1: `sum_in_state_fails_honestly_not_fabricated`) / 7 wasm-native / 12 wasm-target, all green.
+
+> **The value-constructor half of P1.3.2 is complete.** `Dictionary<K,V> = List<Product([K,V])>` and
+> `Option<T> = Sum([T,Unit])` are real, checkable, constructible, storable types. Only the editor inch
+> (recursive `WType` + boundary-input fields) remains — see `P1.3.2-parametric-types-L4.md` §8.
+
+---
+
 **In progress:** generics / parametric types
-P1.3.2 (parametric types): inches 1–2 DONE — the List<T> type-expression language, then
-Product + the pair constructor (Dictionary<K,V> = List<Pair>; see the DONE blocks above + L4 §8).
-Remaining: Sum/Option (the one inch that adds a runtime value kind — the tag), then the editor's
-recursive WType + boundary-input fields. Both scoped in P1.3.2-parametric-types-L4.md. (The "largest
-checker-complexity jump" was paid as the one-time de-Copy; the checker stays structural — no inference,
-no subtyping.)
+P1.3.2 (parametric types): inches 1–3 DONE — the List<T> type-expression language, then Product +
+pair, then Sum + some/none (Dictionary<K,V> = List<Pair>; Option<T> = Sum<T,Unit>; see the DONE blocks
+above + L4 §8). Remaining: the editor inch — recursive WType + boundary-input fields — scoped in
+P1.3.2-parametric-types-L4.md. (The "largest checker-complexity jump" was paid as the one-time
+de-Copy; the checker stays structural — no inference, no subtyping.)
 
 **Consistency check vs design-doc §10.** §10 named *param promotion* as the next step
 after content-hashing. The deduction corrects this: §10 tacitly assumed an evaluator,

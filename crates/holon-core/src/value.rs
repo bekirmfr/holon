@@ -27,11 +27,25 @@ pub enum Value {
     /// rest of the system already keys on (`compute`, `capabilities_of`, `kind_of`). The pure
     /// core only ever *constructs* and *carries* an effect; the host alone *performs* it.
     Effect { sink: String, payload: Box<Value> },
+    /// A tagged choice (P1.3.2 inch 3): `arm` says *which* alternative of a `Sum([T0, T1, …])`
+    /// this is, `payload` is that alternative's value. The untaken arms are not carried — a sum
+    /// value is type-erasing in a way `List`/`Product` are not (see [`Value::ty`]). `Option<T> =
+    /// Sum([T, Unit])`: `none()` is `{arm: 1, payload: List([])}` (`Unit` = the empty product,
+    /// which already rides the list value); `some(x)` is `{arm: 0, payload: x}`.
+    Sum { arm: usize, payload: Box<Value> },
 }
 
 impl Value {
     /// The concrete type of this value. Total: every value maps to exactly one
     /// non-`Any` [`Type`]. (`Any` is a wire-time wildcard; no runtime value is `Any`.)
+    ///
+    /// `Sum` is the one case where this is a **coarsening of convenience, not a sound
+    /// supremum**: a sum value only ever carries its *taken* arm, so its true arity is not
+    /// recoverable from the value alone (unlike `List`, whose `Any`-wildcard coarsening is
+    /// always sound because `List` is unary-recursive). `Sum(vec![Any, Any])` — arity 2 — is
+    /// honest *today* only because the sole constructors, `some`/`none`, both build `Option`
+    /// (`Sum([T, Unit])`). If a generic n-ary sum injector is ever added, this arm needs
+    /// rethinking then — not engineered around now, ahead of that need.
     pub fn ty(&self) -> Type {
         match self {
             Value::Number(_) => Type::Number,
@@ -39,6 +53,7 @@ impl Value {
             Value::Text(_) => Type::Text,
             Value::List(_) => Type::list_any(),
             Value::Effect { .. } => Type::Effect,
+            Value::Sum { .. } => Type::Sum(vec![Type::Any, Type::Any]),
         }
     }
 }
@@ -57,6 +72,10 @@ mod tests {
             Value::Effect { sink: "egress".into(), payload: Box::new(Value::Text("hi".into())) }.ty(),
             Type::Effect
         );
+        assert_eq!(
+            Value::Sum { arm: 0, payload: Box::new(Value::Number(1.0)) }.ty(),
+            Type::Sum(vec![Type::Any, Type::Any])
+        );
     }
 
     #[test]
@@ -68,6 +87,7 @@ mod tests {
             Value::Text(String::new()),
             Value::List(vec![Value::Number(1.0)]),
             Value::Effect { sink: "egress".into(), payload: Box::new(Value::Number(1.0)) },
+            Value::Sum { arm: 1, payload: Box::new(Value::List(vec![])) },
         ] {
             assert_ne!(v.ty(), Type::Any);
         }
@@ -105,5 +125,16 @@ mod tests {
             Value::List(vec![Value::Number(1.0)]),
             Value::List(vec![Value::Number(1.0), Value::Number(2.0)]),
         );
+    }
+
+    #[test]
+    fn sum_arm_is_part_of_identity() {
+        // The whole point of a tag: the SAME payload at a DIFFERENT arm is a different value —
+        // `some(None)`-shaped confusion (mistaking which alternative was taken) must be
+        // impossible. This is what `arm` buys over just storing the payload.
+        let a = Value::Sum { arm: 0, payload: Box::new(Value::Number(5.0)) };
+        let b = Value::Sum { arm: 1, payload: Box::new(Value::Number(5.0)) };
+        assert_ne!(a, b);
+        assert_eq!(a, Value::Sum { arm: 0, payload: Box::new(Value::Number(5.0)) });
     }
 }

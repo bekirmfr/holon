@@ -2383,3 +2383,108 @@ extended), 38 host, 7 wasm-native — / **12 wasm-target**, all green.
 **Next.** `Sum`/`Option` — the one inch in this fork that adds a genuinely new **value kind** (a runtime
 tag): it touches `value.rs` and the memo value-encoding, unlike `pair`. Then the editor inch (recursive
 `WType` + type-as-colour + boundary-input fields).
+
+---
+
+## 2026-07-01 · P1.3.2 inch 2 — `Product` (the positional tuple) + the `pair` constructor · *(types compose)*
+
+**Built (core).** `Type` gains a second recursive constructor — `Product(Vec<Type>)` (tag 7): a
+`u32`-count-prefixed list of element types, decoded under the same `MAX_TYPE_DEPTH` bound and with **no
+pre-allocation from the untrusted count** (a lying count hits `UnexpectedEof`). `compatible` gets the
+product arm — **arity + position, `Any` at each slot, recursive** — and a `Product` is never a `List`.
+`Encoder::ty` turned fallible (`Result<(), EncodeError>`) so a product wider than the `u32` budget is
+**refused, not silently truncated** — the `FieldTooLong` discipline the child/edge counts already use.
+`ENCODING_VERSION → 3`.
+
+**`pair` — a new genesis leaf (34 → 35).** The binary product constructor: pure (∅ manifest), declares
+`(a: Any, b: Any) -> Product([Any, Any])`. Its compute **rides the list value** — `pair(a,b)` builds the
+same `Value::List` a 2-list does — so there is **no new `Value` variant, no memo encoding change, no
+`value.rs` change at all**. Only the declared *type* tells a pair from a list, and the recursive checker
+keeps them apart. The payoff: **`Dictionary<K,V>` = `List<Product([K, V])>`** — the composable shape this
+fork set out to reach, with zero new runtime machinery.
+
+**Type-mostly, by design.** The whole capability lives in the type language (declare / encode / check /
+promote) plus one constructor; the value layer is untouched. That is the line the L4 drew — `Product`
+rides `List`; `Sum` (next inch) is the one that earns a genuinely new value kind (the runtime tag).
+
+**Inch-1 follow-on, folded in.** `sum` and `join` tightened from `List<Any>` to **`List<Number>` /
+`List<Text>`** — the first place `List<T>`'s precision bites: a typed `List<Text>` is now refused by `sum`
+at wire time (core `validate`), while a constructed `List<Any>` still bridges in (the `Any` wildcard), so
+every existing `list → sum` graph keeps working.
+
+**Editor stays coarse.** The flat bridge maps `Product → WType::List` (forced by exhaustiveness, and
+honest — a product is list-shaped), so an editor-placed `pair` behaves like `list` until the
+recursive-`WType` editor inch. Element types are precise in core's `validate` now, in the editor then —
+the same core-precise / editor-coarse staging as `sum`/`join`.
+
+**Ripple.** Two compiler-named edits: `simulate.rs` gained `Type::Product(_) => return None` (no sourced
+leaf outputs a product — unreachable, fail-closed like the `Effect` arm), and the two wasm catalog-count
+assertions moved 34 → 35. The `v2→v3` bump moved every hash again, free (nothing persisted, no manifest;
+parity tests compare values to each other, not fixed hex).
+
+**Tests prove.** **216 native** — 171 core (**+4** since inch 1: `sum_and_join_are_element_typed`,
+`product_type_round_trips`, `pair_declares_a_product`, `pair_builds_a_pair`; `compatible_is_structural`
+extended), 38 host, 7 wasm-native — / **12 wasm-target**, all green.
+
+**Next.** `Sum`/`Option` — the one inch in this fork that adds a genuinely new **value kind** (a runtime
+tag): it touches `value.rs` and the memo value-encoding, unlike `pair`. Then the editor inch (recursive
+`WType` + type-as-colour + boundary-input fields).
+
+---
+
+## 2026-07-01 · P1.3.2 inch 3 — `Sum` (`Option`) + a real host bug it caught · *(the value-constructor half of the fork is complete)*
+
+**Built (core).** `Value` gains a genuinely new shape — `Sum { arm: usize, payload: Box<Value> }`.
+Unlike `Product` (rides `Value::List`, every field always present), a sum value carries only its
+**taken** arm; the untaken alternatives are erased — that's what a tagged union *is*. First P1.3.2
+generator that couldn't be a reuse of an existing value kind. `Type::Sum(Vec<Type>)` (tag 8) shares
+`Product`'s count-prefixed recursive encode/decode exactly; `compatible` gets the matching arm — and a
+`Sum` is never compatible with a same-shaped `Product` (a tagged choice and a tuple are different
+things, not just different tags). `ENCODING_VERSION → 4`, free again. `memo.rs` gets `TAG_SUM`, with
+the arm index mixed into the encoding specifically so the same payload at a different arm never
+collides — proven directly (`sum_arm_changes_the_key`), the property the cache actually depends on.
+
+**`some`/`none` join genesis (35 → 37).** `Option<T> = Sum([T, Unit])`; `some` is always arm 0, `none`
+always arm 1 — hard-coded by which primitive you call, not a generic `inject(tag, value)` (`compute()`
+has no way to know a declared arity; deferred until something other than `Option` asks for it).
+
+**`Value::ty()`'s `Sum` arm is an honest coarsening, not a sound one.** `Sum(vec![Any, Any])` is true
+*today* only because `some`/`none` are the only constructors that exist — arity 2 is the only arity
+reachable. Documented with an explicit trigger for when a generic injector would break this, rather
+than engineered around now. `Value::ty()` has zero callers outside its own tests — latent, not live.
+
+**The wasm bridge needed two different decisions, not one copied pattern.** `WValue` was already a
+**lossless** mirror of `Value` (adjacently-tagged via serde), so `Sum` crossed for free, shaped like
+`Effect`. `WType` is genuinely flat, and `Product`'s precedent — map to `WType::List`, sound because a
+product value really is list-shaped — does **not** carry over: a `Sum` value is `WValue::Sum`, not
+list-shaped, so that mapping would have lied to the editor about what it's about to receive. `WType`
+gained a real new bare-tag variant, `WType::Sum`, reconstructing via `into_core` the same way `List`
+does — the one concrete shape that exists, not a guess at some other arity.
+
+**Caught along the way, not invented: a real latent bug in `holon-host`.** `constant_unit` (which
+reconstructs a held state value as a literal, for the `store_read` boundary) turned out to have a gap
+this inch's type checker exposed. `store_read`/`store_write` are `Any`-typed, so a `Sum` can genuinely
+reach a state cell — not hypothetical. The only niladic `Sum` constructor is `none()`, so silently
+defaulting to it for an arbitrary stored `Sum` would have **silently flipped a held `Some` into a
+`None`** — a wrong-arm bug, not a lossy one, exactly what the codebase's own `Effect`-arm comment
+already refuses ("a bug to fix, not a value to fabricate"). Fixed by making `constant_unit` fallible
+and routing the failure through the **same seam** an unsupplied capability already uses ("evaluates to
+nothing") — no new control invented, reuse of the one already there. Proven end to end
+(`sum_in_state_fails_honestly_not_fabricated`): no panic, no fabricated `none()`, just an honest empty
+read. (Worth knowing, not fixed here: `List`'s existing state handling has the same root limitation —
+a non-empty stored list silently degrades to `[]` — lower-stakes than a flipped arm, already flagged as
+deferred, out of scope this inch.)
+
+**Ripple.** `simulate.rs`'s `sourced_mock` gained the same fail-closed arm `Product` got —
+`Type::Sum(_) => None` — no sourced leaf outputs a `Sum` today, unreachable in practice.
+
+**Tests prove.** **176 core** (+5 since inch 2: `sum_type_round_trips`,
+`some_and_none_declare_an_option`, `some_and_none_tag_their_arm`, `sum_arm_changes_the_key`,
+`sum_arm_is_part_of_identity`) / **39 host** (+1: `sum_in_state_fails_honestly_not_fabricated`) /
+**7 wasm-native** / **12 wasm-target**, all green.
+
+**The value-constructor half of P1.3.2 is complete.** `Dictionary<K,V> = List<Product([K,V])>` and
+`Option<T> = Sum([T,Unit])` are both real, checkable, constructible, and now storable types.
+
+**Next.** The editor inch — recursive `WType` (so `Product`/`Sum` stop bridging coarse) + the
+boundary-input fields that started this whole detour. Scoped in `P1.3.2-parametric-types-L4.md` §8.

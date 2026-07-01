@@ -173,7 +173,14 @@ struct SourcedResolver<'a, R: Resolver> {
 
 impl<'a, R: Resolver> SourcedResolver<'a, R> {
     fn new(sourced: &[(Capability, Value)], real: &'a R) -> Self {
-        let sourced = sourced.iter().map(|(cap, value)| (*cap, constant_unit(value))).collect();
+        // A value that can't be faithfully reconstructed (`constant_unit` → `None`, currently
+        // only `Sum`) is dropped here rather than substituted — which routes it through the
+        // SAME seam `fire_sourced`'s doc comment already names for an unsupplied capability:
+        // "evaluates to nothing." No new failure mode; reuse of the existing honest one.
+        let sourced = sourced
+            .iter()
+            .filter_map(|(cap, value)| constant_unit(value).map(|u| (*cap, u)))
+            .collect();
         SourcedResolver { sourced, real }
     }
 }
@@ -199,8 +206,19 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
 /// A pure leaf that evaluates to `value` — used to inject the held state at the
 /// `store_read` boundary. Scalar; non-scalar state is deferred (a standalone unit can't
 /// carry list items without children-by-hash, and the minimal cell is scalar).
-fn constant_unit(value: &Value) -> Unit {
-    match value {
+///
+/// Fallible (`None`) where `value` cannot be **faithfully** reconstructed by a single
+/// niladic primitive — currently only `Sum`. This is reachable, not hypothetical: both
+/// `store_read`/`store_write` are `Any`-typed (no type-system gate), so a state cell can
+/// genuinely hold an `Option`. Unlike `Effect` (architecturally impossible here — `unreachable!`
+/// is correct), a stored `Sum` is a missing *capability*, not a bug: there is no niladic
+/// constructor for an arbitrary arm (`some(x)` needs `x` as an input; only `none()` is
+/// niladic). Defaulting to `none()` regardless of the value's real arm would silently
+/// **fabricate the wrong arm** — exactly the "value to fabricate" the `Effect` comment above
+/// already refuses to do, just for a reachable case instead of an impossible one. So this
+/// fails honestly; the caller drops the capability rather than inject a lie.
+fn constant_unit(value: &Value) -> Option<Unit> {
+    Some(match value {
         Value::Number(n) => scalar("Number", n.to_string(), Type::Number),
         Value::Boolean(b) => scalar("Boolean", b.to_string(), Type::Boolean),
         Value::Text(s) => scalar("Text", s.clone(), Type::Text),
@@ -214,7 +232,8 @@ fn constant_unit(value: &Value) -> Unit {
         // never the request itself. If this fires, the round stored an `Effect` by mistake —
         // a bug to fix, not a value to fabricate.
         Value::Effect { .. } => unreachable!("a state cell never holds an effect"),
-    }
+        Value::Sum { .. } => return None,
+    })
 }
 
 fn scalar(ty_name: &str, value: String, ty: Type) -> Unit {
@@ -1140,6 +1159,36 @@ mod tests {
         assert_eq!(host.storage(), &num(2.0));
         host.round(&counter, &[], &r);
         assert_eq!(host.storage(), &num(3.0));
+    }
+
+    #[test]
+    fn sum_in_state_fails_honestly_not_fabricated() {
+        // store_write/store_read are Any-typed, so a Sum (Option) CAN reach a state cell —
+        // this isn't hypothetical. constant_unit has no niladic constructor for an arbitrary
+        // arm (only `none()` is niladic), so reconstructing a held `some(x)` is not possible
+        // without fabricating an answer. The required property: it must NOT silently default
+        // to `none()` (which would silently flip a Some to a None — a wrong-arm bug, not a
+        // missing-precision one). It drops the capability instead, the same honest "evaluates
+        // to nothing" path an unsupplied capability already takes.
+        let held = Value::Sum { arm: 0, payload: Box::new(num(5.0)) }; // a stored `some(5)`
+        assert_eq!(constant_unit(&held), None);
+
+        let mut r = MapResolver::new();
+        let rd = r.insert(prim("store_read", vec![], Type::Any)).unwrap();
+        let passthrough = Unit {
+            body: UnitBody::Composite {
+                children: vec![rd],
+                edges: vec![Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }],
+            },
+            params: vec![],
+            inputs: vec![],
+            output: Some(Type::Any),
+        };
+        let mut host = Recorder::default();
+        let sourced = [(Capability::StateRead, held)];
+        // No panic, no fabricated `none()` — the read simply yields nothing, exactly like an
+        // unsupplied capability.
+        assert_eq!(fire_sourced(&passthrough, &sourced, &r, &mut host), None);
     }
 
     // ── slice 2: computed fan-out ──────────────────────────────────────────────

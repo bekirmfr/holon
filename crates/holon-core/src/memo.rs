@@ -36,6 +36,7 @@ const TAG_BOOLEAN: u8 = 2;
 const TAG_TEXT: u8 = 3;
 const TAG_LIST: u8 = 4;
 const TAG_EFFECT: u8 = 5;
+const TAG_SUM: u8 = 6;
 
 // Input-slot tags: an absent input must never collide with a present one.
 const SLOT_ABSENT: u8 = 0;
@@ -150,6 +151,15 @@ fn encode_value(buf: &mut Vec<u8>, v: &Value) -> Result<(), EncodeError> {
             put_bytes(buf, sink.as_bytes())?;
             encode_value(buf, payload)?;
         }
+        Value::Sum { arm, payload } => {
+            buf.push(TAG_SUM);
+            // `arm` is a discriminant, not a length, but it's the same u32-LE shape `put_len`
+            // already writes — reused rather than duplicating the mechanics. The arm participates
+            // in the encoding (see `sum_arm_changes_the_key`), so the same payload at a different
+            // arm never collides.
+            put_len(buf, *arm)?;
+            encode_value(buf, payload)?;
+        }
     }
     Ok(())
 }
@@ -217,10 +227,21 @@ mod tests {
             key(&[Some(Value::Boolean(false))]),
             key(&[Some(Value::Text(String::new()))]),
             key(&[Some(Value::List(vec![]))]),
+            key(&[Some(Value::Sum { arm: 0, payload: Box::new(Value::List(vec![])) })]),
         ];
         keys.sort();
         keys.dedup();
-        assert_eq!(keys.len(), 4); // all four encode distinctly
+        assert_eq!(keys.len(), 5); // all five encode distinctly
+    }
+
+    #[test]
+    fn sum_arm_changes_the_key() {
+        // The property the cache actually depends on: `some(5)` and a hypothetical "other arm
+        // holding 5" must key differently, or two distinct computations could share a cache slot.
+        let payload = Some(Value::Number(5.0));
+        let some_5 = Value::Sum { arm: 0, payload: Box::new(payload.clone().unwrap()) };
+        let other_arm_5 = Value::Sum { arm: 1, payload: Box::new(payload.unwrap()) };
+        assert_ne!(key(&[Some(some_5)]), key(&[Some(other_arm_5)]));
     }
 
     #[test]

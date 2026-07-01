@@ -171,6 +171,19 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             Some(Value::List(vec![(*a).clone(), (*b).clone()]))
         }
 
+        // ── sum (P1.3.2 inch 3): Option<T> = Sum([T, Unit]), arm 0 = some, arm 1 = none. Unlike
+        // pair, this DOES need a new Value shape (Value::Sum) — a sum value carries only its taken
+        // arm, so it can't ride List the way a product can (a product's value always carries every
+        // field). none's payload is Unit's value, which already rides the empty list. ──
+        "some" => {
+            let [v] = inputs else { return None };
+            Some(Value::Sum { arm: 0, payload: Box::new((*v).clone()) })
+        }
+        "none" => {
+            let [] = inputs else { return None };
+            Some(Value::Sum { arm: 1, payload: Box::new(Value::List(vec![])) })
+        }
+
         // ── boundary sink (Fork B): a sink purely *constructs its request* — representation
         // B: a self-describing `Effect { sink-name, payload }`. The capability is *derived*
         // from the name by the host (`capabilities_of`), never stored in the value. Because
@@ -400,6 +413,18 @@ mod tests {
         // A product value rides the list value: pair(a,b) is a 2-list. Wrong arity ⇒ None.
         assert_eq!(compute("pair", &[&num(1.0), &txt("x")], &[]), Some(list(vec![num(1.0), txt("x")])));
         assert_eq!(compute("pair", &[&num(1.0)], &[]), None);
+    }
+
+    #[test]
+    fn some_and_none_tag_their_arm() {
+        let some_5 = compute("some", &[&num(5.0)], &[]).unwrap();
+        let none = compute("none", &[], &[]).unwrap();
+        assert_eq!(some_5, Value::Sum { arm: 0, payload: Box::new(num(5.0)) });
+        assert_eq!(none, Value::Sum { arm: 1, payload: Box::new(list(vec![])) });
+        assert_ne!(some_5, none); // distinct arms, never confusable
+        // Wrong arity ⇒ None, same discipline as every other leaf.
+        assert_eq!(compute("some", &[], &[]), None);
+        assert_eq!(compute("none", &[&num(1.0)], &[]), None);
     }
 
     #[test]

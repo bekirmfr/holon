@@ -59,7 +59,10 @@ fn sourced_mock(unit: &Unit) -> Option<Unit> {
         // A sourced leaf never outputs an Effect (effects are constructed by sinks, the
         // performed side, not the sourced side) — so there is nothing to mock.
         Type::Effect => return None,
+        // No sourced leaf outputs a Product or Sum either, today (drivers/store_read are all
+        // scalar or Any) — same fail-closed answer as Effect: nothing to mock.
         Type::Product(_) => return None,
+        Type::Sum(_) => return None,
     };
     Some(constant(
         "const",

@@ -58,6 +58,10 @@ pub enum WValue {
     Text(String),
     List(Vec<WValue>),
     Effect { sink: String, payload: Box<WValue> },
+    /// Mirrors `core::Value::Sum` losslessly — unlike the `Type`/`WType` bridge (still flat at
+    /// this inch), the *value* bridge is already a faithful one-to-one mirror, so a tagged choice
+    /// crosses intact: `{ "type": "Sum", "value": { "arm": 0, "payload": {...} } }`.
+    Sum { arm: usize, payload: Box<WValue> },
 }
 
 impl WValue {
@@ -71,6 +75,9 @@ impl WValue {
                 sink: sink.clone(),
                 payload: Box::new(WValue::from_core(payload)),
             },
+            Value::Sum { arm, payload } => {
+                WValue::Sum { arm: *arm, payload: Box::new(WValue::from_core(payload)) }
+            }
         }
     }
 
@@ -84,6 +91,9 @@ impl WValue {
                 sink,
                 payload: Box::new(payload.into_core()),
             },
+            WValue::Sum { arm, payload } => {
+                Value::Sum { arm, payload: Box::new(payload.into_core()) }
+            }
         }
     }
 }
@@ -101,6 +111,12 @@ pub enum WType {
     List,
     Effect,
     Any,
+    /// A tagged choice (P1.3.2 inch 3). Unlike `Product`, a `Sum` value is genuinely **not**
+    /// list-shaped (`WValue::Sum`, not `WValue::List`) — mapping it to `WType::List` would lie
+    /// about the value the editor will actually receive. So it earns its own bare tag, same shape
+    /// as `List`/`Effect`: the editor knows "this port is Option-shaped," not yet which types its
+    /// arms hold (that precision is the same deferred recursive-`WType` editor inch).
+    Sum,
 }
 
 impl WType {
@@ -116,6 +132,7 @@ impl WType {
             Type::List(_) => WType::List,
             Type::Product(_) => WType::List, // a product is list-shaped; the recursive WType that
                                              // preserves its element types is the editor inch
+            Type::Sum(_) => WType::Sum,
             Type::Effect => WType::Effect,
             Type::Any => WType::Any,
         }
@@ -126,6 +143,10 @@ impl WType {
             WType::Boolean => Type::Boolean,
             WType::Text => Type::Text,
             WType::List => Type::list_any(),
+            // Option is the only Sum shape genesis can produce, so this is the same honest-default
+            // move `List => list_any()` already makes: reconstruct the one concrete shape that
+            // exists, not a guess at some other arity.
+            WType::Sum => Type::Sum(vec![Type::Any, Type::Any]),
             WType::Effect => Type::Effect,
             WType::Any => Type::Any,
         }
@@ -504,6 +525,8 @@ fn check_wvalue_roundtrip() {
         Value::Text("hi".into()),
         Value::List(vec![Value::Number(1.0), Value::Text("x".into())]),
         Value::Effect { sink: "egress".into(), payload: Box::new(Value::Number(2.0)) },
+        Value::Sum { arm: 0, payload: Box::new(Value::Number(2.0)) },
+        Value::Sum { arm: 1, payload: Box::new(Value::List(vec![])) }, // none
     ];
     for v in cases {
         assert_eq!(WValue::from_core(&v).into_core(), v);
@@ -540,7 +563,7 @@ fn check_wunit_roundtrip() {
 fn check_primitive_catalog() {
     let cat = catalog_wunits();
     // The §13a count crosses the mirror intact.
-    assert_eq!(cat.len(), 35);
+    assert_eq!(cat.len(), 37);
     // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
     let add = cat
         .iter()
@@ -690,7 +713,7 @@ mod wasm_tests {
     fn primitive_catalog_crosses_js_boundary() {
         let js = primitive_catalog().unwrap();
         let cat: Vec<WUnit> = serde_wasm_bindgen::from_value(js).unwrap();
-        assert_eq!(cat.len(), 35);
+        assert_eq!(cat.len(), 37);
         assert!(cat
             .iter()
             .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));

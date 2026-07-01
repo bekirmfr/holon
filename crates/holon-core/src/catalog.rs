@@ -6,7 +6,7 @@
 //! so the genesis set is defined *by code*, not re-asserted by hand in every test and (next) the
 //! editor's palette. Same fail-closed contract: an unknown name yields `None`.
 //!
-//! The 35 leaves and their grouping are §13a of the design doc. The *types* are read off `compute`'s
+//! The 37 leaves and their grouping are §13a of the design doc. The *types* are read off `compute`'s
 //! arity/coercions and `eval`'s higher-order handling: variadic leaves (`add`, `and`, `concat`,
 //! `list`, …) get their canonical arity 2 (true variadic editing is a later editor concern);
 //! polymorphic leaves use [`Type::Any`] (the wiring check already treats `Any` as compatible);
@@ -27,6 +27,8 @@ pub const GENESIS: &[&str] = &[
     "list", "get", "append", "length", "sum", "join",
     // pure — product constructor (1)
     "pair",
+    // pure — sum constructor (2)
+    "some", "none",
     // drivers — sourced, no compute (3)
     "clock", "random", "ingress",
     // state cell (2)
@@ -110,6 +112,15 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // recursive checker keeps Product and List apart. Dictionary<K,V> is sugar for List<Pair>.
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
 
+        // ── pure — sum (Option) ──
+        // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
+        // already expressible with no new value kind for THAT half; the new kind is the tag itself
+        // ([`crate::Value::Sum`]). some/none are Option-specific, not a generic n-ary injector — the
+        // standing example the L4 names; a general inject(tag, value) is deferred until something
+        // other than Option asks for it (no constructor needs it yet).
+        "some" => prim(vec![port("value", Any)], vec![], Sum(vec![Any, Product(vec![])])),
+        "none" => prim(vec![], vec![], Sum(vec![Any, Product(vec![])])),
+
         // ── drivers — sourced (no inputs; host-supplied). Concrete where unambiguous, `Any` where
         //    the payload is genuinely polymorphic (the editor may specialize later). ──
         "clock" => prim(vec![], vec![], Number),
@@ -147,9 +158,9 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_35_leaves() {
+    fn genesis_has_37_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
-        assert_eq!(GENESIS.len(), 35);
+        assert_eq!(GENESIS.len(), 37);
     }
 
     #[test]
@@ -213,5 +224,18 @@ mod tests {
         let pair = interface_of("pair").unwrap();
         assert_eq!(pair.inputs.len(), 2);
         assert_eq!(pair.output, Some(Type::Product(vec![Type::Any, Type::Any])));
+    }
+
+    #[test]
+    fn some_and_none_declare_an_option() {
+        // Both arms of Option<T> declare the SAME Sum shape (arity 2, Unit at slot 1) — the type
+        // doesn't change depending on which arm you construct, only the runtime value's tag does.
+        let some = interface_of("some").unwrap();
+        let none = interface_of("none").unwrap();
+        let option_ty = Type::Sum(vec![Type::Any, Type::Product(vec![])]);
+        assert_eq!(some.inputs.len(), 1);
+        assert_eq!(some.output, Some(option_ty.clone()));
+        assert_eq!(none.inputs.len(), 0);
+        assert_eq!(none.output, Some(option_ty));
     }
 }

@@ -53,7 +53,7 @@ pub fn compatible(src: &Type, dst: &Type) -> bool {
     match (src, dst) {
         (_, Type::Any) | (Type::Any, _) => true,
         (Type::List(a), Type::List(b)) => compatible(a, b),
-        (Type::Product(a), Type::Product(b)) => {
+        (Type::Product(a), Type::Product(b)) | (Type::Sum(a), Type::Sum(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| compatible(x, y))
         }
         _ => src == dst, // scalar equality (Number / Boolean / Text / Effect)
@@ -264,6 +264,14 @@ mod tests {
         assert!(!compatible(&pair(Number, Text), &pair(Number, Number)));
         assert!(!compatible(&pair(Number, Text), &Type::Product(vec![Number]))); // arity
         assert!(!compatible(&pair(Number, Text), &list(Number))); // Product ≠ List
+
+        // Sum: the same arity-+-position rule as Product, but a Sum is not a Product, even at
+        // identical shape — a tagged choice and a tuple are different things (P1.3.2 inch 3).
+        let option_of = |t: Type| Type::Sum(vec![t, Type::Product(vec![])]); // T or Unit
+        assert!(compatible(&option_of(Number), &option_of(Any)));
+        assert!(!compatible(&option_of(Number), &option_of(Text)));
+        assert!(!compatible(&Type::Sum(vec![Number, Text]), &Type::Sum(vec![Number]))); // arity
+        assert!(!compatible(&Type::Product(vec![Number, Text]), &Type::Sum(vec![Number, Text])));
     }
 
     #[test]

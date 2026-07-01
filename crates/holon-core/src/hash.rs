@@ -27,8 +27,8 @@ use crate::BOUNDARY;
 /// Bumped whenever the canonical encoding changes in any way. Mixed into every
 /// preimage so a unit hashed under one version can never collide with the same
 /// unit hashed under another. v2: `List<T>` carries an element type. v3: `Product`
-/// (positional n-ary tuple) joins the recursive type encoding (P1.3.2).
-pub const ENCODING_VERSION: u8 = 3;
+/// joins the recursive type encoding. v4: `Sum` (tagged choice) joins it too (P1.3.2).
+pub const ENCODING_VERSION: u8 = 4;
 
 /// A 32-byte content hash. This is a unit's identity; the version label in the
 /// registry is merely a friendly alias that resolves *to* one of these.
@@ -65,6 +65,12 @@ pub enum Type {
     /// *value* rides the list value (eval is untyped); only the declared type distinguishes it from
     /// a `List`. `Dictionary<K,V>` is sugar for `List<Product([K, V])>`.
     Product(Vec<Type>),
+    /// A tagged choice among n-ary alternatives. `Option<T>` = `Sum([T, Unit])`. Compared the same
+    /// way as `Product` — arity + position — but a `Sum` *value* ([`crate::Value::Sum`]) carries only
+    /// its taken arm; the untaken alternatives are erased at runtime (unlike `Product`, whose value
+    /// carries every field). That asymmetry is what makes `Sum` the one generator needing a genuinely
+    /// new value representation, not a reuse of `List`.
+    Sum(Vec<Type>),
     /// A settled effect *request* (representation B) — the type of a sink's output. It
     /// matches only itself (or `Any`), so an effect can flow to a boundary output or into
     /// `map`, but **never into a sink's payload slot**: a request cannot be re-consumed as
@@ -92,13 +98,14 @@ impl Type {
             Type::Any => 5,
             Type::Effect => 6, // appended last — tags 1-5 unchanged, so no existing hash moves
             Type::Product(_) => 7, // n-ary, recursive — element types follow the tag, like List
+            Type::Sum(_) => 8, // n-ary, recursive — same shape as Product, distinct tag
         }
     }
 
     /// Inverse of [`tag`](Self::tag) for the **nullary** types only. `None` for a byte
-    /// that names no known nullary type — including `4` (`List`) and `7` (`Product`), which
-    /// carry element types and are decoded by [`Decoder::ty`], not here. Must mirror `tag`
-    /// for the nullary cases.
+    /// that names no known nullary type — including `4` (`List`), `7` (`Product`), and `8`
+    /// (`Sum`), which carry element types and are decoded by [`Decoder::ty`], not here. Must
+    /// mirror `tag` for the nullary cases.
     fn from_tag(tag: u8) -> Option<Type> {
         match tag {
             1 => Some(Type::Number),
@@ -106,7 +113,7 @@ impl Type {
             3 => Some(Type::Text),
             5 => Some(Type::Any),
             6 => Some(Type::Effect),
-            _ => None, // 4 (List) / 7 (Product) carry element types — the decoder reads them
+            _ => None, // 4 (List) / 7 (Product) / 8 (Sum) carry element types — the decoder reads them
         }
     }
 }
@@ -268,15 +275,16 @@ impl Encoder {
     }
 
     /// Write a type: its head tag, then — for the recursive constructors — its element type(s).
-    /// `List<T>` writes one inner type; `Product([T…])` writes a `u32` count then each element.
-    /// In-memory types come from `decode` (depth-bounded) or trusted core construction (shallow),
-    /// so the encoder is not depth-limited; the untrusted entry point is `decode`. Fallible only
-    /// to refuse a product wider than the `u32` budget (it never silently truncates).
+    /// `List<T>` writes one inner type; `Product`/`Sum` (n-ary) write a `u32` count then each
+    /// element, identical shape, distinguished only by their tag. In-memory types come from
+    /// `decode` (depth-bounded) or trusted core construction (shallow), so the encoder is not
+    /// depth-limited; the untrusted entry point is `decode`. Fallible only to refuse a Product/Sum
+    /// wider than the `u32` budget (it never silently truncates).
     fn ty(&mut self, t: &Type) -> Result<(), EncodeError> {
         self.buf.push(t.tag());
         match t {
             Type::List(inner) => self.ty(inner)?,
-            Type::Product(elems) => {
+            Type::Product(elems) | Type::Sum(elems) => {
                 self.u32(elems.len().try_into().map_err(|_| EncodeError::FieldTooLong)?);
                 for el in elems {
                     self.ty(el)?;
@@ -602,6 +610,16 @@ impl<'a> Decoder<'a> {
                     elems.push(self.ty_at(depth + 1)?);
                 }
                 Ok(Type::Product(elems))
+            }
+            8 => {
+                // Sum: identical wire shape to Product (tag 7) — a u32 count then that many
+                // types — distinguished only by the tag byte. Same untrusted-count discipline.
+                let n = self.u32()?;
+                let mut elems = Vec::new();
+                for _ in 0..n {
+                    elems.push(self.ty_at(depth + 1)?);
+                }
+                Ok(Type::Sum(elems))
             }
             _ => Type::from_tag(t).ok_or(DecodeError::BadType(t)),
         }
@@ -961,6 +979,17 @@ mod tests {
         let mut u = prim("add");
         u.inputs[0].ty = Type::Product(vec![Type::Number, Type::list_any()]);
         u.output = Some(Type::Product(vec![])); // Unit = the 0-ary product
+        let bytes = encode_preimage(&u).unwrap();
+        assert_eq!(decode_preimage(&bytes).unwrap(), u);
+        assert_eq!(encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn sum_type_round_trips() {
+        // Option<Number> = Sum([Number, Unit]) on the output port survives intact, including the
+        // nested Product (Unit) inside the Sum — proving the two n-ary constructors compose.
+        let mut u = prim("add");
+        u.output = Some(Type::Sum(vec![Type::Number, Type::Product(vec![])]));
         let bytes = encode_preimage(&u).unwrap();
         assert_eq!(decode_preimage(&bytes).unwrap(), u);
         assert_eq!(encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap(), bytes);
