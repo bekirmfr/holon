@@ -134,6 +134,41 @@ function boundaryLabels(ports: WPort[], source: (string | null)[]): string[] {
   });
 }
 
+// A placed node's own hash, for use as a child in project/group (P4.3.1). A genesis primitive
+// is rebuilt fresh from its catalog name+interface — I3 (the same primitive always yields the
+// same hash) makes "rebuild" and "reference" the same operation, exactly how onProject has
+// always worked. A grouped composite is different: it was already frozen when it was grouped,
+// so its hash is just read off PlacedBody directly — its own internal structure is neither
+// rebuilt nor re-inspected here. Shared by onProject and onGroup so there's one implementation
+// of "how do I get this node's hash," not two that could drift.
+function unitFor(n: PrimitiveNodeType, ev: Evaluator): string {
+  if (n.data.body.kind === "Composite") return n.data.body.hash;
+  const wunit: WUnit = {
+    body: { kind: "Primitive", name: n.data.name },
+    params: n.data.params,
+    inputs: n.data.inputs,
+    outputs: n.data.outputs,
+  };
+  return ev.insert(buildPreimage(wunit));
+}
+
+// default_spec names each promoted/exposed port after its inner port's own name, with no
+// uniqueness guarantee across different children — two unrelated "b" ports are common
+// (boundaryLabels above already handles this for DISPLAY, via provenance). But a grouped
+// composite's ports become real handle ids on the new node (P4.3.1), and wiring resolves
+// handles by NAME (findIndex) — a genuine collision there would silently miswire the second
+// port to the first's handle, not just look ambiguous in a label. This disambiguates the
+// actual names before they become handle ids, the same occurrence-counting boundaryLabels
+// already uses as its own last-resort tiebreaker.
+function dedupePortNames(ports: WPort[]): WPort[] {
+  const seen = new Map<string, number>();
+  return ports.map((p) => {
+    const n = (seen.get(p.name) ?? 0) + 1;
+    seen.set(p.name, n);
+    return n === 1 ? p : { ...p, name: `${p.name}_${n}` };
+  });
+}
+
 // `project()` throws the structured error object itself on an EncapError/ValidationError path
 // (not a generic Error) — this is a loose but adequate runtime check: nothing else in this app
 // produces an object with both a string `kind` and a string `message`. It doesn't verify every
@@ -296,6 +331,7 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
       const inputs = u.inputs ?? [];
       const data: PrimitiveData = {
         name,
+        body: { kind: "Primitive" },
         inputs,
         outputs: u.outputs ?? [],
         params: u.params ?? [],
@@ -406,16 +442,10 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
       // cosmetic reorder cannot move the hash (I5). `id`/`position` are dropped here.
       const indexOf = new Map(nodes.map((n, i) => [n.id, i]));
 
-      // Each node is the catalog primitive it was placed as → pinned child hashes (I3), index order.
-      const children = nodes.map((n) => {
-        const wunit: WUnit = {
-          body: { kind: "Primitive", name: n.data.name },
-          params: n.data.params,
-          inputs: n.data.inputs,
-          outputs: n.data.outputs,
-        };
-        return ev.insert(buildPreimage(wunit));
-      });
+      // Each node's own hash — a fresh primitive rebuild or a grouped composite reference
+      // (P4.3.1), resolved identically to onGroup below via the shared unitFor. Pinned child
+      // hashes (I3), index order.
+      const children = nodes.map((n) => unitFor(n, ev));
 
       // Canvas wire → core edge by index. from_port is the named output's position in the source's
       // interface, to_port the named input's position in the target's — symmetric (P4.7: outputs are
@@ -500,6 +530,121 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
     }
   }, [nodes, edges, ev]);
 
+  // Group the current selection into one placed composite node (P4.3.1). React Flow's own
+  // selection (shift-click / drag-box) is already live and already used for delete — this is
+  // its first use for anything else. Mechanically the same derivation as onProject, just fed a
+  // subset: only the selected nodes become children, only edges where BOTH endpoints are
+  // selected become the composite's inner wiring — an edge with exactly one endpoint outside
+  // the selection is, from the selected subgraph's own perspective, indistinguishable from an
+  // ordinary free input or output, so default_spec's existing proposal derives the right
+  // boundary with no new core or bridge logic. Uses the full automatic proposal directly, same
+  // as onProject's own default path — no exclude-review step for grouping in this inch (fork
+  // 3's own scoped-down UI stays a whole-canvas-projection feature, not extended here).
+  // Deliberately does NOT include expand-to-inspect — its own separate, later inch once
+  // grouping itself is proven, the same staged discipline the encapsulation work already used.
+  const onGroup = useCallback(() => {
+    const selected = nodes.filter((n) => n.selected);
+    if (selected.length < 2) return; // mirrors the button's own disabled guard, defensively
+    const selectedIds = new Set(selected.map((n) => n.id));
+    const indexOf = new Map(selected.map((n, i) => [n.id, i]));
+
+    let wedges: WEdge[] = [];
+    try {
+      const children = selected.map((n) => unitFor(n, ev));
+
+      const innerEdges = edges.filter((e) => selectedIds.has(e.source) && selectedIds.has(e.target));
+      wedges = innerEdges.map((e) => {
+        const from = indexOf.get(e.source)!;
+        const to = indexOf.get(e.target)!;
+        const fromPort = selected[from].data.outputs.findIndex((p) => p.name === e.sourceHandle);
+        const toPort = selected[to].data.inputs.findIndex((p) => p.name === e.targetHandle);
+        return { from_child: from, from_port: fromPort, to_child: to, to_port: toPort };
+      });
+
+      const composite = ev.project(children, wedges) as WUnit;
+      const pre = buildPreimage(composite);
+      const hash = ev.insert(pre);
+
+      // Disambiguate default-derived port names before they become this new node's actual
+      // handle ids — see dedupePortNames' own doc for why this differs from boundaryLabels'
+      // display-only disambiguation.
+      const inputs = dedupePortNames(composite.inputs ?? []);
+      const outputs = dedupePortNames(composite.outputs ?? []);
+      const boundaryEdges = composite.body.kind === "Composite" ? composite.body.edges : [];
+
+      // Which (selected-node, port) each promoted input / exposed output came from — read
+      // directly off the boundary edges core already computed, not guessed, so an external
+      // wire that crossed the selection can be re-pointed at the RIGHT new handle below.
+      const promotedFrom = inputs.map((_, i) => {
+        const be = boundaryEdges.find((e) => e.from_child === BOUNDARY && e.from_port === i);
+        return be ? { child: be.to_child, port: be.to_port } : null;
+      });
+      const exposedFrom = outputs.map((_, i) => {
+        const be = boundaryEdges.find((e) => e.to_child === BOUNDARY && e.to_port === i);
+        return be ? { child: be.from_child, port: be.from_port } : null;
+      });
+
+      const groupId = `composite-${idRef.current++}-${hash.slice(0, 8)}`;
+      const centroid = {
+        x: selected.reduce((s, n) => s + n.position.x, 0) / selected.length,
+        y: selected.reduce((s, n) => s + n.position.y, 0) / selected.length,
+      };
+      const groupNode: PrimitiveNodeType = {
+        id: groupId,
+        type: "primitive",
+        position: centroid,
+        data: {
+          name: hash.slice(0, 8),
+          body: { kind: "Composite", hash },
+          inputs,
+          outputs,
+          params: [],
+          variadic: false,
+          minInputs: 0,
+        },
+      };
+
+      // Rewire every edge that crossed the selection boundary to the new node's corresponding
+      // handle; drop every edge now fully internal to the frozen composite (it's baked into
+      // the hash, no longer a canvas wire); leave every edge untouched by the selection exactly
+      // as it was.
+      const nextEdges: Edge[] = edges.flatMap((e): Edge[] => {
+        const sIn = selectedIds.has(e.source);
+        const tIn = selectedIds.has(e.target);
+        if (sIn && tIn) return [];
+        if (sIn) {
+          const ci = indexOf.get(e.source)!;
+          const cp = selected[ci].data.outputs.findIndex((p) => p.name === e.sourceHandle);
+          const oi = exposedFrom.findIndex((x) => x?.child === ci && x?.port === cp);
+          if (oi < 0) return []; // shouldn't happen against an honest proposal; drop defensively
+          return [{ ...e, source: groupId, sourceHandle: outputs[oi].name }];
+        }
+        if (tIn) {
+          const ci = indexOf.get(e.target)!;
+          const cp = selected[ci].data.inputs.findIndex((p) => p.name === e.targetHandle);
+          const ii = promotedFrom.findIndex((x) => x?.child === ci && x?.port === cp);
+          if (ii < 0) return [];
+          return [{ ...e, target: groupId, targetHandle: inputs[ii].name }];
+        }
+        return [e];
+      });
+
+      setNodes((ns) => [...ns.filter((n) => !selectedIds.has(n.id)), groupNode]);
+      setEdges(nextEdges);
+      setProjError("");
+      setErrorNodeIds(new Set());
+    } catch (err) {
+      setProjError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
+      try {
+        const indices = isWEncapError(err) ? encapErrorNodeIndices(err, wedges) : [];
+        const ids = indices.map((i) => selected[i]?.id).filter((id): id is string => id !== undefined);
+        setErrorNodeIds(new Set(ids));
+      } catch {
+        setErrorNodeIds(new Set());
+      }
+    }
+  }, [nodes, edges, ev, setNodes, setEdges]);
+
   // A boundary field changed: update its slot and re-eval live. Safe to be reactive (unlike
   // projecting itself) because a boundary value is never part of the composite's hash — it's a
   // pure eval-time argument, not identity — so there is no "cosmetic move" noise to avoid here.
@@ -560,6 +705,11 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
     [nodes, errorNodeIds],
   );
 
+  // How many placed nodes are currently selected — React Flow's own selection state
+  // (shift-click / drag-box), already live for delete, now also gating the "group" button
+  // (P4.3.1). Cheap enough over a canvas-sized node list not to need memoizing.
+  const selectedCount = nodes.filter((n) => n.selected).length;
+
   return (
     <div className="hl-canvas" onDrop={onDrop} onDragOver={onDragOver}>
       <ReactFlow<PrimitiveNodeType>
@@ -603,6 +753,25 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
               }}
             >
               project
+            </button>
+            <button
+              onClick={onGroup}
+              disabled={selectedCount < 2}
+              title={selectedCount < 2 ? "select 2+ nodes to group" : `group ${selectedCount} nodes`}
+              style={{
+                font: "inherit",
+                fontSize: 12,
+                letterSpacing: "0.04em",
+                padding: "5px 12px",
+                color: "#0e1a2f",
+                background: "#6fd3e0",
+                border: "none",
+                borderRadius: 3,
+                cursor: selectedCount < 2 ? "default" : "pointer",
+                opacity: selectedCount < 2 ? 0.4 : 1,
+              }}
+            >
+              group
             </button>
             {projection && (
               <div style={{ fontSize: 12, color: "#9fb4d4", textAlign: "right", lineHeight: 1.4 }}>

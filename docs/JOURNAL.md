@@ -2930,3 +2930,97 @@ and hasn't been started.
 **Next inch.** Whatever's next is independent of this arc, which is closed at forks 1-3. The
 `SmallVec` perf item from P4.7 remains separately deferred, pending an actual multi-output
 composite existing in the wild to benchmark against — which, as of this inch, one now does.
+
+---
+
+## 2026-07-01 · P4.3.1 — subgraph selection + grouping into a placed node · *(the leaf's own remaining scope; expand-to-inspect is the one piece still open)*
+
+**Context.** The prior P4.3 entry named this explicitly as "still entirely unbuilt, and this is
+the leaf's actual scope" — everything the bridge split and the exclude seam (forks 1-3) were
+prerequisites *for*, not instances of. Two P4 leaves were checked against their own logical
+order first (not just the plan's suggested sequence): P4.4.1's "descend a composite to its
+leaves" and P4.5.1's "publish a unit" both genuinely need a placed composite node to exist
+before they mean anything — this was the actual next leaf, not just the listed one.
+
+**Built.**
+- **Selection needed zero new code.** React Flow's own multi-select (shift-click, drag-box) was
+  already live and already driving delete (`nodes[i].selected`, already flowing through
+  existing state) — this is its first use for anything else.
+- **The load-bearing finding: `propose_encapsulation`/`freeze_encapsulation` needed no changes
+  at all.** Feeding them only the selected nodes as children and only the edges where *both*
+  endpoints are selected as inner wiring already derives the correct boundary — an edge with
+  exactly one endpoint outside the selection is, from the selected subgraph's own perspective,
+  indistinguishable from an ordinary free input or output. The same derivation that already
+  handles the whole canvas handles an arbitrary subset for free. This whole leaf turned out to
+  be an editor-side problem, not a new backend capability.
+- **`unitFor`** — a shared helper resolving any placed node's own hash: rebuild fresh from its
+  catalog interface for a primitive (I3 — the same primitive always yields the same hash, so
+  "rebuild" and "reference" were always the same operation), or read the hash directly for an
+  already-frozen composite. Used by both `onProject` and the new `onGroup`, replacing what had
+  been duplicated inline in `onProject` alone.
+- **`dedupePortNames`** — disambiguates colliding default-derived port names *before* they
+  become a new composite node's actual handle ids, not just its display labels the way
+  `boundaryLabels` already handles for the results panel. This matters specifically here:
+  wiring resolves handles by name (`findIndex`), so a genuine collision on a *new* node's own
+  interface — two different selected `add` nodes both proposing a `b` — would silently miswire
+  the second port to the first's handle, a real bug, not just an ambiguous-looking label.
+- **`onGroup`** — builds the sub-composite from the selection, freezes it via the same
+  `ev.project` `onProject` already uses, then rewires every edge that crossed the selection
+  boundary to the new node's correct handle. The rewiring target is resolved by reading the
+  frozen composite's own boundary edges — the identical "don't guess, read what core already
+  computed" discipline `source`/`resultSource` already follow in `onProject` — not by any new
+  inference. Edges fully inside the selection are dropped (now baked into the composite's hash,
+  no longer a canvas wire); edges untouched by the selection are left exactly as they were.
+- **`PlacedBody`** — a new discriminated field on `PrimitiveData`: `{ kind: "Primitive" }` or
+  `{ kind: "Composite"; hash }`. A genuine structural difference, not cosmetic — a primitive is
+  rebuilt fresh every project, a composite is frozen once and referenced forever after, the
+  same relationship core's own composites already have with their children. Confirmed, not
+  assumed: `PrimitiveNode.tsx`'s existing render logic needed zero changes beyond the type
+  itself — `setConstType` only ever fires for a `params` entry named "type" that composites
+  never have (`params: []`), and the variadic +/− buttons only render when `variadic` is true,
+  which composites never are.
+- A "group" button beside "project," disabled below two selected nodes — grouping a single node
+  would be pure overhead, wrapping one primitive in a composite for no reason.
+
+**Leaf status.** P4.3.1's actual scope — select a subgraph, group it into a placed node — is
+now browser-confirmed done. **Expand-to-inspect is the one piece still open**, its own
+separate, later inch once grouping itself was proven, the same staged discipline the
+encapsulation work (types → `derive_and_freeze` → `default_spec`, each its own gated step)
+already used throughout.
+
+**Tests prove — honestly, this time meaning manual, not automated.** There is still no
+frontend test infrastructure (confirmed when the question came up directly, mid-session) — this
+whole inch is verified by browser confirmation only, four scenarios: (1) two fully-unwired,
+identically-shaped `add` nodes grouped together, proving `dedupePortNames` — the result shows
+`a`, `b`, `a_2`, `b_2`, not a silent collision; (2) a partially-wired pair grouped, proving the
+internal wire disappears while the still-free ports become the new node's own handles; (3) an
+*external* wire connected to a to-be-grouped node's port *before* grouping, confirmed landing on
+the correct handle of the new node afterward — the one scenario that actually proves the
+boundary-rewiring logic, not just that grouping produces something that renders; (4) `project`
+run with a grouped node present, confirming `unitFor`'s reference path end to end. All four
+passed.
+
+**Forks pinned.**
+- Grouping uses `default_spec`'s full automatic proposal directly — no exclude-review step
+  extended to it. That stays a whole-canvas-projection feature (fork 3); grouping doesn't
+  inherit it just because the underlying core calls are shared.
+- No rename or custom naming for a grouped node — labeled by its own hash prefix, matching how
+  nothing in this arc lets a person rename a promoted input or exposed output either.
+- Port-name collisions are resolved by suffixing at construction time (the actual handle id),
+  never left as a display-only ambiguity the way `boundaryLabels`' occurrence-counting handles
+  the results panel.
+
+**Named, not silently accepted — the accumulating gap.** This is the second consecutive
+substantial editor inch (fork 3's exclude UI, now this) verified by browser confirmation alone,
+with no automated coverage backing either one. That's a real, growing risk as the editor's own
+surface area increases, not a one-time cost — worth treating as its own inch before too much
+more gets built on top of it un-tested, not an indefinitely-deferred nicety.
+
+**Deferred.** Expand-to-inspect — taking a placed composite node and reconstructing its
+children back onto the canvas, the dual of grouping. Needs `decode_preimage`/`load_unit`-style
+access to a composite's own internals and edge-reconstruction logic; deliberately not sketched
+here, its own scoping pass when it's actually next.
+
+**Next inch.** Whatever's next is independent of this one. The two most directly-related
+candidates: expand-to-inspect (closes P4.3.1 completely), or P4.4.1 (transitive inspection UI),
+whose own precondition — a placed composite node existing at all — this inch just satisfied.

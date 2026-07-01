@@ -551,16 +551,15 @@ cosmetic layer** (positions, labels) the core deliberately does not know about.
    derive-then-freeze P1.5.1, receives the new `Unit` + hash); expand to inspect.
    *pre:* P4.1.1, P1.5.1 · *inv:* `I4`/`I9` · *test:* grouping in-editor yields a unit
    whose interface + hash match the core's derivation; expand round-trips · *effort:* **M**
-   *→ **Bridge surface — DONE** (`Evaluator.propose_encapsulation` / `freeze_encapsulation`, split
+*→ **Bridge surface — DONE** (`Evaluator.propose_encapsulation` / `freeze_encapsulation`, split
    exactly as this note asked for; `project()` itself untouched, still the combined single-call
-   path). **Earned so far: exclude, not choose** — the editor can drop a proposed output (a
-   genuine re-freeze, new hash) but cannot reorder or rename them, and excluding is one-way
-   within a projection, recovered only by re-running "project." "An ambiguous boundary is a
-   surfaced error" is now obsolete — `default_spec` has no ambiguous case left; it proposes every
-   free output automatically. Still entirely unbuilt, and this is the leaf's actual scope: select
-   a *subgraph* (`project` still always takes the whole canvas), group it into a placed node,
-   expand a placed composite back to inspect its children. Full account: JOURNAL.md, 2026-07-01
-   · P4.3.*
+   path). **Select + group — DONE** (browser-confirmed, no automated coverage — see JOURNAL.md,
+   2026-07-01 · P4.3.1): React Flow's own selection, already live for delete, now also drives
+   grouping a subset of the canvas into one placed, hash-referenced composite node, with
+   boundary-crossing wires correctly re-pointed at its new handles. **Earned so far on choosing
+   an output: exclude, not choose** — the editor can drop a proposed output (a genuine re-freeze,
+   new hash) but cannot reorder or rename them. **Still open, the one remaining piece: expand a
+   placed composite back to inspect its children** — the dual of grouping, not yet started.*
 
 5. **P4.4.1 · Transitive inspection UI** — render the closure tree P3.2.1 produces,
    annotated with derived kind + capabilities at every level, to the leaves.

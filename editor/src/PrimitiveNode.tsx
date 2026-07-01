@@ -13,8 +13,18 @@ import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
  *  `variadic`/`minInputs` are P4.1's variadic-arity editing: whether this leaf's port count may
  *  grow past the catalog's declared default, and what that default was (the shrink floor) —
  *  both set once at drop time from core's own `VARIADIC` list, never guessed here. */
+/** How a placed node's own identity is determined at project/group time (P4.3.1). A genesis
+ *  primitive is rebuilt fresh from its catalog name+interface every time — I3: the same
+ *  primitive name always yields the same hash, so "rebuild" and "reference" are the same
+ *  operation, exactly how it's always worked. A grouped composite is different: it was frozen
+ *  once, when it was grouped, and is referenced by that hash from then on — its own internal
+ *  structure is neither rebuilt nor re-inspected from the canvas (that's expand-to-inspect's
+ *  job, deliberately a separate, later inch, not this one's). */
+export type PlacedBody = { kind: "Primitive" } | { kind: "Composite"; hash: string };
+
 export type PrimitiveData = {
   name: string;
+  body: PlacedBody;
   inputs: WPort[];
   outputs: WPort[];
   params: WParam[];
