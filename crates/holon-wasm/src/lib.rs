@@ -875,7 +875,7 @@ fn check_project() {
             &composite,
             &[Some(Value::Number(2.0)), Some(Value::Number(3.0))],
             &ev.resolver,
-        ),
+        ).into_vec(),
         vec![Some(Value::Number(5.0))],
     );
 
@@ -894,7 +894,7 @@ fn check_project() {
                 Some(Value::Number(20.0)),
             ],
             &ev.resolver,
-        ),
+        ).into_vec(),
         vec![Some(Value::Number(5.0)), Some(Value::Number(30.0))],
     );
 }
@@ -953,8 +953,8 @@ fn check_hash_parity() {
 fn check_eval_parity() {
     let num = |n: f64| Value::Number(n);
     let r = MapResolver::new();
-    assert_eq!(holon_core::eval(&prim("add"), &[Some(num(2.0)), Some(num(3.0))], &r), vec![Some(num(5.0))]);
-    assert_eq!(holon_core::eval(&prim("multiply"), &[Some(num(4.0)), Some(num(5.0))], &r), vec![Some(num(20.0))]);
+    assert_eq!(holon_core::eval(&prim("add"), &[Some(num(2.0)), Some(num(3.0))], &r).into_vec(), vec![Some(num(5.0))]);
+    assert_eq!(holon_core::eval(&prim("multiply"), &[Some(num(4.0)), Some(num(5.0))], &r).into_vec(), vec![Some(num(20.0))]);
     // NaN (inf - inf): assert *is_nan*, not bits — the canonical view, and what is target-stable.
     match holon_core::eval(&prim("subtract"), &[Some(num(f64::INFINITY)), Some(num(f64::INFINITY))], &r).as_slice() {
         [Some(Value::Number(x))] => assert!(x.is_nan()),
@@ -972,7 +972,7 @@ fn check_eval_parity() {
         inputs: vec![],
         outputs: vec![Port { name: "out".into(), ty: Type::Number }],
     };
-    assert_eq!(holon_core::eval(&comp, &[], &r2), vec![Some(num(7.0))]);
+    assert_eq!(holon_core::eval(&comp, &[], &r2).into_vec(), vec![Some(num(7.0))]);
 }
 
 #[cfg(test)]
@@ -1202,7 +1202,7 @@ mod wasm_tests {
                 &bridged,
                 &[Some(Value::Number(2.0)), Some(Value::Number(3.0))],
                 &ev.resolver,
-            ),
+            ).into_vec(),
             vec![Some(Value::Number(5.0))],
         );
     }
@@ -1324,7 +1324,7 @@ mod wasm_tests {
                     Some(Value::Number(20.0)),
                 ],
                 &ev.resolver,
-            ),
+            ).into_vec(),
             vec![Some(Value::Number(5.0))],
         );
 

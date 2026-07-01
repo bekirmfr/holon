@@ -1,6 +1,7 @@
 //! Eager graph evaluator (P1.4.3) — the leaf that closes "identity but not evaluation".
 //!
-//! `eval(unit, inputs, resolver) -> Vec<Option<Value>>`. A primitive dispatches to its
+//! `eval(unit, inputs, resolver) -> EvalOutputs` (`SmallVec<[Option<Value>; 1]>`, inline for the
+//! common 0-1-output case — the SmallVec perf inch, 2026-07-02). A primitive dispatches to its
 //! native `compute`; a composite resolves its inner DAG **by reference** (I3) in a
 //! single topological pass (acyclicity from P1.3.1 means one pass reaches the fixed
 //! point), injecting promoted inputs through `BOUNDARY→child` edges and reading each
@@ -26,27 +27,35 @@
 
 use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY};
 use crate::hash::parse_hash;
+use smallvec::{smallvec, SmallVec};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The eager evaluator's own output shape (P4.7 + the SmallVec perf inch, 2026-07-02).
+/// Inline storage for 0 or 1 outputs — every genesis primitive declares exactly one, forever,
+/// and a single-output composite is still the overwhelming majority even now that multi-output
+/// is a real, everyday editor capability — so the common case never touches the heap. Spills to
+/// the heap only for a genuine multi-output composite, behaving exactly as a plain `Vec` would.
+pub type EvalOutputs = SmallVec<[Option<Value>; 1]>;
 
 /// Evaluate a unit against values for its input ports (index = input-port index;
 /// `None` = absent). Returns one slot per the unit's declared output — `unit.outputs.len()`
 /// entries, always, in order; each slot independently `Some`/`None` (P4.7: multi-output is a
 /// composite-only capability — every primitive declares exactly one output, so its arm always
 /// returns a 1-element vec; only a composite's own boundary can expose several).
-pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> Vec<Option<Value>> {
+pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> EvalOutputs {
     match &unit.body {
         // `map` is higher-order — it invokes the evaluator — so it lives here, where
         // recursion lives, rather than in first-order `compute`.
-        UnitBody::Primitive { name } if name == "map" => vec![eval_map(inputs, &unit.params, resolver)],
+        UnitBody::Primitive { name } if name == "map" => smallvec![eval_map(inputs, &unit.params, resolver)],
         // `fold` is the one iteration primitive (the universal list donor): also higher-order,
         // so it lives here too. It threads an accumulator, which `map` does not.
-        UnitBody::Primitive { name } if name == "fold" => vec![eval_fold(inputs, &unit.params, resolver)],
+        UnitBody::Primitive { name } if name == "fold" => smallvec![eval_fold(inputs, &unit.params, resolver)],
         UnitBody::Primitive { name } => {
             // Gather present values in port order **by reference** — `compute` borrows them,
             // so an O(1) reader (head/length/is_empty) copies only what it returns, not the
             // whole input list. compute's arity check is still the firing rule.
             let present: Vec<&Value> = inputs.iter().flatten().collect();
-            vec![primitives::compute(name, &present, &unit.params)]
+            smallvec![primitives::compute(name, &present, &unit.params)]
         }
         UnitBody::Composite { children, edges } => {
             eval_composite(children, edges, unit.outputs.len(), inputs, resolver)
@@ -76,7 +85,7 @@ fn eval_composite(
     n_outputs: usize,
     inputs: &[Option<Value>],
     resolver: &impl Resolver,
-) -> Vec<Option<Value>> {
+) -> EvalOutputs {
     let n = children.len();
 
     // Resolve children (by hash). Any unresolved ⇒ nothing evaluable — every declared output
@@ -86,7 +95,7 @@ fn eval_composite(
     for h in children {
         match resolver.resolve(h) {
             Some(u) => resolved.push(u),
-            None => return vec![None; n_outputs],
+            None => return smallvec![None; n_outputs],
         }
     }
 
@@ -99,13 +108,17 @@ fn eval_composite(
 
     // One topological pass (deterministic; ties broken by ascending child index).
     let Some(order) = topo_order(n, edges) else {
-        return vec![None; n_outputs]; // a cycle — impossible after P1.3.1, handled not panicked
+        return smallvec![None; n_outputs]; // a cycle — impossible after P1.3.1, handled not panicked
     };
 
     // Per-evaluation scratch, indexed by child, holding EACH child's own output vector (a child
     // may itself be a multi-output composite; a primitive child's vector is always length 1).
-    // Fresh each call ⇒ nested and repeated composites never collide.
-    let mut scratch: Vec<Vec<Option<Value>>> = vec![Vec::new(); n];
+    // Fresh each call ⇒ nested and repeated composites never collide. Inner type matches
+    // `eval`'s own `EvalOutputs` exactly — `scratch[ci] = eval(child, ...)` assigns a recursive
+    // call's result directly, so this must stay in lockstep with `eval`'s return type or the
+    // SmallVec perf inch's whole point (no allocation through nested composite evaluation, not
+    // just the outermost call) would silently stop applying past the first level.
+    let mut scratch: Vec<EvalOutputs> = vec![SmallVec::new(); n];
 
     for ci in order {
         let child = resolved[ci];
@@ -281,7 +294,7 @@ mod tests {
         let r = MapResolver::new();
         let add = prim("add", 3, Type::Number);
         assert_eq!(
-            eval(&add, &[Some(num(3.0)), Some(num(7.0)), Some(num(5.0))], &r),
+            eval(&add, &[Some(num(3.0)), Some(num(7.0)), Some(num(5.0))], &r).into_vec(),
             vec![Some(num(15.0))]
         );
     }
@@ -290,7 +303,7 @@ mod tests {
     fn eval_composite_add() {
         let mut r = MapResolver::new();
         let c = add2(&mut r);
-        assert_eq!(eval(&c, &[Some(num(3.0)), Some(num(4.0))], &r), vec![Some(num(7.0))]);
+        assert_eq!(eval(&c, &[Some(num(3.0)), Some(num(4.0))], &r).into_vec(), vec![Some(num(7.0))]);
     }
 
     #[test]
@@ -300,7 +313,7 @@ mod tests {
         // return the input rather than index the scratch by BOUNDARY and panic.
         let r = MapResolver::new();
         let c = composite(vec![nport("x")], Type::Number, vec![], vec![edge(BOUNDARY, 0, BOUNDARY, 0)]);
-        assert_eq!(eval(&c, &[Some(num(42.0))], &r), vec![Some(num(42.0))]);
+        assert_eq!(eval(&c, &[Some(num(42.0))], &r).into_vec(), vec![Some(num(42.0))]);
     }
 
     #[test]
@@ -322,7 +335,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            eval(&c, &[Some(num(3.0)), Some(num(7.0)), Some(num(5.0))], &r),
+            eval(&c, &[Some(num(3.0)), Some(num(7.0)), Some(num(5.0))], &r).into_vec(),
             vec![Some(num(15.0))]
         );
     }
@@ -338,7 +351,7 @@ mod tests {
             vec![hinner],
             vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
         );
-        assert_eq!(eval(&outer, &[Some(num(10.0)), Some(num(5.0))], &r), vec![Some(num(15.0))]);
+        assert_eq!(eval(&outer, &[Some(num(10.0)), Some(num(5.0))], &r).into_vec(), vec![Some(num(15.0))]);
     }
 
     #[test]
@@ -352,7 +365,7 @@ mod tests {
             vec![hsub],
             vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
         );
-        assert_eq!(eval(&c, &[Some(num(3.0)), None], &r), vec![None]);
+        assert_eq!(eval(&c, &[Some(num(3.0)), None], &r).into_vec(), vec![None]);
     }
 
     // hex-encode a hash for a `map` fn param (the inverse of hash::parse_hash).
@@ -400,7 +413,7 @@ mod tests {
         let m = map_unit(&hdouble);
         let input = list(vec![num(3.0), num(7.0), num(5.0)]);
         assert_eq!(
-            eval(&m, &[Some(input)], &r),
+            eval(&m, &[Some(input)], &r).into_vec(),
             vec![Some(list(vec![num(6.0), num(14.0), num(10.0)]))]
         );
     }
@@ -412,7 +425,7 @@ mod tests {
         let hdouble = double(&mut r);
         let m = map_unit(&hdouble);
         let input = list(vec![num(3.0), txt("x")]);
-        assert_eq!(eval(&m, &[Some(input)], &r), vec![None]);
+        assert_eq!(eval(&m, &[Some(input)], &r).into_vec(), vec![None]);
     }
 
     fn fold_unit(fn_hash: &Hash) -> Unit {
@@ -435,7 +448,7 @@ mod tests {
         let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
         let f = fold_unit(&hadd);
         let xs = list(vec![num(3.0), num(7.0), num(5.0)]);
-        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r), vec![Some(num(15.0))]);
+        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r).into_vec(), vec![Some(num(15.0))]);
     }
 
     #[test]
@@ -444,7 +457,7 @@ mod tests {
         let mut r = MapResolver::new();
         let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
         let f = fold_unit(&hadd);
-        assert_eq!(eval(&f, &[Some(num(42.0)), Some(list(vec![]))], &r), vec![Some(num(42.0))]);
+        assert_eq!(eval(&f, &[Some(num(42.0)), Some(list(vec![]))], &r).into_vec(), vec![Some(num(42.0))]);
     }
 
     #[test]
@@ -454,7 +467,7 @@ mod tests {
         let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
         let f = fold_unit(&hadd);
         let xs = list(vec![num(3.0), txt("x")]);
-        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r), vec![None]);
+        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r).into_vec(), vec![None]);
     }
 
     #[test]
@@ -465,7 +478,7 @@ mod tests {
         let prim_add = prim("add", 2, Type::Number);
         let inp = [Some(num(8.0)), Some(num(9.0))];
         assert_eq!(eval(&prim_add, &inp, &r), eval(&comp_add, &inp, &r));
-        assert_eq!(eval(&comp_add, &inp, &r), vec![Some(num(17.0))]);
+        assert_eq!(eval(&comp_add, &inp, &r).into_vec(), vec![Some(num(17.0))]);
     }
 
     #[test]
@@ -502,7 +515,7 @@ mod tests {
         let host_comp = host(h_comp);
         let inp = [Some(num(3.0)), Some(num(4.0)), Some(num(2.0))]; // (3 + 4) * 2 = 14
         assert_eq!(eval(&host_prim, &inp, &r), eval(&host_comp, &inp, &r));
-        assert_eq!(eval(&host_prim, &inp, &r), vec![Some(num(14.0))]);
+        assert_eq!(eval(&host_prim, &inp, &r).into_vec(), vec![Some(num(14.0))]);
     }
 
     #[test]
@@ -538,7 +551,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            eval(&c, &[Some(num(3.0)), Some(num(4.0))], &r),
+            eval(&c, &[Some(num(3.0)), Some(num(4.0))], &r).into_vec(),
             vec![Some(num(7.0)), Some(num(12.0)), Some(num(-1.0))]
         );
     }
@@ -546,9 +559,9 @@ mod tests {
     #[test]
     fn multi_output_partial_success() {
         // Two exposed outputs from two different children — one succeeds, one fails (divide by
-        // zero) — independently. This is the actual reason eval returns Vec<Option<Value>>
-        // rather than Option<Vec<Value>>: a genuinely computed value is never discarded just
-        // because a sibling output failed.
+        // zero) — independently. This is the actual reason eval's return shape is per-slot
+        // (EvalOutputs, one Option per declared output) rather than Option<Vec<Value>>: a
+        // genuinely computed value is never discarded just because a sibling output failed.
         let mut r = MapResolver::new();
         let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
         let hdiv = r.insert(prim("divide", 2, Type::Number)).unwrap();
@@ -564,7 +577,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            eval(&c, &[Some(num(3.0)), Some(num(0.0))], &r),
+            eval(&c, &[Some(num(3.0)), Some(num(0.0))], &r).into_vec(),
             vec![Some(num(3.0)), None] // add(3,0)=3 succeeds; divide(3,0) fails — independently
         );
     }

@@ -105,7 +105,7 @@ pub fn verify_entry(entry: &CacheEntry, resolver: &impl Resolver) -> bool {
     if !capabilities(unit, resolver).is_pure() {
         return false; // impure ⇒ output is not a stable function of inputs ⇒ not cacheable
     }
-    let produced = eval(unit, &entry.inputs, resolver); // always a Vec now, no top-level Option
+    let produced = eval(unit, &entry.inputs, resolver); // EvalOutputs derefs to &[Option<Value>]
     match (canonical_slots_bytes(&produced), canonical_slots_bytes(&entry.outputs)) {
         (Ok(a), Ok(b)) => a == b, // canonical equality = "same result", machine-independent
         _ => false,               // unencodable ⇒ cannot compare ⇒ fail closed

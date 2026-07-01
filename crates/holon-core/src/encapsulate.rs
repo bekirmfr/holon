@@ -311,7 +311,7 @@ mod tests {
         let derived = derive_and_freeze(children, inner, &spec, &r).unwrap();
         // (2 + 3) * 4 = 20
         assert_eq!(
-            eval(&derived, &[Some(num(2.0)), Some(num(3.0)), Some(num(4.0))], &r),
+            eval(&derived, &[Some(num(2.0)), Some(num(3.0)), Some(num(4.0))], &r).into_vec(),
             vec![Some(num(20.0))]
         );
     }
@@ -486,16 +486,16 @@ mod tests {
 
         // Honest success: 3+4=7, 12/4=3 — both slots present.
         assert_eq!(
-            eval(&derived, &[Some(num(3.0)), Some(num(4.0)), Some(num(12.0)), Some(num(4.0))], &r),
+            eval(&derived, &[Some(num(3.0)), Some(num(4.0)), Some(num(12.0)), Some(num(4.0))], &r).into_vec(),
             vec![Some(num(7.0)), Some(num(3.0))]
         );
 
         // Partial success: divide-by-zero fails ONLY the quotient slot; sum is
-        // unaffected — the whole point of Vec<Option<Value>> over Option<Vec<Value>>
+        // unaffected — the whole point of eval's per-slot EvalOutputs over Option<Vec<Value>>
         // (P4.7's original foundation), now proven through a unit this module actually
         // built, not just eval's own internal fixtures.
         assert_eq!(
-            eval(&derived, &[Some(num(3.0)), Some(num(4.0)), Some(num(12.0)), Some(num(0.0))], &r),
+            eval(&derived, &[Some(num(3.0)), Some(num(4.0)), Some(num(12.0)), Some(num(0.0))], &r).into_vec(),
             vec![Some(num(7.0)), None]
         );
     }

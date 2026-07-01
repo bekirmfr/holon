@@ -69,7 +69,7 @@ mod tests {
         let hleft = r.insert(closed(vec![h2, h3, hadd], binop_edges())).unwrap();
         let hright = r.insert(closed(vec![h10, h4, hsub], binop_edges())).unwrap();
         let top = closed(vec![hleft, hright, hmul], binop_edges());
-        assert_eq!(eval(&top, &[], &r), vec![Some(Value::Number(30.0))]);
+        assert_eq!(eval(&top, &[], &r).into_vec(), vec![Some(Value::Number(30.0))]);
     }
 
     /// Tiny LCG for reproducible random graphs — the pure core takes no external deps.
@@ -114,7 +114,7 @@ mod tests {
             let a = eval(&top, &[], &r);
             let b = eval(&top, &[], &r);
             assert_eq!(a, b, "non-deterministic at seed {seed}");
-            assert_eq!(a, vec![Some(Value::Number(exp))], "wrong value at seed {seed}");
+            assert_eq!(a.into_vec(), vec![Some(Value::Number(exp))], "wrong value at seed {seed}");
         }
     }
 

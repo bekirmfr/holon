@@ -604,17 +604,17 @@ impl Memo {
         resolver: &impl Resolver,
     ) -> Vec<Option<Value>> {
         if !capabilities(unit, resolver).is_pure() {
-            return eval(unit, inputs, resolver); // impure ⇒ never cached
+            return eval(unit, inputs, resolver).into_vec(); // impure ⇒ never cached
         }
         // Un-keyable (un-hashable unit, or an input too large to encode) ⇒ just evaluate.
         let key = match hash_unit(unit).ok().and_then(|h| memo_key(&h, inputs).ok()) {
             Some(k) => k,
-            None => return eval(unit, inputs, resolver),
+            None => return eval(unit, inputs, resolver).into_vec(),
         };
         if let Some(hit) = self.cache.get(&key) {
             return hit.clone();
         }
-        let out = eval(unit, inputs, resolver);
+        let out = eval(unit, inputs, resolver).into_vec();
         self.cache.insert(key, out.clone());
         out
     }

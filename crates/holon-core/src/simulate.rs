@@ -205,7 +205,7 @@ mod tests {
         // A bare clock (Driver) is not evaluable; design mode substitutes a constant.
         let store = MapResolver::new();
         let t = clock();
-        assert_eq!(eval(&t, &[], &store), vec![None]);
+        assert_eq!(eval(&t, &[], &store).into_vec(), vec![None]);
         assert_eq!(design_eval(&t, &[], &store), Some(Value::Number(0.0)));
     }
 
@@ -216,7 +216,7 @@ mod tests {
         // `sourced_mock` — this module needed no change to gain a new driver.
         let store = MapResolver::new();
         let rnd = prim("random", Type::Number);
-        assert_eq!(eval(&rnd, &[], &store), vec![None]); // sourced ⇒ not computable
+        assert_eq!(eval(&rnd, &[], &store).into_vec(), vec![None]); // sourced ⇒ not computable
         assert_eq!(design_eval(&rnd, &[], &store), Some(Value::Number(0.0))); // mocked
     }
 
@@ -225,7 +225,7 @@ mod tests {
         let mut store = MapResolver::new();
         let th = store.insert(clock()).unwrap();
         let comp = pass_through(th, Type::Number);
-        assert_eq!(eval(&comp, &[], &store), vec![None]); // clock not computable
+        assert_eq!(eval(&comp, &[], &store).into_vec(), vec![None]); // clock not computable
         assert_eq!(design_eval(&comp, &[], &store), Some(Value::Number(0.0)));
         // deterministic
         assert_eq!(design_eval(&comp, &[], &store), design_eval(&comp, &[], &store));
@@ -250,7 +250,7 @@ mod tests {
         let comp = sink_graph(eh);
         let hi = Value::Text("hi".into());
         assert_eq!(
-            eval(&comp, &[Some(hi.clone())], &store),
+            eval(&comp, &[Some(hi.clone())], &store).into_vec(),
             vec![Some(Value::Effect { sink: "egress".into(), payload: Box::new(hi) })]
         );
     }
@@ -322,7 +322,7 @@ mod tests {
         let mut store = MapResolver::new();
         let rh = store.insert(prim("store_read", Type::Number)).unwrap();
         let comp = pass_through(rh, Type::Number);
-        assert_eq!(eval(&comp, &[], &store), vec![None]); // store_read not computable (sourced)
+        assert_eq!(eval(&comp, &[], &store).into_vec(), vec![None]); // store_read not computable (sourced)
         assert_eq!(design_eval(&comp, &[], &store), Some(Value::Number(0.0))); // scripted
     }
 }

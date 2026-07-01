@@ -153,8 +153,8 @@ mod tests {
         assert_ne!(h2, h3);
         let u2 = store.resolve(&h2).unwrap().clone();
         let u3 = store.resolve(&h3).unwrap().clone();
-        assert_eq!(eval(&u2, &[], &store), vec![Some(num(2.0))]);
-        assert_eq!(eval(&u3, &[], &store), vec![Some(num(3.0))]);
+        assert_eq!(eval(&u2, &[], &store).into_vec(), vec![Some(num(2.0))]);
+        assert_eq!(eval(&u3, &[], &store).into_vec(), vec![Some(num(3.0))]);
     }
 
     // MultiplyByK template: x → mul.0 ; number(Open "K") → mul.1 ; mul → out.
@@ -187,12 +187,12 @@ mod tests {
         // A number with an open hole has no value ⇒ eval is None until instantiated.
         let mut store = MapResolver::new();
         let nk = open_param(&number("1"), "value", "K").unwrap();
-        assert_eq!(eval(&nk, &[], &store), vec![None]);
+        assert_eq!(eval(&nk, &[], &store).into_vec(), vec![None]);
 
         let hnk = store.insert(nk).unwrap();
         let h = instantiate(&hnk, &binding(&[("K", "9")]), &mut store).unwrap();
         let n9 = store.resolve(&h).unwrap().clone();
-        assert_eq!(eval(&n9, &[], &store), vec![Some(num(9.0))]);
+        assert_eq!(eval(&n9, &[], &store).into_vec(), vec![Some(num(9.0))]);
     }
 
     #[test]
@@ -205,7 +205,7 @@ mod tests {
         let (_, hcomp) = multiply_by_k(&mut store);
         let h3 = instantiate(&hcomp, &binding(&[("K", "3")]), &mut store).unwrap();
         let mul3 = store.resolve(&h3).unwrap().clone();
-        assert_eq!(eval(&mul3, &[Some(num(7.0))], &store), vec![Some(num(21.0))]);
+        assert_eq!(eval(&mul3, &[Some(num(7.0))], &store).into_vec(), vec![Some(num(21.0))]);
     }
 
     #[test]

@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-blake3 = "1"
+blake3   = "1"
+smallvec = "1"
 
 [dev-dependencies]
 criterion = "0.5"

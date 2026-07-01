@@ -3265,3 +3265,111 @@ finding resolved, not a leaf closed.
 stated trigger — an actual multi-output composite existing to benchmark against — has been
 satisfied since the `P4.3` forks landed), then the `P4.5.1`/`P4.6.1` host+registry transport
 scoping pass.
+
+---
+
+## 2026-07-02 · SmallVec perf inch — `eval`'s hot-path allocation, closed · *(the P4.7 benchmark finding, deferred twice, addressed here)*
+
+**Context.** Named at `P4.7`'s close: widening `eval` to `Vec<Option<Value>>` regressed every
+primitive eval ~45–50% (flat across list sizes — a fixed per-call cost), root-caused to
+`eval_one` — which `eval_map`/`eval_fold` call once per list element — always heap-allocating
+through `eval` and discarding all but one slot. Deferred pending an actual multi-output
+composite existing to benchmark against; that trigger was satisfied once the `P4.3` forks made
+multi-output an everyday, automatic editor construct.
+
+**One nuance surfaced and named before building, not glossed over:** `map`/`fold`'s `fn`
+argument is required to be single-output (`eval_one` fails closed otherwise), so the specific
+hot loop this regression concentrates in can never itself contain a multi-output unit, no matter
+how common they get elsewhere. The trigger being satisfied means "is multi-output a real, used
+capability worth having paid this tax for" — not "does the hot loop now see multi-output data."
+Worth being exact about, since it's a different justification than a first pass implied.
+
+**The fix.** `eval`'s return shape is now a named type, `EvalOutputs = SmallVec<[Option<Value>;
+1]>` — inline stack storage for 0 or 1 outputs (every genesis primitive, forever; still the
+overwhelming majority even now), spilling to the heap only for a genuine multi-output composite.
+`eval_composite`'s own internal `scratch` (previously `Vec<Vec<Option<Value>>>`) had to become
+`Vec<EvalOutputs>` too, not just `eval`'s own signature — `scratch[ci] = eval(child, ...)` stores
+each recursive call's result directly, so skipping the scratch would have meant the fix only
+reached the outermost call, not nested composites — the exact "route around it instead of fixing
+it" shape the `eval_composite`-by-reference precedent (2026-06-30) warns against repeating.
+
+**Real, but narrow, production ripple — corrected from an earlier, rougher estimate.** `eval_one`
+needed zero logic changes (`.len()`/`.pop()` both exist on `SmallVec`). The wasm bridge's
+`Evaluator::eval` needed zero changes at all — its existing `.iter().map(...).collect()` already
+builds a fresh `Vec<Option<WValue>>`, and `SmallVec` supports `.iter()` identically to `Vec`.
+`memo.rs`'s `verify_entry` needed zero changes — `canonical_slots_bytes` takes a slice
+(`&[Option<Value>]`), and `SmallVec` derefs to one automatically. `holon-host`'s `fire` needed
+zero changes — already on `eval_one` since `P4.7` sub-leaf (d). The one real production site:
+`holon-host`'s `Memo::eval`, which calls the widened `eval` three times and returns
+`Vec<Option<Value>>` from its own (deliberately still-`Vec`, since it's a stored, long-lived
+cache, not a hot loop) signature — `.into_vec()` at each of the three call sites.
+
+**Wide, but purely mechanical, test-suite ripple.** `SmallVec` implements `PartialEq` only
+against another `SmallVec`, not against `Vec` directly (confirmed against the crate's own
+source, not assumed) — every existing test comparing `eval(...)`'s result directly against a
+`vec![...]` literal needed `.into_vec()` appended at the actual-value side, keeping every
+expected-value literal exactly as `vec![...]`, unchanged. Real work — a few dozen call sites
+across `eval.rs`, `catalog.rs`, `determinism.rs`, `encapsulate.rs`, `promote.rs`, `simulate.rs`,
+and the wasm bridge's own test module — but zero design risk, each fix identical. Comparisons of
+`eval(...)` against another `eval(...)` call (not a `vec![...]` literal) needed no change, since
+`SmallVec == SmallVec` already works. Benchmark call sites (`native_vs_composite.rs`) needed no
+change either — `black_box` takes any `T` by value, no comparison ever happens there.
+
+**A real methodological finding, worth naming rather than quietly working around:** the local
+copy of `holon-host/src/lib.rs` used for this pass turned out to be a stale, pre-`P4.7` snapshot
+(still showing `fire` calling the widened `eval` directly with `?`, when it's actually been on
+`eval_one` since `P4.7` sub-leaf (d) closed). Caught by grounding the real current file via
+search before editing, rather than trusting a stale local baseline — editing or delivering a
+full file from the wrong starting point would have risked silently reverting whatever this
+file's actual current state is. Delivered as a targeted patch instead of a full file for that
+one function, not out of caution theater but because the risk was real and specific.
+
+**The second dependency.** `smallvec = "1"` — `holon-core`'s first new dependency since
+`blake3`, and the honest price of this fix: real, not glossed over. `PLAN.md`'s own "exactly one
+dependency" claim updated to match, rather than left stale.
+
+**Verification — actually run, not deferred.** One real hiccup on first application, worth
+naming rather than glossing over: `cargo test --workspace` initially failed with `unresolved
+import smallvec` — the `Cargo.toml` dependency line from this patch hadn't been applied yet,
+only the code changes had. Once added (`smallvec = "1"`), everything compiled and ran clean.
+
+`cargo test --workspace`: **255/255 green** — 185 core + 39 host + 11 wasm-native.
+`wasm-pack test --node crates/holon-wasm`: **20/20 green**. Confirms the `.into_vec()`
+conversions were lossless — nothing behaves differently, only the allocation pattern changed.
+
+`cargo bench -p holon-core` — the actual proof this inch exists for, and the numbers back it
+up, with two anomalies named honestly rather than rounded away:
+
+- **`fold_sum` — the actual hot loop this inch targets** (`eval_map`/`eval_fold` calling
+  `eval_one` once per element) — improved 17–35% across every list size, largest at the
+  biggest size (4096: −22.5%). This is the fix working exactly where it was built to: the
+  allocate-then-discard `Vec` per element is gone.
+- `native_head`/`native_is_empty`/`native_add` all improved 15–29%, consistent with the P4.7
+  regression being undone. `composite_add` showed no significant change — expected, not a gap:
+  that path is dominated by hashmap lookups and topological sort, costs this fix never touched,
+  so the allocation savings are a small fraction of a much larger baseline.
+- **Anomaly 1, likely pre-existing, not introduced by this fix:** `native_length/1`'s absolute
+  time (~197 ns) sits roughly 4× every other list size (~47–53 ns for 8 through 4096) — odd for
+  a supposedly-flat O(1) operation, and n=1 should be the *fastest* case, not the slowest. But
+  its own reported *change* column shows near-zero movement ("within noise threshold"), meaning
+  this gap was already there before this fix, not caused by it. Most likely a benchmark
+  warm-up artifact specific to the first sample in the run, not a real defect.
+- **Anomaly 2, flagged but genuinely unconfirmed — not settled, not smoothed over:**
+  `native_sum/512` regressed (+17.7% to +30.5%, criterion's own "Performance has regressed"
+  flag), sandwiched between `/64` and `/4096`, both of which improved sharply (−22 to −32%). A
+  single size regressing between two neighbors that both improved doesn't fit a structural
+  explanation — it has the shape of a one-off measurement (background load, a GC-adjacent
+  pause on that run) rather than something this fix caused. This is a plausible read, not a
+  verified one: it was never re-run in isolation to confirm it reproduces. If it matters,
+  `cargo bench -p holon-core -- native_sum` targeting just that benchmark would settle it either
+  way — genuinely open until then, not resolved by this entry.
+
+**Net assessment:** the fix does what it was built for (the hot loop it targets improved
+substantially, confirmed by measurement, not assumed), nothing broke (255+20 tests green), and
+the two anomalies both look like measurement noise rather than defects from this change — but
+one of them is a plausible read, not a confirmed one, and is named as such rather than folded
+into a clean "all good" story it hasn't fully earned yet.
+
+**Next.** Decide whether the `native_sum/512` anomaly is worth a targeted re-run before moving
+on, or set it aside as noise and proceed straight to the `P4.5.1`/`P4.6.1` host+registry
+transport scoping pass, or return to the `P4` projection frontier.

@@ -253,13 +253,13 @@ mod tests {
         let n = |x: f64| Value::Number(x);
 
         let konst = interface_of("const").unwrap();
-        assert_eq!(eval(&konst, &[], &r), vec![Some(n(0.0))]);
+        assert_eq!(eval(&konst, &[], &r).into_vec(), vec![Some(n(0.0))]);
 
         let add = interface_of("add").unwrap();
-        assert_eq!(eval(&add, &[Some(n(2.0)), Some(n(3.0))], &r), vec![Some(n(5.0))]);
+        assert_eq!(eval(&add, &[Some(n(2.0)), Some(n(3.0))], &r).into_vec(), vec![Some(n(5.0))]);
 
         let not = interface_of("not").unwrap();
-        assert_eq!(eval(&not, &[Some(Value::Boolean(true))], &r), vec![Some(Value::Boolean(false))]);
+        assert_eq!(eval(&not, &[Some(Value::Boolean(true))], &r).into_vec(), vec![Some(Value::Boolean(false))]);
     }
 
     #[test]
