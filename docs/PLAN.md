@@ -108,9 +108,13 @@ not an omission.
 - **P2.3** Capability declaration + union up the closure, surfaced before import — `I7` · ✅ ▣
 - **P2.4** Effect-firing model: quiescence / settle-gate before irreversible sinks — `§6` · ◐ ▣ *(design + deploy-minimal built; `drive`, state, B-fan-out, async remain)*
   *(the central unsolved boundary)*
-- **P2.5** Effect contracts: idempotency, transactional read-then-write, req/resp correlation — `§4` · ○ ◇
-- **P2.6** State-cell semantics under replay / fork / pin — `§7` · ○ ◇
-
+- **P2.5** Effect contracts: idempotency, transactional read-then-write, req/resp correlation — `§4` · ✅ ▣
+  *(all three leaves complete — correlation/idempotency both a label riding as data; the real
+  multi-process transactional adversary is deferred to platform hosting, not a core gap)*
+- **P2.6** State-cell semantics under replay / fork / pin — `§7` · ✅ ▣
+  *(P2.6.1 built the cell; P2.6.2/P2.6.3 dissolved into it — corollaries of the host-storage
+  decision, not separately built code)*
+  
 ### P3 · The Marketplace — *for a trustless, network-effected ecosystem:*
 - **P3.1** Registry: alias→hash resolution, publish, immutability — `I5` · ○ ▣
   *(alias-resolves-to-hash decided; rest open)*
@@ -703,8 +707,10 @@ single brittle 1..N list would over-claim precision — the phases are the real 
   P3.5.1 → P3.6.1`. (`P3.8.1` needs only P1.6 — done — so it can begin early in parallel.)
 - **Phase E · Editor** *(TS/React over WASM)* — `P4.2.1 → P4.1.1 → P4.1.2 → P4.3.1 →
   P4.4.1 → P4.4.2 → P4.5.1 → P4.6.1`. Gated on Phase A (the WASM core must exist).
-- **Deferred (fork-open, no near-term trigger):** generics `P1.3.2`; async + quiescence
-  `P2.4.2`; networked/social `P3.3.2`, `P3.4.1`, `P3.8.2` (`P3.7.1` dropped).
+- **Deferred (fork-open, no near-term trigger):** async + quiescence `P2.4.2` — genuinely
+  still open, unnecessary while eager, waits on autonomous cells. Generics `P1.3.2` and
+  networked/social `P3.3.2`, `P3.4.1`, `P3.8.2` are now built — this line had gone stale, not
+  reflecting completed work (`P3.7.1` stays dropped, a decision, not a gap).
 
 Phases A–B are the spine and are pure core — they can proceed with no host, no editor,
 no network. The plan is **thorough enough at the frontier (Phase A) to begin building**
