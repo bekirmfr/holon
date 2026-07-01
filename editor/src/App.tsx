@@ -41,6 +41,7 @@ import {
 import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
+import { InspectPanel } from "./InspectPanel";
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
@@ -414,6 +415,11 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
   // indices (see encapErrorNodeIndices), not guessed. Purely presentational: never read by
   // onProject/onDrop, never affects hashing — a node's identity doesn't know it's "wrong."
   const [errorNodeIds, setErrorNodeIds] = useState<Set<string>>(new Set());
+  // Which hash is currently shown in the inspect panel (P4.4.1) — null when closed. Purely a
+  // view concern, like errorNodeIds above: never read by onProject/onGroup/onExpand, never
+  // affects the canvas or hashing. Read-only, deliberately unlike expand (P4.3.1): opening this
+  // never touches `nodes`/`edges` at all.
+  const [inspecting, setInspecting] = useState<string | null>(null);
 
   const onProject = useCallback(() => {
     // Hoisted out of the try block on purpose: TypeMismatch only carries an `edge` index, and
@@ -768,6 +774,17 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
     }
   }, [nodes, edges, ev, byName, setNodes, setEdges]);
 
+  // Open the inspect panel for the single selected node (P4.4.1). Unlike onExpand, this never
+  // touches nodes/edges — it only resolves the selected node's own hash (via unitFor, the same
+  // resolution onProject/onGroup already use — a fresh primitive gets inserted if it hasn't
+  // been yet, an already-frozen composite is just read off its own body.hash) and hands that
+  // hash to the panel, which does its own read-only descent from there.
+  const onInspect = useCallback(() => {
+    const selected = nodes.filter((n) => n.selected);
+    if (selected.length !== 1) return; // mirrors the button's own disabled guard, defensively
+    setInspecting(unitFor(selected[0], ev));
+  }, [nodes, ev]);
+
   // A boundary field changed: update its slot and re-eval live. Safe to be reactive (unlike
   // projecting itself) because a boundary value is never part of the composite's hash — it's a
   // pure eval-time argument, not identity — so there is no "cosmetic move" noise to avoid here.
@@ -919,6 +936,25 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
             >
               expand
             </button>
+            <button
+              onClick={onInspect}
+              disabled={selectedCount !== 1}
+              title={selectedCount === 1 ? "inspect this node" : "select one node to inspect"}
+              style={{
+                font: "inherit",
+                fontSize: 12,
+                letterSpacing: "0.04em",
+                padding: "5px 12px",
+                color: "#0e1a2f",
+                background: "#6fd3e0",
+                border: "none",
+                borderRadius: 3,
+                cursor: selectedCount === 1 ? "pointer" : "default",
+                opacity: selectedCount === 1 ? 1 : 0.4,
+              }}
+            >
+              inspect
+            </button>
             {projection && (
               <div style={{ fontSize: 12, color: "#9fb4d4", textAlign: "right", lineHeight: 1.4 }}>
                 <div style={{ color: "#6fd3e0" }} title={projection.hash}>
@@ -994,6 +1030,11 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
             )}
           </div>
         </Panel>
+        {inspecting && (
+          <Panel position="bottom-right">
+            <InspectPanel hash={inspecting} ev={ev} onClose={() => setInspecting(null)} />
+          </Panel>
+        )}
       </ReactFlow>
       {nodes.length === 0 && (
         <div className="hl-canvas__empty">drag a primitive here to place it</div>

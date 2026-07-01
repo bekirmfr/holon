@@ -132,8 +132,9 @@ not an omission.
 - **P4.3** Encapsulation UX: group a selection into a unit; expand to inspect — `I4`/`I9` · ✅ ▣
   *(now real in the actual stack, not just v3 — select/group/expand all browser-confirmed, no
   automated coverage; see P4.3.1 below and JOURNAL.md, 2026-07-01, both P4.3.1 entries)*
-- **P4.4** Transitive inspection UI: descend a composite to its leaf primitives — `I9` · ○ ▣
-  *(the human face of P3.2)*
+- **P4.4** Transitive inspection UI: descend a composite to its leaf primitives — `I9` · ✅ ▣
+  *(the human face of P3.2 — now real in the actual stack, browser-confirmed; see P4.4.1 below
+  and JOURNAL.md, 2026-07-01 · P4.4.1)*
 - **P4.5** Registry client: browse / import-as-pin / publish — `§8` · ○ ◇
   *(needs P3; deferred until the marketplace exists)*
 
@@ -568,6 +569,14 @@ cosmetic layer** (positions, labels) the core deliberately does not know about.
    annotated with derived kind + capabilities at every level, to the leaves.
    *pre:* P4.1.1, P3.2.1 · *inv:* `I9` · *test:* inspect a 3-level composite; every level
    to the primitives shows correct kind/caps; nothing stops one level short · *effort:* **M**
+   *→ **DONE**, browser-confirmed (2026-07-01 · P4.4.1, JOURNAL.md). No new recursive bridge
+   capability was needed — `capabilities`/`effects_of` (new bridge methods, wrapping already-
+   built core functions) already recurse internally, so calling either once per hash while
+   walking with `get_unit` (already built for `P4.3.1`) gives each level's own manifest.
+   Genuinely read-only — confirmed, not assumed, to never touch canvas state, the real
+   distinction from `P4.3.1`'s expand. Scoped to canvas-placed nodes only; nothing in the
+   underlying calls is canvas-specific, so registry-browsing (`P4.5.1`) inherits this for free
+   later.*
 
 6. **P4.4.2 · Capability-consent gate** — before importing/running a unit, surface its
    capability union (P2.3.2) and require explicit consent. The human face of

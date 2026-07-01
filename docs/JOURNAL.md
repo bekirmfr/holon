@@ -3112,3 +3112,71 @@ inch, named when the two leaves were first compared and still true now.
 **Next inch.** `P4.4.1` is the most directly-related, genuinely-unblocked candidate on the
 mechanical front. The un-tested-editor-surface risk, named three times now, is the other real
 candidate — whichever gets picked, it shouldn't be silently carried into a fourth inch.
+
+---
+
+## 2026-07-01 · P4.4.1 — transitive inspection UI · *(the leaf's own scope is now genuinely met, browser-confirmed; the un-tested-editor-surface risk was raised and knowingly deferred, not silently carried)*
+
+**Context.** Grounding first caught a real finding worth recording, not just a detail: the
+leaf's own "annotated with kind + capabilities at every level" doesn't need any new recursive
+bridge capability at all. `capabilities`/`effects_of` (both already built, tested core
+functions — nothing new on that front) already recurse internally over whatever unit they're
+given, so calling either once per hash encountered while walking a tree in TypeScript — using
+`get_unit`, already built for `P4.3.1`'s own expand — gives exactly that subtree's own manifest
+at that level. The recursion the UI needed was repeated use of things that already existed, not
+a new "walk everything and annotate" bridge method.
+
+**Built — bridge.**
+- New `WCapability`/`WKind` types: plain, dataless mirrors of `core::Capability`/`core::Kind`,
+  crossing as bare strings — the same convention `WType`'s own nullary variants already use.
+  Neither existed in the bridge before this; `holon-core` deliberately carries no serde derive
+  on either, same reasoning that's held for every other core type all session.
+- New `Evaluator.capabilities(hash)` / `effects_of(hash)`: each resolves the hash and calls the
+  matching core function directly. `effects_of` exposed as its own method rather than left for
+  the editor to derive from `capabilities` — `Capability::kind()`'s fixed projection table stays
+  core's own, never a second, TypeScript-side copy that could drift from it.
+- `get_unit`'s own "parse hash, resolve" logic factored into a shared `resolve_hash` helper once
+  three methods needed the identical pattern — the same discipline already applied to
+  `parse_children_and_edges` in the encapsulation-split arc.
+- New test, `capabilities_and_effects_cross_js_boundary`: a pure primitive declares nothing; an
+  effectful one declares its own capability and kind; a capability buried two levels deep still
+  surfaces at the top through the JS boundary — mirroring core's own
+  `buried_egress_surfaces_before_import`, now proven crossing too; an unresolved hash fails as a
+  plain string, matching `get_unit`'s own convention. `wasm-pack test`: 19 → 20 (+1). `cargo test
+  --workspace`: 185/39/11 unchanged.
+
+**Built — editor.** New `InspectPanel.tsx`: a genuinely **read-only** recursive tree, confirmed
+— not just asserted — to never touch `nodes`/`edges` state anywhere in its own code. This is the
+real, substantive distinction from `P4.3.1`'s expand named a few inches back: expand mutates the
+canvas (places children back as editable nodes); this only ever peeks. A collapsible row per
+unit (name, kind badge, capability list), children indented beneath, deeper levels collapsed by
+default. New "inspect" button and `onInspect` handler in `App.tsx`, resolving the selected
+node's hash via the same `unitFor` `onProject`/`onGroup` already share (a fresh primitive is
+inserted if it hasn't been yet; an already-frozen composite is read straight off its own
+`body.hash`) — nothing new to resolve identity, just handing an existing resolution to a new,
+passive consumer.
+
+**Leaf status: `P4.4.1`'s own stated scope is met.** Its test criterion — "inspect a 3-level
+composite; every level to the primitives shows correct kind/caps; nothing stops one level
+short" — is browser-confirmed: a capability buried inside a twice-grouped composite surfaced
+correctly at every level on descent, the load-bearing scenario, mirroring exactly what made the
+earlier boundary-rewiring checks the real proof rather than the button existing. One deliberate
+scope boundary, not a gap: this only works on canvas-placed nodes today — the registry (`P4.5.1`)
+doesn't exist yet to browse anything else. Nothing about `get_unit`/`capabilities`/`effects_of`
+is canvas-specific, so registry-browsing inherits this for free later, with zero rework to the
+inspection logic itself, whenever that leaf lands.
+
+**Named, addressed, not silently repeated — the testing gap.** This is the fourth consecutive
+editor inch (fork 3, grouping, expand, now inspection) verified by browser confirmation alone.
+Flagged after the second, flagged again after the third with an explicit "shouldn't be silently
+carried into a fourth" — and this time it *was* actually put on the table as a real fork
+(address the debt vs. continue feature work) before this inch started, and continuing was a
+deliberate choice, not a default. Worth recording as the different, more honest shape this time:
+not a fourth unaddressed repetition, a knowingly-deferred one. It doesn't shrink the gap, and it
+shouldn't get a fifth free pass without the same conversation happening again.
+
+**Next inch.** `P4.5.1` (registry client) is the next genuinely-unblocked candidate on the
+mechanical front — all its stated preconditions are already met, and it's the leaf whose
+"import as pin" / "publish" naturally extends this inch's inspect-before-import framing from the
+design doc's own trust model. The testing gap remains the other standing candidate, now on its
+fourth deferral.

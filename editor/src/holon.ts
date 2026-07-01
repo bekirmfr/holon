@@ -138,6 +138,27 @@ export type WValue =
   | { type: "Effect"; value: { sink: string; payload: WValue } }
   | { type: "Sum"; value: { arm: number; payload: WValue } };
 
+/** A category of effect a leaf may touch, outside its inputs. Mirrors `core::Capability` via
+ *  the bridge's `WCapability` (P4.4.1). Dataless — no resource parameter yet, a deferred core
+ *  fork — so this crosses as a bare string. */
+export type WCapability =
+  | "Clock"
+  | "NetworkIngress"
+  | "FileRead"
+  | "SecretAccess"
+  | "Random"
+  | "StateRead"
+  | "StateWrite"
+  | "NetworkEgress"
+  | "FileWrite"
+  | "Spawn";
+
+/** The coarse effect bucket a unit belongs to. Mirrors `core::Kind` via the bridge's `WKind` —
+ *  the fixed projection of {@link WCapability} above, never computed in TypeScript (one
+ *  decider): `Evaluator.effects_of` crosses this directly rather than the editor deriving it
+ *  from a capability list itself. */
+export type WKind = "Pure" | "Driver" | "State" | "Sink";
+
 /** The composite's own boundary index (u32::MAX) — its inputs feed children; one child feeds out. */
 export const BOUNDARY = 4294967295;
 

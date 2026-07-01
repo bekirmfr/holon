@@ -18,8 +18,8 @@
 
 use holon_core::{
     decode_preimage, default_spec, derive_and_freeze, encode_preimage, genesis_units, hash_unit,
-    parse_hash, Edge, EncapError, EncapSpec, Expose, Hash, MapResolver, Param, Port, Promote,
-    Resolver, Type, Unit, UnitBody, Value, ValidationError, MAX_TYPE_DEPTH,
+    parse_hash, Capability, Edge, EncapError, EncapSpec, Expose, Hash, Kind, MapResolver, Param,
+    Port, Promote, Resolver, Type, Unit, UnitBody, Value, ValidationError, MAX_TYPE_DEPTH,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -176,6 +176,62 @@ impl WType {
             WType::Effect => Type::Effect,
             WType::Any => Type::Any,
         })
+    }
+}
+
+/// A category of effect a leaf may touch, outside its inputs — mirrors `core::Capability`
+/// (P4.4.1). Dataless, no resource parameter yet (core's own deferred fork — see
+/// `capabilities_of`'s doc), so this crosses as a bare string, the same convention `WType`'s
+/// own nullary variants already use.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WCapability {
+    Clock,
+    NetworkIngress,
+    FileRead,
+    SecretAccess,
+    Random,
+    StateRead,
+    StateWrite,
+    NetworkEgress,
+    FileWrite,
+    Spawn,
+}
+
+impl WCapability {
+    fn from_core(c: Capability) -> WCapability {
+        match c {
+            Capability::Clock => WCapability::Clock,
+            Capability::NetworkIngress => WCapability::NetworkIngress,
+            Capability::FileRead => WCapability::FileRead,
+            Capability::SecretAccess => WCapability::SecretAccess,
+            Capability::Random => WCapability::Random,
+            Capability::StateRead => WCapability::StateRead,
+            Capability::StateWrite => WCapability::StateWrite,
+            Capability::NetworkEgress => WCapability::NetworkEgress,
+            Capability::FileWrite => WCapability::FileWrite,
+            Capability::Spawn => WCapability::Spawn,
+        }
+    }
+}
+
+/// The coarse effect bucket a unit belongs to — mirrors `core::Kind`, the fixed projection of
+/// `WCapability` above. Bare string, same convention.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WKind {
+    Pure,
+    Driver,
+    State,
+    Sink,
+}
+
+impl WKind {
+    fn from_core(k: Kind) -> WKind {
+        match k {
+            Kind::Pure => WKind::Pure,
+            Kind::Driver => WKind::Driver,
+            Kind::State => WKind::State,
+            Kind::Sink => WKind::Sink,
+        }
     }
 }
 
@@ -612,13 +668,45 @@ impl Evaluator {
     /// hash or a hash never inserted in this session (a stale reference, or one from a
     /// different `Evaluator` instance).
     pub fn get_unit(&self, hash: &str) -> Result<JsValue, JsError> {
-        let h = parse_hash(hash).ok_or_else(|| JsError::new(&format!("bad hash: {hash}")))?;
-        let unit = self
-            .resolver
-            .resolve(&h)
-            .ok_or_else(|| JsError::new(&format!("unresolved: {hash}")))?;
+        let unit = self.resolve_hash(hash)?;
         serde_wasm_bindgen::to_value(&WUnit::from_core(unit))
             .map_err(|e| JsError::new(&format!("unit: {e}")))
+    }
+
+    /// The capability manifest of a unit's whole closure, by hash — core's `capabilities`,
+    /// crossed as an array of `WCapability` (P4.4.1). `capabilities` already recurses
+    /// internally over whatever unit it's given, so calling this once per hash encountered
+    /// while walking a tree in the editor already gives that subtree's own manifest at that
+    /// level — no separate "per-level" mode needed here, and no new recursive bridge
+    /// capability beyond `get_unit` (already built) for descending the tree itself.
+    pub fn capabilities(&self, hash: &str) -> Result<JsValue, JsError> {
+        let unit = self.resolve_hash(hash)?;
+        let caps: Vec<WCapability> = holon_core::capabilities(unit, &self.resolver)
+            .iter()
+            .map(WCapability::from_core)
+            .collect();
+        serde_wasm_bindgen::to_value(&caps).map_err(|e| JsError::new(&format!("capabilities: {e}")))
+    }
+
+    /// The coarse kind-set of a unit's whole closure, by hash — core's `effects_of`, the fixed
+    /// projection of `capabilities` above. Exposed as its own method rather than left for the
+    /// editor to derive from `capabilities`, so `Capability::kind()`'s projection table stays
+    /// core's own, never a second, TypeScript-side copy that could drift from it.
+    pub fn effects_of(&self, hash: &str) -> Result<JsValue, JsError> {
+        let unit = self.resolve_hash(hash)?;
+        let kinds: Vec<WKind> = holon_core::effects_of(unit, &self.resolver)
+            .iter()
+            .map(WKind::from_core)
+            .collect();
+        serde_wasm_bindgen::to_value(&kinds).map_err(|e| JsError::new(&format!("effects: {e}")))
+    }
+
+    /// Parse a hex hash and resolve it against this Evaluator's own resolver — the identical
+    /// "parse then look up" pattern `get_unit`, `capabilities`, and `effects_of` all need.
+    /// Factored out once three call sites needed it, not before.
+    fn resolve_hash(&self, hash: &str) -> Result<&Unit, JsError> {
+        let h = parse_hash(hash).ok_or_else(|| JsError::new(&format!("bad hash: {hash}")))?;
+        self.resolver.resolve(&h).ok_or_else(|| JsError::new(&format!("unresolved: {hash}")))
     }
 
     /// Project a placed graph into a composite (the editor's "compute this graph's unit + hash").
@@ -1151,6 +1239,49 @@ mod wasm_tests {
         let never_inserted: Hash = [9u8; 32];
         let never_hex = never_inserted.iter().map(|b| format!("{b:02x}")).collect::<String>();
         assert!(ev.get_unit(&never_hex).is_err());
+    }
+
+    // capabilities/effects_of (P4.4.1): a pure primitive declares nothing; an effectful one
+    // declares its own capability and the kind it projects to; a capability buried two levels
+    // deep still surfaces at the top — mirrors core's own buried_egress_surfaces_before_import,
+    // now proven crossing the JS boundary too; an unresolved hash fails as a plain string, same
+    // convention as get_unit.
+    #[wasm_bindgen_test]
+    fn capabilities_and_effects_cross_js_boundary() {
+        let mut ev = Evaluator::new();
+
+        let add_hex = ev.insert(&encode_preimage(&prim("add")).unwrap()).unwrap();
+        let add_caps: Vec<WCapability> =
+            serde_wasm_bindgen::from_value(ev.capabilities(&add_hex).unwrap()).unwrap();
+        assert!(add_caps.is_empty());
+        let add_effects: Vec<WKind> =
+            serde_wasm_bindgen::from_value(ev.effects_of(&add_hex).unwrap()).unwrap();
+        assert!(add_effects.is_empty());
+
+        let egress_hex = ev.insert(&encode_preimage(&prim("egress")).unwrap()).unwrap();
+        let egress_caps: Vec<WCapability> =
+            serde_wasm_bindgen::from_value(ev.capabilities(&egress_hex).unwrap()).unwrap();
+        assert_eq!(egress_caps, vec![WCapability::NetworkEgress]);
+        let egress_effects: Vec<WKind> =
+            serde_wasm_bindgen::from_value(ev.effects_of(&egress_hex).unwrap()).unwrap();
+        assert_eq!(egress_effects, vec![WKind::Sink]);
+
+        // Buried two levels down, still surfaces at the top through the JS boundary too.
+        let egress_h = parse_hash(&egress_hex).unwrap();
+        let inner = ev.project_core(vec![egress_h], vec![]).unwrap();
+        let inner_hex = ev.insert(&encode_preimage(&inner).unwrap()).unwrap();
+        let inner_h = parse_hash(&inner_hex).unwrap();
+        let mid = ev.project_core(vec![inner_h], vec![]).unwrap();
+        let mid_hex = ev.insert(&encode_preimage(&mid).unwrap()).unwrap();
+
+        let mid_caps: Vec<WCapability> =
+            serde_wasm_bindgen::from_value(ev.capabilities(&mid_hex).unwrap()).unwrap();
+        assert_eq!(mid_caps, vec![WCapability::NetworkEgress]);
+
+        let never_inserted: Hash = [11u8; 32];
+        let never_hex = never_inserted.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert!(ev.capabilities(&never_hex).is_err());
+        assert!(ev.effects_of(&never_hex).is_err());
     }
 
     // The split encapsulation seam (P4.3, fork 3): propose across the JS boundary, edit the
