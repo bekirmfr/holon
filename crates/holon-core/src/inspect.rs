@@ -103,7 +103,7 @@ mod tests {
             body: UnitBody::Primitive { name: name.into() },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn composite(children: Vec<Hash>) -> Unit {
@@ -114,7 +114,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn hex(h: &Hash) -> String {
@@ -125,7 +125,7 @@ mod tests {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", hex(fn_hash))],
             inputs: vec![Port { name: "list".into(), ty: Type::list_any() }],
-            output: Some(Type::list_any()),
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
         }
     }
 
@@ -158,7 +158,7 @@ mod tests {
             body: UnitBody::Primitive { name: "const".into() },
             params: vec![Param::frozen("type", "Text"), Param::frozen("value", &"a".repeat(64))],
             inputs: vec![],
-            output: Some(Type::Text),
+            outputs: vec![Port { name: "out".into(), ty: Type::Text }],
         };
         assert!(child_refs(&c).is_empty());
     }

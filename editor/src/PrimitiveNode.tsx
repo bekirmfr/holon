@@ -1,11 +1,12 @@
 // A canvas node = a placed instance of a primitive. Its handles are rendered ONLY from the interface
-// the catalog gave us (data.inputs / data.output), never hand-placed — that's I1 made structural (see
-// P4.1-palette-L4 §2). Each handle's hue is its wire type (theme.ts). Handle ids are the port names
-// (inputs) and "out" (output): stable references the wiring inch will turn into Edges by index.
+// the catalog gave us (data.inputs / data.outputs), never hand-placed — that's I1 made structural
+// (see P4.1-palette-L4 §2). Each handle's hue is its wire type (theme.ts). Handle ids are the port
+// names — inputs and outputs alike (P4.7: outputs are a Vec<Port>, symmetric with inputs, not a
+// single hardcoded "out") — stable references the wiring inch turns into Edges by index.
 
 import { memo, type CSSProperties } from "react";
 import { Handle, Position, useReactFlow, type NodeProps, type Node } from "@xyflow/react";
-import { compatible, type WParam, type WPort, type WType } from "./holon";
+import { compatible, type WParam, type WPort } from "./holon";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
 
 /** What a placed primitive node carries. Mirrors the catalog interface; `position`/`id` (view-only) live on the React Flow node, not here.
@@ -15,7 +16,7 @@ import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
 export type PrimitiveData = {
   name: string;
   inputs: WPort[];
-  output: WType | null;
+  outputs: WPort[];
   params: WParam[];
   variadic: boolean;
   minInputs: number;
@@ -78,7 +79,7 @@ const portButtonStyle: CSSProperties = {
 };
 
 function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
-  const { name, inputs, output, params, variadic, minInputs, error } = data;
+  const { name, inputs, outputs, params, variadic, minInputs, error } = data;
   const { updateNodeData, setEdges, getNode } = useReactFlow<PrimitiveNodeType>();
 
   // Grow/shrink a variadic node's port count (P4.1: variadic-arity editing). Every port a
@@ -115,14 +116,19 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
   // the default — it does not decide types; `compatible` stays the sole wire judge. Wires from this
   // output whose target no longer accepts the new type are dropped — fail-closed, the same rule that
   // refused them at connect time; core's `validate` at projection is the real gate behind this.
+  // `const` is a genesis primitive, so it always declares exactly one output (P4.7: multi-output is
+  // composite-only, permanently) — mapping over `outputs` here updates that one entry's type while
+  // keeping whatever name it actually has, rather than assuming a literal "out".
   const setConstType = (ty: ConstType) => {
     const next = params.map((p) =>
       p.kind === "Frozen" && p.name === "type" ? { ...p, value: ty } : p,
     );
-    updateNodeData(id, { params: next, output: ty });
+    const nextOutputs = outputs.map((p) => ({ ...p, ty }));
+    updateNodeData(id, { params: next, outputs: nextOutputs });
+    const outName = outputs[0]?.name;
     setEdges((eds) =>
       eds.filter((e) => {
-        if (e.source !== id || e.sourceHandle !== "out") return true;
+        if (e.source !== id || e.sourceHandle !== outName) return true;
         const dstTy = getNode(e.target)?.data.inputs.find((p) => p.name === e.targetHandle)?.ty;
         return dstTy ? compatible(ty, dstTy) : false;
       }),
@@ -221,20 +227,20 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
         </div>
 
         <div className="hl-node__col hl-node__col--out">
-          {output && (
-            <div className="hl-port hl-port--out">
-              <span className="hl-port__label" style={{ color: outputColor(output) }}>
-                {typeLabel(output)}
+          {outputs.map((port) => (
+            <div className="hl-port hl-port--out" key={port.name}>
+              <span className="hl-port__label" style={{ color: outputColor(port.ty) }}>
+                {typeLabel(port.ty)}
               </span>
               <Handle
                 type="source"
                 position={Position.Right}
-                id="out"
+                id={port.name}
                 className="hl-handle"
-                style={{ background: outputColor(output) }}
+                style={{ background: outputColor(port.ty) }}
               />
             </div>
-          )}
+          ))}
         </div>
       </div>
     </div>

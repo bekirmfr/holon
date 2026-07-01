@@ -230,7 +230,7 @@ pub enum WBody {
     Composite { children: Vec<String>, edges: Vec<WEdge> },
 }
 
-/// JS-facing unit. `params` / `inputs` / `output` may be omitted in JS (default empty / null).
+/// JS-facing unit. `params` / `inputs` / `outputs` may be omitted in JS (default empty).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct WUnit {
     body: WBody,
@@ -239,7 +239,7 @@ pub struct WUnit {
     #[serde(default)]
     inputs: Vec<WPort>,
     #[serde(default)]
-    output: Option<WType>,
+    outputs: Vec<WPort>,
 }
 
 impl WUnit {
@@ -267,7 +267,11 @@ impl WUnit {
                 .iter()
                 .map(|p| WPort { name: p.name.clone(), ty: WType::from_core(&p.ty) })
                 .collect(),
-            output: u.output.as_ref().map(WType::from_core),
+            outputs: u
+                .outputs
+                .iter()
+                .map(|p| WPort { name: p.name.clone(), ty: WType::from_core(&p.ty) })
+                .collect(),
         }
     }
 
@@ -303,7 +307,11 @@ impl WUnit {
                 .into_iter()
                 .map(|p| Ok(Port { name: p.name, ty: p.ty.into_core()? }))
                 .collect::<Result<Vec<_>, JsError>>()?,
-            output: self.output.map(WType::into_core).transpose()?,
+            outputs: self
+                .outputs
+                .into_iter()
+                .map(|p| Ok(Port { name: p.name, ty: p.ty.into_core()? }))
+                .collect::<Result<Vec<_>, JsError>>()?,
         })
     }
 }
@@ -513,13 +521,20 @@ impl Evaluator {
     /// Evaluate the unit (from its preimage) on `inputs` against the inserted workspace. `inputs` is
     /// a JS array of `WValue | null` (null = an absent input slot). Returns the output `WValue`, or
     /// `null` if the unit did not evaluate — a normal "not ready" outcome for a live editor.
+    ///
+    /// Uses `eval_one`, not core's `eval` directly (P4.7: `eval` now returns
+    /// `Vec<Option<Value>>`, since multi-output is a composite capability). Deliberately kept
+    /// single-`WValue`-crossing here, not widened to an array: the editor cannot construct a
+    /// multi-output composite yet — that's its own scoped sub-leaf, not this one — so nothing
+    /// real is lost by keeping today's contract, and `eval_one` fails closed (not "take the
+    /// first") if a multi-output unit ever does reach here before that lands.
     pub fn eval(&self, preimage: &[u8], inputs: JsValue) -> Result<JsValue, JsError> {
         let unit = decode_preimage(preimage).map_err(|e| JsError::new(&format!("decode: {e:?}")))?;
         let winputs: Vec<Option<WValue>> = serde_wasm_bindgen::from_value(inputs)
             .map_err(|e| JsError::new(&format!("inputs: {e}")))?;
         let core_inputs: Vec<Option<Value>> =
             winputs.into_iter().map(|o| o.map(WValue::into_core)).collect();
-        let out = holon_core::eval(&unit, &core_inputs, &self.resolver);
+        let out = holon_core::eval_one(&unit, &core_inputs, &self.resolver);
         let wout = out.as_ref().map(WValue::from_core);
         serde_wasm_bindgen::to_value(&wout).map_err(|e| JsError::new(&format!("output: {e}")))
     }
@@ -583,7 +598,12 @@ use holon_core::BOUNDARY;
 
 #[cfg(test)]
 fn prim(name: &str) -> Unit {
-    Unit { body: UnitBody::Primitive { name: name.into() }, params: vec![], inputs: vec![], output: Some(Type::Number) }
+    Unit {
+        body: UnitBody::Primitive { name: name.into() },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+    }
 }
 
 #[cfg(test)]
@@ -592,7 +612,7 @@ fn konst(v: &str) -> Unit {
         body: UnitBody::Primitive { name: "const".into() },
         params: vec![Param::frozen("value", v), Param::frozen("type", "Number")],
         inputs: vec![],
-        output: Some(Type::Number),
+        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
     }
 }
 
@@ -605,7 +625,7 @@ fn binop(name: &str) -> Unit {
             Port { name: "a".into(), ty: Type::Number },
             Port { name: "b".into(), ty: Type::Number },
         ],
-        output: Some(Type::Number),
+        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
     }
 }
 
@@ -621,7 +641,7 @@ fn check_project() {
     let composite = ev.project_core(vec![h], vec![]).unwrap();
     assert!(matches!(composite.body, UnitBody::Composite { .. }));
     assert_eq!(composite.inputs.len(), 2); // a, b promoted to the boundary
-    assert_eq!(composite.output, Some(Type::Number));
+    assert_eq!(composite.outputs[0].ty, Type::Number);
     assert!(holon_core::validate(&composite, &ev.resolver).is_ok());
     assert_eq!(
         holon_core::eval(
@@ -629,7 +649,7 @@ fn check_project() {
             &[Some(Value::Number(2.0)), Some(Value::Number(3.0))],
             &ev.resolver,
         ),
-        Some(Value::Number(5.0)),
+        vec![Some(Value::Number(5.0))],
     );
 
     // Two independent adds ⇒ two free outputs ⇒ no canonical output: surfaced as an error.
@@ -689,11 +709,11 @@ fn check_hash_parity() {
 fn check_eval_parity() {
     let num = |n: f64| Value::Number(n);
     let r = MapResolver::new();
-    assert_eq!(holon_core::eval(&prim("add"), &[Some(num(2.0)), Some(num(3.0))], &r), Some(num(5.0)));
-    assert_eq!(holon_core::eval(&prim("multiply"), &[Some(num(4.0)), Some(num(5.0))], &r), Some(num(20.0)));
+    assert_eq!(holon_core::eval(&prim("add"), &[Some(num(2.0)), Some(num(3.0))], &r), vec![Some(num(5.0))]);
+    assert_eq!(holon_core::eval(&prim("multiply"), &[Some(num(4.0)), Some(num(5.0))], &r), vec![Some(num(20.0))]);
     // NaN (inf - inf): assert *is_nan*, not bits — the canonical view, and what is target-stable.
-    match holon_core::eval(&prim("subtract"), &[Some(num(f64::INFINITY)), Some(num(f64::INFINITY))], &r) {
-        Some(Value::Number(x)) => assert!(x.is_nan()),
+    match holon_core::eval(&prim("subtract"), &[Some(num(f64::INFINITY)), Some(num(f64::INFINITY))], &r).as_slice() {
+        [Some(Value::Number(x))] => assert!(x.is_nan()),
         other => panic!("expected NaN, got {other:?}"),
     }
     // composite through the resolver: const(7) wired to the boundary ⇒ 7
@@ -706,9 +726,9 @@ fn check_eval_parity() {
         },
         params: vec![],
         inputs: vec![],
-        output: Some(Type::Number),
+        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
     };
-    assert_eq!(holon_core::eval(&comp, &[], &r2), Some(num(7.0)));
+    assert_eq!(holon_core::eval(&comp, &[], &r2), vec![Some(num(7.0))]);
 }
 
 #[cfg(test)]
@@ -744,7 +764,7 @@ fn check_wunit_roundtrip() {
         },
         params: vec![Param::open("x", "x0")],
         inputs: vec![Port { name: "in".into(), ty: Type::Any }],
-        output: Some(Type::Number),
+        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
     };
     for u in [prim("add"), konst("7"), comp] {
         let back = WUnit::from_core(&u).into_core().expect("into_core");
@@ -765,7 +785,7 @@ fn check_primitive_catalog() {
         .expect("add in catalog");
     assert_eq!(add.inputs.len(), 2);
     assert!(add.inputs.iter().all(|p| p.ty == WType::Number));
-    assert_eq!(add.output, Some(WType::Number));
+    assert_eq!(add.outputs[0].ty, WType::Number);
     // A higher-order leaf keeps its function param: map carries an open `fn`.
     let map = cat
         .iter()
@@ -969,7 +989,7 @@ mod wasm_tests {
                 WParam::Frozen { name: "type".into(), value: "Number".into() },
             ],
             inputs: vec![],
-            output: Some(WType::Number),
+            outputs: vec![WPort { name: "out".into(), ty: WType::Number }],
         };
         let const_pre = build_preimage(serde_wasm_bindgen::to_value(&const_w).unwrap()).unwrap();
 
@@ -983,7 +1003,7 @@ mod wasm_tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(WType::Number),
+            outputs: vec![WPort { name: "out".into(), ty: WType::Number }],
         };
         let comp_pre = build_preimage(serde_wasm_bindgen::to_value(&comp_w).unwrap()).unwrap();
 

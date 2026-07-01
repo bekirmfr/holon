@@ -31,7 +31,10 @@ pub struct Promote {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EncapSpec {
     pub promote: Vec<Promote>,
-    pub output: (u32, u32), // (child, port); port is 0 for now (single output)
+    pub output: (u32, u32), // (child, port) — one choice for now; P4.7 sub-leaf (b) generalizes
+    // this to Vec<Expose> so several outputs can be chosen at once. The port itself already
+    // indexes the child's real outputs (derive_and_freeze checks it against outputs.len()),
+    // not hardcoded to 0 — today's single-choice limit is this field's shape, not that check.
 }
 
 /// Why an encapsulation was rejected.
@@ -44,7 +47,7 @@ pub enum EncapError {
     PromoteAlreadyBound { child: u32, port: u32 },
     DuplicatePromotion { child: u32, port: u32 },
     OutputChildOutOfRange(u32),
-    /// The output port isn't 0, or the child has no output.
+    /// The output port is out of range for however many outputs the chosen child declares.
     OutputPortInvalid { child: u32, port: u32 },
     /// `default_spec` found zero or more than one free output — the author must choose.
     /// Carries the candidate child indices `default_spec` already computed (empty ⇒ none
@@ -142,9 +145,9 @@ pub fn derive_and_freeze(
     if oc as usize >= k {
         return Err(EncapError::OutputChildOutOfRange(oc));
     }
-    let out_ty = match (op, resolved[oc as usize].output.clone()) {
-        (0, Some(t)) => t,
-        _ => return Err(EncapError::OutputPortInvalid { child: oc, port: op }),
+    let out_ty = match resolved[oc as usize].outputs.get(op as usize) {
+        Some(p) => p.ty.clone(),
+        None => return Err(EncapError::OutputPortInvalid { child: oc, port: op }),
     };
 
     // Generate boundary edges (the dual of how eval reads them).
@@ -158,7 +161,7 @@ pub fn derive_and_freeze(
         body: UnitBody::Composite { children, edges },
         params: vec![],
         inputs,
-        output: Some(out_ty),
+        outputs: vec![Port { name: "out".into(), ty: out_ty }],
     };
 
     match validate(&unit, resolver) {
@@ -203,7 +206,7 @@ pub fn default_spec(
 
     let consumed: BTreeSet<u32> = inner_edges.iter().map(|e| e.from_child).collect();
     let mut free: Vec<u32> = (0..k as u32)
-        .filter(|c| !consumed.contains(c) && resolved[*c as usize].output.is_some())
+        .filter(|c| !consumed.contains(c) && !resolved[*c as usize].outputs.is_empty())
         .collect();
     if free.len() != 1 {
         return Err(EncapError::AmbiguousDefaultOutput(free));
@@ -226,7 +229,7 @@ mod tests {
                 Port { name: p0.into(), ty: Type::Number },
                 Port { name: p1.into(), ty: Type::Number },
             ],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn e(fc: u32, fp: u32, tc: u32, tp: u32) -> Edge {
@@ -250,7 +253,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![port("a"), port("b")],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         };
         // Edge insertion order differs, but the encoder normalizes edges ⇒ equal hashes.
         assert_eq!(hash_unit(&derived).unwrap(), hash_unit(&manual).unwrap());
@@ -274,7 +277,7 @@ mod tests {
         // (2 + 3) * 4 = 20
         assert_eq!(
             eval(&derived, &[Some(num(2.0)), Some(num(3.0)), Some(num(4.0))], &r),
-            Some(num(20.0))
+            vec![Some(num(20.0))]
         );
     }
 
@@ -357,7 +360,7 @@ mod tests {
             body: UnitBody::Primitive { name: "store_write".into() },
             params: vec![],
             inputs: vec![Port { name: "value".into(), ty: Type::Any }],
-            output: None,
+            outputs: vec![],
         };
         let h = r.insert(no_output).unwrap();
         let err = default_spec(&[h], &[], &r).unwrap_err();

@@ -297,7 +297,7 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
       const data: PrimitiveData = {
         name,
         inputs,
-        output: u.output ?? null,
+        outputs: u.outputs ?? [],
         params: u.params ?? [],
         // The catalog's own declared arity is the floor a variadic node may shrink back to —
         // never below what core actually declared, derived here rather than hardcoded, so a
@@ -321,27 +321,33 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to
   // `validate::compatible`, the canvas never re-decides it (I1). The single-source guard is UI
   // bookkeeping over our own edge state; core's `validate` stays the real gate at projection.
+  //
+  // srcPort is resolved from `sourceHandle` (P4.7: outputs are a Vec<Port>, symmetric with inputs),
+  // the same way dstPort already resolves from `targetHandle` — not just the first output, since a
+  // node may eventually declare more than one.
   const isValidConnection = useCallback(
     (c: Connection | Edge): boolean => {
       const source = getNode(c.source);
       const target = getNode(c.target);
       if (!source || !target) return false;
-      const srcTy = source.data.output;
+      const srcPort = source.data.outputs.find((p) => p.name === c.sourceHandle);
       const dstPort = target.data.inputs.find((p) => p.name === c.targetHandle);
-      if (!srcTy || !dstPort) return false;
+      if (!srcPort || !dstPort) return false;
       const alreadyFed = getEdges().some(
         (e) => e.target === c.target && e.targetHandle === c.targetHandle,
       );
       if (alreadyFed) return false;
-      return compatible(srcTy, dstPort.ty);
+      return compatible(srcPort.ty, dstPort.ty);
     },
     [getNode, getEdges],
   );
 
   // The wire carries a type: colour it by the upstream output's hue — the same legend the ports use.
+  // Resolved from `sourceHandle`, the same as isValidConnection above — not always the first output.
   const onConnect = useCallback(
     (c: Connection) => {
-      const srcTy = getNode(c.source)?.data.output ?? null;
+      const srcPort = getNode(c.source)?.data.outputs.find((p) => p.name === c.sourceHandle);
+      const srcTy = srcPort?.ty ?? null;
       const edge = { ...c, style: { stroke: outputColor(srcTy), strokeWidth: 1.6 } };
       setEdges((es) => addEdge(edge, es));
     },
@@ -393,22 +399,25 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
           body: { kind: "Primitive", name: n.data.name },
           params: n.data.params,
           inputs: n.data.inputs,
-          output: n.data.output,
+          outputs: n.data.outputs,
         };
         return ev.insert(buildPreimage(wunit));
       });
 
-      // Canvas wire → core edge by index. from_port is 0 (single output, the "out" handle); to_port
-      // is the named input's position in the target's interface (the editor holds that interface).
+      // Canvas wire → core edge by index. from_port is the named output's position in the source's
+      // interface, to_port the named input's position in the target's — symmetric (P4.7: outputs are
+      // a Vec<Port>, no longer always port 0), the editor holds both interfaces already.
       wedges = edges.map((e) => {
         const from = indexOf.get(e.source);
         const to = indexOf.get(e.target);
         if (from === undefined || to === undefined) {
           throw new Error("a wire references an unknown node");
         }
+        const fromPort = nodes[from].data.outputs.findIndex((p) => p.name === e.sourceHandle);
+        if (fromPort < 0) throw new Error(`unknown source port "${String(e.sourceHandle)}"`);
         const toPort = nodes[to].data.inputs.findIndex((p) => p.name === e.targetHandle);
         if (toPort < 0) throw new Error(`unknown target port "${String(e.targetHandle)}"`);
-        return { from_child: from, from_port: 0, to_child: to, to_port: toPort };
+        return { from_child: from, from_port: fromPort, to_child: to, to_port: toPort };
       });
 
       // Core derives the boundary and freezes; an EncapError — ambiguous output, cycle, type

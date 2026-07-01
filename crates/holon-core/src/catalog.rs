@@ -67,7 +67,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         body: UnitBody::Primitive { name: name.to_string() },
         params,
         inputs,
-        output: Some(output),
+        outputs: vec![Port { name: "out".to_string(), ty: output }],
     };
     let port = |n: &str, ty: Type| Port { name: n.to_string(), ty };
 
@@ -253,13 +253,13 @@ mod tests {
         let n = |x: f64| Value::Number(x);
 
         let konst = interface_of("const").unwrap();
-        assert_eq!(eval(&konst, &[], &r), Some(n(0.0)));
+        assert_eq!(eval(&konst, &[], &r), vec![Some(n(0.0))]);
 
         let add = interface_of("add").unwrap();
-        assert_eq!(eval(&add, &[Some(n(2.0)), Some(n(3.0))], &r), Some(n(5.0)));
+        assert_eq!(eval(&add, &[Some(n(2.0)), Some(n(3.0))], &r), vec![Some(n(5.0))]);
 
         let not = interface_of("not").unwrap();
-        assert_eq!(eval(&not, &[Some(Value::Boolean(true))], &r), Some(Value::Boolean(false)));
+        assert_eq!(eval(&not, &[Some(Value::Boolean(true))], &r), vec![Some(Value::Boolean(false))]);
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
         // value, but its type is a Product, kept distinct from List by the checker.
         let pair = interface_of("pair").unwrap();
         assert_eq!(pair.inputs.len(), 2);
-        assert_eq!(pair.output, Some(Type::Product(vec![Type::Any, Type::Any])));
+        assert_eq!(pair.outputs[0].ty, Type::Product(vec![Type::Any, Type::Any]));
     }
 
     #[test]
@@ -293,8 +293,8 @@ mod tests {
         let none = interface_of("none").unwrap();
         let option_ty = Type::Sum(vec![Type::Any, Type::Product(vec![])]);
         assert_eq!(some.inputs.len(), 1);
-        assert_eq!(some.output, Some(option_ty.clone()));
+        assert_eq!(some.outputs[0].ty, option_ty.clone());
         assert_eq!(none.inputs.len(), 0);
-        assert_eq!(none.output, Some(option_ty));
+        assert_eq!(none.outputs[0].ty, option_ty);
     }
 }

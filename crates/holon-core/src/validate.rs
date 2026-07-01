@@ -27,15 +27,16 @@ pub enum ValidationError {
     ChildOutOfRange { edge: usize, child: u32 },
     /// A child referenced by hash couldn't be resolved.
     UnresolvedChild { child: u32 },
-    /// An edge's source port isn't a valid output of its source child
-    /// (single output / port 0 for now; a source with no output also lands here).
+    /// An edge's source port isn't a valid output of its source child (out of range for
+    /// however many outputs it declares — zero or more, P4.7; a source with no outputs at
+    /// all also lands here).
     OutputPortOutOfRange { edge: usize, child: u32, port: u32 },
     /// An edge's destination port isn't a valid input of its destination child.
     InputPortOutOfRange { edge: usize, child: u32, port: u32 },
     /// A boundary-source edge names a composite-input index that doesn't exist.
     BoundaryInputOutOfRange { edge: usize, port: u32 },
-    /// A boundary-sink edge names a composite-output index that doesn't exist
-    /// (single output / port 0 for now; no declared output also lands here).
+    /// A boundary-sink edge names a composite-output index that doesn't exist (out of range
+    /// for however many outputs the composite declares — zero or more, P4.7).
     BoundaryOutputOutOfRange { edge: usize, port: u32 },
     /// Two edges feed the same destination port (ambiguous single source).
     DuplicateInputEdge { to_child: u32, to_port: u32 },
@@ -144,9 +145,9 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
             }
             match resolved[fc] {
                 None => continue, // unresolved child already reported
-                Some(src) => match (e.from_port, &src.output) {
-                    (0, Some(t)) => t.clone(),
-                    _ => {
+                Some(src) => match src.outputs.get(e.from_port as usize) {
+                    Some(p) => p.ty.clone(),
+                    None => {
                         errors.push(ValidationError::OutputPortOutOfRange {
                             edge: ei,
                             child: e.from_child,
@@ -160,9 +161,9 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
 
         // ---- destination type (a real child's input, or the composite output via BOUNDARY) ----
         let dst_ty = if e.to_child == BOUNDARY {
-            match (e.to_port, &unit.output) {
-                (0, Some(t)) => t.clone(),
-                _ => {
+            match unit.outputs.get(e.to_port as usize) {
+                Some(p) => p.ty.clone(),
+                None => {
                     errors.push(ValidationError::BoundaryOutputOutOfRange { edge: ei, port: e.to_port });
                     continue;
                 }
@@ -245,7 +246,7 @@ mod tests {
                 Port { name: "a".into(), ty: Type::Number },
                 Port { name: "b".into(), ty: Type::Number },
             ],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn text_source() -> Unit {
@@ -255,14 +256,19 @@ mod tests {
             body: UnitBody::Primitive { name: "const".into() },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Text),
+            outputs: vec![Port { name: "out".into(), ty: Type::Text }],
         }
     }
     fn composite(children: Vec<Hash>, edges: Vec<Edge>) -> Unit {
-        composite_io(vec![Port { name: "a".into(), ty: Type::Number }], Some(Type::Number), children, edges)
+        composite_io(vec![Port { name: "a".into(), ty: Type::Number }], Type::Number, children, edges)
     }
-    fn composite_io(inputs: Vec<Port>, output: Option<Type>, children: Vec<Hash>, edges: Vec<Edge>) -> Unit {
-        Unit { body: UnitBody::Composite { children, edges }, params: vec![], inputs, output }
+    fn composite_io(inputs: Vec<Port>, out: Type, children: Vec<Hash>, edges: Vec<Edge>) -> Unit {
+        Unit {
+            body: UnitBody::Composite { children, edges },
+            params: vec![],
+            inputs,
+            outputs: vec![Port { name: "out".into(), ty: out }],
+        }
     }
     fn edge(fc: u32, fp: u32, tc: u32, tp: u32) -> Edge {
         Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp }
@@ -394,7 +400,7 @@ mod tests {
         // input a → add.a ; add.out → output
         let c = composite_io(
             vec![Port { name: "a".into(), ty: Type::Number }],
-            Some(Type::Number),
+            Type::Number,
             vec![hadd],
             vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)],
         );
@@ -407,7 +413,7 @@ mod tests {
         let hadd = r.insert(num_binop("add")).unwrap();
         let c = composite_io(
             vec![Port { name: "a".into(), ty: Type::Text }], // Text feeding a Number port
-            Some(Type::Number),
+            Type::Number,
             vec![hadd],
             vec![edge(BOUNDARY, 0, 0, 0)],
         );
@@ -421,7 +427,7 @@ mod tests {
         let hadd = r.insert(num_binop("add")).unwrap();
         let c = composite_io(
             vec![Port { name: "a".into(), ty: Type::Number }],
-            Some(Type::Number),
+            Type::Number,
             vec![hadd],
             vec![edge(BOUNDARY, 5, 0, 0)], // composite has only input 0
         );
@@ -435,7 +441,7 @@ mod tests {
         let hadd = r.insert(num_binop("add")).unwrap();
         let c = composite_io(
             vec![Port { name: "a".into(), ty: Type::Number }],
-            Some(Type::Number),
+            Type::Number,
             vec![hadd],
             vec![edge(0, 0, BOUNDARY, 3)], // only output 0 exists
         );
@@ -451,7 +457,7 @@ mod tests {
         // two sources feed child 1, port 0
         let c = composite_io(
             vec![Port { name: "a".into(), ty: Type::Number }],
-            Some(Type::Number),
+            Type::Number,
             vec![hadd, hmul],
             vec![edge(0, 0, 1, 0), edge(BOUNDARY, 0, 1, 0)],
         );
@@ -467,7 +473,7 @@ mod tests {
         // BOUNDARY → add → mul → BOUNDARY : a normal input→output flow, acyclic
         let c = composite_io(
             vec![Port { name: "a".into(), ty: Type::Number }],
-            Some(Type::Number),
+            Type::Number,
             vec![hadd, hmul],
             vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, 1, 0), edge(1, 0, BOUNDARY, 0)],
         );

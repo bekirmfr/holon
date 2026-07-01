@@ -38,7 +38,7 @@ pub fn open_param(unit: &Unit, name: &str, bind: &str) -> Result<Unit, ParamErro
         body: unit.body.clone(),
         params,
         inputs: unit.inputs.clone(),
-        output: unit.output.clone(),
+        outputs: unit.outputs.clone(),
     })
 }
 
@@ -91,7 +91,7 @@ pub fn instantiate(
         }
     };
 
-    let new_unit = Unit { body, params, inputs: unit.inputs.clone(), output: unit.output };
+    let new_unit = Unit { body, params, inputs: unit.inputs.clone(), outputs: unit.outputs };
     store.insert(new_unit).map_err(ParamError::Encode)
 }
 
@@ -114,7 +114,7 @@ mod tests {
             body: UnitBody::Primitive { name: "const".into() },
             params: vec![Param::frozen("type", "Number"), Param::frozen("value", v)],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn prim(name: &str, n_in: usize) -> Unit {
@@ -122,7 +122,7 @@ mod tests {
             body: UnitBody::Primitive { name: name.into() },
             params: vec![],
             inputs: (0..n_in).map(|i| Port { name: format!("i{i}"), ty: Type::Any }).collect(),
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn e(fc: u32, fp: u32, tc: u32, tp: u32) -> Edge {
@@ -153,8 +153,8 @@ mod tests {
         assert_ne!(h2, h3);
         let u2 = store.resolve(&h2).unwrap().clone();
         let u3 = store.resolve(&h3).unwrap().clone();
-        assert_eq!(eval(&u2, &[], &store), Some(num(2.0)));
-        assert_eq!(eval(&u3, &[], &store), Some(num(3.0)));
+        assert_eq!(eval(&u2, &[], &store), vec![Some(num(2.0))]);
+        assert_eq!(eval(&u3, &[], &store), vec![Some(num(3.0))]);
     }
 
     // MultiplyByK template: x → mul.0 ; number(Open "K") → mul.1 ; mul → out.
@@ -168,7 +168,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![Port { name: "x".into(), ty: Type::Number }],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         };
         let h = store.insert(comp.clone()).unwrap();
         (comp, h)
@@ -187,12 +187,12 @@ mod tests {
         // A number with an open hole has no value ⇒ eval is None until instantiated.
         let mut store = MapResolver::new();
         let nk = open_param(&number("1"), "value", "K").unwrap();
-        assert_eq!(eval(&nk, &[], &store), None);
+        assert_eq!(eval(&nk, &[], &store), vec![None]);
 
         let hnk = store.insert(nk).unwrap();
         let h = instantiate(&hnk, &binding(&[("K", "9")]), &mut store).unwrap();
         let n9 = store.resolve(&h).unwrap().clone();
-        assert_eq!(eval(&n9, &[], &store), Some(num(9.0)));
+        assert_eq!(eval(&n9, &[], &store), vec![Some(num(9.0))]);
     }
 
     #[test]
@@ -205,7 +205,7 @@ mod tests {
         let (_, hcomp) = multiply_by_k(&mut store);
         let h3 = instantiate(&hcomp, &binding(&[("K", "3")]), &mut store).unwrap();
         let mul3 = store.resolve(&h3).unwrap().clone();
-        assert_eq!(eval(&mul3, &[Some(num(7.0))], &store), Some(num(21.0)));
+        assert_eq!(eval(&mul3, &[Some(num(7.0))], &store), vec![Some(num(21.0))]);
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         };
         let hcomp = store.insert(comp).unwrap();
         let hpart = instantiate(&hcomp, &binding(&[("A", "5")]), &mut store).unwrap();

@@ -2386,52 +2386,6 @@ tag): it touches `value.rs` and the memo value-encoding, unlike `pair`. Then the
 
 ---
 
-## 2026-07-01 · P1.3.2 inch 2 — `Product` (the positional tuple) + the `pair` constructor · *(types compose)*
-
-**Built (core).** `Type` gains a second recursive constructor — `Product(Vec<Type>)` (tag 7): a
-`u32`-count-prefixed list of element types, decoded under the same `MAX_TYPE_DEPTH` bound and with **no
-pre-allocation from the untrusted count** (a lying count hits `UnexpectedEof`). `compatible` gets the
-product arm — **arity + position, `Any` at each slot, recursive** — and a `Product` is never a `List`.
-`Encoder::ty` turned fallible (`Result<(), EncodeError>`) so a product wider than the `u32` budget is
-**refused, not silently truncated** — the `FieldTooLong` discipline the child/edge counts already use.
-`ENCODING_VERSION → 3`.
-
-**`pair` — a new genesis leaf (34 → 35).** The binary product constructor: pure (∅ manifest), declares
-`(a: Any, b: Any) -> Product([Any, Any])`. Its compute **rides the list value** — `pair(a,b)` builds the
-same `Value::List` a 2-list does — so there is **no new `Value` variant, no memo encoding change, no
-`value.rs` change at all**. Only the declared *type* tells a pair from a list, and the recursive checker
-keeps them apart. The payoff: **`Dictionary<K,V>` = `List<Product([K, V])>`** — the composable shape this
-fork set out to reach, with zero new runtime machinery.
-
-**Type-mostly, by design.** The whole capability lives in the type language (declare / encode / check /
-promote) plus one constructor; the value layer is untouched. That is the line the L4 drew — `Product`
-rides `List`; `Sum` (next inch) is the one that earns a genuinely new value kind (the runtime tag).
-
-**Inch-1 follow-on, folded in.** `sum` and `join` tightened from `List<Any>` to **`List<Number>` /
-`List<Text>`** — the first place `List<T>`'s precision bites: a typed `List<Text>` is now refused by `sum`
-at wire time (core `validate`), while a constructed `List<Any>` still bridges in (the `Any` wildcard), so
-every existing `list → sum` graph keeps working.
-
-**Editor stays coarse.** The flat bridge maps `Product → WType::List` (forced by exhaustiveness, and
-honest — a product is list-shaped), so an editor-placed `pair` behaves like `list` until the
-recursive-`WType` editor inch. Element types are precise in core's `validate` now, in the editor then —
-the same core-precise / editor-coarse staging as `sum`/`join`.
-
-**Ripple.** Two compiler-named edits: `simulate.rs` gained `Type::Product(_) => return None` (no sourced
-leaf outputs a product — unreachable, fail-closed like the `Effect` arm), and the two wasm catalog-count
-assertions moved 34 → 35. The `v2→v3` bump moved every hash again, free (nothing persisted, no manifest;
-parity tests compare values to each other, not fixed hex).
-
-**Tests prove.** **216 native** — 171 core (**+4** since inch 1: `sum_and_join_are_element_typed`,
-`product_type_round_trips`, `pair_declares_a_product`, `pair_builds_a_pair`; `compatible_is_structural`
-extended), 38 host, 7 wasm-native — / **12 wasm-target**, all green.
-
-**Next.** `Sum`/`Option` — the one inch in this fork that adds a genuinely new **value kind** (a runtime
-tag): it touches `value.rs` and the memo value-encoding, unlike `pair`. Then the editor inch (recursive
-`WType` + type-as-colour + boundary-input fields).
-
----
-
 ## 2026-07-01 · P1.3.2 inch 3 — `Sum` (`Option`) + a real host bug it caught · *(the value-constructor half of the fork is complete)*
 
 **Built (core).** `Value` gains a genuinely new shape — `Sum { arm: usize, payload: Box<Value> }`.
@@ -2758,3 +2712,119 @@ open, undecided fork; `Cycle`'s path-tracing (needs new algorithmic work, not ju
 data); and the split `default_spec`/`derive_and_freeze` bridge surface that would let the UI actually
 *choose* which output to expose (P4.3's job, not this one's — this inch only makes the existing
 combined `project()` call's failures legible, it doesn't add a way to resolve them interactively).
+
+---
+
+## 2026-07-01 · P4.7 — native multi-output, core through editor · *(leaf closed, sub-leaves a–e)*
+
+**Context.** Raised during the P4.1 error-surfacing inch as a deliberately-deferred fork:
+`AmbiguousDefaultOutput` was a symptom of composites having exactly one exposable output, no
+matter how many free children a graph had. Confirmed with the user before building: multi-output
+is exclusively a composite capability — `compute()`/`primitives.rs` never change, every genesis
+primitive stays single-output forever. A composite's `outputs` becomes a `Vec<Port>`, symmetric
+with `inputs`, and `eval` returns `Vec<Option<Value>>` — one slot per declared output, each
+independently present or absent, not `Option<Vec<Value>>` (an unresolved child fails one slot,
+not the whole result).
+
+**Built.**
+- **(a) Foundation** — `hash.rs`: `Unit.output: Option<Type>` → `Unit.outputs: Vec<Port>`, the
+  same count-prefixed per-port encoding already used for `inputs`; `ENCODING_VERSION` 4→5.
+  `eval.rs`: `eval` returns `Vec<Option<Value>>`; new `eval_one` convenience wrapper fails closed
+  (returns `None`) if a unit doesn't declare exactly one output — `map`/`fold`'s function argument
+  must be single-output, so they use it. `eval_composite`'s scratch became
+  `Vec<Vec<Option<Value>>>` (per child, holding all of that child's outputs); the boundary-output
+  gather loop walks `0..n_outputs` instead of assuming one slot.
+- **(b) Ripple, minimal-fix scope** — `validate.rs` and `encapsulate.rs`'s output-port checks
+  changed from a hardcoded `(0, Some(t))` match to a natural `.get(port)` lookup against the new
+  `Vec`. Deliberately *not* the full generalization: `EncapSpec.output: (u32, u32)` — the
+  author's choice of *which single* output to expose — is untouched; letting an author expose
+  *several* outputs at once (`EncapSpec.expose: Vec<Expose>`, `default_spec` proposing all free
+  outputs) is its own later, separately-gated pass, not bundled in here.
+- **(c) Local + shared memoization** — `memo.rs`'s `CacheEntry.output: Value` →
+  `outputs: Vec<Option<Value>>`, mirroring `eval`'s own shape; `verify_entry` compares the whole
+  slot vector canonically (order + presence matter, reusing the same `SLOT_ABSENT`/`SLOT_PRESENT`
+  encoding `memo_key` already had for inputs, factored into a shared `encode_slots` helper).
+  `holon-host`'s `Memo` and `SharedCache::get_verified` got the identical treatment — both
+  genuinely widened to `Vec<Option<Value>>`, not narrowed, because both make an explicit
+  "behaviourally identical to `eval`" promise that a multi-output-blind narrowing would break.
+- **(d) Host firing loop + wasm bridge** — `holon-host::fire` and the wasm bridge's
+  `Evaluator::eval` went the *other* way: both use the new `eval_one` internally but keep their
+  own existing `Option<Value>` / single-`WValue` public contracts unchanged. Both are genuinely
+  about a *service* graph settling to one request the host or editor inspects — not the
+  multi-output data-composite case this leaf exists for — and neither can currently be handed a
+  real multi-output unit anyway (nothing yet lets the editor build one). `WUnit.output` →
+  `WUnit.outputs: Vec<WPort>`, same conversion pattern already used for `inputs`.
+- **(e) Editor rendering + wiring** — `holon.ts`'s `WUnit.output?: WType | null` →
+  `outputs?: WPort[]`. `PrimitiveNode.tsx` renders one `<Handle>` per entry in `outputs`, keyed
+  by the port's own name, the same `.map()` already used for `inputs` — not a hardcoded single
+  `"out"` handle. `App.tsx`: the one line that actually mattered was `onProject`'s edge-building
+  loop, which hardcoded `from_port: 0` with a comment reading "single output, the 'out' handle" —
+  now resolves `from_port` from the wire's `sourceHandle`, exactly the way `to_port` already
+  resolves from `targetHandle`. `isValidConnection`/`onConnect` resolve the source port the same
+  way, not just "the" output. `Palette.tsx`'s swatch reads `outputs[0]` (safe: a catalog entry is
+  always a genesis primitive, permanently single-output, so there's no ambiguity about which one
+  to preview). `theme.ts` and `styles.css` needed nothing — `outputColor` already took a bare
+  `WType`, never the renamed container, and the output column's CSS was already a generic
+  flex-column-with-gap, the same layout the input side already uses for variadic ports.
+
+**Leaf closed.** All five sub-leaves, (a) through (e).
+
+**Tests prove** (+4 net: 179→183 core, 39 host unchanged, 11 wasm-native unchanged):
+`eval_composite_multi_output` (three independent outputs off the same two inputs);
+`multi_output_partial_success` (one output succeeds, a sibling divide-by-zero fails,
+independently); `eval_one_requires_exactly_one_output` (fails closed, doesn't silently pick
+one); `multi_output_entry_verifies_every_slot_independently` (a cache entry with a partial
+Some/None claim verifies honestly, and a lie on *either* slot — not just the first — is caught).
+Full workspace: `cargo test --workspace` — 233/233 (183 core + 39 host + 11 wasm-native), zero
+failures. Editor sub-leaf (e) is TypeScript-only, no Rust ripple — same 233 stand unchanged;
+verify with `tsc -b` once `Palette.tsx`'s sibling files are in place.
+
+**Forks pinned.**
+- Multi-output is composite-only, permanently — confirmed with the user, not assumed.
+- `eval` returns `Vec<Option<Value>>`, never `Option<Vec<Value>>` — per-output independent
+  failure, matching how a real multi-output composite (e.g. MACD) actually fails: one line can
+  go stale while its sibling is still computable.
+- `eval_one` fails closed on a non-single-output unit rather than silently taking the first slot
+  — a caller that needs exactly one value should say so and be refused if that's not what it got.
+- `AmbiguousDefaultOutput` is expected to *dissolve* once `default_spec` is generalized —
+  "2 free outputs" stops being an error and becomes "expose both." Not touched here; still gated
+  on the deferred sub-leaf (b) follow-on below.
+
+**Named, not silently deferred — two open items, neither built here.**
+
+1. **The benchmark finding.** `cargo bench -p holon-core` after (a)–(d) showed broad
+   regressions, including on operations with nothing to do with multi-output:
+   `native_head`/`native_length`/`native_is_empty` (trivial, single-output list primitives)
+   regressed ~45–50% *flat across every list size tested* — a fixed per-call cost, not a
+   size-dependent one. `wrapping_tax` confirms it: `native_add` (bare primitive call) regressed
+   33%; `composite_add` (already paying hashmap lookups and edge traversal) regressed only 7% —
+   the same fixed cost is a larger fraction of a small baseline than a large one.
+
+   Root cause, found by reading the code, not guessing: `eval_one` calls `eval` — which now
+   always heap-allocates a `Vec<Option<Value>>`, even for a single-output primitive that used to
+   return a stack-only `Option<Value>` with no allocation — then pops one element and discards
+   the rest. `eval_map`/`eval_fold` call `eval_one` once *per list element*, so a 4096-element
+   `fold_sum` now performs 4096 allocate-then-discard `Vec`s that never existed before.
+
+   Standard fix: a small-vector type (`SmallVec<[Option<Value>; 1]>` in place of
+   `Vec<Option<Value>>`) — inline storage for the common 0–1-output case, spilling to the heap
+   only when a unit genuinely has more than one output. Deliberately not built: it touches
+   `eval`'s core return type, rippling through every file this leaf already touched, plus adds a
+   new dependency to a crate that currently has none. Absolute numbers stay tiny throughout
+   (58 ns for a bare primitive call, 273 µs for a 4096-element fold) — nothing here is
+   user-perceptibly slow. Deferred pending an actual multi-output composite existing to measure
+   against, following the same "surface it, name it, don't silently drop it" discipline the
+   `eval_composite` scratch-clone deferral already set as precedent.
+
+2. **`EncapSpec.expose: Vec<Expose>`.** Sub-leaf (b)'s full scope — letting an author choose
+   *several* outputs to expose at once, generalizing today's single-choice `EncapSpec.output:
+   (u32, u32)` — was deliberately not built in this leaf. Consequence, stated plainly: the editor
+   (sub-leaf e) now correctly *renders* and *wires* however many outputs a node declares, but
+   nothing will ever show more than one *yet* — `derive_and_freeze` still only ever produces a
+   single-output composite, so there is currently no path, anywhere in the editor's own
+   drag-wire-project workflow, that can construct a unit with more than one output. Sub-leaf (e)
+   is forward-ready plumbing, not a reachable feature, until this lands.
+
+**Next inch.** Neither of the two items above is scheduled yet — both are named forks awaiting a
+decision, not a queued next step. Whatever comes next on the overall plan is independent of P4.7,
+which is now fully closed.

@@ -28,7 +28,7 @@ mod tests {
             body: UnitBody::Primitive { name: "const".into() },
             params: vec![Param::frozen("type", "Number"), Param::frozen("value", v.to_string())],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn prim(name: &str, n_in: usize) -> Unit {
@@ -36,11 +36,16 @@ mod tests {
             body: UnitBody::Primitive { name: name.into() },
             params: vec![],
             inputs: (0..n_in).map(|i| Port { name: format!("i{i}"), ty: Type::Any }).collect(),
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn closed(children: Vec<Hash>, edges: Vec<Edge>) -> Unit {
-        Unit { body: UnitBody::Composite { children, edges }, params: vec![], inputs: vec![], output: Some(Type::Number) }
+        Unit {
+            body: UnitBody::Composite { children, edges },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        }
     }
     fn e(fc: u32, fp: u32, tc: u32, tp: u32) -> Edge {
         Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp }
@@ -64,7 +69,7 @@ mod tests {
         let hleft = r.insert(closed(vec![h2, h3, hadd], binop_edges())).unwrap();
         let hright = r.insert(closed(vec![h10, h4, hsub], binop_edges())).unwrap();
         let top = closed(vec![hleft, hright, hmul], binop_edges());
-        assert_eq!(eval(&top, &[], &r), Some(Value::Number(30.0)));
+        assert_eq!(eval(&top, &[], &r), vec![Some(Value::Number(30.0))]);
     }
 
     /// Tiny LCG for reproducible random graphs — the pure core takes no external deps.
@@ -109,7 +114,7 @@ mod tests {
             let a = eval(&top, &[], &r);
             let b = eval(&top, &[], &r);
             assert_eq!(a, b, "non-deterministic at seed {seed}");
-            assert_eq!(a, Some(Value::Number(exp)), "wrong value at seed {seed}");
+            assert_eq!(a, vec![Some(Value::Number(exp))], "wrong value at seed {seed}");
         }
     }
 

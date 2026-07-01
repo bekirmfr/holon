@@ -43,7 +43,7 @@ pub mod primitives;
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
-pub use eval::eval;
+pub use eval::{eval, eval_one};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
 pub use catalog::{genesis_units, interface_of, GENESIS, VARIADIC};

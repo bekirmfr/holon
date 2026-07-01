@@ -23,8 +23,8 @@
 //! from the **real** units and never see a mock — simulating innocent buys nothing
 //! at the trust boundary, and a mock is never in any content hash.
 
-use crate::eval::eval;
-use crate::{capabilities_of, Hash, Param, Resolver, Type, Unit, UnitBody, Value};
+use crate::eval::eval_one;
+use crate::{capabilities_of, Hash, Param, Port, Resolver, Type, Unit, UnitBody, Value};
 use std::collections::BTreeMap;
 
 /// A pure stand-in for a **sourced** (input-side) leaf, used **only** in design-mode
@@ -48,14 +48,19 @@ pub fn mock_of(unit: &Unit) -> Option<Unit> {
     }
 }
 
-/// A sourced leaf's mock: a pure constant of its output type.
+/// A sourced leaf's mock: a pure constant of its output type. Every sourced leaf (`clock`,
+/// `random`, `store_read`, …) is a genesis primitive, and multi-output is composite-only, so
+/// `outputs` here always has exactly one entry — `.first()` is safe by that invariant, not a
+/// guess. The mock's own `outputs` is `unit.outputs.clone()` (not rebuilt), so it keeps the
+/// exact same port name the real leaf declared.
 fn sourced_mock(unit: &Unit) -> Option<Unit> {
-    let (ty, value): (&str, &str) = match unit.output.as_ref()? {
+    let out = unit.outputs.first()?;
+    let (ty, value): (&str, &str) = match &out.ty {
         Type::Number => ("Number", "0"),
         Type::Boolean => ("Boolean", "false"),
         Type::Text | Type::Any => ("Text", ""),
         // An empty-list constant: `list` with no inputs computes to `[]`.
-        Type::List(_) => return Some(constant("list", vec![], unit.output.clone())),
+        Type::List(_) => return Some(constant("list", vec![], unit.outputs.clone())),
         // A sourced leaf never outputs an Effect (effects are constructed by sinks, the
         // performed side, not the sourced side) — so there is nothing to mock.
         Type::Effect => return None,
@@ -67,12 +72,12 @@ fn sourced_mock(unit: &Unit) -> Option<Unit> {
     Some(constant(
         "const",
         vec![Param::frozen("type", ty), Param::frozen("value", value)],
-        unit.output.clone(),
+        unit.outputs.clone(),
     ))
 }
 
-fn constant(name: &str, params: Vec<Param>, output: Option<Type>) -> Unit {
-    Unit { body: UnitBody::Primitive { name: name.to_string() }, params, inputs: vec![], output }
+fn constant(name: &str, params: Vec<Param>, outputs: Vec<Port>) -> Unit {
+    Unit { body: UnitBody::Primitive { name: name.to_string() }, params, inputs: vec![], outputs }
 }
 
 /// A design-mode resolver: wraps the real resolver and, for every effect leaf in a
@@ -120,25 +125,32 @@ fn collect_mocks(unit: &Unit, real: &impl Resolver, mocks: &mut BTreeMap<Hash, U
 /// mocks and the whole closure runs under core [`eval`] — pure, deterministic,
 /// replayable, and memoizable. The "firing loop" in design mode is just `eval` over
 /// the substituting resolver.
+///
+/// Deliberately kept `Option<Value>` (via [`eval_one`]), not widened to `eval`'s new
+/// `Vec<Option<Value>>` — `holon-host`'s `run()` calls this directly and is outside this
+/// pass's scope (P4.7's build order stops at the wasm bridge and editor); a root fed here is
+/// a service graph (single settled value the host inspects for effects), not the multi-output
+/// data-composite case this leaf exists for. `eval_one` already fails closed for a
+/// multi-output root — refusing rather than silently picking one — so nothing here is a lie.
 pub fn design_eval(root: &Unit, inputs: &[Option<Value>], real: &impl Resolver) -> Option<Value> {
     let sim = Simulated::new(root, real);
     match mock_of(root) {
-        Some(mock) => eval(&mock, inputs, &sim),
-        None => eval(root, inputs, &sim),
+        Some(mock) => eval_one(&mock, inputs, &sim),
+        None => eval_one(root, inputs, &sim),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{capabilities, hash_unit, Capability, Edge, MapResolver, Port, BOUNDARY};
+    use crate::{capabilities, eval, hash_unit, Capability, Edge, MapResolver, BOUNDARY};
 
     fn clock() -> Unit {
         Unit {
             body: UnitBody::Primitive { name: "clock".into() },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn egress() -> Unit {
@@ -146,11 +158,19 @@ mod tests {
             body: UnitBody::Primitive { name: "egress".into() },
             params: vec![],
             inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         }
     }
-    fn prim(name: &str, output: Option<Type>) -> Unit {
-        Unit { body: UnitBody::Primitive { name: name.into() }, params: vec![], inputs: vec![], output }
+    // Every call site passes a concrete Type — the Option wrapper this used to take was never
+    // exercised with None, and outputs: vec![] already represents "no output" if that's ever
+    // needed, so the wrapper was redundant once outputs became a Vec.
+    fn prim(name: &str, out: Type) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: name.into() },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: out }],
+        }
     }
     fn pass_through(child: Hash, out: Type) -> Unit {
         Unit {
@@ -160,7 +180,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(out),
+            outputs: vec![Port { name: "out".into(), ty: out }],
         }
     }
     /// input → egress → output. Under Fork B `egress` is pure (identity on payload), so
@@ -176,7 +196,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::Text),
+            outputs: vec![Port { name: "out".into(), ty: Type::Text }],
         }
     }
 
@@ -185,7 +205,7 @@ mod tests {
         // A bare clock (Driver) is not evaluable; design mode substitutes a constant.
         let store = MapResolver::new();
         let t = clock();
-        assert_eq!(eval(&t, &[], &store), None);
+        assert_eq!(eval(&t, &[], &store), vec![None]);
         assert_eq!(design_eval(&t, &[], &store), Some(Value::Number(0.0)));
     }
 
@@ -195,8 +215,8 @@ mod tests {
         // (sourced), and design mode mocks it to its output-type zero through the generic
         // `sourced_mock` — this module needed no change to gain a new driver.
         let store = MapResolver::new();
-        let rnd = prim("random", Some(Type::Number));
-        assert_eq!(eval(&rnd, &[], &store), None); // sourced ⇒ not computable
+        let rnd = prim("random", Type::Number);
+        assert_eq!(eval(&rnd, &[], &store), vec![None]); // sourced ⇒ not computable
         assert_eq!(design_eval(&rnd, &[], &store), Some(Value::Number(0.0))); // mocked
     }
 
@@ -205,7 +225,7 @@ mod tests {
         let mut store = MapResolver::new();
         let th = store.insert(clock()).unwrap();
         let comp = pass_through(th, Type::Number);
-        assert_eq!(eval(&comp, &[], &store), None); // clock not computable
+        assert_eq!(eval(&comp, &[], &store), vec![None]); // clock not computable
         assert_eq!(design_eval(&comp, &[], &store), Some(Value::Number(0.0)));
         // deterministic
         assert_eq!(design_eval(&comp, &[], &store), design_eval(&comp, &[], &store));
@@ -231,7 +251,7 @@ mod tests {
         let hi = Value::Text("hi".into());
         assert_eq!(
             eval(&comp, &[Some(hi.clone())], &store),
-            Some(Value::Effect { sink: "egress".into(), payload: Box::new(hi) })
+            vec![Some(Value::Effect { sink: "egress".into(), payload: Box::new(hi) })]
         );
     }
 
@@ -250,7 +270,7 @@ mod tests {
     fn state_graph_is_not_replayable() {
         // The one place purity ends: a state cell forfeits replay / caching.
         let mut store = MapResolver::new();
-        let sh = store.insert(prim("store_write", Some(Type::Number))).unwrap();
+        let sh = store.insert(prim("store_write", Type::Number)).unwrap();
         let comp = pass_through(sh, Type::Number);
         assert!(!capabilities(&comp, &store).is_replayable());
     }
@@ -280,19 +300,19 @@ mod tests {
 
     #[test]
     fn pure_leaf_has_no_mock() {
-        assert_eq!(mock_of(&prim("add", Some(Type::Number))), None);
+        assert_eq!(mock_of(&prim("add", Type::Number)), None);
     }
 
     #[test]
     fn store_read_is_mockable() {
         // StateRead is sourced (the host supplies it) ⇒ design mode scripts a mock.
-        assert!(mock_of(&prim("store_read", Some(Type::Number))).is_some());
+        assert!(mock_of(&prim("store_read", Type::Number)).is_some());
     }
 
     #[test]
     fn store_write_has_no_mock() {
         // StateWrite is performed (output-carried, a Fork-B sink) ⇒ eval runs it; no mock.
-        assert_eq!(mock_of(&prim("store_write", Some(Type::Number))), None);
+        assert_eq!(mock_of(&prim("store_write", Type::Number)), None);
     }
 
     #[test]
@@ -300,9 +320,9 @@ mod tests {
         // A read-bearing graph runs in design mode: store_read is sourced, so it mocks to
         // a scripted value and the graph evaluates purely (just like a driver).
         let mut store = MapResolver::new();
-        let rh = store.insert(prim("store_read", Some(Type::Number))).unwrap();
+        let rh = store.insert(prim("store_read", Type::Number)).unwrap();
         let comp = pass_through(rh, Type::Number);
-        assert_eq!(eval(&comp, &[], &store), None); // store_read not computable (sourced)
+        assert_eq!(eval(&comp, &[], &store), vec![None]); // store_read not computable (sourced)
         assert_eq!(design_eval(&comp, &[], &store), Some(Value::Number(0.0))); // scripted
     }
 }

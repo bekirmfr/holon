@@ -58,12 +58,12 @@ export type WBody =
   | { kind: "Primitive"; name: string }
   | { kind: "Composite"; children: string[]; edges: WEdge[] };
 
-/** A complete unit. `params`/`inputs`/`output` may be omitted (default empty / null). */
+/** A complete unit. `params`/`inputs`/`outputs` may be omitted (default empty). */
 export type WUnit = {
   body: WBody;
   params?: WParam[];
   inputs?: WPort[];
-  output?: WType | null;
+  outputs?: WPort[];
 };
 
 /**

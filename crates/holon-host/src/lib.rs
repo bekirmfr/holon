@@ -23,8 +23,9 @@ use std::path::PathBuf;
 
 use holon_core::{
     capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval,
-    entry_key, hash_unit, memo_key, refork, verify_entry, adoption_counts, CacheEntry, MapResolver,
-    Refork, Capability, DecodeError, EncodeError, Hash, Param, Resolver, Type, Unit, UnitBody, Value,
+    eval_one, entry_key, hash_unit, memo_key, refork, verify_entry, adoption_counts, CacheEntry,
+    MapResolver, Refork, Capability, DecodeError, EncodeError, Hash, Param, Port, Resolver, Type,
+    Unit, UnitBody, Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -39,8 +40,16 @@ pub trait Host {
 /// re-implemented (`I5`). Under representation **B** the output is a self-describing
 /// `Effect { sink, payload }`, so performance is driven by the **output** (what actually
 /// reached the boundary), not the manifest — the manifest stays the trust disclosure.
+///
+/// Uses `eval_one`, not core's `eval` directly (P4.7: `eval` now returns
+/// `Vec<Option<Value>>`, since multi-output is a composite capability). Deliberately kept
+/// `Option<Value>` here, not widened: `fire` is the host's firing loop for a *service*
+/// graph — a settled request the host inspects for effects — not the multi-output
+/// data-composite case P4.7 exists for. `eval_one` already fails closed for a genuinely
+/// multi-output root (refusing rather than silently picking one), so nothing here hides
+/// a real multi-output unit; it just isn't what this function is for.
 pub fn fire(root: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver, host: &mut impl Host) -> Option<Value> {
-    let output = eval(root, inputs, resolver)?;
+    let output = eval_one(root, inputs, resolver)?;
     perform_effects(&output, host);
     Some(output)
 }
@@ -226,7 +235,7 @@ fn constant_unit(value: &Value) -> Option<Unit> {
             body: UnitBody::Primitive { name: "list".into() },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::list_any()),
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
         },
         // A state cell never holds an effect: a write commits the *payload* (`&**payload`),
         // never the request itself. If this fires, the round stored an `Effect` by mistake —
@@ -241,7 +250,7 @@ fn scalar(ty_name: &str, value: String, ty: Type) -> Unit {
         body: UnitBody::Primitive { name: "const".into() },
         params: vec![Param::frozen("type", ty_name), Param::frozen("value", value)],
         inputs: vec![],
-        output: Some(ty),
+        outputs: vec![Port { name: "out".into(), ty }],
     }
 }
 
@@ -568,7 +577,7 @@ fn verify_closure<S: Store>(unit: &Unit, store: &S) -> Result<(), PublishError> 
 /// overhead — this inch is about correctness, not yet speed.
 #[derive(Default)]
 pub struct Memo {
-    cache: BTreeMap<Hash, Value>,
+    cache: BTreeMap<Hash, Vec<Option<Value>>>,
 }
 
 impl Memo {
@@ -579,13 +588,21 @@ impl Memo {
 
     /// Evaluate `unit` on `inputs`, serving a cached result when the unit is pure and this
     /// `(unit-hash, inputs)` key has been seen. Impure units are never cached. Behaviourally
-    /// identical to [`eval`] — memoization is a pure optimization.
+    /// identical to [`eval`] — memoization is a pure optimization, so this mirrors `eval`'s
+    /// own `Vec<Option<Value>>` shape exactly (P4.7), not `Option<Value>` narrowed to one
+    /// output: a multi-output composite is exactly as cacheable as a single-output one, and
+    /// narrowing this to `eval_one` would silently refuse to cache any pure multi-output unit
+    /// even though `eval` itself computes it fine — breaking the "identical to eval" promise
+    /// this function makes. A result with some (or all) slots `None` is still cached: for a
+    /// *pure* unit, "this output is always absent for these inputs" is exactly as stable and
+    /// deterministic a fact as any concrete value, the same reasoning `CacheEntry`'s own
+    /// `outputs: Vec<Option<Value>>` already applies in the shared cache below.
     pub fn eval(
         &mut self,
         unit: &Unit,
         inputs: &[Option<Value>],
         resolver: &impl Resolver,
-    ) -> Option<Value> {
+    ) -> Vec<Option<Value>> {
         if !capabilities(unit, resolver).is_pure() {
             return eval(unit, inputs, resolver); // impure ⇒ never cached
         }
@@ -595,11 +612,11 @@ impl Memo {
             None => return eval(unit, inputs, resolver),
         };
         if let Some(hit) = self.cache.get(&key) {
-            return Some(hit.clone());
+            return hit.clone();
         }
-        let out = eval(unit, inputs, resolver)?;
+        let out = eval(unit, inputs, resolver);
         self.cache.insert(key, out.clone());
-        Some(out)
+        out
     }
 
     /// Number of cached results.
@@ -644,12 +661,16 @@ impl SharedCache {
         self.entries.get(key)
     }
 
-    /// Trustless path: the output, returned **only if it re-executes correctly** against
-    /// `resolver`. A liar — a wrong output filed under the right key — yields `None`.
-    pub fn get_verified(&self, key: &Hash, resolver: &impl Resolver) -> Option<Value> {
+    /// Trustless path: the outputs, returned **only if they re-execute correctly** against
+    /// `resolver`. A liar — wrong output(s) filed under the right key — yields `None`. Returns
+    /// the whole `Vec<Option<Value>>` (P4.7), mirroring `CacheEntry.outputs` exactly rather than
+    /// narrowing to one value — a cached multi-output composite is exactly as verifiable as a
+    /// single-output one, and this is a general-purpose cache read, not something inherently
+    /// about single-output service graphs (unlike `fire`, which genuinely is).
+    pub fn get_verified(&self, key: &Hash, resolver: &impl Resolver) -> Option<Vec<Option<Value>>> {
         let entry = self.entries.get(key)?;
         if verify_entry(entry, resolver) {
-            Some(entry.output.clone())
+            Some(entry.outputs.clone())
         } else {
             None
         }
@@ -694,7 +715,7 @@ mod memo_tests {
             body: UnitBody::Primitive { name: name.into() },
             params: vec![],
             inputs: (0..n_in).map(|i| Port { name: format!("in{i}"), ty: Type::Any }).collect(),
-            output: Some(out),
+            outputs: vec![Port { name: "out".into(), ty: out }],
         }
     }
     fn num(n: f64) -> Value {
@@ -707,9 +728,9 @@ mod memo_tests {
         let r = MapResolver::new();
         let mut memo = Memo::new();
         assert!(memo.is_empty());
-        assert_eq!(memo.eval(&add, &[Some(num(2.0)), Some(num(3.0))], &r), Some(num(5.0)));
+        assert_eq!(memo.eval(&add, &[Some(num(2.0)), Some(num(3.0))], &r), vec![Some(num(5.0))]);
         assert_eq!(memo.len(), 1); // result cached
-        assert_eq!(memo.eval(&add, &[Some(num(2.0)), Some(num(3.0))], &r), Some(num(5.0)));
+        assert_eq!(memo.eval(&add, &[Some(num(2.0)), Some(num(3.0))], &r), vec![Some(num(5.0))]);
         assert_eq!(memo.len(), 1); // a hit — no new entry
     }
 
@@ -731,7 +752,7 @@ mod memo_tests {
         let r = MapResolver::new();
         let mut memo = Memo::new();
         let out = memo.eval(&egress, &[Some(Value::Text("hi".into()))], &r);
-        assert!(matches!(out, Some(Value::Effect { .. })));
+        assert!(matches!(out.as_slice(), [Some(Value::Effect { .. })]));
         assert!(memo.is_empty()); // impure ⇒ not cached, regardless of result
     }
 }
@@ -746,7 +767,7 @@ mod shared_cache_tests {
             body: UnitBody::Primitive { name: "const".into() },
             params: vec![Param::frozen("value", n), Param::frozen("type", "Number")],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
 
@@ -754,7 +775,7 @@ mod shared_cache_tests {
     fn put_files_under_the_universal_key_and_round_trips() {
         let mut r = MapResolver::new();
         let h = r.insert(const_num("4")).unwrap();
-        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(4.0) };
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], outputs: vec![Some(Value::Number(4.0))] };
         let mut cache = SharedCache::new();
         let key = cache.put(entry.clone()).unwrap();
         assert_eq!(cache.get(&key), Some(&entry));
@@ -766,9 +787,9 @@ mod shared_cache_tests {
         let h = r.insert(const_num("4")).unwrap();
         let mut cache = SharedCache::new();
         let key = cache
-            .put(CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(4.0) })
+            .put(CacheEntry { unit_hash: h, inputs: vec![], outputs: vec![Some(Value::Number(4.0))] })
             .unwrap();
-        assert_eq!(cache.get_verified(&key, &r), Some(Value::Number(4.0)));
+        assert_eq!(cache.get_verified(&key, &r), Some(vec![Some(Value::Number(4.0))]));
     }
 
     #[test]
@@ -778,7 +799,7 @@ mod shared_cache_tests {
         // right computation key, wrong output.
         let mut cache = SharedCache::new();
         let key = cache
-            .put(CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(999.0) })
+            .put(CacheEntry { unit_hash: h, inputs: vec![], outputs: vec![Some(Value::Number(999.0))] })
             .unwrap();
         assert!(cache.get(&key).is_some()); // the lie *is* stored — the cache is untrusted
         assert_eq!(cache.get_verified(&key, &r), None); // but the trustless read refuses it
@@ -788,11 +809,11 @@ mod shared_cache_tests {
     fn ingest_accepts_a_correctly_keyed_entry() {
         let mut r = MapResolver::new();
         let h = r.insert(const_num("4")).unwrap();
-        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(4.0) };
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], outputs: vec![Some(Value::Number(4.0))] };
         let key = entry_key(&entry).unwrap(); // the peer offers the honest key
         let mut cache = SharedCache::new();
         cache.ingest(key, entry).unwrap();
-        assert_eq!(cache.get_verified(&key, &r), Some(Value::Number(4.0))); // behaves like a put
+        assert_eq!(cache.get_verified(&key, &r), Some(vec![Some(Value::Number(4.0))])); // behaves like a put
     }
 
     #[test]
@@ -800,7 +821,7 @@ mod shared_cache_tests {
         // a peer offers an entry under a key it does not hash to (lying about which computation).
         let mut r = MapResolver::new();
         let h = r.insert(const_num("4")).unwrap();
-        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(4.0) };
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], outputs: vec![Some(Value::Number(4.0))] };
         let wrong_key = [0u8; 32]; // not entry_key(&entry)
         let mut cache = SharedCache::new();
         match cache.ingest(wrong_key, entry) {
@@ -815,7 +836,7 @@ mod shared_cache_tests {
         // semantic one (right output). A correctly-keyed entry with a wrong output passes ingest...
         let mut r = MapResolver::new();
         let h = r.insert(const_num("4")).unwrap();
-        let entry = CacheEntry { unit_hash: h, inputs: vec![], output: Value::Number(999.0) };
+        let entry = CacheEntry { unit_hash: h, inputs: vec![], outputs: vec![Some(Value::Number(999.0))] };
         let key = entry_key(&entry).unwrap(); // correctly keyed for the (unit, inputs)...
         let mut cache = SharedCache::new();
         cache.ingest(key, entry).unwrap(); // ...so ingest admits it
@@ -833,7 +854,7 @@ mod registry_tests {
             body: UnitBody::Primitive { name: "const".into() },
             params: vec![Param::frozen("type", "Number"), Param::frozen("value", v)],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn passthrough(child: Hash) -> Unit {
@@ -844,7 +865,7 @@ mod registry_tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
 
@@ -887,7 +908,7 @@ mod registry_tests {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", hex(&absent))],
             inputs: vec![Port { name: "list".into(), ty: Type::list_any() }],
-            output: Some(Type::list_any()),
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
         };
         let mut reg = Registry::new(MemStore::new());
         match reg.publish(&map) {
@@ -914,7 +935,7 @@ mod registry_tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn children_of(u: &Unit) -> Vec<Hash> {
@@ -1037,21 +1058,26 @@ mod tests {
             body: UnitBody::Primitive { name: "egress".into() },
             params: vec![],
             inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         }
     }
     fn nport(name: &str) -> Port {
         Port { name: name.into(), ty: Type::Number }
     }
     fn prim(name: &str, inputs: Vec<Port>, output: Type) -> Unit {
-        Unit { body: UnitBody::Primitive { name: name.into() }, params: vec![], inputs, output: Some(output) }
+        Unit {
+            body: UnitBody::Primitive { name: name.into() },
+            params: vec![],
+            inputs,
+            outputs: vec![Port { name: "out".into(), ty: output }],
+        }
     }
     fn number(n: &str) -> Unit {
         Unit {
             body: UnitBody::Primitive { name: "const".into() },
             params: vec![Param::frozen("type", "Number"), Param::frozen("value", n)],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn text(s: &str) -> Value {
@@ -1083,7 +1109,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
         let mut host = Recorder::default();
         fire(&comp, &[Some(text("ship it"))], &r, &mut host);
@@ -1114,7 +1140,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![nport("v")],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
         let mut host = Recorder::default();
         fire(&comp, &[Some(num(42.0))], &r, &mut host);
@@ -1141,7 +1167,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
         (r, counter)
     }
@@ -1182,7 +1208,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Any),
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
         };
         let mut host = Recorder::default();
         let sourced = [(Capability::StateRead, held)];
@@ -1202,7 +1228,7 @@ mod tests {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", hex(&eh))],
             inputs: vec![Port { name: "xs".into(), ty: Type::list_any() }],
-            output: Some(Type::list_any()),
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
         };
         let xs = Value::List(vec![text("a"), text("b"), text("c")]);
         let mut host = Recorder::default();
@@ -1247,7 +1273,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![nport("v"), Port { name: "msg".into(), ty: Type::Text }],
-            output: Some(Type::list_any()),
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
         };
         let mut host = Recorder::default();
         fire(&comp, &[Some(num(7.0)), Some(text("hi"))], &r, &mut host);
@@ -1277,7 +1303,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
         (r, graph)
     }
@@ -1338,7 +1364,7 @@ mod tests {
                 body: UnitBody::Primitive { name: "compare".into() },
                 params: vec![Param::frozen("op", "<")],
                 inputs: vec![nport("a"), nport("b")],
-                output: Some(Type::Boolean),
+                outputs: vec![Port { name: "out".into(), ty: Type::Boolean }],
             })
             .unwrap();
         let sel = r
@@ -1366,7 +1392,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
 
         let mut host = StateHost::new(num(0.0));
@@ -1391,14 +1417,14 @@ mod tests {
                 body: UnitBody::Primitive { name: "egress".into() },
                 params: vec![],
                 inputs: vec![Port { name: "req".into(), ty: Type::list_any() }],
-                output: Some(Type::Effect),
+                outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
             })
             .unwrap();
         let mapper = Unit {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", hex(&egress))],
             inputs: vec![Port { name: "requests".into(), ty: Type::list_any() }],
-            output: Some(Type::list_any()),
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
         };
         let batch = Value::List(vec![
             Value::List(vec![num(1.0), text("alpha")]), // [token=1, data="alpha"]
@@ -1451,7 +1477,7 @@ mod tests {
                 body: UnitBody::Primitive { name: "const".into() },
                 params: vec![Param::frozen("type", "Text"), Param::frozen("value", "welcome")],
                 inputs: vec![],
-                output: Some(Type::Text),
+                outputs: vec![Port { name: "out".into(), ty: Type::Text }],
             })
             .unwrap();
         let pair = r
@@ -1469,7 +1495,7 @@ mod tests {
                 body: UnitBody::Primitive { name: "egress".into() },
                 params: vec![],
                 inputs: vec![Port { name: "msg".into(), ty: Type::list_any() }],
-                output: Some(Type::Effect),
+                outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
             })
             .unwrap();
         let graph = Unit {
@@ -1484,7 +1510,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![Port { name: "id".into(), ty: Type::Text }],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
 
         let order = Value::Text("order-42".into());
@@ -1509,7 +1535,7 @@ mod tests {
                 body: UnitBody::Primitive { name: "egress".into() },
                 params: vec![],
                 inputs: vec![Port { name: "msg".into(), ty: Type::Number }],
-                output: Some(Type::Effect),
+                outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
             })
             .unwrap();
         let graph = Unit {
@@ -1522,7 +1548,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
 
         // Design: driver mocked to 0, the egress Effect is *previewed*, nothing performed.

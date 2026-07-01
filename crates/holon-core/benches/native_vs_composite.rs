@@ -50,7 +50,7 @@ fn prim(name: &str, n_in: usize, out: Type) -> Unit {
         inputs: (0..n_in)
             .map(|i| Port { name: format!("i{i}"), ty: Type::Any })
             .collect(),
-        output: Some(out),
+        outputs: vec![Port { name: "out".into(), ty: out }],
     }
 }
 
@@ -72,7 +72,7 @@ fn fold_sum(r: &mut MapResolver) -> Unit {
             Port { name: "init".into(), ty: Type::Any },
             Port { name: "list".into(), ty: Type::list_any() },
         ],
-        output: Some(Type::Any),
+        outputs: vec![Port { name: "out".into(), ty: Type::Any }],
     }
 }
 
@@ -94,7 +94,7 @@ fn wrapped_add(r: &mut MapResolver) -> Unit {
             Port { name: "a".into(), ty: Type::Number },
             Port { name: "b".into(), ty: Type::Number },
         ],
-        output: Some(Type::Number),
+        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
     }
 }
 

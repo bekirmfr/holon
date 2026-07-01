@@ -4,8 +4,10 @@
 //! - the unit's **kind discriminant** (primitive identity, or "composite");
 //! - its **params** (frozen value or open hole), in a deterministic order;
 //! - its **derived interface**: input ports (name + type) in declaration order,
-//!   and the output type — names are part of the frozen public contract (I4),
-//!   so they are *in*;
+//!   and output ports (name + type) in declaration order — names are part of the
+//!   frozen public contract (I4), so they are *in*, on both sides now (P4.7:
+//!   outputs became `Vec<Port>`, symmetric with inputs — composite-only, no
+//!   primitive ever declares more than one);
 //! - for a composite: its **internal wiring** (edges) in a deterministic order,
 //!   and each **child referenced by its 32-byte hash** (never inlined).
 //!
@@ -28,7 +30,7 @@ use crate::BOUNDARY;
 /// preimage so a unit hashed under one version can never collide with the same
 /// unit hashed under another. v2: `List<T>` carries an element type. v3: `Product`
 /// joins the recursive type encoding. v4: `Sum` (tagged choice) joins it too (P1.3.2).
-pub const ENCODING_VERSION: u8 = 4;
+pub const ENCODING_VERSION: u8 = 5;
 
 /// A 32-byte content hash. This is a unit's identity; the version label in the
 /// registry is merely a friendly alias that resolves *to* one of these.
@@ -193,13 +195,17 @@ pub enum UnitBody {
     Composite { children: Vec<Hash>, edges: Vec<Edge> },
 }
 
-/// A complete unit: its body plus its frozen, derived interface.
+/// A complete unit: its body plus its frozen, derived interface. `outputs` is
+/// composite-only in practice (P4.7) — every genesis primitive declares exactly
+/// one, named `"out"` by convention (matching the editor's existing single-output
+/// handle id) — but the type itself doesn't special-case that; a composite can
+/// declare zero, one, or several, exactly as `inputs` already could.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unit {
     pub body: UnitBody,
     pub params: Vec<Param>,
     pub inputs: Vec<Port>,
-    pub output: Option<Type>,
+    pub outputs: Vec<Port>,
 }
 
 /// Errors that can occur while encoding a unit's canonical preimage.
@@ -500,19 +506,19 @@ pub fn encode_preimage(unit: &Unit) -> Result<Vec<u8>, EncodeError> {
         }
     }
 
-    // 3. Interface — inputs in declaration order (the frozen contract), output.
+    // 3. Interface — inputs in declaration order, then outputs in declaration order (P4.7:
+    //    the same shape as inputs now, not a lone presence byte). Both are the frozen contract.
     e.u32(unit.inputs.len().try_into().map_err(|_| EncodeError::FieldTooLong)?);
     for port in &unit.inputs {
         e.tag(TAG_PORT);
         e.str(&port.name)?;
         e.ty(&port.ty)?;
     }
-    match &unit.output {
-        Some(t) => {
-            e.buf.push(1);
-            e.ty(t)?;
-        }
-        None => e.buf.push(0),
+    e.u32(unit.outputs.len().try_into().map_err(|_| EncodeError::FieldTooLong)?);
+    for port in &unit.outputs {
+        e.tag(TAG_PORT);
+        e.str(&port.name)?;
+        e.ty(&port.ty)?;
     }
 
     Ok(e.buf)
@@ -705,17 +711,23 @@ pub fn decode_preimage(bytes: &[u8]) -> Result<Unit, DecodeError> {
         let ty = d.ty()?;
         inputs.push(Port { name, ty });
     }
-    let output = match d.u8()? {
-        0 => None,
-        1 => Some(d.ty()?),
-        other => return Err(DecodeError::BadTag(other)),
-    };
+    let n_outputs = d.u32()?;
+    let mut outputs = Vec::new();
+    for _ in 0..n_outputs {
+        match d.u8()? {
+            TAG_PORT => {}
+            other => return Err(DecodeError::BadTag(other)),
+        }
+        let name = d.str()?;
+        let ty = d.ty()?;
+        outputs.push(Port { name, ty });
+    }
 
     if d.pos != d.buf.len() {
         return Err(DecodeError::TrailingBytes);
     }
 
-    Ok(Unit { body, params, inputs, output })
+    Ok(Unit { body, params, inputs, outputs })
 }
 
 /// Decode a 64-char hex string into a [`Hash`]. `None` if it is not exactly 64
@@ -757,7 +769,7 @@ mod tests {
                 Port { name: "a".into(), ty: Type::Number },
                 Port { name: "b".into(), ty: Type::Number },
             ],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
 
@@ -813,7 +825,7 @@ mod tests {
             body: UnitBody::Composite { children: vec![c0, c1], edges },
             params: vec![],
             inputs: vec![Port { name: "a".into(), ty: Type::Number }],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         };
         let e1 = Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 };
         let e2 = Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 1 };
@@ -832,7 +844,7 @@ mod tests {
             body: UnitBody::Composite { children, edges: edges.clone() },
             params: vec![],
             inputs: vec![Port { name: "a".into(), ty: Type::Number }],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         };
         let add = hash_unit(&prim("add")).unwrap();
         let mul = hash_unit(&prim("multiply")).unwrap();
@@ -852,7 +864,7 @@ mod tests {
             body: UnitBody::Composite { children: vec![], edges: vec![] },
             params: p.params.clone(),
             inputs: p.inputs.clone(),
-            output: p.output.clone(),
+            outputs: p.outputs.clone(),
         };
         assert_ne!(hash_unit(&p).unwrap(), hash_unit(&c).unwrap());
     }
@@ -884,7 +896,7 @@ mod tests {
             },
             params: vec![Param::frozen("x", "1"), Param::open("y", "k")],
             inputs: vec![Port { name: "a".into(), ty: Type::list_any() }],
-            output: Some(Type::Effect),
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
         assert_eq!(decode_preimage(&encode_preimage(&u).unwrap()).unwrap(), u);
     }
@@ -899,7 +911,7 @@ mod tests {
             body: UnitBody::Composite { children, edges: vec![edge] },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         };
         // A: [add@0, mul@1], add@0 → mul@1.   B: [mul@0, add@1], add@1 → mul@0.  Same wiring.
         let a = presentation(vec![add, mul], Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 });
@@ -923,7 +935,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![Port { name: "x".into(), ty: Type::Number }],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         };
         let a = roles(0, 1); // child0 → out ; in → child1
         let b = roles(1, 0); // child1 → out ; in → child0  (same composite, swapped presentation)
@@ -972,7 +984,7 @@ mod tests {
         // encode∘decode byte-for-byte and structurally.
         let mut u = prim("add");
         u.inputs[0].ty = Type::List(Box::new(Type::List(Box::new(Type::Number))));
-        u.output = Some(Type::list_any());
+        u.outputs[0].ty = Type::list_any();
         let bytes = encode_preimage(&u).unwrap();
         assert_eq!(decode_preimage(&bytes).unwrap(), u);
         assert_eq!(encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap(), bytes);
@@ -984,7 +996,7 @@ mod tests {
         // survive encode∘decode byte-for-byte and structurally.
         let mut u = prim("add");
         u.inputs[0].ty = Type::Product(vec![Type::Number, Type::list_any()]);
-        u.output = Some(Type::Product(vec![])); // Unit = the 0-ary product
+        u.outputs[0].ty = Type::Product(vec![]); // Unit = the 0-ary product
         let bytes = encode_preimage(&u).unwrap();
         assert_eq!(decode_preimage(&bytes).unwrap(), u);
         assert_eq!(encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap(), bytes);
@@ -995,7 +1007,7 @@ mod tests {
         // Option<Number> = Sum([Number, Unit]) on the output port survives intact, including the
         // nested Product (Unit) inside the Sum — proving the two n-ary constructors compose.
         let mut u = prim("add");
-        u.output = Some(Type::Sum(vec![Type::Number, Type::Product(vec![])]));
+        u.outputs[0].ty = Type::Sum(vec![Type::Number, Type::Product(vec![])]);
         let bytes = encode_preimage(&u).unwrap();
         assert_eq!(decode_preimage(&bytes).unwrap(), u);
         assert_eq!(encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap(), bytes);

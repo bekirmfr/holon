@@ -110,7 +110,7 @@ fn refork_node(
         body: new_body,
         params: new_params,
         inputs: unit.inputs.clone(),
-        output: unit.output.clone(),
+        outputs: unit.outputs.clone(),
     };
     let h = hash_unit(&new_unit).ok()?;
     minted.insert(h, new_unit);
@@ -127,7 +127,7 @@ mod tests {
             body: UnitBody::Primitive { name: name.into() },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn composite(children: Vec<Hash>) -> Unit {
@@ -138,7 +138,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         }
     }
     fn map_over(fn_hash: &Hash) -> Unit {
@@ -146,7 +146,7 @@ mod tests {
             body: UnitBody::Primitive { name: "map".into() },
             params: vec![Param::frozen("fn", to_hex(fn_hash))],
             inputs: vec![Port { name: "list".into(), ty: Type::list_any() }],
-            output: Some(Type::list_any()),
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
         }
     }
     fn children_of(u: &Unit) -> Vec<Hash> {

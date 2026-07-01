@@ -40,14 +40,14 @@ pub fn advise(unit: &Unit, resolver: &impl Resolver) -> Advisory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Capability, Edge, MapResolver, Type, UnitBody, BOUNDARY};
+    use crate::{Capability, Edge, MapResolver, Port, Type, UnitBody, BOUNDARY};
 
     fn prim(name: &str, out: Type) -> Unit {
         Unit {
             body: UnitBody::Primitive { name: name.into() },
             params: vec![],
             inputs: vec![],
-            output: Some(out),
+            outputs: vec![Port { name: "out".into(), ty: out }],
         }
     }
 
@@ -94,7 +94,7 @@ mod tests {
             },
             params: vec![],
             inputs: vec![],
-            output: Some(Type::Number),
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
         };
         assert_eq!(advise(&root, &r).dependency_count, 1); // one transitive child
     }

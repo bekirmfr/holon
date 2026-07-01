@@ -371,7 +371,7 @@ mod tests {
             body: UnitBody::Primitive { name: name.to_string() },
             params: vec![],
             inputs: vec![],
-            output: None,
+            outputs: vec![],
         }
     }
 
@@ -382,7 +382,7 @@ mod tests {
             body: UnitBody::Composite { children, edges: vec![] },
             params: vec![],
             inputs: vec![],
-            output: None,
+            outputs: vec![],
         }
     }
 
@@ -392,7 +392,7 @@ mod tests {
             body: UnitBody::Primitive { name: "map".to_string() },
             params: vec![Param::frozen("fn", to_hex(target))],
             inputs: vec![],
-            output: None,
+            outputs: vec![],
         }
     }
 

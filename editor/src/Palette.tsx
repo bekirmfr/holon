@@ -32,7 +32,7 @@ export function Palette({ catalog }: { catalog: WUnit[] }) {
             >
               <span
                 className="hl-palette__swatch"
-                style={{ background: outputColor(u.output) }}
+                style={{ background: outputColor(u.outputs?.[0]?.ty) }}
                 aria-hidden
               />
               <span className="hl-palette__name">{name}</span>
