@@ -3583,3 +3583,143 @@ overwritten by a dishonest one, not just against a first, never-before-seen lie.
 last and alone, since it's the one endpoint that performs a real effect (`Host::perform`) rather
 than reading or writing content-addressed data. Warrants its own review pass, not a bundle with
 anything before it.
+
+---
+
+## 2026-07-02 · holon-server — fire (one-shot settle), inch 5 · closes the initial buildout
+
+**Built.** `POST /fire?root=<hex>`, body `{"inputs": [...]}` — settles an already-published/
+staged unit **once**, on request, via `fire`. Reuses `materialize_closure` a third time now
+(after the cache endpoints), the same closure-walking helper `Registry::publish`'s own
+dangling-reference check is built on — one definition of "what a unit needs resolvable," used
+everywhere this crate needs it.
+
+**A naming/scope correction, worked out live with the user before any code.** The first framing
+of this leaf assumed `holon-server` was itself a place units "live" and run continuously — it
+isn't; nothing in this project has ever kept a unit running between calls, and `holon-server` is
+the first thing that even keeps `Store`/`Registry` alive across requests, let alone a flow.
+`fire`, here, is exactly the one-shot settle-and-return `eval`/`design_eval` already are
+elsewhere — no listener, no scheduler, nothing left running after the response. The user's real
+target — bind a published flow to `ingress`/`clock`, keep it alive, serve it standing — is real
+and was named explicitly as its **own, separate, not-yet-scoped pillar**, not folded into this
+endpoint under a bigger name than it earns. Worth recording precisely so a future reader doesn't
+mistake `/fire` for that pillar already being done.
+
+**The one real design decision this leaf hinged on, surfaced and confirmed before code
+(`fire-scoping-L4.md`): `RecordingHost`, not a real one.** `fire` performs against a `Host` that
+records `(capability, payload)` pairs and hands them back as a receipt, rather than actually
+sending an email, writing a file, or making a network call. Grounded against a decision already
+on record elsewhere in this project (real platform hosts — real email/socket/file IO behind the
+`Host` seam — are already named as deferred, separate work, not something this transport crate
+was ever asked to close), not picked freely. The `Host` trait is exactly the seam a real
+implementation would plug into later, unchanged — nothing about `/fire`'s wire shape moves when
+that happens.
+
+**`Capability` crosses the wire via `{capability:?}` (Debug), not a hand-written name table** —
+avoids a fifth place (after `WEncapError`'s TS mirror, the curated `pub use` list, and two
+others named earlier this arc) where an upstream enum could silently drift out of sync with a
+downstream consumer.
+
+**Verified, including a real gap named and then closed rather than left implicit.** `cargo build
+-p holon-server`: clean. `cargo test --workspace`: unaffected. First pass only exercised the
+pure path (`leaf`, `const 42`) — settled output correct, `performed` correctly empty, since
+`const` triggers nothing. That left `RecordingHost::perform` itself never actually called by any
+test this session — named as a real gap, not glossed over, and closed by adding
+`--emit-test-sink` (an `egress` unit, one `Text` input) to the dev-flag set. Firing it with a
+real message returned both the self-describing `Effect` output (`eval` alone already produces
+that much) **and** a `performed` entry (`NetworkEgress`, the real payload) — the part that
+actually proves `fire` walked the settled output and handed it to the `Host`, not just evaluated
+and stopped. The `Capability::Debug` naming guess (`"NetworkEgress"`) came back exactly as
+expected, confirmed live rather than assumed correct.
+
+**This closes `holon-server`'s initial buildout.** Five inches, one session:
+`GET`/`POST /unit` (`Store`) → `POST /registry/publish` + `GET /registry` (`Registry::publish`)
+→ `POST /registry/fork` (`Registry::fork`) → `GET /cache/<key>` + `POST /cache/ingest`
+(`SharedCache`) → `POST /fire` (`fire`, one-shot). Every endpoint is a thin wrapper over
+already-existing, already-tested `holon-host` code — the transport adds no trust logic and no
+execution logic of its own anywhere in it, exactly as scoped at the start
+(`P4.5-P4.6-transport-scoping-L4.md`'s load-bearing finding: the security of this boundary was
+already fully provided by content-addressing before any of this was written). This is what was
+actually blocking `P4.5.1` (Registry client) and half of `P4.6.1` (Deploy mode) — both are
+unblocked now, though neither is itself built; the editor still needs to actually call this
+server.
+
+**Two real self-review catches during this arc, worth keeping in the permanent record rather
+than letting them blend into "it all just worked":** a dangling-borrow bug in `route()`
+(`request.url()`'s owned `String` used unbound) caught before ever reaching the user, in inch 1;
+and, in inch 4, a wrong import path followed twice — first attributing `CacheEntry` to the wrong
+crate, then trusting rustc's literal suggested fix (`holon_core::memo::CacheEntry`) without
+cross-checking it against already-grounded knowledge that `holon-host` itself imports it as a
+flat `holon_core::CacheEntry` — landing on the correct fix only by reconciling both signals, not
+by either one alone.
+
+**No `PLAN.md` change.** This whole arc is infrastructure `P4.5.1`/`P4.6.1` sit behind, not a
+leaf itself — consistent through all five inches.
+
+**Next: the genuine "deploy" pillar** — binding a published flow to `ingress`/`clock` so it
+keeps running and reacts to the outside world on its own, standing rather than one-shot. Real,
+separate, deliberately not scoped as part of this arc. Needs its own grounding pass before any
+design note gets written, the same discipline this whole arc followed from its first inch.
+
+---
+
+## 2026-07-02 · holon-server — ingress-bound deploy, inch 6 · first slice of standing-deploy
+
+**Built.** `POST /deploy`, `GET /deployments`, `POST /trigger/<slug>` — a `slug → unit hash`
+table plus one route that looks a slug up, `materialize_closure`s it exactly as `/cache` and
+`/fire` already do, and settles it via `fire_sourced` with the request body injected as
+`Capability::NetworkIngress` instead of a positional input. The first slice of the pillar named
+at the end of the `/fire` inch: binding a published flow to a driver so it reacts to the
+outside world, rather than being fired once by hand.
+
+**Confirmed, not assumed: this really is the small half of that pillar.** Grounded fresh
+against the real code before any of it was written (`fire_sourced(root, sourced: &[(Capability,
+Value)], real, host) -> Option<Value>`, `SourcedResolver`'s per-capability substitution,
+`ingress`'s real genesis interface — zero inputs, output `Any`, confirmed against `catalog.rs`
+rather than guessed by symmetry with `egress`'s `Text`). Every mechanism this inch needed was
+already built and tested; the only genuinely new surface is the slug table and the one route.
+A `Clock`-bound deployment — the other half — needs something that wakes up on its own, on a
+schedule, with nobody asking: the first standing background process anywhere in this project,
+deliberately left as its own, separately-grounded pillar rather than folded in here.
+
+**A design question worked through in the open, before code, not defaulted silently.** Should
+`ingress` let a unit declare the specific format it expects? Reasoned to **no**: a per-instance
+declared format on a primitive is a self-asserted claim, cutting against this project's own
+"derived, not asserted" invariant (kind, capabilities, and interfaces are all computed from
+structure everywhere else in this codebase, never declared by a unit about itself). The tool
+for "this might not be the shape I expected" already exists one tier out —
+`Sum`/`some`/`none` (this project's `Option<T>`) plus `select`, composed *inside* the flow
+right after `ingress` — not built into the primitive every `ingress`-using flow would then
+have to accommodate. `holon-server`'s job stays what it already was for `/fire`: hand over the
+raw value untouched (`Value::Text`, the L4's Fork 3 default — `ingress`'s `Any` output doesn't
+force this choice, but it's the simplest one and matches how every other text-shaped payload
+already crosses this boundary).
+
+**Three smaller forks resolved the same way, quickly, before code:** deploy requires only that
+the unit resolve in the store, not that it be *published* (a separate, marketplace-facing
+concept — `Registry`'s own scope, not a deploy prerequisite); a slug collision **overwrites**
+(a redeploy, matching `Store::put`'s and `SharedCache::ingest`'s own "dumb, idempotent"
+precedent elsewhere in this crate, not an error); routes named `/deploy`, `/deployments`,
+`/trigger/<slug>`.
+
+**`Deployments` is in-memory only**, same as `Registry`'s published set and `SharedCache` —
+restarting the server forgets every deployment. Stated plainly in both the L4 and the module
+doc, consistent with every prior inch's own honesty about this same boundary.
+
+**Verified — the full path, live, including the first real driver leaf fired all session.**
+`cargo build -p holon-server`: clean. `cargo test --workspace`: unaffected. A new dev flag,
+`--emit-test-ingress-flow`, emits a genuine `ingress → egress` composite (nothing before this
+inch had ever fired a real driver leaf, only positional inputs or bare sinks) — staged,
+deployed, listed via `GET /deployments`, then triggered: the request body `"hello from
+ingress"` came back as a real settled `Value::Effect` **and** a recorded `performed` entry
+carrying that exact text — proof `fire_sourced` actually substituted the driver and walked the
+result to the `Host`, not an echo of the request. The 404 path for an unknown slug was
+confirmed explicitly via `curl -i` (`HTTP/1.1 404 Not Found`, empty body), not inferred from an
+empty response that could as easily have meant something else.
+
+**No `PLAN.md` change.** Still infrastructure, same as every inch in this arc.
+
+**Next: `Clock`-bound deployment**, the pillar's real remaining half — needs its own fresh
+grounding pass (a background scheduler, what happens on overlap or a mid-tick restart,
+per-deployment concurrency) before any design note gets written, the same discipline every
+leaf in this arc has followed from the first inch.

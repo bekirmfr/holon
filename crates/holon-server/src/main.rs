@@ -10,9 +10,30 @@
 //! **Inch 1** (prior commit): the crate scaffold, CORS, `GET`/`POST /unit` wrapping `Store`.
 //! **Inch 2** (prior commit): `POST /registry/publish` + `GET /registry`, wrapping `Registry`.
 //! **Inch 3** (prior commit): `POST /registry/fork`, wrapping `Registry::fork`.
-//! **Inch 4** (this one): `GET /cache/<key>` (verified read) + `POST /cache/ingest`, wrapping
-//! `SharedCache`. `fire` is the one endpoint left, deliberately last and alone, since it's the
-//! only one that performs a real effect and deserves its own review pass.
+//! **Inch 4** (prior commit): `GET /cache/<key>` + `POST /cache/ingest`, wrapping `SharedCache`.
+//! **Inch 5** (prior commit): `POST /fire`, wrapping `fire` — settles an already-published unit
+//! **once**, on request, via a `RecordingHost` that reports what it would perform rather than
+//! actually performing it (see the handler doc for why). This closed this crate's initial
+//! buildout: `/unit`, `/registry/*`, `/cache/*`, `/fire`.
+//!
+//! **Inch 6** (this one, `ingress-deploy-L4.md`): the first slice of the standing-deploy
+//! pillar — `POST /deploy`, `GET /deployments`, `POST /trigger/<slug>`. Deliberately the small
+//! half: nothing here needed a single new mechanism from `holon-core`/`holon-host`
+//! (`fire_sourced` and `SourcedResolver` already existed, already tested) — the only genuinely
+//! new thing is a `slug → unit hash` table and one new route. A `Clock`-bound deployment is
+//! explicitly **not** this inch — it needs a standing background scheduler, the first
+//! genuinely new runtime shape anywhere in this project, and stays its own, later, separately
+//! grounded pillar.
+//!
+//! **A design question worth recording, not just the answer:** should `ingress` let a unit
+//! declare the specific format it expects? No — `ingress`'s own genesis interface is
+//! deliberately `Any`-typed, and a per-instance declared format would be a **self-asserted**
+//! claim on a primitive, cutting against this project's own "derived, not asserted" invariant
+//! (kind, capabilities, and interfaces are all computed from structure, never declared by a
+//! unit about itself). The tool for "this might not be the expected shape" already exists one
+//! tier out — `Sum`/`some`/`none` (this project's `Option<T>`) plus `select`, composed *inside*
+//! the flow right after `ingress`, not baked into the primitive every `ingress`-using flow
+//! would then have to accommodate.
 //!
 //! **A second real wrinkle, same family as inch 2's:** `SharedCache::get_verified` needs a
 //! `Resolver` (it re-executes the cached computation to check the claimed output), but `Store`
@@ -44,17 +65,17 @@
 //! what I got back," which is the only question a stranger-facing boundary would have needed
 //! auth *for*.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 use holon_core::{
-    child_refs, decode_preimage, encode_preimage, hash_unit, parse_hash, CacheEntry, Edge, Hash,
-    MapResolver, Param, Port, Type, Unit, UnitBody, Value, BOUNDARY,
+    child_refs, decode_preimage, encode_preimage, hash_unit, parse_hash, Capability, CacheEntry,
+    Edge, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody, Value, BOUNDARY,
 };
 use holon_host::{
-    CacheIngestError, FileStore, ForkError, MemStore, PublishError, Registry, SharedCache, Store,
-    StoreError,
+    fire, fire_sourced, CacheIngestError, FileStore, ForkError, Host, MemStore, PublishError,
+    Registry, SharedCache, Store, StoreError,
 };
 use rouille::{Request, Response};
 use serde::{Deserialize, Serialize};
@@ -82,14 +103,16 @@ impl Store for SharedStore {
     }
 }
 
-/// Everything a request handler needs. `registry` and `cache` are each their own `Mutex` (not
-/// folded into `SharedStore`'s locking) since each needs a different lock scope than a single
-/// store put/get — `Registry::publish`/`published()` need `&mut Registry`/`&Registry`,
-/// `SharedCache::ingest`/`get_verified` likewise need `&mut SharedCache`/`&SharedCache`.
+/// Everything a request handler needs. `registry`, `cache`, and `deployments` are each their
+/// own `Mutex` (not folded into `SharedStore`'s locking) since each needs its own lock scope
+/// distinct from a single store put/get.
 struct AppState {
     store: SharedStore,
     registry: Mutex<Registry<SharedStore>>,
     cache: Mutex<SharedCache>,
+    /// slug → unit hash. In-memory only, same as `Registry`'s published set and `SharedCache` —
+    /// restarting the server forgets every deployment, consistent with everything else here.
+    deployments: Mutex<BTreeMap<String, Hash>>,
 }
 
 #[derive(Serialize)]
@@ -171,6 +194,55 @@ struct SCacheEntry {
 #[derive(Serialize)]
 struct CacheOutputsBody {
     outputs: Vec<Option<SValue>>,
+}
+
+/// `POST /fire`'s request body — just the inputs, positional, same convention `eval` already
+/// uses everywhere (index = input-port index, `null` = absent). The root itself is named by
+/// the `?root=<hex>` query param (it must already be published/staged — see the handler doc),
+/// not re-sent in the body.
+#[derive(Deserialize)]
+struct FireRequestBody {
+    inputs: Vec<Option<SValue>>,
+}
+
+/// One `(capability, payload)` pair `RecordingHost` recorded instead of actually performing.
+#[derive(Serialize)]
+struct PerformedEntry {
+    capability: String,
+    payload: SValue,
+}
+
+#[derive(Serialize)]
+struct FireResponseBody {
+    output: Option<SValue>,
+    performed: Vec<PerformedEntry>,
+}
+
+/// `POST /deploy`'s request body: a chosen `slug` plus the unit's hash. The unit itself is not
+/// re-sent — it must already be resolvable in the store (staged via `/unit`, or published; see
+/// the L4's Fork 1 — deploy deliberately does not require publication, a separate,
+/// marketplace-facing concept).
+#[derive(Deserialize)]
+struct DeployRequestBody {
+    slug: String,
+    unit: String,
+}
+
+#[derive(Serialize)]
+struct DeployResponseBody {
+    slug: String,
+    unit: String,
+}
+
+#[derive(Serialize)]
+struct DeploymentEntry {
+    slug: String,
+    unit: String,
+}
+
+#[derive(Serialize)]
+struct DeploymentsBody {
+    deployments: Vec<DeploymentEntry>,
 }
 
 fn to_hex(h: &Hash) -> String {
@@ -460,6 +532,173 @@ fn handle_post_cache_ingest(cache: &Mutex<SharedCache>, request: &Request) -> Re
     }
 }
 
+/// The `Host` this endpoint runs `fire` against. **Deliberately does not perform anything
+/// real** — no network call, no file write, no email. It records each `(capability, payload)`
+/// `fire` hands it and returns them to the caller as a receipt instead. This is a scoped
+/// decision, not an oversight: the project's own plan already names real platform hosts (real
+/// email/socket/file IO behind the `Host` seam) as a still-deferred, separate piece of work,
+/// not something this transport crate was ever asked to build. Swapping in a real `Host` later
+/// is exactly what the `Host` trait already exists to make a clean, isolated change — nothing
+/// about this endpoint's wire shape would need to move.
+struct RecordingHost {
+    performed: Vec<(String, Value)>,
+}
+
+impl Host for RecordingHost {
+    fn perform(&mut self, capability: Capability, payload: &Value) {
+        // `{capability:?}` (Debug), not a hand-written name table — one fewer place a new
+        // Capability variant could be added upstream and silently never reach this mirror.
+        self.performed.push((format!("{capability:?}"), payload.clone()));
+    }
+}
+
+/// `POST /fire?root=<hex>` — settle a published unit **once**, on request. Not "deploy": there
+/// is no standing process left running afterward, no listener bound to a driver — this is a
+/// single call-and-return, the same shape `eval`/`design_eval` already are, just via `fire`
+/// (deploy mode) instead. The genuine "keep a flow alive, bound to `ingress`/`timer`" pillar is
+/// real and different work, deliberately not this endpoint — see the L4.
+///
+/// `root` must already be resolvable from the store (staged via `/unit`, or published) — this
+/// reuses `materialize_closure` exactly as the cache endpoints do, rather than accepting the
+/// unit fresh in the body, since firing something implies it's a real, referenceable unit, not
+/// a throwaway one.
+fn handle_post_fire(store: &SharedStore, request: &Request) -> Response {
+    let Some(root_hex) = request.get_param("root") else {
+        return err(400, "missing ?root=<hex> query param");
+    };
+    let Some(root_hash) = parse_hash(&root_hex) else {
+        return err(400, "root is not a 64-char hex hash");
+    };
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let fire_body: FireRequestBody = match serde_json::from_slice(&bytes) {
+        Ok(b) => b,
+        Err(e) => return err(400, format!("not a valid fire request JSON: {e}")),
+    };
+    let resolver = match materialize_closure(store, root_hash) {
+        Ok(r) => r,
+        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+    };
+    let Some(root_unit) = resolver.resolve(&root_hash) else {
+        return err(404, "no unit stored at that hash — stage or publish it first");
+    };
+    let inputs: Vec<Option<Value>> =
+        fire_body.inputs.into_iter().map(|o| o.map(SValue::into_core)).collect();
+
+    let mut host = RecordingHost { performed: Vec::new() };
+    let output = fire(root_unit, &inputs, &resolver, &mut host);
+
+    Response::json(&FireResponseBody {
+        output: output.as_ref().map(SValue::from_core),
+        performed: host
+            .performed
+            .into_iter()
+            .map(|(capability, payload)| PerformedEntry { capability, payload: SValue::from_core(&payload) })
+            .collect(),
+    })
+}
+
+/// A slug must be non-empty ASCII alphanumeric/`-`/`_` only — keeps the simple prefix-based
+/// router in `route()` unambiguous (no `/` inside a slug could be confused with a path
+/// separator) and avoids any path-traversal-shaped weirdness reaching `strip_prefix`.
+fn is_valid_slug(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// `POST /deploy` — register `slug → unit`. Confirms the unit actually resolves in the store
+/// (reuses `Store::get`, not a new check) before committing the mapping. Overwrites silently on
+/// a repeat slug (the L4's Fork 2 — a redeploy, not an error; matches `Store::put`'s and
+/// `SharedCache::ingest`'s own "dumb, idempotent" precedent elsewhere in this crate).
+fn handle_post_deploy(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Hash>>,
+    request: &Request,
+) -> Response {
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let body: DeployRequestBody = match serde_json::from_slice(&bytes) {
+        Ok(b) => b,
+        Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
+    };
+    if !is_valid_slug(&body.slug) {
+        return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
+    }
+    let Some(unit_hash) = parse_hash(&body.unit) else {
+        return err(400, "unit is not a 64-char hex hash");
+    };
+    match store.get(&unit_hash) {
+        Ok(Some(_)) => {}
+        Ok(None) => return err(404, "no unit stored at that hash — stage or publish it first"),
+        Err(e) => return err(500, format!("store error: {e:?}")),
+    }
+    deployments.lock().unwrap().insert(body.slug.clone(), unit_hash);
+    Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash) })
+}
+
+/// `GET /deployments` — the current slug → hash table, same shape/convention as `GET /registry`.
+fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Hash>>) -> Response {
+    let deployments = deployments.lock().unwrap();
+    let list = deployments
+        .iter()
+        .map(|(slug, hash)| DeploymentEntry { slug: slug.clone(), unit: to_hex(hash) })
+        .collect();
+    Response::json(&DeploymentsBody { deployments: list })
+}
+
+/// `POST /trigger/<slug>` — the actual ingress trigger. Looks up the deployed unit, materializes
+/// its closure exactly as `/fire` and the cache endpoints do, and settles it via `fire_sourced`
+/// with the raw request body injected as `Capability::NetworkIngress` — wrapped as
+/// `Value::Text`, the L4's Fork 3 default (`ingress`'s declared output type is `Any`; nothing
+/// forces this choice, but Text matches how every other text-shaped payload already crosses
+/// this boundary). A flow wanting structured data parses that Text itself, downstream, using
+/// this project's own `Sum`/`select` machinery — not a format this endpoint imposes.
+fn handle_post_trigger(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Hash>>,
+    slug: &str,
+    request: &Request,
+) -> Response {
+    let unit_hash = {
+        let deployments = deployments.lock().unwrap();
+        match deployments.get(slug) {
+            Some(h) => *h,
+            None => return Response::empty_404(),
+        }
+    };
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let body_text = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return err(400, "request body is not valid UTF-8 text"),
+    };
+    let resolver = match materialize_closure(store, unit_hash) {
+        Ok(r) => r,
+        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+    };
+    let Some(root_unit) = resolver.resolve(&unit_hash) else {
+        return err(500, "deployed unit no longer resolves in the store");
+    };
+
+    let sourced = [(Capability::NetworkIngress, Value::Text(body_text))];
+    let mut host = RecordingHost { performed: Vec::new() };
+    let output = fire_sourced(root_unit, &sourced, &resolver, &mut host);
+
+    Response::json(&FireResponseBody {
+        output: output.as_ref().map(SValue::from_core),
+        performed: host
+            .performed
+            .into_iter()
+            .map(|(capability, payload)| PerformedEntry { capability, payload: SValue::from_core(&payload) })
+            .collect(),
+    })
+}
+
 fn route(state: &AppState, request: &Request) -> Response {
     // `request.url()` returns an owned `String` (not a borrow of `request`) — bound once here
     // rather than called again per branch, both so `strip_prefix` below has something with a
@@ -509,6 +748,24 @@ fn route(state: &AppState, request: &Request) -> Response {
         }
     }
 
+    if method == "POST" && url == "/fire" {
+        return handle_post_fire(&state.store, request);
+    }
+
+    if method == "POST" && url == "/deploy" {
+        return handle_post_deploy(&state.store, &state.deployments, request);
+    }
+
+    if method == "GET" && url == "/deployments" {
+        return handle_get_deployments(&state.deployments);
+    }
+
+    if let Some(slug) = url.strip_prefix("/trigger/") {
+        if method == "POST" {
+            return handle_post_trigger(&state.store, &state.deployments, slug, request);
+        }
+    }
+
     Response::empty_404()
 }
 
@@ -554,6 +811,54 @@ fn test_replacement() -> Unit {
     }
 }
 
+/// The `egress` sink primitive — the same shape used as a test helper throughout `holon-core`
+/// and `holon-host`'s own tests, reused rather than reinvented. Under Fork B a sink is a pure
+/// request-constructor (`eval` settles it to `Value::Effect{sink:"egress",payload}` without any
+/// IO), and `fire` is what actually performs whatever the settled output carries — so firing
+/// this unit with a real message input is what finally exercises `RecordingHost::perform` and
+/// gives `POST /fire`'s `performed` list something real to report.
+fn test_sink() -> Unit {
+    Unit {
+        body: UnitBody::Primitive { name: "egress".into() },
+        params: vec![],
+        inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
+        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+    }
+}
+
+/// The `ingress` driver primitive — zero inputs, output `Any` (its real genesis interface,
+/// confirmed against `catalog.rs`, not assumed). For testing `POST /trigger/<slug>`: nothing
+/// this session has fired a real driver leaf before, so this is a genuinely new shape, not a
+/// variant of `test_sink`/`test_unit`.
+fn test_ingress() -> Unit {
+    Unit {
+        body: UnitBody::Primitive { name: "ingress".into() },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+    }
+}
+
+/// `ingress → egress`: whatever `/trigger/<slug>` injects for `NetworkIngress` flows straight
+/// through to `egress`'s payload. Exercises both halves of `POST /trigger/<slug>` at once —
+/// the *sourced* substitution (this composite's own settled output should equal whatever was
+/// sent) and `performed` (the `egress` sink should show up, same as `test_sink` alone proved
+/// for `/fire`, but now reached via a real driver instead of a positional input).
+fn test_ingress_flow(ingress_hash: Hash, egress_hash: Hash) -> Unit {
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![ingress_hash, egress_hash],
+            edges: vec![
+                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
+                Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+            ],
+        },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+    }
+}
+
 fn main() {
     let addr = std::env::var("HOLON_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:7420".to_string());
 
@@ -575,6 +880,11 @@ fn main() {
     // `--emit-test-replacement <path>` writes a second, distinct leaf (same shape, a different
     // frozen value, so a different hash) — the replacement unit for exercising
     // `POST /registry/fork` against the composite from `--emit-test-pair`.
+    //
+    // `--emit-test-sink <path>` writes an `egress` unit (one Text input, no params) — stage it
+    // via `/unit`, then `POST /fire?root=<its hash>` with a real message input to see
+    // `RecordingHost` actually record something, unlike the pure `--emit-test-unit` leaf, which
+    // triggers nothing.
     let mut args = std::env::args().skip(1);
     let mut store_arg = ".holon-store".to_string();
     while let Some(a) = args.next() {
@@ -626,6 +936,52 @@ fn main() {
             std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {path}: {e}"));
             println!("wrote {} bytes to {path} — a distinct unit for /registry/fork's replacement", bytes.len());
             return;
+        } else if a == "--emit-test-sink" {
+            let Some(path) = args.next() else {
+                eprintln!("--emit-test-sink needs a path");
+                std::process::exit(1);
+            };
+            let bytes = encode_preimage(&test_sink()).expect("test_sink() is a fixed, valid unit");
+            std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {path}: {e}"));
+            println!(
+                "wrote {} bytes to {path} — an egress sink; stage it via /unit, then POST /fire \
+                 with {{\"inputs\":[{{\"type\":\"Text\",\"value\":\"hello\"}}]}} to see it in performed",
+                bytes.len()
+            );
+            return;
+        } else if a == "--emit-test-ingress-flow" {
+            let (Some(ingress_path), Some(egress_path), Some(composite_path)) =
+                (args.next(), args.next(), args.next())
+            else {
+                eprintln!("--emit-test-ingress-flow needs <ingress-path> <egress-path> <composite-path>");
+                std::process::exit(1);
+            };
+            let ingress = test_ingress();
+            let ingress_hash = hash_unit(&ingress).expect("test_ingress() is a fixed, valid unit");
+            let ingress_bytes = encode_preimage(&ingress).expect("test_ingress() is a fixed, valid unit");
+            let egress = test_sink();
+            let egress_hash = hash_unit(&egress).expect("test_sink() is a fixed, valid unit");
+            let egress_bytes = encode_preimage(&egress).expect("test_sink() is a fixed, valid unit");
+            let composite = test_ingress_flow(ingress_hash, egress_hash);
+            let composite_hash =
+                hash_unit(&composite).expect("test_ingress_flow() is a fixed, valid unit");
+            let composite_bytes = encode_preimage(&composite)
+                .expect("test_ingress_flow() is a fixed, valid unit given any two leaf hashes");
+            std::fs::write(&ingress_path, &ingress_bytes)
+                .unwrap_or_else(|e| panic!("write {ingress_path}: {e}"));
+            std::fs::write(&egress_path, &egress_bytes)
+                .unwrap_or_else(|e| panic!("write {egress_path}: {e}"));
+            std::fs::write(&composite_path, &composite_bytes)
+                .unwrap_or_else(|e| panic!("write {composite_path}: {e}"));
+            println!("wrote ingress ({} bytes) to {ingress_path}", ingress_bytes.len());
+            println!("wrote egress ({} bytes) to {egress_path}", egress_bytes.len());
+            println!(
+                "wrote composite ingress->egress ({} bytes, hash {}) to {composite_path}",
+                composite_bytes.len(),
+                to_hex(&composite_hash)
+            );
+            println!("stage all three via /unit (order doesn't matter), then /deploy the composite's hash, then POST /trigger/<slug>.");
+            return;
         }
     }
 
@@ -642,7 +998,8 @@ fn main() {
     let store = SharedStore(Arc::new(Mutex::new(backend)));
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
-    let state = AppState { store, registry, cache };
+    let deployments = Mutex::new(BTreeMap::new());
+    let state = AppState { store, registry, cache, deployments };
 
     println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
     rouille::start_server(addr, move |request| with_cors(request, route(&state, request)));
