@@ -3431,3 +3431,44 @@ closing in itself — same convention as the `EvalOutputs`/SmallVec inch before 
 **Next inch.** `registry/publish` + `GET /registry`, thin-wrapping `Registry::publish` and
 `Registry::published()` exactly as `/unit` wraps `Store` — the next slice toward actually
 unblocking `P4.5.1`.
+
+---
+
+## 2026-07-02 · holon-server — registry publish + list, inch 2
+
+**Built.** `POST /registry/publish` and `GET /registry`, wrapping `Registry::publish` and
+`Registry::published()` exactly as `GET`/`POST /unit` (the prior inch) wrapped `Store` — direct
+calls into existing, tested `holon-host` code, no new logic invented at this layer.
+
+**One real design wrinkle, resolved without touching `holon-host`.** `Registry::new` takes
+ownership of its `Store` and only exposes it back read-only (`Registry::store() -> &S`), but
+`POST /unit` still needs direct write access to stage children bottom-up before a parent's
+`publish`. Rather than adding a `store_mut()` to the spine crate, introduced `SharedStore`
+(`Arc<Mutex<Box<dyn Store + Send>>>`) in `holon-server` only — one physical store, two cheap
+clones of a handle onto it, one held raw by the server for `/unit`, one owned by the
+`Registry` it also constructs. `holon-host` unchanged.
+
+**Named plainly, not silently inherited:** `Registry`'s own doc already scopes its
+published-hash bookkeeping as in-memory only ("persisting the record is a short follow-on," not
+yet built). This server inherits that as-is — restarting it forgets which hashes were
+published, though the units themselves stay on disk in `FileStore`. Not a defect introduced
+this inch; a pre-existing, already-documented boundary of `Registry` itself, worth restating
+where a person actually using this server would hit it.
+
+**Verified — actually run.** `cargo build -p holon-server`: clean. `cargo test --workspace`:
+unaffected, still 255 green. Manual verification extended this inch specifically to close a gap
+named (not glossed over) at the end of the prior inch: a `--emit-test-pair` dev flag now emits a
+leaf plus a composite referencing it by real hash, so the `DanglingReference` refusal path is
+actually exercised, not just implemented-and-assumed-correct. Confirmed: publishing the
+composite before staging its leaf → `400`, naming the exact missing hash; staging the leaf via
+`/unit`, then publishing the composite → succeeds; `GET /registry` afterward lists only the
+composite's hash, not the leaf's — confirming "staged" and "published" stayed genuinely
+distinct through this wrapper, not blurred into one.
+
+**No `PLAN.md` change.** Still infrastructure `P4.5.1` sits behind, not a leaf closing on its
+own — same convention as both inches before it.
+
+**Next inch.** `registry/fork` is the remaining read/write registry endpoint before the
+cache endpoints and `fire`. `fire` stays deliberately last and alone — the one endpoint that
+performs a real effect, warranting its own review pass rather than a bundle with anything
+read-only.
