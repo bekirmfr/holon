@@ -41,8 +41,7 @@ pub fn mock_of(unit: &Unit) -> Option<Unit> {
         UnitBody::Primitive { name } => name,
         UnitBody::Composite { .. } => return None,
     };
-    if capabilities_of(name)?.iter().any(|c| c.is_sourced()) {
-        sourced_mock(unit)
+    if capabilities_of(name, &unit.params)?.iter().any(|c| c.is_sourced()) {        sourced_mock(unit)
     } else {
         None
     }
@@ -172,6 +171,18 @@ mod tests {
             outputs: vec![Port { name: "out".into(), ty: out }],
         }
     }
+    /// `store_read`/`store_write` with a real `"key"` param — both now require one to
+    /// classify at all (`capabilities_of` fails closed without it, the keyed-state-capability
+    /// L4). The same naming convention `kind.rs` and `holon-host`'s own test module already
+    /// use for the identical fixture.
+    fn keyed_prim(name: &str, key: &str, out: Type) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: name.into() },
+            params: vec![Param::frozen("key", key)],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: out }],
+        }
+    }
     fn pass_through(child: Hash, out: Type) -> Unit {
         Unit {
             body: UnitBody::Composite {
@@ -268,9 +279,11 @@ mod tests {
 
     #[test]
     fn state_graph_is_not_replayable() {
-        // The one place purity ends: a state cell forfeits replay / caching.
+        // The one place purity ends: a state cell forfeits replay / caching. Uses a real key —
+        // without one this would still (accidentally) report non-replayable via fail-closed
+        // saturation on an unrecognized leaf, which is a different, misleading reason.
         let mut store = MapResolver::new();
-        let sh = store.insert(prim("store_write", Type::Number)).unwrap();
+        let sh = store.insert(keyed_prim("store_write", "var1", Type::Number)).unwrap();
         let comp = pass_through(sh, Type::Number);
         assert!(!capabilities(&comp, &store).is_replayable());
     }
@@ -305,14 +318,19 @@ mod tests {
 
     #[test]
     fn store_read_is_mockable() {
-        // StateRead is sourced (the host supplies it) ⇒ design mode scripts a mock.
-        assert!(mock_of(&prim("store_read", Type::Number)).is_some());
+        // StateRead is sourced (the host supplies it) ⇒ design mode scripts a mock. A real key
+        // is required just to classify at all now, but the thing this test actually proves is
+        // unchanged: a state *read* gets mocked the same as any other sourced leaf.
+        assert!(mock_of(&keyed_prim("store_read", "var1", Type::Number)).is_some());
     }
 
     #[test]
     fn store_write_has_no_mock() {
-        // StateWrite is performed (output-carried, a Fork-B sink) ⇒ eval runs it; no mock.
-        assert_eq!(mock_of(&prim("store_write", Type::Number)), None);
+        // StateWrite is performed (output-carried, a Fork-B sink) ⇒ eval runs it; no mock. A
+        // real key so this actually reaches `mock_of`'s `is_sourced()` check — without one it
+        // would return `None` earlier, for the unrelated reason of being unrecognized, and this
+        // test would pass without ever proving what its own comment claims.
+        assert_eq!(mock_of(&keyed_prim("store_write", "var1", Type::Number)), None);
     }
 
     #[test]
@@ -320,7 +338,7 @@ mod tests {
         // A read-bearing graph runs in design mode: store_read is sourced, so it mocks to
         // a scripted value and the graph evaluates purely (just like a driver).
         let mut store = MapResolver::new();
-        let rh = store.insert(prim("store_read", Type::Number)).unwrap();
+        let rh = store.insert(keyed_prim("store_read", "var1", Type::Number)).unwrap();
         let comp = pass_through(rh, Type::Number);
         assert_eq!(eval(&comp, &[], &store).into_vec(), vec![None]); // store_read not computable (sourced)
         assert_eq!(design_eval(&comp, &[], &store), Some(Value::Number(0.0))); // scripted

@@ -148,9 +148,14 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "random" => prim(vec![], vec![], Number),
         "ingress" => prim(vec![], vec![], Any),
 
-        // ── state cell ──
-        "store_read" => prim(vec![], vec![], Any),
-        "store_write" => prim(vec![port("value", Any)], vec![], Effect),
+        // ── state cell ── `"key"` (frozen) names which slot this leaf touches — see the
+        // keyed-state-capability L4. `capabilities_of` now fails closed without one, the
+        // same standard an unrecognized name already gets held to; the default here
+        // ("value") keeps a freshly palette-dropped node immediately valid and usable,
+        // matching every other leaf's own default-configured convention (`const` at
+        // `Number 0`, `compare` at `op="eq"`).
+        "store_read" => prim(vec![], vec![Param::frozen("key", "value")], Any),
+        "store_write" => prim(vec![port("value", Any)], vec![Param::frozen("key", "value")], Effect),
 
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
@@ -168,7 +173,7 @@ pub fn genesis_units() -> Vec<Unit> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{capabilities_of, compatible, eval, MapResolver, Value};
+    use crate::{capabilities_of, compatible, eval, Capability, MapResolver, Value};
 
     #[test]
     fn interface_of_unknown_is_none() {
@@ -239,9 +244,13 @@ mod tests {
     #[test]
     fn the_two_catalogs_agree() {
         // The interface axis and the capability axis cover the same atom set — drift in either
-        // (a name in one table but not the other) is caught here.
+        // (a name in one table but not the other) is caught here. Uses each name's REAL
+        // catalog params (not bare &[]) so store_read/store_write's own default key
+        // actually has to resolve for this to pass — proving the two catalogs agree
+        // end to end, not just superficially by name.
         for &n in GENESIS {
-            assert!(capabilities_of(n).is_some(), "{n} missing from capabilities_of");
+            let iface = interface_of(n).unwrap();
+            assert!(capabilities_of(n, &iface.params).is_some(), "{n} missing from capabilities_of");
         }
     }
 
@@ -274,6 +283,19 @@ mod tests {
         // (what the `list` constructor produces) still bridges in — so existing graphs keep working.
         assert!(!compatible(&Type::List(Box::new(Type::Text)), &sum.inputs[0].ty));
         assert!(compatible(&Type::list_any(), &sum.inputs[0].ty));
+    }
+
+    #[test]
+    fn store_read_write_have_a_valid_default_key() {
+        // interface_of's whole point is a usable, valid palette node — confirmed here by
+        // actually deriving capabilities from it, not just checking the param exists.
+        let read = interface_of("store_read").unwrap();
+        let caps = capabilities_of("store_read", &read.params).unwrap();
+        assert!(caps.contains(Capability::StateRead("value".to_string())));
+
+        let write = interface_of("store_write").unwrap();
+        let caps = capabilities_of("store_write", &write.params).unwrap();
+        assert!(caps.contains(Capability::StateWrite("value".to_string())));
     }
 
     #[test]

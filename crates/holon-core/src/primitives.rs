@@ -198,7 +198,19 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // A state write is a Fork-B sink too: it constructs a `store_write` request; the host
         // performs it by *storing* (capability `StateWrite`). `store_read` has no pure compute
         // — it is sourced (host-supplied), like a driver. `ingress` is sourced too (no compute).
-        "store_write" => sink_effect("store_write", inputs),
+        //
+        // Keyed now (see the keyed-state-capability L4): the settled `Value::Effect` this
+        // constructs is the ONLY thing that survives evaluation — the leaf's own `params` are
+        // gone by the time the host walks the output looking for effects to perform. So the key
+        // has to travel *inside* the sink string itself, or it's lost entirely. Encoded as
+        // `"store_write:<key>"`; `holon-host`'s `perform_effects` undoes this same encoding.
+        // Fails closed exactly like `const` two arms up (`?` on a missing param): a `store_write`
+        // with no key never even constructs an effect, rather than silently constructing an
+        // ownerless one that would vanish at the perform step with no visible error.
+        "store_write" => {
+            let key = param(params, "key")?;
+            sink_effect(&format!("store_write:{key}"), inputs)
+        }
 
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
@@ -390,12 +402,22 @@ mod tests {
     }
     #[test]
     fn store_write_constructs_an_effect() {
-        // A state write is a Fork-B sink too: it constructs a `store_write` request.
+        // A state write is a Fork-B sink too: it constructs a `store_write` request — now with
+        // its key encoded into the sink string, since that's the only thing that survives into
+        // the settled value for `holon-host`'s `perform_effects` to read back.
         assert_eq!(
-            compute("store_write", &[&num(7.0)], &[]),
-            Some(Value::Effect { sink: "store_write".into(), payload: Box::new(num(7.0)) })
+            compute("store_write", &[&num(7.0)], &[p("key", "var1")]),
+            Some(Value::Effect { sink: "store_write:var1".into(), payload: Box::new(num(7.0)) })
         );
         assert_eq!(compute("store_read", &[], &[]), None); // read is sourced, not computed
+    }
+
+    #[test]
+    fn store_write_fails_closed_without_a_key() {
+        // Real, deliberate: no key means no effect is constructed at all, rather than silently
+        // building one that would vanish, unowned, at the perform step. Same discipline `const`
+        // already applies two arms up for a missing/unparseable literal.
+        assert_eq!(compute("store_write", &[&num(7.0)], &[]), None);
     }
     #[test]
     fn egress_carries_a_correlation_token() {

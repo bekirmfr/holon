@@ -38,7 +38,7 @@
 
 /// What a primitive or composite *is*, with respect to effects.
 ///
-use crate::{Resolver, Unit, UnitBody};
+use crate::{Param, Resolver, Unit, UnitBody};
 use std::collections::BTreeSet;
 
 /// The non-`Pure` variants are the three ways purity ends, in increasing
@@ -85,14 +85,20 @@ impl Kind {
 // *derivable ⟹ derived*, kind is computed from capabilities, never asserted beside
 // them, so the two cannot drift.
 
-/// A category of effect — what a leaf touches outside its inputs. **Atomic** for
-/// now: the *category*, not yet the *resource* (`NetworkEgress`, not
-/// `NetworkEgress("api.evil.com")`); the resource parameter is a deferred precision
-/// layer. Grouped by the [`Kind`] each projects to.
+/// A category of effect — what a leaf touches outside its inputs. Grouped by the
+/// [`Kind`] each projects to. Every variant is atomic (no payload) **except**
+/// `StateRead`/`StateWrite`, which carry the state key they name — see the
+/// keyed-state-capability L4. That's a deliberate, narrower precision upgrade than
+/// the general "resource parameter" idea named early in this project's own history
+/// (`NetworkEgress("api.evil.com")` and friends stay atomic; only the two state
+/// capabilities are keyed, on the concrete need that actually showed up).
 ///
 /// `PartialOrd`/`Ord` exist for deterministic [`BTreeSet`] storage only — storage
-/// order, not a danger ranking (same disclaimer as [`Kind`]).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+/// order, not a danger ranking (same disclaimer as [`Kind`]). **No longer `Copy`**
+/// (a `String` payload can't be): every call site that used to rely on a bare copy
+/// now clones instead — real, but mechanical (see `kind`/`is_sourced` below, both
+/// widened to take `&self` rather than `self` so the ripple stays contained there).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Capability {
     /// Reads wall-clock / timers.
     Clock,
@@ -104,10 +110,10 @@ pub enum Capability {
     SecretAccess,
     /// Sources entropy / nondeterminism.
     Random,
-    /// Reads a value retained across firings.
-    StateRead,
-    /// Writes a value retained across firings.
-    StateWrite,
+    /// Reads a value retained across firings, at the named key.
+    StateRead(String),
+    /// Writes a value retained across firings, at the named key.
+    StateWrite(String),
     /// Sends outbound (mail, HTTP write).
     NetworkEgress,
     /// Writes / deletes files.
@@ -116,16 +122,29 @@ pub enum Capability {
     Spawn,
 }
 
+/// The sentinel key `saturate_caps` uses for the fail-closed "this closure touches
+/// state at some key I can't identify" case — an unresolvable reference or unknown
+/// leaf can't name a real key (key-space is unbounded strings, nothing to
+/// enumerate), so this stands in for "unspecified, be suspicious." **Never a value
+/// `store_read`/`store_write` legitimately construct** — `state_key` (below) never
+/// produces it from a real, resolved param. One honest, un-closed gap: nothing
+/// currently stops a real unit from choosing this exact string as its own key,
+/// which would be indistinguishable from the saturation marker. Low practical risk,
+/// cheap to close later (reject this string at deploy time) if it ever matters —
+/// not solved now.
+const SATURATED_STATE_KEY: &str = "<unknown>";
+
 impl Capability {
     /// The coarse [`Kind`] bucket this capability projects to — *read the world* ⇒
     /// `Driver`, *retain* ⇒ `State`, *commit irreversibly* ⇒ `Sink`. Never
     /// [`Kind::Pure`]: purity is the **empty** capability set, not a projection
-    /// target.
-    pub fn kind(self) -> Kind {
+    /// target. Takes `&self` (not `self`) — `Capability` is no longer `Copy`, and a
+    /// method that doesn't need to consume its receiver shouldn't force one.
+    pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
             Clock | NetworkIngress | FileRead | SecretAccess | Random => Kind::Driver,
-            StateRead | StateWrite => Kind::State,
+            StateRead(_) | StateWrite(_) => Kind::State,
             NetworkEgress | FileWrite | Spawn => Kind::Sink,
         }
     }
@@ -136,10 +155,10 @@ impl Capability {
     /// write, spawn, **state write**). Design mode mocks the sourced side; deploy
     /// performs the rest. The `State` kind splits here — `StateRead` enters at the top,
     /// `StateWrite` exits at the bottom — which is what "time in, consequences out"
-    /// always meant.
-    pub fn is_sourced(self) -> bool {
+    /// always meant. Takes `&self`, same reason as [`kind`](Capability::kind).
+    pub fn is_sourced(&self) -> bool {
         use Capability::*;
-        matches!(self, Clock | NetworkIngress | FileRead | SecretAccess | Random | StateRead)
+        matches!(self, Clock | NetworkIngress | FileRead | SecretAccess | Random | StateRead(_))
     }
 }
 
@@ -167,9 +186,11 @@ impl Capabilities {
     pub fn len(&self) -> usize {
         self.0.len()
     }
-    /// Iterate the capabilities in deterministic order.
+    /// Iterate the capabilities in deterministic order. `cloned()`, not `copied()` —
+    /// `Capability` is no longer `Copy` (the `StateRead`/`StateWrite` keys carry a
+    /// `String`).
     pub fn iter(&self) -> impl Iterator<Item = Capability> + '_ {
-        self.0.iter().copied()
+        self.0.iter().cloned()
     }
     /// Replayable / cacheable ⇔ **no `State` capability anywhere in the closure** — the
     /// one place the design forfeits caching and replay (`§7`). This is *orthogonal* to
@@ -182,20 +203,24 @@ impl Capabilities {
     }
 }
 
-/// Classify a **primitive leaf**'s capability manifest by name — the *primary* leaf
-/// classification (P2.3.1), from which [`kind_of`] and [`effects_of`] are projected.
+/// Classify a **primitive leaf**'s capability manifest by name (and, for the two
+/// state-cell leaves, its own `params`) — the *primary* leaf classification
+/// (P2.3.1), from which [`kind_of`] and [`effects_of`] are projected.
 ///
 /// - pure leaf ⇒ `Some(∅)` — the positive "touches nothing outside its inputs";
 /// - effectful exemplar ⇒ `Some({…})`;
-/// - unknown leaf ⇒ `None` — **fail closed**: a caller treats it at least as
-///   conservatively as the full capability set, never as ∅.
+/// - unknown leaf, **or `store_read`/`store_write` with no resolvable `"key"`
+///   param**, ⇒ `None` — **fail closed**: a caller treats it at least as
+///   conservatively as the full capability set, never as ∅. A state-cell leaf with
+///   no key is not a leaf this engine vouches for, the identical standard an
+///   unrecognized name already gets held to.
 ///
 /// Closed core table: the marketplace ships only composites (which *derive*); new
 /// effect leaves are trusted host releases that add a row here. Core *declares* the
 /// manifest; `holon-host` *honours* it at execution.
-pub fn capabilities_of(name: &str) -> Option<Capabilities> {
+pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
     use Capability::*;
-    let caps: &[Capability] = match name {
+    let caps: Vec<Capability> = match name {
         // Pure leaves: the first-order vocabulary `compute` implements, plus
         // higher-order `map` (effect-free). A positive empty manifest.
         "const"
@@ -206,42 +231,58 @@ pub fn capabilities_of(name: &str) -> Option<Capabilities> {
         | "cons" | "head" | "tail" | "is_empty"
         | "pair"
         | "some" | "none"
-        | "fold" | "map" => &[],
+        | "fold" | "map" => vec![],
 
         // Effectful exemplars (classification only; execution is host-side). A state
         // cell is two leaves: `store_read` sources its slot (input-side), `store_write`
-        // commits to it (output-side) — see the P2.6.1 L4.
-        "store_read" => &[StateRead],
-        "store_write" => &[StateWrite],
-        "clock" => &[Clock],
-        "random" => &[Random],
-        "egress" => &[NetworkEgress],
+        // commits to it (output-side) — see the P2.6.1 L4. Both are now **keyed** — see
+        // the keyed-state-capability L4 — so each needs its own `"key"` param to
+        // classify at all.
+        "store_read" => vec![StateRead(state_key(params)?)],
+        "store_write" => vec![StateWrite(state_key(params)?)],
+        "clock" => vec![Clock],
+        "random" => vec![Random],
+        "egress" => vec![NetworkEgress],
         // Request/response (P2.5.1): `ingress` is the driver (a request arrives), `egress` carries
         // the reply out. §13 merges the old `email`/`respond` into this one `egress` sink — both
         // were NetworkEgress, and the host dispatches on the *capability*, not the sink name, so the
         // destination (mailbox, connection token, …) belongs in the payload, not in a distinct
         // primitive. The correlation token rides as ordinary data; isolation is purity's
         // (independent pure paths can't cross), so the token is only a boundary label.
-        "ingress" => &[NetworkIngress],
+        "ingress" => vec![NetworkIngress],
 
         // Unknown leaf ⇒ fail closed. The engine does not vouch for it.
         _ => return None,
     };
-    Some(Capabilities(caps.iter().copied().collect()))
+    Some(Capabilities(caps.into_iter().collect()))
+}
+
+/// Read the required `"key"` frozen param for `store_read`/`store_write` — the state
+/// key that capability now names. `None` (routing the caller to `capabilities_of`'s
+/// own fail-closed `None` path) if the param is missing, still an unfilled `Open`
+/// hole, or frozen to an empty string — a state-cell leaf with no concrete key
+/// identifies nothing to key by.
+fn state_key(params: &[Param]) -> Option<String> {
+    let key = params.iter().find(|p| p.name() == "key")?.value()?;
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
+    }
 }
 
 /// The coarse [`Kind`] of a **primitive leaf**, *projected* from its capability
 /// manifest ([`capabilities_of`]) — the single source of leaf classification:
 ///
-/// - unknown leaf ⇒ `None` (fail-closed);
+/// - unknown leaf, or a state-cell leaf with no resolvable key ⇒ `None` (fail-closed);
 /// - pure leaf (∅ manifest) ⇒ `Some(Pure)`;
 /// - effectful leaf ⇒ the [`Kind`] its capabilities project to.
 ///
 /// A single-bucket **convenience**, exact for the current ≤1-axis vocabulary. The
 /// general truth — a leaf may touch several axes — is the *set* [`effects_of`]
 /// returns; when a multi-axis leaf first exists, this convenience yields to it.
-pub fn kind_of(name: &str) -> Option<Kind> {
-    let caps = capabilities_of(name)?;
+pub fn kind_of(name: &str, params: &[Param]) -> Option<Kind> {
+    let caps = capabilities_of(name, params)?;
     let first = caps.iter().next();
     Some(match first {
         None => Kind::Pure,
@@ -323,12 +364,22 @@ pub fn effects_of(unit: &Unit, resolver: &impl Resolver) -> Effects {
     Effects(acc)
 }
 
-/// Insert every capability — the saturated, maximally-suspicious manifest.
+/// Insert every capability — the saturated, maximally-suspicious manifest. The two
+/// state capabilities use [`SATURATED_STATE_KEY`] — "touches state at some
+/// unspecified key" — since an unresolvable reference can't name a real one.
 fn saturate_caps(acc: &mut BTreeSet<Capability>) {
     use Capability::*;
     for c in [
-        Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead,
-        StateWrite, NetworkEgress, FileWrite, Spawn,
+        Clock,
+        NetworkIngress,
+        FileRead,
+        SecretAccess,
+        Random,
+        StateRead(SATURATED_STATE_KEY.to_string()),
+        StateWrite(SATURATED_STATE_KEY.to_string()),
+        NetworkEgress,
+        FileWrite,
+        Spawn,
     ] {
         acc.insert(c);
     }
@@ -336,9 +387,11 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
 
 fn collect_caps(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capability>) {
     // (1) This unit's own leaf contribution, if it is a primitive: its capability
-    //     manifest. A pure leaf's ∅ contributes nothing; an unknown leaf fails closed.
+    //     manifest, read from its name **and its own params** (the state-cell leaves'
+    //     key lives there). A pure leaf's ∅ contributes nothing; an unknown leaf, or a
+    //     state-cell leaf with no resolvable key, fails closed.
     if let UnitBody::Primitive { name } = &unit.body {
-        match capabilities_of(name) {
+        match capabilities_of(name, &unit.params) {
             Some(caps) => {
                 for c in caps.iter() {
                     acc.insert(c);
@@ -370,6 +423,17 @@ mod tests {
         Unit {
             body: UnitBody::Primitive { name: name.to_string() },
             params: vec![],
+            inputs: vec![],
+            outputs: vec![],
+        }
+    }
+
+    /// A `store_read`/`store_write` primitive with a real `"key"` param — both now
+    /// require one to classify at all (`capabilities_of` fails closed without it).
+    fn keyed_state_prim(name: &str, key: &str) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: name.to_string() },
+            params: vec![Param::frozen("key", key)],
             inputs: vec![],
             outputs: vec![],
         }
@@ -408,17 +472,18 @@ mod tests {
             "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "fold", "map",
         ];
         for name in PURE {
-            assert_eq!(kind_of(name), Some(Kind::Pure), "{name} should be Pure");
+            assert_eq!(kind_of(name, &[]), Some(Kind::Pure), "{name} should be Pure");
         }
     }
 
     #[test]
     fn effectful_exemplars_classify() {
-        assert_eq!(kind_of("store_read"), Some(Kind::State));
-        assert_eq!(kind_of("store_write"), Some(Kind::State));
-        assert_eq!(kind_of("clock"), Some(Kind::Driver));
-        assert_eq!(kind_of("random"), Some(Kind::Driver));
-        assert_eq!(kind_of("egress"), Some(Kind::Sink));
+        let key = [Param::frozen("key", "var1")];
+        assert_eq!(kind_of("store_read", &key), Some(Kind::State));
+        assert_eq!(kind_of("store_write", &key), Some(Kind::State));
+        assert_eq!(kind_of("clock", &[]), Some(Kind::Driver));
+        assert_eq!(kind_of("random", &[]), Some(Kind::Driver));
+        assert_eq!(kind_of("egress", &[]), Some(Kind::Sink));
     }
 
     /// The security-relevant direction: every effectful leaf classifies non-`Pure`.
@@ -426,24 +491,30 @@ mod tests {
     /// name — lands with host execution, P2.4.1 / P2.6.1.)
     #[test]
     fn effectful_exemplars_are_not_pure() {
-        for name in ["store_read", "store_write", "clock", "egress"] {
-            assert!(kind_of(name).unwrap().is_effectful(), "{name} must be effectful");
+        let key = [Param::frozen("key", "var1")];
+        for (name, params) in [
+            ("store_read", &key[..]),
+            ("store_write", &key[..]),
+            ("clock", &[][..]),
+            ("egress", &[][..]),
+        ] {
+            assert!(kind_of(name, params).unwrap().is_effectful(), "{name} must be effectful");
         }
     }
 
     /// `map` is higher-order but carries no effect — it must read as `Pure`.
     #[test]
     fn map_is_pure() {
-        assert_eq!(kind_of("map"), Some(Kind::Pure));
-        assert!(!kind_of("map").unwrap().is_effectful());
+        assert_eq!(kind_of("map", &[]), Some(Kind::Pure));
+        assert!(!kind_of("map", &[]).unwrap().is_effectful());
     }
 
     /// An unknown leaf fails closed: `None`, never `Some(Pure)`.
     #[test]
     fn unknown_is_none() {
-        assert_eq!(kind_of("xyzzy"), None);
-        assert_eq!(kind_of(""), None);
-        assert_ne!(kind_of("definitely_not_a_primitive"), Some(Kind::Pure));
+        assert_eq!(kind_of("xyzzy", &[]), None);
+        assert_eq!(kind_of("", &[]), None);
+        assert_ne!(kind_of("definitely_not_a_primitive", &[]), Some(Kind::Pure));
     }
 
     #[test]
@@ -556,26 +627,26 @@ mod tests {
     #[test]
     fn pure_leaf_declares_empty_manifest() {
         // A positive empty manifest — Some(∅), not None — "touches nothing".
-        let caps = capabilities_of("add").unwrap();
+        let caps = capabilities_of("add", &[]).unwrap();
         assert!(caps.is_pure());
         assert_eq!(caps.len(), 0);
     }
 
     #[test]
     fn effectful_leaves_declare_their_caps() {
-        let egress = capabilities_of("egress").unwrap();
+        let egress = capabilities_of("egress", &[]).unwrap();
         assert!(egress.contains(Capability::NetworkEgress));
         assert_eq!(egress.len(), 1);
 
-        let store_read = capabilities_of("store_read").unwrap();
-        assert!(store_read.contains(Capability::StateRead));
+        let store_read = capabilities_of("store_read", &[Param::frozen("key", "var1")]).unwrap();
+        assert!(store_read.contains(Capability::StateRead("var1".to_string())));
         assert_eq!(store_read.len(), 1);
 
-        let store_write = capabilities_of("store_write").unwrap();
-        assert!(store_write.contains(Capability::StateWrite));
+        let store_write = capabilities_of("store_write", &[Param::frozen("key", "var1")]).unwrap();
+        assert!(store_write.contains(Capability::StateWrite("var1".to_string())));
         assert_eq!(store_write.len(), 1);
 
-        let clock = capabilities_of("clock").unwrap();
+        let clock = capabilities_of("clock", &[]).unwrap();
         assert!(clock.contains(Capability::Clock));
         assert_eq!(clock.len(), 1);
 
@@ -583,7 +654,7 @@ mod tests {
         // effect-bearing yet *replayable* (no State); `egress` carries the reply (checked above,
         // since the merged sink is the same leaf). The correlating token is plain data, never a
         // capability.
-        let ingress = capabilities_of("ingress").unwrap();
+        let ingress = capabilities_of("ingress", &[]).unwrap();
         assert!(ingress.contains(Capability::NetworkIngress));
         assert!(ingress.is_replayable()); // a driver, not state
     }
@@ -592,11 +663,11 @@ mod tests {
     fn is_sourced_splits_input_from_output() {
         use Capability::*;
         // sourced (input-side): drivers and the state *read*
-        for c in [Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead] {
+        for c in [Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead("var1".to_string())] {
             assert!(c.is_sourced(), "{c:?} should be sourced");
         }
         // performed (output-side): sinks and the state *write*
-        for c in [NetworkEgress, FileWrite, Spawn, StateWrite] {
+        for c in [NetworkEgress, FileWrite, Spawn, StateWrite("var1".to_string())] {
             assert!(!c.is_sourced(), "{c:?} should be performed");
         }
     }
@@ -605,8 +676,8 @@ mod tests {
     fn capability_projects_to_expected_kind() {
         assert_eq!(Capability::NetworkEgress.kind(), Kind::Sink);
         assert_eq!(Capability::Clock.kind(), Kind::Driver);
-        assert_eq!(Capability::StateRead.kind(), Kind::State);
-        assert_eq!(Capability::StateWrite.kind(), Kind::State);
+        assert_eq!(Capability::StateRead("var1".to_string()).kind(), Kind::State);
+        assert_eq!(Capability::StateWrite("var1".to_string()).kind(), Kind::State);
     }
 
     #[test]
@@ -622,8 +693,8 @@ mod tests {
     fn capability_kind_is_never_pure() {
         use Capability::*;
         for cap in [
-            Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead,
-            StateWrite, NetworkEgress, FileWrite, Spawn,
+            Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead("var1".to_string()),
+            StateWrite("var1".to_string()), NetworkEgress, FileWrite, Spawn,
         ] {
             assert_ne!(cap.kind(), Kind::Pure, "{cap:?} must project to an effect");
         }
@@ -631,8 +702,27 @@ mod tests {
 
     #[test]
     fn unknown_leaf_has_no_manifest() {
-        assert_eq!(capabilities_of("frobnicate"), None);
-        assert_eq!(capabilities_of(""), None);
+        assert_eq!(capabilities_of("frobnicate", &[]), None);
+        assert_eq!(capabilities_of("", &[]), None);
+    }
+
+    #[test]
+    fn state_cell_leaf_without_a_key_is_unrecognized() {
+        // A real, deliberate decision, not an incidental side effect of adding the
+        // param: `store_read`/`store_write` with no resolvable key fail closed the
+        // *same way* an unknown name does — not "some anonymous state," not ∅.
+        assert_eq!(capabilities_of("store_read", &[]), None); // no key param at all
+        assert_eq!(capabilities_of("store_write", &[]), None);
+        assert_eq!(
+            capabilities_of("store_read", &[Param::frozen("key", "")]),
+            None // frozen to an empty string — no real key
+        );
+        assert_eq!(
+            capabilities_of("store_read", &[Param::open("key", "some_binding")]),
+            None // an unfilled hole — not yet a concrete key
+        );
+        // A key param present under the wrong name doesn't accidentally satisfy it.
+        assert_eq!(capabilities_of("store_read", &[Param::frozen("wrong_name", "var1")]), None);
     }
 
     // ── P2.3.2: capability union, surfaced before import ────────────────────
@@ -666,15 +756,33 @@ mod tests {
         let mut store = MapResolver::new();
         let clock = store.insert(prim("clock")).unwrap();
         let egress = store.insert(prim("egress")).unwrap();
-        let store_read = store.insert(prim("store_read")).unwrap();
-        let store_write = store.insert(prim("store_write")).unwrap();
+        let store_read = store.insert(keyed_state_prim("store_read", "var1")).unwrap();
+        let store_write = store.insert(keyed_state_prim("store_write", "var1")).unwrap();
         let comp = composite(vec![clock, egress, store_read, store_write]);
         let caps = capabilities(&comp, &store);
         assert!(caps.contains(Capability::Clock));
         assert!(caps.contains(Capability::NetworkEgress));
-        assert!(caps.contains(Capability::StateRead));
-        assert!(caps.contains(Capability::StateWrite));
+        assert!(caps.contains(Capability::StateRead("var1".to_string())));
+        assert!(caps.contains(Capability::StateWrite("var1".to_string())));
         assert_eq!(caps.len(), 4);
+    }
+
+    #[test]
+    fn distinct_state_keys_surface_as_distinct_capabilities() {
+        // The actual point of keying: two store_read leaves at DIFFERENT keys don't
+        // collapse into one manifest entry the way two bare StateReads used to.
+        let mut store = MapResolver::new();
+        let var1 = store.insert(keyed_state_prim("store_read", "var1")).unwrap();
+        let var2 = store.insert(keyed_state_prim("store_read", "var2")).unwrap();
+        let caps = capabilities(&composite(vec![var1, var2]), &store);
+        assert!(caps.contains(Capability::StateRead("var1".to_string())));
+        assert!(caps.contains(Capability::StateRead("var2".to_string())));
+        assert_eq!(caps.len(), 2); // two distinct entries, not deduped to one
+
+        // The same key, referenced twice, IS one entry — a BTreeSet, not a multiset.
+        let var1_again = store.insert(keyed_state_prim("store_read", "var1")).unwrap();
+        let repeated_caps = capabilities(&composite(vec![var1, var1_again]), &store);
+        assert_eq!(repeated_caps.len(), 1);
     }
 
     #[test]

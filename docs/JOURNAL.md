@@ -3823,3 +3823,105 @@ tested. What's still open, named rather than silently assumed solved: no persist
 deployment forgotten on restart, consistent with everything else in this crate); no overlap
 protection beyond the scheduler being single and sequential; no capability-consent gate before
 deploying a unit with real effects.
+
+---
+
+## 2026-07-02 · holon-core/host/wasm — keyed `StateRead`/`StateWrite`, real per-key state
+
+**Built.** `Capability::StateRead`/`StateWrite` now carry a `String` key instead of being bare
+flags. The concrete need, not a speculative one: a deployment-level design conversation
+surfaced that a single anonymous state slot means two different variables silently share one
+lock and one value — a real lost-update race once two triggers for the same deployment can
+overlap (the concurrent-tick fan-out from a few inches back made this a live possibility, not
+theoretical). Landed across six files, each grounded from real source before a line changed,
+not reasoned from memory.
+
+**Where the idea actually came from — worth crediting plainly, not absorbing silently.** The
+shape of this feature was arrived at *with* the user, across several turns, each one a real
+correction to what had been proposed the turn before: a first sketch of per-deployment
+`Deployment.state: Option<Value>` was caught as reinventing `StateHost::round`'s already-proven
+snapshot→fire→apply logic by hand, a second sketch of a pluggable `dyn StateBackend` was caught
+as reaching for a mechanism `Deployment`'s own already-persisted JSON already provided, and the
+final, right question — "state units solve the per-composite problem, but state write needs a
+key and a value" — is what actually named the real, previously-unscoped gap. None of this was
+solved solo; recording that honestly rather than presenting it as a clean, single-pass design.
+
+**`kind.rs` — the enum change, and the ripple it wasn't obvious would follow.** Adding a
+`String` payload cost `Capability` its `Copy` (kept `Clone`), which cascaded further than the
+enum itself: `saturate_caps`'s old flat array of bare variants stopped compiling outright once
+two of its entries became constructor functions instead of values, and — the real, not just
+mechanical, question — "fail closed, assume the worst" no longer had anything concrete to write
+down for an unknown *key*, since key-space is unbounded strings, not an enumerable set the way
+the old ten bare capabilities were. Resolved with a documented `"<unknown>"` sentinel, only
+after asking rather than picking silently — the user settled it in one line ("n/a, unknown or
+error like keys if that's the whole issue") once the actual shape of the problem was explained
+plainly rather than left in jargon. `capabilities_of` widened to `(name, params)`, since a
+leaf's key lives in its own params, not its name; `store_read`/`store_write` with no resolvable
+key now fail closed exactly like an unrecognized primitive name — a real, deliberate decision,
+locked in by its own governing test, not an incidental side effect of the param change.
+
+**`catalog.rs`** — `store_read`/`store_write` gain a required `"key"` frozen param, defaulting
+to `"value"` so a freshly palette-dropped node stays immediately usable, the same convention
+`const`'s own default already sets.
+
+**`primitives.rs` — the piece that turned this from a type exercise into something real.**
+Tracing `perform_effects` precisely surfaced a genuine, previously unscoped gap: a settled
+`Value::Effect` only ever carried its sink's *bare name* — the leaf's own params never survive
+evaluation into the output value. So a keyed `store_write`'s key had nowhere left to live
+except *inside that same string* — `"store_write:var1"` instead of bare `"store_write"`. `egress`
+stays untouched (it never had params to encode). Fails closed with no key, same `?` discipline
+`const` already uses two arms up — a `store_write` missing its key constructs no effect at all,
+rather than one that would silently vanish, unowned, at the perform step.
+
+**`holon-host/lib.rs` — the good surprise: `SourcedResolver` needed no new logic at all.**
+Traced precisely rather than assumed: once `capabilities_of` sees a leaf's real params, its
+*existing* equality-based matching loop already does correct per-key routing, because two
+different keys are now two genuinely different `Capability` values in the set. The only real
+work was `perform_effects` gaining `parse_sink` (the exact inverse of `primitives.rs`'s
+encoding) and `StateHost`'s actual redesign — `storage: Value` → `storage: BTreeMap<String,
+Value>`, `round()` snapshotting every stored key each pass (harmless if a given graph doesn't
+use them all, simpler than pre-deriving which keys it touches) and writing back only the key a
+settled `StateWrite(key)` actually names.
+
+**`holon-wasm/lib.rs`** — `WCapability` mirrors the keyed shape using the exact bare-string /
+single-key-object convention `WType`'s own doc comment already establishes for nullary vs.
+payload-carrying variants — no new serde attribute, no new convention invented.
+
+**`simulate.rs` — the last mile, and an honest self-correction on the way.** `mock_of` already
+had the real fix applied (from an earlier round); what was left was four stale test fixtures
+still constructing keyless `store_read`/`store_write` units. Two were outright failing. Two —
+worth naming, not glossing over — were *quietly passing for the wrong reason*: a keyless
+`store_write` now triggers fail-closed saturation, which happens to also report "not
+replayable" and "no mock," coincidentally matching what their comments claimed a real state
+leaf would produce. Fixed all four for honesty, not just to clear red text.
+
+**A citation walked back, then walked back again — recorded plainly rather than smoothed over.**
+Mid-arc, a claim about a prior design note ("resource parameters need `capabilities_of` to read
+params") was first stated confidently, then doubted when a fresh `project_knowledge_search`
+came up empty, then confirmed correct after all once the full session transcript (not the
+narrower project-knowledge index) was searched directly. Worth recording as a reminder that an
+empty search result means "not found by this tool," not "doesn't exist."
+
+**Verified — the real thing, not just a clean compile.** `cargo build --workspace`: clean
+across all four crates, confirming only that the types line up. `cargo test --workspace`: **263
+passed, 0 failed** — 189 `holon-core` (including the new `distinct_state_keys_surface_as_
+distinct_capabilities`, `state_cell_leaf_without_a_key_is_unrecognized`, `store_read_write_
+have_a_valid_default_key`, `store_write_fails_closed_without_a_key`), 39 `holon-host`
+(`counter_remembers_across_firings`, `forking_a_cells_state_is_copy_on_write`,
+`saturating_counter_is_one_atomic_conditional_update` and every other `StateHost` test rewritten
+by hand, not left untouched), 24 `holon-server` (unaffected, confirming the boundary held), 11
+`holon-wasm`.
+
+**A stray file flagged twice before, still not removed until this pass.**
+`crates/holon-server/src/lib.rs` — the unrelated `cargo new --lib` stub with its own
+`tests::it_works` — kept showing up in every `cargo test --workspace` run across this entire
+arc, named in two earlier journal entries, deleted only now.
+
+**Deliberately out of scope, named rather than silently dropped:** generalizing resource
+parameters to any capability beyond state (only state had a concrete need); dynamic/runtime
+keys (static-only, decided early — the only choice that keeps `/deploy`'s capability-consent
+gate meaningful rather than gutted); `holon-server`'s own per-deployment `StateHost` wiring —
+the actual reason this whole pillar exists — still ahead, now unblocked.
+
+**No `PLAN.md` change this entry.** This was a correction to an already-shipped P2.6.1 design
+choice (the scalar cell explicitly named as a future deferral at the time), not a new leaf.

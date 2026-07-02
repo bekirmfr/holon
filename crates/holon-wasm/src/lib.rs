@@ -179,19 +179,21 @@ impl WType {
     }
 }
 
-/// A category of effect a leaf may touch, outside its inputs — mirrors `core::Capability`
-/// (P4.4.1). Dataless, no resource parameter yet (core's own deferred fork — see
-/// `capabilities_of`'s doc), so this crosses as a bare string, the same convention `WType`'s
-/// own nullary variants already use.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+/// A category of effect a leaf may touch, outside its inputs — mirrors `core::Capability`.
+/// Every variant crosses as a bare string (`"Clock"`) via serde's default external tagging,
+/// except `StateRead`/`StateWrite`, which now carry their state key and cross as a
+/// single-key object (`{"StateRead": "var1"}`) — the identical convention `WType`'s own
+/// nullary-vs-payload variants already use (see that type's own doc). No longer `Copy` (a
+/// `String` payload can't be).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub enum WCapability {
     Clock,
     NetworkIngress,
     FileRead,
     SecretAccess,
     Random,
-    StateRead,
-    StateWrite,
+    StateRead(String),
+    StateWrite(String),
     NetworkEgress,
     FileWrite,
     Spawn,
@@ -205,8 +207,8 @@ impl WCapability {
             Capability::FileRead => WCapability::FileRead,
             Capability::SecretAccess => WCapability::SecretAccess,
             Capability::Random => WCapability::Random,
-            Capability::StateRead => WCapability::StateRead,
-            Capability::StateWrite => WCapability::StateWrite,
+            Capability::StateRead(key) => WCapability::StateRead(key),
+            Capability::StateWrite(key) => WCapability::StateWrite(key),
             Capability::NetworkEgress => WCapability::NetworkEgress,
             Capability::FileWrite => WCapability::FileWrite,
             Capability::Spawn => WCapability::Spawn,

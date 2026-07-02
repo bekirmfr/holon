@@ -11,10 +11,12 @@
 //! the fixed point is one `eval` pass, so each effect is performed once with its
 //! committed payload.
 //!
-//! [`StateHost`] adds the one fenced state cell (`P2.6.1`): its storage is the `Model`;
-//! a `store_read` sources it, a `store_write` (a Fork-B sink, capability `StateWrite`)
-//! commits to it. The feedback that looked like a graph cycle is broken by storage
-//! *between rounds* — no `validate` change, no `eval` change.
+//! [`StateHost`] adds the fenced state cell (`P2.6.1`, keyed — see the
+//! keyed-state-capability L4): its storage is the `Model`, now a `BTreeMap<String, Value>`
+//! rather than one anonymous slot; a `store_read` sources one key, a `store_write` (a
+//! Fork-B sink, capability `StateWrite`) commits to one key. The feedback that looked
+//! like a graph cycle is broken by storage *between rounds* — no `validate` change, no
+//! `eval` change.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -54,15 +56,32 @@ pub fn fire(root: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver, hos
     Some(output)
 }
 
+/// Parse a settled `Effect`'s `sink` string back into `(primitive name, synthetic params)` —
+/// the exact inverse of how `primitives.rs`'s `store_write` arm encodes its own `"key"` param
+/// into the sink string (`"store_write:var1"`), since the leaf's real params don't survive
+/// evaluation into the output value — this string is the only thing that does. A bare name
+/// with no `:` (every non-keyed sink — `egress`, and `store_write` itself before this feature
+/// existed) parses as itself with no params, unchanged from before. Reused by
+/// `capabilities_of` below rather than adding a second function that answers a similar
+/// question a different way.
+fn parse_sink(sink: &str) -> (String, Vec<Param>) {
+    match sink.split_once(':') {
+        Some((name, key)) => (name.to_string(), vec![Param::frozen("key", key)]),
+        None => (sink.to_string(), Vec::new()),
+    }
+}
+
 /// Perform the effect(s) a settled output carries. A single `Effect`, or a `List` of them
 /// (and nested lists) — the **computed fan-out**: `map(egress, xs)` yields a `List[Effect]`,
 /// performed in order. Pure data carries nothing. The capability is *derived* from the sink's
-/// name (`capabilities_of`), so the `Host` trait is unchanged and a graph can only perform a
-/// capability it structurally declares — the effect was constructed by a leaf that has it.
+/// name (and, for keyed sinks, the key `parse_sink` recovers from that same string), so the
+/// `Host` trait is unchanged and a graph can only perform a capability it structurally
+/// declares — the effect was constructed by a leaf that has it.
 fn perform_effects(value: &Value, host: &mut impl Host) {
     match value {
         Value::Effect { sink, payload } => {
-            if let Some(caps) = capabilities_of(sink) {
+            let (name, params) = parse_sink(sink);
+            if let Some(caps) = capabilities_of(&name, &params) {
                 for cap in caps.iter() {
                     if !cap.is_sourced() {
                         host.perform(cap, &**payload);
@@ -82,10 +101,10 @@ fn perform_effects(value: &Value, host: &mut impl Host) {
 // ── Drive: source the world (and state) at sourced leaves ──────────────────────────
 
 /// Fire a graph with its **sourced** inputs supplied: each `(capability, value)` injects
-/// `value` at every leaf carrying that sourced capability — `Clock`, ingress, `StateRead`, …
-/// This is the one entry every mode funnels through; a leaf with no pure `compute` (a driver,
-/// a state read) gets its value here, or — if unsupplied — evaluates to nothing (deploy's
-/// honest asymmetry with design mode, which substitutes a default).
+/// `value` at every leaf carrying that sourced capability — `Clock`, ingress, `StateRead(key)`,
+/// … This is the one entry every mode funnels through; a leaf with no pure `compute` (a
+/// driver, a state read) gets its value here, or — if unsupplied — evaluates to nothing
+/// (deploy's honest asymmetry with design mode, which substitutes a default).
 pub fn fire_sourced(
     root: &Unit,
     sourced: &[(Capability, Value)],
@@ -124,41 +143,51 @@ pub fn run(
     }
 }
 
-// ── State: one anonymous cell threaded across rounds (P2.6.1) ──────────────────────
+// ── State: keyed cells threaded across rounds (P2.6.1, keyed) ──────────────────────
 
-/// A host that threads a single anonymous state cell across firing rounds. Storage is
-/// the `Model`: a `store_read` sources the round-start snapshot, a `store_write` commits
-/// the new value, which the round applies at the end — Elm's `update(old) → (new,
-/// cmds)`, atomically.
+/// A host that threads keyed state across firing rounds. Storage is the `Model`: a
+/// `store_read(key)` sources that key's round-start snapshot, a `store_write(key)` commits
+/// a new value at that key, applied at the end of the round — Elm's `update(old) → (new,
+/// cmds)`, atomically, now per-key rather than for one anonymous cell.
+///
+/// Every round snapshots **every** key currently in storage into the sourced set, whether or
+/// not the fired graph actually reads all of them — harmless (`SourcedResolver` only
+/// substitutes a leaf whose own key matches), and far simpler than pre-deriving which keys a
+/// given graph touches before firing it.
 pub struct StateHost {
-    storage: Value,
+    storage: BTreeMap<String, Value>,
     pending: Vec<(Capability, Value)>,
 }
 
 impl StateHost {
-    pub fn new(initial: Value) -> Self {
+    pub fn new(initial: BTreeMap<String, Value>) -> Self {
         StateHost { storage: initial, pending: Vec::new() }
     }
 
-    pub fn storage(&self) -> &Value {
+    pub fn storage(&self) -> &BTreeMap<String, Value> {
         &self.storage
     }
 
-    /// One firing round: source `StateRead` from storage (internal, threaded) and the given
-    /// `drivers` from the world (external, this event's inputs), fire, then apply the
-    /// `StateWrite` to storage. Reads see the round-start values; the write lands at round-end
-    /// and loops back. With `drivers` empty this is the pure state loop.
+    /// One firing round: source every keyed `StateRead` from storage (internal, threaded) and
+    /// the given `drivers` from the world (external, this event's inputs), fire, then apply
+    /// every `StateWrite(key)` in what was performed back to that same key in storage. Reads
+    /// see the round-start values; writes land at round-end and loop back. With `drivers`
+    /// empty this is the pure state loop.
     pub fn round(&mut self, graph: &Unit, drivers: &[(Capability, Value)], real: &impl Resolver) {
-        // Sourced inputs: storage for `StateRead` (threaded), the world for the drivers. The
-        // resolver injects both uniformly; only the internal one (`StateWrite`) is committed
-        // back below — drivers have no write-back.
-        let mut sourced = vec![(Capability::StateRead, self.storage.clone())];
+        // Sourced inputs: every stored key (threaded), the world for the drivers. The resolver
+        // injects both uniformly, matching each leaf's own key exactly; only `StateWrite` is
+        // committed back below — drivers have no write-back.
+        let mut sourced: Vec<(Capability, Value)> = self
+            .storage
+            .iter()
+            .map(|(key, value)| (Capability::StateRead(key.clone()), value.clone()))
+            .collect();
         sourced.extend_from_slice(drivers);
         self.pending.clear();
         fire_sourced(graph, &sourced, real, self);
         for (cap, payload) in std::mem::take(&mut self.pending) {
-            if cap == Capability::StateWrite {
-                self.storage = payload; // the Model-out (loops back to next round's read)
+            if let Capability::StateWrite(key) = cap {
+                self.storage.insert(key, payload); // the Model-out (loops back to next round's read)
             }
         }
     }
@@ -171,10 +200,13 @@ impl Host for StateHost {
 }
 
 /// A resolver that injects a host-supplied constant at every **sourced** leaf — `StateRead`,
-/// `Clock`, ingress, … — keyed by capability (one value per kind: the anonymous cell, the
-/// anonymous clock; keyed/multiple resources defer with the capability model). It **owns** the
-/// constants it hands out, since `resolve` returns `&Unit`. Performed leaves (sinks,
-/// `store_write`) are never substituted, so the effect manifest is intact.
+/// `Clock`, ingress, … Matching is by full `Capability` equality, which — now that
+/// `StateRead`/`StateWrite` carry a key — already does correct per-key routing with no new
+/// logic: two leaves reading different keys derive different `Capability` values (via
+/// `capabilities_of` reading each leaf's own `params`), so the loop below only ever matches a
+/// leaf against a sourced entry for its *own* key. It **owns** the constants it hands out,
+/// since `resolve` returns `&Unit`. Performed leaves (sinks, `store_write`) are never
+/// substituted, so the effect manifest is intact.
 struct SourcedResolver<'a, R: Resolver> {
     sourced: Vec<(Capability, Unit)>,
     real: &'a R,
@@ -188,7 +220,7 @@ impl<'a, R: Resolver> SourcedResolver<'a, R> {
         // "evaluates to nothing." No new failure mode; reuse of the existing honest one.
         let sourced = sourced
             .iter()
-            .filter_map(|(cap, value)| constant_unit(value).map(|u| (*cap, u)))
+            .filter_map(|(cap, value)| constant_unit(value).map(|u| (cap.clone(), u)))
             .collect();
         SourcedResolver { sourced, real }
     }
@@ -198,11 +230,9 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
     fn resolve(&self, hash: &Hash) -> Option<&Unit> {
         let u = self.real.resolve(hash)?;
         if let UnitBody::Primitive { name } = &u.body {
-            if let Some(caps) = capabilities_of(name) {
-                // Inject the first sourced capability we hold a value for (one per leaf in the
-                // minimal set: clock→Clock, store_read→StateRead).
+            if let Some(caps) = capabilities_of(name, &u.params) {
                 for (cap, constant) in &self.sourced {
-                    if caps.contains(*cap) {
+                    if caps.contains(cap.clone()) {
                         return Some(constant);
                     }
                 }
@@ -212,7 +242,7 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
     }
 }
 
-/// A pure leaf that evaluates to `value` — used to inject the held state at the
+/// A pure leaf that evaluates to `value` — used to inject a held state value at the
 /// `store_read` boundary. Scalar; non-scalar state is deferred (a standalone unit can't
 /// carry list items without children-by-hash, and the minimal cell is scalar).
 ///
@@ -1072,6 +1102,16 @@ mod tests {
             outputs: vec![Port { name: "out".into(), ty: output }],
         }
     }
+    /// A `store_read`/`store_write` primitive carrying a real `"key"` param — both now
+    /// require one to classify or (for `store_write`) even construct an effect at all.
+    fn keyed_state_prim(name: &str, key: &str, inputs: Vec<Port>, output: Type) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: name.into() },
+            params: vec![Param::frozen("key", key)],
+            inputs,
+            outputs: vec![Port { name: "out".into(), ty: output }],
+        }
+    }
     fn number(n: &str) -> Unit {
         Unit {
             body: UnitBody::Primitive { name: "const".into() },
@@ -1127,9 +1167,10 @@ mod tests {
 
     #[test]
     fn state_write_is_performed() {
-        // A store_write is now an output-side effect (`!is_sourced`): fire performs it.
+        // A store_write is now an output-side effect (`!is_sourced`): fire performs it, with
+        // its key threaded through the settled sink string (`primitives.rs`'s own encoding).
         let mut r = MapResolver::new();
-        let wh = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
+        let wh = r.insert(keyed_state_prim("store_write", "var1", vec![nport("v")], Type::Effect)).unwrap();
         let comp = Unit {
             body: UnitBody::Composite {
                 children: vec![wh],
@@ -1144,17 +1185,17 @@ mod tests {
         };
         let mut host = Recorder::default();
         fire(&comp, &[Some(num(42.0))], &r, &mut host);
-        assert_eq!(host.performed, vec![(Capability::StateWrite, num(42.0))]);
+        assert_eq!(host.performed, vec![(Capability::StateWrite("var1".to_string()), num(42.0))]);
     }
 
-    /// store_read → +1 → store_write: the canonical one-cell counter. Shared by the state and
-    /// fork tests.
+    /// store_read → +1 → store_write, both at key `"counter"`: the canonical counter, now
+    /// keyed. Shared by the state and fork tests.
     fn counter_graph() -> (MapResolver, Unit) {
         let mut r = MapResolver::new();
-        let rd = r.insert(prim("store_read", vec![], Type::Number)).unwrap();
+        let rd = r.insert(keyed_state_prim("store_read", "counter", vec![], Type::Number)).unwrap();
         let one = r.insert(number("1")).unwrap();
         let add = r.insert(prim("add", vec![nport("a"), nport("b")], Type::Number)).unwrap();
-        let wr = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
+        let wr = r.insert(keyed_state_prim("store_write", "counter", vec![nport("v")], Type::Effect)).unwrap();
         let counter = Unit {
             body: UnitBody::Composite {
                 children: vec![rd, one, add, wr],
@@ -1174,17 +1215,17 @@ mod tests {
 
     #[test]
     fn counter_remembers_across_firings() {
-        // store_read → +1 → store_write. The host threads storage through each round:
-        // reads see the prior write, and `eval` performed none of it.
+        // store_read → +1 → store_write, at key "counter". The host threads that one key's
+        // storage through each round: reads see the prior write, and `eval` performed none of it.
         let (r, counter) = counter_graph();
-        let mut host = StateHost::new(num(0.0));
-        assert_eq!(host.storage(), &num(0.0));
+        let mut host = StateHost::new(BTreeMap::from([("counter".to_string(), num(0.0))]));
+        assert_eq!(host.storage().get("counter"), Some(&num(0.0)));
         host.round(&counter, &[], &r);
-        assert_eq!(host.storage(), &num(1.0));
+        assert_eq!(host.storage().get("counter"), Some(&num(1.0)));
         host.round(&counter, &[], &r);
-        assert_eq!(host.storage(), &num(2.0));
+        assert_eq!(host.storage().get("counter"), Some(&num(2.0)));
         host.round(&counter, &[], &r);
-        assert_eq!(host.storage(), &num(3.0));
+        assert_eq!(host.storage().get("counter"), Some(&num(3.0)));
     }
 
     #[test]
@@ -1195,12 +1236,13 @@ mod tests {
         // without fabricating an answer. The required property: it must NOT silently default
         // to `none()` (which would silently flip a Some to a None — a wrong-arm bug, not a
         // missing-precision one). It drops the capability instead, the same honest "evaluates
-        // to nothing" path an unsupplied capability already takes.
+        // to nothing" path an unsupplied capability already takes. Direct `fire_sourced`, not
+        // `StateHost`/`round` — never touches the keyed-storage redesign at all.
         let held = Value::Sum { arm: 0, payload: Box::new(num(5.0)) }; // a stored `some(5)`
         assert_eq!(constant_unit(&held), None);
 
         let mut r = MapResolver::new();
-        let rd = r.insert(prim("store_read", vec![], Type::Any)).unwrap();
+        let rd = r.insert(keyed_state_prim("store_read", "var1", vec![], Type::Any)).unwrap();
         let passthrough = Unit {
             body: UnitBody::Composite {
                 children: vec![rd],
@@ -1211,7 +1253,7 @@ mod tests {
             outputs: vec![Port { name: "out".into(), ty: Type::Any }],
         };
         let mut host = Recorder::default();
-        let sourced = [(Capability::StateRead, held)];
+        let sourced = [(Capability::StateRead("var1".to_string()), held)];
         // No panic, no fabricated `none()` — the read simply yields nothing, exactly like an
         // unsupplied capability.
         assert_eq!(fire_sourced(&passthrough, &sourced, &r, &mut host), None);
@@ -1248,7 +1290,7 @@ mod tests {
         // One output carrying two *different* effects — a state write AND a send — both fire,
         // with no multi-output composite: the self-describing List[Effect] is enough.
         let mut r = MapResolver::new();
-        let sw = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
+        let sw = r.insert(keyed_state_prim("store_write", "var1", vec![nport("v")], Type::Effect)).unwrap();
         let em = r.insert(egress()).unwrap();
         let lst = r
             .insert(prim(
@@ -1280,19 +1322,19 @@ mod tests {
         assert_eq!(
             host.performed,
             vec![
-                (Capability::StateWrite, num(7.0)),
+                (Capability::StateWrite("var1".to_string()), num(7.0)),
                 (Capability::NetworkEgress, text("hi")),
             ]
         );
     }
 
     // ── drive: source the world ────────────────────────────────────────────────
-    /// clock (Clock) → store_write: read the clock, commit it. A graph whose driver leaf
-    /// (`clock`) has no pure compute — it must be sourced.
+    /// clock (Clock) → store_write at key "counter": read the clock, commit it. A graph whose
+    /// driver leaf (`clock`) has no pure compute — it must be sourced.
     fn timer_to_store() -> (MapResolver, Unit) {
         let mut r = MapResolver::new();
         let th = r.insert(prim("clock", vec![], Type::Number)).unwrap();
-        let wh = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
+        let wh = r.insert(keyed_state_prim("store_write", "counter", vec![nport("v")], Type::Effect)).unwrap();
         let graph = Unit {
             body: UnitBody::Composite {
                 children: vec![th, wh],
@@ -1313,9 +1355,9 @@ mod tests {
         // A driver (Clock) is sourced from the round's supply — the world flows in, through the
         // graph, and here lands in storage. One round threads state AND injects the world.
         let (r, graph) = timer_to_store();
-        let mut host = StateHost::new(num(0.0));
+        let mut host = StateHost::new(BTreeMap::from([("counter".to_string(), num(0.0))]));
         host.round(&graph, &[(Capability::Clock, num(99.0))], &r);
-        assert_eq!(host.storage(), &num(99.0));
+        assert_eq!(host.storage().get("counter"), Some(&num(99.0)));
     }
 
     #[test]
@@ -1331,20 +1373,21 @@ mod tests {
     #[test]
     fn forking_a_cells_state_is_copy_on_write() {
         // P2.6.3, the only sub-part with observable behavior. Fork = a new host over a *clone* of
-        // the current state; the two then diverge independently. Copy-on-write falls out of
-        // storage living in the host (P2.6.1), not the unit — no new mechanism. Identity is
-        // shared (both run the same `&counter`, one graph); state is per-host.
+        // the current state (now the whole keyed map, not one scalar); the two then diverge
+        // independently. Copy-on-write falls out of storage living in the host (P2.6.1), not the
+        // unit — no new mechanism. Identity is shared (both run the same `&counter`, one graph);
+        // state is per-host.
         let (r, counter) = counter_graph();
-        let mut original = StateHost::new(num(5.0));
+        let mut original = StateHost::new(BTreeMap::from([("counter".to_string(), num(5.0))]));
         original.round(&counter, &[], &r); // original: 6
 
-        let mut fork = StateHost::new(original.storage().clone()); // CoW: copy current state (6)
+        let mut fork = StateHost::new(original.storage().clone()); // CoW: copy the whole map (6)
         original.round(&counter, &[], &r); // original: 7
         original.round(&counter, &[], &r); // original: 8
         fork.round(&counter, &[], &r); // fork: 7 (from its own 6, untouched by original)
 
-        assert_eq!(original.storage(), &num(8.0));
-        assert_eq!(fork.storage(), &num(7.0)); // diverged — independent runtime state
+        assert_eq!(original.storage().get("counter"), Some(&num(8.0)));
+        assert_eq!(fork.storage().get("counter"), Some(&num(7.0))); // diverged — independent state
     }
 
     #[test]
@@ -1355,7 +1398,7 @@ mod tests {
         // a round is snapshot → fire → apply and rounds are serialized (`&mut self`). The round
         // IS the transaction; no special primitive. Caps at 2: 0 → 1 → 2 → 2 → 2.
         let mut r = MapResolver::new();
-        let rd = r.insert(prim("store_read", vec![], Type::Number)).unwrap();
+        let rd = r.insert(keyed_state_prim("store_read", "counter", vec![], Type::Number)).unwrap();
         let one = r.insert(number("1")).unwrap();
         let cap = r.insert(number("2")).unwrap();
         let add = r.insert(prim("add", vec![nport("a"), nport("b")], Type::Number)).unwrap();
@@ -1374,7 +1417,7 @@ mod tests {
                 Type::Number,
             ))
             .unwrap();
-        let wr = r.insert(prim("store_write", vec![nport("v")], Type::Effect)).unwrap();
+        let wr = r.insert(keyed_state_prim("store_write", "counter", vec![nport("v")], Type::Effect)).unwrap();
         let saturating = Unit {
             body: UnitBody::Composite {
                 children: vec![rd, one, cap, add, cmp, sel, wr],
@@ -1395,11 +1438,11 @@ mod tests {
             outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
 
-        let mut host = StateHost::new(num(0.0));
-        let mut seen = vec![host.storage().clone()];
+        let mut host = StateHost::new(BTreeMap::from([("counter".to_string(), num(0.0))]));
+        let mut seen = vec![host.storage().get("counter").cloned().unwrap()];
         for _ in 0..4 {
             host.round(&saturating, &[], &r);
-            seen.push(host.storage().clone());
+            seen.push(host.storage().get("counter").cloned().unwrap());
         }
         assert_eq!(seen, vec![num(0.0), num(1.0), num(2.0), num(2.0), num(2.0)]);
     }
