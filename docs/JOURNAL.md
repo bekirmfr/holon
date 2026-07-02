@@ -3785,3 +3785,41 @@ reading the full `cargo test` output carefully rather than skimming for pass/fai
 
 **No `PLAN.md` change.** Testing infrastructure, not a leaf — same convention the editor's own
 Vitest setup used when it closed an equivalent gap on the TypeScript side.
+
+---
+
+## 2026-07-02 · holon-server — `DELETE /deployments/<slug>`, closing the undeploy gap
+
+**Built.** Removes a slug from the deployments table. That's sufficient on its own to stop a
+`Clock`-triggered deployment — `run_due_clock_ticks` only ever acts on whatever is currently in
+the table, so there's no separate "cancel" signal to build. For an `Ingress`-triggered
+deployment, `POST /trigger/<slug>` starts returning 404 immediately afterward, identical to a
+slug that was never deployed. Returns the removed deployment's last known info (200), or 404 if
+the slug didn't exist.
+
+**Closes a gap that was named plainly, not left implicit, at the clock-deploy L4's Fork 4**:
+until now the only way to stop a standing `Clock`-triggered deployment was killing the whole
+server process. Small enough not to need its own L4 — stated the plan in one paragraph before
+building, proportionate to the size of the change, rather than either skipping the "ground
+before code" step or over-formalizing something this contained.
+
+**Tests written in the same pass this time, not after** — the direct lesson from the
+integration-testing inch just before this one. Three new: deleting an `Ingress` deployment
+stops `/trigger` and removes it from `GET /deployments`; deleting a `Clock` deployment
+mid-schedule stops future ticks, confirmed by calling `run_due_clock_ticks` at a timestamp that
+would have been due under the old schedule and observing nothing fires (`GET
+/deployments/<slug>/history` 404s, since the deployment itself is gone); deleting an unknown
+slug 404s. 23 tests total now, still all in-process via `Request::fake_http`, still under a
+second.
+
+**Verified.** `cargo test -p holon-server`: 23 green. `cargo test --workspace`: unaffected.
+
+**No `PLAN.md` change.** Still infrastructure.
+
+**Where this leaves the standing-deploy pillar:** register (`/deploy`, deriving triggers from
+the unit's own capabilities), list (`/deployments`), trigger (`/trigger/<slug>`), observe
+(`/deployments/<slug>/history`), and now stop (`DELETE /deployments/<slug>`) are all real and
+tested. What's still open, named rather than silently assumed solved: no persistence (every
+deployment forgotten on restart, consistent with everything else in this crate); no overlap
+protection beyond the scheduler being single and sequential; no capability-consent gate before
+deploying a unit with real effects.

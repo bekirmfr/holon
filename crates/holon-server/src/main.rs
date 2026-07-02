@@ -22,7 +22,7 @@
 //! (`fire_sourced` and `SourcedResolver` already existed, already tested) — the only genuinely
 //! new thing was a `slug → unit hash` table and one new route.
 //!
-//! **Inch 7** (this one, `clock-deploy-L4.md`): the other half — `Clock`-bound deployment.
+//! **Inch 7** (prior commit, `clock-deploy-L4.md`): the other half — `Clock`-bound deployment.
 //! `spawn_clock_scheduler` is the first genuinely new runtime shape anywhere in this project: a
 //! background thread that fires on its own, on a schedule, with nobody asking. Reworked
 //! `/deploy` along the way (worth naming plainly, not burying): rather than the caller
@@ -43,6 +43,18 @@
 //! tier out — `Sum`/`some`/`none` (this project's `Option<T>`) plus `select`, composed *inside*
 //! the flow right after `ingress`, not baked into the primitive every `ingress`-using flow
 //! would then have to accommodate.
+//!
+//! **Inch 8** (prior commit): real integration tests — 17, in-process, via
+//! `rouille::Request::fake_http` calling `route()`/`with_cors()` directly, replacing the manual
+//! `curl` walkthroughs used to verify inches 1-7. Prompted by a direct, fair challenge partway
+//! through this session, not a self-initiated cleanup — worth recording that plainly.
+//! `run_due_clock_ticks` (see inch 7) exists specifically so the scheduler could be tested with
+//! a controlled `SystemTime` rather than real sleeping.
+//!
+//! **Inch 9** (this one): `DELETE /deployments/<slug>` — closes a gap named plainly at inch 7
+//! (`clock-deploy-L4.md`'s Fork 4) and left open on purpose: until now, the only way to stop a
+//! `Clock`-triggered deployment was killing the whole server. Removing the slug from the table
+//! is sufficient — the scheduler only ever acts on what's currently there.
 //!
 //! **A second real wrinkle, same family as inch 2's:** `SharedCache::get_verified` needs a
 //! `Resolver` (it re-executes the cached computation to check the claimed output), but `Store`
@@ -766,6 +778,26 @@ fn handle_get_history(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     }
 }
 
+/// `DELETE /deployments/<slug>` — closes the named gap from the clock-deploy L4's Fork 4: the
+/// only way to stop a `Clock`-triggered deployment used to be killing the whole server. Removing
+/// the slug from the table is sufficient — `run_due_clock_ticks` only ever acts on what's
+/// currently in the table, so there's no separate "cancel" signal to build; the deployment
+/// simply stops being something the scheduler can find. For an `Ingress`-triggered deployment,
+/// `POST /trigger/<slug>` starts 404ing immediately afterward, the same 404 it already gives a
+/// slug that was never deployed. Returns the removed deployment's last known info, or 404 if
+/// the slug didn't exist.
+fn handle_delete_deployment(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
+    match deployments.lock().unwrap().remove(slug) {
+        Some(dep) => Response::json(&DeploymentEntry {
+            slug: slug.to_string(),
+            unit: to_hex(&dep.unit),
+            triggers: dep.triggers,
+            interval_seconds: dep.interval_seconds,
+        }),
+        None => Response::empty_404(),
+    }
+}
+
 /// `POST /trigger/<slug>` — the ingress trigger. Looks up the deployed unit, materializes its
 /// closure exactly as `/fire` and the cache endpoints do, and settles it via `fire_sourced`
 /// with the raw request body injected as `Capability::NetworkIngress` — wrapped as
@@ -965,6 +997,8 @@ fn route(state: &AppState, request: &Request) -> Response {
             if method == "GET" {
                 return handle_get_history(&state.deployments, slug);
             }
+        } else if method == "DELETE" {
+            return handle_delete_deployment(&state.deployments, rest);
         }
     }
 
@@ -1627,6 +1661,70 @@ mod tests {
     fn deployments_history_for_unknown_slug_is_404() {
         let state = test_state();
         assert_eq!(route(&state, &req("GET", "/deployments/nope/history", vec![])).status_code, 404);
+    }
+
+    #[test]
+    fn delete_deployment_stops_ingress_trigger_and_removes_it_from_the_list() {
+        let state = test_state();
+        let ingress = test_ingress();
+        let ingress_hash = hash_unit(&ingress).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_ingress_flow(ingress_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+        let deploy_body =
+            serde_json::to_vec(&serde_json::json!({"slug": "echo", "unit": to_hex(&flow_hash)})).unwrap();
+        route(&state, &req("POST", "/deploy", deploy_body));
+
+        // Works before deletion.
+        assert_eq!(route(&state, &req("POST", "/trigger/echo", b"x".to_vec())).status_code, 200);
+
+        let deleted = route(&state, &req("DELETE", "/deployments/echo", vec![]));
+        assert_eq!(deleted.status_code, 200);
+        assert_eq!(body_json(deleted)["unit"], to_hex(&flow_hash));
+
+        // 404s after deletion — same as a slug that was never deployed.
+        assert_eq!(route(&state, &req("POST", "/trigger/echo", b"x".to_vec())).status_code, 404);
+        let list = route(&state, &req("GET", "/deployments", vec![]));
+        assert_eq!(body_json(list)["deployments"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn delete_deployment_stops_future_clock_ticks() {
+        let state = test_state();
+        let clock = test_clock();
+        let clock_hash = hash_unit(&clock).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&clock).unwrap()));
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_clock_flow(clock_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+        let deploy_body = serde_json::to_vec(
+            &serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash), "interval_seconds": 5}),
+        )
+        .unwrap();
+        route(&state, &req("POST", "/deploy", deploy_body));
+
+        let t0 = SystemTime::now();
+        run_due_clock_ticks(&state.store, &state.deployments, t0);
+        let h1 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
+        assert_eq!(body_json(h1)["ticks"].as_array().unwrap().len(), 1);
+
+        assert_eq!(route(&state, &req("DELETE", "/deployments/tick", vec![])).status_code, 200);
+
+        // The scheduler now has nothing to find for this slug — a tick "due" by the old
+        // schedule simply doesn't fire, because the deployment isn't in the table anymore.
+        run_due_clock_ticks(&state.store, &state.deployments, t0 + Duration::from_secs(6));
+        assert_eq!(route(&state, &req("GET", "/deployments/tick/history", vec![])).status_code, 404);
+    }
+
+    #[test]
+    fn delete_unknown_deployment_is_404() {
+        let state = test_state();
+        assert_eq!(route(&state, &req("DELETE", "/deployments/nope", vec![])).status_code, 404);
     }
 
     // ── CORS ─────────────────────────────────────────────────────────────────────────────
