@@ -3511,3 +3511,75 @@ the real value is already sitting in the transcript.
 **Next inch.** The cache endpoints (`SharedCache::get_verified` / `ingest`), then `fire` last
 and alone — deliberately the final piece of this crate's initial buildout, since it's the one
 endpoint that performs a real effect and warrants review on its own.
+
+---
+
+## 2026-07-02 · holon-server — cache verified-read + ingest, inch 4
+
+**Built.** `GET /cache/<key>` and `POST /cache/ingest?key=<hex>`, wrapping
+`SharedCache::get_verified` and `SharedCache::ingest` — the last pair of endpoints before
+`fire`, which stays deliberately separate and last.
+
+**New shared plumbing, same shape as a problem already solved elsewhere in this crate.**
+`SharedCache::get_verified` needs a `Resolver` to re-execute the cached computation, but
+`Store` only hands back owned units. `Registry::fork` already faces this identically
+internally (its own doc: "materialize the root's bounded closure into one [resolver]") — so
+`materialize_closure` reuses that shape: walk `child_refs` (the one definition of "what a unit
+references," the same primitive `Registry::publish`'s dangling-reference check already uses),
+fetch each referenced unit from the store, populate a fresh `MapResolver`. Not a new mechanism,
+the same one applied a second place it was already needed.
+
+**`SValue` — a JSON mirror of `core::Value` for this boundary**, same reasoning as the wasm
+bridge's `WValue` (`Value` deliberately carries no serde). Grounded exactly, not assumed by
+symmetry with `Type`: the user pasted the real `value.rs` mid-session after an explicit
+uncertainty flag (a `Product`-at-the-Value-level guess would have been wrong — there is no
+such variant; `Product` exists only on `Type`, for tuple/record *shapes*, never as a bare
+runtime value). Six variants mirrored exactly: `Number`, `Boolean`, `Text`, `List`,
+`Effect{sink,payload}`, `Sum{arm: usize, payload}`. Named, not fixed: `serde_json` can't carry
+`NaN`/`Infinity` (JSON has no token for them) — a non-finite cached `Number` will fail to
+serialize back to the client. The wasm bridge sidesteps this by using `serde-wasm-bindgen`
+instead of JSON; a plain HTTP/JSON boundary doesn't have that option available cheaply.
+
+**Two real import mistakes this inch, both worth keeping in the record rather than smoothing
+over.** First: `CacheEntry` was assumed to be a `holon-host` type (based on where it's *used*,
+in `SharedCache`'s API) and imported from there — it's actually defined in `holon-core`, caught
+by the compiler's own `E0603`. Second, worse mistake: the compiler's suggested fix
+(`holon_core::memo::CacheEntry`) was applied *literally*, without cross-checking it against
+already-grounded knowledge that `holon-host`'s own source imports `CacheEntry` as a flat
+`holon_core::CacheEntry` — which only works if the type is re-exported at the crate root, `mod
+memo` being private notwithstanding. rustc's suggestion walks the *definition* site, not
+necessarily the crate's intended public path; taking it as authoritative without reconciling it
+against other known-working code was the actual error, not the wrong import path itself. Fixed
+by returning to the flat root import, which the second compile confirmed correct.
+
+**A residual uncertainty flagged before the build, resolved by the build itself.**
+`CacheEntry`'s fields needed to be `pub` for direct struct-literal construction from
+`holon-server`; unlike `Value` (confirmed directly from the pasted source, enum-variant fields
+inherit the enum's own visibility automatically), this was inferred from API-design plausibility
+only, not confirmed. The clean compile after the import fix settled it — the fields are `pub`.
+
+**Verified — actually run, including a test-plan correction caught live, not glossed over.**
+`cargo build -p holon-server`: clean, after both import fixes. Manual round trip: ingesting
+under a deliberately-wrong key (`0x00…00`) surfaces the entry's real key in the `400` response
+itself — no separate hashing tool needed, unlike the transport-only-generated hashes the
+`--emit-test-*` flags provide for units. Re-ingesting under that real key succeeds; `GET
+/cache/<key>` returns the verified, re-executed output (`42.0`, matching the real leaf's actual
+evaluation, not just an echo of what was ingested).
+
+The planned negative test assumed a different claimed output would hash to a different key —
+wrong, caught live: `entry_key` hashes the *query* (`unit_hash` + `inputs`), not the *claimed
+answer* (`outputs`), which is the correct design for a memo cache (you look something up
+*because* you don't yet know the answer). So the second `ingest` (claiming `999.0` for the same
+leaf) landed at the *same* key as the honest `42.0` entry, silently overwriting it — `ingest` is
+a plain insert, no existence guard, exactly matching `SharedCache`'s "dumb on purpose" design.
+`GET /cache/<key>` afterward still caught it: re-ran `leaf`, got `42`, compared against whatever
+was actually sitting in the cache, refused (`422`). A **stronger** proof of the trustless-read
+property than originally planned — it holds even against a cache that's had an honest entry
+overwritten by a dishonest one, not just against a first, never-before-seen lie.
+
+**No `PLAN.md` change.** Still infrastructure `P4.5.1` sits behind.
+
+**Next inch — the last one in this crate's initial buildout: `fire`.** Deliberately saved for
+last and alone, since it's the one endpoint that performs a real effect (`Host::perform`) rather
+than reading or writing content-addressed data. Warrants its own review pass, not a bundle with
+anything before it.

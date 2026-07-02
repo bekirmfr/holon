@@ -9,10 +9,20 @@
 //!
 //! **Inch 1** (prior commit): the crate scaffold, CORS, `GET`/`POST /unit` wrapping `Store`.
 //! **Inch 2** (prior commit): `POST /registry/publish` + `GET /registry`, wrapping `Registry`.
-//! **Inch 3** (this one): `POST /registry/fork`, wrapping `Registry::fork`. The cache
-//! endpoints and `fire` are still their own inches — `fire` most of all, since it's the one
-//! endpoint that performs a real effect and deserves its own review pass, not a bundle with
-//! the read-only ones.
+//! **Inch 3** (prior commit): `POST /registry/fork`, wrapping `Registry::fork`.
+//! **Inch 4** (this one): `GET /cache/<key>` (verified read) + `POST /cache/ingest`, wrapping
+//! `SharedCache`. `fire` is the one endpoint left, deliberately last and alone, since it's the
+//! only one that performs a real effect and deserves its own review pass.
+//!
+//! **A second real wrinkle, same family as inch 2's:** `SharedCache::get_verified` needs a
+//! `Resolver` (it re-executes the cached computation to check the claimed output), but `Store`
+//! only hands back owned units, not a `Resolver`. `Registry::fork` faces the identical problem
+//! internally (its own doc: "materialize the root's bounded closure into one [resolver]") — so
+//! this inch reuses that shape rather than inventing a second one: `materialize_closure` walks
+//! a unit's closure via `child_refs` (the same primitive `Registry::publish`'s own dangling-
+//! reference check already uses) and populates a fresh `MapResolver`, once per request. `SharedCache`
+//! itself is also in-memory only, same as `Registry`'s published set — restarting the server
+//! forgets ingested/cached entries too, worth restating rather than assuming obvious.
 //!
 //! **A real wrinkle this inch, resolved without touching `holon-host`:** `Registry::new` takes
 //! ownership of its `Store` and only exposes it back read-only (`Registry::store() -> &S`), but
@@ -34,16 +44,20 @@
 //! what I got back," which is the only question a stranger-facing boundary would have needed
 //! auth *for*.
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 use holon_core::{
-    decode_preimage, encode_preimage, hash_unit, parse_hash, Edge, Hash, Param, Port, Type, Unit,
-    UnitBody, BOUNDARY,
+    child_refs, decode_preimage, encode_preimage, hash_unit, parse_hash, CacheEntry, Edge, Hash,
+    MapResolver, Param, Port, Type, Unit, UnitBody, Value, BOUNDARY,
 };
-use holon_host::{FileStore, ForkError, MemStore, PublishError, Registry, Store, StoreError};
+use holon_host::{
+    CacheIngestError, FileStore, ForkError, MemStore, PublishError, Registry, SharedCache, Store,
+    StoreError,
+};
 use rouille::{Request, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Any concrete `Store` backend, boxed so the server picks one at startup without the rest of
 /// the file branching on which. `Store`'s own trait shape (no generics, no `Self`-returning
@@ -68,13 +82,14 @@ impl Store for SharedStore {
     }
 }
 
-/// Everything a request handler needs. `registry` is its own `Mutex` (not folded into
-/// `SharedStore`'s locking) because `Registry::publish`/`published()` need `&mut
-/// Registry`/`&Registry` respectively, which is a different lock scope than a single
-/// store put/get.
+/// Everything a request handler needs. `registry` and `cache` are each their own `Mutex` (not
+/// folded into `SharedStore`'s locking) since each needs a different lock scope than a single
+/// store put/get — `Registry::publish`/`published()` need `&mut Registry`/`&Registry`,
+/// `SharedCache::ingest`/`get_verified` likewise need `&mut SharedCache`/`&SharedCache`.
 struct AppState {
     store: SharedStore,
     registry: Mutex<Registry<SharedStore>>,
+    cache: Mutex<SharedCache>,
 }
 
 #[derive(Serialize)]
@@ -90,6 +105,72 @@ struct HashBody {
 #[derive(Serialize)]
 struct RegistryBody {
     published: Vec<String>,
+}
+
+/// A JSON mirror of `core::Value`, for this HTTP/JSON boundary — the same reasoning as
+/// `WValue` at the wasm boundary (`core::Value` deliberately carries no serde, keeping
+/// `holon-core` dependency-minimal). Grounded exactly against the real `Value` enum (six
+/// variants — there is no `Product` at the *value* level, only at the `Type` level, so this
+/// mirror doesn't need one either) rather than assumed by symmetry with `Type`.
+///
+/// **A real, named limitation, not silently inherited:** `serde_json` cannot represent `NaN`/
+/// `Infinity` (JSON has no token for them) — a cache entry whose `Number` is non-finite (an
+/// overflow result) will fail to serialize back to the client. The wasm bridge sidesteps this
+/// entirely by using `serde-wasm-bindgen` instead of JSON, since JS numbers carry non-finite
+/// values natively; a plain-JSON HTTP boundary doesn't have that option. Not fixed here —
+/// naming it is the honest move until it's a real, hit problem, not a hypothetical one.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type", content = "value")]
+enum SValue {
+    Number(f64),
+    Boolean(bool),
+    Text(String),
+    List(Vec<SValue>),
+    Effect { sink: String, payload: Box<SValue> },
+    Sum { arm: usize, payload: Box<SValue> },
+}
+
+impl SValue {
+    fn from_core(v: &Value) -> SValue {
+        match v {
+            Value::Number(n) => SValue::Number(*n),
+            Value::Boolean(b) => SValue::Boolean(*b),
+            Value::Text(s) => SValue::Text(s.clone()),
+            Value::List(items) => SValue::List(items.iter().map(SValue::from_core).collect()),
+            Value::Effect { sink, payload } => {
+                SValue::Effect { sink: sink.clone(), payload: Box::new(SValue::from_core(payload)) }
+            }
+            Value::Sum { arm, payload } => {
+                SValue::Sum { arm: *arm, payload: Box::new(SValue::from_core(payload)) }
+            }
+        }
+    }
+    fn into_core(self) -> Value {
+        match self {
+            SValue::Number(n) => Value::Number(n),
+            SValue::Boolean(b) => Value::Boolean(b),
+            SValue::Text(s) => Value::Text(s),
+            SValue::List(items) => Value::List(items.into_iter().map(SValue::into_core).collect()),
+            SValue::Effect { sink, payload } => {
+                Value::Effect { sink, payload: Box::new(payload.into_core()) }
+            }
+            SValue::Sum { arm, payload } => Value::Sum { arm, payload: Box::new(payload.into_core()) },
+        }
+    }
+}
+
+/// Wire shape of a `CacheEntry` for `POST /cache/ingest` — `unit_hash` as hex (the one
+/// convention every hash already crosses this boundary as), `inputs`/`outputs` as `SValue`.
+#[derive(Deserialize)]
+struct SCacheEntry {
+    unit_hash: String,
+    inputs: Vec<Option<SValue>>,
+    outputs: Vec<Option<SValue>>,
+}
+
+#[derive(Serialize)]
+struct CacheOutputsBody {
+    outputs: Vec<Option<SValue>>,
 }
 
 fn to_hex(h: &Hash) -> String {
@@ -278,6 +359,107 @@ fn handle_post_fork(registry: &Mutex<Registry<SharedStore>>, request: &Request) 
     }
 }
 
+/// Build a `Resolver` over `root`'s full closure by walking `child_refs` (the same closure
+/// definition `Registry::publish`'s own dangling-reference check already uses — one definition
+/// of "what a unit references," not a second) and fetching each referenced unit from the store.
+/// This is the same shape `Registry::fork` already needs internally for the identical reason
+/// (`Store` yields owned units; `Resolver` wants borrowed ones) — reused, not reinvented.
+///
+/// A hash that doesn't resolve in the store is left out of the resolver rather than erroring —
+/// `eval`/`verify_entry` already treat an unresolved reference as "nothing evaluable" and fail
+/// closed on it, so this doesn't need its own dangling-reference error path; it just doesn't
+/// promise more than the store actually has.
+fn materialize_closure(store: &SharedStore, root: Hash) -> Result<MapResolver, StoreError> {
+    let mut resolver = MapResolver::new();
+    let mut seen = BTreeSet::new();
+    let mut queue = vec![root];
+    while let Some(h) = queue.pop() {
+        if !seen.insert(h) {
+            continue;
+        }
+        let Some(unit) = store.get(&h)? else {
+            continue;
+        };
+        queue.extend(child_refs(&unit));
+        resolver.insert(unit).map_err(StoreError::Encode)?;
+    }
+    Ok(resolver)
+}
+
+/// `GET /cache/<key>` — the trustless read: re-executes the cached computation against a
+/// resolver materialized from the store and returns the outputs **only if they check out**
+/// (`SharedCache::get_verified`). A syntactically-present entry whose claimed output is wrong
+/// is refused (422), not served — the whole point of this endpoint over the cache's raw,
+/// unverified `get`, which this server deliberately does not expose at all.
+fn handle_get_cache(cache: &Mutex<SharedCache>, store: &SharedStore, key_hex: &str) -> Response {
+    let Some(key) = parse_hash(key_hex) else {
+        return err(400, "not a 64-char hex hash");
+    };
+    let unit_hash = {
+        let cache = cache.lock().unwrap();
+        match cache.get(&key) {
+            Some(entry) => entry.unit_hash,
+            None => return Response::empty_404(),
+        }
+    };
+    let resolver = match materialize_closure(store, unit_hash) {
+        Ok(r) => r,
+        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+    };
+    let cache = cache.lock().unwrap();
+    match cache.get_verified(&key, &resolver) {
+        Some(outputs) => Response::json(&CacheOutputsBody {
+            outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
+        }),
+        // 422, not 404: the entry exists (we already found it above) but failed the semantic
+        // check — a different failure than "nothing here."
+        None => err(422, "cache entry failed verification — refused, not served"),
+    }
+}
+
+/// `POST /cache/ingest?key=<hex>` — the trustless *write*: admits a peer-supplied entry only if
+/// it actually hashes to the key it's claimed under (`SharedCache::ingest`, P3.8.2's own gap,
+/// exposed here). Cheap structural check only — it does **not** re-execute the computation
+/// (that's `GET /cache/<key>`'s job on read); a correctly-keyed entry with a wrong output is
+/// admitted here and caught there, exactly as `SharedCache`'s own two-tier design intends.
+fn handle_post_cache_ingest(cache: &Mutex<SharedCache>, request: &Request) -> Response {
+    let Some(key_hex) = request.get_param("key") else {
+        return err(400, "missing ?key=<hex> query param — the claimed cache key");
+    };
+    let Some(claimed_key) = parse_hash(&key_hex) else {
+        return err(400, "key is not a 64-char hex hash");
+    };
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let sentry: SCacheEntry = match serde_json::from_slice(&bytes) {
+        Ok(e) => e,
+        Err(e) => return err(400, format!("not a valid cache entry JSON: {e}")),
+    };
+    let Some(unit_hash) = parse_hash(&sentry.unit_hash) else {
+        return err(400, "entry.unit_hash is not a 64-char hex hash");
+    };
+    let entry = CacheEntry {
+        unit_hash,
+        inputs: sentry.inputs.into_iter().map(|o| o.map(SValue::into_core)).collect(),
+        outputs: sentry.outputs.into_iter().map(|o| o.map(SValue::into_core)).collect(),
+    };
+    let mut cache = cache.lock().unwrap();
+    match cache.ingest(claimed_key, entry) {
+        Ok(()) => Response::text("ingested"),
+        Err(CacheIngestError::KeyMismatch { claimed, actual }) => err(
+            400,
+            format!(
+                "key mismatch: claimed {}, entry actually hashes to {} — refused",
+                to_hex(&claimed),
+                to_hex(&actual)
+            ),
+        ),
+        Err(CacheIngestError::Encode(e)) => err(500, format!("encode error: {e:?}")),
+    }
+}
+
 fn route(state: &AppState, request: &Request) -> Response {
     // `request.url()` returns an owned `String` (not a borrow of `request`) — bound once here
     // rather than called again per branch, both so `strip_prefix` below has something with a
@@ -315,6 +497,16 @@ fn route(state: &AppState, request: &Request) -> Response {
 
     if method == "POST" && url == "/registry/fork" {
         return handle_post_fork(&state.registry, request);
+    }
+
+    if method == "POST" && url == "/cache/ingest" {
+        return handle_post_cache_ingest(&state.cache, request);
+    }
+
+    if let Some(key_hex) = url.strip_prefix("/cache/") {
+        if method == "GET" {
+            return handle_get_cache(&state.cache, &state.store, key_hex);
+        }
     }
 
     Response::empty_404()
@@ -449,7 +641,8 @@ fn main() {
 
     let store = SharedStore(Arc::new(Mutex::new(backend)));
     let registry = Mutex::new(Registry::new(store.clone()));
-    let state = AppState { store, registry };
+    let cache = Mutex::new(SharedCache::new());
+    let state = AppState { store, registry, cache };
 
     println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
     rouille::start_server(addr, move |request| with_cors(request, route(&state, request)));
