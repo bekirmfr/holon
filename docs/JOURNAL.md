@@ -3377,3 +3377,57 @@ sight (the flat `change` column), one settled by a targeted re-run that didn't r
 already wasm-accessible) is real, buildable work today; its deploy half hits the identical
 transport wall as `P4.5.1`. Either build the transport layer (unblocks both at once), or build
 `P4.6.1`'s design-mode-only slice now while transport gets scoped separately.
+
+---
+
+## 2026-07-02 · holon-server — the browser↔host transport, inch 1 (Store only)
+
+**Built.** A new workspace crate, `holon-server` — the blocker named at the end of the
+`EvalOutputs`/SmallVec inch, now scoped and begun. Grounded first
+(`P4.5-P4.6-transport-scoping-L4.md`): the load-bearing finding is that a network boundary's
+*security* here is already fully provided by content-addressing (`decode_verified` inside every
+`Store::get`, `entry_key`/`ingest`, `verify_entry`) — this server adds no trust logic of its
+own, only plumbing. Two forks resolved before code: **local registry first** (P4.5.1/P4.6.1's
+own leaf definitions only need localhost — a DHT/bootstrap-node discovery layer was considered
+and deliberately deferred, echoing the `Remote`/`Peer` "speculative until a 2nd transport" call
+already on record in `P3.8.2-transport-L4.md`); and **`rouille`, not `axum`**, for the HTTP
+layer — synchronous/thread-per-request fits six low-volume request/response endpoints without
+pulling in an async runtime nothing here needs (checked both crates' real metadata against
+crates.io before choosing, not from memory).
+
+**This inch's actual scope: `GET`/`POST /unit` only**, wrapping `holon-host`'s `Store` trait
+directly (`MemStore` or `FileStore`, selectable via `--store`). CORS scoped to
+`localhost`/`127.0.0.1` origins only, applied in one place (`with_cors`) rather than per
+endpoint. No auth — there's no "who" to gatekeep on a single local process, and
+content-addressing already answers the "can I trust what I got back" question a stranger-facing
+boundary would have needed auth *for*. `registry/publish`, `GET /registry`, `registry/fork`,
+the cache endpoints, and `fire` are each still their own inch — `fire` deliberately last and
+alone, since it's the one endpoint that performs a real effect.
+
+**A real bug caught by self-review before it ever reached the user:** `rouille::Request::url()`
+returns an owned `String`, not a borrow — the first draft called `.strip_prefix()` on the
+unbound return value directly, which would have failed to compile (a dangling-borrow shape,
+not a logic error). Fixed by binding the `String` once at the top of `route()` before use.
+
+**Verified — actually run, not assumed.** `cargo build -p holon-server`: clean, first try.
+`cargo test --workspace`: unaffected, still the same 255 green — a new, independent crate
+nothing else depends on yet. Manual round trip (no automated test added this inch — an HTTP
+client dependency felt like more machinery than a 2-endpoint inch justified): a
+`--emit-test-unit` dev flag emits a trivial `const` unit's real preimage bytes via the crate's
+own `encode_preimage` (no second encoder); `POST /unit` → a valid 64-char hex hash; `GET
+/unit/<hash>` → byte-identical to the original 69 bytes, confirmed via `Compare-Object`. The
+400 path also confirmed live in passing (`/unit/deadbeef` → `{"error":"not a 64-char hex
+hash"}`).
+
+**Named, not silently ignored:** the build reports a future-incompat warning from `buf_redux`/
+`multipart`, both transitive dependencies of `rouille` (multipart form parsing — a feature this
+server never touches). Not a blocker; worth re-checking whenever `rouille` itself next moves,
+not urgent on its own given the crate is quiet upstream (last release April 2023) and this is a
+localhost-only dev tool.
+
+**No `PLAN.md` change.** This inch is infrastructure `P4.5.1`/`P4.6.1` sit behind, not a leaf
+closing in itself — same convention as the `EvalOutputs`/SmallVec inch before it.
+
+**Next inch.** `registry/publish` + `GET /registry`, thin-wrapping `Registry::publish` and
+`Registry::published()` exactly as `/unit` wraps `Store` — the next slice toward actually
+unblocking `P4.5.1`.

@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["crates/holon-core", "crates/holon-host", "crates/holon-wasm"]
+members = ["crates/holon-core", "crates/holon-host", "crates/holon-wasm", "crates/holon-server"]
