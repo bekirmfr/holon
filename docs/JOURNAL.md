@@ -3472,3 +3472,42 @@ own — same convention as both inches before it.
 cache endpoints and `fire`. `fire` stays deliberately last and alone — the one endpoint that
 performs a real effect, warranting its own review pass rather than a bundle with anything
 read-only.
+
+---
+
+## 2026-07-02 · holon-server — registry fork, inch 3
+
+**Built.** `POST /registry/fork?root=<hex>&target=<hex>`, body the replacement unit's own
+preimage bytes — thin-wrapping `Registry::fork` exactly as the two inches before it wrapped
+`Store` and `Registry::publish`. `root`/`target` ride the query string as hex (consistent with
+`/unit/<hash>` already putting a hash in the URL, not the body); the replacement crosses as its
+own preimage (the one wire shape every endpoint so far uses for a unit, never a second).
+
+**`ForkError`'s six variants — including the nested `PublishError` from fork's own internal
+re-publish step — mapped individually, not collapsed to a generic 500.** `RootNotFound` → 404;
+`TargetNotInClosure` and the re-pinned root's own possible `DanglingReference` → 400, each
+naming the specific hash; `Store`/`Encode` failures → 500. Same discipline as `publish`'s
+handler: the transport translates errors, it doesn't reinterpret or soften them.
+
+**Verified — actually run, all four paths.** `cargo build -p holon-server`: clean. `cargo test
+--workspace`: unaffected, still 255. Manual round trip via a new `--emit-test-replacement` dev
+flag (a second, distinct leaf for the replacement side): forking a published composite to
+replace its leaf returns a new hash, confirmed distinct from the original composite's hash;
+`GET /registry` afterward lists **both** hashes, confirming fork produces a new entry rather
+than silently overwriting the old one — the one property that would have been easy to get wrong
+silently and hardest to notice by inspection alone. Both negative paths confirmed live with the
+exact expected status and message: a target outside the root's closure → 400 naming it; a root
+that was never published → 404 naming it.
+
+**A repeated instruction mistake, worth naming rather than letting slide a second time:** the
+verification commands handed to the user used templated placeholders (`<C>`, `<L>`) instead of
+the real values from the prior turn's output — this happened once already in the `/unit` inch
+and recurred here before being caught and corrected with fully-substituted, literal commands.
+Worth remembering for future inches: never hand back a command with a bracketed placeholder when
+the real value is already sitting in the transcript.
+
+**No `PLAN.md` change.** Still infrastructure `P4.5.1` sits behind.
+
+**Next inch.** The cache endpoints (`SharedCache::get_verified` / `ingest`), then `fire` last
+and alone — deliberately the final piece of this crate's initial buildout, since it's the one
+endpoint that performs a real effect and warrants review on its own.

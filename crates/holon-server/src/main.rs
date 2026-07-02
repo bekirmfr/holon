@@ -8,10 +8,11 @@
 //! code that already exists and is already tested. It is plumbing, not a second decider.
 //!
 //! **Inch 1** (prior commit): the crate scaffold, CORS, `GET`/`POST /unit` wrapping `Store`.
-//! **Inch 2** (this one): `POST /registry/publish` + `GET /registry`, wrapping `Registry`.
-//! `registry/fork`, the cache endpoints, and `fire` are each still their own inch — `fire`
-//! most of all, since it's the one endpoint that performs a real effect and deserves its own
-//! review pass, not a bundle with the read-only ones.
+//! **Inch 2** (prior commit): `POST /registry/publish` + `GET /registry`, wrapping `Registry`.
+//! **Inch 3** (this one): `POST /registry/fork`, wrapping `Registry::fork`. The cache
+//! endpoints and `fire` are still their own inches — `fire` most of all, since it's the one
+//! endpoint that performs a real effect and deserves its own review pass, not a bundle with
+//! the read-only ones.
 //!
 //! **A real wrinkle this inch, resolved without touching `holon-host`:** `Registry::new` takes
 //! ownership of its `Store` and only exposes it back read-only (`Registry::store() -> &S`), but
@@ -40,7 +41,7 @@ use holon_core::{
     decode_preimage, encode_preimage, hash_unit, parse_hash, Edge, Hash, Param, Port, Type, Unit,
     UnitBody, BOUNDARY,
 };
-use holon_host::{FileStore, MemStore, PublishError, Registry, Store, StoreError};
+use holon_host::{FileStore, ForkError, MemStore, PublishError, Registry, Store, StoreError};
 use rouille::{Request, Response};
 use serde::Serialize;
 
@@ -219,6 +220,64 @@ fn handle_get_registry(registry: &Mutex<Registry<SharedStore>>) -> Response {
     Response::json(&RegistryBody { published })
 }
 
+/// `POST /registry/fork?root=<hex>&target=<hex>` — body is the replacement unit's own preimage
+/// bytes (same "unit crosses as its own preimage" convention as `/unit` and
+/// `/registry/publish`). `root`/`target` are hashes, so they ride the query string as hex —
+/// consistent with how `/unit/<hash>` already puts a hash in the URL rather than the body.
+///
+/// `Registry::fork` does the real work: re-pin every reference to `target` inside `root`'s
+/// closure to the newly-stored replacement, then publish the re-pinned spine (reusing
+/// `publish`'s own dangling-reference gate verbatim). This handler only decodes the wire shapes
+/// and translates `ForkError` to a status — the same "thin wrapper" discipline as every other
+/// endpoint here.
+fn handle_post_fork(registry: &Mutex<Registry<SharedStore>>, request: &Request) -> Response {
+    let Some(root_hex) = request.get_param("root") else {
+        return err(400, "missing ?root=<hex> query param");
+    };
+    let Some(target_hex) = request.get_param("target") else {
+        return err(400, "missing ?target=<hex> query param");
+    };
+    let Some(root_hash) = parse_hash(&root_hex) else {
+        return err(400, "root is not a 64-char hex hash");
+    };
+    let Some(target_hash) = parse_hash(&target_hex) else {
+        return err(400, "target is not a 64-char hex hash");
+    };
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let replacement = match decode_preimage(&bytes) {
+        Ok(u) => u,
+        Err(e) => return err(400, format!("not a valid unit preimage: {e:?}")),
+    };
+
+    let mut reg = registry.lock().unwrap();
+    match reg.fork(&root_hash, &target_hash, &replacement) {
+        Ok(hash) => Response::json(&HashBody { hash: to_hex(&hash) }),
+        Err(ForkError::RootNotFound(h)) => {
+            err(404, format!("no unit stored at root {}", to_hex(&h)))
+        }
+        Err(ForkError::TargetNotInClosure(h)) => err(
+            400,
+            format!("target {} is not referenced anywhere in root's closure", to_hex(&h)),
+        ),
+        Err(ForkError::DanglingInClosure(h)) => err(
+            400,
+            format!("root's closure is incomplete in the store: {} does not resolve", to_hex(&h)),
+        ),
+        Err(ForkError::Publish(PublishError::DanglingReference(h))) => err(
+            400,
+            format!("re-pinned root refused: {} is referenced but not in the store", to_hex(&h)),
+        ),
+        Err(ForkError::Publish(PublishError::Store(e))) => {
+            err(500, format!("store error during publish: {e:?}"))
+        }
+        Err(ForkError::Store(e)) => err(500, format!("store error: {e:?}")),
+        Err(ForkError::Encode(e)) => err(500, format!("encode error: {e:?}")),
+    }
+}
+
 fn route(state: &AppState, request: &Request) -> Response {
     // `request.url()` returns an owned `String` (not a borrow of `request`) — bound once here
     // rather than called again per branch, both so `strip_prefix` below has something with a
@@ -254,6 +313,10 @@ fn route(state: &AppState, request: &Request) -> Response {
         return handle_get_registry(&state.registry);
     }
 
+    if method == "POST" && url == "/registry/fork" {
+        return handle_post_fork(&state.registry, request);
+    }
+
     Response::empty_404()
 }
 
@@ -287,6 +350,18 @@ fn test_composite(leaf_hash: Hash) -> Unit {
     }
 }
 
+/// A second, distinct leaf (same shape as `test_unit()`, a different frozen value so its hash
+/// differs) — for exercising `POST /registry/fork`: re-pin `test_composite`'s child from
+/// `test_unit()`'s hash to this one's.
+fn test_replacement() -> Unit {
+    Unit {
+        body: UnitBody::Primitive { name: "const".into() },
+        params: vec![Param::frozen("type", "Number"), Param::frozen("value", "99")],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+    }
+}
+
 fn main() {
     let addr = std::env::var("HOLON_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:7420".to_string());
 
@@ -304,6 +379,10 @@ fn main() {
     // references the leaf's real hash, written as two files. Publishing the composite before
     // staging the leaf should 400; staging the leaf via `/unit` first, then publishing the
     // composite, should succeed.
+    //
+    // `--emit-test-replacement <path>` writes a second, distinct leaf (same shape, a different
+    // frozen value, so a different hash) — the replacement unit for exercising
+    // `POST /registry/fork` against the composite from `--emit-test-pair`.
     let mut args = std::env::args().skip(1);
     let mut store_arg = ".holon-store".to_string();
     while let Some(a) = args.next() {
@@ -344,6 +423,16 @@ fn main() {
                 composite_bytes.len()
             );
             println!("try publishing the composite BEFORE staging the leaf — it should 400.");
+            return;
+        } else if a == "--emit-test-replacement" {
+            let Some(path) = args.next() else {
+                eprintln!("--emit-test-replacement needs a path");
+                std::process::exit(1);
+            };
+            let bytes = encode_preimage(&test_replacement())
+                .expect("test_replacement() is a fixed, valid unit");
+            std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {path}: {e}"));
+            println!("wrote {} bytes to {path} — a distinct unit for /registry/fork's replacement", bytes.len());
             return;
         }
     }
