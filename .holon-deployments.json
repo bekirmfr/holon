@@ -1,0 +1,16 @@
+[
+  {
+    "slug": "inc",
+    "unit": "a90c33f3fa30b3b9874e5bb52d705ba8c571ff695c7918a222f6a8760fd8dea3",
+    "interval_seconds": null,
+    "state": {
+      "count": {
+        "type": "Number",
+        "value": 6.0
+      }
+    },
+    "deployed_at_epoch_seconds": 1783023960,
+    "trigger_count": 6,
+    "error_count": 0
+  }
+]

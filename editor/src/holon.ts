@@ -139,16 +139,27 @@ export type WValue =
   | { type: "Sum"; value: { arm: number; payload: WValue } };
 
 /** A category of effect a leaf may touch, outside its inputs. Mirrors `core::Capability` via
- *  the bridge's `WCapability` (P4.4.1). Dataless — no resource parameter yet, a deferred core
- *  fork — so this crosses as a bare string. */
+ *  the bridge's `WCapability` (P4.4.1, keyed as of the keyed-state-capability inch). Every
+ *  variant crosses as a bare string (`"Clock"`) via serde's default external tagging, except
+ *  `StateRead`/`StateWrite`, which now carry their state key and cross as a single-key object
+ *  (`{"StateRead": "var1"}`) — the identical convention {@link WType}'s own nullary-vs-payload
+ *  variants already use, needing no extra parsing here beyond the type itself. This was stale
+ *  until now (still the old bare-string shape) even though the Rust side changed earlier —
+ *  caught only when this file was actually read again for the deploy-UI work, not by anything
+ *  that had been exercising it: nothing in the editor called `Evaluator.capabilities()` on a
+ *  state-bearing unit before now. (`capabilityAcknowledgeName`, the function that formats one
+ *  of these for the deploy UI, lives in `./diagnostics` instead of here — the same reason
+ *  `boundaryLabels`/etc. do: this file has a top-level *value* import of the wasm package, so
+ *  even a single pure function living here would drag that in for anything that imports it,
+ *  tests included.)*/
 export type WCapability =
   | "Clock"
   | "NetworkIngress"
   | "FileRead"
   | "SecretAccess"
   | "Random"
-  | "StateRead"
-  | "StateWrite"
+  | { StateRead: string }
+  | { StateWrite: string }
   | "NetworkEgress"
   | "FileWrite"
   | "Spawn";

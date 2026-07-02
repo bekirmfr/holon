@@ -35,12 +35,29 @@ import {
   type WPort,
   type WType,
   type WEncapSpec,
+  type WCapability,
 } from "./holon";
+import {
+  stageUnit,
+  deployUnit,
+  listDeployments,
+  deleteDeployment,
+  triggerDeployment,
+  ServerError,
+  type DeploymentEntry,
+  type TriggerResult,
+} from "./server";
 import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
-import { boundaryLabels, isWEncapError, encapErrorNodeIndices } from "./diagnostics";
+import {
+  boundaryLabels,
+  isWEncapError,
+  encapErrorNodeIndices,
+  capabilityAcknowledgeName,
+  formatValue,
+} from "./diagnostics";
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
@@ -50,30 +67,8 @@ function primitiveName(u: WUnit): string | null {
 
 // Render an evaluated value for the readout. This is core's *pure* evaluator, so a sink shows as the
 // Effect it constructs (it doesn't fire here), and a driver / unparsed-const graph comes back null.
-function formatValue(v: WValue): string {
-  switch (v.type) {
-    case "Number":
-      return String(v.value);
-    case "Boolean":
-      return v.value ? "true" : "false";
-    case "Text":
-      return `"${v.value}"`;
-    case "List":
-      return `[${v.value.map(formatValue).join(", ")}]`;
-    case "Effect":
-      return `effect(${v.value.sink})`;
-    case "Sum":
-      // No core signal says which arm means "Some" vs "None" (a value carries only its taken arm's
-      // index, never a name — the same honesty theme.ts's typeLabel already holds to for the TYPE
-      // side, not guessing "this looks like Option"). Show the arm plainly instead of guessing.
-      return `sum#${v.value.arm}(${formatValue(v.value.payload)})`;
-  }
-  // Exhaustiveness: this project's tsconfig doesn't enable noImplicitReturns, so a missing case here
-  // was previously a silent runtime "undefined", not a compile error — exactly the gap that let
-  // `Sum` go unhandled since it was added. A future WValue shape is now a compile error instead.
-  const exhaustive: never = v;
-  return exhaustive;
-}
+// formatValue moved to ./diagnostics (this inch) — pure, no wasm dependency, and worth actually
+// testing after the Effect case shipped a real, silent bug (see its own doc there).
 
 // A promoted input's starting value: the type's zero value for the three scalar forms that have
 // one (Number→0, Boolean→false, Text→"") — the SAME convention `const`'s own default and core's
@@ -133,6 +128,34 @@ function unitFor(n: PrimitiveNodeType, ev: Evaluator): string {
     outputs: n.data.outputs,
   };
   return ev.insert(buildPreimage(wunit));
+}
+
+// Recursively stage a unit's whole closure to holon-server — not just the root. A composite's
+// own preimage references its children BY HASH; it never carries their bytes. The local
+// Evaluator already has every one of them (that's how the composite got built in the first
+// place), so this walks the SAME closure `capabilities()`/`materialize_closure` walk on the
+// server side — children, and any `fn` param (a `map`'s higher-order reference; core's own
+// `child_refs` counts it as part of the closure too, so skipping it here would under-stage
+// exactly the case that exists to not miss) — and pushes whatever the server doesn't have yet.
+// `staged` is the caller's own de-dup set: the same child reachable from two different parents
+// (an ordinary DAG, not a tree) only needs sending once. Order between siblings doesn't matter —
+// `POST /unit` stores whatever bytes it's given with no closure-completeness check of its own
+// (that's `/deploy`'s job, downstream) — only "every hash gets there before `/deploy` is called"
+// matters, not the order they arrive in.
+async function stageClosure(ev: Evaluator, hash: string, staged: Set<string>): Promise<void> {
+  if (staged.has(hash)) return;
+  staged.add(hash); // mark before awaiting anything, so a re-entrant call can't double-queue it
+  const unit = ev.get_unit(hash) as WUnit;
+  if (unit.body.kind === "Composite") {
+    for (const child of unit.body.children) {
+      await stageClosure(ev, child, staged);
+    }
+  }
+  const fnParam = (unit.params ?? []).find((p) => p.kind === "Frozen" && p.name === "fn");
+  if (fnParam && fnParam.kind === "Frozen") {
+    await stageClosure(ev, fnParam.value, staged);
+  }
+  await stageUnit(buildPreimage(unit));
 }
 
 function BoundaryField({
@@ -202,6 +225,99 @@ function BoundaryField({
     <div style={row}>
       {label}
       <span style={{ ...boundaryFieldStyle, color: "#5a6d8c", textAlign: "center" }}>wire in</span>
+    </div>
+  );
+}
+
+// One deployed flow, in the deployments panel. Ingress-triggered flows get their own inline
+// "try it" input — the actual payoff of this whole boundary: type something, hit trigger, see
+// the real response come back from the real running server, not a preview. A Clock-only
+// deployment has nothing to type into — it fires on its own — so it just shows what it's doing.
+function DeploymentRow({
+  entry,
+  triggerInput,
+  onTriggerInputChange,
+  onTrigger,
+  onDelete,
+  result,
+}: {
+  entry: DeploymentEntry;
+  triggerInput: string;
+  onTriggerInputChange: (v: string) => void;
+  onTrigger: () => void;
+  onDelete: () => void;
+  result?: { ok: true; result: TriggerResult } | { ok: false; message: string };
+}) {
+  // entry.triggers holds trigger NAMES ("Ingress"/"Clock" — see handle_post_deploy's own
+  // triggers.push("Ingress".to_string())), a different vocabulary from acknowledge's CAPABILITY
+  // names ("NetworkIngress"). Checking against "NetworkIngress" here was conflating the two —
+  // the trigger box never rendered because that string never actually appears in `triggers`.
+  const canTrigger = entry.triggers.includes("Ingress");
+  return (
+    <div style={{ borderTop: "1px solid #1b2a45", padding: "6px 0", fontSize: 11 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <span style={{ color: "#6fd3e0" }}>{entry.slug}</span>
+        <span style={{ color: "#9fb4d4" }}>{entry.triggers.join(", ")}</span>
+        <button
+          className="nodrag"
+          onClick={onDelete}
+          title="stop and remove this deployment"
+          style={{
+            font: "inherit",
+            fontSize: 10,
+            color: "#9fb4d4",
+            background: "transparent",
+            border: "1px solid #1b2a45",
+            borderRadius: 3,
+            width: 16,
+            height: 16,
+            padding: 0,
+            cursor: "pointer",
+          }}
+        >
+          ×
+        </button>
+      </div>
+      <div style={{ color: "#7e8ea8", fontSize: 10, marginTop: 2 }}>
+        {entry.has_state && <span>state · </span>}
+        {entry.trigger_count} fired{entry.error_count > 0 ? `, ${entry.error_count} errored` : ""}
+      </div>
+      {canTrigger && (
+        <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+          <input
+            className="nodrag"
+            placeholder="request body"
+            value={triggerInput}
+            onChange={(e) => onTriggerInputChange(e.target.value)}
+            style={{ ...boundaryFieldStyle, width: 120 }}
+          />
+          <button
+            className="nodrag"
+            onClick={onTrigger}
+            style={{
+              font: "inherit",
+              fontSize: 11,
+              color: "#0e1a2f",
+              background: "#6fd3e0",
+              border: "none",
+              borderRadius: 3,
+              padding: "1px 8px",
+              cursor: "pointer",
+            }}
+          >
+            trigger
+          </button>
+        </div>
+      )}
+      {result && (
+        <div style={{ marginTop: 4, color: result.ok ? "#9ad29f" : "#e0916f", wordBreak: "break-word" }}>
+          {result.ok
+            ? result.result.output
+              ? formatValue(result.result.output)
+              : "(no output)"
+            : result.message}
+        </div>
+      )}
     </div>
   );
 }
@@ -342,6 +458,118 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
   // affects the canvas or hashing. Read-only, deliberately unlike expand (P4.3.1): opening this
   // never touches `nodes`/`edges` at all.
   const [inspecting, setInspecting] = useState<string | null>(null);
+
+  // ── Deploy / manage (holon-server) ──────────────────────────────────────────────────────
+  // Everything above this point (project, group, expand, inspect) is purely local — an
+  // in-browser wasm workspace. This is the first thing in the editor that talks to anything
+  // outside the browser at all: holon-server, over plain HTTP, localhost-only. `deployments`
+  // is the server's own live table, re-fetched after every mutation here rather than guessed
+  // at locally, so this view can never drift from what the server actually has running.
+  const [deployments, setDeployments] = useState<DeploymentEntry[]>([]);
+  const [slugInput, setSlugInput] = useState("");
+  const [intervalInput, setIntervalInput] = useState("");
+  const [deploying, setDeploying] = useState(false);
+  const [deployError, setDeployError] = useState("");
+  // Per-slug trigger body input and last result/error — a small map rather than one shared
+  // field, since more than one deployed flow can be sitting in the list at once, each with
+  // its own thing to try.
+  const [triggerInputs, setTriggerInputs] = useState<Record<string, string>>({});
+  const [triggerResults, setTriggerResults] = useState<
+    Record<string, { ok: true; result: TriggerResult } | { ok: false; message: string }>
+  >({});
+
+  const refreshDeployments = useCallback(() => {
+    listDeployments()
+      .then(setDeployments)
+      .catch((e: unknown) => setDeployError(e instanceof ServerError ? e.message : String(e)));
+  }, []);
+
+  useEffect(() => {
+    refreshDeployments();
+  }, [refreshDeployments]);
+
+  // What the currently-projected composite would actually require acknowledging, shown
+  // *before* the deploy button is ever clicked — not silently auto-filled and hidden. The
+  // whole point of the server's own consent gate is that a person has actually seen this
+  // list; auto-acknowledging without displaying it would rubber-stamp the check into
+  // meaninglessness. `null` while there's no projection to ask about at all.
+  const projectionCapabilities = useMemo(() => {
+    if (!projection) return null;
+    try {
+      return ev.capabilities(projection.hash) as WCapability[];
+    } catch {
+      return null;
+    }
+  }, [projection, ev]);
+  const projectionNeedsInterval = projectionCapabilities?.some((c) => c === "Clock") ?? false;
+
+  // Stage the projected unit server-side, then deploy it under the typed slug — the
+  // acknowledge list is exactly `projectionCapabilities` above, not re-derived or asserted
+  // separately; the server re-derives its own copy from the real unit independently and
+  // checks the two agree, so this can't silently drift into acknowledging the wrong thing.
+  const onDeploy = useCallback(() => {
+    if (!projection || !projectionCapabilities) return;
+    const slug = slugInput.trim();
+    if (!slug) {
+      setDeployError("enter a slug first");
+      return;
+    }
+    const interval = intervalInput.trim() ? Number(intervalInput) : undefined;
+    if (projectionNeedsInterval && (interval === undefined || !Number.isFinite(interval) || interval < 1)) {
+      setDeployError("this flow reads the clock — interval (seconds, ≥ 1) is required");
+      return;
+    }
+    setDeploying(true);
+    setDeployError("");
+    const acknowledge = projectionCapabilities.map(capabilityAcknowledgeName);
+    // Stage the WHOLE closure, not just the root — a composite's own preimage only references
+    // its children by hash, it never carries their bytes (see stageClosure's own doc; this was
+    // the real bug behind an early "every capability at once" 400, the server's honest
+    // fail-closed answer to a closure it genuinely couldn't resolve, not a bug in that check).
+    // The hash itself is already known locally (`projection.hash`) — content-addressing
+    // guarantees the server computes the identical hash for identical bytes, so there's no
+    // need to round-trip and re-derive it from the server's own response.
+    stageClosure(ev, projection.hash, new Set())
+      .then(() => deployUnit(slug, projection.hash, acknowledge, interval))
+      .then(() => {
+        setSlugInput("");
+        setIntervalInput("");
+        refreshDeployments();
+      })
+      .catch((e: unknown) => setDeployError(e instanceof ServerError ? e.message : String(e)))
+      .finally(() => setDeploying(false));
+  }, [projection, projectionCapabilities, projectionNeedsInterval, slugInput, intervalInput, refreshDeployments, ev]);
+
+  const onDeleteDeployment = useCallback(
+    (slug: string) => {
+      deleteDeployment(slug)
+        .then(() => refreshDeployments())
+        .catch((e: unknown) => setDeployError(e instanceof ServerError ? e.message : String(e)));
+    },
+    [refreshDeployments],
+  );
+
+  const onTriggerDeployment = useCallback(
+    (slug: string) => {
+      const body = triggerInputs[slug] ?? "";
+      triggerDeployment(slug, body)
+        .then((result) => setTriggerResults((r) => ({ ...r, [slug]: { ok: true, result } })))
+        .catch((e: unknown) =>
+          setTriggerResults((r) => ({
+            ...r,
+            [slug]: { ok: false, message: e instanceof ServerError ? e.message : String(e) },
+          })),
+        )
+        // The server bumps trigger_count/error_count on every attempt, success or failure
+        // alike — refreshed here unconditionally (a finally, not just the success branch), the
+        // same "always resync after touching the server" shape onDeploy already uses for its
+        // own busy flag. Without this, the count showing in the panel was real server state
+        // gone stale the instant a trigger fired, not an actually-wrong count server-side.
+        .finally(() => refreshDeployments());
+    },
+    [triggerInputs, refreshDeployments],
+  );
+
 
   const onProject = useCallback(() => {
     // Hoisted out of the try block on purpose: TypeMismatch only carries an `edge` index, and
@@ -945,6 +1173,65 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
                 )}
               </div>
             )}
+            {projection && projectionCapabilities && (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  alignItems: "flex-end",
+                  marginTop: 8,
+                  paddingTop: 8,
+                  borderTop: "1px solid #1b2a45",
+                }}
+              >
+                {projectionCapabilities.length > 0 && (
+                  <div style={{ fontSize: 10, color: "#9fb4d4", textAlign: "right", maxWidth: 240 }}>
+                    touches: {projectionCapabilities.map(capabilityAcknowledgeName).join(", ")}
+                  </div>
+                )}
+                <input
+                  className="nodrag"
+                  placeholder="slug"
+                  value={slugInput}
+                  onChange={(e) => setSlugInput(e.target.value)}
+                  style={{ ...boundaryFieldStyle, width: 100 }}
+                />
+                {projectionNeedsInterval && (
+                  <input
+                    className="nodrag"
+                    type="number"
+                    placeholder="interval (s)"
+                    value={intervalInput}
+                    onChange={(e) => setIntervalInput(e.target.value)}
+                    style={{ ...boundaryFieldStyle, width: 100 }}
+                  />
+                )}
+                <button
+                  onClick={onDeploy}
+                  disabled={deploying || !slugInput.trim()}
+                  style={{
+                    font: "inherit",
+                    fontSize: 12,
+                    letterSpacing: "0.04em",
+                    padding: "5px 12px",
+                    color: "#0e1a2f",
+                    background: "#6fd3e0",
+                    border: "none",
+                    borderRadius: 3,
+                    cursor: deploying || !slugInput.trim() ? "default" : "pointer",
+                    opacity: deploying || !slugInput.trim() ? 0.4 : 1,
+                  }}
+                >
+                  {deploying ? "deploying…" : "deploy"}
+                </button>
+                {deployError && (
+                  <div style={{ fontSize: 11, color: "#e0916f", maxWidth: 240, textAlign: "right" }}>
+                    {deployError}
+                  </div>
+                )}
+              </div>
+            )}
             {projError && (
               <div style={{ fontSize: 12, color: "#e0916f", maxWidth: 240, textAlign: "right" }}>
                 {projError}
@@ -955,6 +1242,39 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
         {inspecting && (
           <Panel position="bottom-right">
             <InspectPanel hash={inspecting} ev={ev} onClose={() => setInspecting(null)} />
+          </Panel>
+        )}
+        {deployments.length > 0 && (
+          <Panel position="bottom-left">
+            <div
+              style={{
+                background: "#0e1a2f",
+                border: "1px solid #1b2a45",
+                borderRadius: 4,
+                padding: 10,
+                minWidth: 200,
+                maxWidth: 320,
+                maxHeight: 320,
+                overflow: "auto",
+              }}
+            >
+              <div style={{ color: "#9fb4d4", fontSize: 11, letterSpacing: "0.04em", marginBottom: 2 }}>
+                deployed
+              </div>
+              {deployments.map((entry) => (
+                <DeploymentRow
+                  key={entry.slug}
+                  entry={entry}
+                  triggerInput={triggerInputs[entry.slug] ?? ""}
+                  onTriggerInputChange={(v) =>
+                    setTriggerInputs((t) => ({ ...t, [entry.slug]: v }))
+                  }
+                  onTrigger={() => onTriggerDeployment(entry.slug)}
+                  onDelete={() => onDeleteDeployment(entry.slug)}
+                  result={triggerResults[entry.slug]}
+                />
+              ))}
+            </div>
           </Panel>
         )}
       </ReactFlow>

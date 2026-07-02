@@ -56,7 +56,7 @@
 //! stop a `Clock`-triggered deployment was killing the whole server. Removing the slug from
 //! the table is sufficient — the scheduler only ever acts on what's currently there.
 //!
-//! **Inch 10** (this one): three things at once, each real but each contained —
+//! **Inch 10** (prior commit): three things at once, each real but each contained —
 //! **persistence** (`--deployments <path>`, write-through, mirroring `--store`'s own
 //! `:memory:` convention; only the deployment *definition* persists, not the derived
 //! `triggers` or the diagnostic tick history — re-derived/reset on load, the same discipline
@@ -67,6 +67,34 @@
 //! (`run_due_clock_ticks` now fans out via `thread::scope`, so two deployments due in the same
 //! moment no longer block each other — deliberately not a bounded worker pool, a real,
 //! consciously-left-open limitation for genuinely large simultaneous fan-out, not solved here).
+//!
+//! **Inch 11** (this one): a deployment carrying `StateRead`/`StateWrite` (see the
+//! keyed-state-capability inch, `holon-core`/`holon-host`) now genuinely remembers across
+//! fires — both `/trigger` and clock ticks. A real correction on the way here, worth keeping
+//! on record: the first plan routed this through `holon-host`'s own `StateHost::round`, and a
+//! widening of its return type was even proposed. Tracing `round()`'s actual body found that
+//! plan wrong, not just incomplete — it only ever keeps `StateWrite` from what gets performed
+//! and silently discards everything else, which would mean a state-bearing deployment that
+//! also sends an egress loses that egress with no error. The real fix needed nothing from
+//! `holon-core`/`holon-host` at all: `fire_with_state` does the same three-step round
+//! (snapshot → fire → apply) directly in this crate, using `RecordingHost` (which already
+//! captures everything) instead of `StateHost` (which deliberately doesn't).
+//!
+//! A second real correctness question surfaced and got solved properly, not deferred: holding
+//! the whole deployments-table lock across an entire fire would reintroduce the "one slow flow
+//! blocks every other deployment" problem inch 10's concurrent tick-firing was built to avoid
+//! — but *not* holding a lock across the whole round reopens the lost-update race between two
+//! near-simultaneous triggers of the *same* deployment, flagged and resolved earlier in this
+//! project's own history. `Deployment.state` is `Arc<Mutex<...>>`, not a bare map: the table
+//! lock is only ever held briefly (to clone the `Arc` out), and the *inner* mutex is what's
+//! held for the whole round — so two different deployments never contend, and two triggers of
+//! the same deployment correctly serialize instead of racing.
+//!
+//! Also added, unconditionally on every deployment (not gated on state at all):
+//! `trigger_count`/`error_count`/`deployed_at`, all persisted, all visible on
+//! `GET /deployments`. `error_count` counts infrastructure failures (the closure didn't
+//! resolve) — a settle that honestly evaluates to nothing is not an error, the same "this is a
+//! normal, expected outcome" stance this whole project takes everywhere else.
 //!
 //! **A second real wrinkle, same family as inch 2's:** `SharedCache::get_verified` needs a
 //! `Resolver` (it re-executes the cached computation to check the claimed output), but `Store`
@@ -174,6 +202,34 @@ struct Deployment {
     /// deployment is checkable after the fact, not just while someone happens to be watching
     /// the console.
     history: Vec<TickEntry>,
+    /// This deployment's own keyed state, present iff its derived capabilities include
+    /// `StateRead`/`StateWrite` — `None` for a capability-free deployment, nothing to
+    /// allocate or thread. `Arc<Mutex<...>>`, not a bare map: a fire needs to lock this
+    /// specific deployment's state for the *whole* round (read snapshot → fire → apply
+    /// write) to stay correct under two near-simultaneous triggers of the *same* slug —
+    /// clone-then-overwrite would lose whichever update finished last. Cloning the `Arc` out
+    /// under a brief table lock, then locking just this mutex for the round itself, means the
+    /// table lock is never held during a fire at all, so one deployment's slow state round
+    /// still never blocks any other deployment — only two triggers of the *same* deployment
+    /// ever wait on each other, which is the actual granularity of the contention. A freshly
+    /// deployed unit starts with an empty map; a `store_read` for a key that's never been
+    /// written simply evaluates to nothing, the same honest-absence behavior any other
+    /// unsupplied sourced capability already has (see `fire_with_state`) — no special-casing
+    /// needed for "first ever fire." Persisted write-through alongside the rest of
+    /// `Deployment`, since surviving a restart is the whole point of giving a flow its own
+    /// durable state.
+    state: Option<Arc<Mutex<BTreeMap<String, Value>>>>,
+    /// Every trigger attempt for this deployment, success or failure — ingress calls and
+    /// clock ticks alike.
+    trigger_count: u64,
+    /// Trigger attempts that failed at the infrastructure level (the unit's closure didn't
+    /// resolve). A settle that legitimately evaluates to nothing (an unmet guard, an
+    /// unsupplied capability) is *not* an error — it's the same honest, expected outcome
+    /// this whole project treats as normal everywhere else, not a fault to count.
+    error_count: u64,
+    /// When this deployment was first created. Persisted, so a restart doesn't reset it to
+    /// "now" and quietly lie about how long it's actually been running.
+    deployed_at: SystemTime,
 }
 
 #[derive(Serialize)]
@@ -267,8 +323,13 @@ struct FireRequestBody {
 }
 
 /// One `(capability, payload)` pair `RecordingHost` recorded instead of actually performing.
-/// `Clone` so a `Deployment`'s cached `TickEntry` history can be cloned out for a response
-/// without holding the deployments lock across the JSON serialization.
+/// `capability` is stringified via `{c:?}` (`Debug`) at the point a response is built, not
+/// when `RecordingHost` records it — `RecordingHost.performed` keeps the real `Capability`
+/// (needed by `fire_with_state`, which has to tell `StateWrite(key)` apart from everything
+/// else that got performed) and only becomes a plain name here, at the wire boundary. One
+/// fewer place a new `Capability` variant could be added upstream and silently never reach
+/// this mirror. `Clone` so a `Deployment`'s cached `TickEntry` history can be cloned out for a
+/// response without holding the deployments lock across the JSON serialization.
 #[derive(Serialize, Clone)]
 struct PerformedEntry {
     capability: String,
@@ -302,17 +363,26 @@ struct DeployRequestBody {
     acknowledge: Vec<String>,
 }
 
-/// The on-disk, persisted shape of one deployment — deliberately minimal. `triggers` is not
-/// persisted at all: it's re-derived from `unit`'s own capabilities on load, the same way a
-/// fresh `/deploy` call derives it, rather than storing a fact that's already computable
-/// (consistent with everywhere else in this project that a derived fact stays derived, not
-/// cached to disk as if it could drift). Tick history is not persisted either — diagnostic,
-/// not load-bearing; fine to lose on restart.
+/// The on-disk, persisted shape of one deployment. `triggers` is still not persisted — it's
+/// re-derived from `unit`'s own capabilities on load, the same way a fresh `/deploy` call
+/// derives it, rather than storing a fact that's already computable. Tick history still isn't
+/// either — diagnostic, not load-bearing; fine to lose on restart. `state` **is** persisted
+/// now, though — surviving a restart is the whole reason a deployment gets its own durable
+/// state instead of an in-memory-only scratch value. Every new field is `#[serde(default)]`
+/// so a deployments file written before this inch still loads without error.
 #[derive(Serialize, Deserialize)]
 struct DeploymentRecord {
     slug: String,
     unit: String,
     interval_seconds: Option<u64>,
+    #[serde(default)]
+    state: Option<BTreeMap<String, SValue>>,
+    #[serde(default)]
+    deployed_at_epoch_seconds: Option<u64>,
+    #[serde(default)]
+    trigger_count: u64,
+    #[serde(default)]
+    error_count: u64,
 }
 
 #[derive(Serialize)]
@@ -331,6 +401,15 @@ struct DeploymentEntry {
     unit: String,
     triggers: Vec<String>,
     interval_seconds: Option<u64>,
+    /// Whether this deployment's own derived capabilities include a state axis — `true` means
+    /// it carries a real, persisted `state` slot; `false` means it's stateless and `state`
+    /// below is always `null`. The actual state *values* aren't exposed here yet (a real,
+    /// named, not-yet-built follow-on, the same way tick history got its own endpoint rather
+    /// than riding the deployment listing).
+    has_state: bool,
+    trigger_count: u64,
+    error_count: u64,
+    deployed_at_epoch_seconds: u64,
 }
 
 /// One clock tick's result, kept in a deployment's bounded history.
@@ -345,6 +424,18 @@ struct TickEntry {
 struct HistoryBody {
     slug: String,
     ticks: Vec<TickEntry>,
+}
+
+/// `GET /deployments/<slug>/state`'s response — the deployment's current keyed state, in
+/// full. Real observability, not just a debugging convenience: without this, there is no way
+/// to confirm a write actually persisted between two fires except trusting a flow's own
+/// self-report, which a `store_read → add → store_write` bootstrap can't even provide on its
+/// first fire (see `test_stateful_writer`'s own doc). Named, not built speculatively — a
+/// genuine testing and real-world need surfaced this, not spec-writing ahead of a use case.
+#[derive(Serialize)]
+struct StateBody {
+    slug: String,
+    state: BTreeMap<String, SValue>,
 }
 
 #[derive(Serialize)]
@@ -379,7 +470,7 @@ fn with_cors(request: &Request, mut response: Response) -> Response {
         if is_allowed_origin(origin) {
             response = response
                 .with_additional_header("Access-Control-Allow-Origin", origin.to_string())
-                .with_additional_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                .with_additional_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
                 .with_additional_header("Access-Control-Allow-Headers", "Content-Type")
                 .with_additional_header("Vary", "Origin");
         }
@@ -648,15 +739,65 @@ fn handle_post_cache_ingest(cache: &Mutex<SharedCache>, request: &Request) -> Re
 /// is exactly what the `Host` trait already exists to make a clean, isolated change — nothing
 /// about this endpoint's wire shape would need to move.
 struct RecordingHost {
-    performed: Vec<(String, Value)>,
+    performed: Vec<(Capability, Value)>,
 }
 
 impl Host for RecordingHost {
     fn perform(&mut self, capability: Capability, payload: &Value) {
-        // `{capability:?}` (Debug), not a hand-written name table — one fewer place a new
-        // Capability variant could be added upstream and silently never reach this mirror.
-        self.performed.push((format!("{capability:?}"), payload.clone()));
+        self.performed.push((capability, payload.clone()));
     }
+}
+
+/// Fire `root_unit` with one extra sourced value (whatever actually triggered this fire —
+/// `NetworkIngress`'s body, or `Clock`'s current time) plus, if this deployment carries state,
+/// every key currently in `state` sourced as `StateRead(key)` — then, after firing, apply any
+/// `StateWrite(key)` that was performed back into `state`. The same three steps
+/// `holon-host`'s own `StateHost::round` uses internally (snapshot → fire → apply) —
+/// deliberately **not** routed through `StateHost` itself, though: `round()` only ever keeps
+/// `StateWrite` from what gets performed and quietly discards everything else, which is wrong
+/// here — a state-bearing deployment that also sends an egress needs that egress reported back
+/// to the caller, not silently dropped. `RecordingHost` already captures everything performed;
+/// this just adds the one extra step `round()` would otherwise hide.
+///
+/// Locks `state` itself, for the whole round, if this deployment is stateful — the caller
+/// hands in the deployment's own `Arc<Mutex<...>>` dereferenced to `&Mutex<...>`, already
+/// cloned out from under the deployments-table lock, which is never held here. That's what
+/// keeps two triggers of two *different* deployments from ever contending, while two triggers
+/// of the *same* deployment correctly serialize instead of racing.
+///
+/// A `store_read` for a key that's never been written simply isn't in `sourced` at all, so it
+/// evaluates to nothing — the same honest-absence behavior any other unsupplied sourced
+/// capability already has (`fire_sourced`'s own doc). No special-casing needed for a
+/// deployment's first ever fire.
+fn fire_with_state(
+    root_unit: &Unit,
+    resolver: &impl Resolver,
+    state: Option<&Mutex<BTreeMap<String, Value>>>,
+    extra_sourced: (Capability, Value),
+) -> (Option<Value>, Vec<(Capability, Value)>) {
+    let mut guard = state.map(|m| m.lock().unwrap());
+
+    let mut sourced: Vec<(Capability, Value)> = match guard.as_deref() {
+        Some(storage) => storage
+            .iter()
+            .map(|(key, value)| (Capability::StateRead(key.clone()), value.clone()))
+            .collect(),
+        None => Vec::new(),
+    };
+    sourced.push(extra_sourced);
+
+    let mut host = RecordingHost { performed: Vec::new() };
+    let output = fire_sourced(root_unit, &sourced, resolver, &mut host);
+
+    if let Some(storage) = guard.as_deref_mut() {
+        for (cap, payload) in &host.performed {
+            if let Capability::StateWrite(key) = cap {
+                storage.insert(key.clone(), payload.clone());
+            }
+        }
+    }
+
+    (output, host.performed)
 }
 
 /// `POST /fire?root=<hex>` — settle a published unit **once**, on request. Not "deploy": there
@@ -702,7 +843,7 @@ fn handle_post_fire(store: &SharedStore, request: &Request) -> Response {
         performed: host
             .performed
             .into_iter()
-            .map(|(capability, payload)| PerformedEntry { capability, payload: SValue::from_core(&payload) })
+            .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
             .collect(),
     })
 }
@@ -726,6 +867,17 @@ fn persist_deployments(path: &str, deployments: &BTreeMap<String, Deployment>) {
             slug: slug.clone(),
             unit: to_hex(&dep.unit),
             interval_seconds: dep.interval_seconds,
+            state: dep.state.as_ref().map(|arc| {
+                let storage = arc.lock().unwrap();
+                storage.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect()
+            }),
+            deployed_at_epoch_seconds: dep
+                .deployed_at
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs()),
+            trigger_count: dep.trigger_count,
+            error_count: dep.error_count,
         })
         .collect();
     match serde_json::to_vec_pretty(&records) {
@@ -742,10 +894,15 @@ fn persist_deployments(path: &str, deployments: &BTreeMap<String, Deployment>) {
 /// empty table for the `":memory:"` sentinel, a missing file (first run), or any read/parse
 /// failure (logged, not fatal — a corrupt or foreign file shouldn't stop the server from
 /// starting, just start it with nothing deployed). Each record is re-materialized against the
-/// **current** store and re-derives its `triggers` fresh via `capabilities()` — exactly what a
-/// live `/deploy` call would compute, not a cached copy that could go stale. A record whose
-/// unit no longer resolves in the store (e.g. the store directory was touched separately) is
-/// skipped with a warning, not a crash — the rest of the file still loads.
+/// **current** store and re-derives its `triggers`/`state`-eligibility fresh via
+/// `capabilities()` — exactly what a live `/deploy` call would compute, not a cached copy that
+/// could go stale. A record whose unit no longer resolves in the store (e.g. the store
+/// directory was touched separately) is skipped with a warning, not a crash — the rest of the
+/// file still loads. `state` in the record is only trusted if the unit still genuinely derives
+/// a state capability (defensive: a hand-edited or foreign file claiming state for a
+/// state-free unit is ignored, not silently restored); a state-capable unit with no persisted
+/// state (an old file predating this feature) starts from an empty map, same as a fresh
+/// `/deploy`.
 fn load_deployments(path: &str, store: &SharedStore) -> BTreeMap<String, Deployment> {
     let mut loaded = BTreeMap::new();
     if path == ":memory:" {
@@ -793,13 +950,47 @@ fn load_deployments(path: &str, store: &SharedStore) -> BTreeMap<String, Deploym
             triggers.push("Clock".to_string());
         }
         let next_due = record.interval_seconds.map(|_| SystemTime::now());
+
+        let state = if derives_state(caps.iter()) {
+            let map: BTreeMap<String, Value> = match record.state {
+                Some(persisted) => {
+                    persisted.into_iter().map(|(k, v)| (k, SValue::into_core(v))).collect()
+                }
+                None => BTreeMap::new(),
+            };
+            Some(Arc::new(Mutex::new(map)))
+        } else {
+            None
+        };
+        let deployed_at = record
+            .deployed_at_epoch_seconds
+            .map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap_or_else(SystemTime::now);
+
         println!("loaded deployment {:?} from {path:?} (triggers: {triggers:?})", record.slug);
         loaded.insert(
             record.slug,
-            Deployment { unit: unit_hash, triggers, interval_seconds: record.interval_seconds, next_due, history: Vec::new() },
+            Deployment {
+                unit: unit_hash,
+                triggers,
+                interval_seconds: record.interval_seconds,
+                next_due,
+                history: Vec::new(),
+                state,
+                trigger_count: record.trigger_count,
+                error_count: record.error_count,
+                deployed_at,
+            },
         );
     }
     loaded
+}
+
+/// Whether a unit's derived capabilities include either state axis — the gate for whether a
+/// deployment gets its own `state` slot at all. Takes the iterator `Capabilities::iter()`
+/// already gives, rather than the `Capabilities` type itself, so this needs no new import.
+fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool {
+    caps.any(|c| matches!(c, Capability::StateRead(_) | Capability::StateWrite(_)))
 }
 
 fn is_valid_slug(s: &str) -> bool {
@@ -893,12 +1084,23 @@ fn handle_post_deploy(
     if is_clock {
         triggers.push("Clock".to_string());
     }
+    let is_state = derives_state(caps.iter());
 
     {
         let mut deployments = deployments.lock().unwrap();
         deployments.insert(
             body.slug.clone(),
-            Deployment { unit: unit_hash, triggers: triggers.clone(), interval_seconds, next_due, history: Vec::new() },
+            Deployment {
+                unit: unit_hash,
+                triggers: triggers.clone(),
+                interval_seconds,
+                next_due,
+                history: Vec::new(),
+                state: if is_state { Some(Arc::new(Mutex::new(BTreeMap::new()))) } else { None },
+                trigger_count: 0,
+                error_count: 0,
+                deployed_at: SystemTime::now(),
+            },
         );
     }
     persist_deployments(deployments_path, &deployments.lock().unwrap());
@@ -906,18 +1108,26 @@ fn handle_post_deploy(
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds })
 }
 
+/// Build the wire-facing summary of one deployment — shared by `GET /deployments` and
+/// `DELETE /deployments/<slug>`'s response, so the two never drift apart on what a
+/// deployment "is" from the outside.
+fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry {
+    DeploymentEntry {
+        slug: slug.to_string(),
+        unit: to_hex(&dep.unit),
+        triggers: dep.triggers.clone(),
+        interval_seconds: dep.interval_seconds,
+        has_state: dep.state.is_some(),
+        trigger_count: dep.trigger_count,
+        error_count: dep.error_count,
+        deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+    }
+}
+
 /// `GET /deployments` — every deployment, its derived triggers, and its interval if clock-bound.
 fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Response {
     let deployments = deployments.lock().unwrap();
-    let list = deployments
-        .iter()
-        .map(|(slug, dep)| DeploymentEntry {
-            slug: slug.clone(),
-            unit: to_hex(&dep.unit),
-            triggers: dep.triggers.clone(),
-            interval_seconds: dep.interval_seconds,
-        })
-        .collect();
+    let list = deployments.iter().map(|(slug, dep)| deployment_entry(slug, dep)).collect();
     Response::json(&DeploymentsBody { deployments: list })
 }
 
@@ -928,6 +1138,30 @@ fn handle_get_history(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     let deployments = deployments.lock().unwrap();
     match deployments.get(slug) {
         Some(dep) => Response::json(&HistoryBody { slug: slug.to_string(), ticks: dep.history.clone() }),
+        None => Response::empty_404(),
+    }
+}
+
+/// `GET /deployments/<slug>/state` — a stateful deployment's current keyed state, in full.
+/// 404 for an unknown slug (same convention as `/history`); 400 for a slug that exists but
+/// isn't stateful (its derived capabilities never included `StateRead`/`StateWrite`) — a
+/// different failure from "not found," so a different status, naming what's actually true
+/// rather than pretending an empty map would mean the same thing as "this was never a stateful
+/// deployment at all."
+fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
+    let deployments = deployments.lock().unwrap();
+    match deployments.get(slug) {
+        Some(dep) => match &dep.state {
+            Some(arc) => {
+                let storage = arc.lock().unwrap();
+                let state = storage.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
+                Response::json(&StateBody { slug: slug.to_string(), state })
+            }
+            None => err(
+                400,
+                "this deployment has no state — its derived capabilities don't include StateRead/StateWrite",
+            ),
+        },
         None => Response::empty_404(),
     }
 }
@@ -949,12 +1183,7 @@ fn handle_delete_deployment(
     match removed {
         Some(dep) => {
             persist_deployments(deployments_path, &deployments.lock().unwrap());
-            Response::json(&DeploymentEntry {
-                slug: slug.to_string(),
-                unit: to_hex(&dep.unit),
-                triggers: dep.triggers,
-                interval_seconds: dep.interval_seconds,
-            })
+            Response::json(&deployment_entry(slug, &dep))
         }
         None => Response::empty_404(),
     }
@@ -970,16 +1199,47 @@ fn handle_delete_deployment(
 /// against any deployed unit regardless of its derived triggers (a `Clock`-only unit just won't
 /// have an `ingress` leaf for the resolver to substitute, so this is harmless, not unsafe, to
 /// allow uniformly rather than gating on which triggers were derived at deploy time).
+/// Bump a deployment's trigger/error counters after a fire attempt — a small, shared tail
+/// step for both `handle_post_trigger` and `fire_one_clock_tick`. Locks the table only
+/// briefly; if the deployment was deleted concurrently between the earlier lookup and this
+/// call, this quietly no-ops rather than panicking, the same defensive shape
+/// `fire_one_clock_tick`'s own history write-back already uses.
+fn record_trigger(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, is_error: bool) {
+    if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
+        dep.trigger_count += 1;
+        if is_error {
+            dep.error_count += 1;
+        }
+    }
+}
+
+/// `POST /trigger/<slug>` — the ingress trigger. Looks up the deployed unit, materializes its
+/// closure exactly as `/fire` and the cache endpoints do, and settles it via `fire_with_state`
+/// with the raw request body injected as `Capability::NetworkIngress` — wrapped as
+/// `Value::Text`, the L4's Fork 3 default (`ingress`'s declared output type is `Any`; nothing
+/// forces this choice, but Text matches how every other text-shaped payload already crosses
+/// this boundary). A flow wanting structured data parses that Text itself, downstream, using
+/// this project's own `Sum`/`select` machinery — not a format this endpoint imposes. Works
+/// against any deployed unit regardless of its derived triggers (a `Clock`-only unit just won't
+/// have an `ingress` leaf for the resolver to substitute, so this is harmless, not unsafe, to
+/// allow uniformly rather than gating on which triggers were derived at deploy time).
+///
+/// Only ever holds the deployments-table lock briefly — once to look up the unit and clone out
+/// this deployment's own state handle (an `Arc` clone, not the state itself), and once at the
+/// end to bump counters (and, for a stateful deployment, persist). The fire itself, and any
+/// state locking it needs, happens with the table lock released, so one slow trigger never
+/// blocks any other deployment.
 fn handle_post_trigger(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
     slug: &str,
     request: &Request,
 ) -> Response {
-    let unit_hash = {
+    let (unit_hash, state) = {
         let deployments = deployments.lock().unwrap();
         match deployments.get(slug) {
-            Some(dep) => dep.unit,
+            Some(dep) => (dep.unit, dep.state.clone()),
             None => return Response::empty_404(),
         }
     };
@@ -993,22 +1253,29 @@ fn handle_post_trigger(
     };
     let resolver = match materialize_closure(store, unit_hash) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => {
+            record_trigger(deployments, slug, true);
+            return err(500, format!("store error while materializing closure: {e:?}"));
+        }
     };
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
+        record_trigger(deployments, slug, true);
         return err(500, "deployed unit no longer resolves in the store");
     };
 
-    let sourced = [(Capability::NetworkIngress, Value::Text(body_text))];
-    let mut host = RecordingHost { performed: Vec::new() };
-    let output = fire_sourced(root_unit, &sourced, &resolver, &mut host);
+    let extra_sourced = (Capability::NetworkIngress, Value::Text(body_text));
+    let (output, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), extra_sourced);
+
+    record_trigger(deployments, slug, false);
+    if state.is_some() {
+        persist_deployments(deployments_path, &deployments.lock().unwrap());
+    }
 
     Response::json(&FireResponseBody {
         output: output.as_ref().map(SValue::from_core),
-        performed: host
-            .performed
+        performed: performed
             .into_iter()
-            .map(|(capability, payload)| PerformedEntry { capability, payload: SValue::from_core(&payload) })
+            .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
             .collect(),
     })
 }
@@ -1020,14 +1287,19 @@ fn handle_post_trigger(
 /// deployment **due** at `now` fires **concurrently** with every other deployment due at the
 /// same moment — see `fire_one_clock_tick` and the module doc for why, and for the honest limit
 /// of this approach (unbounded per-tick fan-out, not a worker pool).
-fn run_due_clock_ticks(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, now: SystemTime) {
-    let due: Vec<(String, Hash, u64)> = {
+fn run_due_clock_ticks(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    now: SystemTime,
+) {
+    let due: Vec<(String, Hash, Option<Arc<Mutex<BTreeMap<String, Value>>>>, u64)> = {
         let deployments = deployments.lock().unwrap();
         deployments
             .iter()
             .filter_map(|(slug, dep)| match (dep.interval_seconds, dep.next_due) {
                 (Some(interval), Some(next_due)) if now >= next_due => {
-                    Some((slug.clone(), dep.unit, interval))
+                    Some((slug.clone(), dep.unit, dep.state.clone(), interval))
                 }
                 _ => None,
             })
@@ -1049,8 +1321,10 @@ fn run_due_clock_ticks(store: &SharedStore, deployments: &Mutex<BTreeMap<String,
     // enough to matter, the fix is a bounded worker pool (or a semaphore capping concurrent
     // fires), not more threads. Left open on purpose.
     thread::scope(|scope| {
-        for (slug, unit_hash, interval) in due {
-            scope.spawn(move || fire_one_clock_tick(store, deployments, slug, unit_hash, interval, now));
+        for (slug, unit_hash, state, interval) in due {
+            scope.spawn(move || {
+                fire_one_clock_tick(store, deployments, deployments_path, slug, unit_hash, state, interval, now)
+            });
         }
     });
 }
@@ -1064,8 +1338,10 @@ fn run_due_clock_ticks(store: &SharedStore, deployments: &Mutex<BTreeMap<String,
 fn fire_one_clock_tick(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
     slug: String,
     unit_hash: Hash,
+    state: Option<Arc<Mutex<BTreeMap<String, Value>>>>,
     interval: u64,
     now: SystemTime,
 ) {
@@ -1073,53 +1349,61 @@ fn fire_one_clock_tick(
         Ok(r) => r,
         Err(e) => {
             eprintln!("clock tick [{slug}]: store error while materializing closure: {e:?}");
+            record_trigger(deployments, &slug, true);
             return;
         }
     };
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         eprintln!("clock tick [{slug}]: deployed unit no longer resolves in the store");
+        record_trigger(deployments, &slug, true);
         return;
     };
 
     let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64))];
-    let mut host = RecordingHost { performed: Vec::new() };
-    let output = fire_sourced(root_unit, &sourced, &resolver, &mut host);
+    let extra_sourced = (Capability::Clock, Value::Number(epoch_seconds as f64));
+    let is_state = state.is_some();
+    let (output, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), extra_sourced);
 
     println!(
         "clock tick [{slug}] at {epoch_seconds}: output={output:?}, {} effect(s) performed",
-        host.performed.len()
+        performed.len()
     );
 
     let tick = TickEntry {
         at_epoch_seconds: epoch_seconds,
         output: output.as_ref().map(SValue::from_core),
-        performed: host
-            .performed
+        performed: performed
             .into_iter()
-            .map(|(capability, payload)| PerformedEntry { capability, payload: SValue::from_core(&payload) })
+            .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
             .collect(),
     };
 
-    let mut deployments = deployments.lock().unwrap();
-    if let Some(dep) = deployments.get_mut(&slug) {
-        dep.next_due = Some(now + Duration::from_secs(interval));
-        dep.history.push(tick);
-        if dep.history.len() > 20 {
-            dep.history.remove(0);
+    {
+        let mut deployments = deployments.lock().unwrap();
+        if let Some(dep) = deployments.get_mut(&slug) {
+            dep.next_due = Some(now + Duration::from_secs(interval));
+            dep.trigger_count += 1;
+            dep.history.push(tick);
+            if dep.history.len() > 20 {
+                dep.history.remove(0);
+            }
         }
     }
+    if is_state {
+        persist_deployments(deployments_path, &deployments.lock().unwrap());
+    }
 }
+
 
 /// The clock scheduler — the one genuinely new runtime shape in this whole project: a thread
 /// that acts on its own, on a timer, with nobody asking. Spawned once at startup with its own
 /// `Arc` handle onto `deployments` (no async runtime needed for this workload; a plain sleep
 /// loop is enough). Every second, hands off to `run_due_clock_ticks`, which fires whatever's
 /// due — concurrently within that one pass, see there for why and for the honest limit.
-fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>) {
+fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: String) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
-        run_due_clock_ticks(&store, &deployments, SystemTime::now());
+        run_due_clock_ticks(&store, &deployments, &deployments_path, SystemTime::now());
     });
 }
 
@@ -1189,6 +1473,10 @@ fn route(state: &AppState, request: &Request) -> Response {
             if method == "GET" {
                 return handle_get_history(&state.deployments, slug);
             }
+        } else if let Some(slug) = rest.strip_suffix("/state") {
+            if method == "GET" {
+                return handle_get_state(&state.deployments, slug);
+            }
         } else if method == "DELETE" {
             return handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
         }
@@ -1196,7 +1484,7 @@ fn route(state: &AppState, request: &Request) -> Response {
 
     if let Some(slug) = url.strip_prefix("/trigger/") {
         if method == "POST" {
-            return handle_post_trigger(&state.store, &state.deployments, slug, request);
+            return handle_post_trigger(&state.store, &state.deployments, &state.deployments_path, slug, request);
         }
     }
 
@@ -1508,7 +1796,7 @@ fn main() {
     let cache = Mutex::new(SharedCache::new());
     let initial_deployments = load_deployments(&deployments_arg, &store);
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
-    spawn_clock_scheduler(store.clone(), Arc::clone(&deployments));
+    spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
     let state = AppState { store, registry, cache, deployments, deployments_path: deployments_arg };
 
     println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
@@ -1560,6 +1848,105 @@ mod tests {
         let mut path = std::env::temp_dir();
         path.push(format!("holon-server-test-{label}-{}-{nanos}", std::process::id()));
         path.to_string_lossy().to_string()
+    }
+
+    /// Stages a full `test_stateful_counter` graph (a driver leaf — `test_ingress()` or
+    /// `test_clock()` — plus `store_read(key)`/`one`/`add`/`store_write(key)`) and returns the
+    /// composite's hash, ready to deploy.
+    /// `store_read(key)` — reads this deployment's own state at `key`.
+    fn test_store_read(key: &str) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: "store_read".into() },
+            params: vec![Param::frozen("key", key)],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        }
+    }
+
+    /// `store_write(key)` — writes this deployment's own state at `key`.
+    fn test_store_write(key: &str) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: "store_write".into() },
+            params: vec![Param::frozen("key", key)],
+            inputs: vec![Port { name: "value".into(), ty: Type::Any }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+        }
+    }
+
+    /// `driver -> store_write(key)`: writes whatever the trigger supplies (the ingress body as
+    /// text, or the clock's own epoch number) directly to this deployment's state at `key` —
+    /// no read involved. Deliberately write-only, not a read-and-increment counter: a
+    /// `store_read → add → store_write` graph cannot bootstrap its own first value with only
+    /// this primitive set — an absent key's read fails the *whole* single-output settle
+    /// (`fire_sourced`'s own honest-absence rule), and there's no coalesce-with-default
+    /// primitive to route around that. A real, named limitation of the primitive set itself,
+    /// not something to fight with a contrived test. This unit tests exactly what this inch
+    /// actually delivers instead: a write from one fire is still there for the *next* fire to
+    /// see — checked via `GET /deployments/<slug>/state`, not by asking the flow to read back
+    /// its own prior write.
+    fn test_stateful_writer(driver_hash: Hash, write_hash: Hash) -> Unit {
+        Unit {
+            body: UnitBody::Composite {
+                children: vec![driver_hash, write_hash],
+                edges: vec![
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // driver → store_write.value
+                    Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // store_write → out
+                ],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+        }
+    }
+
+    fn stage_stateful_writer(state: &AppState, driver: Unit, key: &str) -> Hash {
+        let driver_hash = hash_unit(&driver).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&driver).unwrap()));
+
+        let write = test_store_write(key);
+        let write_hash = hash_unit(&write).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&write).unwrap()));
+
+        let composite = test_stateful_writer(driver_hash, write_hash);
+        let composite_hash = hash_unit(&composite).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&composite).unwrap()));
+
+        composite_hash
+    }
+
+    /// `ingress, store_read(key) -> egress`: for testing the honest-absence side directly —
+    /// a fresh deployment's never-written key evaluates to nothing, so the whole single-output
+    /// settle fails, proven end to end through `holon-server`, not just at the core level.
+    fn stage_stateful_reader(state: &AppState, key: &str) -> Hash {
+        let ingress = test_ingress();
+        let ingress_hash = hash_unit(&ingress).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
+
+        let read = test_store_read(key);
+        let read_hash = hash_unit(&read).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&read).unwrap()));
+
+        let egress = test_sink();
+        let egress_hash = hash_unit(&egress).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&egress).unwrap()));
+
+        let composite = Unit {
+            body: UnitBody::Composite {
+                // ingress is an unwired child, present only so this composite derives
+                // NetworkIngress and is therefore deployable/triggerable at all.
+                children: vec![ingress_hash, read_hash, egress_hash],
+                edges: vec![
+                    Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 }, // store_read → egress
+                    Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // egress → out
+                ],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+        };
+        let composite_hash = hash_unit(&composite).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&composite).unwrap()));
+        composite_hash
     }
 
     // ── /health ──────────────────────────────────────────────────────────────────────────
@@ -1870,17 +2257,17 @@ mod tests {
         let t0 = SystemTime::now();
 
         // Due immediately — next_due was set to "now" at deploy time.
-        run_due_clock_ticks(&state.store, &state.deployments, t0);
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0);
         let h1 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
         assert_eq!(body_json(h1)["ticks"].as_array().unwrap().len(), 1);
 
         // Not due yet — only 1s of a 5s interval has passed.
-        run_due_clock_ticks(&state.store, &state.deployments, t0 + Duration::from_secs(1));
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0 + Duration::from_secs(1));
         let h2 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
         assert_eq!(body_json(h2)["ticks"].as_array().unwrap().len(), 1);
 
         // Due again.
-        run_due_clock_ticks(&state.store, &state.deployments, t0 + Duration::from_secs(6));
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0 + Duration::from_secs(6));
         let h3 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
         let ticks = body_json(h3)["ticks"].as_array().unwrap().clone();
         assert_eq!(ticks.len(), 2);
@@ -1946,7 +2333,7 @@ mod tests {
         route(&state, &req("POST", "/deploy", deploy_body));
 
         let t0 = SystemTime::now();
-        run_due_clock_ticks(&state.store, &state.deployments, t0);
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0);
         let h1 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
         assert_eq!(body_json(h1)["ticks"].as_array().unwrap().len(), 1);
 
@@ -1954,7 +2341,7 @@ mod tests {
 
         // The scheduler now has nothing to find for this slug — a tick "due" by the old
         // schedule simply doesn't fire, because the deployment isn't in the table anymore.
-        run_due_clock_ticks(&state.store, &state.deployments, t0 + Duration::from_secs(6));
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0 + Duration::from_secs(6));
         assert_eq!(route(&state, &req("GET", "/deployments/tick/history", vec![])).status_code, 404);
     }
 
@@ -2095,7 +2482,7 @@ mod tests {
             assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
         }
 
-        run_due_clock_ticks(&state.store, &state.deployments, SystemTime::now());
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now());
 
         for slug in ["tick-a", "tick-b"] {
             let h = route(&state, &req("GET", &format!("/deployments/{slug}/history"), vec![]));
@@ -2103,6 +2490,218 @@ mod tests {
             assert_eq!(ticks.len(), 1, "slug {slug} should have exactly one tick recorded");
             assert_eq!(ticks[0]["performed"][0]["capability"], "NetworkEgress");
         }
+    }
+
+    // ── per-deployment state ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn trigger_with_state_persists_across_calls() {
+        let state = test_state();
+        let composite_hash = stage_stateful_writer(&state, test_ingress(), "counter");
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "writer",
+            "unit": to_hex(&composite_hash),
+            "acknowledge": ["NetworkIngress", "StateWrite(\"counter\")"],
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+
+        // First fire: writes "hello".
+        let r1 = route(&state, &req("POST", "/trigger/writer", b"hello".to_vec()));
+        assert_eq!(r1.status_code, 200);
+        let v1 = body_json(r1);
+        assert_eq!(v1["performed"][0]["capability"], "StateWrite(\"counter\")");
+        assert_eq!(v1["performed"][0]["payload"]["value"], "hello");
+
+        let s1 = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
+        assert_eq!(s1["state"]["counter"]["value"], "hello");
+
+        // Second fire, a real *different* call: overwrites — proving this is the same state
+        // slot persisting across two separate fires, not something reset or freshly allocated
+        // each time.
+        let r2 = route(&state, &req("POST", "/trigger/writer", b"world".to_vec()));
+        assert_eq!(r2.status_code, 200);
+        let s2 = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
+        assert_eq!(s2["state"]["counter"]["value"], "world");
+    }
+
+    #[test]
+    fn clock_tick_with_state_persists_across_ticks() {
+        let state = test_state();
+        let composite_hash = stage_stateful_writer(&state, test_clock(), "last_tick");
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "clock-writer",
+            "unit": to_hex(&composite_hash),
+            "interval_seconds": 5,
+            "acknowledge": ["Clock", "StateWrite(\"last_tick\")"],
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+
+        let t0 = SystemTime::now();
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0);
+        let epoch0 = t0.duration_since(UNIX_EPOCH).unwrap().as_secs() as f64;
+        let s1 = body_json(route(&state, &req("GET", "/deployments/clock-writer/state", vec![])));
+        assert_eq!(s1["state"]["last_tick"]["value"], epoch0);
+
+        let t1 = t0 + Duration::from_secs(6);
+        run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t1);
+        let epoch1 = t1.duration_since(UNIX_EPOCH).unwrap().as_secs() as f64;
+        let s2 = body_json(route(&state, &req("GET", "/deployments/clock-writer/state", vec![])));
+        assert_eq!(s2["state"]["last_tick"]["value"], epoch1);
+        assert_ne!(epoch0, epoch1); // genuinely a new value, not a stale re-read
+    }
+
+    #[test]
+    fn reading_a_never_written_key_evaluates_to_nothing() {
+        // The honest-absence side, proven end to end: a fresh deployment's key that's never
+        // been written makes the whole single-output settle fail — the same rule
+        // `holon-core`'s own tests already prove in isolation, now confirmed through the real
+        // trigger path.
+        let state = test_state();
+        let composite_hash = stage_stateful_reader(&state, "never_written");
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "reader",
+            "unit": to_hex(&composite_hash),
+            "acknowledge": ["NetworkIngress", "StateRead(\"never_written\")", "NetworkEgress"],
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+
+        let r = route(&state, &req("POST", "/trigger/reader", b"x".to_vec()));
+        assert_eq!(r.status_code, 200);
+        let v = body_json(r);
+        assert_eq!(v["output"], serde_json::Value::Null);
+        assert_eq!(v["performed"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn deployments_listing_shows_state_and_counters() {
+        let state = test_state();
+        let stateful_hash = stage_stateful_writer(&state, test_ingress(), "k");
+        let deploy_stateful = serde_json::to_vec(&serde_json::json!({
+            "slug": "stateful",
+            "unit": to_hex(&stateful_hash),
+            "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"],
+        }))
+        .unwrap();
+        route(&state, &req("POST", "/deploy", deploy_stateful));
+
+        let ingress = test_ingress();
+        let ingress_hash = hash_unit(&ingress).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_ingress_flow(ingress_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+        let deploy_stateless = serde_json::to_vec(&serde_json::json!({
+            "slug": "stateless",
+            "unit": to_hex(&flow_hash),
+            "acknowledge": ["NetworkIngress", "NetworkEgress"],
+        }))
+        .unwrap();
+        route(&state, &req("POST", "/deploy", deploy_stateless));
+
+        route(&state, &req("POST", "/trigger/stateful", b"x".to_vec()));
+        route(&state, &req("POST", "/trigger/stateful", b"y".to_vec()));
+
+        let list = body_json(route(&state, &req("GET", "/deployments", vec![])));
+        let entries = list["deployments"].as_array().unwrap();
+        let stateful = entries.iter().find(|e| e["slug"] == "stateful").unwrap();
+        assert_eq!(stateful["has_state"], true);
+        assert_eq!(stateful["trigger_count"], 2);
+        assert_eq!(stateful["error_count"], 0);
+        let stateless = entries.iter().find(|e| e["slug"] == "stateless").unwrap();
+        assert_eq!(stateless["has_state"], false);
+        assert_eq!(stateless["trigger_count"], 0);
+    }
+
+    #[test]
+    fn get_state_404s_for_unknown_slug_and_400s_for_stateless_deployment() {
+        let state = test_state();
+        assert_eq!(route(&state, &req("GET", "/deployments/nope/state", vec![])).status_code, 404);
+
+        let ingress = test_ingress();
+        let ingress_hash = hash_unit(&ingress).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_ingress_flow(ingress_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "stateless",
+            "unit": to_hex(&flow_hash),
+            "acknowledge": ["NetworkIngress", "NetworkEgress"],
+        }))
+        .unwrap();
+        route(&state, &req("POST", "/deploy", deploy_body));
+
+        assert_eq!(route(&state, &req("GET", "/deployments/stateless/state", vec![])).status_code, 400);
+    }
+
+    #[test]
+    fn state_persists_across_a_simulated_restart() {
+        let deployments_path = unique_temp_path("state-deployments");
+        let store_dir = unique_temp_path("state-store");
+        let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
+        let store = SharedStore(Arc::new(Mutex::new(backend)));
+
+        let ingress = test_ingress();
+        let ingress_hash = hash_unit(&ingress).unwrap();
+        let mut writer = store.clone();
+        writer.put(&ingress).unwrap();
+        let write_leaf = test_store_write("counter");
+        let write_hash = hash_unit(&write_leaf).unwrap();
+        writer.put(&write_leaf).unwrap();
+        let composite = test_stateful_writer(ingress_hash, write_hash);
+        let composite_hash = hash_unit(&composite).unwrap();
+        writer.put(&composite).unwrap();
+
+        // "First run": deploy and trigger once — writes "before-restart".
+        {
+            let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store)));
+            let state = AppState {
+                store: store.clone(),
+                registry: Mutex::new(Registry::new(store.clone())),
+                cache: Mutex::new(SharedCache::new()),
+                deployments,
+                deployments_path: deployments_path.clone(),
+            };
+            let deploy_body = serde_json::to_vec(&serde_json::json!({
+                "slug": "writer",
+                "unit": to_hex(&composite_hash),
+                "acknowledge": ["NetworkIngress", "StateWrite(\"counter\")"],
+            }))
+            .unwrap();
+            assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+            let triggered = route(&state, &req("POST", "/trigger/writer", b"before-restart".to_vec()));
+            assert_eq!(triggered.status_code, 200);
+        }
+
+        // "Restart": a fresh load from the same path/store — the state survives, and the
+        // deployment can still be triggered again afterward.
+        let reloaded = load_deployments(&deployments_path, &store);
+        let dep = reloaded.get("writer").unwrap();
+        let restored_state = dep.state.as_ref().unwrap().lock().unwrap();
+        assert_eq!(restored_state.get("counter"), Some(&Value::Text("before-restart".to_string())));
+        drop(restored_state);
+
+        let state2 = AppState {
+            store: store.clone(),
+            registry: Mutex::new(Registry::new(store.clone())),
+            cache: Mutex::new(SharedCache::new()),
+            deployments: Arc::new(Mutex::new(reloaded)),
+            deployments_path: deployments_path.clone(),
+        };
+        let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
+        assert_eq!(triggered2.status_code, 200);
+        let s = body_json(route(&state2, &req("GET", "/deployments/writer/state", vec![])));
+        assert_eq!(s["state"]["counter"]["value"], "after-restart");
+
+        let _ = std::fs::remove_file(&deployments_path);
+        let _ = std::fs::remove_dir_all(&store_dir);
     }
 
     // ── CORS ─────────────────────────────────────────────────────────────────────────────
@@ -2123,5 +2722,35 @@ mod tests {
             Request::fake_http("GET", "/health", vec![("Origin".to_string(), "http://evil.example".to_string())], vec![]);
         let r2 = with_cors(&disallowed, route(&state, &disallowed));
         assert!(!r2.headers.iter().any(|(k, _)| k.as_ref() == "Access-Control-Allow-Origin"));
+    }
+
+    #[test]
+    fn cors_allows_every_method_this_api_actually_uses() {
+        // A real, shipped bug, not a hypothetical: Access-Control-Allow-Methods once listed
+        // "GET, POST, OPTIONS" — DELETE was missing. The server-side OPTIONS handling
+        // (`route`'s own preflight branch) still answered 204 every time regardless, so nothing
+        // about the SERVER looked broken in isolation — a browser reads the *header's own
+        // contents*, not just the preflight's status code, and silently refuses to ever send
+        // the real DELETE if its method isn't listed. `assert!(..headers..)` alone (the test
+        // above) would never have caught this — it only checks the header is PRESENT, never
+        // what it actually says. This checks the one thing that matters: every method a real
+        // endpoint in this file uses (GET, POST, DELETE) is actually named in the value.
+        let state = test_state();
+        let req = Request::fake_http(
+            "OPTIONS",
+            "/deployments/whatever",
+            vec![("Origin".to_string(), "http://localhost:5173".to_string())],
+            vec![],
+        );
+        let res = with_cors(&req, route(&state, &req));
+        let methods = res
+            .headers
+            .iter()
+            .find(|(k, _)| k.as_ref() == "Access-Control-Allow-Methods")
+            .map(|(_, v)| v.as_ref().to_string())
+            .unwrap_or_default();
+        for method in ["GET", "POST", "DELETE"] {
+            assert!(methods.contains(method), "Access-Control-Allow-Methods {methods:?} is missing {method}");
+        }
     }
 }

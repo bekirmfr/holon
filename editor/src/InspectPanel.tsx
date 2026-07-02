@@ -11,6 +11,7 @@
 
 import { useMemo, useState } from "react";
 import { Evaluator, type WCapability, type WKind, type WUnit } from "./holon";
+import { capabilityAcknowledgeName } from "./diagnostics";
 
 type InspectNode = {
   hash: string;
@@ -76,7 +77,7 @@ function InspectRow({ node, depth }: { node: InspectNode; depth: number }) {
         <span style={{ color: kindColor, fontSize: 11 }}>{kindLabel}</span>
         {node.capabilities.length > 0 && (
           <span style={{ color: "#9fb4d4", fontSize: 10 }} title="capabilities">
-            {node.capabilities.join(", ")}
+            {node.capabilities.map(capabilityAcknowledgeName).join(", ")}
           </span>
         )}
       </div>

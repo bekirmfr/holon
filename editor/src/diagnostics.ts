@@ -8,7 +8,7 @@
 // and even a single real-value import would force holon.ts's whole module — including the wasm
 // import — to evaluate. Matches core's own u32::MAX; structurally fixed, not at risk of drifting.
 
-import type { WPort, WEdge, WEncapError, WValidationError } from "./holon";
+import type { WPort, WEdge, WEncapError, WValidationError, WCapability, WValue } from "./holon";
 
 const BOUNDARY = 4294967295;
 
@@ -88,5 +88,53 @@ export function encapErrorNodeIndices(err: WEncapError, wedges: WEdge[]): number
       return err.errors.flatMap((e) => validationErrorNodeIndices(e, wedges));
   }
   const exhaustive: never = err;
+  return exhaustive;
+}
+
+// The exact string a WCapability would cross as in holon-server's own `acknowledge` field —
+// `{c:?}` (Rust Debug) on the real Capability, e.g. "Clock" or `StateRead("counter")`. One
+// decider for this formatting: every caller that needs an acknowledge string (the deploy UI,
+// InspectPanel's capability readout) goes through this, rather than each hand-building the
+// same string differently. Lives here, not holon.ts, for the same reason every other function
+// in this file does: holon.ts has a top-level VALUE import of the wasm package, so even one
+// pure function living there would drag that in for anything that imports it — tests included.
+export function capabilityAcknowledgeName(c: WCapability): string {
+  if (typeof c === "string") return c;
+  if ("StateRead" in c) return `StateRead("${c.StateRead}")`;
+  return `StateWrite("${c.StateWrite}")`;
+}
+
+// Render an evaluated value for the readout. This is core's *pure* evaluator, so a sink shows
+// as the Effect it constructs (it doesn't fire here), and a driver / unparsed-const graph comes
+// back null. Moved out of App.tsx (this inch) for the same reason every other function in this
+// file was: pure, no wasm dependency, testable in isolation — and worth actually testing, since
+// the Effect case just shipped a real, silent bug (dropping the payload entirely, showing only
+// the sink name) that sat unnoticed until someone built a state-write flow and looked closely
+// at the result. That's exactly the class of regression this file exists to catch early instead
+// of by manual review.
+export function formatValue(v: WValue): string {
+  switch (v.type) {
+    case "Number":
+      return String(v.value);
+    case "Boolean":
+      return v.value ? "true" : "false";
+    case "Text":
+      return `"${v.value}"`;
+    case "List":
+      return `[${v.value.map(formatValue).join(", ")}]`;
+    case "Effect":
+      return `effect(${v.value.sink}, ${formatValue(v.value.payload)})`;
+    case "Sum":
+      // No core signal says which arm means "Some" vs "None" (a value carries only its taken
+      // arm's index, never a name — the same honesty theme.ts's typeLabel already holds to for
+      // the TYPE side, not guessing "this looks like Option"). Show the arm plainly instead of
+      // guessing.
+      return `sum#${v.value.arm}(${formatValue(v.value.payload)})`;
+  }
+  // Exhaustiveness: this project's tsconfig doesn't enable noImplicitReturns, so a missing case
+  // here was previously a silent runtime "undefined", not a compile error — exactly the gap
+  // that let `Sum` go unhandled since it was added. A future WValue shape is now a compile
+  // error instead.
+  const exhaustive: never = v;
   return exhaustive;
 }

@@ -3925,3 +3925,89 @@ the actual reason this whole pillar exists — still ahead, now unblocked.
 
 **No `PLAN.md` change this entry.** This was a correction to an already-shipped P2.6.1 design
 choice (the scalar cell explicitly named as a future deferral at the time), not a new leaf.
+
+---
+
+## 2026-07-02 · holon-server — real per-deployment state, wired end to end
+
+**Built.** A deployment whose unit derives `StateRead`/`StateWrite` now has genuine, working,
+persisted state — threaded through both `/trigger` and clock ticks, surviving a restart, correct
+under concurrent firing. This is the actual reason the keyed-capability work in
+`holon-core`/`holon-host` existed; this inch is where it finally does something.
+
+**Correction #1, on the record rather than smoothed over.** The plan going in routed this
+through `holon-host`'s `StateHost`. Reading `round()`'s actual body — not assumed from its name
+— found that plan wrong, not just incomplete: it only ever keeps `StateWrite` from what gets
+performed and silently discards everything else. A state-bearing deployment that *also* sends
+an egress would have lost that egress with no error, every time. The real fix needed nothing
+from `holon-core`/`holon-host` at all — `fire_with_state` does the same three-step round
+(snapshot → fire → apply) directly in `holon-server`, reusing `RecordingHost` (which already
+captures everything performed) instead of `StateHost` (which deliberately doesn't).
+`RecordingHost.performed` changed from `Vec<(String, Value)>` to `Vec<(Capability, Value)>` so
+`fire_with_state` can actually distinguish `StateWrite(key)` from everything else recorded —
+the `{c:?}` stringification moved from record-time to the three places that build a wire
+response.
+
+**Correction #2, solved rather than deferred.** Holding the whole deployments-table lock across
+an entire fire would reintroduce exactly the "one slow flow blocks every other deployment"
+problem the concurrent tick-firing inch (inch 10) was built to prevent. But *not* locking across
+the whole round reopens the lost-update race between two near-simultaneous triggers of the
+*same* deployment — already named and resolved earlier in this project's history, and worth
+getting right the first time rather than shipping it broken again. `Deployment.state` is
+`Arc<Mutex<BTreeMap<String, Value>>>`, not a bare map: the table lock is only ever held briefly,
+to clone the `Arc` out; the *inner* mutex is what's held for the whole round. Two different
+deployments never contend with each other at all; two triggers of the *same* deployment
+correctly serialize instead of racing.
+
+**A real, structural limitation of the primitive set, surfaced while designing the test unit —
+named, not routed around.** A `store_read → add → store_write` counter cannot bootstrap its own
+first value with only the current genesis set: an absent key's read fails the *whole*
+single-output settle (`fire_sourced`'s own honest-absence rule), and there's no
+coalesce-with-default primitive to work around that. The test unit (`test_stateful_writer`) is
+deliberately write-only instead, with this limitation spelled out directly in its own doc
+comment rather than quietly avoided.
+
+**That in turn surfaced a genuine need, not a speculative one.** `GET /deployments/<slug>/state`
+exists because there was no other honest way to prove persistence without inspecting state
+directly — a flow can't always read back its own prior write (see above), so the only truthful
+verification is looking at the state itself. 404 for an unknown slug, 400 (not an empty object)
+for a slug that exists but was never stateful — a different failure from "not found," naming
+what's actually true rather than letting an empty map stand in for two different meanings.
+
+**Also added, unconditionally on every deployment, not gated on state:** `trigger_count`,
+`error_count`, `deployed_at`, all persisted, all visible on `GET /deployments`. `error_count`
+counts infrastructure failures only — the unit's closure genuinely failed to resolve. A settle
+that honestly evaluates to nothing is *not* an error; it's the same "this is a normal, expected
+outcome" stance this whole project takes everywhere else, now extended to this one new counter
+rather than quietly contradicted by it. `DeploymentRecord`'s new fields are all
+`#[serde(default)]`, so a `deployments.json` written before this inch still loads without error.
+
+**Cleanup, caught by a compiler warning that turned out to be a real signal, not noise.** Three
+test-only unit builders (`test_store_read`, `test_store_write`, `test_stateful_writer`) had been
+placed at module scope out of habit — copying the shape of five *other* builders
+(`test_ingress`, `test_clock`, etc.) that legitimately live there because they back a real
+`--emit-test-*` CLI flag — without actually having that flag themselves. In a normal
+(non-test) build they were dead code. Fixed by moving them into `mod tests`, their only real
+caller, not by adding `#[allow(dead_code)]` over the symptom.
+
+**Verified — actually run, not just written.** `cargo build --workspace`: clean, zero warnings
+beyond the pre-existing, unrelated `buf_redux`/`multipart` future-incompatibility notice.
+`cargo test --workspace`: **268 passed, 0 failed**, across all four crates (189 core + 39 host +
+29 server + 11 wasm) — 6 new `holon-server` tests written specifically for this inch:
+state persisting across two separate `/trigger` calls, state persisting across two separate
+clock ticks, the honest-absence path proven end to end through the real trigger path (not just
+at the core level), the deployments listing showing `has_state`/counters correctly for both a
+stateful and a stateless deployment side by side, `/state`'s 404-vs-400 distinction, and state
+surviving a full simulated restart.
+
+**No `PLAN.md` change.** Still infrastructure — the standing-deploy pillar's own scope, not a
+core-language leaf.
+
+**Where the standing-deploy pillar actually stands now:** register (deriving triggers *and*
+state-eligibility from the unit's own capabilities), list, trigger, observe (tick history *and*
+state), stop, and now genuinely *remember* — all real, all tested, all grounded against the
+actual source rather than assumed. What's still open, named plainly rather than silently
+treated as solved: the write-only bootstrap limitation (a real primitive-set gap, not a
+`holon-server` one); unbounded per-tick thread fan-out at genuinely large simultaneous
+scheduling; dynamic (non-static) state keys, deliberately out of scope from the very first L4 of
+this whole arc.

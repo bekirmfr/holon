@@ -13,8 +13,10 @@ import {
   isWEncapError,
   validationErrorNodeIndices,
   encapErrorNodeIndices,
+  capabilityAcknowledgeName,
+  formatValue,
 } from "./diagnostics";
-import type { WPort, WEdge, WEncapError, WValidationError } from "./holon";
+import type { WPort, WEdge, WEncapError, WValidationError, WCapability, WValue } from "./holon";
 
 // Inlined rather than imported: importing a real VALUE (not a type) from holon.ts would evaluate
 // its whole module at runtime, including its own import of the actual wasm package
@@ -190,5 +192,71 @@ describe("encapErrorNodeIndices", () => {
       message: "x",
     };
     expect(encapErrorNodeIndices(err, wedges)).toEqual([1, 2]);
+  });
+});
+
+describe("capabilityAcknowledgeName", () => {
+  it("returns a bare capability's own name unchanged", () => {
+    const cases: WCapability[] = [
+      "Clock",
+      "NetworkIngress",
+      "FileRead",
+      "SecretAccess",
+      "Random",
+      "NetworkEgress",
+      "FileWrite",
+      "Spawn",
+    ];
+    for (const c of cases) expect(capabilityAcknowledgeName(c)).toBe(c);
+  });
+
+  it("formats a keyed StateRead/StateWrite exactly as holon-server's own {c:?} does", () => {
+    // Must match Rust's derived Debug on a tuple variant EXACTLY — this is the literal string
+    // holon-server's /deploy endpoint checks the "acknowledge" list against, not a
+    // human-friendly approximation of it.
+    expect(capabilityAcknowledgeName({ StateRead: "counter" })).toBe('StateRead("counter")');
+    expect(capabilityAcknowledgeName({ StateWrite: "counter" })).toBe('StateWrite("counter")');
+  });
+
+  it("keeps different keys distinct, not collapsed to the bare capability name", () => {
+    const a = capabilityAcknowledgeName({ StateRead: "var1" });
+    const b = capabilityAcknowledgeName({ StateRead: "var2" });
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("formatValue", () => {
+  it("formats every scalar plainly", () => {
+    expect(formatValue({ type: "Number", value: 3 })).toBe("3");
+    expect(formatValue({ type: "Boolean", value: true })).toBe("true");
+    expect(formatValue({ type: "Boolean", value: false })).toBe("false");
+    expect(formatValue({ type: "Text", value: "hi" })).toBe('"hi"');
+  });
+
+  it("formats a list recursively, comma-separated", () => {
+    const v: WValue = {
+      type: "List",
+      value: [{ type: "Number", value: 1 }, { type: "Number", value: 2 }],
+    };
+    expect(formatValue(v)).toBe("[1, 2]");
+  });
+
+  it("includes an Effect's payload, not just its sink name", () => {
+    // The actual regression: this used to be `effect(store_write:count)` with no way to see
+    // the value that was written — exactly the case a deployed state-write flow's whole point
+    // is showing. Caught by building a real counter flow and looking at its result, not by
+    // this test — which is the point of adding this test now.
+    const v: WValue = {
+      type: "Effect",
+      value: { sink: "store_write:count", payload: { type: "Number", value: 3 } },
+    };
+    expect(formatValue(v)).toBe("effect(store_write:count, 3)");
+  });
+
+  it("formats a Sum by its arm index, never guessing a Some/None label", () => {
+    const some5: WValue = { type: "Sum", value: { arm: 0, payload: { type: "Number", value: 5 } } };
+    const none: WValue = { type: "Sum", value: { arm: 1, payload: { type: "List", value: [] } } };
+    expect(formatValue(some5)).toBe("sum#0(5)");
+    expect(formatValue(none)).toBe("sum#1([])");
   });
 });
