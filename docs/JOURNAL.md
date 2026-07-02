@@ -3723,3 +3723,65 @@ empty response that could as easily have meant something else.
 grounding pass (a background scheduler, what happens on overlap or a mid-tick restart,
 per-deployment concurrency) before any design note gets written, the same discipline every
 leaf in this arc has followed from the first inch.
+
+---
+
+## 2026-07-02 · holon-server — real integration tests, replacing manual `curl`
+
+**Built.** 17 tests, all in-process, via `rouille::Request::fake_http` calling `route()`/
+`with_cors()` directly — no real server, no port, no socket. `route()` and `with_cors()` were
+already plain functions over `Request`/`Response`; `fake_http` builds a real `Request` value
+without a network stack under it, so every endpoint runs exactly as the real server would run
+it, just called in-process. Runs in well under a second, now part of `cargo test --workspace`
+by default — no separate step to remember.
+
+**Prompted by a direct, fair challenge, not a self-initiated cleanup.** Partway through this
+session, with nine endpoints and a background scheduler built, the user asked plainly: should
+this not have integration tests instead of hand-testing everything via `curl`? It should have.
+Worth naming honestly rather than smoothing over: manual verification was proportionate back
+when there were two simple endpoints; by the time `/deploy` alone had five branches and a
+scheduler thread, it clearly wasn't anymore, and that shift should have been caught and flagged
+on this end, not left for the user to raise.
+
+**One real refactor made this possible cleanly.** `spawn_clock_scheduler`'s `thread::spawn` +
+real-time sleep loop can't be exercised by a fast, deterministic test — so the actual decision
+logic (what's due, what firing it produces) was pulled out into `run_due_clock_ticks(store,
+deployments, now: SystemTime)`, callable directly with a hand-picked timestamp. The real
+scheduler loop now just calls it once a second with `SystemTime::now()`. Same move this
+project's own editor tests already made for the identical reason (`diagnostics.ts`, extracted
+specifically so pure logic didn't need the real wasm package to test) — applied here for the
+first time on the Rust side.
+
+**Grounded before writing a single test, same discipline as every endpoint before it.**
+`Response`'s fields (`status_code`, `data`, `headers`) and `ResponseBody::into_reader_and_size()`
+confirmed `pub` via direct doc lookup first — the whole testing strategy hinges on being able
+to read a real `Response`'s body back out, so that got checked before any test was written, not
+assumed.
+
+**Coverage, mapped directly onto what had been manually verified all session:** `/health`;
+`/unit` round-trip plus bad-hash (400) and missing-hash (404) paths; `/registry/publish`'s
+dangling-reference refusal then success once staged; `/registry/fork`'s happy path plus
+unknown-root (404) and target-outside-closure (400); `/cache/ingest`'s key-mismatch refusal,
+successful ingest, and `GET /cache/<key>` catching a structurally-valid-but-lying entry (422);
+`/fire` on a pure unit (empty `performed`) and a sink (a real recorded effect); `/deploy`
+deriving `Ingress` automatically, requiring and validating `interval_seconds` only when `Clock`
+is derived, and rejecting a unit with neither; `/trigger`'s happy path and unknown-slug 404;
+the clock scheduler firing exactly when due and not a moment before or after, via
+`run_due_clock_ticks` at three hand-picked timestamps; CORS allowing a localhost origin and
+omitting the header entirely for a disallowed one.
+
+**Verified — actually run, first try, no second compile round needed.** `cargo test -p
+holon-server`: all 17 green immediately, including the one flagged uncertainty
+(`entry_key`'s import path, used directly rather than assumed re-exported, on the strength of
+`holon-host`'s own source importing it the same flat way) — confirmed correct without a repeat
+of the `CacheEntry` back-and-forth from the cache inch.
+
+**A stray file caught in passing, not introduced this inch.** `crates/holon-server/src/lib.rs`
+turned out to exist alongside `main.rs`, holding an unrelated `cargo new --lib` placeholder
+test (`tests::it_works`) — present since the crate was first scaffolded, silently compiled and
+run every test invocation all session without either party noticing, since Cargo happily builds
+both a `lib.rs` and `main.rs` target in one crate. Deleted — clutter, not design, caught only by
+reading the full `cargo test` output carefully rather than skimming for pass/fail.
+
+**No `PLAN.md` change.** Testing infrastructure, not a leaf — same convention the editor's own
+Vitest setup used when it closed an equivalent gap on the TypeScript side.

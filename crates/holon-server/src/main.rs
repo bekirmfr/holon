@@ -16,14 +16,23 @@
 //! actually performing it (see the handler doc for why). This closed this crate's initial
 //! buildout: `/unit`, `/registry/*`, `/cache/*`, `/fire`.
 //!
-//! **Inch 6** (this one, `ingress-deploy-L4.md`): the first slice of the standing-deploy
+//! **Inch 6** (prior commit, `ingress-deploy-L4.md`): the first slice of the standing-deploy
 //! pillar — `POST /deploy`, `GET /deployments`, `POST /trigger/<slug>`. Deliberately the small
-//! half: nothing here needed a single new mechanism from `holon-core`/`holon-host`
+//! half: nothing there needed a single new mechanism from `holon-core`/`holon-host`
 //! (`fire_sourced` and `SourcedResolver` already existed, already tested) — the only genuinely
-//! new thing is a `slug → unit hash` table and one new route. A `Clock`-bound deployment is
-//! explicitly **not** this inch — it needs a standing background scheduler, the first
-//! genuinely new runtime shape anywhere in this project, and stays its own, later, separately
-//! grounded pillar.
+//! new thing was a `slug → unit hash` table and one new route.
+//!
+//! **Inch 7** (this one, `clock-deploy-L4.md`): the other half — `Clock`-bound deployment.
+//! `spawn_clock_scheduler` is the first genuinely new runtime shape anywhere in this project: a
+//! background thread that fires on its own, on a schedule, with nobody asking. Reworked
+//! `/deploy` along the way (worth naming plainly, not burying): rather than the caller
+//! asserting a trigger *type*, `/deploy` now **derives** it from the unit's own
+//! `capabilities()` — the same closure-union already used for capability-consent elsewhere in
+//! this project. A caller only supplies what genuinely can't be read off the graph
+//! (`interval_seconds`, only when the derived capabilities include `Clock`). This correction
+//! came from a real design conversation mid-session, not a solo decision — worth recording
+//! that the first draft (an explicit `trigger` field the caller asserted) was the wrong shape,
+//! caught before it shipped.
 //!
 //! **A design question worth recording, not just the answer:** should `ingress` let a unit
 //! declare the specific format it expects? No — `ingress`'s own genesis interface is
@@ -68,10 +77,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use holon_core::{
-    child_refs, decode_preimage, encode_preimage, hash_unit, parse_hash, Capability, CacheEntry,
-    Edge, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody, Value, BOUNDARY,
+    capabilities, child_refs, decode_preimage, encode_preimage, hash_unit, parse_hash,
+    Capability, CacheEntry, Edge, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody,
+    Value, BOUNDARY,
 };
 use holon_host::{
     fire, fire_sourced, CacheIngestError, FileStore, ForkError, Host, MemStore, PublishError,
@@ -110,9 +122,29 @@ struct AppState {
     store: SharedStore,
     registry: Mutex<Registry<SharedStore>>,
     cache: Mutex<SharedCache>,
-    /// slug → unit hash. In-memory only, same as `Registry`'s published set and `SharedCache` —
-    /// restarting the server forgets every deployment, consistent with everything else here.
-    deployments: Mutex<BTreeMap<String, Hash>>,
+    /// slug → deployment. `Arc` (not just `Mutex`) because the clock scheduler thread
+    /// (`spawn_clock_scheduler`) needs its own independent handle onto the same table, cloned
+    /// before `AppState` is built — the same `Send`-shared-handle shape `SharedStore` already
+    /// uses for the store itself. In-memory only, same as `Registry`'s published set and
+    /// `SharedCache` — restarting the server forgets every deployment.
+    deployments: Arc<Mutex<BTreeMap<String, Deployment>>>,
+}
+
+/// A registered deployment. `triggers` is derived **once**, at deploy time, from the unit's
+/// own capability closure (`capabilities()`) — safe to cache rather than re-derive on every
+/// `GET /deployments`, since a unit's hash is its whole identity: the same hash can never later
+/// have different capabilities. `next_due`/`history` are `Clock`-only; `None`/empty for a
+/// purely `Ingress`-triggered deployment.
+struct Deployment {
+    unit: Hash,
+    triggers: Vec<String>,
+    interval_seconds: Option<u64>,
+    next_due: Option<SystemTime>,
+    /// A bounded ring buffer (last 20) of clock ticks — see the L4's Fork 2: logged to stdout
+    /// *and* kept here, retrievable via `GET /deployments/<slug>/history`, so a standing
+    /// deployment is checkable after the fact, not just while someone happens to be watching
+    /// the console.
+    history: Vec<TickEntry>,
 }
 
 #[derive(Serialize)]
@@ -206,7 +238,9 @@ struct FireRequestBody {
 }
 
 /// One `(capability, payload)` pair `RecordingHost` recorded instead of actually performing.
-#[derive(Serialize)]
+/// `Clone` so a `Deployment`'s cached `TickEntry` history can be cloned out for a response
+/// without holding the deployments lock across the JSON serialization.
+#[derive(Serialize, Clone)]
 struct PerformedEntry {
     capability: String,
     payload: SValue,
@@ -218,26 +252,48 @@ struct FireResponseBody {
     performed: Vec<PerformedEntry>,
 }
 
-/// `POST /deploy`'s request body: a chosen `slug` plus the unit's hash. The unit itself is not
-/// re-sent — it must already be resolvable in the store (staged via `/unit`, or published; see
-/// the L4's Fork 1 — deploy deliberately does not require publication, a separate,
-/// marketplace-facing concept).
+/// `POST /deploy`'s request body. `unit` must already be resolvable in the store (staged via
+/// `/unit`, or published — see the L4's Fork 1: deploy deliberately does not require
+/// publication, a separate, marketplace-facing concept). `interval_seconds` is **only**
+/// consulted (and required) if the unit's own derived capabilities include `Clock` — nothing
+/// about *which* trigger(s) apply is asserted by the caller; that's read off the unit itself.
 #[derive(Deserialize)]
 struct DeployRequestBody {
     slug: String,
     unit: String,
+    interval_seconds: Option<u64>,
 }
 
 #[derive(Serialize)]
 struct DeployResponseBody {
     slug: String,
     unit: String,
+    /// What was actually derived from the unit's own capabilities — `"Ingress"`, `"Clock"`,
+    /// both, or (refused before reaching this response) neither.
+    triggers: Vec<String>,
+    interval_seconds: Option<u64>,
 }
 
 #[derive(Serialize)]
 struct DeploymentEntry {
     slug: String,
     unit: String,
+    triggers: Vec<String>,
+    interval_seconds: Option<u64>,
+}
+
+/// One clock tick's result, kept in a deployment's bounded history.
+#[derive(Serialize, Clone)]
+struct TickEntry {
+    at_epoch_seconds: u64,
+    output: Option<SValue>,
+    performed: Vec<PerformedEntry>,
+}
+
+#[derive(Serialize)]
+struct HistoryBody {
+    slug: String,
+    ticks: Vec<TickEntry>,
 }
 
 #[derive(Serialize)]
@@ -607,13 +663,17 @@ fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// `POST /deploy` — register `slug → unit`. Confirms the unit actually resolves in the store
-/// (reuses `Store::get`, not a new check) before committing the mapping. Overwrites silently on
-/// a repeat slug (the L4's Fork 2 — a redeploy, not an error; matches `Store::put`'s and
-/// `SharedCache::ingest`'s own "dumb, idempotent" precedent elsewhere in this crate).
+/// `POST /deploy` — register `slug → unit`. The trigger(s) are **derived**, not asserted:
+/// `capabilities(unit, resolver)` (the same closure-union already used for capability-consent
+/// elsewhere in this project) tells us whether the unit needs `Ingress`, `Clock`, both, or
+/// neither — the caller only supplies what genuinely can't be read off the graph
+/// (`interval_seconds`, only when `Clock` is present; nothing tells you "every 3600 seconds"
+/// from structure alone). A unit deriving neither capability is refused — nothing would ever
+/// trigger it. Overwrites silently on a repeat slug (the L4's Fork 2 — a redeploy, not an
+/// error, matching `Store::put`'s and `SharedCache::ingest`'s own "dumb, idempotent" precedent).
 fn handle_post_deploy(
     store: &SharedStore,
-    deployments: &Mutex<BTreeMap<String, Hash>>,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
     request: &Request,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -630,42 +690,102 @@ fn handle_post_deploy(
     let Some(unit_hash) = parse_hash(&body.unit) else {
         return err(400, "unit is not a 64-char hex hash");
     };
-    match store.get(&unit_hash) {
-        Ok(Some(_)) => {}
-        Ok(None) => return err(404, "no unit stored at that hash — stage or publish it first"),
-        Err(e) => return err(500, format!("store error: {e:?}")),
+
+    let resolver = match materialize_closure(store, unit_hash) {
+        Ok(r) => r,
+        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+    };
+    let Some(root_unit) = resolver.resolve(&unit_hash) else {
+        return err(404, "no unit stored at that hash — stage or publish it first");
+    };
+
+    let caps = capabilities(root_unit, &resolver);
+    let is_ingress = caps.contains(Capability::NetworkIngress);
+    let is_clock = caps.contains(Capability::Clock);
+    if !is_ingress && !is_clock {
+        return err(
+            400,
+            "this unit declares no driver capability (NetworkIngress or Clock) — nothing would ever trigger it",
+        );
     }
-    deployments.lock().unwrap().insert(body.slug.clone(), unit_hash);
-    Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash) })
+
+    let interval_seconds = if is_clock {
+        match body.interval_seconds {
+            Some(n) if n >= 1 => Some(n),
+            Some(_) => return err(400, "interval_seconds must be at least 1 (the L4's Fork 3 floor)"),
+            None => {
+                return err(400, "this unit's derived capabilities include Clock — interval_seconds is required")
+            }
+        }
+    } else {
+        None
+    };
+    // Fires on the scheduler's very next pass rather than waiting a full interval the first
+    // time — a person deploying a clock flow wants to see it work now, not in an hour.
+    let next_due = interval_seconds.map(|_| SystemTime::now());
+
+    let mut triggers = Vec::new();
+    if is_ingress {
+        triggers.push("Ingress".to_string());
+    }
+    if is_clock {
+        triggers.push("Clock".to_string());
+    }
+
+    deployments.lock().unwrap().insert(
+        body.slug.clone(),
+        Deployment { unit: unit_hash, triggers: triggers.clone(), interval_seconds, next_due, history: Vec::new() },
+    );
+
+    Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds })
 }
 
-/// `GET /deployments` — the current slug → hash table, same shape/convention as `GET /registry`.
-fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Hash>>) -> Response {
+/// `GET /deployments` — every deployment, its derived triggers, and its interval if clock-bound.
+fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Response {
     let deployments = deployments.lock().unwrap();
     let list = deployments
         .iter()
-        .map(|(slug, hash)| DeploymentEntry { slug: slug.clone(), unit: to_hex(hash) })
+        .map(|(slug, dep)| DeploymentEntry {
+            slug: slug.clone(),
+            unit: to_hex(&dep.unit),
+            triggers: dep.triggers.clone(),
+            interval_seconds: dep.interval_seconds,
+        })
         .collect();
     Response::json(&DeploymentsBody { deployments: list })
 }
 
-/// `POST /trigger/<slug>` — the actual ingress trigger. Looks up the deployed unit, materializes
-/// its closure exactly as `/fire` and the cache endpoints do, and settles it via `fire_sourced`
+/// `GET /deployments/<slug>/history` — the bounded (last 20) clock-tick history for a
+/// `Clock`-triggered deployment. Empty for a purely `Ingress`-triggered one — there's nothing
+/// to show; each `/trigger/<slug>` call already returns its own result directly.
+fn handle_get_history(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
+    let deployments = deployments.lock().unwrap();
+    match deployments.get(slug) {
+        Some(dep) => Response::json(&HistoryBody { slug: slug.to_string(), ticks: dep.history.clone() }),
+        None => Response::empty_404(),
+    }
+}
+
+/// `POST /trigger/<slug>` — the ingress trigger. Looks up the deployed unit, materializes its
+/// closure exactly as `/fire` and the cache endpoints do, and settles it via `fire_sourced`
 /// with the raw request body injected as `Capability::NetworkIngress` — wrapped as
 /// `Value::Text`, the L4's Fork 3 default (`ingress`'s declared output type is `Any`; nothing
 /// forces this choice, but Text matches how every other text-shaped payload already crosses
 /// this boundary). A flow wanting structured data parses that Text itself, downstream, using
-/// this project's own `Sum`/`select` machinery — not a format this endpoint imposes.
+/// this project's own `Sum`/`select` machinery — not a format this endpoint imposes. Works
+/// against any deployed unit regardless of its derived triggers (a `Clock`-only unit just won't
+/// have an `ingress` leaf for the resolver to substitute, so this is harmless, not unsafe, to
+/// allow uniformly rather than gating on which triggers were derived at deploy time).
 fn handle_post_trigger(
     store: &SharedStore,
-    deployments: &Mutex<BTreeMap<String, Hash>>,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
     slug: &str,
     request: &Request,
 ) -> Response {
     let unit_hash = {
         let deployments = deployments.lock().unwrap();
         match deployments.get(slug) {
-            Some(h) => *h,
+            Some(dep) => dep.unit,
             None => return Response::empty_404(),
         }
     };
@@ -697,6 +817,86 @@ fn handle_post_trigger(
             .map(|(capability, payload)| PerformedEntry { capability, payload: SValue::from_core(&payload) })
             .collect(),
     })
+}
+
+/// The clock scheduler — the one genuinely new runtime shape in this whole project: a thread
+/// that acts on its own, on a timer, with nobody asking. Spawned once at startup with its own
+/// `Arc` handle onto `deployments` (see the L4 §2 — no async runtime needed for this workload;
+/// a plain sleep loop is enough). Every second, checks which `Clock`-triggered deployments are
+/// due, fires each via `fire_sourced` with the real wall-clock time injected, logs the result
+/// to stdout, and appends it to that deployment's bounded history (the L4's Fork 2). Single,
+/// sequential loop — a slow tick simply delays the next check for everyone, never overlaps
+/// itself (the L4 §4's accepted, named limitation, not a general solution).
+/// The tick-firing logic, pulled out of `spawn_clock_scheduler`'s loop specifically so it's
+/// callable directly with a controlled `now` — the same "extract the testable logic out of the
+/// untestable wrapper" move the editor's own `diagnostics.ts` extraction already used (see that
+/// module's own doc, elsewhere in this project) for the identical reason: a `thread::spawn` +
+/// real-time sleep loop can't be exercised by a fast, deterministic test, but the actual
+/// decision ("what's due, what does firing it produce") has nothing to do with sleeping and
+/// everything to do with comparing `now` against `next_due` — so that part is its own function.
+fn run_due_clock_ticks(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, now: SystemTime) {
+    let due: Vec<(String, Hash, u64)> = {
+        let deployments = deployments.lock().unwrap();
+        deployments
+            .iter()
+            .filter_map(|(slug, dep)| match (dep.interval_seconds, dep.next_due) {
+                (Some(interval), Some(next_due)) if now >= next_due => {
+                    Some((slug.clone(), dep.unit, interval))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    for (slug, unit_hash, interval) in due {
+        let resolver = match materialize_closure(store, unit_hash) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("clock tick [{slug}]: store error while materializing closure: {e:?}");
+                continue;
+            }
+        };
+        let Some(root_unit) = resolver.resolve(&unit_hash) else {
+            eprintln!("clock tick [{slug}]: deployed unit no longer resolves in the store");
+            continue;
+        };
+
+        let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64))];
+        let mut host = RecordingHost { performed: Vec::new() };
+        let output = fire_sourced(root_unit, &sourced, &resolver, &mut host);
+
+        println!(
+            "clock tick [{slug}] at {epoch_seconds}: output={output:?}, {} effect(s) performed",
+            host.performed.len()
+        );
+
+        let tick = TickEntry {
+            at_epoch_seconds: epoch_seconds,
+            output: output.as_ref().map(SValue::from_core),
+            performed: host
+                .performed
+                .into_iter()
+                .map(|(capability, payload)| PerformedEntry { capability, payload: SValue::from_core(&payload) })
+                .collect(),
+        };
+
+        let mut deployments = deployments.lock().unwrap();
+        if let Some(dep) = deployments.get_mut(&slug) {
+            dep.next_due = Some(now + Duration::from_secs(interval));
+            dep.history.push(tick);
+            if dep.history.len() > 20 {
+                dep.history.remove(0);
+            }
+        }
+    }
+}
+
+fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(1));
+        run_due_clock_ticks(&store, &deployments, SystemTime::now());
+    });
 }
 
 fn route(state: &AppState, request: &Request) -> Response {
@@ -758,6 +958,14 @@ fn route(state: &AppState, request: &Request) -> Response {
 
     if method == "GET" && url == "/deployments" {
         return handle_get_deployments(&state.deployments);
+    }
+
+    if let Some(rest) = url.strip_prefix("/deployments/") {
+        if let Some(slug) = rest.strip_suffix("/history") {
+            if method == "GET" {
+                return handle_get_history(&state.deployments, slug);
+            }
+        }
     }
 
     if let Some(slug) = url.strip_prefix("/trigger/") {
@@ -848,6 +1056,36 @@ fn test_ingress_flow(ingress_hash: Hash, egress_hash: Hash) -> Unit {
     Unit {
         body: UnitBody::Composite {
             children: vec![ingress_hash, egress_hash],
+            edges: vec![
+                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
+                Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+            ],
+        },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+    }
+}
+
+/// The `clock` driver primitive — zero inputs, output `Number` (its real genesis interface;
+/// unlike `ingress`, this one is concretely typed, not `Any`).
+fn test_clock() -> Unit {
+    Unit {
+        body: UnitBody::Primitive { name: "clock".into() },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+    }
+}
+
+/// `clock → egress`: wire-compatible because `egress`'s `payload` port is `Any` (`compatible`'s
+/// rule: `dst==Any` accepts anything). For exercising `POST /deploy`'s derived-`Clock` path and
+/// `spawn_clock_scheduler` end to end — every tick should record a `NetworkEgress` carrying
+/// that tick's epoch-seconds value.
+fn test_clock_flow(clock_hash: Hash, egress_hash: Hash) -> Unit {
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![clock_hash, egress_hash],
             edges: vec![
                 Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
                 Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 },
@@ -982,6 +1220,41 @@ fn main() {
             );
             println!("stage all three via /unit (order doesn't matter), then /deploy the composite's hash, then POST /trigger/<slug>.");
             return;
+        } else if a == "--emit-test-clock-flow" {
+            let (Some(clock_path), Some(egress_path), Some(composite_path)) =
+                (args.next(), args.next(), args.next())
+            else {
+                eprintln!("--emit-test-clock-flow needs <clock-path> <egress-path> <composite-path>");
+                std::process::exit(1);
+            };
+            let clock = test_clock();
+            let clock_hash = hash_unit(&clock).expect("test_clock() is a fixed, valid unit");
+            let clock_bytes = encode_preimage(&clock).expect("test_clock() is a fixed, valid unit");
+            let egress = test_sink();
+            let egress_hash = hash_unit(&egress).expect("test_sink() is a fixed, valid unit");
+            let egress_bytes = encode_preimage(&egress).expect("test_sink() is a fixed, valid unit");
+            let composite = test_clock_flow(clock_hash, egress_hash);
+            let composite_hash =
+                hash_unit(&composite).expect("test_clock_flow() is a fixed, valid unit");
+            let composite_bytes = encode_preimage(&composite)
+                .expect("test_clock_flow() is a fixed, valid unit given any two leaf hashes");
+            std::fs::write(&clock_path, &clock_bytes)
+                .unwrap_or_else(|e| panic!("write {clock_path}: {e}"));
+            std::fs::write(&egress_path, &egress_bytes)
+                .unwrap_or_else(|e| panic!("write {egress_path}: {e}"));
+            std::fs::write(&composite_path, &composite_bytes)
+                .unwrap_or_else(|e| panic!("write {composite_path}: {e}"));
+            println!("wrote clock ({} bytes) to {clock_path}", clock_bytes.len());
+            println!("wrote egress ({} bytes) to {egress_path}", egress_bytes.len());
+            println!(
+                "wrote composite clock->egress ({} bytes, hash {}) to {composite_path}",
+                composite_bytes.len(),
+                to_hex(&composite_hash)
+            );
+            println!(
+                "stage all three via /unit, then POST /deploy with {{\"slug\":\"...\",\"unit\":\"<hash>\",\"interval_seconds\":5}}."
+            );
+            return;
         }
     }
 
@@ -998,9 +1271,381 @@ fn main() {
     let store = SharedStore(Arc::new(Mutex::new(backend)));
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
-    let deployments = Mutex::new(BTreeMap::new());
+    let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(BTreeMap::new()));
+    spawn_clock_scheduler(store.clone(), Arc::clone(&deployments));
     let state = AppState { store, registry, cache, deployments };
 
     println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
     rouille::start_server(addr, move |request| with_cors(request, route(&state, request)));
+}
+
+/// In-process integration tests. No real server, no network, no port — `route()`/`with_cors()`
+/// are plain functions over `Request`/`Response`, and `Request::fake_http` builds a real
+/// `Request` value without a socket, so every endpoint is exercised exactly as the real server
+/// would run it, just called directly. This replaces the manual `curl` walkthroughs used to
+/// verify each inch while building this crate — a real gap, named plainly rather than left
+/// implicit, once the surface grew past the first couple of endpoints. `run_due_clock_ticks`
+/// (pulled out of `spawn_clock_scheduler` for exactly this reason) means the scheduler is
+/// tested with a controlled `now`, not real sleeping.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_state() -> AppState {
+        let backend: DynStore = Box::new(MemStore::new());
+        let store = SharedStore(Arc::new(Mutex::new(backend)));
+        let registry = Mutex::new(Registry::new(store.clone()));
+        let cache = Mutex::new(SharedCache::new());
+        let deployments = Arc::new(Mutex::new(BTreeMap::new()));
+        AppState { store, registry, cache, deployments }
+    }
+
+    fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
+        Request::fake_http(method, url, vec![], body)
+    }
+
+    fn body_bytes(response: Response) -> Vec<u8> {
+        let (mut reader, _) = response.data.into_reader_and_size();
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).unwrap();
+        buf
+    }
+
+    fn body_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&body_bytes(response)).expect("response body was not valid JSON")
+    }
+
+    // ── /health ──────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn health_check() {
+        let state = test_state();
+        let r = route(&state, &req("GET", "/health", vec![]));
+        assert_eq!(r.status_code, 200);
+        assert_eq!(body_bytes(r), b"ok");
+    }
+
+    // ── /unit ────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn unit_round_trips() {
+        let state = test_state();
+        let bytes = encode_preimage(&test_unit()).unwrap();
+        let expected_hash = to_hex(&hash_unit(&test_unit()).unwrap());
+
+        let post = route(&state, &req("POST", "/unit", bytes.clone()));
+        assert_eq!(post.status_code, 200);
+        assert_eq!(body_json(post)["hash"], expected_hash);
+
+        let get = route(&state, &req("GET", &format!("/unit/{expected_hash}"), vec![]));
+        assert_eq!(get.status_code, 200);
+        assert_eq!(body_bytes(get), bytes);
+    }
+
+    #[test]
+    fn unit_get_rejects_bad_hash_and_404s_a_missing_one() {
+        let state = test_state();
+        assert_eq!(route(&state, &req("GET", "/unit/deadbeef", vec![])).status_code, 400);
+
+        let zeros = "0".repeat(64);
+        assert_eq!(route(&state, &req("GET", &format!("/unit/{zeros}"), vec![])).status_code, 404);
+    }
+
+    // ── /registry ────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn publish_refuses_dangling_reference_then_succeeds_once_staged() {
+        let state = test_state();
+        let leaf_hash = hash_unit(&test_unit()).unwrap();
+        let composite_bytes = encode_preimage(&test_composite(leaf_hash)).unwrap();
+
+        let refused = route(&state, &req("POST", "/registry/publish", composite_bytes.clone()));
+        assert_eq!(refused.status_code, 400);
+
+        route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
+
+        let published = route(&state, &req("POST", "/registry/publish", composite_bytes));
+        assert_eq!(published.status_code, 200);
+
+        let list = route(&state, &req("GET", "/registry", vec![]));
+        assert_eq!(body_json(list)["published"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn fork_replaces_target_and_keeps_original_published() {
+        let state = test_state();
+        let leaf_hash = hash_unit(&test_unit()).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
+        let composite = test_composite(leaf_hash);
+        let composite_hash = hash_unit(&composite).unwrap();
+        route(&state, &req("POST", "/registry/publish", encode_preimage(&composite).unwrap()));
+
+        let replacement_bytes = encode_preimage(&test_replacement()).unwrap();
+        let url =
+            format!("/registry/fork?root={}&target={}", to_hex(&composite_hash), to_hex(&leaf_hash));
+        let forked = route(&state, &req("POST", &url, replacement_bytes));
+        assert_eq!(forked.status_code, 200);
+        let new_hash = body_json(forked)["hash"].as_str().unwrap().to_string();
+        assert_ne!(new_hash, to_hex(&composite_hash));
+
+        let list = route(&state, &req("GET", "/registry", vec![]));
+        let published: Vec<String> = body_json(list)["published"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect();
+        assert!(published.contains(&to_hex(&composite_hash)));
+        assert!(published.contains(&new_hash));
+    }
+
+    #[test]
+    fn fork_rejects_unknown_root_and_target_outside_closure() {
+        let state = test_state();
+        let leaf_hash = hash_unit(&test_unit()).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
+        let composite = test_composite(leaf_hash);
+        let composite_hash = hash_unit(&composite).unwrap();
+        route(&state, &req("POST", "/registry/publish", encode_preimage(&composite).unwrap()));
+        let replacement_bytes = encode_preimage(&test_replacement()).unwrap();
+
+        let bad_root = "de".repeat(32);
+        let url1 = format!("/registry/fork?root={bad_root}&target={}", to_hex(&leaf_hash));
+        assert_eq!(route(&state, &req("POST", &url1, replacement_bytes.clone())).status_code, 404);
+
+        let zero_target = "0".repeat(64);
+        let url2 = format!("/registry/fork?root={}&target={zero_target}", to_hex(&composite_hash));
+        assert_eq!(route(&state, &req("POST", &url2, replacement_bytes)).status_code, 400);
+    }
+
+    // ── /cache ───────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cache_ingest_rejects_key_mismatch_then_succeeds_under_the_real_key() {
+        use holon_core::entry_key;
+
+        let state = test_state();
+        route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
+        let leaf_hash = hash_unit(&test_unit()).unwrap();
+
+        let entry =
+            CacheEntry { unit_hash: leaf_hash, inputs: vec![], outputs: vec![Some(Value::Number(42.0))] };
+        let real_key = entry_key(&entry).unwrap();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "unit_hash": to_hex(&leaf_hash),
+            "inputs": [],
+            "outputs": [{"type": "Number", "value": 42.0}],
+        }))
+        .unwrap();
+
+        let zero_key = "0".repeat(64);
+        let mismatch = route(&state, &req("POST", &format!("/cache/ingest?key={zero_key}"), body.clone()));
+        assert_eq!(mismatch.status_code, 400);
+
+        let ok = route(&state, &req("POST", &format!("/cache/ingest?key={}", to_hex(&real_key)), body));
+        assert_eq!(ok.status_code, 200);
+
+        let get = route(&state, &req("GET", &format!("/cache/{}", to_hex(&real_key)), vec![]));
+        assert_eq!(get.status_code, 200);
+        assert_eq!(body_json(get)["outputs"][0]["value"], 42.0);
+    }
+
+    #[test]
+    fn cache_verified_read_refuses_a_lying_entry() {
+        use holon_core::entry_key;
+
+        let state = test_state();
+        route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
+        let leaf_hash = hash_unit(&test_unit()).unwrap();
+
+        // leaf really evaluates to 42, but this entry claims 999.
+        let lie =
+            CacheEntry { unit_hash: leaf_hash, inputs: vec![], outputs: vec![Some(Value::Number(999.0))] };
+        let key = entry_key(&lie).unwrap();
+        let body = serde_json::to_vec(&serde_json::json!({
+            "unit_hash": to_hex(&leaf_hash),
+            "inputs": [],
+            "outputs": [{"type": "Number", "value": 999.0}],
+        }))
+        .unwrap();
+        let ingested = route(&state, &req("POST", &format!("/cache/ingest?key={}", to_hex(&key)), body));
+        assert_eq!(ingested.status_code, 200); // structurally valid — ingest doesn't re-execute
+
+        let get = route(&state, &req("GET", &format!("/cache/{}", to_hex(&key)), vec![]));
+        assert_eq!(get.status_code, 422); // but the verified read catches the lie
+    }
+
+    // ── /fire ────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fire_pure_unit_settles_with_no_performed_effects() {
+        let state = test_state();
+        route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
+        let leaf_hash = hash_unit(&test_unit()).unwrap();
+
+        let body = serde_json::to_vec(&serde_json::json!({"inputs": []})).unwrap();
+        let r = route(&state, &req("POST", &format!("/fire?root={}", to_hex(&leaf_hash)), body));
+        assert_eq!(r.status_code, 200);
+        let v = body_json(r);
+        assert_eq!(v["output"]["value"], 42.0);
+        assert_eq!(v["performed"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn fire_sink_unit_records_a_performed_effect() {
+        let state = test_state();
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let sink_hash = hash_unit(&test_sink()).unwrap();
+
+        let body =
+            serde_json::to_vec(&serde_json::json!({"inputs": [{"type": "Text", "value": "hi"}]})).unwrap();
+        let r = route(&state, &req("POST", &format!("/fire?root={}", to_hex(&sink_hash)), body));
+        assert_eq!(r.status_code, 200);
+        let v = body_json(r);
+        assert_eq!(v["performed"][0]["capability"], "NetworkEgress");
+        assert_eq!(v["performed"][0]["payload"]["value"], "hi");
+    }
+
+    // ── /deploy + /trigger ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn deploy_derives_ingress_trigger_and_the_trigger_endpoint_fires_it() {
+        let state = test_state();
+        let ingress = test_ingress();
+        let ingress_hash = hash_unit(&ingress).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_ingress_flow(ingress_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+
+        let deploy_body =
+            serde_json::to_vec(&serde_json::json!({"slug": "echo", "unit": to_hex(&flow_hash)})).unwrap();
+        let d = route(&state, &req("POST", "/deploy", deploy_body));
+        assert_eq!(d.status_code, 200);
+        assert_eq!(body_json(d)["triggers"].as_array().unwrap(), &vec![serde_json::json!("Ingress")]);
+
+        let list = route(&state, &req("GET", "/deployments", vec![]));
+        assert_eq!(body_json(list)["deployments"].as_array().unwrap().len(), 1);
+
+        let triggered = route(&state, &req("POST", "/trigger/echo", b"hello from test".to_vec()));
+        assert_eq!(triggered.status_code, 200);
+        let tv = body_json(triggered);
+        assert_eq!(tv["performed"][0]["capability"], "NetworkEgress");
+        assert_eq!(tv["performed"][0]["payload"]["value"], "hello from test");
+    }
+
+    #[test]
+    fn trigger_unknown_slug_is_404() {
+        let state = test_state();
+        assert_eq!(route(&state, &req("POST", "/trigger/nope", b"x".to_vec())).status_code, 404);
+    }
+
+    #[test]
+    fn deploy_rejects_a_unit_with_no_driver_capability() {
+        let state = test_state();
+        route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
+        let leaf_hash = hash_unit(&test_unit()).unwrap();
+        let body =
+            serde_json::to_vec(&serde_json::json!({"slug": "nope", "unit": to_hex(&leaf_hash)})).unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 400);
+    }
+
+    #[test]
+    fn deploy_clock_unit_requires_a_valid_interval() {
+        let state = test_state();
+        let clock = test_clock();
+        let clock_hash = hash_unit(&clock).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&clock).unwrap()));
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_clock_flow(clock_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+
+        let no_interval =
+            serde_json::to_vec(&serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash)})).unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", no_interval)).status_code, 400);
+
+        let zero_interval = serde_json::to_vec(
+            &serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash), "interval_seconds": 0}),
+        )
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", zero_interval)).status_code, 400);
+
+        let ok = serde_json::to_vec(
+            &serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash), "interval_seconds": 5}),
+        )
+        .unwrap();
+        let r = route(&state, &req("POST", "/deploy", ok));
+        assert_eq!(r.status_code, 200);
+        assert_eq!(body_json(r)["triggers"].as_array().unwrap(), &vec![serde_json::json!("Clock")]);
+    }
+
+    // ── the clock scheduler, with a controlled clock — no real sleeping ────────────────────
+
+    #[test]
+    fn clock_ticks_fire_when_due_and_not_before() {
+        let state = test_state();
+        let clock = test_clock();
+        let clock_hash = hash_unit(&clock).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&clock).unwrap()));
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_clock_flow(clock_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+
+        let deploy_body = serde_json::to_vec(
+            &serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash), "interval_seconds": 5}),
+        )
+        .unwrap();
+        route(&state, &req("POST", "/deploy", deploy_body));
+
+        let t0 = SystemTime::now();
+
+        // Due immediately — next_due was set to "now" at deploy time.
+        run_due_clock_ticks(&state.store, &state.deployments, t0);
+        let h1 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
+        assert_eq!(body_json(h1)["ticks"].as_array().unwrap().len(), 1);
+
+        // Not due yet — only 1s of a 5s interval has passed.
+        run_due_clock_ticks(&state.store, &state.deployments, t0 + Duration::from_secs(1));
+        let h2 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
+        assert_eq!(body_json(h2)["ticks"].as_array().unwrap().len(), 1);
+
+        // Due again.
+        run_due_clock_ticks(&state.store, &state.deployments, t0 + Duration::from_secs(6));
+        let h3 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
+        let ticks = body_json(h3)["ticks"].as_array().unwrap().clone();
+        assert_eq!(ticks.len(), 2);
+        assert_eq!(ticks[0]["performed"][0]["capability"], "NetworkEgress");
+    }
+
+    #[test]
+    fn deployments_history_for_unknown_slug_is_404() {
+        let state = test_state();
+        assert_eq!(route(&state, &req("GET", "/deployments/nope/history", vec![])).status_code, 404);
+    }
+
+    // ── CORS ─────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cors_allows_localhost_origin_and_omits_the_header_for_others() {
+        let state = test_state();
+
+        let allowed =
+            Request::fake_http("GET", "/health", vec![("Origin".to_string(), "http://localhost:5173".to_string())], vec![]);
+        let r1 = with_cors(&allowed, route(&state, &allowed));
+        assert!(r1
+            .headers
+            .iter()
+            .any(|(k, v)| k.as_ref() == "Access-Control-Allow-Origin" && v.as_ref() == "http://localhost:5173"));
+
+        let disallowed =
+            Request::fake_http("GET", "/health", vec![("Origin".to_string(), "http://evil.example".to_string())], vec![]);
+        let r2 = with_cors(&disallowed, route(&state, &disallowed));
+        assert!(!r2.headers.iter().any(|(k, _)| k.as_ref() == "Access-Control-Allow-Origin"));
+    }
 }
