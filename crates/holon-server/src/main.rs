@@ -51,10 +51,22 @@
 //! `run_due_clock_ticks` (see inch 7) exists specifically so the scheduler could be tested with
 //! a controlled `SystemTime` rather than real sleeping.
 //!
-//! **Inch 9** (this one): `DELETE /deployments/<slug>` — closes a gap named plainly at inch 7
-//! (`clock-deploy-L4.md`'s Fork 4) and left open on purpose: until now, the only way to stop a
-//! `Clock`-triggered deployment was killing the whole server. Removing the slug from the table
-//! is sufficient — the scheduler only ever acts on what's currently there.
+//! **Inch 9** (prior commit): `DELETE /deployments/<slug>` — closes a gap named plainly at
+//! inch 7 (`clock-deploy-L4.md`'s Fork 4) and left open on purpose: until now, the only way to
+//! stop a `Clock`-triggered deployment was killing the whole server. Removing the slug from
+//! the table is sufficient — the scheduler only ever acts on what's currently there.
+//!
+//! **Inch 10** (this one): three things at once, each real but each contained —
+//! **persistence** (`--deployments <path>`, write-through, mirroring `--store`'s own
+//! `:memory:` convention; only the deployment *definition* persists, not the derived
+//! `triggers` or the diagnostic tick history — re-derived/reset on load, the same discipline
+//! as everywhere else a fact stays computed rather than cached to disk); **capability-consent
+//! before deploy** (`/deploy`'s `acknowledge` field — the caller asserts *review*, never the
+//! capability *set itself*, which stays fully derived via `capabilities()`; covers the whole
+//! manifest, not just the trigger-relevant capabilities); and **concurrent per-tick firing**
+//! (`run_due_clock_ticks` now fans out via `thread::scope`, so two deployments due in the same
+//! moment no longer block each other — deliberately not a bounded worker pool, a real,
+//! consciously-left-open limitation for genuinely large simultaneous fan-out, not solved here).
 //!
 //! **A second real wrinkle, same family as inch 2's:** `SharedCache::get_verified` needs a
 //! `Resolver` (it re-executes the cached computation to check the claimed output), but `Store`
@@ -137,9 +149,14 @@ struct AppState {
     /// slug → deployment. `Arc` (not just `Mutex`) because the clock scheduler thread
     /// (`spawn_clock_scheduler`) needs its own independent handle onto the same table, cloned
     /// before `AppState` is built — the same `Send`-shared-handle shape `SharedStore` already
-    /// uses for the store itself. In-memory only, same as `Registry`'s published set and
-    /// `SharedCache` — restarting the server forgets every deployment.
+    /// uses for the store itself. `Registry`'s published set and `SharedCache` stay in-memory
+    /// only; `deployments` itself is now persisted write-through to `deployments_path` (see
+    /// `persist_deployments`/`load_deployments`) — a deployment definition surviving a restart
+    /// is the whole point of "standing," unlike a cache entry or a publish record.
     deployments: Arc<Mutex<BTreeMap<String, Deployment>>>,
+    /// Where `deployments` is persisted, or the literal `":memory:"` sentinel (matching
+    /// `--store`'s own convention) to opt out entirely.
+    deployments_path: String,
 }
 
 /// A registered deployment. `triggers` is derived **once**, at deploy time, from the unit's
@@ -269,8 +286,30 @@ struct FireResponseBody {
 /// publication, a separate, marketplace-facing concept). `interval_seconds` is **only**
 /// consulted (and required) if the unit's own derived capabilities include `Clock` — nothing
 /// about *which* trigger(s) apply is asserted by the caller; that's read off the unit itself.
+/// `acknowledge` **is** something the caller must assert — not the capability *set* (still
+/// fully derived), but that the caller has actually reviewed it: every capability
+/// `capabilities()` derives for this unit — its whole manifest, not just the trigger-relevant
+/// ones — must appear in `acknowledge` (by its `{:?}` name, e.g. `"NetworkEgress"`) or the
+/// deploy is refused, naming exactly what's missing. `#[serde(default)]` so an omitted field
+/// becomes an empty list rather than a JSON parse error — the missing-capability message is a
+/// clearer failure than "missing field."
 #[derive(Deserialize)]
 struct DeployRequestBody {
+    slug: String,
+    unit: String,
+    interval_seconds: Option<u64>,
+    #[serde(default)]
+    acknowledge: Vec<String>,
+}
+
+/// The on-disk, persisted shape of one deployment — deliberately minimal. `triggers` is not
+/// persisted at all: it's re-derived from `unit`'s own capabilities on load, the same way a
+/// fresh `/deploy` call derives it, rather than storing a fact that's already computable
+/// (consistent with everywhere else in this project that a derived fact stays derived, not
+/// cached to disk as if it could drift). Tick history is not persisted either — diagnostic,
+/// not load-bearing; fine to lose on restart.
+#[derive(Serialize, Deserialize)]
+struct DeploymentRecord {
     slug: String,
     unit: String,
     interval_seconds: Option<u64>,
@@ -671,6 +710,98 @@ fn handle_post_fire(store: &SharedStore, request: &Request) -> Response {
 /// A slug must be non-empty ASCII alphanumeric/`-`/`_` only — keeps the simple prefix-based
 /// router in `route()` unambiguous (no `/` inside a slug could be confused with a path
 /// separator) and avoids any path-traversal-shaped weirdness reaching `strip_prefix`.
+/// Write the whole current deployments table to `path` as a JSON array of `DeploymentRecord`
+/// (write-through — called after every successful deploy/delete, not batched or scheduled).
+/// A no-op for the `":memory:"` sentinel. Failures are logged, not fatal — a person's server
+/// keeps working even if the disk write failed; they just won't survive a restart until it
+/// succeeds again, which is the honest degradation for something that was opt-in persistence
+/// to begin with.
+fn persist_deployments(path: &str, deployments: &BTreeMap<String, Deployment>) {
+    if path == ":memory:" {
+        return;
+    }
+    let records: Vec<DeploymentRecord> = deployments
+        .iter()
+        .map(|(slug, dep)| DeploymentRecord {
+            slug: slug.clone(),
+            unit: to_hex(&dep.unit),
+            interval_seconds: dep.interval_seconds,
+        })
+        .collect();
+    match serde_json::to_vec_pretty(&records) {
+        Ok(bytes) => {
+            if let Err(e) = std::fs::write(path, bytes) {
+                eprintln!("warning: failed to persist deployments to {path:?}: {e}");
+            }
+        }
+        Err(e) => eprintln!("warning: failed to serialize deployments: {e}"),
+    }
+}
+
+/// Load deployments from `path` at startup — the inverse of `persist_deployments`. Returns an
+/// empty table for the `":memory:"` sentinel, a missing file (first run), or any read/parse
+/// failure (logged, not fatal — a corrupt or foreign file shouldn't stop the server from
+/// starting, just start it with nothing deployed). Each record is re-materialized against the
+/// **current** store and re-derives its `triggers` fresh via `capabilities()` — exactly what a
+/// live `/deploy` call would compute, not a cached copy that could go stale. A record whose
+/// unit no longer resolves in the store (e.g. the store directory was touched separately) is
+/// skipped with a warning, not a crash — the rest of the file still loads.
+fn load_deployments(path: &str, store: &SharedStore) -> BTreeMap<String, Deployment> {
+    let mut loaded = BTreeMap::new();
+    if path == ":memory:" {
+        return loaded;
+    }
+
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return loaded,
+        Err(e) => {
+            eprintln!("warning: could not read {path:?}: {e} — starting with no deployments");
+            return loaded;
+        }
+    };
+    let records: Vec<DeploymentRecord> = match serde_json::from_slice(&bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("warning: {path:?} is not valid deployment JSON: {e} — starting with no deployments");
+            return loaded;
+        }
+    };
+
+    for record in records {
+        let Some(unit_hash) = parse_hash(&record.unit) else {
+            eprintln!("warning: skipping deployment {:?} — {:?} is not a valid hash", record.slug, record.unit);
+            continue;
+        };
+        let resolver = match materialize_closure(store, unit_hash) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("warning: skipping deployment {:?} — store error: {e:?}", record.slug);
+                continue;
+            }
+        };
+        let Some(root_unit) = resolver.resolve(&unit_hash) else {
+            eprintln!("warning: skipping deployment {:?} — unit no longer resolves in the store", record.slug);
+            continue;
+        };
+        let caps = capabilities(root_unit, &resolver);
+        let mut triggers = Vec::new();
+        if caps.contains(Capability::NetworkIngress) {
+            triggers.push("Ingress".to_string());
+        }
+        if caps.contains(Capability::Clock) {
+            triggers.push("Clock".to_string());
+        }
+        let next_due = record.interval_seconds.map(|_| SystemTime::now());
+        println!("loaded deployment {:?} from {path:?} (triggers: {triggers:?})", record.slug);
+        loaded.insert(
+            record.slug,
+            Deployment { unit: unit_hash, triggers, interval_seconds: record.interval_seconds, next_due, history: Vec::new() },
+        );
+    }
+    loaded
+}
+
 fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
@@ -686,6 +817,7 @@ fn is_valid_slug(s: &str) -> bool {
 fn handle_post_deploy(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
     request: &Request,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -721,6 +853,24 @@ fn handle_post_deploy(
         );
     }
 
+    // Capability-consent, before this unit ever gets to run on a schedule or answer a request.
+    // The set itself is still fully derived (`caps`, above) — only "has the caller actually
+    // reviewed it" is asserted, which is the one part that genuinely can't come from the graph.
+    let missing: Vec<String> = caps
+        .iter()
+        .map(|c| format!("{c:?}"))
+        .filter(|name| !body.acknowledge.contains(name))
+        .collect();
+    if !missing.is_empty() {
+        return err(
+            400,
+            format!(
+                "this unit's derived capabilities include {} — list them in \"acknowledge\" to confirm you've reviewed what it may do",
+                missing.join(", ")
+            ),
+        );
+    }
+
     let interval_seconds = if is_clock {
         match body.interval_seconds {
             Some(n) if n >= 1 => Some(n),
@@ -744,10 +894,14 @@ fn handle_post_deploy(
         triggers.push("Clock".to_string());
     }
 
-    deployments.lock().unwrap().insert(
-        body.slug.clone(),
-        Deployment { unit: unit_hash, triggers: triggers.clone(), interval_seconds, next_due, history: Vec::new() },
-    );
+    {
+        let mut deployments = deployments.lock().unwrap();
+        deployments.insert(
+            body.slug.clone(),
+            Deployment { unit: unit_hash, triggers: triggers.clone(), interval_seconds, next_due, history: Vec::new() },
+        );
+    }
+    persist_deployments(deployments_path, &deployments.lock().unwrap());
 
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds })
 }
@@ -786,14 +940,22 @@ fn handle_get_history(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
 /// `POST /trigger/<slug>` starts 404ing immediately afterward, the same 404 it already gives a
 /// slug that was never deployed. Returns the removed deployment's last known info, or 404 if
 /// the slug didn't exist.
-fn handle_delete_deployment(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
-    match deployments.lock().unwrap().remove(slug) {
-        Some(dep) => Response::json(&DeploymentEntry {
-            slug: slug.to_string(),
-            unit: to_hex(&dep.unit),
-            triggers: dep.triggers,
-            interval_seconds: dep.interval_seconds,
-        }),
+fn handle_delete_deployment(
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    slug: &str,
+) -> Response {
+    let removed = deployments.lock().unwrap().remove(slug);
+    match removed {
+        Some(dep) => {
+            persist_deployments(deployments_path, &deployments.lock().unwrap());
+            Response::json(&DeploymentEntry {
+                slug: slug.to_string(),
+                unit: to_hex(&dep.unit),
+                triggers: dep.triggers,
+                interval_seconds: dep.interval_seconds,
+            })
+        }
         None => Response::empty_404(),
     }
 }
@@ -851,21 +1013,13 @@ fn handle_post_trigger(
     })
 }
 
-/// The clock scheduler — the one genuinely new runtime shape in this whole project: a thread
-/// that acts on its own, on a timer, with nobody asking. Spawned once at startup with its own
-/// `Arc` handle onto `deployments` (see the L4 §2 — no async runtime needed for this workload;
-/// a plain sleep loop is enough). Every second, checks which `Clock`-triggered deployments are
-/// due, fires each via `fire_sourced` with the real wall-clock time injected, logs the result
-/// to stdout, and appends it to that deployment's bounded history (the L4's Fork 2). Single,
-/// sequential loop — a slow tick simply delays the next check for everyone, never overlaps
-/// itself (the L4 §4's accepted, named limitation, not a general solution).
-/// The tick-firing logic, pulled out of `spawn_clock_scheduler`'s loop specifically so it's
-/// callable directly with a controlled `now` — the same "extract the testable logic out of the
-/// untestable wrapper" move the editor's own `diagnostics.ts` extraction already used (see that
-/// module's own doc, elsewhere in this project) for the identical reason: a `thread::spawn` +
-/// real-time sleep loop can't be exercised by a fast, deterministic test, but the actual
-/// decision ("what's due, what does firing it produce") has nothing to do with sleeping and
-/// everything to do with comparing `now` against `next_due` — so that part is its own function.
+/// The tick-firing logic for one scheduler pass, callable directly with a controlled `now` —
+/// pulled out of `spawn_clock_scheduler`'s sleep loop specifically so it's testable without real
+/// sleeping (the same "extract the testable logic out of the untestable wrapper" move the
+/// editor's own `diagnostics.ts` extraction already used, for the identical reason). Every
+/// deployment **due** at `now` fires **concurrently** with every other deployment due at the
+/// same moment — see `fire_one_clock_tick` and the module doc for why, and for the honest limit
+/// of this approach (unbounded per-tick fan-out, not a worker pool).
 fn run_due_clock_ticks(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, now: SystemTime) {
     let due: Vec<(String, Hash, u64)> = {
         let deployments = deployments.lock().unwrap();
@@ -880,50 +1034,88 @@ fn run_due_clock_ticks(store: &SharedStore, deployments: &Mutex<BTreeMap<String,
             .collect()
     };
 
-    for (slug, unit_hash, interval) in due {
-        let resolver = match materialize_closure(store, unit_hash) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("clock tick [{slug}]: store error while materializing closure: {e:?}");
-                continue;
-            }
-        };
-        let Some(root_unit) = resolver.resolve(&unit_hash) else {
-            eprintln!("clock tick [{slug}]: deployed unit no longer resolves in the store");
-            continue;
-        };
+    // `thread::scope` (stable since Rust 1.63): spawned threads may borrow `store`/
+    // `deployments` directly — no `Arc` clone needed per thread — and every thread is
+    // guaranteed joined before `scope()` returns, so this function is still synchronous from
+    // its caller's point of view (the existing tests, written before this change, still hold:
+    // by the time `run_due_clock_ticks` returns, every due tick from this call has completed).
+    // What changes is internal: two deployments due in the same tick no longer block each
+    // other — a slow flow only delays itself, not its neighbors.
+    //
+    // Deliberately NOT a bounded worker pool: a genuinely large number of simultaneously-due
+    // deployments spawns that many OS threads at once, unbounded. Fine, and simpler, at the
+    // scale this is actually for — a handful of local flows on one machine. Named honestly as
+    // a real, open limitation rather than solved here: if per-tick fan-out ever gets large
+    // enough to matter, the fix is a bounded worker pool (or a semaphore capping concurrent
+    // fires), not more threads. Left open on purpose.
+    thread::scope(|scope| {
+        for (slug, unit_hash, interval) in due {
+            scope.spawn(move || fire_one_clock_tick(store, deployments, slug, unit_hash, interval, now));
+        }
+    });
+}
 
-        let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64))];
-        let mut host = RecordingHost { performed: Vec::new() };
-        let output = fire_sourced(root_unit, &sourced, &resolver, &mut host);
+/// One deployment's single tick — settle it via `fire_sourced` with the real wall-clock time
+/// injected, log the result, append it to that deployment's bounded history. Runs on its own
+/// scoped thread when called from `run_due_clock_ticks`'s per-tick fan-out (see there), but has
+/// no threading concerns of its own: it only ever touches `store` (internally locked,
+/// `Sync`-safe) and this one deployment's own map entry (via the shared `deployments` lock,
+/// held only briefly at the end to write the result back).
+fn fire_one_clock_tick(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: String,
+    unit_hash: Hash,
+    interval: u64,
+    now: SystemTime,
+) {
+    let resolver = match materialize_closure(store, unit_hash) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("clock tick [{slug}]: store error while materializing closure: {e:?}");
+            return;
+        }
+    };
+    let Some(root_unit) = resolver.resolve(&unit_hash) else {
+        eprintln!("clock tick [{slug}]: deployed unit no longer resolves in the store");
+        return;
+    };
 
-        println!(
-            "clock tick [{slug}] at {epoch_seconds}: output={output:?}, {} effect(s) performed",
-            host.performed.len()
-        );
+    let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64))];
+    let mut host = RecordingHost { performed: Vec::new() };
+    let output = fire_sourced(root_unit, &sourced, &resolver, &mut host);
 
-        let tick = TickEntry {
-            at_epoch_seconds: epoch_seconds,
-            output: output.as_ref().map(SValue::from_core),
-            performed: host
-                .performed
-                .into_iter()
-                .map(|(capability, payload)| PerformedEntry { capability, payload: SValue::from_core(&payload) })
-                .collect(),
-        };
+    println!(
+        "clock tick [{slug}] at {epoch_seconds}: output={output:?}, {} effect(s) performed",
+        host.performed.len()
+    );
 
-        let mut deployments = deployments.lock().unwrap();
-        if let Some(dep) = deployments.get_mut(&slug) {
-            dep.next_due = Some(now + Duration::from_secs(interval));
-            dep.history.push(tick);
-            if dep.history.len() > 20 {
-                dep.history.remove(0);
-            }
+    let tick = TickEntry {
+        at_epoch_seconds: epoch_seconds,
+        output: output.as_ref().map(SValue::from_core),
+        performed: host
+            .performed
+            .into_iter()
+            .map(|(capability, payload)| PerformedEntry { capability, payload: SValue::from_core(&payload) })
+            .collect(),
+    };
+
+    let mut deployments = deployments.lock().unwrap();
+    if let Some(dep) = deployments.get_mut(&slug) {
+        dep.next_due = Some(now + Duration::from_secs(interval));
+        dep.history.push(tick);
+        if dep.history.len() > 20 {
+            dep.history.remove(0);
         }
     }
 }
 
+/// The clock scheduler — the one genuinely new runtime shape in this whole project: a thread
+/// that acts on its own, on a timer, with nobody asking. Spawned once at startup with its own
+/// `Arc` handle onto `deployments` (no async runtime needed for this workload; a plain sleep
+/// loop is enough). Every second, hands off to `run_due_clock_ticks`, which fires whatever's
+/// due — concurrently within that one pass, see there for why and for the honest limit.
 fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
@@ -985,7 +1177,7 @@ fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        return handle_post_deploy(&state.store, &state.deployments, request);
+        return handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, request);
     }
 
     if method == "GET" && url == "/deployments" {
@@ -998,7 +1190,7 @@ fn route(state: &AppState, request: &Request) -> Response {
                 return handle_get_history(&state.deployments, slug);
             }
         } else if method == "DELETE" {
-            return handle_delete_deployment(&state.deployments, rest);
+            return handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
         }
     }
 
@@ -1138,6 +1330,10 @@ fn main() {
     // (nothing persisted across restarts — useful for a quick local session or a test run).
     // Defaults to a `.holon-store` directory next to wherever the binary is run from.
     //
+    // `--deployments <path>` for where the deployments table is persisted (write-through, on
+    // every deploy/delete); `--deployments :memory:` opts out entirely, same convention as
+    // `--store`. Defaults to `.holon-deployments.json` next to wherever the binary is run from.
+    //
     // `--emit-test-unit <path>` is a dev-only escape hatch, not a server flag: it writes a
     // trivial unit's canonical preimage bytes to `path` and exits *without* starting the
     // server, so the `/unit`/`/registry` round trips can be checked with plain `curl` + a file
@@ -1159,10 +1355,15 @@ fn main() {
     // triggers nothing.
     let mut args = std::env::args().skip(1);
     let mut store_arg = ".holon-store".to_string();
+    let mut deployments_arg = ".holon-deployments.json".to_string();
     while let Some(a) = args.next() {
         if a == "--store" {
             if let Some(v) = args.next() {
                 store_arg = v;
+            }
+        } else if a == "--deployments" {
+            if let Some(v) = args.next() {
+                deployments_arg = v;
             }
         } else if a == "--emit-test-unit" {
             let Some(path) = args.next() else {
@@ -1305,9 +1506,10 @@ fn main() {
     let store = SharedStore(Arc::new(Mutex::new(backend)));
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
-    let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(BTreeMap::new()));
+    let initial_deployments = load_deployments(&deployments_arg, &store);
+    let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments));
-    let state = AppState { store, registry, cache, deployments };
+    let state = AppState { store, registry, cache, deployments, deployments_path: deployments_arg };
 
     println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
     rouille::start_server(addr, move |request| with_cors(request, route(&state, request)));
@@ -1331,7 +1533,7 @@ mod tests {
         let registry = Mutex::new(Registry::new(store.clone()));
         let cache = Mutex::new(SharedCache::new());
         let deployments = Arc::new(Mutex::new(BTreeMap::new()));
-        AppState { store, registry, cache, deployments }
+        AppState { store, registry, cache, deployments, deployments_path: ":memory:".to_string() }
     }
 
     fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
@@ -1347,6 +1549,17 @@ mod tests {
 
     fn body_json(response: Response) -> serde_json::Value {
         serde_json::from_slice(&body_bytes(response)).expect("response body was not valid JSON")
+    }
+
+    /// A unique path in the OS temp dir, for the one test that needs real disk IO
+    /// (persistence) rather than the `:memory:` isolation every other test uses. Not a
+    /// directory or file by itself — `FileStore::new` creates the directory it needs;
+    /// `std::fs::write` creates the file it needs.
+    fn unique_temp_path(label: &str) -> String {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let mut path = std::env::temp_dir();
+        path.push(format!("holon-server-test-{label}-{}-{nanos}", std::process::id()));
+        path.to_string_lossy().to_string()
     }
 
     // ── /health ──────────────────────────────────────────────────────────────────────────
@@ -1554,8 +1767,12 @@ mod tests {
         let flow_hash = hash_unit(&flow).unwrap();
         route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
 
-        let deploy_body =
-            serde_json::to_vec(&serde_json::json!({"slug": "echo", "unit": to_hex(&flow_hash)})).unwrap();
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "echo",
+            "unit": to_hex(&flow_hash),
+            "acknowledge": ["NetworkIngress", "NetworkEgress"],
+        }))
+        .unwrap();
         let d = route(&state, &req("POST", "/deploy", deploy_body));
         assert_eq!(d.status_code, 200);
         assert_eq!(body_json(d)["triggers"].as_array().unwrap(), &vec![serde_json::json!("Ingress")]);
@@ -1598,19 +1815,29 @@ mod tests {
         let flow_hash = hash_unit(&flow).unwrap();
         route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
 
-        let no_interval =
-            serde_json::to_vec(&serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash)})).unwrap();
+        let no_interval = serde_json::to_vec(&serde_json::json!({
+            "slug": "tick",
+            "unit": to_hex(&flow_hash),
+            "acknowledge": ["Clock", "NetworkEgress"],
+        }))
+        .unwrap();
         assert_eq!(route(&state, &req("POST", "/deploy", no_interval)).status_code, 400);
 
-        let zero_interval = serde_json::to_vec(
-            &serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash), "interval_seconds": 0}),
-        )
+        let zero_interval = serde_json::to_vec(&serde_json::json!({
+            "slug": "tick",
+            "unit": to_hex(&flow_hash),
+            "interval_seconds": 0,
+            "acknowledge": ["Clock", "NetworkEgress"],
+        }))
         .unwrap();
         assert_eq!(route(&state, &req("POST", "/deploy", zero_interval)).status_code, 400);
 
-        let ok = serde_json::to_vec(
-            &serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash), "interval_seconds": 5}),
-        )
+        let ok = serde_json::to_vec(&serde_json::json!({
+            "slug": "tick",
+            "unit": to_hex(&flow_hash),
+            "interval_seconds": 5,
+            "acknowledge": ["Clock", "NetworkEgress"],
+        }))
         .unwrap();
         let r = route(&state, &req("POST", "/deploy", ok));
         assert_eq!(r.status_code, 200);
@@ -1631,9 +1858,12 @@ mod tests {
         let flow_hash = hash_unit(&flow).unwrap();
         route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
 
-        let deploy_body = serde_json::to_vec(
-            &serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash), "interval_seconds": 5}),
-        )
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "tick",
+            "unit": to_hex(&flow_hash),
+            "interval_seconds": 5,
+            "acknowledge": ["Clock", "NetworkEgress"],
+        }))
         .unwrap();
         route(&state, &req("POST", "/deploy", deploy_body));
 
@@ -1674,8 +1904,12 @@ mod tests {
         let flow = test_ingress_flow(ingress_hash, egress_hash);
         let flow_hash = hash_unit(&flow).unwrap();
         route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-        let deploy_body =
-            serde_json::to_vec(&serde_json::json!({"slug": "echo", "unit": to_hex(&flow_hash)})).unwrap();
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "echo",
+            "unit": to_hex(&flow_hash),
+            "acknowledge": ["NetworkIngress", "NetworkEgress"],
+        }))
+        .unwrap();
         route(&state, &req("POST", "/deploy", deploy_body));
 
         // Works before deletion.
@@ -1702,9 +1936,12 @@ mod tests {
         let flow = test_clock_flow(clock_hash, egress_hash);
         let flow_hash = hash_unit(&flow).unwrap();
         route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-        let deploy_body = serde_json::to_vec(
-            &serde_json::json!({"slug": "tick", "unit": to_hex(&flow_hash), "interval_seconds": 5}),
-        )
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "tick",
+            "unit": to_hex(&flow_hash),
+            "interval_seconds": 5,
+            "acknowledge": ["Clock", "NetworkEgress"],
+        }))
         .unwrap();
         route(&state, &req("POST", "/deploy", deploy_body));
 
@@ -1725,6 +1962,147 @@ mod tests {
     fn delete_unknown_deployment_is_404() {
         let state = test_state();
         assert_eq!(route(&state, &req("DELETE", "/deployments/nope", vec![])).status_code, 404);
+    }
+
+    // ── capability-consent ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn deploy_refuses_without_full_capability_acknowledgment() {
+        let state = test_state();
+        let ingress = test_ingress();
+        let ingress_hash = hash_unit(&ingress).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_ingress_flow(ingress_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+
+        // No acknowledgment at all.
+        let no_ack =
+            serde_json::to_vec(&serde_json::json!({"slug": "echo", "unit": to_hex(&flow_hash)})).unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", no_ack)).status_code, 400);
+
+        // Only half the real manifest acknowledged — still refused, not partially accepted.
+        let partial_ack = serde_json::to_vec(&serde_json::json!({
+            "slug": "echo",
+            "unit": to_hex(&flow_hash),
+            "acknowledge": ["NetworkIngress"],
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", partial_ack)).status_code, 400);
+
+        // The whole derived manifest acknowledged — succeeds.
+        let full_ack = serde_json::to_vec(&serde_json::json!({
+            "slug": "echo",
+            "unit": to_hex(&flow_hash),
+            "acknowledge": ["NetworkIngress", "NetworkEgress"],
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", full_ack)).status_code, 200);
+    }
+
+    // ── persistence ──────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn deployments_persist_across_a_simulated_restart() {
+        let deployments_path = unique_temp_path("deployments");
+        let store_dir = unique_temp_path("store");
+
+        // A real on-disk store, not MemStore — the deployment definition surviving only means
+        // something if the unit it points at is still there too.
+        let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
+        let store = SharedStore(Arc::new(Mutex::new(backend)));
+
+        let ingress = test_ingress();
+        let ingress_hash = hash_unit(&ingress).unwrap();
+        let mut writer = store.clone();
+        writer.put(&ingress).unwrap();
+        writer.put(&test_sink()).unwrap();
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_ingress_flow(ingress_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        writer.put(&flow).unwrap();
+
+        // "First run": nothing to load yet, deploy, which persists write-through.
+        {
+            let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store)));
+            assert_eq!(deployments.lock().unwrap().len(), 0);
+
+            let state = AppState {
+                store: store.clone(),
+                registry: Mutex::new(Registry::new(store.clone())),
+                cache: Mutex::new(SharedCache::new()),
+                deployments,
+                deployments_path: deployments_path.clone(),
+            };
+            let body = serde_json::to_vec(&serde_json::json!({
+                "slug": "echo",
+                "unit": to_hex(&flow_hash),
+                "acknowledge": ["NetworkIngress", "NetworkEgress"],
+            }))
+            .unwrap();
+            assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
+        }
+
+        // "Restart": a fresh load from the same path/store reconstructs the deployment, with
+        // triggers re-derived (not read back from disk), and it actually works.
+        let reloaded = load_deployments(&deployments_path, &store);
+        assert_eq!(reloaded.len(), 1);
+        let dep = reloaded.get("echo").unwrap();
+        assert_eq!(dep.unit, flow_hash);
+        assert_eq!(dep.triggers, vec!["Ingress".to_string()]);
+
+        let state2 = AppState {
+            store: store.clone(),
+            registry: Mutex::new(Registry::new(store.clone())),
+            cache: Mutex::new(SharedCache::new()),
+            deployments: Arc::new(Mutex::new(reloaded)),
+            deployments_path: deployments_path.clone(),
+        };
+        let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
+        assert_eq!(triggered.status_code, 200);
+        assert_eq!(body_json(triggered)["performed"][0]["payload"]["value"], "restarted");
+
+        let _ = std::fs::remove_file(&deployments_path);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    // ── multi-flow overlap ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn multiple_due_clock_deployments_all_fire_in_one_pass() {
+        let state = test_state();
+        let clock = test_clock();
+        let clock_hash = hash_unit(&clock).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&clock).unwrap()));
+        route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+        let egress_hash = hash_unit(&test_sink()).unwrap();
+        let flow = test_clock_flow(clock_hash, egress_hash);
+        let flow_hash = hash_unit(&flow).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+
+        // The same unit, deployed twice under different slugs — a legitimate real scenario,
+        // and enough to exercise the per-tick fan-out (two due deployments in one pass).
+        for slug in ["tick-a", "tick-b"] {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "slug": slug,
+                "unit": to_hex(&flow_hash),
+                "interval_seconds": 5,
+                "acknowledge": ["Clock", "NetworkEgress"],
+            }))
+            .unwrap();
+            assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
+        }
+
+        run_due_clock_ticks(&state.store, &state.deployments, SystemTime::now());
+
+        for slug in ["tick-a", "tick-b"] {
+            let h = route(&state, &req("GET", &format!("/deployments/{slug}/history"), vec![]));
+            let ticks = body_json(h)["ticks"].as_array().unwrap().clone();
+            assert_eq!(ticks.len(), 1, "slug {slug} should have exactly one tick recorded");
+            assert_eq!(ticks[0]["performed"][0]["capability"], "NetworkEgress");
+        }
     }
 
     // ── CORS ─────────────────────────────────────────────────────────────────────────────
