@@ -4011,3 +4011,68 @@ treated as solved: the write-only bootstrap limitation (a real primitive-set gap
 `holon-server` one); unbounded per-tick thread fan-out at genuinely large simultaneous
 scheduling; dynamic (non-static) state keys, deliberately out of scope from the very first L4 of
 this whole arc.
+
+---
+
+## 2026-07-02 · holon-core — `to_text`, the universal any-to-text primitive (38th leaf)
+
+**Built.** A pure, total primitive: `Any → Text`, covering every `Value` shape (`Number`,
+`Boolean`, `Text`, `List` — which already covers `Product`, since a product's value rides `List`,
+only the declared *type* differs — `Effect`, `Sum`). Motivated directly by a bug fixed a few
+commits earlier in the editor: `formatValue` was silently dropping an `Effect`'s payload, showing
+only its sink name. `formatValue` *is* an any-to-text stringifier, just written informally in
+TypeScript, with zero test coverage until that exact bug got caught. `to_text` is that same
+stringifier, done for real in core, and deliberately built to produce byte-identical shape to
+`formatValue`'s output — quoted text, `effect(sink, payload)`, `sum#arm(payload)` — one convention,
+not two that can quietly drift apart the way `WCapability` already did once this session.
+
+**Grounded first, and it paid off immediately.** Before writing anything, traced how
+`capabilities_of` (`kind.rs`) actually classifies a pure leaf — and it isn't an inferred default
+for "anything not explicitly effectful," it's a hand-maintained allowlist, one long match arm
+naming every pure primitive by name. That's not how I'd have guessed it worked, and guessing would
+have shipped a real defect: without adding `to_text` to that list, any unit using it would have
+been permanently unrecognized by the capability system, saturating to *every* capability the
+moment it appeared in a graph — the identical failure mode already chased down for the
+`increment` deployment's 400 a few turns back, except this time a genuine bug in the primitive
+itself, not a client-side staging gap. Checking the actual match arms instead of assuming they'd
+fall through as pure is the whole reason this didn't ship broken.
+
+**Four independent places turned out to track "how many genesis leaves" by hand**, none of them
+aware of the other three:
+- `catalog.rs`'s own `GENESIS.len()` test (37 → 38) plus its module-level doc comment (also stale,
+  also fixed).
+- `kind.rs`'s `pure_leaves_are_pure` test — a *second*, separately hand-maintained enumeration of
+  pure names, not derived from the same allowlist `capabilities_of` uses. Wouldn't have failed if
+  skipped, just silently left `to_text` untested there — caught by checking for a second list
+  instead of assuming one fix covered it.
+- `holon-wasm/src/lib.rs`'s `check_primitive_catalog` (shared by both the native and wasm test
+  targets) — the one that actually surfaced as a real, red `cargo test` failure.
+- `holon-wasm/src/lib.rs`'s `primitive_catalog_crosses_js_boundary` — a *second*, wasm-only
+  (`#[wasm_bindgen_test]`) hard-coded count in the same file, invisible to a native `cargo test`
+  run entirely. Found only by asking for the real file and reading it, rather than pattern-matching
+  the one failing test name and assuming that was the whole fix.
+
+**Two real missteps, corrected rather than smoothed over.** A new catalog test wrote bare `Any`/
+`Text` — copied from `interface_of`'s own body, where a function-local `use Type::*;` makes that
+legal, without checking that the local `use` doesn't extend to the sibling test module. Every
+other test in that module already writes `Type::Any`/`Type::Text` fully qualified; fixed to match,
+once `rust-analyzer`'s own "cannot find value" pointed at exactly where the assumption broke. And
+the *first* delivery only caught one of `holon-wasm`'s two hard-coded counts, inferred from the
+one failing test's name rather than the file's actual content — the second one only surfaced by
+asking for, and actually reading, the real source instead of guessing there was nothing left to
+find.
+
+**Editor: needs nothing.** The palette is derived from the catalog via `primitiveCatalog()`, never
+a hand-listed TypeScript copy (I1/I8) — `to_text` simply appears in it the next time the wasm
+package is rebuilt. No editor code touched, none needed.
+
+**Verified — and one gap in that verification named honestly, not hidden.** `cargo test
+--workspace`: **272 passed, 0 failed**, across all four crates (192 core + 39 host + 30 server +
+11 wasm-native). The two `#[wasm_bindgen_test]`-gated fixes in `holon-wasm` do **not** run under a
+plain native `cargo test` at all — fixed by reading and reasoning about what they check, same as
+everything else here, but that is not the same claim as watching them pass. Worth a real
+`wasm-pack test` run before treating this as fully closed, not assumed clean by extension of
+everything else being green.
+
+**No `PLAN.md` change.** A genesis primitive addition, not a pillar — same footing as any other
+leaf in the frozen §13a set.

@@ -6,7 +6,7 @@
 //! so the genesis set is defined *by code*, not re-asserted by hand in every test and (next) the
 //! editor's palette. Same fail-closed contract: an unknown name yields `None`.
 //!
-//! The 37 leaves and their grouping are §13a of the design doc. The *types* are read off `compute`'s
+//! The 38 leaves and their grouping are §13a of the design doc (37 original + `to_text`). The *types* are read off `compute`'s
 //! arity/coercions and `eval`'s higher-order handling: variadic leaves (`add`, `and`, `concat`,
 //! `list`, …) get their canonical arity 2 (true variadic editing is a later editor concern);
 //! polymorphic leaves use [`Type::Any`] (the wiring check already treats `Any` as compatible);
@@ -29,6 +29,8 @@ pub const GENESIS: &[&str] = &[
     "pair",
     // pure — sum constructor (2)
     "some", "none",
+    // pure — universal, any-to-text (1)
+    "to_text",
     // drivers — sourced, no compute (3)
     "clock", "random", "ingress",
     // state cell (2)
@@ -142,6 +144,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "some" => prim(vec![port("value", Any)], vec![], Sum(vec![Any, Product(vec![])])),
         "none" => prim(vec![], vec![], Sum(vec![Any, Product(vec![])])),
 
+        // ── pure — universal: accepts every value kind, not a fixed shape ──
+        "to_text" => prim(vec![port("value", Any)], vec![], Text),
+
         // ── drivers — sourced (no inputs; host-supplied). Concrete where unambiguous, `Any` where
         //    the payload is genuinely polymorphic (the editor may specialize later). ──
         "clock" => prim(vec![], vec![], Number),
@@ -184,9 +189,23 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_37_leaves() {
+    fn genesis_has_38_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
-        assert_eq!(GENESIS.len(), 37);
+        // 37 + to_text (the universal any-to-text primitive).
+        assert_eq!(GENESIS.len(), 38);
+    }
+
+    #[test]
+    fn to_text_is_in_the_catalog_with_the_right_shape() {
+        // The palette is DERIVED from GENESIS + interface_of (never a hand-written editor
+        // copy, I1) — this is the one test proving the two actually agree for the new
+        // leaf, the same way every other genesis primitive already has one.
+        assert!(GENESIS.contains(&"to_text"));
+        let unit = interface_of("to_text").unwrap();
+        assert_eq!(unit.inputs.len(), 1);
+        assert_eq!(unit.inputs[0].ty, Type::Any);
+        assert_eq!(unit.outputs.len(), 1);
+        assert_eq!(unit.outputs[0].ty, Type::Text);
     }
 
     #[test]

@@ -85,6 +85,27 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             let [v] = inputs else { return None };
             Some(Value::Number(as_text(v)?.chars().count() as f64))
         }
+
+        // ── universal (any → text): the one primitive that accepts every value kind, not a
+        // fixed shape — a flow's own way to turn arbitrary data into text (an egress message
+        // describing a value, a log line), the same job the editor's own `formatValue` does
+        // for on-screen display. Deliberately kept in lockstep with it, not a second,
+        // independently-drifting convention: quoted text (so a nested Text and a nested Number
+        // that happen to look the same, e.g. "5" vs 5, stay distinguishable), an Effect's own
+        // payload always shown (not just its sink name — the exact bug just fixed on the
+        // editor side, worth not re-introducing here), a Sum's arm shown by index, never
+        // guessed as "Some"/"None" (core carries no name for which arm means which — showing
+        // the index is honest, not a guess). Total over every `Value` shape, including a
+        // non-finite Number: `const` already refuses to construct one directly, but arithmetic
+        // can still produce one as an intermediate value, and a to-text conversion that
+        // sometimes just fails is a worse primitive than one that always produces something,
+        // even for an edge case — Rust's own `f64::Display` already prints "NaN"/"inf"/"-inf"
+        // as fixed, deterministic literals, not a platform-dependent guess (I2).
+        "to_text" => {
+            let [v] = inputs else { return None };
+            Some(Value::Text(to_text_str(v)))
+        }
+
         "slice" => {
             let [s, start, len] = inputs else { return None };
             let (s, start, len) = (as_text(s)?, as_index(start)?, as_index(len)?);
@@ -224,6 +245,23 @@ fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
     inputs.first().map(|p| Value::Effect { sink: sink.into(), payload: Box::new((*p).clone()) })
 }
 
+/// The one recursive, total stringifier for an arbitrary `Value` — `to_text`'s own
+/// implementation, factored out so it can call itself on a `List`/`Effect`/`Sum`'s inner
+/// value(s). Kept in lockstep with the editor's own `formatValue` (`editor/src/diagnostics.ts`)
+/// by design, not by accident — same shape, same reasoning, one convention instead of two that
+/// could quietly drift apart. `f64::to_string()` is Rust's own shortest-round-trip Display
+/// impl: deterministic and portable (I2), not something to hand-roll.
+fn to_text_str(v: &Value) -> String {
+    match v {
+        Value::Number(n) => n.to_string(),
+        Value::Boolean(b) => b.to_string(),
+        Value::Text(s) => format!("\"{s}\""),
+        Value::List(xs) => format!("[{}]", xs.iter().map(to_text_str).collect::<Vec<_>>().join(", ")),
+        Value::Effect { sink, payload } => format!("effect({sink}, {})", to_text_str(payload)),
+        Value::Sum { arm, payload } => format!("sum#{arm}({})", to_text_str(payload)),
+    }
+}
+
 // ── extractors (runtime type guards) ────────────────────────────────────────
 fn as_number(v: &Value) -> Option<f64> {
     if let Value::Number(n) = v { Some(*n) } else { None }
@@ -345,6 +383,36 @@ mod tests {
         assert_eq!(compute("slice", &[&txt("hi"), &num(5.0), &num(2.0)], &[]), Some(txt("")));
         assert_eq!(compute("index_of", &[&txt("hello"), &txt("ll")], &[]), Some(num(2.0)));
         assert_eq!(compute("index_of", &[&txt("hello"), &txt("z")], &[]), Some(num(-1.0)));
+    }
+    #[test]
+    fn to_text_covers_every_value_shape() {
+        // Number: Rust's own shortest-round-trip Display, not a hand-rolled formatter.
+        assert_eq!(compute("to_text", &[&num(3.0)], &[]), Some(txt("3")));
+        assert_eq!(compute("to_text", &[&num(-2.5)], &[]), Some(txt("-2.5")));
+        // Boolean.
+        assert_eq!(compute("to_text", &[&boo(true)], &[]), Some(txt("true")));
+        // Text: QUOTED, not passed through bare — so a nested Text and a nested Number that
+        // happen to look the same ("5" vs 5) stay distinguishable once nested in a List/Sum.
+        assert_eq!(compute("to_text", &[&txt("hi")], &[]), Some(txt("\"hi\"")));
+        // List — including the product case (a product's value already rides List; nothing
+        // special-cased for it here, it's just a List like any other).
+        let l = list(vec![num(1.0), txt("a")]);
+        assert_eq!(compute("to_text", &[&l], &[]), Some(txt("[1, \"a\"]")));
+        // Effect — the payload is shown, not just the sink name (the exact bug just fixed on
+        // the editor's own formatValue; this locks in the same discipline here).
+        let effect = Value::Effect { sink: "store_write:count".into(), payload: Box::new(num(3.0)) };
+        assert_eq!(compute("to_text", &[&effect], &[]), Some(txt("effect(store_write:count, 3)")));
+        // Sum — shown by arm index, never a guessed "Some"/"None" label.
+        let some5 = Value::Sum { arm: 0, payload: Box::new(num(5.0)) };
+        assert_eq!(compute("to_text", &[&some5], &[]), Some(txt("sum#0(5)")));
+    }
+    #[test]
+    fn to_text_is_total_even_for_a_non_finite_number() {
+        // const already refuses to construct one directly, but arithmetic can still produce a
+        // non-finite intermediate value — to_text stays total rather than fail on it. Rust's
+        // f64::Display already prints these as fixed, deterministic literals.
+        assert_eq!(compute("to_text", &[&num(f64::NAN)], &[]), Some(txt("NaN")));
+        assert_eq!(compute("to_text", &[&num(f64::INFINITY)], &[]), Some(txt("inf")));
     }
     #[test]
     fn list_construct_and_query() {
