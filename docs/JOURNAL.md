@@ -4434,3 +4434,83 @@ before it.
 
 **No `PLAN.md` change.** One more genesis primitive, same footing as every other leaf in the
 frozen §13a set — not a pillar.
+
+---
+
+## 2026-07-04 · flows — save/open/delete named workspace documents, plus a menu, undo/redo, and Deployed/Flows pages
+
+**Requested directly**: a save endpoint capturing a flow exactly as left on the canvas — node
+positions, viewport, UI state — a New/Flows/Deployed/Marketplace menu, undo/redo, and pages to
+browse saved and deployed flows. Marketplace explicitly deferred: a menu entry that can't be
+picked is disabled with an honest tooltip, not wired to something half-built just to look
+complete.
+
+**The one design decision that shapes the whole feature, settled before any code was written.**
+A published unit and a saved flow are kept as two genuinely different things, not merged into one.
+A unit's identity is content-addressed and deliberately presentation-free —
+`child_order_is_cosmetic`, `param_order_is_cosmetic`, the whole hashing design exists specifically
+to keep pixels out of hashes. A flow document is the opposite: mutable, named, and *all*
+presentation is the entire point of it. So flows became a new, separate, opaque JSON store the
+server never reads inside (name validated by the same `is_valid_slug` rule deployments already
+use; body validated only as JSON, nothing more) — and publish/deploy stays the existing
+content-addressed path, completely untouched. No coupling invented between the two concepts just
+because they happen to sit next to each other in the UI.
+
+**`holon-server`**: `POST/GET /flows`, `GET/DELETE /flows/<name>`. Write-through persistence to
+`--flows <path>` (default `.holon-flows.json`, `:memory:` to opt out) — the identical discipline
+`--deployments` already follows, including the "corrupt or foreign file: warn and start empty,
+never crash" load posture. Plain `Mutex`, no `Arc` — deployments needed a second handle only for
+the clock scheduler thread; nothing else ever touches flows, so an `Arc` here would have been a
+hedge against a need that doesn't exist. Five new tests: document round-trip fidelity (positions
+and viewport come back byte-identical, not just structurally similar), upsert-overwrites-by-name,
+bad-name/malformed-body rejection, 404 on delete, and restart persistence, mirroring
+`deployments_persist_across_a_simulated_restart`'s own pattern exactly rather than inventing a new
+one. All six `AppState` construction sites updated up front this time — found by `grep` before
+writing a line of handler code, rather than discovered one at a time by a compile error the way
+the multi-output firing change was a few turns back.
+
+**One real mistake made and owned while getting the Rust side working.** Wrote
+`io::ErrorKind::NotFound` assuming a bare `use std::io;` existed in this file, because it exists in
+`holon-host`'s `lib.rs`, which had been edited the same day — never actually checked this file's
+own imports before writing the line. Fixed by matching `load_deployments`' own already-established
+`std::io::ErrorKind::NotFound` convention — the exact function this new code claimed to be
+mirroring, whose import convention it then didn't actually copy. Caught by the compiler
+immediately, fixed in one line once traced.
+
+**`editor/server.ts`**: `saveFlow`/`listFlows`/`getFlow`/`deleteFlow`, plus a `FlowDocument` type
+kept deliberately editor-side, not mirrored from any server struct — the document's shape is the
+editor's own contract with itself, and the server has no reason to know it.
+
+**`editor/App.tsx`, the UI inch.** A menu added to the existing header. Flows and Deployed render
+as overlays *on top of* the always-mounted canvas, never by unmounting it — React Flow's own live
+state (nodes mid-edit, viewport) lives inside the Canvas component and would be destroyed by
+unmounting it to show a different page. The old bottom-left deployments panel moved wholesale into
+the new Deployed page — one home for it, not two — gaining a summary line (deployment count, total
+fires, total errors) over the exact same `DeploymentRow` components and their live trigger
+controls; nothing about triggering itself was touched.
+
+**Undo/redo, built from scratch, since React Flow provides none.** Debounced `{nodes, edges}`
+snapshots (400ms, so a drag is one history entry, not sixty intermediate position updates);
+selection and dragging flags normalized out of every snapshot (undoing a *selection* would be
+noise; restoring a node frozen mid-drag would wedge it to the cursor); and a `restoring` flag
+marking programmatic changes (undo, redo, opening a flow, starting a new one) so the watcher
+treats them as the new baseline instead of recording them as fresh user edits — without that flag,
+every undo would immediately push itself right back into its own history. Ctrl/Cmd+Z, Shift+Z,
+and Ctrl+Y are all skipped while a text field has focus, so undo inside a param input stays the
+browser's own native text undo rather than mutating the canvas underneath the cursor.
+
+**Opening a saved flow** restores nodes, edges, viewport, and name, and resets history — and
+advances the node-id counter past every number found in the loaded ids. A fresh `idRef` starting
+back at 0 would mint a colliding id on the very next drop. Found by re-grounding in how ids are
+actually generated (`${name}-${idRef.current++}`) before writing the restore path, not assumed
+safe by default the way a less careful pass might have left it.
+
+**Verified.** `cargo test --workspace`: **294 passed, 0 failed**, across all four crates (207 core
++ 39 host + 37 server + 11 wasm-native), including the full flows round-trip and
+restart-persistence tests. `npx tsc -b` clean against the new `App.tsx` and `server.ts`.
+**Not yet verified**: an actual save → new → open → undo/redo cycle exercised in the running
+browser — named as open rather than implied closed by the type-checker and the Rust tests alone.
+
+**No `PLAN.md` change.** A real new feature area (saved flows, the menu, undo/redo), not a
+core-language leaf — worth its own line if this project tracks feature inches separately from the
+primitive catalog, but nothing here touches §13a's frozen set.

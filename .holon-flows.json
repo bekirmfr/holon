@@ -1,0 +1,943 @@
+[
+  {
+    "name": "greetMe",
+    "document": {
+      "edges": [
+        {
+          "id": "xy-edge__store_read-1out-is_truthy-2value",
+          "source": "store_read-1",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "is_truthy-2",
+          "targetHandle": "value"
+        },
+        {
+          "id": "xy-edge__store_read-1out-guard-3value",
+          "source": "store_read-1",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "guard-3",
+          "targetHandle": "value"
+        },
+        {
+          "id": "xy-edge__is_truthy-2out-guard-3cond",
+          "source": "is_truthy-2",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#46c8d8",
+            "strokeWidth": 1.6
+          },
+          "target": "guard-3",
+          "targetHandle": "cond"
+        },
+        {
+          "id": "xy-edge__guard-3out-default-4value",
+          "source": "guard-3",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "default-4",
+          "targetHandle": "value"
+        },
+        {
+          "id": "xy-edge__ingress-5out-is_truthy-6value",
+          "selected": false,
+          "source": "ingress-5",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "is_truthy-6",
+          "targetHandle": "value"
+        },
+        {
+          "id": "xy-edge__is_truthy-6out-guard-7cond",
+          "selected": false,
+          "source": "is_truthy-6",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#46c8d8",
+            "strokeWidth": 1.6
+          },
+          "target": "guard-7",
+          "targetHandle": "cond"
+        },
+        {
+          "id": "xy-edge__ingress-5out-guard-7value",
+          "selected": false,
+          "source": "ingress-5",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "guard-7",
+          "targetHandle": "value"
+        },
+        {
+          "id": "xy-edge__default-4out-equals-8a",
+          "source": "default-4",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#5fd38a",
+            "strokeWidth": 1.6
+          },
+          "target": "equals-8",
+          "targetHandle": "a"
+        },
+        {
+          "id": "xy-edge__guard-7out-equals-8b",
+          "selected": false,
+          "source": "guard-7",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "equals-8",
+          "targetHandle": "b"
+        },
+        {
+          "id": "xy-edge__equals-8out-not-9v",
+          "source": "equals-8",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#46c8d8",
+            "strokeWidth": 1.6
+          },
+          "target": "not-9",
+          "targetHandle": "v"
+        },
+        {
+          "id": "xy-edge__not-9out-guard-12cond",
+          "selected": false,
+          "source": "not-9",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#46c8d8",
+            "strokeWidth": 1.6
+          },
+          "target": "guard-12",
+          "targetHandle": "cond"
+        },
+        {
+          "id": "xy-edge__guard-7out-guard-12value",
+          "selected": false,
+          "source": "guard-7",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "guard-12",
+          "targetHandle": "value"
+        },
+        {
+          "id": "xy-edge__guard-12out-store_write-10value",
+          "selected": false,
+          "source": "guard-12",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "store_write-10",
+          "targetHandle": "value"
+        },
+        {
+          "id": "xy-edge__const-14out-concat-13a",
+          "selected": false,
+          "source": "const-14",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#5fd38a",
+            "strokeWidth": 1.6
+          },
+          "target": "concat-13",
+          "targetHandle": "a"
+        },
+        {
+          "id": "xy-edge__default-4out-select-11if_false",
+          "selected": false,
+          "source": "default-4",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#5fd38a",
+            "strokeWidth": 1.6
+          },
+          "target": "select-11",
+          "targetHandle": "if_false"
+        },
+        {
+          "id": "xy-edge__not-9out-select-11cond",
+          "source": "not-9",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#46c8d8",
+            "strokeWidth": 1.6
+          },
+          "target": "select-11",
+          "targetHandle": "cond"
+        },
+        {
+          "id": "xy-edge__select-11out-concat-13c",
+          "selected": false,
+          "source": "select-11",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "concat-13",
+          "targetHandle": "c"
+        },
+        {
+          "id": "xy-edge__const-15out-concat-13d",
+          "selected": false,
+          "source": "const-15",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#5fd38a",
+            "strokeWidth": 1.6
+          },
+          "target": "concat-13",
+          "targetHandle": "d"
+        },
+        {
+          "id": "xy-edge__const-17out-select-16if_true",
+          "selected": false,
+          "source": "const-17",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#5fd38a",
+            "strokeWidth": 1.6
+          },
+          "target": "select-16",
+          "targetHandle": "if_true"
+        },
+        {
+          "id": "xy-edge__select-16out-concat-13b",
+          "selected": false,
+          "source": "select-16",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "concat-13",
+          "targetHandle": "b"
+        },
+        {
+          "id": "xy-edge__equals-8out-select-16cond",
+          "selected": false,
+          "source": "equals-8",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#46c8d8",
+            "strokeWidth": 1.6
+          },
+          "target": "select-16",
+          "targetHandle": "cond"
+        },
+        {
+          "id": "xy-edge__guard-7out-select-11if_true",
+          "source": "guard-7",
+          "sourceHandle": "out",
+          "style": {
+            "stroke": "#8295b0",
+            "strokeWidth": 1.6
+          },
+          "target": "select-11",
+          "targetHandle": "if_true"
+        }
+      ],
+      "nodes": [
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [],
+            "minInputs": 0,
+            "name": "store_read",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Any"
+              }
+            ],
+            "params": [
+              {
+                "kind": "Frozen",
+                "name": "key",
+                "value": "name"
+              }
+            ],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "store_read-1",
+          "measured": {
+            "height": 84,
+            "width": 116
+          },
+          "position": {
+            "x": 83,
+            "y": 357.6666717529297
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "value",
+                "ty": "Any"
+              }
+            ],
+            "minInputs": 1,
+            "name": "is_truthy",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Boolean"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "is_truthy-2",
+          "measured": {
+            "height": 61,
+            "width": 123
+          },
+          "position": {
+            "x": 229,
+            "y": 350.6666717529297
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "cond",
+                "ty": "Boolean"
+              },
+              {
+                "name": "value",
+                "ty": "Any"
+              }
+            ],
+            "minInputs": 2,
+            "name": "guard",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Any"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "guard-3",
+          "measured": {
+            "height": 82,
+            "width": 116
+          },
+          "position": {
+            "x": 379,
+            "y": 359.6666717529297
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "value",
+                "ty": "Text"
+              }
+            ],
+            "minInputs": 1,
+            "name": "default",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Text"
+              }
+            ],
+            "params": [
+              {
+                "kind": "Frozen",
+                "name": "value",
+                "value": "stranger"
+              },
+              {
+                "kind": "Frozen",
+                "name": "type",
+                "value": "Text"
+              }
+            ],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "default-4",
+          "measured": {
+            "height": 84,
+            "width": 239
+          },
+          "position": {
+            "x": 525.3750228881836,
+            "y": 338.6666717529297
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [],
+            "minInputs": 0,
+            "name": "ingress",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Any"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "ingress-5",
+          "measured": {
+            "height": 61,
+            "width": 116
+          },
+          "position": {
+            "x": 345.4610682708852,
+            "y": 502.2742223223272
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "value",
+                "ty": "Any"
+              }
+            ],
+            "minInputs": 1,
+            "name": "is_truthy",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Boolean"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "is_truthy-6",
+          "measured": {
+            "height": 61,
+            "width": 123
+          },
+          "position": {
+            "x": 492.4610682708852,
+            "y": 462.2742223223272
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "cond",
+                "ty": "Boolean"
+              },
+              {
+                "name": "value",
+                "ty": "Any"
+              }
+            ],
+            "minInputs": 2,
+            "name": "guard",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Any"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "guard-7",
+          "measured": {
+            "height": 82,
+            "width": 116
+          },
+          "position": {
+            "x": 644.4610682708852,
+            "y": 480.2742223223272
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "a",
+                "ty": "Any"
+              },
+              {
+                "name": "b",
+                "ty": "Any"
+              }
+            ],
+            "minInputs": 2,
+            "name": "equals",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Boolean"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "equals-8",
+          "measured": {
+            "height": 82,
+            "width": 116
+          },
+          "position": {
+            "x": 799.4636970340874,
+            "y": 415.7175930518464
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "v",
+                "ty": "Boolean"
+              }
+            ],
+            "minInputs": 1,
+            "name": "not",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Boolean"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "not-9",
+          "measured": {
+            "height": 61,
+            "width": 116
+          },
+          "position": {
+            "x": 939.85614646469,
+            "y": 415.71759305184634
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "value",
+                "ty": "Any"
+              }
+            ],
+            "minInputs": 1,
+            "name": "store_write",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Effect"
+              }
+            ],
+            "params": [
+              {
+                "kind": "Frozen",
+                "name": "key",
+                "value": "name"
+              }
+            ],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "store_write-10",
+          "measured": {
+            "height": 84,
+            "width": 116
+          },
+          "position": {
+            "x": 1273.7751580217316,
+            "y": 436.8563122422662
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "cond",
+                "ty": "Boolean"
+              },
+              {
+                "name": "if_true",
+                "ty": "Any"
+              },
+              {
+                "name": "if_false",
+                "ty": "Any"
+              }
+            ],
+            "minInputs": 3,
+            "name": "select",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Any"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "select-11",
+          "measured": {
+            "height": 103,
+            "width": 116
+          },
+          "position": {
+            "x": 1274.2858038104544,
+            "y": 319.7044245999169
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "cond",
+                "ty": "Boolean"
+              },
+              {
+                "name": "value",
+                "ty": "Any"
+              }
+            ],
+            "minInputs": 2,
+            "name": "guard",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Any"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "guard-12",
+          "measured": {
+            "height": 82,
+            "width": 116
+          },
+          "position": {
+            "x": 1101.91186785199,
+            "y": 459.18642443082433
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "a",
+                "ty": "Text"
+              },
+              {
+                "name": "b",
+                "ty": "Text"
+              },
+              {
+                "name": "c",
+                "ty": "Text"
+              },
+              {
+                "name": "d",
+                "ty": "Text"
+              }
+            ],
+            "minInputs": 2,
+            "name": "concat",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Text"
+              }
+            ],
+            "params": [],
+            "variadic": true
+          },
+          "dragging": false,
+          "id": "concat-13",
+          "measured": {
+            "height": 149,
+            "width": 116
+          },
+          "position": {
+            "x": 1720.4284273592298,
+            "y": 277.7350552850185
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [],
+            "minInputs": 0,
+            "name": "const",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Text"
+              }
+            ],
+            "params": [
+              {
+                "kind": "Frozen",
+                "name": "value",
+                "value": "Welcome "
+              },
+              {
+                "kind": "Frozen",
+                "name": "type",
+                "value": "Text"
+              }
+            ],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "const-14",
+          "measured": {
+            "height": 84,
+            "width": 239
+          },
+          "position": {
+            "x": 1438.7583959936867,
+            "y": 210.91146608372375
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [],
+            "minInputs": 0,
+            "name": "const",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Text"
+              }
+            ],
+            "params": [
+              {
+                "kind": "Frozen",
+                "name": "value",
+                "value": "!"
+              },
+              {
+                "kind": "Frozen",
+                "name": "type",
+                "value": "Text"
+              }
+            ],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "const-15",
+          "measured": {
+            "height": 84,
+            "width": 239
+          },
+          "position": {
+            "x": 1441.9085596707198,
+            "y": 375.78593474145055
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [
+              {
+                "name": "cond",
+                "ty": "Boolean"
+              },
+              {
+                "name": "if_true",
+                "ty": "Any"
+              },
+              {
+                "name": "if_false",
+                "ty": "Any"
+              }
+            ],
+            "minInputs": 3,
+            "name": "select",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Any"
+              }
+            ],
+            "params": [],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "select-16",
+          "measured": {
+            "height": 103,
+            "width": 116
+          },
+          "position": {
+            "x": 1068.719884121625,
+            "y": 266.3453509512615
+          },
+          "selected": false,
+          "type": "primitive"
+        },
+        {
+          "data": {
+            "body": {
+              "kind": "Primitive"
+            },
+            "inputs": [],
+            "minInputs": 0,
+            "name": "const",
+            "outputs": [
+              {
+                "name": "out",
+                "ty": "Text"
+              }
+            ],
+            "params": [
+              {
+                "kind": "Frozen",
+                "name": "value",
+                "value": "back, "
+              },
+              {
+                "kind": "Frozen",
+                "name": "type",
+                "value": "Text"
+              }
+            ],
+            "variadic": false
+          },
+          "dragging": false,
+          "id": "const-17",
+          "measured": {
+            "height": 84,
+            "width": 239
+          },
+          "position": {
+            "x": 804.969884121625,
+            "y": 263.8453509512616
+          },
+          "selected": false,
+          "type": "primitive"
+        }
+      ],
+      "viewport": {
+        "x": 42.02409270270084,
+        "y": 193.59039099192069,
+        "zoom": 0.7999999999999993
+      }
+    },
+    "saved_at_epoch_seconds": 1783116622
+  }
+]

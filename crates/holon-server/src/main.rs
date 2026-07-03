@@ -96,6 +96,16 @@
 //! resolve) — a settle that honestly evaluates to nothing is not an error, the same "this is a
 //! normal, expected outcome" stance this whole project takes everywhere else.
 //!
+//! **Inch 12**: saved flows — `POST/GET /flows`, `GET/DELETE /flows/<name>`. A flow is a named
+//! *workspace document*: the editor's canvas exactly as it was left (node positions, viewport,
+//! UI settings), saved and re-opened by name. Deliberately a separate concept from a published
+//! unit, not a variant of one: a unit's identity is content-addressed and presentation-free by
+//! design (`child_order_is_cosmetic` et al.), while a flow document is *all* presentation —
+//! merging them would put pixels into hashes. The server treats the document as opaque JSON
+//! (name validated by the same `is_valid_slug` rule deployments use; body validated only as
+//! JSON) and persists write-through to `--flows <path>` (default `.holon-flows.json`,
+//! `":memory:"` to opt out) — the identical discipline `deployments` already follows.
+//!
 //! **A second real wrinkle, same family as inch 2's:** `SharedCache::get_verified` needs a
 //! `Resolver` (it re-executes the cached computation to check the claimed output), but `Store`
 //! only hands back owned units, not a `Resolver`. `Registry::fork` faces the identical problem
@@ -185,6 +195,21 @@ struct AppState {
     /// Where `deployments` is persisted, or the literal `":memory:"` sentinel (matching
     /// `--store`'s own convention) to opt out entirely.
     deployments_path: String,
+    /// name → saved flow document. A flow is a *workspace file* — the editor's canvas exactly
+    /// as it was left (node positions, viewport, UI settings), saved and re-opened by name —
+    /// deliberately NOT a content-addressed unit: positions and zoom are presentation, and the
+    /// whole hashing design exists to keep presentation out of identity (child_order /
+    /// param_order are cosmetic). The two stay separate: flows are mutable named documents;
+    /// projecting/publishing/deploying stays the existing content-addressed path, untouched.
+    /// The document itself is opaque `serde_json::Value` — the server validates the name and
+    /// that the body parses, nothing more; its internal shape is the editor's contract with
+    /// itself, and teaching the server that shape would couple it to a presentation format for
+    /// zero gain. Plain `Mutex`, no `Arc` — deployments needed a second handle for the clock
+    /// scheduler thread; nothing but HTTP handlers ever touches flows.
+    flows: Mutex<BTreeMap<String, FlowRecord>>,
+    /// Where `flows` is persisted (write-through, same discipline as `deployments_path`), or
+    /// `":memory:"` to opt out.
+    flows_path: String,
 }
 
 /// A registered deployment. `triggers` is derived **once**, at deploy time, from the unit's
@@ -346,6 +371,35 @@ struct PerformedEntry {
 struct FireResponseBody {
     outputs: Vec<Option<SValue>>,
     performed: Vec<PerformedEntry>,
+}
+
+/// One saved flow — a named workspace document (see `AppState::flows` for why this is
+/// deliberately not a content-addressed unit). `document` is opaque JSON: node positions,
+/// viewport, whatever the editor chooses to keep — the server never reads inside it.
+/// `Serialize`+`Deserialize` because this exact shape is also the on-disk persistence format
+/// (one JSON array of these, same discipline as `DeploymentRecord`).
+#[derive(Serialize, Deserialize, Clone)]
+struct FlowRecord {
+    name: String,
+    document: serde_json::Value,
+    saved_at_epoch_seconds: u64,
+}
+
+/// `POST /flows`' request body: upsert by name. The same name saves over the previous
+/// version — a flow is a mutable workspace file, not an immutable identity; "save" means
+/// exactly what it means in any editor.
+#[derive(Deserialize)]
+struct SaveFlowBody {
+    name: String,
+    document: serde_json::Value,
+}
+
+/// `GET /flows`' per-entry listing shape — name and freshness only, never the (possibly
+/// large) document itself; that's what `GET /flows/<name>` is for.
+#[derive(Serialize)]
+struct FlowListEntry {
+    name: String,
+    saved_at_epoch_seconds: u64,
 }
 
 /// `POST /deploy`'s request body. `unit` must already be resolvable in the store (staged via
@@ -1013,6 +1067,124 @@ fn load_deployments(path: &str, store: &SharedStore) -> BTreeMap<String, Deploym
     loaded
 }
 
+/// Persist the flows table — same write-through discipline and `":memory:"` opt-out as
+/// `persist_deployments`, but simpler: a `FlowRecord` is already its own on-disk shape (no
+/// store cross-references, no re-derivation needed on the way back in).
+fn persist_flows(path: &str, flows: &BTreeMap<String, FlowRecord>) {
+    if path == ":memory:" {
+        return;
+    }
+    let records: Vec<&FlowRecord> = flows.values().collect();
+    match serde_json::to_vec_pretty(&records) {
+        Ok(bytes) => {
+            if let Err(e) = std::fs::write(path, bytes) {
+                eprintln!("warning: failed to persist flows to {path:?}: {e}");
+            }
+        }
+        Err(e) => eprintln!("warning: failed to serialize flows: {e}"),
+    }
+}
+
+/// Load flows at startup — the inverse of `persist_flows`. Missing file (first run),
+/// `":memory:"`, or a corrupt/foreign file all yield an empty table (logged, never fatal),
+/// the same failure posture `load_deployments` already takes: a bad file shouldn't stop the
+/// server, just start it with nothing saved. A record whose name fails `is_valid_slug` is
+/// skipped with a warning rather than trusted — same defensive stance `load_deployments`
+/// takes toward hand-edited files.
+fn load_flows(path: &str) -> BTreeMap<String, FlowRecord> {
+    if path == ":memory:" {
+        return BTreeMap::new();
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return BTreeMap::new(),
+        Err(e) => {
+            eprintln!("warning: failed to read flows from {path:?}: {e}");
+            return BTreeMap::new();
+        }
+    };
+    let records: Vec<FlowRecord> = match serde_json::from_slice(&bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("warning: failed to parse flows file {path:?}: {e}");
+            return BTreeMap::new();
+        }
+    };
+    let mut loaded = BTreeMap::new();
+    for record in records {
+        if !is_valid_slug(&record.name) {
+            eprintln!("warning: skipping flow with invalid name {:?}", record.name);
+            continue;
+        }
+        loaded.insert(record.name.clone(), record);
+    }
+    loaded
+}
+
+/// `POST /flows` — save (upsert) a flow document by name. The name follows the same rule as
+/// deployment slugs (`is_valid_slug`) — one naming convention across the API, not two. The
+/// document is stored as-is; the server never inspects inside it (see `AppState::flows`).
+fn handle_post_flows(
+    flows: &Mutex<BTreeMap<String, FlowRecord>>,
+    flows_path: &str,
+    request: &Request,
+) -> Response {
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let body: SaveFlowBody = match serde_json::from_slice(&bytes) {
+        Ok(b) => b,
+        Err(e) => return err(400, format!("invalid save-flow body: {e}")),
+    };
+    if !is_valid_slug(&body.name) {
+        return err(400, "flow name must be non-empty ASCII alphanumeric/'-'/'_' only");
+    }
+    let saved_at_epoch_seconds =
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let record = FlowRecord { name: body.name.clone(), document: body.document, saved_at_epoch_seconds };
+
+    let mut table = flows.lock().unwrap();
+    table.insert(body.name.clone(), record);
+    persist_flows(flows_path, &table);
+
+    Response::json(&FlowListEntry { name: body.name, saved_at_epoch_seconds })
+}
+
+/// `GET /flows` — every saved flow's name + freshness, never the documents themselves.
+fn handle_get_flows(flows: &Mutex<BTreeMap<String, FlowRecord>>) -> Response {
+    let table = flows.lock().unwrap();
+    let entries: Vec<FlowListEntry> = table
+        .values()
+        .map(|f| FlowListEntry { name: f.name.clone(), saved_at_epoch_seconds: f.saved_at_epoch_seconds })
+        .collect();
+    Response::json(&entries)
+}
+
+/// `GET /flows/<name>` — the full saved record, document included. 404 for an unknown name,
+/// same convention as every other by-name lookup on this API.
+fn handle_get_flow(flows: &Mutex<BTreeMap<String, FlowRecord>>, name: &str) -> Response {
+    let table = flows.lock().unwrap();
+    match table.get(name) {
+        Some(record) => Response::json(record),
+        None => err(404, "no flow saved under that name"),
+    }
+}
+
+/// `DELETE /flows/<name>` — remove a saved flow. 404 if it was never there.
+fn handle_delete_flow(
+    flows: &Mutex<BTreeMap<String, FlowRecord>>,
+    flows_path: &str,
+    name: &str,
+) -> Response {
+    let mut table = flows.lock().unwrap();
+    if table.remove(name).is_none() {
+        return err(404, "no flow saved under that name");
+    }
+    persist_flows(flows_path, &table);
+    Response::json(&serde_json::json!({ "deleted": name }))
+}
+
 /// Whether a unit's derived capabilities include either state axis — the gate for whether a
 /// deployment gets its own `state` slot at all. Takes the iterator `Capabilities::iter()`
 /// already gives, rather than the `Capabilities` type itself, so this needs no new import.
@@ -1500,6 +1672,24 @@ fn route(state: &AppState, request: &Request) -> Response {
         return handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, request);
     }
 
+    if url == "/flows" {
+        if method == "POST" {
+            return handle_post_flows(&state.flows, &state.flows_path, request);
+        }
+        if method == "GET" {
+            return handle_get_flows(&state.flows);
+        }
+    }
+
+    if let Some(name) = url.strip_prefix("/flows/") {
+        if method == "GET" {
+            return handle_get_flow(&state.flows, name);
+        }
+        if method == "DELETE" {
+            return handle_delete_flow(&state.flows, &state.flows_path, name);
+        }
+    }
+
     if method == "GET" && url == "/deployments" {
         return handle_get_deployments(&state.deployments);
     }
@@ -1680,6 +1870,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mut store_arg = ".holon-store".to_string();
     let mut deployments_arg = ".holon-deployments.json".to_string();
+    let mut flows_arg = ".holon-flows.json".to_string();
     while let Some(a) = args.next() {
         if a == "--store" {
             if let Some(v) = args.next() {
@@ -1688,6 +1879,10 @@ fn main() {
         } else if a == "--deployments" {
             if let Some(v) = args.next() {
                 deployments_arg = v;
+            }
+        } else if a == "--flows" {
+            if let Some(v) = args.next() {
+                flows_arg = v;
             }
         } else if a == "--emit-test-unit" {
             let Some(path) = args.next() else {
@@ -1833,7 +2028,8 @@ fn main() {
     let initial_deployments = load_deployments(&deployments_arg, &store);
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
-    let state = AppState { store, registry, cache, deployments, deployments_path: deployments_arg };
+    let flows = Mutex::new(load_flows(&flows_arg));
+    let state = AppState { store, registry, cache, deployments, deployments_path: deployments_arg, flows, flows_path: flows_arg };
 
     println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
     rouille::start_server(addr, move |request| with_cors(request, route(&state, request)));
@@ -1857,7 +2053,15 @@ mod tests {
         let registry = Mutex::new(Registry::new(store.clone()));
         let cache = Mutex::new(SharedCache::new());
         let deployments = Arc::new(Mutex::new(BTreeMap::new()));
-        AppState { store, registry, cache, deployments, deployments_path: ":memory:".to_string() }
+        AppState {
+            store,
+            registry,
+            cache,
+            deployments,
+            deployments_path: ":memory:".to_string(),
+            flows: Mutex::new(BTreeMap::new()),
+            flows_path: ":memory:".to_string(),
+        }
     }
 
     fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
@@ -2495,6 +2699,8 @@ mod tests {
                 cache: Mutex::new(SharedCache::new()),
                 deployments,
                 deployments_path: deployments_path.clone(),
+                flows: Mutex::new(BTreeMap::new()),
+                flows_path: ":memory:".to_string(),
             };
             let body = serde_json::to_vec(&serde_json::json!({
                 "slug": "echo",
@@ -2519,6 +2725,8 @@ mod tests {
             cache: Mutex::new(SharedCache::new()),
             deployments: Arc::new(Mutex::new(reloaded)),
             deployments_path: deployments_path.clone(),
+            flows: Mutex::new(BTreeMap::new()),
+            flows_path: ":memory:".to_string(),
         };
         let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
         assert_eq!(triggered.status_code, 200);
@@ -2563,6 +2771,98 @@ mod tests {
             assert_eq!(ticks.len(), 1, "slug {slug} should have exactly one tick recorded");
             assert_eq!(ticks[0]["performed"][0]["capability"], "NetworkEgress");
         }
+    }
+
+    // ── flows: named workspace documents (save / list / load / delete) ────────────────────
+
+    #[test]
+    fn flow_saves_lists_loads_and_deletes() {
+        let state = test_state();
+
+        // Save — the document is opaque; positions/viewport are exactly the kind of thing it
+        // carries, and the server must hand back byte-identical structure without touching it.
+        let doc = serde_json::json!({
+            "nodes": [{ "id": "n1", "position": { "x": 120.5, "y": -40.0 }, "data": { "name": "const" } }],
+            "edges": [],
+            "viewport": { "x": 12.0, "y": 34.0, "zoom": 1.5 },
+        });
+        let save = serde_json::to_vec(&serde_json::json!({ "name": "greet", "document": doc })).unwrap();
+        let r = route(&state, &req("POST", "/flows", save));
+        assert_eq!(r.status_code, 200);
+        assert_eq!(body_json(r)["name"], "greet");
+
+        // List — name + freshness only, never the document.
+        let list = body_json(route(&state, &req("GET", "/flows", vec![])));
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["name"], "greet");
+        assert!(list[0].get("document").is_none());
+
+        // Load — the document comes back exactly as saved, viewport and positions intact.
+        let loaded = body_json(route(&state, &req("GET", "/flows/greet", vec![])));
+        assert_eq!(loaded["document"], doc);
+
+        // Delete, then both lookups agree it's gone.
+        assert_eq!(route(&state, &req("DELETE", "/flows/greet", vec![])).status_code, 200);
+        assert_eq!(route(&state, &req("GET", "/flows/greet", vec![])).status_code, 404);
+        let empty = body_json(route(&state, &req("GET", "/flows", vec![])));
+        assert_eq!(empty.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn saving_the_same_name_overwrites_it() {
+        // A flow is a mutable workspace file — save means save, the same name replaces.
+        let state = test_state();
+        let v1 = serde_json::to_vec(&serde_json::json!({ "name": "wip", "document": { "rev": 1 } })).unwrap();
+        let v2 = serde_json::to_vec(&serde_json::json!({ "name": "wip", "document": { "rev": 2 } })).unwrap();
+        assert_eq!(route(&state, &req("POST", "/flows", v1)).status_code, 200);
+        assert_eq!(route(&state, &req("POST", "/flows", v2)).status_code, 200);
+
+        let list = body_json(route(&state, &req("GET", "/flows", vec![])));
+        assert_eq!(list.as_array().unwrap().len(), 1); // still one flow, not two
+        let loaded = body_json(route(&state, &req("GET", "/flows/wip", vec![])));
+        assert_eq!(loaded["document"]["rev"], 2);
+    }
+
+    #[test]
+    fn flow_save_rejects_a_bad_name_and_a_malformed_body() {
+        let state = test_state();
+        let bad_name =
+            serde_json::to_vec(&serde_json::json!({ "name": "no spaces!", "document": {} })).unwrap();
+        assert_eq!(route(&state, &req("POST", "/flows", bad_name)).status_code, 400);
+        assert_eq!(route(&state, &req("POST", "/flows", b"not json".to_vec())).status_code, 400);
+        // Neither attempt saved anything.
+        let list = body_json(route(&state, &req("GET", "/flows", vec![])));
+        assert_eq!(list.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn deleting_an_unknown_flow_is_404() {
+        let state = test_state();
+        assert_eq!(route(&state, &req("DELETE", "/flows/nope", vec![])).status_code, 404);
+    }
+
+    #[test]
+    fn flows_persist_across_a_simulated_restart() {
+        let flows_path = unique_temp_path("flows");
+        let doc = serde_json::json!({ "nodes": [], "viewport": { "zoom": 2.0 } });
+
+        // "First run": save one flow against a real on-disk path, then drop the whole state.
+        {
+            let mut state = test_state();
+            state.flows_path = flows_path.clone();
+            let save =
+                serde_json::to_vec(&serde_json::json!({ "name": "keeper", "document": doc })).unwrap();
+            assert_eq!(route(&state, &req("POST", "/flows", save)).status_code, 200);
+        }
+
+        // "Restart": a fresh state loads the table the way main() does, from the same path.
+        let mut state2 = test_state();
+        state2.flows = Mutex::new(load_flows(&flows_path));
+        state2.flows_path = flows_path.clone();
+        let loaded = body_json(route(&state2, &req("GET", "/flows/keeper", vec![])));
+        assert_eq!(loaded["document"], doc);
+
+        let _ = std::fs::remove_file(&flows_path);
     }
 
     // ── every honestly-answerable driver is actually sourced, regardless of which one
@@ -2788,6 +3088,8 @@ mod tests {
                 cache: Mutex::new(SharedCache::new()),
                 deployments,
                 deployments_path: deployments_path.clone(),
+                flows: Mutex::new(BTreeMap::new()),
+                flows_path: ":memory:".to_string(),
             };
             let deploy_body = serde_json::to_vec(&serde_json::json!({
                 "slug": "writer",
@@ -2814,6 +3116,8 @@ mod tests {
             cache: Mutex::new(SharedCache::new()),
             deployments: Arc::new(Mutex::new(reloaded)),
             deployments_path: deployments_path.clone(),
+            flows: Mutex::new(BTreeMap::new()),
+            flows_path: ":memory:".to_string(),
         };
         let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
         assert_eq!(triggered2.status_code, 200);

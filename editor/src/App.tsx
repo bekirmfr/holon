@@ -43,9 +43,16 @@ import {
   listDeployments,
   deleteDeployment,
   triggerDeployment,
+  saveFlow,
+  listFlows,
+  getFlow,
+  deleteFlow,
   ServerError,
   type DeploymentEntry,
   type TriggerResult,
+  type FlowDocument,
+  type FlowListEntry,
+  type FlowRecord,
 } from "./server";
 import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
@@ -319,11 +326,275 @@ function DeploymentRow({
   );
 }
 
-function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string> }) {
+/** Which top-level view is showing. The canvas is never unmounted (React Flow's own state —
+ *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
+ *  as overlays on top of it. `marketplace` is deliberately absent: deferred, and a menu entry
+ *  that can't be picked shouldn't be representable as a page state either. */
+type AppPage = "canvas" | "flows" | "deployed";
+
+/** The saved-flows page: list, open, delete. Publishing to the marketplace is deferred — the
+ *  button is real but disabled, honestly labeled, rather than wired to something half-built. */
+function FlowsPage({ onOpen }: { onOpen: (rec: FlowRecord) => void }) {
+  const [flows, setFlows] = useState<FlowListEntry[]>([]);
+  const [msg, setMsg] = useState("");
+
+  const refresh = useCallback(() => {
+    listFlows()
+      .then((f) => {
+        setFlows(f);
+        setMsg("");
+      })
+      .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
+  }, []);
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const open = (name: string) => {
+    getFlow(name)
+      .then(onOpen)
+      .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
+  };
+  const remove = (name: string) => {
+    deleteFlow(name)
+      .then(refresh)
+      .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
+  };
+
+  const smallBtn: CSSProperties = {
+    font: "inherit",
+    fontSize: 11,
+    padding: "2px 8px",
+    color: "#9fb4d4",
+    background: "#0e1a2f",
+    border: "1px solid #1b2a45",
+    borderRadius: 3,
+    cursor: "pointer",
+  };
+
+  return (
+    <div style={{ maxWidth: 560 }}>
+      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 12 }}>
+        flows
+      </div>
+      {msg && <div style={{ color: "#e0916f", fontSize: 12, marginBottom: 8 }}>{msg}</div>}
+      {flows.length === 0 && !msg && (
+        <div style={{ color: "#9fb4d4", fontSize: 12 }}>
+          nothing saved yet — build something on the canvas and hit save
+        </div>
+      )}
+      {flows.map((f) => (
+        <div
+          key={f.name}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 10px",
+            marginBottom: 6,
+            background: "#0e1a2f",
+            border: "1px solid #1b2a45",
+            borderRadius: 4,
+          }}
+        >
+          <span style={{ color: "#6fd3e0", fontSize: 13, flex: 1 }}>{f.name}</span>
+          <span style={{ color: "#9fb4d4", fontSize: 11 }}>
+            saved {new Date(f.saved_at_epoch_seconds * 1000).toLocaleString()}
+          </span>
+          <button style={smallBtn} onClick={() => open(f.name)}>
+            open
+          </button>
+          <button
+            style={{ ...smallBtn, opacity: 0.4, cursor: "default" }}
+            disabled
+            title="marketplace is deferred — publishing lands with it"
+          >
+            publish
+          </button>
+          <button style={smallBtn} onClick={() => remove(f.name)} title="delete this saved flow">
+            ×
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Canvas({
+  catalog,
+  variadic,
+  page,
+  setPage,
+  pendingNew,
+}: {
+  catalog: WUnit[];
+  variadic: Set<string>;
+  page: AppPage;
+  setPage: (p: AppPage) => void;
+  pendingNew: { name: string; nonce: number } | null;
+}) {
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const { screenToFlowPosition, getNode, getEdges } = useReactFlow<PrimitiveNodeType>();
+  const { screenToFlowPosition, getNode, getEdges, getViewport, setViewport } =
+    useReactFlow<PrimitiveNodeType>();
   const idRef = useRef(0);
+
+  // ── the current flow (P4.8): its name, save, and undo/redo ────────────────────────────
+  // A saved flow is a named workspace document — nodes/edges/viewport exactly as left, stored
+  // opaquely by the server (see server.ts's FlowDocument). Deliberately separate from the
+  // content-addressed unit the same canvas projects to: positions and zoom are presentation,
+  // and presentation stays out of identity by design.
+  const [flowName, setFlowName] = useState<string | null>(null);
+  const [saveMsg, setSaveMsg] = useState("");
+
+  // Undo/redo: a debounced snapshot history over {nodes, edges}. React Flow has no built-in
+  // history, so this is the standard minimal shape: commit a snapshot 400ms after the canvas
+  // settles (so a drag is ONE entry, not sixty), undo/redo swap between past/committed/future.
+  // Selection and drag flags are normalized out of snapshots — undoing a *selection* would be
+  // noise, and restoring a node mid-"dragging" would wedge it to the cursor. `restoring` marks
+  // programmatic setNodes/setEdges (undo, redo, open, new) so the watcher records them as the
+  // new baseline instead of pushing them into history as if the user had made an edit.
+  type Snapshot = { nodes: PrimitiveNodeType[]; edges: Edge[] };
+  const history = useRef<{ past: Snapshot[]; future: Snapshot[] }>({ past: [], future: [] });
+  const committed = useRef<Snapshot>({ nodes: [], edges: [] });
+  const restoring = useRef(false);
+  const [histVersion, setHistVersion] = useState(0); // buttons re-render on history changes
+
+  const snapshotOf = useCallback((ns: PrimitiveNodeType[], es: Edge[]): Snapshot => {
+    return {
+      nodes: ns.map((n) => ({ ...n, selected: false, dragging: false })),
+      edges: es.map((e) => ({ ...e, selected: false })),
+    };
+  }, []);
+
+  useEffect(() => {
+    if (restoring.current) {
+      restoring.current = false;
+      committed.current = snapshotOf(nodes, edges);
+      return;
+    }
+    const t = setTimeout(() => {
+      const next = snapshotOf(nodes, edges);
+      if (JSON.stringify(next) === JSON.stringify(committed.current)) return;
+      history.current.past.push(committed.current);
+      if (history.current.past.length > 50) history.current.past.shift();
+      history.current.future = [];
+      committed.current = next;
+      setHistVersion((v) => v + 1);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [nodes, edges, snapshotOf]);
+
+  const applySnapshot = useCallback(
+    (s: Snapshot) => {
+      restoring.current = true;
+      setNodes(s.nodes);
+      setEdges(s.edges);
+    },
+    [setNodes, setEdges],
+  );
+
+  const undo = useCallback(() => {
+    const h = history.current;
+    if (h.past.length === 0) return;
+    const prev = h.past.pop()!;
+    h.future.push(committed.current);
+    applySnapshot(prev);
+    setHistVersion((v) => v + 1);
+  }, [applySnapshot]);
+
+  const redo = useCallback(() => {
+    const h = history.current;
+    if (h.future.length === 0) return;
+    const next = h.future.pop()!;
+    h.past.push(committed.current);
+    applySnapshot(next);
+    setHistVersion((v) => v + 1);
+  }, [applySnapshot]);
+
+  // Ctrl/Cmd+Z / Shift+Z / Y — skipped entirely while a text field has focus, so undo inside a
+  // param input stays the browser's own text undo, never a canvas mutation under the cursor.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) {
+        return;
+      }
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if (k === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
+
+  // "New" from the menu: a clean canvas under the prompted name. `nonce` makes a second New
+  // with the same name still fire.
+  useEffect(() => {
+    if (!pendingNew) return;
+    restoring.current = true;
+    setNodes([]);
+    setEdges([]);
+    setViewport({ x: 0, y: 0, zoom: 1 });
+    setFlowName(pendingNew.name);
+    history.current = { past: [], future: [] };
+    committed.current = { nodes: [], edges: [] };
+    setSaveMsg("");
+    setHistVersion((v) => v + 1);
+  }, [pendingNew, setNodes, setEdges, setViewport]);
+
+  const onSave = useCallback(() => {
+    let name = flowName;
+    if (!name) {
+      name = window.prompt("Flow name (letters, digits, - and _ only):")?.trim() || null;
+      if (!name) return;
+      setFlowName(name);
+    }
+    const doc: FlowDocument = {
+      nodes: nodes as unknown[],
+      edges: edges as unknown[],
+      viewport: getViewport(),
+    };
+    saveFlow(name, doc)
+      .then((entry) =>
+        setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`),
+      )
+      .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
+  }, [flowName, nodes, edges, getViewport]);
+
+  const onOpenFlow = useCallback(
+    (rec: FlowRecord) => {
+      const ns = rec.document.nodes as PrimitiveNodeType[];
+      const es = rec.document.edges as Edge[];
+      restoring.current = true;
+      setNodes(ns);
+      setEdges(es);
+      setViewport(rec.document.viewport);
+      setFlowName(rec.name);
+      history.current = { past: [], future: [] };
+      committed.current = snapshotOf(ns, es);
+      // A loaded flow's node ids carry the counters they were minted with — the fresh idRef
+      // must start PAST all of them, or the next drop would mint a colliding id.
+      let max = -1;
+      for (const n of ns) {
+        for (const m of n.id.matchAll(/\d+/g)) {
+          max = Math.max(max, Number(m[0]));
+        }
+      }
+      idRef.current = max + 1;
+      setSaveMsg("");
+      setHistVersion((v) => v + 1);
+      setPage("canvas");
+    },
+    [setNodes, setEdges, setViewport, setPage, snapshotOf],
+  );
 
   const byName = useMemo(() => {
     const m = new Map<string, WUnit>();
@@ -484,6 +755,11 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
   useEffect(() => {
     refreshDeployments();
   }, [refreshDeployments]);
+
+  // Opening the Deployed page always shows the live table, not whatever the last fetch saw.
+  useEffect(() => {
+    if (page === "deployed") refreshDeployments();
+  }, [page, refreshDeployments]);
 
   // What the currently-projected composite would actually require acknowledging, shown
   // *before* the deploy button is ever clicked — not silently auto-filled and hidden. The
@@ -1002,7 +1278,7 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
   const canExpand = selectedCount === 1 && nodes.some((n) => n.selected && n.data.body.kind === "Composite");
 
   return (
-    <div className="hl-canvas" onDrop={onDrop} onDragOver={onDragOver}>
+    <div className="hl-canvas" style={{ position: "relative" }} onDrop={onDrop} onDragOver={onDragOver}>
       <ReactFlow<PrimitiveNodeType>
         nodes={decoratedNodes}
         onNodesChange={onNodesChange}
@@ -1025,6 +1301,68 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
       >
         <Background variant={BackgroundVariant.Lines} gap={26} color="#1b2a45" />
         <Controls showInteractive={false} />
+        <Panel position="top-left">
+          {/* histVersion is what makes the undo/redo disabled state live — history itself is a
+              ref (pushing must not re-render the canvas mid-drag), so the buttons re-render off
+              this counter instead. */}
+          <div data-hist={histVersion} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ color: "#9fb4d4", fontSize: 12, letterSpacing: "0.04em" }}>
+              {flowName ?? "untitled"}
+            </span>
+            <button
+              onClick={onSave}
+              style={{
+                font: "inherit",
+                fontSize: 11,
+                padding: "3px 10px",
+                color: "#0e1a2f",
+                background: "#6fd3e0",
+                border: "none",
+                borderRadius: 3,
+                cursor: "pointer",
+              }}
+            >
+              save
+            </button>
+            <button
+              onClick={undo}
+              disabled={history.current.past.length === 0}
+              title="undo (Ctrl+Z)"
+              style={{
+                font: "inherit",
+                fontSize: 11,
+                padding: "3px 8px",
+                color: "#9fb4d4",
+                background: "#0e1a2f",
+                border: "1px solid #1b2a45",
+                borderRadius: 3,
+                cursor: history.current.past.length === 0 ? "default" : "pointer",
+                opacity: history.current.past.length === 0 ? 0.4 : 1,
+              }}
+            >
+              ⟲
+            </button>
+            <button
+              onClick={redo}
+              disabled={history.current.future.length === 0}
+              title="redo (Ctrl+Y / Ctrl+Shift+Z)"
+              style={{
+                font: "inherit",
+                fontSize: 11,
+                padding: "3px 8px",
+                color: "#9fb4d4",
+                background: "#0e1a2f",
+                border: "1px solid #1b2a45",
+                borderRadius: 3,
+                cursor: history.current.future.length === 0 ? "default" : "pointer",
+                opacity: history.current.future.length === 0 ? 0.4 : 1,
+              }}
+            >
+              ⟳
+            </button>
+            {saveMsg && <span style={{ color: "#9ad29f", fontSize: 11 }}>{saveMsg}</span>}
+          </div>
+        </Panel>
         <Panel position="top-right">
           <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
             <button
@@ -1241,23 +1579,44 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
             <InspectPanel hash={inspecting} ev={ev} onClose={() => setInspecting(null)} />
           </Panel>
         )}
-        {deployments.length > 0 && (
-          <Panel position="bottom-left">
-            <div
-              style={{
-                background: "#0e1a2f",
-                border: "1px solid #1b2a45",
-                borderRadius: 4,
-                padding: 10,
-                minWidth: 200,
-                maxWidth: 320,
-                maxHeight: 320,
-                overflow: "auto",
-              }}
-            >
-              <div style={{ color: "#9fb4d4", fontSize: 11, letterSpacing: "0.04em", marginBottom: 2 }}>
+      </ReactFlow>
+      {nodes.length === 0 && page === "canvas" && (
+        <div className="hl-canvas__empty">drag a primitive here to place it</div>
+      )}
+      {/* The Flows / Deployed pages are overlays ON TOP of the always-mounted canvas — React
+          Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,
+          so the canvas is covered, never unmounted. The deployments list used to live in a
+          bottom-left panel on the canvas itself; it moved here wholesale — one home, not two. */}
+      {page !== "canvas" && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 10,
+            background: "#0b1526",
+            overflow: "auto",
+            padding: 24,
+          }}
+        >
+          {page === "flows" && <FlowsPage onOpen={onOpenFlow} />}
+          {page === "deployed" && (
+            <div style={{ maxWidth: 560 }}>
+              <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 4 }}>
                 deployed
               </div>
+              <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 12 }}>
+                {deployments.length} deployment{deployments.length === 1 ? "" : "s"} ·{" "}
+                {deployments.reduce((a, d) => a + d.trigger_count, 0)} fires ·{" "}
+                {deployments.reduce((a, d) => a + d.error_count, 0)} errors
+              </div>
+              {deployError && (
+                <div style={{ color: "#e0916f", fontSize: 12, marginBottom: 8 }}>{deployError}</div>
+              )}
+              {deployments.length === 0 && (
+                <div style={{ color: "#9fb4d4", fontSize: 12 }}>
+                  nothing deployed — project a flow on the canvas, then deploy it
+                </div>
+              )}
               {deployments.map((entry) => (
                 <DeploymentRow
                   key={entry.slug}
@@ -1272,11 +1631,8 @@ function Canvas({ catalog, variadic }: { catalog: WUnit[]; variadic: Set<string>
                 />
               ))}
             </div>
-          </Panel>
-        )}
-      </ReactFlow>
-      {nodes.length === 0 && (
-        <div className="hl-canvas__empty">drag a primitive here to place it</div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1286,6 +1642,10 @@ function Editor() {
   const [catalog, setCatalog] = useState<WUnit[] | null>(null);
   const [variadic, setVariadic] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>("");
+  const [page, setPage] = useState<AppPage>("canvas");
+  // "New" carries the prompted name down to the canvas; `nonce` makes a second New with the
+  // same name still take effect (the object identity changes even when the name doesn't).
+  const [pendingNew, setPendingNew] = useState<{ name: string; nonce: number } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -1295,12 +1655,49 @@ function Editor() {
     })().catch((e: unknown) => setError(String(e)));
   }, []);
 
+  const onNew = () => {
+    const name = window.prompt("Flow name (letters, digits, - and _ only):")?.trim();
+    if (!name) return;
+    setPendingNew((p) => ({ name, nonce: (p?.nonce ?? 0) + 1 }));
+    setPage("canvas");
+  };
+
+  const menuBtn = (active: boolean, enabled = true): CSSProperties => ({
+    font: "inherit",
+    fontSize: 12,
+    letterSpacing: "0.04em",
+    padding: "3px 10px",
+    color: active ? "#0e1a2f" : "#9fb4d4",
+    background: active ? "#6fd3e0" : "transparent",
+    border: "1px solid #1b2a45",
+    borderRadius: 3,
+    cursor: enabled ? "pointer" : "default",
+    opacity: enabled ? 1 : 0.4,
+  });
+
   return (
     <div className="hl-app">
       <header className="hl-header">
         <span className="hl-header__brand">holon</span>
         <span className="hl-header__sep">·</span>
         <span className="hl-header__mode">authoring</span>
+        <nav style={{ display: "flex", gap: 6, marginLeft: 18 }}>
+          <button style={menuBtn(false)} onClick={onNew}>
+            new
+          </button>
+          <button style={menuBtn(page === "flows")} onClick={() => setPage(page === "flows" ? "canvas" : "flows")}>
+            flows
+          </button>
+          <button
+            style={menuBtn(page === "deployed")}
+            onClick={() => setPage(page === "deployed" ? "canvas" : "deployed")}
+          >
+            deployed
+          </button>
+          <button style={menuBtn(false, false)} disabled title="deferred — the flow marketplace lands later">
+            marketplace
+          </button>
+        </nav>
         <span className="hl-header__count">
           {catalog ? `${catalog.length} genesis atoms` : "loading core…"}
         </span>
@@ -1312,7 +1709,15 @@ function Editor() {
         <div className="hl-body">
           {catalog && <Palette catalog={catalog} />}
           <ReactFlowProvider>
-            {catalog && <Canvas catalog={catalog} variadic={variadic} />}
+            {catalog && (
+              <Canvas
+                catalog={catalog}
+                variadic={variadic}
+                page={page}
+                setPage={setPage}
+                pendingNew={pendingNew}
+              />
+            )}
           </ReactFlowProvider>
         </div>
       )}

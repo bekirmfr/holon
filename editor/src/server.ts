@@ -164,3 +164,55 @@ export async function getDeploymentState(slug: string): Promise<Record<string, W
   const { state } = await asJson<{ slug: string; state: Record<string, WValue> }>(res);
   return state;
 }
+
+// ── flows: named workspace documents (P4.8: save / open / delete) ──────────────────────────
+
+/** What a saved flow document carries — the canvas exactly as it was left. This shape is the
+ *  EDITOR's own contract with itself: the server stores it opaquely (validated only as JSON,
+ *  named by the same slug rule deployments use) and never reads inside it, so this type lives
+ *  here, not mirrored from any server struct. `nodes`/`edges` are React Flow's own arrays as
+ *  the canvas holds them (positions included); `viewport` is the pan/zoom triple its
+ *  `getViewport()` returns. `unknown[]` rather than the precise React Flow node type on
+ *  purpose — server.ts stays free of React Flow imports (it's the plain HTTP boundary), and
+ *  App.tsx, which owns both sides of this contract, casts at the seam. */
+export type FlowDocument = {
+  nodes: unknown[];
+  edges: unknown[];
+  viewport: { x: number; y: number; zoom: number };
+};
+
+/** One entry in `GET /flows` — name + freshness only, never the (possibly large) document. */
+export type FlowListEntry = { name: string; saved_at_epoch_seconds: number };
+
+/** A full saved flow as `GET /flows/<name>` returns it. */
+export type FlowRecord = FlowListEntry & { document: FlowDocument };
+
+/** `POST /flows` — save (upsert) the current canvas under `name`. The same name saves over
+ *  the previous version: a flow is a mutable workspace file, and "save" means exactly what it
+ *  means in any editor. Throws {@link ServerError} (400) for an invalid name. */
+export async function saveFlow(name: string, document: FlowDocument): Promise<FlowListEntry> {
+  const res = await fetch(`${BASE}/flows`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, document }),
+  });
+  return asJson<FlowListEntry>(res);
+}
+
+/** `GET /flows` — every saved flow's name and freshness. */
+export async function listFlows(): Promise<FlowListEntry[]> {
+  const res = await fetch(`${BASE}/flows`);
+  return asJson<FlowListEntry[]>(res);
+}
+
+/** `GET /flows/<name>` — one full saved flow, document included. Throws (404) if unknown. */
+export async function getFlow(name: string): Promise<FlowRecord> {
+  const res = await fetch(`${BASE}/flows/${encodeURIComponent(name)}`);
+  return asJson<FlowRecord>(res);
+}
+
+/** `DELETE /flows/<name>` — remove a saved flow. Throws (404) if it was never there. */
+export async function deleteFlow(name: string): Promise<void> {
+  const res = await fetch(`${BASE}/flows/${encodeURIComponent(name)}`, { method: "DELETE" });
+  await asJson<{ deleted: string }>(res);
+}
