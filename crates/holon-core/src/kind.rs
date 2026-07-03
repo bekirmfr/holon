@@ -231,7 +231,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "cons" | "head" | "tail" | "is_empty"
         | "pair"
         | "some" | "none"
-        | "to_text" | "is_truthy" | "guard" | "default"
+        | "to_text" | "is_truthy" | "guard" | "default" | "equals"
         | "fold" | "map" => vec![],
 
         // Effectful exemplars (classification only; execution is host-side). A state
@@ -470,7 +470,7 @@ mod tests {
             "subtract", "divide", "compare", "and", "or", "not", "select",
             "concat", "uppercase", "lowercase", "text_length", "slice", "index_of",
             "list", "get", "append", "length", "sum",
-            "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "is_truthy", "guard", "default", "fold", "map",
+            "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "is_truthy", "guard", "default", "equals", "fold", "map",
         ];
         for name in PURE {
             assert_eq!(kind_of(name, &[]), Some(Kind::Pure), "{name} should be Pure");

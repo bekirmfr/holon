@@ -4383,3 +4383,54 @@ pass.
 
 **No `PLAN.md` change.** A real architectural widening of the standing-deploy pillar's own firing
 path, not a new pillar and not a core-language leaf.
+
+---
+
+## 2026-07-03 · holon-core — `equals` (42nd genesis leaf): general structural equality over any two values
+
+**Requested directly, and checked against the real catalog rather than assumed missing.** No
+primitive could assert two `Text` values equal. `compare` is `Number`-only, confirmed both by its
+declared port types (`Number`, not `Text`/`Any`) and by its own `bin_numbers(inputs)?` extraction
+inside `compute` — a real, structural restriction, not just a catalog default that happened to
+look numeric. Nothing else in the 41-leaf catalog at the time covered general equality either.
+
+**Checked what the foundation already provides before writing a single line of new logic.**
+`Value` already derives Rust's own `PartialEq`. `equals(a, b)` turned out to be exactly one line —
+`Value::Boolean(a == b)` — exposing that derived implementation as a primitive, not implementing
+comparison logic of its own. Scoped `Any`/`Any` rather than `Text`-specific, matching `to_text`'s
+and `is_truthy`'s own precedent: the general form costs nothing extra here, since the derived
+equality already handles every variant uniformly — there was no reason to narrow it.
+
+**Pressed on directly before building, and traced the answer rather than just asserting it.**
+The question: would a naive to-text-then-compare implementation wrongly call `Text("true")` and
+`Boolean(true)` equal, since both stringify to `"true"`? Confirmed the actual design doesn't have
+this bug, and *why*: Rust's derived equality for an enum matches both sides to the *same variant*
+first. `Text` and `Boolean` fall straight into the enum's own generated "different variant, not
+equal" case before either value's content is ever inspected — not a content check that happens to
+come out right, but two values that are never compared to each other in the first place. No
+`to_text` anywhere in the actual path; the naive, broken version was named and explicitly not
+built.
+
+**Two considered choices, each following an established precedent rather than set fresh:**
+- **`Number` equality is plain `f64` equality, `NaN != NaN` included** — IEEE-754's own standard
+  behavior, the same undisguised choice `is_truthy` already made for the identical reason (`NaN !=
+  0.0` there, `NaN != NaN` here). Not an overlooked edge case either time.
+- **`Sum` equality respects the arm as part of identity** — `some(5)` and a `none` carrying the
+  same payload `5` are correctly *not* equal. Confirmed to hold through the primitive itself with
+  a dedicated test, not just assumed from the `Value`-level property `value.rs`'s own
+  `sum_arm_is_part_of_identity` test already locks in.
+
+**Same four-place ceremony as every primitive this session.** `primitives.rs` (the one-line
+compute arm, plus tests for same-kind comparison, the specific cross-kind non-coercion case that
+prompted this whole addition, the `Sum`-arm case, and the deliberate `NaN` case); `catalog.rs`
+(`GENESIS`, `interface_of`, count 41 → 42, a real catalog-level shape test); `kind.rs` (the
+capability allowlist — the one that actually matters — plus the separate hand-maintained
+`pure_leaves_are_pure` test list); `holon-wasm`'s two hard-coded catalog counts.
+
+**Verified.** `cargo build --workspace` and `cargo test --workspace`: **289 passed, 0 failed**,
+across all four crates (207 core + 39 host + 32 server + 11 wasm-native) — a real green run
+pasted back and read, not assumed clean by extension of the pattern holding for every primitive
+before it.
+
+**No `PLAN.md` change.** One more genesis primitive, same footing as every other leaf in the
+frozen §13a set — not a pillar.

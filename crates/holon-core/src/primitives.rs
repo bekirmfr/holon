@@ -39,6 +39,26 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             _ => None,
         },
 
+        // Structural equality over ANY two values, of any kind — including two of DIFFERENT
+        // kinds, which are always false, never coerced toward each other first. This is not
+        // new comparison logic: `Value` already derives Rust's own `PartialEq`, and this is
+        // exactly that, exposed as a primitive. That derived impl is what makes this safe in
+        // the way `compare` (Number-only) never had to worry about: Rust's own generated
+        // equality for an enum matches BOTH sides to the SAME variant before ever looking at
+        // content — Text("true") and Boolean(true) fall into the enum's own "different variant
+        // ⇒ not equal" case before either value's content is inspected at all, not because of
+        // any check written here. No `to_text` anywhere in this path — a text-conversion
+        // approach was considered and rejected specifically because it WOULD conflate them
+        // (both stringify to "true"), and that's a real bug this design doesn't have, not
+        // an edge case it happens to handle correctly. `Number` equality is plain `f64`
+        // equality (IEEE-754's own rules, including `NaN != NaN`) — the same considered,
+        // undisguised choice `is_truthy` already made for the identical reason: it's the
+        // correct, standard behavior, not something to invent an exception for.
+        "equals" => {
+            let [a, b] = inputs else { return None };
+            Some(Value::Boolean(a == b))
+        }
+
         // ── arithmetic ──
         "add" => fold_numbers(inputs, 0.0, |a, b| a + b),
         "multiply" => fold_numbers(inputs, 1.0, |a, b| a * b),
@@ -598,6 +618,43 @@ mod tests {
         // arity against the catalog's own declared interface before eval ever runs).
         let fallback = [p("type", "Text"), p("value", "x")];
         assert_eq!(compute("default", &[&txt("a"), &txt("b")], &fallback), None);
+    }
+    #[test]
+    fn equals_compares_same_kind_structurally() {
+        assert_eq!(compute("equals", &[&txt("hi"), &txt("hi")], &[]), Some(boo(true)));
+        assert_eq!(compute("equals", &[&txt("hi"), &txt("bye")], &[]), Some(boo(false)));
+        assert_eq!(compute("equals", &[&num(5.0), &num(5.0)], &[]), Some(boo(true)));
+        assert_eq!(compute("equals", &[&boo(true), &boo(true)], &[]), Some(boo(true)));
+        assert_eq!(
+            compute("equals", &[&list(vec![num(1.0)]), &list(vec![num(1.0)])], &[]),
+            Some(boo(true)),
+        );
+    }
+    #[test]
+    fn equals_never_coerces_across_kinds() {
+        // The actual regression this exists to prevent: a naive to-text-then-compare
+        // implementation would see Text("true") and Boolean(true) both stringify to "true"
+        // and wrongly call them equal. Rust's own derived equality matches both sides to the
+        // SAME variant first — different variants are never equal, regardless of content.
+        assert_eq!(compute("equals", &[&txt("true"), &boo(true)], &[]), Some(boo(false)));
+        assert_eq!(compute("equals", &[&txt("5"), &num(5.0)], &[]), Some(boo(false)));
+        assert_eq!(compute("equals", &[&txt("0"), &num(0.0)], &[]), Some(boo(false)));
+    }
+    #[test]
+    fn equals_sum_arm_is_part_of_identity_here_too() {
+        // some(5) and none carrying the same payload must not be equal — the same property
+        // value.rs's own sum_arm_is_part_of_identity test already locks in at the Value level;
+        // this confirms it holds through the primitive too, not just the type.
+        let some5 = Value::Sum { arm: 0, payload: Box::new(num(5.0)) };
+        let none_with_5 = Value::Sum { arm: 1, payload: Box::new(num(5.0)) };
+        assert_eq!(compute("equals", &[&some5, &none_with_5], &[]), Some(boo(false)));
+        assert_eq!(compute("equals", &[&some5, &some5.clone()], &[]), Some(boo(true)));
+    }
+    #[test]
+    fn equals_treats_nan_as_unequal_to_itself_deliberately() {
+        // f64's own IEEE-754 equality, undisguised — the same considered choice is_truthy
+        // already made (NaN != 0.0 there; NaN != NaN here), not an overlooked edge case.
+        assert_eq!(compute("equals", &[&num(f64::NAN), &num(f64::NAN)], &[]), Some(boo(false)));
     }
     #[test]
     fn egress_constructs_an_effect() {
