@@ -4076,3 +4076,163 @@ everything else being green.
 
 **No `PLAN.md` change.** A genesis primitive addition, not a pillar — same footing as any other
 leaf in the frozen §13a set.
+
+---
+
+## 2026-07-03 · holon-server — source `Random` and `Clock` honestly on every fire, not just their own path
+
+**The reported bug, traced to its actual root cause.** A deployed flow combining `ingress` and
+`random` always evaluated `random` to nothing when fired through `/trigger` — silently: no error
+anywhere, `concat` (or whatever consumed it) just quietly produced shorter text than expected,
+because an absent input is dropped *before* `compute` ever runs, not passed through as some
+placeholder. Traced to the real cause rather than the flow being blamed for a wiring mistake:
+`handle_post_trigger` only ever supplied `Capability::NetworkIngress`. Nothing, anywhere, ever
+sourced `Random`.
+
+**Asked to audit, not just patch the one report — and it found a second, identical gap.**
+Systematically checked all ten `Capability` variants, not just the reported one:
+
+- **`Clock`** — sourced only on the scheduler's own tick path, never when the same unit is fired
+  manually via `/trigger`. Same class of bug as `Random`, found by auditing rather than reported.
+- **`NetworkIngress`** — correctly *absent* on a scheduled tick (there's genuinely no request body
+  then). Not a gap.
+- **`Random`** — the reported bug.
+- **`FileRead` / `SecretAccess`** — sourced nowhere, and genuinely *can't* be without a real design
+  question answered first: a leaf declaring `FileRead` doesn't say *which* file. Nothing in the
+  current wire surface names one. Correctly out of scope for this fix, named plainly rather than
+  quietly skipped.
+- **`StateRead(key)` / `StateWrite(key)`** — both genuinely real, both already extensively tested.
+  No gap.
+- **`NetworkEgress` / `FileWrite` / `Spawn`** — `RecordingHost` only ever *records* these, never
+  performs them. The standing "nothing has a real `Host` yet" gap, already on the open list
+  separately — same underlying cause, not something to patch here.
+
+**The fix.** `fire_with_state` widened from accepting one `extra_sourced` pair to a slice. `Clock`
+and `Random` are both cheap and honest to supply on *every* fire regardless of what specifically
+triggered it — the wall clock is always knowable, a fresh draw is always makeable — so both
+`handle_post_trigger` and `fire_one_clock_tick` now offer both, consistently, instead of each only
+offering its own "primary" capability. Added `rand` (0.10, current stable, checked against the live
+crate docs rather than written from an older, half-remembered API — `thread_rng()` → `rng()`,
+`Rng` → `RngExt`, real changes across recent versions) as a new dependency for the actual entropy
+source.
+
+**Three real missteps, all caught and corrected in the open, not smoothed over:**
+- A `str_replace` edit briefly deleted `stage_stateful_writer`'s own function signature line while
+  inserting new test helpers above it — caught by re-reading the file immediately afterward, not
+  left for the compiler to find.
+- The new `Clock`-sourcing test was itself wrong on the first pass: it deployed a `Clock`-deriving
+  unit without supplying `interval_seconds`, which `deploy_clock_unit_requires_a_valid_interval`
+  already correctly requires and already tests elsewhere in this exact file. The resulting `400`
+  was the deploy gate working *correctly* against a malformed test request — confirmed, not just
+  assumed, by the sibling `Random` test passing clean in the same run.
+- `rand` wasn't actually added to `Cargo.toml` on the first delivery — caught by the compiler
+  (`E0433`), fixed with `cargo add rand` rather than guessing a version string by hand.
+
+**Also reviewed, on request: does `select` need a genuine short-circuiting `if` alongside it?**
+Both of `select`'s branches are evaluated regardless of which one gets chosen — traced why that
+does or doesn't matter rather than assuming either way. A sink's evaluation only ever *constructs*
+a `Value::Effect` (Fork B) — it never performs it. Performing happens later, when `perform_effects`
+walks the *final settled output*, which only ever contains the branch `select` actually chose. The
+unchosen branch's effect is computed as a wasted value but never reaches `perform_effects`, so it
+never actually happens — not by luck, but as a direct consequence of effects being represented as
+plain data until the last possible step. State reads are already unconditionally sourced every
+round regardless of which branch uses them, so evaluating both sides adds no new exposure there
+either. **Conclusion: `select` has no correctness bug today, only wasted computation** — because
+nothing in the current primitive set has a side effect *at the moment of being evaluated*, only at
+the moment of being *performed*. Named the actual future trigger for when this stops being true (a
+primitive whose evaluation itself is a side effect — e.g., destructively popping a queue) and the
+seam already built for handling it (`map`'s own `fn`-reference pattern: a hash-referenced sub-unit,
+evaluated on demand by the primitive's own logic, not wired in eagerly) — **not built now**, since
+nothing in the catalog needs it yet, and building it speculatively would be adding a mechanism to
+guard against a problem that doesn't exist.
+
+**Verified.** `cargo test --workspace`: **274 passed, 0 failed**, across all four crates (192 core +
+39 host + 32 server + 11 wasm-native) — 2 new `holon-server` tests specifically for this fix,
+proving `Random` and `Clock` are both actually sourced when `NetworkIngress` is what triggered the
+fire, not just when they trigger it themselves.
+
+**No `PLAN.md` change.** Infrastructure fix to the standing-deploy pillar, not a new pillar or a
+core-language leaf.
+
+---
+
+## 2026-07-03 · holon-core — `is_truthy` and `guard` (39th, 40th genesis leaves): the gap `select` genuinely couldn't touch
+
+**Prompted by a concrete, correctly-argued case, not a hypothetical.** A few commits back,
+`select`'s limitation was named as "both branches get evaluated eagerly" — real, but inert,
+because nothing in the primitive set has a side effect at the moment of being *evaluated*, only
+at the moment of being *performed*. This inch started from a sharper, different problem: try to
+build *"if the ingress body is not empty, persist it in state — otherwise do nothing"* with
+`select`, and there's no way to express it at all. `select` requires **both** branches to be real
+values of the same type; there is no representable "do nothing" to put in the branch that isn't
+taken. Not a performance question — a genuine expressiveness gap.
+
+**Traced the actual mechanism before proposing anything.** A sink's `compute` only ever
+*constructs* a `Value::Effect` from a real input — `store_write`'s own `sink_effect` does
+`inputs.first().map(...)`; no input, no effect, not a null effect, nothing at all. And
+`perform_effects` only ever performs what's actually in the *final settled output*. Absence
+already propagates through wiring everywhere in this system, with no special handling anywhere —
+this was already trusted machinery, just never deliberately *triggered* from a condition. So the
+missing piece was never branching execution (which would have meant a real `eval.rs` change,
+modeled on `map`/`fold`'s hash-referenced sub-unit pattern) — it was one small, ordinary,
+first-order primitive whose whole job is turning a condition into presence-or-absence *on purpose*.
+
+**`guard(cond: Boolean, value: Any) -> Any`.** Passes `value` through when `cond` is true;
+constructs nothing at all when false. No `eval.rs` change, no hash reference, no "what inputs does
+the branch get" design question — because there's no branch subgraph, just one value conditionally
+suppressed. `ingress → guard(is-non-empty, ingress) → store_write` is now a real, buildable "if —
+then — else nothing."
+
+**`is_truthy(value: Any) -> Boolean`**, requested alongside `guard` as the condition side — a
+uniform check that works on an `Any`-typed value *before* its runtime type is known, which matters
+for something like `store_read(key)`, where it often genuinely isn't. Reflected on the proposed
+per-type rules rather than implementing them as handed over, and two real corrections came out of
+that:
+- **`Effect → "null/empty"` doesn't correspond to anything that can exist.** `Value::Effect`'s
+  `payload: Box<Value>` is never null in safe Rust; `sink` is always a real, non-empty name built
+  from a primitive's own identity. There is no falsy `Effect` to detect — implemented as always
+  true, with the reasoning written down, not silently dropped from the design.
+- **`Sum` was missing from the original list, and turned out to be the most natural case to
+  include, not the least.** `Sum{arm, payload}` is this system's `Option<T>` — `arm == 0` (`some`)
+  true, `arm == 1` (`none`) false is exactly the question a truthiness check on an Option should
+  answer, and it's the same "empty container is falsy" theme `List`/`Text` already carry.
+
+The rest of the proposed rules (`Number`, `Boolean`, `Text`, `List`) matched the standard
+convention nearly every mainstream language already uses — no objection, and they close a real,
+previously-nonexistent gap: there was no "is this zero" check anywhere in this catalog before now.
+
+**Naming:** `is_truthy`, not `to_bool` — `is_empty` already established the `"is_X → Boolean"`
+convention in this catalog for exactly this predicate shape; `to_text`'s `"to_X"` prefix is for
+*display* conversions, a different kind of thing.
+
+**Same four-place ceremony `to_text` needed, for both leaves together:** `primitives.rs` (compute
+arms, plus a test that `NaN` is deliberately treated as truthy under the rule's own logic — `NaN
+!= 0.0` under IEEE 754 — not an overlooked edge case); `catalog.rs` (`GENESIS`, `interface_of`,
+count 38 → 40, a real shape-agreement test per leaf); `kind.rs` (the capability allowlist —
+`capabilities_of` is an explicit list, not an inferred default, confirmed the same way it was for
+`to_text` — plus the separately hand-maintained `pure_leaves_are_pure` test enumeration);
+`holon-wasm`'s two hard-coded catalog counts.
+
+**A real correction owned, not smoothed over: the `wasm-pack test --headless --firefox`
+suggestion from a few turns back was wrong, and it was my mistake, not a new bug.** Checked the
+*original* file, from before any of my own edits, and confirmed
+`wasm_bindgen_test_configure!(run_in_browser)` was never present anywhere. Absent that macro,
+`wasm-bindgen-test` defaults to Node — meaning an earlier "20 tests passed" run I described as a
+successful browser test almost certainly ran under Node the whole time, and I never checked. The
+fix was **not** to add browser configuration now just to make my earlier flag choice retroactively
+correct — that would have been adding a mechanism to guarantee a property (browser execution)
+nothing here actually needs, purely to avoid saying the invocation was wrong. The real fix was the
+plain command this suite has always actually supported: `wasm-pack test --node`.
+
+**Verified for real, not by extension or inference.** `cargo test --workspace`: **280 passed, 0
+failed**, across all four crates (198 core + 39 host + 32 server + 11 wasm-native). `wasm-pack test
+--node` (from `crates/holon-wasm`, the actual crate — not the workspace root, not `editor/wasm`,
+which is a build *output* directory with no `Cargo.toml` of its own): **20 passed, 0 failed**,
+including `primitive_catalog_wasm` and `primitive_catalog_crosses_js_boundary` — the two
+assertions carried on reasoning alone since the `to_text` inch, now genuinely confirmed by a green
+run instead. `wasm-pack build --target web --out-dir ../../editor/wasm` also run, so the editor's
+actual wasm package — not just `holon-core`'s own test binary — now genuinely carries
+`to_text`/`is_truthy`/`guard` for real use in the browser.
+
+**No `PLAN.md` change.** Two more genesis primitives, same footing as every other leaf in the
+frozen §13a set — not a pillar.

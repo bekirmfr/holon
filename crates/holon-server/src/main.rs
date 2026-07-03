@@ -769,11 +769,21 @@ impl Host for RecordingHost {
 /// evaluates to nothing — the same honest-absence behavior any other unsupplied sourced
 /// capability already has (`fire_sourced`'s own doc). No special-casing needed for a
 /// deployment's first ever fire.
+/// Fire `root_unit` with whatever sourced values this fire can honestly supply — always
+/// including every `StateRead(key)` this deployment's own state currently holds, plus
+/// `extra_sourced`: the driver capabilities the caller can actually answer for this fire.
+/// A slice, not one pair: `Clock` (the wall clock is always knowable) and `Random` (a fresh
+/// draw is always makeable) are cheap and honest to supply on *every* fire regardless of what
+/// specifically triggered it — a unit combining `ingress` and `random`, say, needs both
+/// available at once. `FileRead`/`SecretAccess` are deliberately never in this list: there is
+/// no addressing mechanism in the wire surface today (a leaf declaring `FileRead` doesn't say
+/// *which* file), so there is nothing honest to supply — a real, separate design question, not
+/// something to paper over with a placeholder value.
 fn fire_with_state(
     root_unit: &Unit,
     resolver: &impl Resolver,
     state: Option<&Mutex<BTreeMap<String, Value>>>,
-    extra_sourced: (Capability, Value),
+    extra_sourced: &[(Capability, Value)],
 ) -> (Option<Value>, Vec<(Capability, Value)>) {
     let mut guard = state.map(|m| m.lock().unwrap());
 
@@ -784,7 +794,7 @@ fn fire_with_state(
             .collect(),
         None => Vec::new(),
     };
-    sourced.push(extra_sourced);
+    sourced.extend_from_slice(extra_sourced);
 
     let mut host = RecordingHost { performed: Vec::new() };
     let output = fire_sourced(root_unit, &sourced, resolver, &mut host);
@@ -1263,8 +1273,14 @@ fn handle_post_trigger(
         return err(500, "deployed unit no longer resolves in the store");
     };
 
-    let extra_sourced = (Capability::NetworkIngress, Value::Text(body_text));
-    let (output, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), extra_sourced);
+    let now = SystemTime::now();
+    let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let extra_sourced = [
+        (Capability::NetworkIngress, Value::Text(body_text)),
+        (Capability::Clock, Value::Number(epoch_seconds as f64)),
+        (Capability::Random, Value::Number(rand::random::<f64>())),
+    ];
+    let (output, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), &extra_sourced);
 
     record_trigger(deployments, slug, false);
     if state.is_some() {
@@ -1360,9 +1376,12 @@ fn fire_one_clock_tick(
     };
 
     let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let extra_sourced = (Capability::Clock, Value::Number(epoch_seconds as f64));
+    let extra_sourced = [
+        (Capability::Clock, Value::Number(epoch_seconds as f64)),
+        (Capability::Random, Value::Number(rand::random::<f64>())),
+    ];
     let is_state = state.is_some();
-    let (output, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), extra_sourced);
+    let (output, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), &extra_sourced);
 
     println!(
         "clock tick [{slug}] at {epoch_seconds}: output={output:?}, {} effect(s) performed",
@@ -1897,6 +1916,43 @@ mod tests {
             inputs: vec![],
             outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         }
+    }
+
+    /// The `random` driver primitive — zero inputs, output `Number`, same shape as `clock`.
+    fn test_random() -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: "random".into() },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        }
+    }
+
+    /// `ingress` (unwired, present only so the composite derives `NetworkIngress` and is
+    /// therefore deployable at all — same convention `stage_stateful_reader` already uses)
+    /// alongside `driver` wired straight to the boundary output. For proving a *second*
+    /// driver's own capability is honestly sourced even when `NetworkIngress` is what actually
+    /// triggered the fire — the exact gap `Random` (and `Clock`-via-`/trigger`) had.
+    fn stage_ingress_plus_driver(state: &AppState, driver: Unit) -> Hash {
+        let ingress = test_ingress();
+        let ingress_hash = hash_unit(&ingress).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
+
+        let driver_hash = hash_unit(&driver).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&driver).unwrap()));
+
+        let composite = Unit {
+            body: UnitBody::Composite {
+                children: vec![ingress_hash, driver_hash],
+                edges: vec![Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        };
+        let composite_hash = hash_unit(&composite).unwrap();
+        route(state, &req("POST", "/unit", encode_preimage(&composite).unwrap()));
+        composite_hash
     }
 
     fn stage_stateful_writer(state: &AppState, driver: Unit, key: &str) -> Hash {
@@ -2490,6 +2546,53 @@ mod tests {
             assert_eq!(ticks.len(), 1, "slug {slug} should have exactly one tick recorded");
             assert_eq!(ticks[0]["performed"][0]["capability"], "NetworkEgress");
         }
+    }
+
+    // ── every honestly-answerable driver is actually sourced, regardless of which one
+    // triggered this fire (the Random / Clock-via-/trigger gap) ────────────────────────────
+
+    #[test]
+    fn trigger_sources_random_even_though_ingress_is_what_actually_fired_it() {
+        // Real bug, not a hypothetical: Random was never supplied by any fire path at all — a
+        // random leaf always evaluated to nothing, silently, with no error anywhere in the
+        // chain (an absent slot is dropped before compute runs, so a downstream primitive like
+        // concat just quietly produces shorter text, never a crash). This is the direct
+        // regression test for that.
+        let state = test_state();
+        let composite_hash = stage_ingress_plus_driver(&state, test_random());
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "rnd",
+            "unit": to_hex(&composite_hash),
+            "acknowledge": ["NetworkIngress", "Random"],
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+
+        let r = route(&state, &req("POST", "/trigger/rnd", b"x".to_vec()));
+        assert_eq!(r.status_code, 200);
+        let v = body_json(r);
+        assert_eq!(v["output"]["type"], "Number"); // a real number, not null
+    }
+
+    #[test]
+    fn trigger_sources_clock_even_though_ingress_is_what_actually_fired_it() {
+        // The same gap, found by auditing rather than reported: Clock was only ever sourced on
+        // the scheduler's own tick path, never on a manual /trigger of an Ingress+Clock unit.
+        let state = test_state();
+        let composite_hash = stage_ingress_plus_driver(&state, test_clock());
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "clk",
+            "unit": to_hex(&composite_hash),
+            "acknowledge": ["NetworkIngress", "Clock"],
+            "interval_seconds": 60,
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+
+        let r = route(&state, &req("POST", "/trigger/clk", b"x".to_vec()));
+        assert_eq!(r.status_code, 200);
+        let v = body_json(r);
+        assert_eq!(v["output"]["type"], "Number");
     }
 
     // ── per-deployment state ─────────────────────────────────────────────────────────────

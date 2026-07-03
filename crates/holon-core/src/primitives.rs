@@ -106,6 +106,61 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             Some(Value::Text(to_text_str(v)))
         }
 
+        // The other universal any-typed primitive alongside `to_text`, same reasoning: one
+        // uniform check that works before you know a value's runtime type — reading
+        // `store_read(key)` (declared `Any`), say, where you often genuinely don't. Total over
+        // every `Value` shape:
+        //   Number   → nonzero is true (n != 0.0; NaN, being != everything including itself
+        //              under IEEE 754, is therefore true here — a real, deliberate choice, not
+        //              an oversight: "not equal to zero" is exactly what this rule says, and
+        //              different languages disagree on NaN's truthiness anyway, so there is no
+        //              single "obviously correct" convention to defer to instead)
+        //   Boolean  → itself (the identity case)
+        //   Text     → non-empty is true
+        //   List     → non-empty is true (covers Product too — a product's value already rides
+        //              List, nothing special-cased for it)
+        //   Effect   → always true. An Effect can structurally never be "empty" — `payload:
+        //              Box<Value>` is never null in safe Rust, and `sink` is always a real,
+        //              non-empty name built from a primitive's own identity. There is no
+        //              falsy Effect to detect, so it isn't invented; this just falls into
+        //              "true by default", the same as any value with no established falsy form.
+        //   Sum      → arm 0 (`some`) is true, arm 1 (`none`) is false. This system's Option —
+        //              "is a real value present" is exactly what a truthiness check on an
+        //              Option should answer, and it's the same "empty container is falsy"
+        //              theme List/Text already carry, not a new idea.
+        "is_truthy" => {
+            let [v] = inputs else { return None };
+            let truthy = match v {
+                Value::Number(n) => *n != 0.0,
+                Value::Boolean(b) => *b,
+                Value::Text(s) => !s.is_empty(),
+                Value::List(xs) => !xs.is_empty(),
+                Value::Effect { .. } => true,
+                Value::Sum { arm, .. } => *arm == 0,
+            };
+            Some(Value::Boolean(truthy))
+        }
+
+        // A conditional sink-gate, not a branch: `value` passes through only if `cond` is
+        // true; otherwise this constructs NOTHING — genuine absence, not a null/false value.
+        // This is what lets "if X then perform an effect, else do nothing" exist at all: a
+        // sink like `store_write` only ever constructs its Effect from a real `value` input
+        // (`sink_effect`'s own `inputs.first().map(...)` — no input, no effect), and
+        // `perform_effects` only ever performs what's in the FINAL settled output — so a
+        // `guard`-suppressed value never reaches either. No new mechanism: absence already
+        // propagates through wiring and through sink construction everywhere else in this
+        // system; `guard` is just the first primitive whose whole job is to CREATE that
+        // absence on purpose, from a condition, rather than only ever inheriting it from an
+        // unsupplied capability.
+        "guard" => {
+            let [c, v] = inputs else { return None };
+            match c {
+                Value::Boolean(true) => Some((*v).clone()),
+                Value::Boolean(false) => None,
+                _ => None, // wrong type on cond ⇒ fail closed, same as everywhere else
+            }
+        }
+
         "slice" => {
             let [s, start, len] = inputs else { return None };
             let (s, start, len) = (as_text(s)?, as_index(start)?, as_index(len)?);
@@ -413,6 +468,42 @@ mod tests {
         // f64::Display already prints these as fixed, deterministic literals.
         assert_eq!(compute("to_text", &[&num(f64::NAN)], &[]), Some(txt("NaN")));
         assert_eq!(compute("to_text", &[&num(f64::INFINITY)], &[]), Some(txt("inf")));
+    }
+    #[test]
+    fn is_truthy_covers_every_value_shape() {
+        assert_eq!(compute("is_truthy", &[&num(0.0)], &[]), Some(boo(false)));
+        assert_eq!(compute("is_truthy", &[&num(1.0)], &[]), Some(boo(true)));
+        assert_eq!(compute("is_truthy", &[&num(-1.0)], &[]), Some(boo(true)));
+        assert_eq!(compute("is_truthy", &[&boo(true)], &[]), Some(boo(true)));
+        assert_eq!(compute("is_truthy", &[&boo(false)], &[]), Some(boo(false)));
+        assert_eq!(compute("is_truthy", &[&txt("")], &[]), Some(boo(false)));
+        assert_eq!(compute("is_truthy", &[&txt("hi")], &[]), Some(boo(true)));
+        assert_eq!(compute("is_truthy", &[&list(vec![])], &[]), Some(boo(false)));
+        assert_eq!(compute("is_truthy", &[&list(vec![num(1.0)])], &[]), Some(boo(true)));
+        // An Effect can never structurally be empty — always true, not a special case.
+        let effect = Value::Effect { sink: "egress".into(), payload: Box::new(txt("")) };
+        assert_eq!(compute("is_truthy", &[&effect], &[]), Some(boo(true)));
+        // Sum: arm 0 (some) is truthy, arm 1 (none) is falsy — this system's Option.
+        let some = Value::Sum { arm: 0, payload: Box::new(num(0.0)) }; // even some(0) is truthy —
+        let none = Value::Sum { arm: 1, payload: Box::new(list(vec![])) }; // presence, not payload, is what's checked
+        assert_eq!(compute("is_truthy", &[&some], &[]), Some(boo(true)));
+        assert_eq!(compute("is_truthy", &[&none], &[]), Some(boo(false)));
+    }
+    #[test]
+    fn is_truthy_treats_nan_as_truthy_deliberately() {
+        // NaN != 0.0 under IEEE 754 (NaN is != everything, including itself), so this rule's
+        // own logic makes it true — a real, considered choice, not an overlooked edge case.
+        assert_eq!(compute("is_truthy", &[&num(f64::NAN)], &[]), Some(boo(true)));
+    }
+    #[test]
+    fn guard_passes_the_value_through_only_when_true() {
+        assert_eq!(compute("guard", &[&boo(true), &txt("hi")], &[]), Some(txt("hi")));
+        // false ⇒ constructs NOTHING, not a null/false value — the whole point.
+        assert_eq!(compute("guard", &[&boo(false), &txt("hi")], &[]), None);
+    }
+    #[test]
+    fn guard_fails_closed_on_a_non_boolean_cond() {
+        assert_eq!(compute("guard", &[&num(1.0), &txt("hi")], &[]), None);
     }
     #[test]
     fn list_construct_and_query() {

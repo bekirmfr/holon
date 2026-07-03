@@ -1,16 +1,11 @@
 [
   {
-    "slug": "inc",
-    "unit": "a90c33f3fa30b3b9874e5bb52d705ba8c571ff695c7918a222f6a8760fd8dea3",
+    "slug": "greet",
+    "unit": "2fa836993f04079b3643e65c3ce6863e10cda590bca7ae1a5b758d6970ae1601",
     "interval_seconds": null,
-    "state": {
-      "count": {
-        "type": "Number",
-        "value": 6.0
-      }
-    },
-    "deployed_at_epoch_seconds": 1783023960,
-    "trigger_count": 6,
+    "state": {},
+    "deployed_at_epoch_seconds": 1783069840,
+    "trigger_count": 2,
     "error_count": 0
   }
 ]

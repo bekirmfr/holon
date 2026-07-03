@@ -6,7 +6,7 @@
 //! so the genesis set is defined *by code*, not re-asserted by hand in every test and (next) the
 //! editor's palette. Same fail-closed contract: an unknown name yields `None`.
 //!
-//! The 38 leaves and their grouping are §13a of the design doc (37 original + `to_text`). The *types* are read off `compute`'s
+//! The 40 leaves and their grouping are §13a of the design doc (37 original + `to_text`/`is_truthy`/`guard`). The *types* are read off `compute`'s
 //! arity/coercions and `eval`'s higher-order handling: variadic leaves (`add`, `and`, `concat`,
 //! `list`, …) get their canonical arity 2 (true variadic editing is a later editor concern);
 //! polymorphic leaves use [`Type::Any`] (the wiring check already treats `Any` as compatible);
@@ -29,8 +29,8 @@ pub const GENESIS: &[&str] = &[
     "pair",
     // pure — sum constructor (2)
     "some", "none",
-    // pure — universal, any-to-text (1)
-    "to_text",
+    // pure — universal, any-typed (3)
+    "to_text", "is_truthy", "guard",
     // drivers — sourced, no compute (3)
     "clock", "random", "ingress",
     // state cell (2)
@@ -146,6 +146,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
 
         // ── pure — universal: accepts every value kind, not a fixed shape ──
         "to_text" => prim(vec![port("value", Any)], vec![], Text),
+        "is_truthy" => prim(vec![port("value", Any)], vec![], Boolean),
+        "guard" => prim(vec![port("cond", Boolean), port("value", Any)], vec![], Any),
 
         // ── drivers — sourced (no inputs; host-supplied). Concrete where unambiguous, `Any` where
         //    the payload is genuinely polymorphic (the editor may specialize later). ──
@@ -189,10 +191,10 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_38_leaves() {
+    fn genesis_has_40_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
-        // 37 + to_text (the universal any-to-text primitive).
-        assert_eq!(GENESIS.len(), 38);
+        // 37 + to_text + is_truthy + guard (the universal any-typed primitives).
+        assert_eq!(GENESIS.len(), 40);
     }
 
     #[test]
@@ -206,6 +208,27 @@ mod tests {
         assert_eq!(unit.inputs[0].ty, Type::Any);
         assert_eq!(unit.outputs.len(), 1);
         assert_eq!(unit.outputs[0].ty, Type::Text);
+    }
+
+    #[test]
+    fn is_truthy_is_in_the_catalog_with_the_right_shape() {
+        assert!(GENESIS.contains(&"is_truthy"));
+        let unit = interface_of("is_truthy").unwrap();
+        assert_eq!(unit.inputs.len(), 1);
+        assert_eq!(unit.inputs[0].ty, Type::Any);
+        assert_eq!(unit.outputs.len(), 1);
+        assert_eq!(unit.outputs[0].ty, Type::Boolean);
+    }
+
+    #[test]
+    fn guard_is_in_the_catalog_with_the_right_shape() {
+        assert!(GENESIS.contains(&"guard"));
+        let unit = interface_of("guard").unwrap();
+        assert_eq!(unit.inputs.len(), 2);
+        assert_eq!(unit.inputs[0].ty, Type::Boolean);
+        assert_eq!(unit.inputs[1].ty, Type::Any);
+        assert_eq!(unit.outputs.len(), 1);
+        assert_eq!(unit.outputs[0].ty, Type::Any);
     }
 
     #[test]

@@ -9,6 +9,7 @@ edition = "2024"
 # docs/L4s/P4.5-P4.6-transport-scoping-L4.md.
 holon-core = { path = "../holon-core" }
 holon-host = { path = "../holon-host" }
+rand = "0.10.2"
 # rouille (sync, thread-per-request, built on tiny_http) chosen deliberately over an async
 # framework (axum/warp) — this server's whole workload is six low-volume request/response
 # endpoints a person triggers by clicking a button in the editor, never a stream or a load
