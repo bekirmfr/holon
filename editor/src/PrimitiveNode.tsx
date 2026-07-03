@@ -51,11 +51,13 @@ export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
  *  never be `{ List: ... }`, so the type should never have said it could.
  *
  *  `CONST_TYPES` itself is shared by both `const`'s and `default`'s own `type` param dropdown —
- *  the same three literal forms, the same list, one definition. `setConstType` is NOT shared:
- *  it also retypes the node's own output port, correct for `const` (whose declared output type
- *  IS its `type` param) but wrong for `default` (whose output stays `Any` always, since it
- *  passes through whatever type actually arrives). `default`'s dropdown reuses the UI, not the
- *  retyping side effect — see `isDefaultType` below. */
+ *  the same three literal forms, the same list, one definition — and, since this inch, the
+ *  same action too: `setLiteralType` retypes the param plus every `Any`-typed input AND
+ *  output the node actually declares (zero inputs for `const`, so that pass is a no-op;
+ *  `value` for `default`), dropping any wire on either side that no longer fits. Retyping
+ *  `default`'s input alongside its output is what keeps the output honest rather than a
+ *  guess: once `value`'s own declared type matches, `compatible()` refuses a wrong-typed
+ *  source at connect time, the same way it already refused a wrong-typed destination. */
 type ConstType = "Number" | "Boolean" | "Text";
 const CONST_TYPES: readonly ConstType[] = ["Number", "Boolean", "Text"];
 
@@ -114,8 +116,8 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
     if (inputs.length <= minInputs) return;
     const removed = inputs[inputs.length - 1];
     updateNodeData(id, { inputs: inputs.slice(0, -1) });
-    // Drop any wire that fed the removed port — fail-closed, the same rule setConstType already
-    // applies when a change makes an existing wire's target port stop existing.
+    // Drop any wire that fed the removed port — fail-closed, the same rule setLiteralType
+    // already applies when a change makes an existing wire's target port stop existing.
     setEdges((eds) => eds.filter((e) => !(e.target === id && e.targetHandle === removed.name)));
   };
 
@@ -128,27 +130,44 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
     updateNodeData(id, { params: next });
   };
 
-  // `const`'s `type` is also its OUTPUT type. Changing it re-types the node: the param AND the
-  // declared output (which re-colours the handle and changes what `compatible` lets it wire into).
-  // The editor upholds const's "output == type param" contract here, exactly as the catalog does for
-  // the default — it does not decide types; `compatible` stays the sole wire judge. Wires from this
-  // output whose target no longer accepts the new type are dropped — fail-closed, the same rule that
-  // refused them at connect time; core's `validate` at projection is the real gate behind this.
-  // `const` is a genesis primitive, so it always declares exactly one output (P4.7: multi-output is
-  // composite-only, permanently) — mapping over `outputs` here updates that one entry's type while
-  // keeping whatever name it actually has, rather than assuming a literal "out".
-  const setConstType = (ty: ConstType) => {
+  // The chosen literal type governs every `Any`-typed slot a leaf declares under it — for
+  // `const`, that's just its one output (zero inputs, so the input pass below is a no-op,
+  // correctly); for `default`, it's both its `value` input AND its output. Narrowing the
+  // input alongside the output is what makes retyping the output honest rather than a
+  // guess: once `value`'s own declared type matches, `compatible()` — the one function this
+  // whole system already uses to judge every wire — refuses a wrong-typed source at connect
+  // time, the same way it already refuses a wrong-typed *destination* below. A wire from an
+  // `Any`-typed source (e.g. `store_read`) still defers to runtime, exactly like every other
+  // `Any` wire in this system already does — this doesn't add or remove that; it only means
+  // a *concretely* wrong-typed source can no longer sneak past a claim the output is about to
+  // make. Existing wires that no longer fit are dropped on both sides — fail-closed, the same
+  // rule that refused them at connect time; core's `validate` at projection is the real gate
+  // behind this either way. Exactly one output (P4.7: multi-output is composite-only,
+  // permanently) — mapping over `outputs` updates that one entry's type while keeping
+  // whatever name it actually has, rather than assuming a literal "out".
+  const setLiteralType = (ty: ConstType) => {
     const next = params.map((p) =>
       p.kind === "Frozen" && p.name === "type" ? { ...p, value: ty } : p,
     );
+    const nextInputs = inputs.map((p) => ({ ...p, ty }));
     const nextOutputs = outputs.map((p) => ({ ...p, ty }));
-    updateNodeData(id, { params: next, outputs: nextOutputs });
+    updateNodeData(id, { params: next, inputs: nextInputs, outputs: nextOutputs });
+
     const outName = outputs[0]?.name;
+    const inputNames = new Set(inputs.map((p) => p.name));
     setEdges((eds) =>
       eds.filter((e) => {
-        if (e.source !== id || e.sourceHandle !== outName) return true;
-        const dstTy = getNode(e.target)?.data.inputs.find((p) => p.name === e.targetHandle)?.ty;
-        return dstTy ? compatible(ty, dstTy) : false;
+        if (e.source === id && e.sourceHandle === outName) {
+          // Outgoing: this node's own (newly retyped) output feeding something else.
+          const dstTy = getNode(e.target)?.data.inputs.find((p) => p.name === e.targetHandle)?.ty;
+          return dstTy ? compatible(ty, dstTy) : false;
+        }
+        if (e.target === id && e.targetHandle && inputNames.has(e.targetHandle)) {
+          // Incoming: something else feeding one of this node's (newly retyped) inputs.
+          const srcTy = getNode(e.source)?.data.outputs.find((p) => p.name === e.sourceHandle)?.ty;
+          return srcTy ? compatible(srcTy, ty) : false;
+        }
+        return true;
       }),
     );
   };
@@ -170,29 +189,22 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                 </span>
               );
             }
-            const isConstType = name === "const" && p.name === "type";
-            // `default`'s own `type` param picks the SAME three literal forms `const` does
-            // (it calls the same core parse_literal when its value input is absent) — so it
-            // earns the identical dropdown, drawn from the same CONST_TYPES list, not a second
-            // one. But `default`'s output stays `Any` always (it passes through whatever type
-            // actually arrives when present) — unlike `const`, where the type param IS the
-            // output type. So this reuses the dropdown UI only, through the ordinary setParam
-            // path, never setConstType's output-retyping — that stays const's alone.
-            const isDefaultType = name === "default" && p.name === "type";
-            const showsTypeDropdown = isConstType || isDefaultType;
+            // `const` and `default` both pick their literal from the same three forms
+            // (`primitives.rs`'s shared `parse_literal`) — same dropdown, same CONST_TYPES
+            // list, and now the same action too: setLiteralType correctly retypes whatever
+            // `Any`-typed slots each one actually declares (zero inputs for `const`, one for
+            // `default`), so there's no longer a reason to route them differently here.
+            const isLiteralTypeParam =
+              (name === "const" || name === "default") && p.name === "type";
             return (
               <label className="hl-node__param" key={p.name}>
                 {p.name}{" "}
-                {showsTypeDropdown ? (
+                {isLiteralTypeParam ? (
                   <select
                     className="nodrag"
                     style={fieldStyle}
                     value={p.value}
-                    onChange={(e) =>
-                      isConstType
-                        ? setConstType(e.target.value as ConstType)
-                        : setParam(p.name, e.target.value)
-                    }
+                    onChange={(e) => setLiteralType(e.target.value as ConstType)}
                   >
                     {CONST_TYPES.map((t) => (
                       <option key={t} value={t}>
