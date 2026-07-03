@@ -40,14 +40,22 @@ export type PrimitiveData = {
 export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
 
 /** `const` is the one type-polymorphic atom: its `type` param IS its output type. Core supports
- *  exactly these three literal forms (`primitives.rs` `const`); List/Product/Sum/Effect/Any have no
- *  literal form — a list is built with the `list` constructor, not typed as text. This was always
- *  the true domain of `CONST_TYPES`/`setConstType`; typing them as the full `WType` only ever
- *  type-checked by accident, because the old flat `WType` was a plain string union and TS widens a
- *  narrower string-literal type into `string` for free. Recursive `WType` (P1.3.2 editor inch)
- *  correctly ended that coincidence — a real latent imprecision the compiler just caught, not
- *  something the recursion broke. Narrowing to the true domain fixes it at the root: `const`
- *  genuinely can never be `{ List: ... }`, so the type should never have said it could. */
+ *  exactly these three literal forms (`primitives.rs`'s shared `parse_literal`, called by both
+ *  `const` and `default`); List/Product/Sum/Effect/Any have no literal form — a list is built
+ *  with the `list` constructor, not typed as text. This was always the true domain of
+ *  `CONST_TYPES`; typing them as the full `WType` only ever type-checked by accident, because
+ *  the old flat `WType` was a plain string union and TS widens a narrower string-literal type
+ *  into `string` for free. Recursive `WType` (P1.3.2 editor inch) correctly ended that
+ *  coincidence — a real latent imprecision the compiler just caught, not something the
+ *  recursion broke. Narrowing to the true domain fixes it at the root: a literal genuinely can
+ *  never be `{ List: ... }`, so the type should never have said it could.
+ *
+ *  `CONST_TYPES` itself is shared by both `const`'s and `default`'s own `type` param dropdown —
+ *  the same three literal forms, the same list, one definition. `setConstType` is NOT shared:
+ *  it also retypes the node's own output port, correct for `const` (whose declared output type
+ *  IS its `type` param) but wrong for `default` (whose output stays `Any` always, since it
+ *  passes through whatever type actually arrives). `default`'s dropdown reuses the UI, not the
+ *  retyping side effect — see `isDefaultType` below. */
 type ConstType = "Number" | "Boolean" | "Text";
 const CONST_TYPES: readonly ConstType[] = ["Number", "Boolean", "Text"];
 
@@ -163,15 +171,28 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
               );
             }
             const isConstType = name === "const" && p.name === "type";
+            // `default`'s own `type` param picks the SAME three literal forms `const` does
+            // (it calls the same core parse_literal when its value input is absent) — so it
+            // earns the identical dropdown, drawn from the same CONST_TYPES list, not a second
+            // one. But `default`'s output stays `Any` always (it passes through whatever type
+            // actually arrives when present) — unlike `const`, where the type param IS the
+            // output type. So this reuses the dropdown UI only, through the ordinary setParam
+            // path, never setConstType's output-retyping — that stays const's alone.
+            const isDefaultType = name === "default" && p.name === "type";
+            const showsTypeDropdown = isConstType || isDefaultType;
             return (
               <label className="hl-node__param" key={p.name}>
                 {p.name}{" "}
-                {isConstType ? (
+                {showsTypeDropdown ? (
                   <select
                     className="nodrag"
                     style={fieldStyle}
                     value={p.value}
-                    onChange={(e) => setConstType(e.target.value as ConstType)}
+                    onChange={(e) =>
+                      isConstType
+                        ? setConstType(e.target.value as ConstType)
+                        : setParam(p.name, e.target.value)
+                    }
                   >
                     {CONST_TYPES.map((t) => (
                       <option key={t} value={t}>

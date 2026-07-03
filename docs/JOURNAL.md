@@ -4236,3 +4236,75 @@ actual wasm package — not just `holon-core`'s own test binary — now genuinel
 
 **No `PLAN.md` change.** Two more genesis primitives, same footing as every other leaf in the
 frozen §13a set — not a pillar.
+
+---
+
+## 2026-07-03 · holon-core — `default` (42nd genesis leaf): the frozen-fallback complement to `guard`/`is_truthy`
+
+**Motivated by seeing the actual size of the workaround, not a request in the abstract.** The
+greeting flow's state-read fallback needed a six-node
+`list → is_empty → select → const → list → select → head` chain just to give `store_read` a
+default when a key was never written — the same bootstrap gap the very first counter hit,
+several turns earlier. Traced *why* it had to be that large before proposing anything: every
+fixed-arity primitive requires **all** its declared inputs present to compute at all, and once
+one of two *wired* inputs goes absent, the other one's position becomes indistinguishable from
+it — `eval` drops an absent slot before `compute` ever sees it, so there is no way, from inside
+`compute`, to tell "this surviving value is the real one" apart from "this surviving value is the
+fallback." A frozen param never has that problem — it's baked in at construction, never subject
+to eval-time absence at all — so a fallback belongs there, not on a second wired port. Explicitly
+checked and declined to extend this to a genuinely *computed* fallback: it would either
+reintroduce the exact ambiguity above, or require the same on-demand, hash-referenced sub-unit
+machinery already scoped and declined for a real short-circuiting `if` a few commits back. Named
+as real, separate, bigger work — not built speculatively.
+
+**`const`'s own literal parsing factored out, not copied.** `parse_literal(ty, value)` is now
+the one function both `const` and `default` call; `const`'s own arm is a single line calling it.
+This is what makes "`default` with nothing wired in front of it and these fallback params *is* a
+`const`" a fact the compiler enforces, not something two separate implementations merely happen
+to agree on today.
+
+**A real, owned misstep, corrected once it was actually visible instead of theoretical.**
+`default`'s fallback params were first named `fallback_type`/`fallback_value`, specifically to
+avoid an on-canvas naming collision with `default`'s own `value` *input port* (both would read
+"value" in the editor). Seeing the actual rendered node showed the real cost: a visibly oversized
+node, purely from the longer label text — while the ambiguity concern turned out to be
+speculative, and likely overstated given the params row and the ports row are already visually
+and positionally distinct in this UI. Reverted to plain `value`/`type`, matching `const`'s own
+convention exactly. Traded a confirmed, visible problem for a speculative one; corrected as soon
+as the real rendering made that tradeoff concrete rather than abstract.
+
+**`editor/src/PrimitiveNode.tsx` updated to match.** `default`'s own `type` param now gets the
+same three-option dropdown `const`'s already has, drawn from the same `CONST_TYPES` list — but
+routed through the ordinary `setParam` path, a new `isDefaultType` check, rather than `const`'s
+own `setConstType`, which *also* retypes the node's own output port. Correct for `const` (whose
+`type` param genuinely *is* its output type); wrong for `default` (whose output stays `Any`
+permanently, since it passes through whatever type actually shows up). Same dropdown UI,
+deliberately different underlying action.
+
+**A genuine conceptual gap, surfaced by a real usage question and corrected on the spot, not
+patched over.** `default` solves *absence* — a wire that produced nothing at all, like
+`store_read` on a never-written key. It does not solve *falsy-emptiness* — an ingress trigger
+with an empty body is a real, present `Value::Text("")`, confirmed directly against
+`handle_post_trigger`'s own source (`NetworkIngress` is supplied unconditionally, every fire, body
+empty or not), not assumed. Wiring `ingress` straight into `default` doesn't produce the fallback
+on an empty body — and that's `default` behaving exactly as designed, applied to a condition it
+was never built for, not a bug in it. The fix is `is_truthy` + `guard` upstream of it, converting
+"falsy but present" into genuine absence — exactly the condition `default` *was* built to catch.
+
+**A better idiom, found by the user, not designed in advance.** `is_truthy → guard → default` for
+"use this if truthy, else fall back" turned out to be a cleaner general pattern than
+`is_truthy → select`: `guard`'s output is real, general-purpose absence, reusable by anything
+else in this catalog that already knows how to handle "maybe nothing" — not a three-input,
+all-or-nothing `select` that needs both branches wired every single time. Worth remembering as
+the standard shape for this situation going forward, not treated as a one-off discovery.
+
+**Same four-place ceremony as every primitive before it.** `primitives.rs` (the `parse_literal`
+extraction, `default`'s compute arm, tests — including one proving `default`'s absent-branch
+output equals `const`'s own output for the same params, the actual fact the design rests on, not
+just an assertion of it); `catalog.rs` (`GENESIS`, `interface_of`, count 41 → 42, a test that
+runs `compute` against the catalog's own default params and confirms it genuinely resolves);
+`kind.rs` (the capability allowlist — the one that matters — plus the separate hand-maintained
+`pure_leaves_are_pure` test list); `holon-wasm`'s two hard-coded catalog counts.
+
+**No `PLAN.md` change.** One more genesis primitive, same footing as every other leaf in the
+frozen §13a set — not a pillar.

@@ -1,11 +1,11 @@
 [
   {
-    "slug": "greet",
-    "unit": "2fa836993f04079b3643e65c3ce6863e10cda590bca7ae1a5b758d6970ae1601",
+    "slug": "test2",
+    "unit": "354295870352298a5b5060fad0f5ec82c2580003bd001a6722ff3ee7a3695812",
     "interval_seconds": null,
-    "state": {},
-    "deployed_at_epoch_seconds": 1783069840,
-    "trigger_count": 2,
+    "state": null,
+    "deployed_at_epoch_seconds": 1783085649,
+    "trigger_count": 3,
     "error_count": 0
   }
 ]

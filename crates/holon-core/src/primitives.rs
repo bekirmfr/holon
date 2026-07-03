@@ -20,19 +20,24 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // self-describing and two authors who meant different types never collide (I5). A value
         // that doesn't parse for its type ⇒ None; List/Effect/Any have no literal form (an empty
         // list is the niladic `list`), ⇒ None. ──
-        "const" => {
-            let value = param(params, "value")?;
-            match param(params, "type")? {
-                "Number" => value
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|n| crate::determinism::is_finite_number(*n))
-                    .map(Value::Number),
-                "Boolean" => parse_bool(value).map(Value::Boolean),
-                "Text" => Some(Value::Text(value.to_string())),
-                _ => None,
-            }
-        }
+        "const" => parse_literal(param(params, "type")?, param(params, "value")?),
+
+        // A value that passes through when present, or falls back to a frozen literal when
+        // absent — the piece that was missing for "read this, or use a default if it was
+        // never written" (the same bootstrap gap the very first counter and this greeting
+        // flow's state-read both hit, worked around both times with a five-node
+        // list/is_empty/select/head chain because a fixed-arity primitive can't tell which of
+        // two WIRED inputs survived once one goes absent). A frozen param never has that
+        // problem — it's baked in at construction time, never subject to eval-time absence at
+        // all — so this is the one place that asymmetry is actually usable. Reuses `const`'s
+        // own literal parsing via `parse_literal`, not a second copy of it: `default` with no
+        // input present and `type`/`value` set IS a `const`, and this keeps
+        // that fact true by construction rather than by two implementations happening to agree.
+        "default" => match inputs {
+            [v] => Some((*v).clone()),
+            [] => parse_literal(param(params, "type")?, param(params, "value")?),
+            _ => None,
+        },
 
         // ── arithmetic ──
         "add" => fold_numbers(inputs, 0.0, |a, b| a + b),
@@ -340,6 +345,25 @@ fn as_index(v: &Value) -> Option<usize> {
 fn param<'a>(params: &'a [Param], name: &str) -> Option<&'a str> {
     params.iter().find(|p| p.name() == name).and_then(|p| p.value())
 }
+/// The one literal parser `const` and `default` both call — `type`+`value` (as `const` has
+/// always declared its own params) into a `Value`. Factored out here rather than left as
+/// `const`'s own private logic: `default`'s frozen-fallback case needs to do exactly this,
+/// and a second copy could silently drift from the first the way a couple of other things
+/// already have this session (`WCapability`, `formatValue`) — one function, called twice,
+/// closes that off structurally instead of by discipline.
+fn parse_literal(ty: &str, value: &str) -> Option<Value> {
+    match ty {
+        "Number" => value
+            .parse::<f64>()
+            .ok()
+            .filter(|n| crate::determinism::is_finite_number(*n))
+            .map(Value::Number),
+        "Boolean" => parse_bool(value).map(Value::Boolean),
+        "Text" => Some(Value::Text(value.to_string())),
+        _ => None,
+    }
+}
+
 fn parse_bool(s: &str) -> Option<bool> {
     match s {
         "true" => Some(true),
@@ -548,6 +572,32 @@ mod tests {
         assert_eq!(compute("const", &[], &[p("type", "Number"), p("value", "hi")]), None);
         // A type with no literal form ⇒ None.
         assert_eq!(compute("const", &[], &[p("type", "List"), p("value", "x")]), None);
+    }
+    #[test]
+    fn default_passes_a_present_value_through_unchanged() {
+        // The value's own type doesn't have to match the fallback's declared type at all —
+        // this branch never looks at type/value; a present input just
+        // passes straight through.
+        let fallback = [p("type", "Text"), p("value", "stranger")];
+        assert_eq!(compute("default", &[&txt("Bekir")], &fallback), Some(txt("Bekir")));
+        assert_eq!(compute("default", &[&num(5.0)], &fallback), Some(num(5.0)));
+    }
+    #[test]
+    fn default_falls_back_to_the_frozen_literal_when_absent() {
+        // Absent input ⇒ exactly the same parse const itself would do with the SAME
+        // params — proving default with nothing wired in front of it IS a const, not just
+        // similar to one.
+        let fallback = [p("type", "Text"), p("value", "stranger")];
+        assert_eq!(compute("default", &[], &fallback), Some(txt("stranger")));
+        assert_eq!(compute("default", &[], &fallback), compute("const", &[], &fallback));
+    }
+    #[test]
+    fn default_fails_closed_on_more_than_one_input() {
+        // default declares exactly one input port; this is defensive completeness for the
+        // match, not a reachable case through normal wiring (validate() already enforces
+        // arity against the catalog's own declared interface before eval ever runs).
+        let fallback = [p("type", "Text"), p("value", "x")];
+        assert_eq!(compute("default", &[&txt("a"), &txt("b")], &fallback), None);
     }
     #[test]
     fn egress_constructs_an_effect() {
