@@ -23,7 +23,7 @@
 //! from the **real** units and never see a mock — simulating innocent buys nothing
 //! at the trust boundary, and a mock is never in any content hash.
 
-use crate::eval::eval_one;
+use crate::eval::eval;
 use crate::{capabilities_of, Hash, Param, Port, Resolver, Type, Unit, UnitBody, Value};
 use std::collections::BTreeMap;
 
@@ -125,17 +125,20 @@ fn collect_mocks(unit: &Unit, real: &impl Resolver, mocks: &mut BTreeMap<Hash, U
 /// replayable, and memoizable. The "firing loop" in design mode is just `eval` over
 /// the substituting resolver.
 ///
-/// Deliberately kept `Option<Value>` (via [`eval_one`]), not widened to `eval`'s new
-/// `Vec<Option<Value>>` — `holon-host`'s `run()` calls this directly and is outside this
-/// pass's scope (P4.7's build order stops at the wasm bridge and editor); a root fed here is
-/// a service graph (single settled value the host inspects for effects), not the multi-output
-/// data-composite case this leaf exists for. `eval_one` already fails closed for a
-/// multi-output root — refusing rather than silently picking one — so nothing here is a lie.
-pub fn design_eval(root: &Unit, inputs: &[Option<Value>], real: &impl Resolver) -> Option<Value> {
+/// Returns [`eval`]'s own `Vec<Option<Value>>` directly — no longer narrowed through
+/// `eval_one`. That narrowing was named, at the time, as deliberately deferred rather than
+/// permanent ("not the multi-output data-composite case this leaf exists for... outside this
+/// pass's scope") — a real gap has since shown up that it exists for: a deployed flow with a
+/// genuine data response *and* a genuine side effect are two separate things, and forcing
+/// them into one artificial `list(...)` to satisfy a single-output requirement doesn't just
+/// add a wiring step, it produces a response where the effect is redundantly echoed inside
+/// what's supposed to be the plain answer. `Design`/`Deploy` (`run`, `holon-host`) are the two
+/// modes over the *same* graph — they need to agree on shape, so this widens alongside `fire`.
+pub fn design_eval(root: &Unit, inputs: &[Option<Value>], real: &impl Resolver) -> Vec<Option<Value>> {
     let sim = Simulated::new(root, real);
     match mock_of(root) {
-        Some(mock) => eval_one(&mock, inputs, &sim),
-        None => eval_one(root, inputs, &sim),
+        Some(mock) => eval(&mock, inputs, &sim).into_vec(),
+        None => eval(root, inputs, &sim).into_vec(),
     }
 }
 
@@ -217,7 +220,7 @@ mod tests {
         let store = MapResolver::new();
         let t = clock();
         assert_eq!(eval(&t, &[], &store).into_vec(), vec![None]);
-        assert_eq!(design_eval(&t, &[], &store), Some(Value::Number(0.0)));
+        assert_eq!(design_eval(&t, &[], &store), vec![Some(Value::Number(0.0))]);
     }
 
     #[test]
@@ -228,7 +231,7 @@ mod tests {
         let store = MapResolver::new();
         let rnd = prim("random", Type::Number);
         assert_eq!(eval(&rnd, &[], &store).into_vec(), vec![None]); // sourced ⇒ not computable
-        assert_eq!(design_eval(&rnd, &[], &store), Some(Value::Number(0.0))); // mocked
+        assert_eq!(design_eval(&rnd, &[], &store), vec![Some(Value::Number(0.0))]); // mocked
     }
 
     #[test]
@@ -237,7 +240,7 @@ mod tests {
         let th = store.insert(clock()).unwrap();
         let comp = pass_through(th, Type::Number);
         assert_eq!(eval(&comp, &[], &store).into_vec(), vec![None]); // clock not computable
-        assert_eq!(design_eval(&comp, &[], &store), Some(Value::Number(0.0)));
+        assert_eq!(design_eval(&comp, &[], &store), vec![Some(Value::Number(0.0))]);
         // deterministic
         assert_eq!(design_eval(&comp, &[], &store), design_eval(&comp, &[], &store));
     }
@@ -248,7 +251,7 @@ mod tests {
         let th = store.insert(clock()).unwrap();
         let inner = store.insert(pass_through(th, Type::Number)).unwrap();
         let mid = pass_through(inner, Type::Number);
-        assert_eq!(design_eval(&mid, &[], &store), Some(Value::Number(0.0))); // depth-agnostic
+        assert_eq!(design_eval(&mid, &[], &store), vec![Some(Value::Number(0.0))]); // depth-agnostic
     }
 
     #[test]
@@ -341,6 +344,6 @@ mod tests {
         let rh = store.insert(keyed_prim("store_read", "var1", Type::Number)).unwrap();
         let comp = pass_through(rh, Type::Number);
         assert_eq!(eval(&comp, &[], &store).into_vec(), vec![None]); // store_read not computable (sourced)
-        assert_eq!(design_eval(&comp, &[], &store), Some(Value::Number(0.0))); // scripted
+        assert_eq!(design_eval(&comp, &[], &store), vec![Some(Value::Number(0.0))]); // scripted
     }
 }

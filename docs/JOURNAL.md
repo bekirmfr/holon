@@ -4308,3 +4308,78 @@ runs `compute` against the catalog's own default params and confirms it genuinel
 
 **No `PLAN.md` change.** One more genesis primitive, same footing as every other leaf in the
 frozen §13a set — not a pillar.
+
+---
+
+## 2026-07-03 · fire — genuinely multi-output, closing a gap the design always named as deferred
+
+**The reported problem, traced to its real cause rather than accepted as "how this works."**
+Every firing path — `/trigger`, `/fire`, clock ticks — went through `eval_one`, which refuses to
+settle anything for a composite with more than one exposed output. This forced a real, awkward
+pattern: a flow producing a genuine data response (a greeting) *and* a genuine side effect (a
+state write) had to be combined into one artificial `list(...)` node just to satisfy the
+single-output rule — and that combining wasn't even cosmetically neutral. `perform_effects` reads
+a value without ever removing anything from it, so the settled output redundantly echoed the
+effect a second time, on top of it already being shown correctly in `performed`. Not a labeling
+problem a UI tweak could fix — the list genuinely conflated "my answer" with "things that happened
+to also be effects."
+
+**Checked why the narrowing existed before touching it, rather than assuming it was a bug or a
+wall.** `fire`'s own doc comment already named the choice as deliberately deferred, not permanent:
+*"not the multi-output data-composite case P4.7 exists for"* — a scoping decision made before a
+real need for it existed, not a ruling against one ever mattering. `eval()` has returned
+`Vec<Option<Value>>` since P4.7; `default_spec` already exposes every free output automatically —
+that's literally how the very first two-output bug happened, several turns earlier, when
+`store_read`'s loose end got exposed alongside `store_write`'s. Checked, individually, that nothing
+in capability derivation, state-read snapshotting, or effect-performing depends on output
+cardinality at all — none of it does. The only thing actually standing between "two separate
+exposed outputs" and it genuinely working was `fire` calling `eval_one` instead of `eval`.
+
+**Widened crate by crate, each one grounded fresh rather than assumed from the last:**
+- **`holon-core`** — `design_eval` (`simulate.rs`) had narrowed to `eval_one` for the identical,
+  now-superseded reason `fire` did; `run()`'s two modes need to agree on shape, so both widened
+  together.
+- **`holon-host`** — `fire`, `fire_sourced`, `run` all return `Vec<Option<Value>>` now;
+  `perform_effects` runs once per settled slot, skipping any that came back `None`, so a genuinely
+  multi-output root performs every effect any of its outputs carries — not fewer, not more, never
+  a silent pick of just one.
+- **`holon-server`** — `fire_with_state` widened; `FireResponseBody` and `TickEntry` both changed
+  `output` → `outputs` — a real, breaking wire-format change, named as exactly that rather than
+  glossed over; all four production construction sites updated; every test in the entire file
+  individually checked for a stale `["output"]` reference, not just the ones expected to have one.
+- **Editor** — `TriggerResult.output` → `outputs`; a new `formatOutputs` in `diagnostics.ts` (not
+  inline in `App.tsx`, matching exactly why `formatValue` already lives there — pure, testable, no
+  wasm dependency) that preserves the *exact* old single-output wording for the common case and
+  only shows the comma-joined form for a genuinely multi-output settle, so nothing about the
+  ordinary path visually changes just because the type widened underneath it. Checked, not
+  assumed, whether the editor's own local preview (`Evaluator.eval` in the wasm bridge) shared the
+  same gap — it didn't. It already called `holon_core::eval` directly, never `eval_one`, from
+  before this session even started. Only the server-firing path was ever narrowed; nothing in the
+  local preview needed touching, and nothing was touched.
+
+**A real miss, caught by the compiler and owned rather than smoothed over.** The first delivery
+widened `design_eval`'s signature and body correctly but never checked its *own* test module for
+callers — `lib.rs` and `holon-server-main.rs` were swept exhaustively for stale assertions, but the
+file just edited wasn't circled back to for the same check. Five assertions inside `simulate.rs`'s
+own tests were still comparing a `Vec` against a bare `Option`, surfaced immediately on the next
+`cargo build`. Fixed by name, one at a time, with enough disambiguating context to avoid a
+collision — a first, careless batch-replace attempt aborted safely on a substring match between two
+similarly-worded lines *before* writing anything, confirmed by checking the file was genuinely
+untouched rather than assumed, then redone properly with `str_replace`. And because the mistake
+was real, `lib.rs` and `holon-server-main.rs` were both re-swept from scratch afterward rather than
+trusted just because they'd compiled cleanly before — both confirmed genuinely clean, not assumed
+clean by association.
+
+**Verified — a real green run, not inferred from the pieces individually looking right.**
+`cargo build --workspace`: clean. `wasm-pack build --target web`: rebuilt the actual editor
+package, not just the crate's own test binary. `cargo test --workspace`: **284 passed, 0 failed**,
+across all four crates (202 core + 39 host + 32 server + 11 wasm-native).
+
+**Two things still genuinely open, named rather than implied closed by the Rust result alone:**
+`npx tsc -b`/`npm run test` in `editor/` haven't been run against this change yet, and neither has
+an actual browser trigger of a genuinely two-output deployed flow — the one piece of proof that
+this solves what was originally reported, not just that the Rust side compiles and its own tests
+pass.
+
+**No `PLAN.md` change.** A real architectural widening of the standing-deploy pillar's own firing
+path, not a new pillar and not a core-language leaf.

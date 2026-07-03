@@ -138,3 +138,16 @@ export function formatValue(v: WValue): string {
   const exhaustive: never = v;
   return exhaustive;
 }
+
+// Render a fire/trigger's WHOLE outputs array — every settled slot a unit declared, not just
+// one, now that fire (holon-host) genuinely supports multi-output roots instead of refusing
+// them. Preserves the exact prior single-output wording for the common case: an all-null
+// array (including the one-slot case that always used to just say this) still reads
+// "(no output)", and a single real value still reads as bare formatValue(v), no separators —
+// nothing about the common case changes shape just because the type widened under it. Only a
+// GENUINELY multi-output settle (more than one slot, or a mix of real/absent) shows the
+// comma-joined form, since that's the only case where there's more than one thing to show.
+export function formatOutputs(outputs: (WValue | null)[]): string {
+  if (outputs.every((o) => o === null)) return "(no output)";
+  return outputs.map((o) => (o ? formatValue(o) : "(none)")).join(", ");
+}

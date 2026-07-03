@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use holon_core::{
     capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval,
-    eval_one, entry_key, hash_unit, memo_key, refork, verify_entry, adoption_counts, CacheEntry,
+    entry_key, hash_unit, memo_key, refork, verify_entry, adoption_counts, CacheEntry,
     MapResolver, Refork, Capability, DecodeError, EncodeError, Hash, Param, Port, Resolver, Type,
     Unit, UnitBody, Value,
 };
@@ -39,21 +39,29 @@ pub trait Host {
 
 /// Deploy-mode firing: settle the graph (core — the one decider), then perform the
 /// effect(s) its output *carries* (host — the only impurity). `eval` is *called*, never
-/// re-implemented (`I5`). Under representation **B** the output is a self-describing
+/// re-implemented (`I5`). Under representation **B** an output is a self-describing
 /// `Effect { sink, payload }`, so performance is driven by the **output** (what actually
 /// reached the boundary), not the manifest — the manifest stays the trust disclosure.
 ///
-/// Uses `eval_one`, not core's `eval` directly (P4.7: `eval` now returns
-/// `Vec<Option<Value>>`, since multi-output is a composite capability). Deliberately kept
-/// `Option<Value>` here, not widened: `fire` is the host's firing loop for a *service*
-/// graph — a settled request the host inspects for effects — not the multi-output
-/// data-composite case P4.7 exists for. `eval_one` already fails closed for a genuinely
-/// multi-output root (refusing rather than silently picking one), so nothing here hides
-/// a real multi-output unit; it just isn't what this function is for.
-pub fn fire(root: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver, host: &mut impl Host) -> Option<Value> {
-    let output = eval_one(root, inputs, resolver)?;
-    perform_effects(&output, host);
-    Some(output)
+/// Calls core's `eval` directly now, returning its own `Vec<Option<Value>>` unchanged — no
+/// longer narrowed through `eval_one`. That narrowing was named, when it was written, as
+/// deliberately deferred rather than permanent: "not the multi-output data-composite case
+/// P4.7 exists for" — a scoping choice made before a real need for it existed, not a ruling
+/// against it. The need since showed up concretely: a deployed flow that produces a genuine
+/// data response *and* performs a genuine side effect are two separate things, and forcing
+/// them into one artificial `list(...)` just to satisfy a single-output requirement doesn't
+/// just add an unrelated wiring step — the settled value it produces redundantly echoes the
+/// effect inside what's supposed to be the plain answer, since `perform_effects` reads a
+/// value without removing anything from it. `perform_effects` is called once per output slot
+/// (skipping any that settled to `None`), so a genuinely multi-output root now performs
+/// every effect any of its outputs carries — not fewer, not more, and never a silent pick of
+/// just one, which `eval_one` refused for the identical reason.
+pub fn fire(root: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver, host: &mut impl Host) -> Vec<Option<Value>> {
+    let outputs = eval(root, inputs, resolver).into_vec();
+    for output in outputs.iter().flatten() {
+        perform_effects(output, host);
+    }
+    outputs
 }
 
 /// Parse a settled `Effect`'s `sink` string back into `(primitive name, synthetic params)` —
@@ -110,7 +118,7 @@ pub fn fire_sourced(
     sourced: &[(Capability, Value)],
     real: &impl Resolver,
     host: &mut impl Host,
-) -> Option<Value> {
+) -> Vec<Option<Value>> {
     let resolver = SourcedResolver::new(sourced, real);
     fire(root, &[], &resolver, host)
 }
@@ -128,15 +136,16 @@ pub enum Mode {
 }
 
 /// Run a graph in `Design` (mocked, performs nothing) or `Deploy` (real, performs), returning the
-/// settled output either way. Design substitutes mocks at resolve time (`design_eval`); deploy
-/// supplies real sourced values (`fire_sourced`) — the same `eval` underneath both.
+/// settled output(s) either way. Design substitutes mocks at resolve time (`design_eval`); deploy
+/// supplies real sourced values (`fire_sourced`) — the same `eval` underneath both, and now the
+/// same multi-output shape underneath both too.
 pub fn run(
     mode: Mode,
     graph: &Unit,
     drivers: &[(Capability, Value)],
     real: &impl Resolver,
     host: &mut impl Host,
-) -> Option<Value> {
+) -> Vec<Option<Value>> {
     match mode {
         Mode::Design => design_eval(graph, &[], real), // host untouched — nothing performed
         Mode::Deploy => fire_sourced(graph, drivers, real, host),
@@ -1256,7 +1265,7 @@ mod tests {
         let sourced = [(Capability::StateRead("var1".to_string()), held)];
         // No panic, no fabricated `none()` — the read simply yields nothing, exactly like an
         // unsupplied capability.
-        assert_eq!(fire_sourced(&passthrough, &sourced, &r, &mut host), None);
+        assert_eq!(fire_sourced(&passthrough, &sourced, &r, &mut host), vec![None]);
     }
 
     // ── slice 2: computed fan-out ──────────────────────────────────────────────
@@ -1599,7 +1608,7 @@ mod tests {
         let preview = run(Mode::Design, &graph, &[], &r, &mut design);
         assert_eq!(
             preview,
-            Some(Value::Effect { sink: "egress".into(), payload: Box::new(num(0.0)) })
+            vec![Some(Value::Effect { sink: "egress".into(), payload: Box::new(num(0.0)) })]
         );
         assert!(design.performed.is_empty()); // safe — design sends nothing
 

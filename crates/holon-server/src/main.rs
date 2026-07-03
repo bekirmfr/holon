@@ -336,9 +336,15 @@ struct PerformedEntry {
     payload: SValue,
 }
 
+/// `POST /fire` and `POST /trigger/<slug>`'s response shape. `outputs` is every settled slot
+/// the fired unit declared — not just one. A single-output unit still gets a one-element
+/// array; nothing about the common case changes shape awkwardly. A two-output unit (a text
+/// response and a state-write effect, left as two separate exposed outputs rather than
+/// combined into one artificial `list(...)`) now shows both, cleanly, instead of needing to
+/// be merged into something that echoed the effect twice.
 #[derive(Serialize)]
 struct FireResponseBody {
-    output: Option<SValue>,
+    outputs: Vec<Option<SValue>>,
     performed: Vec<PerformedEntry>,
 }
 
@@ -412,11 +418,12 @@ struct DeploymentEntry {
     deployed_at_epoch_seconds: u64,
 }
 
-/// One clock tick's result, kept in a deployment's bounded history.
+/// One clock tick's result, kept in a deployment's bounded history. `outputs`: same shape
+/// change as `FireResponseBody`, same reason — every settled slot, not just one.
 #[derive(Serialize, Clone)]
 struct TickEntry {
     at_epoch_seconds: u64,
-    output: Option<SValue>,
+    outputs: Vec<Option<SValue>>,
     performed: Vec<PerformedEntry>,
 }
 
@@ -779,12 +786,22 @@ impl Host for RecordingHost {
 /// no addressing mechanism in the wire surface today (a leaf declaring `FileRead` doesn't say
 /// *which* file), so there is nothing honest to supply — a real, separate design question, not
 /// something to paper over with a placeholder value.
+///
+/// Returns every settled output slot, not just one — `fire_sourced` itself now carries
+/// `eval`'s real `Vec<Option<Value>>` end to end, and this just passes it through. A flow that
+/// produces a genuine data response *and* performs a genuine side effect are two separate
+/// things; forcing them into one artificial `list(...)` to satisfy an old single-output
+/// requirement doesn't just add unrelated wiring, it makes the settled value redundantly
+/// echo the effect inside what's supposed to be the plain answer, since nothing ever removes
+/// it from there. `perform_effects` already walks every non-`None` slot, so a state-write and
+/// a text response left as two separate exposed outputs are both correctly handled now,
+/// without combining them into anything.
 fn fire_with_state(
     root_unit: &Unit,
     resolver: &impl Resolver,
     state: Option<&Mutex<BTreeMap<String, Value>>>,
     extra_sourced: &[(Capability, Value)],
-) -> (Option<Value>, Vec<(Capability, Value)>) {
+) -> (Vec<Option<Value>>, Vec<(Capability, Value)>) {
     let mut guard = state.map(|m| m.lock().unwrap());
 
     let mut sourced: Vec<(Capability, Value)> = match guard.as_deref() {
@@ -797,7 +814,7 @@ fn fire_with_state(
     sourced.extend_from_slice(extra_sourced);
 
     let mut host = RecordingHost { performed: Vec::new() };
-    let output = fire_sourced(root_unit, &sourced, resolver, &mut host);
+    let outputs = fire_sourced(root_unit, &sourced, resolver, &mut host);
 
     if let Some(storage) = guard.as_deref_mut() {
         for (cap, payload) in &host.performed {
@@ -807,7 +824,7 @@ fn fire_with_state(
         }
     }
 
-    (output, host.performed)
+    (outputs, host.performed)
 }
 
 /// `POST /fire?root=<hex>` — settle a published unit **once**, on request. Not "deploy": there
@@ -846,10 +863,10 @@ fn handle_post_fire(store: &SharedStore, request: &Request) -> Response {
         fire_body.inputs.into_iter().map(|o| o.map(SValue::into_core)).collect();
 
     let mut host = RecordingHost { performed: Vec::new() };
-    let output = fire(root_unit, &inputs, &resolver, &mut host);
+    let outputs = fire(root_unit, &inputs, &resolver, &mut host);
 
     Response::json(&FireResponseBody {
-        output: output.as_ref().map(SValue::from_core),
+        outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
         performed: host
             .performed
             .into_iter()
@@ -1280,7 +1297,7 @@ fn handle_post_trigger(
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
-    let (output, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), &extra_sourced);
+    let (outputs, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), &extra_sourced);
 
     record_trigger(deployments, slug, false);
     if state.is_some() {
@@ -1288,7 +1305,7 @@ fn handle_post_trigger(
     }
 
     Response::json(&FireResponseBody {
-        output: output.as_ref().map(SValue::from_core),
+        outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
         performed: performed
             .into_iter()
             .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
@@ -1381,16 +1398,16 @@ fn fire_one_clock_tick(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let is_state = state.is_some();
-    let (output, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), &extra_sourced);
+    let (outputs, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), &extra_sourced);
 
     println!(
-        "clock tick [{slug}] at {epoch_seconds}: output={output:?}, {} effect(s) performed",
+        "clock tick [{slug}] at {epoch_seconds}: outputs={outputs:?}, {} effect(s) performed",
         performed.len()
     );
 
     let tick = TickEntry {
         at_epoch_seconds: epoch_seconds,
-        output: output.as_ref().map(SValue::from_core),
+        outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
         performed: performed
             .into_iter()
             .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
@@ -2177,7 +2194,7 @@ mod tests {
         let r = route(&state, &req("POST", &format!("/fire?root={}", to_hex(&leaf_hash)), body));
         assert_eq!(r.status_code, 200);
         let v = body_json(r);
-        assert_eq!(v["output"]["value"], 42.0);
+        assert_eq!(v["outputs"][0]["value"], 42.0);
         assert_eq!(v["performed"].as_array().unwrap().len(), 0);
     }
 
@@ -2571,7 +2588,7 @@ mod tests {
         let r = route(&state, &req("POST", "/trigger/rnd", b"x".to_vec()));
         assert_eq!(r.status_code, 200);
         let v = body_json(r);
-        assert_eq!(v["output"]["type"], "Number"); // a real number, not null
+        assert_eq!(v["outputs"][0]["type"], "Number"); // a real number, not null
     }
 
     #[test]
@@ -2592,7 +2609,7 @@ mod tests {
         let r = route(&state, &req("POST", "/trigger/clk", b"x".to_vec()));
         assert_eq!(r.status_code, 200);
         let v = body_json(r);
-        assert_eq!(v["output"]["type"], "Number");
+        assert_eq!(v["outputs"][0]["type"], "Number");
     }
 
     // ── per-deployment state ─────────────────────────────────────────────────────────────
@@ -2674,7 +2691,7 @@ mod tests {
         let r = route(&state, &req("POST", "/trigger/reader", b"x".to_vec()));
         assert_eq!(r.status_code, 200);
         let v = body_json(r);
-        assert_eq!(v["output"], serde_json::Value::Null);
+        assert_eq!(v["outputs"][0], serde_json::Value::Null);
         assert_eq!(v["performed"].as_array().unwrap().len(), 0);
     }
 

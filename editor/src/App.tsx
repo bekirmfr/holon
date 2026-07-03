@@ -57,6 +57,7 @@ import {
   encapErrorNodeIndices,
   capabilityAcknowledgeName,
   formatValue,
+  formatOutputs,
 } from "./diagnostics";
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
@@ -311,11 +312,7 @@ function DeploymentRow({
       )}
       {result && (
         <div style={{ marginTop: 4, color: result.ok ? "#9ad29f" : "#e0916f", wordBreak: "break-word" }}>
-          {result.ok
-            ? result.result.output
-              ? formatValue(result.result.output)
-              : "(no output)"
-            : result.message}
+          {result.ok ? formatOutputs(result.result.outputs) : result.message}
         </div>
       )}
     </div>

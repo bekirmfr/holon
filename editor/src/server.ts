@@ -136,12 +136,16 @@ export async function deleteDeployment(slug: string): Promise<DeploymentEntry> {
 /** One `(capability, payload)` pair a trigger actually performed — mirrors `PerformedEntry`. */
 export type PerformedEntry = { capability: string; payload: WValue };
 
-/** `POST /trigger/<slug>`'s response — mirrors `FireResponseBody` exactly. `SValue` (the
- *  server's own JSON mirror of `core::Value`) and `WValue` (the wasm bridge's) turned out to be
- *  the identical `{type,value}` shape, independently — so `WValue` is reused here rather than a
- *  second, parallel value type for this other boundary. */
+/** `POST /trigger/<slug>`'s response — mirrors `FireResponseBody` exactly, `outputs` included:
+ *  every settled slot the fired unit declared, not just one. A single-output unit (the common
+ *  case) is still a one-element array; a flow that produces a genuine data response *and*
+ *  performs a genuine side effect can now be left as two separate exposed outputs — no more
+ *  forcing them into one artificial `list(...)` just to satisfy an old single-output rule.
+ *  `SValue` (the server's own JSON mirror of `core::Value`) and `WValue` (the wasm bridge's)
+ *  turned out to be the identical `{type,value}` shape, independently — so `WValue` is reused
+ *  here rather than a second, parallel value type for this other boundary. */
 export type TriggerResult = {
-  output: WValue | null;
+  outputs: (WValue | null)[];
   performed: PerformedEntry[];
 };
 

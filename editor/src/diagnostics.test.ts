@@ -15,6 +15,7 @@ import {
   encapErrorNodeIndices,
   capabilityAcknowledgeName,
   formatValue,
+  formatOutputs,
 } from "./diagnostics";
 import type { WPort, WEdge, WEncapError, WValidationError, WCapability, WValue } from "./holon";
 
@@ -258,5 +259,38 @@ describe("formatValue", () => {
     const none: WValue = { type: "Sum", value: { arm: 1, payload: { type: "List", value: [] } } };
     expect(formatValue(some5)).toBe("sum#0(5)");
     expect(formatValue(none)).toBe("sum#1([])");
+  });
+});
+
+describe("formatOutputs", () => {
+  it("keeps the exact old wording for the common single-null-slot case", () => {
+    // The overwhelming majority of flows have exactly one output — this must read identically
+    // to how it always did, even though the underlying type widened to an array under it.
+    expect(formatOutputs([null])).toBe("(no output)");
+  });
+
+  it("shows a single real value bare, no separators, matching the old single-output shape", () => {
+    const v: WValue = { type: "Text", value: "Welcome Bekir!" };
+    expect(formatOutputs([v])).toBe('"Welcome Bekir!"');
+  });
+
+  it("reads all-null as no output regardless of how many slots there are", () => {
+    expect(formatOutputs([null, null])).toBe("(no output)");
+  });
+
+  it("comma-joins a genuine multi-output settle — the actual point of this whole change", () => {
+    const greeting: WValue = { type: "Text", value: "Welcome Bekir!" };
+    const effect: WValue = {
+      type: "Effect",
+      value: { sink: "store_write:name", payload: { type: "Text", value: "Bekir" } },
+    };
+    expect(formatOutputs([greeting, effect])).toBe(
+      '"Welcome Bekir!", effect(store_write:name, "Bekir")',
+    );
+  });
+
+  it("shows (none) for an absent slot sitting alongside a real one", () => {
+    const v: WValue = { type: "Number", value: 1 };
+    expect(formatOutputs([v, null])).toBe("1, (none)");
   });
 });
