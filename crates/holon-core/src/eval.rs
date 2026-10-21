@@ -25,7 +25,7 @@
 //! lives, rather than via a callback into a first-order `compute`. Its `fn` argument is a
 //! param holding the hex hash of the unit to apply.
 
-use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY};
+use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY, VARIADIC};
 use crate::hash::parse_hash;
 use smallvec::{smallvec, SmallVec};
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +54,15 @@ pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> 
             // Gather present values in port order **by reference** — `compute` borrows them,
             // so an O(1) reader (head/length/is_empty) copies only what it returns, not the
             // whole input list. compute's arity check is still the firing rule.
+            //
+            // That rule alone fails *open* for a variadic leaf: dropping an absent input leaves
+            // a shorter list it still accepts, so `and(authenticated, <absent>)` would yield
+            // `authenticated` and `list(a, <absent>, c)` would yield `[a, c]`. A variadic leaf
+            // therefore fires only when every declared input is present, exactly as a
+            // fixed-arity leaf already does.
+            if VARIADIC.contains(&name.as_str()) && inputs.iter().any(Option::is_none) {
+                return smallvec![None];
+            }
             let present: Vec<&Value> = inputs.iter().flatten().collect();
             smallvec![primitives::compute(name, &present, &unit.params)]
         }
@@ -297,6 +306,36 @@ mod tests {
             eval(&add, &[Some(num(3.0)), Some(num(7.0)), Some(num(5.0))], &r).into_vec(),
             vec![Some(num(15.0))]
         );
+    }
+
+    /// Regression: absent inputs used to be dropped before `compute`, so a variadic leaf fired
+    /// on whatever was left — `and(true, <absent>)` was `true`, an auth check failing open.
+    #[test]
+    fn variadic_leaf_with_an_absent_input_fails_closed() {
+        let r = MapResolver::new();
+        let t = Value::Boolean(true);
+        let x = Value::Text("x".into());
+        for (name, present) in [
+            ("and", t.clone()),
+            ("or", Value::Boolean(false)),
+            ("add", num(1.0)),
+            ("multiply", num(2.0)),
+            ("concat", x.clone()),
+            ("list", x.clone()),
+        ] {
+            let leaf = prim(name, 2, Type::Any);
+            assert_eq!(eval(&leaf, &[Some(present.clone()), None], &r).into_vec(), vec![None], "{name}(v, <absent>)");
+            assert_eq!(eval(&leaf, &[None, Some(present)], &r).into_vec(), vec![None], "{name}(<absent>, v)");
+            assert_eq!(eval(&leaf, &[None, None], &r).into_vec(), vec![None], "{name}(<absent>, <absent>)");
+        }
+        // Inside a composite, an unwired declared port is absent too.
+        let mut r = MapResolver::new();
+        let hand = r.insert(prim("and", 2, Type::Boolean)).unwrap();
+        let c = composite(vec![], Type::Boolean, vec![hand], vec![edge(0, 0, BOUNDARY, 0)]);
+        assert_eq!(eval(&c, &[], &r).into_vec(), vec![None]);
+        // All present still fires, and a zero-input variadic leaf has nothing absent.
+        assert_eq!(eval(&prim("and", 2, Type::Boolean), &[Some(t.clone()), Some(t.clone())], &r).into_vec(), vec![Some(t)]);
+        assert_eq!(eval(&prim("list", 0, Type::Any), &[], &r).into_vec(), vec![Some(Value::List(vec![]))]);
     }
 
     #[test]
