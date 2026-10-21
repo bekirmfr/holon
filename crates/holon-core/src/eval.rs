@@ -139,7 +139,9 @@ fn eval_composite(
                 Some(&(BOUNDARY, fp)) => inputs.get(fp as usize).cloned().flatten(),
                 // another child's (already-evaluated) output, at the specific port wired —
                 // `fp` is now actually used, not discarded: a child may have more than one.
-                Some(&(fc, fp)) => scratch[fc as usize].get(fp as usize).cloned().flatten(),
+                // `get`, not indexing: an edge naming a child that does not exist (bytes that
+                // never went through `validate`, e.g. straight from a peer) reads as absent.
+                Some(&(fc, fp)) => output_of(&scratch, fc, fp),
                 // unconnected port
                 None => None,
             };
@@ -155,10 +157,15 @@ fn eval_composite(
     (0..n_outputs as u32)
         .map(|op| match incoming.get(&(BOUNDARY, op)) {
             Some(&(BOUNDARY, fp)) => inputs.get(fp as usize).cloned().flatten(),
-            Some(&(fc, fp)) => scratch[fc as usize].get(fp as usize).cloned().flatten(),
+            Some(&(fc, fp)) => output_of(&scratch, fc, fp),
             None => None,
         })
         .collect()
+}
+
+/// Child `fc`'s output at port `fp`, or `None` when either index is out of range.
+fn output_of(scratch: &[EvalOutputs], fc: u32, fp: u32) -> Option<Value> {
+    scratch.get(fc as usize)?.get(fp as usize).cloned().flatten()
 }
 
 /// Kahn's algorithm over in-range child→child edges, emitting a deterministic order
@@ -336,6 +343,27 @@ mod tests {
         // All present still fires, and a zero-input variadic leaf has nothing absent.
         assert_eq!(eval(&prim("and", 2, Type::Boolean), &[Some(t.clone()), Some(t.clone())], &r).into_vec(), vec![Some(t)]);
         assert_eq!(eval(&prim("list", 0, Type::Any), &[], &r).into_vec(), vec![Some(Value::List(vec![]))]);
+    }
+
+    /// Regression: an edge whose `from_child` names no child indexed `scratch` out of bounds.
+    /// `validate` rejects such a unit, but `eval` is reached without it (the wasm bridge's
+    /// `Evaluator::eval`, `verify_entry` on a peer's cache entry), so it must not panic.
+    #[test]
+    fn edge_from_a_missing_child_reads_as_absent_not_a_panic() {
+        let mut r = MapResolver::new();
+        let hnot = r.insert(prim("not", 1, Type::Boolean)).unwrap();
+        let c = composite(
+            vec![],
+            Type::Any,
+            vec![hnot],
+            vec![edge(5, 0, 0, 0), edge(0, 0, BOUNDARY, 0)], // child 5 does not exist
+        );
+        assert_eq!(eval(&c, &[], &r).into_vec(), vec![None]);
+        // An exposed output fed straight from a missing child, and from a missing port.
+        let c = composite(vec![], Type::Any, vec![hnot], vec![edge(9, 0, BOUNDARY, 0)]);
+        assert_eq!(eval(&c, &[], &r).into_vec(), vec![None]);
+        let c = composite(vec![], Type::Any, vec![hnot], vec![edge(0, 3, BOUNDARY, 0)]);
+        assert_eq!(eval(&c, &[], &r).into_vec(), vec![None]);
     }
 
     #[test]
