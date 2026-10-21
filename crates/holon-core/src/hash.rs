@@ -348,9 +348,12 @@ fn canonical_composite(
     // Bound the work; reject pathological symmetry rather than hash non-canonically.
     let mut budget = 1usize;
     for g in &groups {
-        budget = budget.saturating_mul(factorial(g.len()));
-        if budget > MAX_CHILD_SYMMETRY {
-            return Err(EncodeError::TooSymmetric);
+        // Overflow counts as over budget. A plain product wrapped: 66! is a multiple of 2^64,
+        // so it came out as 0, passed this check, and the enumeration below then tried 66!
+        // orderings (debug builds panicked on the overflow instead).
+        match factorial(g.len()).and_then(|f| budget.checked_mul(f)) {
+            Some(b) if b <= MAX_CHILD_SYMMETRY => budget = b,
+            _ => return Err(EncodeError::TooSymmetric),
         }
     }
 
@@ -369,8 +372,9 @@ fn canonical_composite(
     Ok(apply_child_order(children, edges, &winner))
 }
 
-fn factorial(n: usize) -> usize {
-    (1..=n).product()
+/// `n!`, or `None` if it overflows `usize`.
+fn factorial(n: usize) -> Option<usize> {
+    (1..=n).try_fold(1usize, |acc, k| acc.checked_mul(k))
 }
 
 /// Visit every full ordering formed by permuting each group independently (their cartesian product).
@@ -770,6 +774,25 @@ mod tests {
                 Port { name: "b".into(), ty: Type::Number },
             ],
             outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        }
+    }
+
+    /// Regression: `factorial` wrapped on overflow. With 66+ identical children it came out 0,
+    /// the symmetry budget passed, and hashing tried 66! orderings: a hang in release, an
+    /// overflow panic in debug. Reachable from untrusted bytes via `decode_preimage` → `hash_unit`.
+    #[test]
+    fn many_identical_children_are_too_symmetric_not_a_hang() {
+        let child = hash_unit(&prim("add")).unwrap();
+        let composite = |k: usize| Unit {
+            body: UnitBody::Composite { children: vec![child; k], edges: vec![] },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![],
+        };
+        assert!(hash_unit(&composite(8)).is_ok(), "8! is exactly the budget");
+        assert!(matches!(hash_unit(&composite(9)), Err(EncodeError::TooSymmetric)));
+        for k in [21, 66, 70, 200] {
+            assert!(matches!(hash_unit(&composite(k)), Err(EncodeError::TooSymmetric)), "{k} children");
         }
     }
 
