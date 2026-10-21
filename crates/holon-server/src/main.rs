@@ -148,8 +148,8 @@ use holon_core::{
     Value, BOUNDARY,
 };
 use holon_host::{
-    fire, fire_sourced, CacheIngestError, FileStore, ForkError, Host, MemStore, PublishError,
-    Registry, SharedCache, Store, StoreError,
+    fire, fire_sourced, is_storable, CacheIngestError, FileStore, ForkError, Host, MemStore,
+    PublishError, Registry, SharedCache, Store, StoreError,
 };
 use rouille::{Request, Response};
 use serde::{Deserialize, Serialize};
@@ -874,7 +874,11 @@ fn fire_with_state(
     if let Some(storage) = guard.as_deref_mut() {
         for (cap, payload) in &host.performed {
             if let Capability::StateWrite(key) = cap {
-                storage.insert(key.clone(), payload.clone());
+                if is_storable(payload) {
+                    storage.insert(key.clone(), payload.clone());
+                } else {
+                    eprintln!("holon-server: refused to store an effect request in state key {key:?}");
+                }
             }
         }
     }
@@ -3000,6 +3004,58 @@ mod tests {
         let s = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
         assert_eq!(s["state"]["counter"]["value"], "hello");
         assert!(Arc::ptr_eq(&before, &state_arc()));
+    }
+
+    /// Regression: `ingress → egress → store_write` stored the `Effect` itself, the next fire
+    /// panicked in holon-host's `constant_unit` while holding the state lock, and the poisoned
+    /// mutex then took down every later `/deploy`, `/deployments` and `/trigger`.
+    #[test]
+    fn effect_written_to_state_does_not_take_the_server_down() {
+        let state = test_state();
+        let ingress = test_ingress();
+        let sink = test_sink();
+        let write = test_store_write("cell");
+        let read = test_store_read("cell");
+        let hashes: Vec<Hash> = [&ingress, &sink, &write, &read]
+            .iter()
+            .map(|u| {
+                route(&state, &req("POST", "/unit", encode_preimage(u).unwrap()));
+                hash_unit(u).unwrap()
+            })
+            .collect();
+        let composite = Unit {
+            body: UnitBody::Composite {
+                children: hashes,
+                edges: vec![
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // ingress → egress
+                    Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 }, // egress → store_write
+                    Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                    Edge { from_child: 3, from_port: 0, to_child: BOUNDARY, to_port: 1 }, // store_read
+                ],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![
+                Port { name: "write".into(), ty: Type::Effect },
+                Port { name: "read".into(), ty: Type::Any },
+            ],
+        };
+        let composite_hash = hash_unit(&composite).unwrap();
+        route(&state, &req("POST", "/unit", encode_preimage(&composite).unwrap()));
+        let deploy_body = serde_json::to_vec(&serde_json::json!({
+            "slug": "bad-writer",
+            "unit": to_hex(&composite_hash),
+            "acknowledge": ["NetworkIngress", "NetworkEgress", "StateRead(\"cell\")", "StateWrite(\"cell\")"],
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+
+        for _ in 0..2 {
+            assert_eq!(route(&state, &req("POST", "/trigger/bad-writer", b"x".to_vec())).status_code, 200);
+        }
+        let s = body_json(route(&state, &req("GET", "/deployments/bad-writer/state", vec![])));
+        assert!(s["state"].get("cell").is_none(), "an effect request is not data: {s}");
+        assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200);
     }
 
     #[test]

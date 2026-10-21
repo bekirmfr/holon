@@ -196,9 +196,25 @@ impl StateHost {
         fire_sourced(graph, &sourced, real, self);
         for (cap, payload) in std::mem::take(&mut self.pending) {
             if let Capability::StateWrite(key) = cap {
-                self.storage.insert(key, payload); // the Model-out (loops back to next round's read)
+                if is_storable(&payload) {
+                    self.storage.insert(key, payload); // the Model-out (loops back to next round's read)
+                }
             }
         }
+    }
+}
+
+/// Whether `value` may be committed to a state cell. A cell holds data, never an effect
+/// *request*: `store_write` is `Any`-typed, so `store_write(egress(x))` reaches the host with an
+/// `Effect` as its payload, and committing it would put a request into storage that no later
+/// round can source back. Recursive — an effect nested in a list or sum is no more data. The one
+/// rule both write paths (`StateHost::round` here, holon-server's `fire_with_state`) apply.
+pub fn is_storable(value: &Value) -> bool {
+    match value {
+        Value::Effect { .. } => false,
+        Value::List(xs) => xs.iter().all(is_storable),
+        Value::Sum { payload, .. } => is_storable(payload),
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
     }
 }
 
@@ -223,8 +239,8 @@ struct SourcedResolver<'a, R: Resolver> {
 
 impl<'a, R: Resolver> SourcedResolver<'a, R> {
     fn new(sourced: &[(Capability, Value)], real: &'a R) -> Self {
-        // A value that can't be faithfully reconstructed (`constant_unit` → `None`, currently
-        // only `Sum`) is dropped here rather than substituted — which routes it through the
+        // A value that can't be faithfully reconstructed (`constant_unit` → `None`: a `Sum` or
+        // an `Effect`) is dropped here rather than substituted — which routes it through the
         // SAME seam `fire_sourced`'s doc comment already names for an unsupplied capability:
         // "evaluates to nothing." No new failure mode; reuse of the existing honest one.
         let sourced = sourced
@@ -256,10 +272,10 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
 /// carry list items without children-by-hash, and the minimal cell is scalar).
 ///
 /// Fallible (`None`) where `value` cannot be **faithfully** reconstructed by a single
-/// niladic primitive — currently only `Sum`. This is reachable, not hypothetical: both
+/// niladic primitive: a `Sum`, or an `Effect`. Both are reachable, not hypothetical: both
 /// `store_read`/`store_write` are `Any`-typed (no type-system gate), so a state cell can
-/// genuinely hold an `Option`. Unlike `Effect` (architecturally impossible here — `unreachable!`
-/// is correct), a stored `Sum` is a missing *capability*, not a bug: there is no niladic
+/// genuinely hold an `Option`, and — before `is_storable` gated writes — an `Effect` too.
+/// A stored `Sum` is a missing *capability*, not a bug: there is no niladic
 /// constructor for an arbitrary arm (`some(x)` needs `x` as an input; only `none()` is
 /// niladic). Defaulting to `none()` regardless of the value's real arm would silently
 /// **fabricate the wrong arm** — exactly the "value to fabricate" the `Effect` comment above
@@ -276,11 +292,11 @@ fn constant_unit(value: &Value) -> Option<Unit> {
             inputs: vec![],
             outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
         },
-        // A state cell never holds an effect: a write commits the *payload* (`&**payload`),
-        // never the request itself. If this fires, the round stored an `Effect` by mistake —
-        // a bug to fix, not a value to fabricate.
-        Value::Effect { .. } => unreachable!("a state cell never holds an effect"),
-        Value::Sum { .. } => return None,
+        // Writes refuse effects (`is_storable`), but storage loaded from disk predates that
+        // rule, and a sourced value can come from any host. No faithful constant exists, so
+        // this drops the capability like `Sum` does, rather than panicking mid-fire while the
+        // caller holds the state lock.
+        Value::Effect { .. } | Value::Sum { .. } => return None,
     })
 }
 
@@ -1266,6 +1282,52 @@ mod tests {
         // No panic, no fabricated `none()` — the read simply yields nothing, exactly like an
         // unsupplied capability.
         assert_eq!(fire_sourced(&passthrough, &sourced, &r, &mut host), vec![None]);
+    }
+
+    /// Regression: `store_write(egress(x))` used to commit the `Effect` itself to the cell, and
+    /// the next round's `constant_unit` hit `unreachable!` — a panic while the caller held the
+    /// state lock. Writes now refuse effects, and an effect already in storage reads as absent.
+    #[test]
+    fn effect_is_never_stored_and_never_panics() {
+        let mut r = MapResolver::new();
+        let msg = r.insert(number("1")).unwrap();
+        let eg = r.insert(prim("egress", vec![Port { name: "msg".into(), ty: Type::Any }], Type::Effect)).unwrap();
+        let wr = r
+            .insert(keyed_state_prim("store_write", "cell", vec![Port { name: "value".into(), ty: Type::Any }], Type::Effect))
+            .unwrap();
+        let rd = r.insert(keyed_state_prim("store_read", "cell", vec![], Type::Any)).unwrap();
+        // out0 = store_write(cell, egress(1)); out1 = store_read(cell)
+        let graph = Unit {
+            body: UnitBody::Composite {
+                children: vec![msg, eg, wr, rd],
+                edges: vec![
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
+                    Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 },
+                    Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                    Edge { from_child: 3, from_port: 0, to_child: BOUNDARY, to_port: 1 },
+                ],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![
+                Port { name: "write".into(), ty: Type::Effect },
+                Port { name: "read".into(), ty: Type::Any },
+            ],
+        };
+
+        let mut host = StateHost::new(BTreeMap::new());
+        host.round(&graph, &[], &r);
+        assert_eq!(host.storage().get("cell"), None, "an effect request is not data");
+        host.round(&graph, &[], &r); // used to panic here
+
+        // Storage that already holds an effect (persisted before the write gate existed).
+        let held = Value::Effect { sink: "egress".into(), payload: Box::new(num(1.0)) };
+        assert_eq!(constant_unit(&held), None);
+        let mut host = StateHost::new(BTreeMap::from([("cell".to_string(), held)]));
+        host.round(&graph, &[], &r);
+
+        assert!(!is_storable(&Value::List(vec![num(1.0), Value::Effect { sink: "egress".into(), payload: Box::new(num(2.0)) }])));
+        assert!(is_storable(&Value::Sum { arm: 0, payload: Box::new(Value::List(vec![num(1.0)])) }));
     }
 
     // ── slice 2: computed fan-out ──────────────────────────────────────────────
