@@ -27,8 +27,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use holon_core::{
     capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval,
     entry_key, hash_unit, memo_key, refork, verify_entry, adoption_counts, CacheEntry,
-    MapResolver, Refork, Capability, DecodeError, EncodeError, Hash, Param, Port, Resolver, Type,
-    Unit, UnitBody, Value,
+    MapResolver, Refork, Capability, DecodeError, Edge, EncodeError, Hash, Param, Port, Resolver,
+    Type, Unit, UnitBody, Value, BOUNDARY,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -235,25 +235,31 @@ impl Host for StateHost {
 /// substituted, so the effect manifest is intact.
 struct SourcedResolver<'a, R: Resolver> {
     sourced: Vec<(Capability, Unit)>,
+    /// The pieces a non-scalar constant is built from (see `constant_unit`).
+    parts: Parts,
     real: &'a R,
 }
 
 impl<'a, R: Resolver> SourcedResolver<'a, R> {
     fn new(sourced: &[(Capability, Value)], real: &'a R) -> Self {
-        // A value that can't be faithfully reconstructed (`constant_unit` → `None`: a `Sum` or
-        // an `Effect`) is dropped here rather than substituted — which routes it through the
-        // SAME seam `fire_sourced`'s doc comment already names for an unsupplied capability:
-        // "evaluates to nothing." No new failure mode; reuse of the existing honest one.
+        // A value that can't be faithfully reconstructed (`constant_unit` → `None`: an
+        // `Effect`, or a sum that isn't an Option) is dropped here rather than substituted —
+        // which routes it through the SAME seam `fire_sourced`'s doc comment already names for
+        // an unsupplied capability: "evaluates to nothing." No new failure mode.
+        let mut parts = Parts::default();
         let sourced = sourced
             .iter()
-            .filter_map(|(cap, value)| constant_unit(value).map(|u| (cap.clone(), u)))
+            .filter_map(|(cap, value)| constant_unit(value, &mut parts).map(|u| (cap.clone(), u)))
             .collect();
-        SourcedResolver { sourced, real }
+        SourcedResolver { sourced, parts, real }
     }
 }
 
 impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
     fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+        if let Some(part) = self.parts.units.get(hash) {
+            return Some(part);
+        }
         let u = self.real.resolve(hash)?;
         if let UnitBody::Primitive { name } = &u.body {
             if let Some(caps) = capabilities_of(name, &u.params) {
@@ -268,37 +274,77 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
     }
 }
 
-/// A pure leaf that evaluates to `value` — used to inject a held state value at the
-/// `store_read` boundary. Scalar; non-scalar state is deferred (a standalone unit can't
-/// carry list items without children-by-hash, and the minimal cell is scalar).
+/// A niladic unit that evaluates to `value` — used to inject a sourced value (a held state
+/// value, the clock, an ingress body) at its leaf. A scalar is one `const`. A list or an Option
+/// is a small composite: one constant per element (built the same way, recursively) wired into
+/// `list` or `some`, whose pieces go into `parts` so the resolver can hand them out. `none()`
+/// and the empty `list()` are niladic already.
 ///
-/// Fallible (`None`) where `value` cannot be **faithfully** reconstructed by a single
-/// niladic primitive: a `Sum`, or an `Effect`. Both are reachable, not hypothetical: both
-/// `store_read`/`store_write` are `Any`-typed (no type-system gate), so a state cell can
-/// genuinely hold an `Option`, and — before `is_storable` gated writes — an `Effect` too.
-/// A stored `Sum` is a missing *capability*, not a bug: there is no niladic
-/// constructor for an arbitrary arm (`some(x)` needs `x` as an input; only `none()` is
-/// niladic). Defaulting to `none()` regardless of the value's real arm would silently
-/// **fabricate the wrong arm** — exactly the "value to fabricate" the `Effect` comment above
-/// already refuses to do, just for a reachable case instead of an impossible one. So this
-/// fails honestly; the caller drops the capability rather than inject a lie.
-fn constant_unit(value: &Value) -> Option<Unit> {
+/// `None` where `value` can't be **faithfully** rebuilt: an `Effect` (writes refuse them, see
+/// `is_storable`, but storage loaded from disk predates that rule), or a sum that isn't an
+/// Option, since genesis has no constructor for an arbitrary arm. The caller then drops the
+/// capability rather than inject a fabricated value. Before this, a stored list read back as
+/// `[]` and a stored Option read as absent.
+fn constant_unit(value: &Value, parts: &mut Parts) -> Option<Unit> {
+    let option = || Type::Sum(vec![Type::Any, Type::Product(vec![])]);
     Some(match value {
         Value::Number(n) => scalar("Number", n.to_string(), Type::Number),
         Value::Boolean(b) => scalar("Boolean", b.to_string(), Type::Boolean),
         Value::Text(s) => scalar("Text", s.clone(), Type::Text),
-        Value::List(_) => Unit {
-            body: UnitBody::Primitive { name: "list".into() },
-            params: vec![],
-            inputs: vec![],
-            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
-        },
-        // Writes refuse effects (`is_storable`), but storage loaded from disk predates that
-        // rule, and a sourced value can come from any host. No faithful constant exists, so
-        // this drops the capability like `Sum` does, rather than panicking mid-fire while the
-        // caller holds the state lock.
-        Value::Effect { .. } | Value::Sum { .. } => return None,
+        Value::List(xs) => {
+            let elements = xs.iter().map(|x| constant_unit(x, parts)).collect::<Option<Vec<_>>>()?;
+            built_from(parts, elements, "list", Type::list_any())
+        }
+        Value::Sum { arm: 0, payload } => {
+            let inner = constant_unit(payload, parts)?;
+            built_from(parts, vec![inner], "some", option())
+        }
+        Value::Sum { arm: 1, payload } if **payload == Value::List(vec![]) => built_from(parts, vec![], "none", option()),
+        Value::Sum { .. } | Value::Effect { .. } => return None,
     })
+}
+
+/// `ctor(e0, e1, …)` as a unit: the constructor primitive itself when there are no elements,
+/// otherwise a composite feeding each element unit into the constructor's inputs in order.
+fn built_from(parts: &mut Parts, elements: Vec<Unit>, ctor: &str, out: Type) -> Unit {
+    let ctor_unit = Unit {
+        body: UnitBody::Primitive { name: ctor.into() },
+        params: vec![],
+        inputs: (0..elements.len()).map(|i| Port { name: format!("e{i}"), ty: Type::Any }).collect(),
+        outputs: vec![Port { name: "out".into(), ty: out.clone() }],
+    };
+    if elements.is_empty() {
+        return ctor_unit;
+    }
+    let k = elements.len() as u32;
+    let mut children: Vec<Hash> = elements.into_iter().map(|e| parts.add(e)).collect();
+    children.push(parts.add(ctor_unit));
+    let mut edges: Vec<Edge> =
+        (0..k).map(|i| Edge { from_child: i, from_port: 0, to_child: k, to_port: i }).collect();
+    edges.push(Edge { from_child: k, from_port: 0, to_child: BOUNDARY, to_port: 0 });
+    Unit {
+        body: UnitBody::Composite { children, edges },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: out }],
+    }
+}
+
+/// Units built by `constant_unit`, under private keys. They are never hashed (a list of nine
+/// equal elements would be `TooSymmetric`) and never leave the resolver. Keys are 24 bytes of
+/// 0xFF followed by a counter, which no blake3 output will realistically equal.
+#[derive(Default)]
+struct Parts {
+    units: BTreeMap<Hash, Unit>,
+}
+
+impl Parts {
+    fn add(&mut self, unit: Unit) -> Hash {
+        let mut key = [0xFF; 32];
+        key[24..].copy_from_slice(&(self.units.len() as u64).to_be_bytes());
+        self.units.insert(key, unit);
+        key
+    }
 }
 
 fn scalar(ty_name: &str, value: String, ty: Type) -> Unit {
@@ -1275,19 +1321,11 @@ mod tests {
         assert_eq!(host.storage().get("counter"), Some(&num(3.0)));
     }
 
+    /// Regression: a stored List read back as `[]` (`constant_unit` injected an empty `list`) and a
+    /// stored Option read as absent. Every storable shape now reads back exactly as stored, and a
+    /// sum that isn't an Option still reads as absent rather than a fabricated arm.
     #[test]
-    fn sum_in_state_fails_honestly_not_fabricated() {
-        // store_write/store_read are Any-typed, so a Sum (Option) CAN reach a state cell —
-        // this isn't hypothetical. constant_unit has no niladic constructor for an arbitrary
-        // arm (only `none()` is niladic), so reconstructing a held `some(x)` is not possible
-        // without fabricating an answer. The required property: it must NOT silently default
-        // to `none()` (which would silently flip a Some to a None — a wrong-arm bug, not a
-        // missing-precision one). It drops the capability instead, the same honest "evaluates
-        // to nothing" path an unsupplied capability already takes. Direct `fire_sourced`, not
-        // `StateHost`/`round` — never touches the keyed-storage redesign at all.
-        let held = Value::Sum { arm: 0, payload: Box::new(num(5.0)) }; // a stored `some(5)`
-        assert_eq!(constant_unit(&held), None);
-
+    fn stored_values_read_back_exactly() {
         let mut r = MapResolver::new();
         let rd = r.insert(keyed_state_prim("store_read", "var1", vec![], Type::Any)).unwrap();
         let passthrough = Unit {
@@ -1299,11 +1337,34 @@ mod tests {
             inputs: vec![],
             outputs: vec![Port { name: "out".into(), ty: Type::Any }],
         };
-        let mut host = Recorder::default();
-        let sourced = [(Capability::StateRead("var1".to_string()), held)];
-        // No panic, no fabricated `none()` — the read simply yields nothing, exactly like an
-        // unsupplied capability.
-        assert_eq!(fire_sourced(&passthrough, &sourced, &r, &mut host), vec![None]);
+        let read_back = |held: Value| {
+            let sourced = [(Capability::StateRead("var1".to_string()), held)];
+            fire_sourced(&passthrough, &sourced, &r, &mut Recorder::default())
+        };
+        let some = |v: Value| Value::Sum { arm: 0, payload: Box::new(v) };
+        let none = Value::Sum { arm: 1, payload: Box::new(Value::List(vec![])) };
+        let list = Value::List;
+
+        for held in [
+            num(5.0),
+            text("hi"),
+            Value::Boolean(true),
+            list(vec![]),
+            list(vec![num(1.0), text("two"), Value::Boolean(false)]),
+            list(vec![num(0.0); 12]), // 12 equal elements: fine, the pieces are never hashed
+            list(vec![list(vec![num(1.0)]), list(vec![]), some(text("x"))]),
+            some(num(5.0)),
+            some(list(vec![num(1.0), num(2.0)])),
+            none.clone(),
+            some(none.clone()),
+        ] {
+            assert_eq!(read_back(held.clone()), vec![Some(held.clone())], "{held:?}");
+        }
+
+        // Not reconstructible: absent, never a different value.
+        assert_eq!(read_back(Value::Sum { arm: 2, payload: Box::new(num(1.0)) }), vec![None]);
+        assert_eq!(read_back(Value::Sum { arm: 1, payload: Box::new(num(1.0)) }), vec![None]);
+        assert_eq!(read_back(list(vec![num(1.0), Value::Effect { sink: "egress".into(), payload: Box::new(num(2.0)) }])), vec![None]);
     }
 
     /// Regression: `store_write(egress(x))` used to commit the `Effect` itself to the cell, and
@@ -1344,7 +1405,7 @@ mod tests {
 
         // Storage that already holds an effect (persisted before the write gate existed).
         let held = Value::Effect { sink: "egress".into(), payload: Box::new(num(1.0)) };
-        assert_eq!(constant_unit(&held), None);
+        assert_eq!(constant_unit(&held, &mut Parts::default()), None);
         let mut host = StateHost::new(BTreeMap::from([("cell".to_string(), held)]));
         host.round(&graph, &[], &r);
 
