@@ -237,7 +237,8 @@ struct Deployment {
     /// table lock is never held during a fire at all, so one deployment's slow state round
     /// still never blocks any other deployment — only two triggers of the *same* deployment
     /// ever wait on each other, which is the actual granularity of the contention. A freshly
-    /// deployed unit starts with an empty map; a `store_read` for a key that's never been
+    /// deployed slug starts with an empty map; a redeploy keeps the existing one (see
+    /// `handle_post_deploy`). A `store_read` for a key that's never been
     /// written simply evaluates to nothing, the same honest-absence behavior any other
     /// unsupplied sourced capability already has (see `fire_with_state`) — no special-casing
     /// needed for "first ever fire." Persisted write-through alongside the rest of
@@ -1202,8 +1203,8 @@ fn is_valid_slug(s: &str) -> bool {
 /// neither — the caller only supplies what genuinely can't be read off the graph
 /// (`interval_seconds`, only when `Clock` is present; nothing tells you "every 3600 seconds"
 /// from structure alone). A unit deriving neither capability is refused — nothing would ever
-/// trigger it. Overwrites silently on a repeat slug (the L4's Fork 2 — a redeploy, not an
-/// error, matching `Store::put`'s and `SharedCache::ingest`'s own "dumb, idempotent" precedent).
+/// trigger it. A repeat slug is a redeploy, not an error (the L4's Fork 2): the unit, triggers
+/// and schedule are replaced, but the slug's **state is kept** (see the insert below).
 fn handle_post_deploy(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
@@ -1287,6 +1288,17 @@ fn handle_post_deploy(
 
     {
         let mut deployments = deployments.lock().unwrap();
+        // A redeploy keeps the slug's state: shipping a fix must never wipe the data the
+        // previous version wrote. The *same* `Arc` is carried over (not a copy), so a fire still
+        // in flight against the old version commits into the map the new version reads. Kept
+        // even when the new unit is stateless, so redeploying a stateful version later finds
+        // its data again; `DELETE /deployments/<slug>` is the one way to discard it.
+        let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
+        let state = match carried {
+            Some(arc) => Some(arc),
+            None if is_state => Some(Arc::new(Mutex::new(BTreeMap::new()))),
+            None => None,
+        };
         deployments.insert(
             body.slug.clone(),
             Deployment {
@@ -1295,7 +1307,7 @@ fn handle_post_deploy(
                 interval_seconds,
                 next_due,
                 history: Vec::new(),
-                state: if is_state { Some(Arc::new(Mutex::new(BTreeMap::new()))) } else { None },
+                state,
                 trigger_count: 0,
                 error_count: 0,
                 deployed_at: SystemTime::now(),
@@ -2943,6 +2955,51 @@ mod tests {
         assert_eq!(r2.status_code, 200);
         let s2 = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
         assert_eq!(s2["state"]["counter"]["value"], "world");
+    }
+
+    /// Regression: `/deploy` on an existing slug used to install a fresh, empty state map, so
+    /// shipping a fix silently erased everything the previous version had written — and a fire
+    /// in flight at the time committed into the orphaned old map instead.
+    #[test]
+    fn redeploy_keeps_state() {
+        let state = test_state();
+        let deploy = |unit: Hash, acknowledge: serde_json::Value| {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "slug": "writer",
+                "unit": to_hex(&unit),
+                "acknowledge": acknowledge,
+            }))
+            .unwrap();
+            assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
+        };
+        let state_arc = || state.deployments.lock().unwrap()["writer"].state.clone().unwrap();
+
+        let v1 = stage_stateful_writer(&state, test_ingress(), "counter");
+        deploy(v1, serde_json::json!(["NetworkIngress", "StateWrite(\"counter\")"]));
+        assert_eq!(route(&state, &req("POST", "/trigger/writer", b"hello".to_vec())).status_code, 200);
+        let before = state_arc();
+
+        // Same unit redeployed: state survives, and it is the very same map, not a copy.
+        deploy(v1, serde_json::json!(["NetworkIngress", "StateWrite(\"counter\")"]));
+        assert!(Arc::ptr_eq(&before, &state_arc()));
+        let s = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
+        assert_eq!(s["state"]["counter"]["value"], "hello");
+
+        // A different stateful version writing another key: the old key is still there.
+        let v2 = stage_stateful_writer(&state, test_ingress(), "other");
+        deploy(v2, serde_json::json!(["NetworkIngress", "StateWrite(\"other\")"]));
+        assert_eq!(route(&state, &req("POST", "/trigger/writer", b"world".to_vec())).status_code, 200);
+        let s = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
+        assert_eq!(s["state"]["counter"]["value"], "hello");
+        assert_eq!(s["state"]["other"]["value"], "world");
+
+        // A stateless version in between doesn't discard it either.
+        let stateless = stage_ingress_plus_driver(&state, test_random());
+        deploy(stateless, serde_json::json!(["NetworkIngress", "Random"]));
+        deploy(v1, serde_json::json!(["NetworkIngress", "StateWrite(\"counter\")"]));
+        let s = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
+        assert_eq!(s["state"]["counter"]["value"], "hello");
+        assert!(Arc::ptr_eq(&before, &state_arc()));
     }
 
     #[test]
