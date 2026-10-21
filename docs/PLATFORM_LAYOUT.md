@@ -148,8 +148,9 @@ Stored per deployment with a bounded retention. The editor's `replay/` reads it 
 - The markers are ordinary frozen params, so there is no encoding change and no new unit
   kind. The earlier idea of a `Kind::Declaration` did not fit: in core, "kind" means effect
   kind (Pure, Driver, State, Sink).
-- **An endpoint** has `declare=endpoint`, `method` and `path`, wraps one handler, and has
-  one `Record`-compatible input and one output. Evaluating it runs the handler, so testing
+- **An endpoint** is any composite with `declare=endpoint`, `method` and `path`, one
+  `Record`-compatible input (the request), and output 0 the response; further outputs carry
+  effects such as state writes. Evaluating it runs the handler, so testing
   an endpoint is plain `eval`.
 - **A server** has `declare=server` and `port`. Its children are endpoints; it has no wiring
   and no ports, so evaluating it yields nothing. Its capability manifest includes

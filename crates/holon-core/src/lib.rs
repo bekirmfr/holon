@@ -63,6 +63,7 @@ pub use resolve::{MapResolver, Resolver};
 pub use simulate::{design_eval, mock_of, Simulated};
 pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;
+pub use json::{parse as parse_json, stringify as stringify_json};
 pub use declare::{
     declaration_of, match_route, parse_path, read_endpoint, read_server, DeclError, EndpointError, Route, Segment,
     Server, METHODS,

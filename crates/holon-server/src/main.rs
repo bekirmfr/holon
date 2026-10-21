@@ -138,6 +138,8 @@
 //! what I got back," which is the only question a stranger-facing boundary would have needed
 //! auth *for*.
 
+mod data;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::Path;
@@ -146,12 +148,12 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use holon_core::{
-    capabilities, child_refs, decode_preimage, encode_preimage, hash_unit, parse_hash,
-    Capability, CacheEntry, Edge, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody,
+    capabilities, child_refs, declaration_of, decode_preimage, encode_preimage, hash_unit, parse_hash,
+    read_server, Capability, CacheEntry, Server, Edge, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody,
     Value, BOUNDARY,
 };
 use holon_host::{
-    fire, fire_sourced, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
+    fire, fire_sourced_with, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
     PublishError, Registry, SharedCache, Store, StoreError,
 };
 use rouille::{Request, Response};
@@ -216,7 +218,14 @@ struct AppState {
     /// The port this server listens on — the one a request's `Host` must name
     /// (`reject_untrusted`).
     port: u16,
+    /// slug → (port, stop signal) for each running data-plane listener, kept in line with the
+    /// deployments table by `sync_listeners`. `None` turns listening off (the tests, which call
+    /// `serve_data` directly instead of opening sockets).
+    listeners: Option<Mutex<Listeners>>,
 }
+
+/// slug → (port, stop signal) of each running data-plane listener.
+type Listeners = BTreeMap<String, (u16, std::sync::mpsc::Sender<()>)>;
 
 /// One deployment's keyed state, shared between its fires and persistence (see `Deployment::state`).
 type DeploymentState = Arc<Mutex<BTreeMap<String, Value>>>;
@@ -262,6 +271,10 @@ struct Deployment {
     /// unsupplied capability) is *not* an error — it's the same honest, expected outcome
     /// this whole project treats as normal everywhere else, not a fault to count.
     error_count: u64,
+    /// The routes and port, when the unit is a server declaration (`holon_core::read_server`):
+    /// such a deployment is answered on its own port by the data plane (`data.rs`), not by
+    /// `/trigger` or the clock. Derived from the unit at deploy and load time, never persisted.
+    server: Option<Server>,
     /// When this deployment was first created. Persisted, so a restart doesn't reset it to
     /// "now" and quietly lie about how long it's actually been running.
     deployed_at: SystemTime,
@@ -484,6 +497,8 @@ struct DeploymentEntry {
     /// named, not-yet-built follow-on, the same way tick history got its own endpoint rather
     /// than riding the deployment listing).
     has_state: bool,
+    /// The port a server deployment answers on; `None` for any other deployment.
+    port: Option<u16>,
     trigger_count: u64,
     error_count: u64,
     deployed_at_epoch_seconds: u64,
@@ -916,6 +931,7 @@ impl Host for RecordingHost {
 /// without combining them into anything.
 fn fire_with_state(
     root_unit: &Unit,
+    inputs: &[Option<Value>],
     resolver: &impl Resolver,
     state: Option<&Mutex<BTreeMap<String, Value>>>,
     extra_sourced: &[(Capability, Value)],
@@ -932,7 +948,7 @@ fn fire_with_state(
     sourced.extend_from_slice(extra_sourced);
 
     let mut host = RecordingHost { performed: Vec::new() };
-    let outputs = fire_sourced(root_unit, &sourced, resolver, &mut host);
+    let outputs = fire_sourced_with(root_unit, inputs, &sourced, resolver, &mut host);
 
     if let Some(storage) = guard.as_deref_mut() {
         for (cap, payload) in &host.performed {
@@ -1110,7 +1126,14 @@ fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeMap<String, 
         if caps.contains(Capability::Clock) {
             triggers.push("Clock".to_string());
         }
-        let next_due = record.interval_seconds.map(|_| SystemTime::now());
+        let server = match declaration_of(root_unit) {
+            Some("server") => Some(
+                read_server(root_unit, &resolver)
+                    .map_err(|e| format!("deployment {slug:?} in {path:?}: not a valid server declaration: {e:?}"))?,
+            ),
+            _ => None,
+        };
+        let next_due = record.interval_seconds.filter(|_| server.is_none()).map(|_| SystemTime::now());
 
         let state = match record.state {
             Some(persisted) => {
@@ -1135,6 +1158,7 @@ fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeMap<String, 
                 next_due,
                 history: Vec::new(),
                 state,
+                server,
                 trigger_count: record.trigger_count,
                 error_count: record.error_count,
                 deployed_at,
@@ -1302,8 +1326,17 @@ fn handle_post_deploy(
     };
 
     let caps = capabilities(root_unit, &resolver);
+    // A server declaration is answered on its own port (the data plane), so it needs neither
+    // `/trigger` nor a schedule. Its clock/random leaves are sourced per request instead.
+    let server = match declaration_of(root_unit) {
+        Some("server") => match read_server(root_unit, &resolver) {
+            Ok(s) => Some(s),
+            Err(e) => return err(400, format!("not a valid server declaration: {e:?}")),
+        },
+        _ => None,
+    };
     let is_ingress = caps.contains(Capability::NetworkIngress);
-    let is_clock = caps.contains(Capability::Clock);
+    let is_clock = caps.contains(Capability::Clock) && server.is_none();
     if !is_ingress && !is_clock {
         return err(
             400,
@@ -1345,7 +1378,9 @@ fn handle_post_deploy(
     let next_due = interval_seconds.map(|_| SystemTime::now());
 
     let mut triggers = Vec::new();
-    if is_ingress {
+    if let Some(s) = &server {
+        triggers.push(format!("Http :{}", s.port));
+    } else if is_ingress {
         triggers.push("Ingress".to_string());
     }
     if is_clock {
@@ -1355,6 +1390,13 @@ fn handle_post_deploy(
 
     {
         let mut deployments = deployments.lock().unwrap();
+        if let Some(s) = &server
+            && let Some((other, _)) = deployments
+                .iter()
+                .find(|(other, d)| **other != body.slug && d.server.as_ref().is_some_and(|o| o.port == s.port))
+        {
+            return err(409, format!("port {} is already served by deployment {other:?}", s.port));
+        }
         // A redeploy keeps the slug's state: shipping a fix must never wipe the data the
         // previous version wrote. The *same* `Arc` is carried over (not a copy), so a fire still
         // in flight against the old version commits into the map the new version reads. Kept
@@ -1375,6 +1417,7 @@ fn handle_post_deploy(
                 next_due,
                 history: Vec::new(),
                 state,
+                server,
                 trigger_count: 0,
                 error_count: 0,
                 deployed_at: SystemTime::now(),
@@ -1396,6 +1439,7 @@ fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry {
         triggers: dep.triggers.clone(),
         interval_seconds: dep.interval_seconds,
         has_state: dep.state.is_some(),
+        port: dep.server.as_ref().map(|s| s.port),
         trigger_count: dep.trigger_count,
         error_count: dep.error_count,
         deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
@@ -1517,6 +1561,9 @@ fn handle_post_trigger(
     let (unit_hash, state) = {
         let deployments = deployments.lock().unwrap();
         match deployments.get(slug) {
+            Some(dep) if dep.server.is_some() => {
+                return err(400, "this deployment is an HTTP server: send requests to its own port");
+            }
             Some(dep) => (dep.unit, dep.state.clone()),
             None => return Response::empty_404(),
         }
@@ -1548,7 +1595,7 @@ fn handle_post_trigger(
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
-    let (outputs, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), &extra_sourced);
+    let (outputs, performed) = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
 
     record_trigger(deployments, slug, false);
     if state.is_some() {
@@ -1649,7 +1696,7 @@ fn fire_one_clock_tick(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let is_state = state.is_some();
-    let (outputs, performed) = fire_with_state(root_unit, &resolver, state.as_deref(), &extra_sourced);
+    let (outputs, performed) = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
 
     println!(
         "clock tick [{slug}] at {epoch_seconds}: outputs={outputs:?}, {} effect(s) performed",
@@ -1692,6 +1739,105 @@ fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<Str
         thread::sleep(Duration::from_secs(1));
         run_due_clock_ticks(&store, &deployments, &deployments_path, SystemTime::now());
     });
+}
+
+/// Answer one data-plane request for the server deployment `slug`: route it, settle the matched
+/// endpoint with its request record and the deployment's state, and send its response (see
+/// `data.rs`). The deployment is looked up per request, so a redeploy on the same port takes
+/// effect for the very next request without restarting the listener.
+fn serve_data(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    slug: &str,
+    request: &Request,
+) -> Response {
+    let found = deployments.lock().unwrap().get(slug).map(|d| (d.unit, d.state.clone(), d.server.clone()));
+    let Some((unit_hash, state, Some(server))) = found else {
+        return err(503, format!("{slug:?} is not deployed as a server"));
+    };
+    let body = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let resolver = match materialize_closure(store, unit_hash) {
+        Ok(r) => r,
+        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+    };
+    let headers: Vec<(String, String)> = request.headers().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let epoch_seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let sourced = [
+        (Capability::Clock, Value::Number(epoch_seconds as f64)),
+        (Capability::Random, Value::Number(rand::random::<f64>())),
+    ];
+    let http = data::HttpRequest { method: request.method(), url: request.raw_url(), headers: &headers, body: &body };
+    let answer = data::handle(
+        &server,
+        &resolver,
+        &http,
+        |endpoint, req, sourced| fire_with_state(endpoint, &[Some(req)], &resolver, state.as_deref(), sourced).0,
+        &sourced,
+    );
+    record_trigger(deployments, slug, answer.status >= 500);
+    if state.is_some() {
+        persist_deployments(deployments_path, deployments);
+    }
+    Response {
+        status_code: answer.status,
+        headers: answer.headers.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+        data: rouille::ResponseBody::from_data(answer.body),
+        upgrade: None,
+    }
+}
+
+/// Start the data-plane listener for `slug` on `127.0.0.1:port`, returning its stop signal.
+/// Loopback only for now: before a data plane faces the internet it moves to a maintained async
+/// stack with timeouts and connection limits (docs/PLATFORM_LAYOUT.md §7b).
+fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<std::sync::mpsc::Sender<()>, String> {
+    let store = state.store.clone();
+    let deployments = Arc::clone(&state.deployments);
+    let path = state.deployments_path.clone();
+    let owner = slug.to_string();
+    let server = rouille::Server::new(("127.0.0.1", port), move |request| {
+        serve_data(&store, &deployments, &path, &owner, request)
+    })
+    .map_err(|e| e.to_string())?;
+    let (_thread, stop) = server.stoppable();
+    println!("holon-server: {slug:?} answering on http://127.0.0.1:{port}");
+    Ok(stop)
+}
+
+/// Bring the running listeners in line with the deployments table: stop any whose deployment is
+/// gone or moved port, start one for each server deployment without one. Idempotent; called after
+/// every deploy and undeploy, and once at startup.
+fn sync_listeners(state: &AppState) {
+    let Some(listeners) = &state.listeners else { return };
+    let wanted: BTreeMap<String, u16> = state
+        .deployments
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(slug, d)| d.server.as_ref().map(|s| (slug.clone(), s.port)))
+        .collect();
+    let mut running = listeners.lock().unwrap();
+    running.retain(|slug, (port, stop)| {
+        let keep = wanted.get(slug) == Some(port);
+        if !keep {
+            let _ = stop.send(());
+        }
+        keep
+    });
+    for (slug, port) in wanted {
+        if running.contains_key(&slug) {
+            continue;
+        }
+        match start_listener(state, &slug, port) {
+            Ok(stop) => {
+                running.insert(slug, (port, stop));
+            }
+            Err(e) => eprintln!("holon-server: {slug:?} could not listen on port {port}: {e}"),
+        }
+    }
 }
 
 fn route(state: &AppState, request: &Request) -> Response {
@@ -1752,7 +1898,9 @@ fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        return handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, request);
+        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, request);
+        sync_listeners(state);
+        return response;
     }
 
     if url == "/flows" {
@@ -1787,7 +1935,9 @@ fn route(state: &AppState, request: &Request) -> Response {
                 return handle_get_state(&state.deployments, slug);
             }
         } else if method == "DELETE" {
-            return handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
+            let response = handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
+            sync_listeners(state);
+            return response;
         }
     }
 
@@ -2121,8 +2271,18 @@ fn main() {
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|e| panic!("HOLON_SERVER_ADDR {addr:?} is not host:port: {e}"))
         .port();
-    let state =
-        AppState { store, registry, cache, deployments, deployments_path: deployments_arg, flows, flows_path: flows_arg, port };
+    let state = AppState {
+        store,
+        registry,
+        cache,
+        deployments,
+        deployments_path: deployments_arg,
+        flows,
+        flows_path: flows_arg,
+        port,
+        listeners: Some(Mutex::new(BTreeMap::new())),
+    };
+    sync_listeners(&state);
 
     println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
     rouille::start_server(addr, move |request| with_cors(request, route(&state, request)));
@@ -2155,6 +2315,7 @@ mod tests {
             flows: Mutex::new(BTreeMap::new()),
             flows_path: ":memory:".to_string(),
             port: TEST_PORT,
+            listeners: None,
         }
     }
 
@@ -2810,6 +2971,7 @@ mod tests {
                 flows: Mutex::new(BTreeMap::new()),
                 flows_path: ":memory:".to_string(),
                 port: TEST_PORT,
+                listeners: None,
             };
             let body = serde_json::to_vec(&serde_json::json!({
                 "slug": "echo",
@@ -2837,6 +2999,7 @@ mod tests {
             flows: Mutex::new(BTreeMap::new()),
             flows_path: ":memory:".to_string(),
             port: TEST_PORT,
+            listeners: None,
         };
         let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
         assert_eq!(triggered.status_code, 200);
@@ -3180,6 +3343,141 @@ mod tests {
         assert!(Arc::ptr_eq(&before, &state_arc()));
     }
 
+    // ── data plane: a server declaration answered on its own port ─────────────────────────
+
+    fn stage(state: &AppState, unit: &Unit) -> Hash {
+        assert_eq!(route(state, &req("POST", "/unit", encode_preimage(unit).unwrap())).status_code, 200);
+        hash_unit(unit).unwrap()
+    }
+
+    fn leaf(name: &str, params: Vec<Param>, inputs: Vec<(&str, Type)>, out: Type) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: name.into() },
+            params,
+            inputs: inputs.into_iter().map(|(n, ty)| Port { name: n.into(), ty }).collect(),
+            outputs: vec![Port { name: "out".into(), ty: out }],
+        }
+    }
+
+    /// An endpoint wrapping `children` wired by `edges`: input 0 is the request, output 0 the
+    /// response, and `extra_outputs` more outputs carry effects.
+    fn endpoint(state: &AppState, method: &str, path: &str, children: Vec<Unit>, edges: Vec<Edge>, extra_outputs: usize) -> Hash {
+        let children = children.iter().map(|u| stage(state, u)).collect();
+        let mut outputs = vec![Port { name: "response".into(), ty: Type::Any }];
+        for i in 0..extra_outputs {
+            outputs.push(Port { name: format!("effect{i}"), ty: Type::Effect });
+        }
+        stage(
+            state,
+            &Unit {
+                body: UnitBody::Composite { children, edges },
+                params: vec![
+                    Param::frozen("declare", "endpoint"),
+                    Param::frozen("method", method),
+                    Param::frozen("path", path),
+                ],
+                inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+                outputs,
+            },
+        )
+    }
+
+    /// GET /todos lists the stored items (`[]` until the first write); POST /todos parses the body,
+    /// appends it, stores the list, and answers with the item.
+    fn todo_server(state: &AppState, port: &str) -> Hash {
+        let todos = || leaf("default", vec![Param::frozen("type", "Json"), Param::frozen("value", "[]")], vec![("value", Type::Any)], Type::Any);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let list = endpoint(state, "GET", "/todos", vec![test_store_read("todos"), todos()], vec![e(0, 0, 1, 0), e(1, 0, BOUNDARY, 0)], 0);
+        let create = endpoint(
+            state,
+            "POST",
+            "/todos",
+            vec![
+                leaf("field", vec![Param::frozen("name", "body")], vec![("record", Type::Record)], Type::Any),
+                leaf("json_parse", vec![], vec![("text", Type::Text)], Type::Any),
+                test_store_read("todos"),
+                todos(),
+                leaf("append", vec![], vec![("list", Type::list_any()), ("item", Type::Any)], Type::list_any()),
+                test_store_write("todos"),
+            ],
+            vec![
+                e(BOUNDARY, 0, 0, 0), // request → field(body)
+                e(0, 0, 1, 0),        // body → json_parse
+                e(2, 0, 3, 0),        // store_read → default([])
+                e(3, 0, 4, 0),        // list → append
+                e(1, 0, 4, 1),        // item → append
+                e(4, 0, 5, 0),        // appended → store_write
+                e(1, 0, BOUNDARY, 0), // response: the item
+                e(5, 0, BOUNDARY, 1), // effect: the write
+            ],
+            1,
+        );
+        stage(
+            state,
+            &Unit {
+                body: UnitBody::Composite { children: vec![list, create], edges: vec![] },
+                params: vec![Param::frozen("declare", "server"), Param::frozen("port", port)],
+                inputs: vec![],
+                outputs: vec![],
+            },
+        )
+    }
+
+    fn deploy_server(state: &AppState, slug: &str, unit: Hash) -> Response {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "slug": slug,
+            "unit": to_hex(&unit),
+            "acknowledge": ["NetworkIngress", "StateRead(\"todos\")", "StateWrite(\"todos\")"],
+        }))
+        .unwrap();
+        route(state, &req("POST", "/deploy", body))
+    }
+
+    #[test]
+    fn a_server_deployment_answers_requests_and_keeps_state() {
+        let mut state = test_state();
+        let path = unique_temp_path("todo-api");
+        state.deployments_path = path.clone();
+        let api = todo_server(&state, "18080");
+        let deployed = deploy_server(&state, "todo-api", api);
+        let code = deployed.status_code;
+        let shown = body_json(deployed);
+        assert_eq!(code, 200, "{shown}");
+        assert_eq!(shown["triggers"], serde_json::json!(["Http :18080"]));
+
+        let call = |method: &str, url: &str, body: &str| {
+            let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "todo-api",
+                &Request::fake_http(method, url, vec![], body.as_bytes().to_vec()));
+            (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+        };
+        assert_eq!(call("GET", "/todos", ""), (200, "[]".to_string()));
+        assert_eq!(call("POST", "/todos", r#"{"title":"buy milk"}"#), (200, r#"{"title":"buy milk"}"#.to_string()));
+        assert_eq!(call("POST", "/todos", r#"{"title":"walk"}"#).0, 200);
+        assert_eq!(call("GET", "/todos?ignored=1", ""), (200, r#"[{"title":"buy milk"},{"title":"walk"}]"#.to_string()));
+        assert_eq!(call("POST", "/todos", "not json").0, 500, "a body json_parse refuses settles to no response");
+        assert_eq!(call("GET", "/nope", "").0, 404);
+        assert_eq!(call("DELETE", "/todos", "").0, 405);
+
+        // The listing shows the port and the request count; /trigger is refused for a server.
+        let listed = body_json(route(&state, &req("GET", "/deployments", vec![])));
+        assert_eq!(listed["deployments"][0]["port"], 18080);
+        assert_eq!(listed["deployments"][0]["trigger_count"], 7);
+        assert_eq!(route(&state, &req("POST", "/trigger/todo-api", b"x".to_vec())).status_code, 400);
+
+        // A second server on the same port is refused; a broken declaration is a 400.
+        let other = todo_server(&state, "18080");
+        assert_eq!(deploy_server(&state, "other", other).status_code, 409);
+        let bad = todo_server(&state, "0");
+        assert_eq!(deploy_server(&state, "bad", bad).status_code, 400);
+
+        // A restart reloads it as a server, with its items.
+        let reloaded = load_deployments(&path, &state.store).unwrap();
+        assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
+        let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap()["todos"].clone();
+        assert!(matches!(todos, Value::List(ref xs) if xs.len() == 2));
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Regression: `persist_deployments` ran with the table lock held, and inside it locked
     /// every deployment's state. So while one deployment was mid-fire (holding its own state
     /// lock), any persist parked on that lock *while holding the table*, and every endpoint
@@ -3424,6 +3722,7 @@ mod tests {
                 flows: Mutex::new(BTreeMap::new()),
                 flows_path: ":memory:".to_string(),
                 port: TEST_PORT,
+                listeners: None,
             };
             let deploy_body = serde_json::to_vec(&serde_json::json!({
                 "slug": "writer",
@@ -3453,6 +3752,7 @@ mod tests {
             flows: Mutex::new(BTreeMap::new()),
             flows_path: ":memory:".to_string(),
             port: TEST_PORT,
+            listeners: None,
         };
         let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
         assert_eq!(triggered2.status_code, 200);

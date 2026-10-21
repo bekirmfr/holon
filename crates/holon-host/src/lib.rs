@@ -120,8 +120,20 @@ pub fn fire_sourced(
     real: &impl Resolver,
     host: &mut impl Host,
 ) -> Vec<Option<Value>> {
+    fire_sourced_with(root, &[], sourced, real, host)
+}
+
+/// [`fire_sourced`] for a root that also takes inputs: an endpoint, whose one input is the
+/// request record.
+pub fn fire_sourced_with(
+    root: &Unit,
+    inputs: &[Option<Value>],
+    sourced: &[(Capability, Value)],
+    real: &impl Resolver,
+    host: &mut impl Host,
+) -> Vec<Option<Value>> {
     let resolver = SourcedResolver::new(sourced, real);
-    fire(root, &[], &resolver, host)
+    fire(root, inputs, &resolver, host)
 }
 
 /// The two firing modes the host offers over one graph. The **core never learns about them** —

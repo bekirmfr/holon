@@ -1,8 +1,9 @@
 //! Declaration units (M1, docs/PLATFORM_LAYOUT.md §5, option A): an HTTP API as ordinary units.
 //!
-//! - An **endpoint** is a composite wrapping one handler (`request → response`), carrying frozen
-//!   params `declare = "endpoint"`, `method` and `path`. Evaluating it runs the handler, so testing
-//!   an endpoint is plain `eval`.
+//! - An **endpoint** is a composite (any internal graph: the handler) from a `request` record to a
+//!   response, carrying frozen params `declare = "endpoint"`, `method` and `path`. Evaluating it runs the handler, so testing
+//!   an endpoint is plain `eval`. Output 0 is the response; any further outputs carry effects
+//!   (state writes) for the host to perform.
 //! - A **server** is a composite whose children are endpoints, with no wiring and no ports,
 //!   carrying `declare = "server"` and `port`. Its hash is the hash of the whole API.
 //!
@@ -52,7 +53,7 @@ pub enum DeclError {
     NotAnEndpoint { child: u32 },
     BadMethod { child: u32, method: String },
     BadPath { child: u32, path: String },
-    /// An endpoint must wrap exactly one handler with one input and one output.
+    /// An endpoint takes exactly one `Record`-compatible input and has at least one output.
     BadEndpointShape { child: u32 },
     DuplicateRoute { method: String, path: String },
 }
@@ -124,10 +125,7 @@ pub enum EndpointError {
 
 /// Read an endpoint's method and path, checking its shape.
 pub fn read_endpoint(unit: &Unit) -> Result<(String, String), EndpointError> {
-    let UnitBody::Composite { children, .. } = &unit.body else {
-        return Err(EndpointError::NotAnEndpoint);
-    };
-    if declaration_of(unit) != Some("endpoint") {
+    if !matches!(unit.body, UnitBody::Composite { .. }) || declaration_of(unit) != Some("endpoint") {
         return Err(EndpointError::NotAnEndpoint);
     }
     let method = frozen(unit, "method").unwrap_or("").to_string();
@@ -139,7 +137,7 @@ pub fn read_endpoint(unit: &Unit) -> Result<(String, String), EndpointError> {
         return Err(EndpointError::BadPath(path));
     }
     let request_ok = matches!(unit.inputs.as_slice(), [p] if crate::compatible(&Type::Record, &p.ty));
-    if children.len() != 1 || !request_ok || unit.outputs.len() != 1 {
+    if !request_ok || unit.outputs.is_empty() {
         return Err(EndpointError::BadShape);
     }
     Ok((method, path))
