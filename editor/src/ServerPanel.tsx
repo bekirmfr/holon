@@ -1,11 +1,23 @@
 // The server panel (M1): turn the projected handler into an endpoint, collect endpoints into a
-// server with a port, test an endpoint locally, and deploy the server. The server and its
-// endpoints are ordinary units (core's declare.rs), so deploying one is deploying a hash.
+// server with a port, try requests against it, and deploy it. The server and its endpoints are
+// ordinary units (core's declare.rs), so deploying one is deploying a hash.
 
 import { useMemo, useState, type CSSProperties } from "react";
 import { buildPreimage, type Evaluator, type WCapability, type WPort, type WUnit, type WValue } from "./holon";
-import { capabilityAcknowledgeName, formatValue } from "./diagnostics";
-import { endpointUnit, METHODS, requestRecord, responseOf, serverUnit, type EndpointDraft, type Method } from "./endpoint";
+import { capabilityAcknowledgeName } from "./diagnostics";
+import {
+  endpointUnit,
+  matchRoute,
+  METHODS,
+  parseHeaders,
+  requestRecord,
+  responseOf,
+  serverUnit,
+  toJson,
+  type EndpointDraft,
+  type Method,
+} from "./endpoint";
+import { sendRequest, ServerError, type HttpResponse } from "./server";
 
 /** What the panel keeps per flow (saved with it): the server's port and its endpoints. */
 export type ServerDraft = { port: string; endpoints: EndpointDraft[] };
@@ -20,6 +32,65 @@ const field: CSSProperties = {
   padding: "2px 4px",
 };
 const button: CSSProperties = { ...field, color: "#9fb4d4", cursor: "pointer", padding: "2px 8px" };
+const label: CSSProperties = { width: 52, flexShrink: 0 };
+
+/** A request typed into the tester. */
+type TesterRequest = { method: Method; url: string; headers: string; body: string };
+/** What came back, and from where. */
+type TesterResult = ({ from: "local" | "live" } & HttpResponse) | { error: string };
+
+/** Answer `req` in the browser, as the deployed server would: route it across the draft's
+ *  endpoints, evaluate the matched one, and write the response the way data.rs does. State reads
+ *  see nothing stored, since no state lives in the browser. */
+function answerLocally(ev: Evaluator, endpoints: EndpointDraft[], req: TesterRequest): TesterResult {
+  const headers = parseHeaders(req.headers);
+  if (typeof headers === "string") return { error: headers };
+  const json = (status: number, error: string, extra: [string, string][] = []): TesterResult => ({
+    from: "local",
+    status,
+    headers: [["content-type", "application/json"], ...extra],
+    body: JSON.stringify({ error }),
+  });
+  const routed = matchRoute(endpoints, req.method, req.url);
+  if ("status" in routed) {
+    return routed.status === 404
+      ? json(404, "no route for this path")
+      : json(405, "method not allowed for this path", [["allow", routed.allow.join(", ")]]);
+  }
+  const e = routed.endpoint;
+  const request = requestRecord(req.method, e.path, req.url, req.body, headers);
+  if (!request) return { error: `"${req.url}" doesn't match ${e.path}` };
+  let outputs: (WValue | null)[];
+  try {
+    outputs = ev.eval(buildPreimage(ev.get_unit(e.hash) as WUnit), [request]) as (WValue | null)[];
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+  const answer = responseOf(outputs[0]);
+  let body = "";
+  let contentType: string | null = null;
+  if (answer.body?.type === "Text") {
+    body = answer.body.value;
+    contentType = "text/plain; charset=utf-8";
+  } else if (answer.body) {
+    const j = toJson(answer.body);
+    if (j === null) return json(500, "the response body has no JSON form");
+    body = j;
+    contentType = "application/json";
+  }
+  const out = [...answer.headers];
+  if (contentType && !out.some(([k]) => k === "content-type")) out.push(["content-type", contentType]);
+  return { from: "local", status: answer.status, headers: out, body };
+}
+
+/** Pretty-print a JSON body; anything else is shown as it came. */
+function showBody(body: string): string {
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    return body;
+  }
+}
 
 export function ServerPanel({
   ev,
@@ -39,12 +110,16 @@ export function ServerPanel({
   const [method, setMethod] = useState<Method>("GET");
   const [path, setPath] = useState("/");
   const [slug, setSlug] = useState("");
+  const [deployedSlug, setDeployedSlug] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const [testing, setTesting] = useState<{ index: number; url: string; body: string; result: string } | null>(null);
+  const [req, setReq] = useState<TesterRequest>({ method: "GET", url: "/", headers: "", body: "" });
+  const [result, setResult] = useState<TesterResult | null>(null);
+  const [sending, setSending] = useState(false);
 
   const portNumber = Number(draft.port);
   const portOk = Number.isInteger(portNumber) && portNumber >= 1 && portNumber <= 65535;
+  const liveSlug = deployedSlug || slug.trim();
 
   // The server this draft would deploy, and what it may touch, shown before deploying.
   const server = useMemo(() => {
@@ -71,21 +146,19 @@ export function ServerPanel({
     setMsg(others.length < draft.endpoints.length ? `replaced ${method} ${path.trim()}` : "");
   };
 
-  const send = () => {
-    if (!testing) return;
-    const e = draft.endpoints[testing.index];
-    const request = requestRecord(e.method, e.path, testing.url, testing.body);
-    if (!request) {
-      setTesting({ ...testing, result: `"${testing.url}" doesn't match ${e.path}` });
+  const sendLocal = () => setResult(answerLocally(ev, draft.endpoints, req));
+
+  const sendLive = () => {
+    const headers = parseHeaders(req.headers);
+    if (typeof headers === "string") {
+      setResult({ error: headers });
       return;
     }
-    try {
-      const outputs = ev.eval(buildPreimage(ev.get_unit(e.hash) as WUnit), [request]) as (WValue | null)[];
-      const { status, body } = responseOf(outputs[0]);
-      setTesting({ ...testing, result: `${status}${body ? ` · ${formatValue(body)}` : ""}` });
-    } catch (err) {
-      setTesting({ ...testing, result: err instanceof Error ? err.message : String(err) });
-    }
+    setSending(true);
+    sendRequest(liveSlug, { method: req.method, url: req.url, headers, body: req.body })
+      .then((r) => setResult({ from: "live", ...r }))
+      .catch((err: unknown) => setResult({ error: err instanceof ServerError || err instanceof Error ? err.message : String(err) }))
+      .finally(() => setSending(false));
   };
 
   const onDeploy = () => {
@@ -93,14 +166,19 @@ export function ServerPanel({
     setBusy(true);
     setMsg("");
     deploy(server.hash, slug.trim(), server.caps)
-      .then(() => setMsg(`deployed — try curl http://127.0.0.1:${portNumber}${draft.endpoints[0]?.path ?? "/"}`))
+      .then(() => {
+        setDeployedSlug(slug.trim());
+        setMsg(`deployed — live at http://127.0.0.1:${portNumber}`);
+      })
       .catch((err: unknown) => setMsg(err instanceof Error ? err.message : String(err)))
       .finally(() => setBusy(false));
   };
 
+  const canSend = req.url.startsWith("/");
+
   return (
     <div
-      className="nodrag"
+      className="nodrag nowheel"
       style={{
         fontSize: 11,
         color: "#9fb4d4",
@@ -111,7 +189,9 @@ export function ServerPanel({
         display: "flex",
         flexDirection: "column",
         gap: 6,
-        width: 300,
+        width: 320,
+        maxHeight: "70vh",
+        overflowY: "auto",
       }}
     >
       <div style={{ color: "#e6eefb", letterSpacing: "0.04em" }}>server</div>
@@ -134,46 +214,23 @@ export function ServerPanel({
       </div>
 
       {draft.endpoints.map((e, i) => (
-        <div key={`${e.method} ${e.path}`} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ color: "#6fd3e0", width: 52 }}>{e.method}</span>
-            <span style={{ flex: 1, color: "#e6eefb" }}>{e.path}</span>
-            <button style={button} onClick={() => setTesting({ index: i, url: e.path, body: "", result: "" })}>
-              test
-            </button>
-            <button
-              style={button}
-              title="remove this endpoint"
-              onClick={() => {
-                setDraft({ ...draft, endpoints: draft.endpoints.filter((_, j) => j !== i) });
-                setTesting(null);
-              }}
-            >
-              ×
-            </button>
-          </div>
-          {testing?.index === i && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingLeft: 58 }}>
-              <input value={testing.url} onChange={(ev2) => setTesting({ ...testing, url: ev2.target.value })} style={field} />
-              {e.method !== "GET" && (
-                <textarea
-                  value={testing.body}
-                  onChange={(ev2) => setTesting({ ...testing, body: ev2.target.value })}
-                  placeholder="request body"
-                  rows={2}
-                  style={{ ...field, resize: "vertical" }}
-                />
-              )}
-              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <button style={button} onClick={send}>
-                  send
-                </button>
-                <span style={{ color: "#9ad29f" }} title="evaluated in the browser; state reads see nothing stored">
-                  {testing.result}
-                </span>
-              </div>
-            </div>
-          )}
+        <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <span style={{ color: "#6fd3e0", ...label }}>{e.method}</span>
+          <span style={{ flex: 1, color: "#e6eefb" }}>{e.path}</span>
+          <button
+            style={button}
+            title="load this route into the request tester"
+            onClick={() => setReq({ ...req, method: e.method, url: e.path })}
+          >
+            test
+          </button>
+          <button
+            style={button}
+            title="remove this endpoint"
+            onClick={() => setDraft({ ...draft, endpoints: draft.endpoints.filter((_, j) => j !== i) })}
+          >
+            ×
+          </button>
         </div>
       ))}
 
@@ -202,6 +259,77 @@ export function ServerPanel({
       </div>
       {server && server.caps.length > 0 && <div>touches: {server.caps.join(", ")}</div>}
       {msg && <div style={{ color: msg.startsWith("deployed") ? "#9ad29f" : "#e0916f" }}>{msg}</div>}
+
+      {/* ── request tester ── */}
+      <div style={{ borderTop: "1px solid #1b2a45", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+        <div style={{ color: "#e6eefb", letterSpacing: "0.04em" }}>request</div>
+        <div style={{ display: "flex", gap: 4 }}>
+          <select value={req.method} onChange={(e) => setReq({ ...req, method: e.target.value as Method })} style={field}>
+            {METHODS.map((m) => (
+              <option key={m}>{m}</option>
+            ))}
+          </select>
+          <input
+            value={req.url}
+            onChange={(e) => setReq({ ...req, url: e.target.value })}
+            placeholder="/todos/1?full=1"
+            style={{ ...field, flex: 1 }}
+          />
+        </div>
+        <textarea
+          value={req.headers}
+          onChange={(e) => setReq({ ...req, headers: e.target.value })}
+          placeholder={"headers, one per line\ncontent-type: application/json"}
+          rows={2}
+          style={{ ...field, resize: "vertical" }}
+        />
+        <textarea
+          value={req.body}
+          onChange={(e) => setReq({ ...req, body: e.target.value })}
+          placeholder={'body, e.g. {"title": "buy milk"}'}
+          rows={3}
+          style={{ ...field, resize: "vertical" }}
+        />
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            style={{ ...button, opacity: canSend && draft.endpoints.length > 0 ? 1 : 0.4 }}
+            disabled={!canSend || draft.endpoints.length === 0}
+            onClick={sendLocal}
+            title="answer it in the browser, from the draft endpoints (no stored state)"
+          >
+            send local
+          </button>
+          <button
+            style={{ ...button, opacity: canSend && liveSlug && !sending ? 1 : 0.4 }}
+            disabled={!canSend || !liveSlug || sending}
+            onClick={sendLive}
+            title={liveSlug ? `send it to the deployed server "${liveSlug}"` : "deploy the server (or type its slug) first"}
+          >
+            {sending ? "sending…" : "send live"}
+          </button>
+        </div>
+        {result &&
+          ("error" in result ? (
+            <div style={{ color: "#e0916f" }}>{result.error}</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <div>
+                <span style={{ color: result.status < 400 ? "#9ad29f" : "#e0916f" }}>← {result.status}</span>
+                <span> · {result.from === "live" ? `live (${liveSlug})` : "local"}</span>
+              </div>
+              {result.headers.map(([k, v]) => (
+                <div key={k} style={{ color: "#7f93b3" }}>
+                  {k}: {v}
+                </div>
+              ))}
+              {result.body && (
+                <pre style={{ ...field, margin: 0, whiteSpace: "pre-wrap", maxHeight: 160, overflowY: "auto" }}>
+                  {showBody(result.body)}
+                </pre>
+              )}
+            </div>
+          ))}
+      </div>
     </div>
   );
 }

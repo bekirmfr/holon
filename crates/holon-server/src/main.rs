@@ -1840,6 +1840,61 @@ fn sync_listeners(state: &AppState) {
     }
 }
 
+/// `POST /deployments/<slug>/request`'s body: one HTTP request to send to that server deployment.
+#[derive(Deserialize)]
+struct SendRequestBody {
+    method: String,
+    /// Path plus optional query string, e.g. `/todos/3?full=1`.
+    url: String,
+    #[serde(default)]
+    headers: Vec<(String, String)>,
+    #[serde(default)]
+    body: String,
+}
+
+/// The data plane's answer, as `POST /deployments/<slug>/request` returns it.
+#[derive(Serialize)]
+struct SentResponseBody {
+    status: u16,
+    headers: Vec<(String, String)>,
+    /// The response body as text (lossily, if it isn't UTF-8).
+    body: String,
+}
+
+/// `POST /deployments/<slug>/request` — send one request to a deployed server and return its
+/// answer: the editor's request tester ("send live"). It goes through `serve_data`, exactly as a
+/// request on the server's own port would (same routing, same state, counted the same), but
+/// arrives over the control plane, so the browser needs no CORS access to the data plane and the
+/// control plane's request gate still applies.
+fn handle_post_request(state: &AppState, slug: &str, request: &Request) -> Response {
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let send: SendRequestBody = match serde_json::from_slice(&bytes) {
+        Ok(b) => b,
+        Err(e) => return err(400, format!("not a valid request JSON: {e}")),
+    };
+    if !send.url.starts_with('/') {
+        return err(400, "url must start with / (a path, plus an optional ?query)");
+    }
+    match state.deployments.lock().unwrap().get(slug) {
+        None => return err(404, format!("no deployment {slug:?}")),
+        Some(d) if d.server.is_none() => return err(400, format!("{slug:?} is not an HTTP server deployment")),
+        Some(_) => {}
+    }
+    let inner = Request::fake_http(send.method, send.url, send.headers, send.body.into_bytes());
+    let answer = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &inner);
+    let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let status = answer.status_code;
+    let (mut reader, _) = answer.data.into_reader_and_size();
+    let mut body = Vec::new();
+    if reader.read_to_end(&mut body).is_err() {
+        return err(500, "could not read the server's response");
+    }
+    Response::json(&SentResponseBody { status, headers, body: String::from_utf8_lossy(&body).into_owned() })
+}
+
 fn route(state: &AppState, request: &Request) -> Response {
     // `request.url()` returns an owned `String` (not a borrow of `request`) — bound once here
     // rather than called again per branch, both so `strip_prefix` below has something with a
@@ -1933,6 +1988,10 @@ fn route(state: &AppState, request: &Request) -> Response {
         } else if let Some(slug) = rest.strip_suffix("/state") {
             if method == "GET" {
                 return handle_get_state(&state.deployments, slug);
+            }
+        } else if let Some(slug) = rest.strip_suffix("/request") {
+            if method == "POST" {
+                return handle_post_request(state, slug, request);
             }
         } else if method == "DELETE" {
             let response = handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
@@ -3476,6 +3535,32 @@ mod tests {
         let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap()["todos"].clone();
         assert!(matches!(todos, Value::List(ref xs) if xs.len() == 2));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The editor's "send live": a request sent over the control plane reaches the deployed server
+    /// exactly as one on its port would, state included.
+    #[test]
+    fn a_request_sent_through_the_control_plane_reaches_the_server() {
+        let state = test_state();
+        let api = todo_server(&state, "18081");
+        assert_eq!(deploy_server(&state, "todo", api).status_code, 200);
+        let send = |slug: &str, body: serde_json::Value| {
+            let r = route(&state, &req("POST", &format!("/deployments/{slug}/request"), serde_json::to_vec(&body).unwrap()));
+            (r.status_code, body_json(r))
+        };
+        let (code, sent) = send("todo", serde_json::json!({
+            "method": "POST", "url": "/todos", "headers": [["Content-Type", "application/json"]], "body": "{\"title\":\"milk\"}"
+        }));
+        assert_eq!((code, &sent["status"], &sent["body"]), (200, &serde_json::json!(200), &serde_json::json!("{\"title\":\"milk\"}")));
+        let (_, listed) = send("todo", serde_json::json!({ "method": "GET", "url": "/todos?x=1" }));
+        assert_eq!(listed["status"], 200);
+        assert_eq!(listed["body"], "[{\"title\":\"milk\"}]");
+        assert!(listed["headers"].as_array().unwrap().iter().any(|h| h[0] == "content-type" && h[1] == "application/json"));
+        assert_eq!(send("todo", serde_json::json!({ "method": "GET", "url": "/nope" })).1["status"], 404);
+
+        assert_eq!(send("missing", serde_json::json!({ "method": "GET", "url": "/" })).0, 404);
+        assert_eq!(send("todo", serde_json::json!({ "method": "GET", "url": "todos" })).0, 400);
+        assert_eq!(send("todo", serde_json::json!({ "url": "/todos" })).0, 400, "method is required");
     }
 
     /// Regression: `persist_deployments` ran with the table lock held, and inside it locked

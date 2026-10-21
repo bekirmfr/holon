@@ -163,6 +163,23 @@ export async function triggerDeployment(slug: string, body: string): Promise<Tri
   return asJson<TriggerResult>(res);
 }
 
+/** One HTTP request for a deployed server, and its answer (`POST /deployments/<slug>/request`). */
+export type HttpRequest = { method: string; url: string; headers: [string, string][]; body: string };
+export type HttpResponse = { status: number; headers: [string, string][]; body: string };
+
+/** Send `request` to the server deployed as `slug`, through holon-server's control plane rather
+ *  than the server's own port (which the browser can't read from: no CORS there). It is routed,
+ *  fired and counted exactly as a request on the port would be. Throws {@link ServerError} (404)
+ *  for an unknown slug, (400) for a deployment that isn't a server. */
+export async function sendRequest(slug: string, request: HttpRequest): Promise<HttpResponse> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/request`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return asJson<HttpResponse>(res);
+}
+
 /** `GET /deployments/<slug>/state` — a stateful deployment's current keyed state. Throws
  *  {@link ServerError} — 400 if the slug exists but was never stateful, 404 if it doesn't
  *  exist at all; two different failures, two different statuses, not one glossed-over "empty". */
