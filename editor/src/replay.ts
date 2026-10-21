@@ -39,6 +39,58 @@ const frozen = (params: WParam[], name: string) => {
 };
 
 /**
+ * The flow's state as of a step: what the run read at its start, and what it holds once the
+ * state writes evaluated so far (`store_write` nodes up to and including `step`; all of them for
+ * `null`) are applied. The host commits writes when the run finishes, so "after" at the last step
+ * is the state the next run sees.
+ */
+export function stateAtStep(
+  before: Record<string, WValue>,
+  run: Replay,
+  nodes: ReplayNode[],
+  step: number | null,
+): { after: Record<string, WValue>; changed: string[] } {
+  const upTo = step === null ? run.order.length - 1 : step;
+  const after = { ...before };
+  const changed = new Set<string>();
+  run.order.slice(0, upTo + 1).forEach((id) => {
+    const n = nodes.find((x) => x.id === id);
+    if (!n || n.data.name !== "store_write" || n.data.body.kind !== "Primitive") return;
+    const out = run.traces.get(id)?.outputs[0];
+    if (out?.type !== "Effect") return;
+    const key = out.value.sink.slice(out.value.sink.indexOf(":") + 1);
+    after[key] = out.value.payload;
+    if (JSON.stringify(before[key] ?? null) !== JSON.stringify(out.value.payload)) changed.add(key);
+  });
+  return { after, changed: [...changed].sort() };
+}
+
+/** When one node ran, in microseconds from the run's start (holon-server's NodeTiming). */
+export type NodeTiming = { path: number[]; start_us: number; end_us: number };
+
+/**
+ * The server's per-step timings, by canvas node. `trace` comes with the deployed flow: for each
+ * route (or `"*"` for a whole-flow unit), which canvas node is each child of the unit as stored
+ * (canonical order). A request's steps sit one level down, inside its endpoint (`[0, k]`); a
+ * whole-flow unit's at the top (`[k]`).
+ */
+export function nodeTimings(
+  entry: { kind: string; route: string | null; timeline?: NodeTiming[] },
+  trace: Record<string, string[]> | undefined,
+): Map<string, { start_us: number; end_us: number }> {
+  const out = new Map<string, { start_us: number; end_us: number }>();
+  const map = trace?.[entry.kind === "request" ? (entry.route ?? "") : "*"];
+  if (!map) return out;
+  const depth = entry.kind === "request" ? 2 : 1;
+  for (const t of entry.timeline ?? []) {
+    if (t.path.length !== depth || (depth === 2 && t.path[0] !== 0)) continue;
+    const id = map[t.path[depth - 1]];
+    if (id) out.set(id, { start_us: t.start_us, end_us: t.end_us });
+  }
+  return out;
+}
+
+/**
  * Which nodes a run touched: for a request, the group holding the request node of its route
  * (`"GET /todos/:id"`); for anything else (a tick, a trigger), the whole canvas.
  */

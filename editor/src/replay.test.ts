@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { replay, runGroup, type ReplayInput, type ReplayNode } from "./replay";
+import { nodeTimings, replay, runGroup, stateAtStep, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
@@ -89,5 +89,53 @@ describe("replay", () => {
     expect(traces.get("k")?.outputs).toEqual([num(42)]);
     expect(traces.get("s")?.outputs).toEqual([null]);
     expect(runGroup(nodes, edges, { ...entry, route: "DELETE /x" })).toEqual([]);
+  });
+});
+
+describe("stateAtStep", () => {
+  const nodes = [
+    n("w1", "store_write", ["value"], ["out"], [frozen("key", "a")]),
+    n("x", "count", ["list"], ["out"]),
+    n("w2", "store_write", ["value"], ["out"], [frozen("key", "b")]),
+  ];
+  const effect = (key: string, payload: WValue): WValue => ({ type: "Effect", value: { sink: `store_write:${key}`, payload } });
+  const run = {
+    order: ["w1", "x", "w2"],
+    traces: new Map([
+      ["w1", { inputs: [], outputs: [effect("a", num(2))] }],
+      ["x", { inputs: [], outputs: [num(0)] }],
+      ["w2", { inputs: [], outputs: [effect("b", num(9))] }],
+    ]),
+  };
+  const before = { a: num(1), b: num(9) };
+
+  it("applies the writes reached so far and names the keys that changed", () => {
+    expect(stateAtStep(before, run, nodes, 0)).toEqual({ after: { a: num(2), b: num(9) }, changed: ["a"] });
+    // b is rewritten with the value it already had: not a change
+    expect(stateAtStep(before, run, nodes, null)).toEqual({ after: { a: num(2), b: num(9) }, changed: ["a"] });
+    expect(stateAtStep({}, run, nodes, null).changed).toEqual(["a", "b"]);
+  });
+});
+
+describe("nodeTimings", () => {
+  const trace = { "POST /todos": ["r", "sw", "ap"], "*": ["k"] };
+  it("maps a request's [0, k] steps and a whole flow's [k] steps to canvas nodes", () => {
+    const req = {
+      kind: "request",
+      route: "POST /todos",
+      timeline: [
+        { path: [0], start_us: 0, end_us: 30 },
+        { path: [0, 2], start_us: 10, end_us: 12 },
+        { path: [0, 0], start_us: 1, end_us: 3 },
+        { path: [0, 2, 1], start_us: 10, end_us: 11 },
+      ],
+    };
+    expect([...nodeTimings(req, trace)]).toEqual([
+      ["ap", { start_us: 10, end_us: 12 }],
+      ["r", { start_us: 1, end_us: 3 }],
+    ]);
+    const tick = { kind: "tick", route: null, timeline: [{ path: [0], start_us: 0, end_us: 5 }] };
+    expect([...nodeTimings(tick, trace)]).toEqual([["k", { start_us: 0, end_us: 5 }]]);
+    expect(nodeTimings(req, undefined).size).toBe(0);
   });
 });

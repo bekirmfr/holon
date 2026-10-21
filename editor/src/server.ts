@@ -10,6 +10,7 @@
 
 import type { WValue } from "./holon";
 import type { EndpointDraft } from "./endpoint";
+import type { NodeTiming } from "./replay";
 
 const BASE = "http://127.0.0.1:7420";
 
@@ -182,6 +183,8 @@ export type LogEntry = {
   performed: PerformedEntry[];
   response_body: string | null;
   error: string | null;
+  /** When each step ran (absent from servers before it was recorded). */
+  timeline?: NodeTiming[];
 };
 
 /** `GET /deployments/<slug>/log` — entries past `after` (all without), oldest first. `next` is
@@ -296,6 +299,9 @@ export type FlowDocument = {
    *  clock flow. Absent in older flows; `endpoints`, from flows saved before routes were
    *  derived, is ignored. */
   server?: { port: string; interval?: string; endpoints?: EndpointDraft[] };
+  /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow
+   *  deployed whole), so the log's timings land on the canvas (replay.ts's `nodeTimings`). */
+  trace?: Record<string, string[]>;
 };
 
 /** One entry in `GET /flows` — name + freshness only, never the (possibly large) document. */
