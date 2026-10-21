@@ -140,6 +140,7 @@
 
 mod data;
 mod lifecycle;
+mod recorder;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -158,6 +159,7 @@ use holon_host::{
     PublishError, Registry, SharedCache, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
+use recorder::{Log, LogEntry};
 use rouille::{Request, Response};
 use serde::{Deserialize, Serialize};
 
@@ -283,6 +285,11 @@ struct Deployment {
     /// Running, paused or stopped, and every run session so far with its end-of-session state
     /// snapshot (lifecycle.rs). Persisted.
     life: Lifecycle,
+    /// Every run, with what it read and produced (recorder.rs). In memory only.
+    log: Log,
+    /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
+    /// view mode shows exactly what runs even after the flow is edited. Persisted.
+    document: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -390,7 +397,7 @@ struct FireRequestBody {
 /// fewer place a new `Capability` variant could be added upstream and silently never reach
 /// this mirror. `Clone` so a `Deployment`'s cached `TickEntry` history can be cloned out for a
 /// response without holding the deployments lock across the JSON serialization.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 struct PerformedEntry {
     capability: String,
     payload: SValue,
@@ -456,6 +463,9 @@ struct DeployRequestBody {
     interval_seconds: Option<u64>,
     #[serde(default)]
     acknowledge: Vec<String>,
+    /// The flow document (canvas) being deployed, for view mode. Optional.
+    #[serde(default)]
+    document: Option<serde_json::Value>,
 }
 
 /// The on-disk, persisted shape of one deployment. `triggers` is still not persisted — it's
@@ -483,6 +493,8 @@ struct DeploymentRecord {
     status: Option<Status>,
     #[serde(default)]
     sessions: Vec<Session>,
+    #[serde(default)]
+    document: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -943,14 +955,18 @@ impl Host for RecordingHost {
 /// it from there. `perform_effects` already walks every non-`None` slot, so a state-write and
 /// a text response left as two separate exposed outputs are both correctly handled now,
 /// without combining them into anything.
+/// A fired run: its outputs, the effects performed, and the state it read (for the flow log).
+type FiredRun = (Vec<Option<Value>>, Vec<(Capability, Value)>, BTreeMap<String, Value>);
+
 fn fire_with_state(
     root_unit: &Unit,
     inputs: &[Option<Value>],
     resolver: &impl Resolver,
     state: Option<&Mutex<BTreeMap<String, Value>>>,
     extra_sourced: &[(Capability, Value)],
-) -> (Vec<Option<Value>>, Vec<(Capability, Value)>) {
+) -> FiredRun {
     let mut guard = state.map(|m| m.lock().unwrap());
+    let state_before = guard.as_deref().cloned().unwrap_or_default();
 
     let mut sourced: Vec<(Capability, Value)> = match guard.as_deref() {
         Some(storage) => storage
@@ -976,7 +992,7 @@ fn fire_with_state(
         }
     }
 
-    (outputs, host.performed)
+    (outputs, host.performed, state_before)
 }
 
 /// `POST /fire?root=<hex>` — settle a published unit **once**, on request. Not "deploy": there
@@ -1068,6 +1084,7 @@ fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<String, Deployme
                 error_count: dep.error_count,
                 status: Some(dep.life.status),
                 sessions: dep.life.sessions.clone(),
+                document: dep.document.clone(),
             };
             (record, dep.state.clone())
         })
@@ -1183,6 +1200,8 @@ fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeMap<String, 
                     }
                     life
                 },
+                log: Log::default(),
+                document: record.document,
                 trigger_count: record.trigger_count,
                 error_count: record.error_count,
                 deployed_at,
@@ -1437,6 +1456,11 @@ fn handle_post_deploy(
             }
             None => Lifecycle::deployed(now_secs),
         };
+        let (log, old_document) = match deployments.get_mut(&body.slug) {
+            Some(old) => (std::mem::take(&mut old.log), old.document.take()),
+            None => (Log::default(), None),
+        };
+        let document = body.document.clone().or(old_document);
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
         let state = match carried {
             Some(arc) => Some(arc),
@@ -1457,6 +1481,8 @@ fn handle_post_deploy(
                 error_count: 0,
                 deployed_at: SystemTime::now(),
                 life,
+                log,
+                document,
             },
         );
     }
@@ -1646,9 +1672,11 @@ fn handle_post_trigger(
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
-    let (outputs, performed) = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
+    let started = started_now();
+    let (outputs, performed, before) = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
 
     record_trigger(deployments, slug, false);
+    log_run(deployments, slug, run_entry("trigger", started, &extra_sourced, &before, &outputs, &performed));
     if state.is_some() {
         persist_deployments(deployments_path, deployments);
     }
@@ -1747,7 +1775,9 @@ fn fire_one_clock_tick(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let is_state = state.is_some();
-    let (outputs, performed) = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
+    let started = started_now();
+    let (outputs, performed, before) = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
+    log_run(deployments, &slug, run_entry("tick", started, &extra_sourced, &before, &outputs, &performed));
 
     println!(
         "clock tick [{slug}] at {epoch_seconds}: outputs={outputs:?}, {} effect(s) performed",
@@ -1768,6 +1798,7 @@ fn fire_one_clock_tick(
         if let Some(dep) = deployments.get_mut(&slug) {
             dep.next_due = Some(now + Duration::from_secs(interval));
             dep.trigger_count += 1;
+            dep.life.record(false);
             dep.history.push(tick);
             if dep.history.len() > 20 {
                 dep.history.remove(0);
@@ -1790,6 +1821,74 @@ fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<Str
         thread::sleep(Duration::from_secs(1));
         run_due_clock_ticks(&store, &deployments, &deployments_path, SystemTime::now());
     });
+}
+
+/// Add a run to `slug`'s flow log, in its current session.
+fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry) {
+    if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
+        entry.session = dep.life.sessions.last().map_or(0, |s| s.number);
+        dep.log.push(entry);
+    }
+}
+
+/// The parts every log entry shares, from what a run read and produced.
+fn run_entry(
+    kind: &'static str,
+    started: (u64, std::time::Instant),
+    sourced: &[(Capability, Value)],
+    state_before: &BTreeMap<String, Value>,
+    outputs: &[Option<Value>],
+    performed: &[(Capability, Value)],
+) -> LogEntry {
+    LogEntry {
+        seq: 0,
+        session: 0,
+        at_ms: started.0,
+        duration_ms: started.1.elapsed().as_secs_f64() * 1000.0,
+        kind,
+        route: None,
+        method: None,
+        url: None,
+        status: None,
+        request: None,
+        sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
+        state_before: state_before.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
+        outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
+        performed: performed
+            .iter()
+            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
+            .collect(),
+        response_body: None,
+        error: None,
+    }
+}
+
+fn started_now() -> (u64, std::time::Instant) {
+    let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    (ms, std::time::Instant::now())
+}
+
+/// `GET /deployments/<slug>/log?after=<seq>&limit=<n>` — the flow log past `after` (all of it
+/// without), oldest first, at most `limit` (default 200) newest. `next` is the seq the next
+/// entry will get, so a poller can ask for `after=next-1`.
+fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
+    let after = request.get_param("after").and_then(|a| a.parse::<u64>().ok());
+    let limit = request.get_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(200);
+    match deployments.lock().unwrap().get(slug) {
+        Some(dep) => Response::json(&serde_json::json!({ "entries": dep.log.after(after, limit), "next": dep.log.next_seq() })),
+        None => err(404, format!("no deployment {slug:?}")),
+    }
+}
+
+/// `GET /deployments/<slug>/document` — the flow document it was deployed from, for view mode.
+fn handle_get_document(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
+    match deployments.lock().unwrap().get(slug) {
+        Some(dep) => match &dep.document {
+            Some(doc) => Response::json(doc),
+            None => err(404, format!("{slug:?} was deployed without its canvas; deploy it again from the editor")),
+        },
+        None => err(404, format!("no deployment {slug:?}")),
+    }
 }
 
 fn epoch_now() -> u64 {
@@ -1909,15 +2008,33 @@ fn serve_data(
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
+    let started = started_now();
     let http = data::HttpRequest { method: request.method(), url: request.raw_url(), headers: &headers, body: &body };
+    let mut ran: Option<LogEntry> = None;
     let answer = data::handle(
         &server,
         &resolver,
         &http,
-        |endpoint, req, sourced| fire_with_state(endpoint, &[Some(req)], &resolver, state.as_deref(), sourced).0,
+        |endpoint, route, req, sourced| {
+            let (outputs, performed, before) =
+                fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced);
+            let mut entry = run_entry("request", started, sourced, &before, &outputs, &performed);
+            entry.route = Some(route.to_string());
+            entry.request = Some(SValue::from_core(&req));
+            ran = Some(entry);
+            outputs
+        },
         &sourced,
     );
     record_trigger(deployments, slug, answer.status >= 500);
+    // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.
+    let mut entry = ran.unwrap_or_else(|| run_entry("request", started, &sourced, &BTreeMap::new(), &[], &[]));
+    entry.duration_ms = started.1.elapsed().as_secs_f64() * 1000.0;
+    entry.method = Some(request.method().to_string());
+    entry.url = Some(request.raw_url().to_string());
+    entry.status = Some(answer.status);
+    entry.response_body = Some(recorder::body_text(&answer.body));
+    log_run(deployments, slug, entry);
     if state.is_some() {
         persist_deployments(deployments_path, deployments);
     }
@@ -2128,6 +2245,14 @@ fn route(state: &AppState, request: &Request) -> Response {
         } else if let Some(slug) = rest.strip_suffix("/state") {
             if method == "GET" {
                 return handle_get_state(&state.deployments, slug);
+            }
+        } else if let Some(slug) = rest.strip_suffix("/log") {
+            if method == "GET" {
+                return handle_get_log(&state.deployments, slug, request);
+            }
+        } else if let Some(slug) = rest.strip_suffix("/document") {
+            if method == "GET" {
+                return handle_get_document(&state.deployments, slug);
             }
         } else if let Some(slug) = rest.strip_suffix("/sessions") {
             if method == "GET" {
@@ -3690,6 +3815,81 @@ mod tests {
         let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap()["todos"].clone();
         assert!(matches!(todos, Value::List(ref xs) if xs.len() == 2));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The flow log records every run with what it read and produced, enough to run it again
+    /// exactly; and a deployment keeps the canvas it was deployed from.
+    #[test]
+    fn the_flow_log_records_each_run_well_enough_to_replay_it() {
+        let state = test_state();
+        let api = todo_server(&state, "18083");
+        let body = serde_json::to_vec(&serde_json::json!({
+            "slug": "todo",
+            "unit": to_hex(&api),
+            "acknowledge": ["NetworkIngress", "StateRead(\"todos\")", "StateWrite(\"todos\")"],
+            "document": { "nodes": [], "edges": [], "viewport": { "x": 0, "y": 0, "zoom": 1 } },
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
+        let call = |method: &str, url: &str, body: &str| {
+            serve_data(&state.store, &state.deployments, &state.deployments_path, "todo",
+                &Request::fake_http(method, url, vec![], body.as_bytes().to_vec()))
+            .status_code
+        };
+        assert_eq!(call("POST", "/todos", r#"{"t":1}"#), 200);
+        assert_eq!(call("POST", "/todos", r#"{"t":2}"#), 200);
+        assert_eq!(call("GET", "/nope", ""), 404);
+
+        let log = body_json(route(&state, &req("GET", "/deployments/todo/log", vec![])));
+        assert_eq!(log["next"], 3);
+        let entries = log["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 3);
+        let second = &entries[1];
+        assert_eq!((second["kind"].as_str(), second["route"].as_str(), second["status"].as_u64()), (Some("request"), Some("POST /todos"), Some(200)));
+        assert_eq!(second["session"], 1);
+        assert_eq!(second["response_body"], r#"{"t":2}"#);
+        assert_eq!(second["state_before"]["todos"]["value"].as_array().unwrap().len(), 1, "it read the list with one item");
+        assert_eq!(second["performed"][0]["capability"], "StateWrite(\"todos\")");
+        assert_eq!((entries[2]["status"].as_u64(), entries[2]["route"].is_null()), (Some(404), true), "an unrouted request is logged too");
+        let newer = body_json(route(&state, &req("GET", "/deployments/todo/log?after=1", vec![])));
+        assert_eq!(newer["entries"].as_array().unwrap().len(), 1);
+
+        // Replay: the entry alone (request, state read, sourced values) reproduces the run.
+        let resolver = materialize_closure(&state.store, api).unwrap();
+        let server = read_server(resolver.resolve(&api).unwrap(), &resolver).unwrap();
+        let endpoint = resolver.resolve(&server.routes.iter().find(|r| r.method == "POST").unwrap().endpoint).unwrap();
+        let sv = |v: &serde_json::Value| serde_json::from_value::<SValue>(v.clone()).unwrap().into_core();
+        let mut sourced: Vec<(Capability, Value)> = second["state_before"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (Capability::StateRead(k.clone()), sv(v)))
+            .collect();
+        for pair in second["sourced"].as_array().unwrap() {
+            let cap = match pair[0].as_str().unwrap() {
+                "Clock" => Capability::Clock,
+                "Random" => Capability::Random,
+                _ => Capability::NetworkIngress,
+            };
+            sourced.push((cap, sv(&pair[1])));
+        }
+        let mut host = RecordingHost { performed: Vec::new() };
+        let replayed = fire_sourced_with(endpoint, &[Some(sv(&second["request"]))], &sourced, &resolver, &mut host);
+        let recorded: Vec<Option<Value>> =
+            second["outputs"].as_array().unwrap().iter().map(|o| (!o.is_null()).then(|| sv(o))).collect();
+        assert_eq!(replayed, recorded, "replaying the entry gives exactly what was recorded");
+
+        // The canvas it was deployed from, and a redeploy keeps the log.
+        let doc = route(&state, &req("GET", "/deployments/todo/document", vec![]));
+        assert_eq!((doc.status_code, body_json(doc)["viewport"]["zoom"].as_u64()), (200, Some(1)));
+        let again = serde_json::to_vec(&serde_json::json!({
+            "slug": "todo", "unit": to_hex(&api),
+            "acknowledge": ["NetworkIngress", "StateRead(\"todos\")", "StateWrite(\"todos\")"],
+        }))
+        .unwrap();
+        assert_eq!(route(&state, &req("POST", "/deploy", again)).status_code, 200);
+        assert_eq!(body_json(route(&state, &req("GET", "/deployments/todo/log", vec![])))["next"], 3);
+        assert_eq!(route(&state, &req("GET", "/deployments/todo/document", vec![])).status_code, 200, "kept");
     }
 
     /// Run, pause, stop, and the sessions a deployment keeps until it is deleted.

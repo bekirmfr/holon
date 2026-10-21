@@ -50,12 +50,13 @@ pub struct HttpRequest<'a> {
 }
 
 /// Answer one request to `server`. `fire` settles the matched endpoint with the request record
-/// as its input (and performs its effects); it returns the endpoint's output slots.
+/// as its input (and performs its effects); it returns the endpoint's output slots. It is also
+/// told the matched route (`"GET /todos/:id"`), for the flow log.
 pub fn handle(
     server: &Server,
     resolver: &impl Resolver,
     request: &HttpRequest,
-    fire: impl FnOnce(&holon_core::Unit, Value, &[(Capability, Value)]) -> Vec<Option<Value>>,
+    fire: impl FnOnce(&holon_core::Unit, &str, Value, &[(Capability, Value)]) -> Vec<Option<Value>>,
     sourced: &[(Capability, Value)],
 ) -> DataResponse {
     let HttpRequest { method, url, headers, body } = *request;
@@ -83,7 +84,7 @@ pub fn handle(
     let request = request_record(method, path, params, query, headers, &body_text);
     let mut sourced = sourced.to_vec();
     sourced.push((Capability::NetworkIngress, Value::Text(body_text)));
-    let outputs = fire(endpoint, request, &sourced);
+    let outputs = fire(endpoint, &format!("{} {}", route.method, route.path), request, &sourced);
     respond(outputs.first().and_then(Option::as_ref))
 }
 
@@ -291,7 +292,7 @@ mod tests {
         let server = read_server(&server_unit, &r).unwrap();
         let run = |method: &str, url: &str| {
             let http = HttpRequest { method, url, headers: &[], body: b"" };
-            handle(&server, &r, &http, |unit, request, _| holon_core::eval(unit, &[Some(request)], &r).into_vec(), &[])
+            handle(&server, &r, &http, |unit, _, request, _| holon_core::eval(unit, &[Some(request)], &r).into_vec(), &[])
         };
         let ok = run("GET", "/todos/7?x=1");
         assert_eq!((ok.status, ok.body.as_slice()), (200, &b"{\"id\":\"7\"}"[..]));
