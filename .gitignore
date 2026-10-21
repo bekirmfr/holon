@@ -6,7 +6,7 @@
 # Visual Studio internal
 .vs/
 
-# Rust
-/target
-**/*.rs.bk
-*.pdb
+# holon-server runtime state: deployments, saved flows, and the on-disk unit store.
+# Per machine, rewritten on every deploy/save, so never committed.
+.holon-*.json
+.holon-store/
