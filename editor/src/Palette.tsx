@@ -13,9 +13,27 @@ function nameOf(u: WUnit): string {
   return u.body.kind === "Primitive" ? u.body.name : "?";
 }
 
-export function Palette({ catalog }: { catalog: WUnit[] }) {
+export function Palette({ catalog, templates }: { catalog: WUnit[]; templates: readonly string[] }) {
   return (
     <aside className="hl-palette">
+      <div className="hl-palette__head">http</div>
+      <div className="hl-palette__list" style={{ flex: "none" }}>
+        {/* Templates (templates.ts): ready-made groups of the primitives below, not new atoms. */}
+        {templates.map((name) => (
+          <div
+            key={name}
+            className="hl-palette__item"
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData(DND_MIME, name);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+          >
+            <span className="hl-palette__swatch" style={{ background: outputColor("Record") }} aria-hidden />
+            <span className="hl-palette__name">{name}</span>
+          </div>
+        ))}
+      </div>
       <div className="hl-palette__head">palette</div>
       <div className="hl-palette__list">
         {catalog.map((u) => {

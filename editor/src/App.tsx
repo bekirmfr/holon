@@ -61,8 +61,11 @@ import { InspectPanel } from "./InspectPanel";
 import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import { History } from "./history";
 import { ServerPanel, type ServerDraft } from "./ServerPanel";
+import { buildTemplate, isTemplate, templateDefaults, templateInterface, TEMPLATES, type TemplateName } from "./templates";
+import { findRoutes, routeSpec } from "./derive";
+import { endpointUnit, type EndpointDraft } from "./endpoint";
 
-const EMPTY_SERVER: ServerDraft = { port: "8080", endpoints: [] };
+const EMPTY_SERVER: ServerDraft = { port: "8080" };
 // What a save records, for unsaved-change tracking: the canvas plus the server draft.
 const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], server: ServerDraft) =>
   documentKey(ns, es) + JSON.stringify(server);
@@ -135,8 +138,13 @@ const boundaryFieldStyle: CSSProperties = {
 // so its hash is just read off PlacedBody directly — its own internal structure is neither
 // rebuilt nor re-inspected here. Shared by onProject and onGroup so there's one implementation
 // of "how do I get this node's hash," not two that could drift.
-function unitFor(n: PrimitiveNodeType, ev: Evaluator): string {
+function unitFor(n: PrimitiveNodeType, ev: Evaluator, catalog: Map<string, WUnit>): string {
   if (n.data.body.kind === "Composite") return n.data.body.hash;
+  if (n.data.body.kind === "Template") {
+    const u = buildTemplate(n.data.name as TemplateName, n.data.params, catalog, (c) => ev.insert(buildPreimage(c)));
+    if (typeof u === "string") throw new Error(`${n.data.name}: ${u}`);
+    return ev.insert(buildPreimage(u));
+  }
   const wunit: WUnit = {
     body: { kind: "Primitive", name: n.data.name },
     params: n.data.params,
@@ -632,7 +640,6 @@ function Canvas({
     try {
       const roots = [
         ...nodes.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])),
-        ...serverDraft.endpoints.map((e) => e.hash),
       ];
       units = closureOf(roots, (h) => ev.get_unit(h) as WUnit).map((h) =>
         toHex(buildPreimage(ev.get_unit(h) as WUnit)),
@@ -691,7 +698,7 @@ function Canvas({
       setViewport(rec.document.viewport);
       setFlowName(rec.name);
       history.current.reset(snapshotOf(ns, es));
-      const server = rec.document.server ?? EMPTY_SERVER;
+      const server: ServerDraft = { port: rec.document.server?.port ?? EMPTY_SERVER.port };
       setServerDraft(server);
       setSavedKey(savedKeyOf(ns, es, server));
       // A loaded flow's node ids carry the counters they were minted with — the fresh idRef
@@ -729,6 +736,27 @@ function Canvas({
     (e: DragEvent<HTMLDivElement>) => {
       e.preventDefault();
       const name = e.dataTransfer.getData(DND_MIME);
+      if (isTemplate(name)) {
+        const params = templateDefaults(name);
+        const iface = templateInterface(name, params);
+        const node: PrimitiveNodeType = {
+          id: `${name}-${idRef.current++}`,
+          type: "primitive",
+          position: screenToFlowPosition({ x: e.clientX, y: e.clientY }),
+          data: {
+            name,
+            body: { kind: "Template" },
+            inputs: iface.inputs,
+            outputs: iface.outputs,
+            params,
+            variadic: false,
+            minInputs: 0,
+            hiddenInputs: iface.hiddenInputs,
+          },
+        };
+        setNodes((ns) => ns.concat(node));
+        return;
+      }
       const u = name ? byName.get(name) : undefined;
       if (!u || !name) return;
 
@@ -757,6 +785,54 @@ function Canvas({
     },
     [byName, screenToFlowPosition, setNodes],
   );
+
+  // The server this flow declares, derived from the canvas: each connected group holding a
+  // request node is one route (derive.ts). Each group is projected through core like a
+  // selection being grouped, narrowed to the request input and the response/effect outputs,
+  // and wrapped as an endpoint. Recomputed when the canvas's structure changes, not on moves.
+  const derived = useMemo(() => {
+    const { nodes: ns, edges: es } = live.current;
+    const { routes, errors } = findRoutes(ns, es);
+    const endpoints: EndpointDraft[] = [];
+    for (const r of routes) {
+      const label = `${r.method} ${r.path}`;
+      try {
+        const group = r.nodeIds.map((id) => ns.find((n) => n.id === id)!);
+        const indexOf = new Map(group.map((n, i) => [n.id, i]));
+        const children = group.map((n) => unitFor(n, ev, byName));
+        const wedges: WEdge[] = es
+          .filter((e) => indexOf.has(e.source) && indexOf.has(e.target))
+          .map((e) => {
+            const from = indexOf.get(e.source)!;
+            const to = indexOf.get(e.target)!;
+            return {
+              from_child: from,
+              from_port: group[from].data.outputs.findIndex((p) => p.name === e.sourceHandle),
+              to_child: to,
+              to_port: group[to].data.inputs.findIndex((p) => p.name === e.targetHandle),
+            };
+          });
+        const spec = routeSpec(ev.propose_encapsulation(children, wedges) as WEncapSpec, group, label);
+        if (typeof spec === "string") {
+          errors.push(spec);
+          continue;
+        }
+        const handler = ev.freeze_encapsulation(children, wedges, spec) as WUnit;
+        const handlerHash = ev.insert(buildPreimage(handler));
+        const unit = endpointUnit(handlerHash, handler.inputs ?? [], handler.outputs ?? [], r.method, r.path);
+        if (typeof unit === "string") {
+          errors.push(`${label}: ${unit}`);
+          continue;
+        }
+        endpoints.push({ method: r.method, path: r.path, hash: ev.insert(buildPreimage(unit)) });
+      } catch (err) {
+        errors.push(`${label}: ${isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { endpoints, errors };
+    // live.current is read on purpose: canvasKey changes exactly when the structure does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasKey, ev, byName]);
 
   // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to
@@ -956,7 +1032,7 @@ function Canvas({
       // Each node's own hash — a fresh primitive rebuild or a grouped composite reference
       // (P4.3.1), resolved identically to onGroup below via the shared unitFor. Pinned child
       // hashes (I3), index order.
-      const children = nodes.map((n) => unitFor(n, ev));
+      const children = nodes.map((n) => unitFor(n, ev, byName));
 
       // Canvas wire → core edge by index. from_port is the named output's position in the source's
       // interface, to_port the named input's position in the target's — symmetric (P4.7: outputs are
@@ -1039,7 +1115,7 @@ function Canvas({
         setErrorNodeIds(new Set());
       }
     }
-  }, [nodes, edges, ev, canvasKey]);
+  }, [nodes, edges, ev, canvasKey, byName]);
 
   // Group the current selection into one placed composite node (P4.3.1). React Flow's own
   // selection (shift-click / drag-box) is already live and already used for delete — this is
@@ -1061,7 +1137,7 @@ function Canvas({
 
     let wedges: WEdge[] = [];
     try {
-      const children = selected.map((n) => unitFor(n, ev));
+      const children = selected.map((n) => unitFor(n, ev, byName));
 
       const innerEdges = edges.filter((e) => selectedIds.has(e.source) && selectedIds.has(e.target));
       wedges = innerEdges.map((e) => {
@@ -1170,7 +1246,7 @@ function Canvas({
         setErrorNodeIds(new Set());
       }
     }
-  }, [nodes, edges, ev, setNodes, setEdges]);
+  }, [nodes, edges, ev, setNodes, setEdges, byName]);
 
   // Expand a placed composite node back into its children (P4.3.1's last piece — the dual of
   // onGroup). One level only, deliberately: a nested composite child is revealed still
@@ -1304,8 +1380,8 @@ function Canvas({
   const onInspect = useCallback(() => {
     const selected = nodes.filter((n) => n.selected);
     if (selected.length !== 1) return; // mirrors the button's own disabled guard, defensively
-    setInspecting(unitFor(selected[0], ev));
-  }, [nodes, ev]);
+    setInspecting(unitFor(selected[0], ev, byName));
+  }, [nodes, ev, byName]);
 
   // A boundary field changed: update its slot and re-eval live. Safe to be reactive (unlike
   // projecting itself) because a boundary value is never part of the composite's hash — it's a
@@ -1677,7 +1753,8 @@ function Canvas({
         <Panel position="bottom-left" style={{ marginLeft: 56 }}>
           <ServerPanel
             ev={ev}
-            handler={projection ? { hash: projection.hash, ports: projection.ports, outputs: projection.outputs } : null}
+            endpoints={derived.endpoints}
+            errors={derived.errors}
             draft={serverDraft}
             setDraft={setServerDraft}
             deploy={deployServerHash}
@@ -1823,7 +1900,7 @@ function Editor() {
         <pre className="hl-error">{error}</pre>
       ) : (
         <div className="hl-body">
-          {catalog && <Palette catalog={catalog} />}
+          {catalog && <Palette catalog={catalog} templates={TEMPLATES} />}
           <ReactFlowProvider>
             {catalog && (
               <Canvas

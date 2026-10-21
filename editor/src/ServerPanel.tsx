@@ -1,12 +1,11 @@
-// The server panel (M1): turn the projected handler into an endpoint, collect endpoints into a
-// server with a port, try requests against it, and deploy it. The server and its endpoints are
-// ordinary units (core's declare.rs), so deploying one is deploying a hash.
+// The server panel (M1): the routes this flow declares (derived from its request nodes, see
+// derive.ts), the port, a request tester, and deploy. The server and its endpoints are ordinary
+// units (core's declare.rs), so deploying one is deploying a hash.
 
 import { useMemo, useState, type CSSProperties } from "react";
-import { buildPreimage, type Evaluator, type WCapability, type WPort, type WUnit, type WValue } from "./holon";
+import { buildPreimage, type Evaluator, type WCapability, type WUnit, type WValue } from "./holon";
 import { capabilityAcknowledgeName } from "./diagnostics";
 import {
-  endpointUnit,
   matchRoute,
   METHODS,
   parseHeaders,
@@ -19,8 +18,8 @@ import {
 } from "./endpoint";
 import { sendRequest, ServerError, type HttpResponse } from "./server";
 
-/** What the panel keeps per flow (saved with it): the server's port and its endpoints. */
-export type ServerDraft = { port: string; endpoints: EndpointDraft[] };
+/** What the panel keeps per flow (saved with it): the server's port. The routes are derived. */
+export type ServerDraft = { port: string };
 
 const field: CSSProperties = {
   font: "inherit",
@@ -94,21 +93,22 @@ function showBody(body: string): string {
 
 export function ServerPanel({
   ev,
-  handler,
+  endpoints,
+  errors,
   draft,
   setDraft,
   deploy,
 }: {
   ev: Evaluator;
-  /** The current projection, a candidate handler; `null` when nothing is projected. */
-  handler: { hash: string; ports: WPort[]; outputs: WPort[] } | null;
+  /** The routes the canvas declares, each already built into an endpoint unit. */
+  endpoints: EndpointDraft[];
+  /** Why a request node's group couldn't become a route. */
+  errors: string[];
   draft: ServerDraft;
   setDraft: (d: ServerDraft) => void;
   /** Stage `hash`'s closure and deploy it under `slug`, acknowledging `acknowledge`. */
   deploy: (hash: string, slug: string, acknowledge: string[]) => Promise<void>;
 }) {
-  const [method, setMethod] = useState<Method>("GET");
-  const [path, setPath] = useState("/");
   const [slug, setSlug] = useState("");
   const [deployedSlug, setDeployedSlug] = useState("");
   const [msg, setMsg] = useState("");
@@ -116,6 +116,7 @@ export function ServerPanel({
   const [req, setReq] = useState<TesterRequest>({ method: "GET", url: "/", headers: "", body: "" });
   const [result, setResult] = useState<TesterResult | null>(null);
   const [sending, setSending] = useState(false);
+  const [open, setOpen] = useState(true);
 
   const portNumber = Number(draft.port);
   const portOk = Number.isInteger(portNumber) && portNumber >= 1 && portNumber <= 65535;
@@ -123,30 +124,17 @@ export function ServerPanel({
 
   // The server this draft would deploy, and what it may touch, shown before deploying.
   const server = useMemo(() => {
-    if (draft.endpoints.length === 0 || !portOk) return null;
+    if (endpoints.length === 0 || !portOk || errors.length > 0) return null;
     try {
-      const hash = ev.insert(buildPreimage(serverUnit(draft.endpoints.map((e) => e.hash), portNumber)));
+      const hash = ev.insert(buildPreimage(serverUnit(endpoints.map((e) => e.hash), portNumber)));
       const caps = (ev.capabilities(hash) as WCapability[]).map(capabilityAcknowledgeName);
       return { hash, caps };
     } catch {
       return null;
     }
-  }, [draft.endpoints, portOk, portNumber, ev]);
+  }, [endpoints, errors, portOk, portNumber, ev]);
 
-  const addEndpoint = () => {
-    if (!handler) return;
-    const unit = endpointUnit(handler.hash, handler.ports, handler.outputs, method, path.trim());
-    if (typeof unit === "string") {
-      setMsg(unit);
-      return;
-    }
-    const hash = ev.insert(buildPreimage(unit));
-    const others = draft.endpoints.filter((e) => !(e.method === method && e.path === path.trim()));
-    setDraft({ ...draft, endpoints: [...others, { method, path: path.trim(), hash }] });
-    setMsg(others.length < draft.endpoints.length ? `replaced ${method} ${path.trim()}` : "");
-  };
-
-  const sendLocal = () => setResult(answerLocally(ev, draft.endpoints, req));
+  const sendLocal = () => setResult(answerLocally(ev, endpoints, req));
 
   const sendLive = () => {
     const headers = parseHeaders(req.headers);
@@ -189,31 +177,25 @@ export function ServerPanel({
         display: "flex",
         flexDirection: "column",
         gap: 6,
-        width: 320,
+        width: open ? 320 : "auto",
         maxHeight: "70vh",
         overflowY: "auto",
       }}
     >
-      <div style={{ color: "#e6eefb", letterSpacing: "0.04em" }}>server</div>
-
-      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-        <select value={method} onChange={(e) => setMethod(e.target.value as Method)} style={field}>
-          {METHODS.map((m) => (
-            <option key={m}>{m}</option>
-          ))}
-        </select>
-        <input value={path} onChange={(e) => setPath(e.target.value)} placeholder="/todos/:id" style={{ ...field, flex: 1 }} />
-        <button
-          onClick={addEndpoint}
-          disabled={!handler}
-          title={handler ? "make the projected composite this route's handler" : "project a handler first"}
-          style={{ ...button, opacity: handler ? 1 : 0.4, cursor: handler ? "pointer" : "default" }}
-        >
-          add endpoint
-        </button>
+      <div
+        style={{ color: "#e6eefb", letterSpacing: "0.04em", cursor: "pointer", userSelect: "none" }}
+        onClick={() => setOpen(!open)}
+        title={open ? "collapse" : "expand"}
+      >
+        server {open ? "▾" : `▸ ${endpoints.length} route${endpoints.length === 1 ? "" : "s"}`}
       </div>
+      {open && (
+        <>
 
-      {draft.endpoints.map((e, i) => (
+      {endpoints.length === 0 && errors.length === 0 && (
+        <div>drop a request node (palette, http) and wire it to a respond node to add a route</div>
+      )}
+      {endpoints.map((e) => (
         <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <span style={{ color: "#6fd3e0", ...label }}>{e.method}</span>
           <span style={{ flex: 1, color: "#e6eefb" }}>{e.path}</span>
@@ -224,13 +206,11 @@ export function ServerPanel({
           >
             test
           </button>
-          <button
-            style={button}
-            title="remove this endpoint"
-            onClick={() => setDraft({ ...draft, endpoints: draft.endpoints.filter((_, j) => j !== i) })}
-          >
-            ×
-          </button>
+        </div>
+      ))}
+      {errors.map((e) => (
+        <div key={e} style={{ color: "#e0916f" }}>
+          {e}
         </div>
       ))}
 
@@ -292,8 +272,8 @@ export function ServerPanel({
         />
         <div style={{ display: "flex", gap: 6 }}>
           <button
-            style={{ ...button, opacity: canSend && draft.endpoints.length > 0 ? 1 : 0.4 }}
-            disabled={!canSend || draft.endpoints.length === 0}
+            style={{ ...button, opacity: canSend && endpoints.length > 0 ? 1 : 0.4 }}
+            disabled={!canSend || endpoints.length === 0}
             onClick={sendLocal}
             title="answer it in the browser, from the draft endpoints (no stored state)"
           >
@@ -330,6 +310,8 @@ export function ServerPanel({
             </div>
           ))}
       </div>
+        </>
+      )}
     </div>
   );
 }

@@ -7,6 +7,8 @@
 import { memo, type CSSProperties } from "react";
 import { Handle, Position, useReactFlow, type NodeProps, type Node } from "@xyflow/react";
 import { compatible, type WParam, type WPort, type WType } from "./holon";
+import { METHODS } from "./endpoint";
+import { templateInterface, type TemplateName } from "./templates";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
 
 /** What a placed primitive node carries. Mirrors the catalog interface; `position`/`id` (view-only) live on the React Flow node, not here.
@@ -20,7 +22,9 @@ import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
  *  once, when it was grouped, and is referenced by that hash from then on — its own internal
  *  structure is neither rebuilt nor re-inspected from the canvas (that's expand-to-inspect's
  *  job, deliberately a separate, later inch, not this one's). */
-export type PlacedBody = { kind: "Primitive" } | { kind: "Composite"; hash: string };
+/** What a canvas node stands for: a catalog primitive, a grouped composite (by hash), or an HTTP
+ *  template (`request` / `respond`, see templates.ts), rebuilt from its params like a primitive. */
+export type PlacedBody = { kind: "Primitive" } | { kind: "Composite"; hash: string } | { kind: "Template" };
 
 export type PrimitiveData = {
   name: string;
@@ -35,6 +39,9 @@ export type PrimitiveData = {
    *  absent on every normal node; present and true only while this node is implicated in
    *  the last projection error. */
   error?: boolean;
+  /** Inputs fed from outside the canvas, so drawn without handles: a `request` template's
+   *  request record, which the endpoint its route derives into supplies. */
+  hiddenInputs?: boolean;
 };
 
 export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
@@ -102,7 +109,7 @@ const portButtonStyle: CSSProperties = {
 };
 
 function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
-  const { name, inputs, outputs, params, variadic, minInputs, error } = data;
+  const { name, inputs, outputs, params, variadic, minInputs, error, body, hiddenInputs } = data;
   const { updateNodeData, setEdges, getNode } = useReactFlow<PrimitiveNodeType>();
 
   // Grow/shrink a variadic node's port count (P4.1: variadic-arity editing). Every port a
@@ -130,7 +137,16 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
     const next = params.map((p) =>
       p.kind === "Frozen" && p.name === pname ? { ...p, value } : p,
     );
-    updateNodeData(id, { params: next });
+    if (body.kind !== "Template") {
+      updateNodeData(id, { params: next });
+      return;
+    }
+    // A template's ports follow its params (a 204 respond has no body), so re-derive them and
+    // drop any wire into an input that no longer exists.
+    const iface = templateInterface(name as TemplateName, next);
+    updateNodeData(id, { params: next, inputs: iface.inputs, outputs: iface.outputs });
+    const kept = new Set(iface.inputs.map((p) => p.name));
+    setEdges((eds) => eds.filter((e) => e.target !== id || (e.targetHandle != null && kept.has(e.targetHandle))));
   };
 
   // The chosen literal type governs every `Any`-typed slot a leaf declares under it — for
@@ -203,7 +219,18 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
             return (
               <label className="hl-node__param" key={p.name}>
                 {p.name}{" "}
-                {isLiteralTypeParam ? (
+                {body.kind === "Template" && p.name === "method" ? (
+                  <select
+                    className="nodrag"
+                    style={fieldStyle}
+                    value={p.value}
+                    onChange={(e) => setParam(p.name, e.target.value)}
+                  >
+                    {METHODS.map((m) => (
+                      <option key={m}>{m}</option>
+                    ))}
+                  </select>
+                ) : isLiteralTypeParam ? (
                   <select
                     className="nodrag"
                     style={fieldStyle}
@@ -219,7 +246,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                 ) : (
                   <input
                     className="nodrag"
-                    style={{ ...fieldStyle, width: 64 }}
+                    style={{ ...fieldStyle, width: body.kind === "Template" && p.name === "path" ? 110 : 64 }}
                     value={p.value}
                     onChange={(e) => setParam(p.name, e.target.value)}
                   />
@@ -232,7 +259,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
 
       <div className="hl-node__body">
         <div className="hl-node__col hl-node__col--in">
-          {inputs.map((port) => (
+          {!hiddenInputs && inputs.map((port) => (
             <div className="hl-port" key={port.name}>
               <Handle
                 type="target"
@@ -276,8 +303,14 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
         <div className="hl-node__col hl-node__col--out">
           {outputs.map((port) => (
             <div className="hl-port hl-port--out" key={port.name}>
-              <span className="hl-port__label" style={{ color: outputColor(port.ty) }}>
-                {typeLabel(port.ty)}
+              {/* A single output is named by its type; several (a grouped composite, the request
+                  template) need their names to be told apart, with the type on hover. */}
+              <span
+                className="hl-port__label"
+                style={{ color: outputColor(port.ty) }}
+                title={typeLabel(port.ty)}
+              >
+                {outputs.length > 1 ? port.name : typeLabel(port.ty)}
               </span>
               <Handle
                 type="source"
