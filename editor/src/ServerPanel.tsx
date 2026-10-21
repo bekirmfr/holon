@@ -1,25 +1,20 @@
-// The server panel (M1): the routes this flow declares (derived from its request nodes, see
-// derive.ts), the port, a request tester, and deploy. The server and its endpoints are ordinary
-// units (core's declare.rs), so deploying one is deploying a hash.
+// The server panel: the routes this flow declares (derived from its request nodes, see
+// derive.ts), and a request tester to try them, locally or against the flow's deployment.
+// Deploying is the header's job (DeployBar), for the whole flow.
 
-import { useMemo, useState, type CSSProperties } from "react";
-import { buildPreimage, type Evaluator, type WCapability, type WUnit, type WValue } from "./holon";
-import { capabilityAcknowledgeName } from "./diagnostics";
+import { useState, type CSSProperties } from "react";
+import { buildPreimage, type Evaluator, type WUnit, type WValue } from "./holon";
 import {
   matchRoute,
   METHODS,
   parseHeaders,
   requestRecord,
   responseOf,
-  serverUnit,
   toJson,
   type EndpointDraft,
   type Method,
 } from "./endpoint";
 import { sendRequest, ServerError, type HttpResponse } from "./server";
-
-/** What the panel keeps per flow (saved with it): the server's port. The routes are derived. */
-export type ServerDraft = { port: string };
 
 const field: CSSProperties = {
   font: "inherit",
@@ -95,44 +90,20 @@ export function ServerPanel({
   ev,
   endpoints,
   errors,
-  draft,
-  setDraft,
-  deploy,
+  liveSlug,
 }: {
   ev: Evaluator;
   /** The routes the canvas declares, each already built into an endpoint unit. */
   endpoints: EndpointDraft[];
   /** Why a request node's group couldn't become a route. */
   errors: string[];
-  draft: ServerDraft;
-  setDraft: (d: ServerDraft) => void;
-  /** Stage `hash`'s closure and deploy it under `slug`, acknowledging `acknowledge`. */
-  deploy: (hash: string, slug: string, acknowledge: string[]) => Promise<void>;
+  /** The flow's server deployment, for "send live"; empty when it isn't deployed. */
+  liveSlug: string;
 }) {
-  const [slug, setSlug] = useState("");
-  const [deployedSlug, setDeployedSlug] = useState("");
-  const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
   const [req, setReq] = useState<TesterRequest>({ method: "GET", url: "/", headers: "", body: "" });
   const [result, setResult] = useState<TesterResult | null>(null);
   const [sending, setSending] = useState(false);
   const [open, setOpen] = useState(true);
-
-  const portNumber = Number(draft.port);
-  const portOk = Number.isInteger(portNumber) && portNumber >= 1 && portNumber <= 65535;
-  const liveSlug = deployedSlug || slug.trim();
-
-  // The server this draft would deploy, and what it may touch, shown before deploying.
-  const server = useMemo(() => {
-    if (endpoints.length === 0 || !portOk || errors.length > 0) return null;
-    try {
-      const hash = ev.insert(buildPreimage(serverUnit(endpoints.map((e) => e.hash), portNumber)));
-      const caps = (ev.capabilities(hash) as WCapability[]).map(capabilityAcknowledgeName);
-      return { hash, caps };
-    } catch {
-      return null;
-    }
-  }, [endpoints, errors, portOk, portNumber, ev]);
 
   const sendLocal = () => setResult(answerLocally(ev, endpoints, req));
 
@@ -147,19 +118,6 @@ export function ServerPanel({
       .then((r) => setResult({ from: "live", ...r }))
       .catch((err: unknown) => setResult({ error: err instanceof ServerError || err instanceof Error ? err.message : String(err) }))
       .finally(() => setSending(false));
-  };
-
-  const onDeploy = () => {
-    if (!server || !slug.trim()) return;
-    setBusy(true);
-    setMsg("");
-    deploy(server.hash, slug.trim(), server.caps)
-      .then(() => {
-        setDeployedSlug(slug.trim());
-        setMsg(`deployed — live at http://127.0.0.1:${portNumber}`);
-      })
-      .catch((err: unknown) => setMsg(err instanceof Error ? err.message : String(err)))
-      .finally(() => setBusy(false));
   };
 
   const canSend = req.url.startsWith("/");
@@ -213,32 +171,6 @@ export function ServerPanel({
           {e}
         </div>
       ))}
-
-      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-        <input
-          value={draft.port}
-          onChange={(e) => setDraft({ ...draft, port: e.target.value })}
-          placeholder="port"
-          style={{ ...field, width: 56 }}
-        />
-        <input value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="slug" style={{ ...field, flex: 1 }} />
-        <button
-          onClick={onDeploy}
-          disabled={!server || !slug.trim() || busy}
-          style={{
-            ...button,
-            color: "#0e1a2f",
-            background: "#6fd3e0",
-            border: "none",
-            opacity: !server || !slug.trim() || busy ? 0.4 : 1,
-            cursor: !server || !slug.trim() || busy ? "default" : "pointer",
-          }}
-        >
-          {busy ? "deploying…" : "deploy server"}
-        </button>
-      </div>
-      {server && server.caps.length > 0 && <div>touches: {server.caps.join(", ")}</div>}
-      {msg && <div style={{ color: msg.startsWith("deployed") ? "#9ad29f" : "#e0916f" }}>{msg}</div>}
 
       {/* ── request tester ── */}
       <div style={{ borderTop: "1px solid #1b2a45", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>

@@ -251,9 +251,10 @@ export type FlowDocument = {
   /** Hex preimages of every unit the canvas's composite nodes reference (their whole closure),
    *  inserted back into the Evaluator on open. Absent in flows saved before it existed. */
   units?: string[];
-  /** The flow's server settings (ServerPanel): its port. The routes are derived from the canvas.
-   *  Absent in older flows; `endpoints`, from flows saved before routes were derived, is ignored. */
-  server?: { port: string; endpoints?: EndpointDraft[] };
+  /** The flow's deploy settings (DeployBar): the port for a flow with routes, the interval for a
+   *  clock flow. Absent in older flows; `endpoints`, from flows saved before routes were
+   *  derived, is ignored. */
+  server?: { port: string; interval?: string; endpoints?: EndpointDraft[] };
 };
 
 /** One entry in `GET /flows` — name + freshness only, never the (possibly large) document. */

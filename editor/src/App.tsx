@@ -63,15 +63,15 @@ import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc
 import { History } from "./history";
 import { DialogProvider, useDialog } from "./Dialog";
 import { DeploymentCard } from "./DeploymentCard";
-import { ServerPanel, type ServerDraft } from "./ServerPanel";
+import { ServerPanel } from "./ServerPanel";
+import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { buildTemplate, isTemplate, templateDefaults, templateInterface, TEMPLATES, type TemplateName } from "./templates";
 import { findRoutes, routeSpec } from "./derive";
-import { endpointUnit, type EndpointDraft } from "./endpoint";
+import { endpointUnit, serverUnit, type EndpointDraft } from "./endpoint";
 
-const EMPTY_SERVER: ServerDraft = { port: "8080" };
 // What a save records, for unsaved-change tracking: the canvas plus the server draft.
-const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], server: ServerDraft) =>
-  documentKey(ns, es) + JSON.stringify(server);
+const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) =>
+  documentKey(ns, es) + JSON.stringify(settings);
 import {
   boundaryLabels,
   isWEncapError,
@@ -419,6 +419,7 @@ function Canvas({
     setProjError("");
     setErrorNodeIds(new Set());
     setInspecting(null);
+    setDeployError(""); // declared with the deploy state below; only called after render
   }, []);
 
   // ── the current flow (P4.8): its name, save, and undo/redo ────────────────────────────
@@ -431,12 +432,12 @@ function Canvas({
 
   // Unsaved changes: the canvas differs from what was last saved, opened, or started fresh.
   // New and Open ask before replacing it, and closing the tab asks too.
-  // The flow's HTTP server draft (ServerPanel): saved and opened with the flow.
-  const [serverDraft, setServerDraft] = useState<ServerDraft>(EMPTY_SERVER);
-  const [savedKey, setSavedKey] = useState(() => savedKeyOf([], [], EMPTY_SERVER));
+  // The flow's deploy settings (DeployBar's ⚙): saved and opened with the flow.
+  const [settings, setSettings] = useState<FlowSettings>(DEFAULT_SETTINGS);
+  const [savedKey, setSavedKey] = useState(() => savedKeyOf([], [], DEFAULT_SETTINGS));
   const dirty = useMemo(
-    () => savedKeyOf(nodes, edges, serverDraft) !== savedKey,
-    [nodes, edges, serverDraft, savedKey],
+    () => savedKeyOf(nodes, edges, settings) !== savedKey,
+    [nodes, edges, settings, savedKey],
   );
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => {
@@ -537,8 +538,8 @@ function Canvas({
     setViewport({ x: 0, y: 0, zoom: 1 });
     setFlowName(pendingNew.name);
     history.current.reset({ nodes: [], edges: [] });
-    setServerDraft(EMPTY_SERVER);
-    setSavedKey(savedKeyOf([], [], EMPTY_SERVER));
+    setSettings(DEFAULT_SETTINGS);
+    setSavedKey(savedKeyOf([], [], DEFAULT_SETTINGS));
     setSaveMsg("");
     resetProjectionView();
     setHistVersion((v) => v + 1);
@@ -568,16 +569,16 @@ function Canvas({
       edges: edges as unknown[],
       viewport: getViewport(),
       units,
-      server: serverDraft,
+      server: settings,
     };
-    const key = savedKeyOf(nodes, edges, serverDraft);
+    const key = savedKeyOf(nodes, edges, settings);
     saveFlow(name, doc)
       .then((entry) => {
         setSavedKey(key);
         setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
       })
       .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
-  }, [flowName, nodes, edges, getViewport, ev, serverDraft, dialog]);
+  }, [flowName, nodes, edges, getViewport, ev, settings, dialog]);
 
   const onOpenFlow = useCallback(
     async (rec: FlowRecord) => {
@@ -614,8 +615,11 @@ function Canvas({
       setViewport(rec.document.viewport);
       setFlowName(rec.name);
       history.current.reset(snapshotOf(ns, es));
-      const server: ServerDraft = { port: rec.document.server?.port ?? EMPTY_SERVER.port };
-      setServerDraft(server);
+      const server: FlowSettings = {
+        port: rec.document.server?.port ?? DEFAULT_SETTINGS.port,
+        interval: rec.document.server?.interval ?? DEFAULT_SETTINGS.interval,
+      };
+      setSettings(server);
       setSavedKey(savedKeyOf(ns, es, server));
       // A loaded flow's node ids carry the counters they were minted with — the fresh idRef
       // must start PAST all of them, or the next drop would mint a colliding id.
@@ -702,6 +706,28 @@ function Canvas({
     [byName, screenToFlowPosition, setNodes],
   );
 
+  // A group of canvas nodes as core children plus the wires among them, by index.
+  const groupUnits = useCallback(
+    (group: PrimitiveNodeType[], es: Edge[]) => {
+      const indexOf = new Map(group.map((n, i) => [n.id, i]));
+      const children = group.map((n) => unitFor(n, ev, byName));
+      const wedges: WEdge[] = es
+        .filter((e) => indexOf.has(e.source) && indexOf.has(e.target))
+        .map((e) => {
+          const from = indexOf.get(e.source)!;
+          const to = indexOf.get(e.target)!;
+          return {
+            from_child: from,
+            from_port: group[from].data.outputs.findIndex((p) => p.name === e.sourceHandle),
+            to_child: to,
+            to_port: group[to].data.inputs.findIndex((p) => p.name === e.targetHandle),
+          };
+        });
+      return { children, wedges };
+    },
+    [ev, byName],
+  );
+
   // The server this flow declares, derived from the canvas: each connected group holding a
   // request node is one route (derive.ts). Each group is projected through core like a
   // selection being grouped, narrowed to the request input and the response/effect outputs,
@@ -714,20 +740,7 @@ function Canvas({
       const label = `${r.method} ${r.path}`;
       try {
         const group = r.nodeIds.map((id) => ns.find((n) => n.id === id)!);
-        const indexOf = new Map(group.map((n, i) => [n.id, i]));
-        const children = group.map((n) => unitFor(n, ev, byName));
-        const wedges: WEdge[] = es
-          .filter((e) => indexOf.has(e.source) && indexOf.has(e.target))
-          .map((e) => {
-            const from = indexOf.get(e.source)!;
-            const to = indexOf.get(e.target)!;
-            return {
-              from_child: from,
-              from_port: group[from].data.outputs.findIndex((p) => p.name === e.sourceHandle),
-              to_child: to,
-              to_port: group[to].data.inputs.findIndex((p) => p.name === e.targetHandle),
-            };
-          });
+        const { children, wedges } = groupUnits(group, es);
         const spec = routeSpec(ev.propose_encapsulation(children, wedges) as WEncapSpec, group, label);
         if (typeof spec === "string") {
           errors.push(spec);
@@ -745,10 +758,16 @@ function Canvas({
         errors.push(`${label}: ${isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err)}`);
       }
     }
-    return { endpoints, errors };
+    // The server unit itself, once every route is sound and the port is a port.
+    const port = Number(settings.port);
+    const serverHash =
+      endpoints.length > 0 && errors.length === 0 && Number.isInteger(port) && port >= 1 && port <= 65535
+        ? ev.insert(buildPreimage(serverUnit(endpoints.map((e) => e.hash), port)))
+        : null;
+    return { endpoints, errors, serverHash };
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName]);
+  }, [canvasKey, ev, byName, groupUnits, settings.port]);
 
   // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to
@@ -814,9 +833,7 @@ function Canvas({
   // is the server's own live table, re-fetched after every mutation here rather than guessed
   // at locally, so this view can never drift from what the server actually has running.
   const [deployments, setDeployments] = useState<DeploymentEntry[]>([]);
-  const [slugInput, setSlugInput] = useState("");
-  const [intervalInput, setIntervalInput] = useState("");
-  const [deploying, setDeploying] = useState(false);
+  const [deployBusy, setDeployBusy] = useState(false);
   const [deployError, setDeployError] = useState("");
   // Per-slug trigger body input and last result/error — a small map rather than one shared
   // field, since more than one deployed flow can be sitting in the list at once, each with
@@ -832,8 +849,12 @@ function Canvas({
       .catch((e: unknown) => setDeployError(e instanceof ServerError ? e.message : String(e)));
   }, []);
 
+  // Fetched at start and then every few seconds, so the header's live status (and the deployed
+  // page) also follow changes made elsewhere: another tab, curl, a restart.
   useEffect(() => {
     refreshDeployments();
+    const timer = setInterval(refreshDeployments, 4000);
+    return () => clearInterval(timer);
   }, [refreshDeployments]);
 
   // Opening the Deployed page always shows the live table, not whatever the last fetch saw.
@@ -841,65 +862,76 @@ function Canvas({
     if (page === "deployed") refreshDeployments();
   }, [page, refreshDeployments]);
 
-  // What the currently-projected composite would actually require acknowledging, shown
-  // *before* the deploy button is ever clicked — not silently auto-filled and hidden. The
-  // whole point of the server's own consent gate is that a person has actually seen this
-  // list; auto-acknowledging without displaying it would rubber-stamp the check into
-  // meaninglessness. `null` while there's no projection to ask about at all.
-  const projectionCapabilities = useMemo(() => {
-    if (!projection) return null;
-    try {
-      return ev.capabilities(projection.hash) as WCapability[];
-    } catch {
-      return null;
-    }
-  }, [projection, ev]);
-  const projectionNeedsInterval = projectionCapabilities?.some((c) => c === "Clock") ?? false;
+  // ── Deploy: one action for the whole flow, named after it (DeployBar in the header) ──────
+  // A flow with routes deploys as its derived server; any other flow as the whole canvas
+  // projected into one unit (a clock or ingress flow). Before anything is sent, the person sees
+  // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
+  const deployedEntry = flowName ? deployments.find((d) => d.slug === flowName) : undefined;
+  const outOfDate = deployedEntry && derived.serverHash ? deployedEntry.unit !== derived.serverHash : null;
 
-  // Stage the projected unit server-side, then deploy it under the typed slug — the
-  // acknowledge list is exactly `projectionCapabilities` above, not re-derived or asserted
-  // separately; the server re-derives its own copy from the real unit independently and
-  // checks the two agree, so this can't silently drift into acknowledging the wrong thing.
-  const onDeploy = useCallback(() => {
-    if (!projection || !projectionCapabilities) return;
-    const slug = slugInput.trim();
-    if (!slug) {
-      setDeployError("enter a slug first");
-      return;
-    }
-    const interval = intervalInput.trim() ? Number(intervalInput) : undefined;
-    if (projectionNeedsInterval && (interval === undefined || !Number.isFinite(interval) || interval < 1)) {
-      setDeployError("this flow reads the clock — interval (seconds, ≥ 1) is required");
-      return;
-    }
-    setDeploying(true);
+  const onDeployFlow = useCallback(async () => {
     setDeployError("");
-    const acknowledge = projectionCapabilities.map(capabilityAcknowledgeName);
-    // Stage the WHOLE closure, not just the root — a composite's own preimage only references
-    // its children by hash, it never carries their bytes (see stageClosure's own doc; this was
-    // the real bug behind an early "every capability at once" 400, the server's honest
-    // fail-closed answer to a closure it genuinely couldn't resolve, not a bug in that check).
-    // The hash itself is already known locally (`projection.hash`) — content-addressing
-    // guarantees the server computes the identical hash for identical bytes, so there's no
-    // need to round-trip and re-derive it from the server's own response.
-    stageClosure(ev, projection.hash, new Set())
-      .then(() => deployUnit(slug, projection.hash, acknowledge, interval))
-      .then(() => {
-        setSlugInput("");
-        setIntervalInput("");
-        refreshDeployments();
-      })
-      .catch((e: unknown) => setDeployError(e instanceof ServerError ? e.message : String(e)))
-      .finally(() => setDeploying(false));
-  }, [projection, projectionCapabilities, projectionNeedsInterval, slugInput, intervalInput, refreshDeployments, ev]);
+    let name = flowName;
+    if (!name) {
+      name = await dialog.prompt("Name this flow first (letters, digits, - and _ only). Its deployment takes the name:");
+      if (!name) return;
+      setFlowName(name);
+    }
+    let hash: string;
+    let isServer = false;
+    try {
+      if (derived.errors.length > 0) throw new Error(derived.errors.join("; "));
+      if (derived.endpoints.length > 0) {
+        if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it under ⚙)`);
+        hash = derived.serverHash;
+        isServer = true;
+      } else {
+        const { nodes: ns, edges: es } = live.current;
+        if (ns.length === 0) throw new Error("nothing to deploy: the canvas is empty");
+        const { children, wedges } = groupUnits(ns, es);
+        const spec = ev.propose_encapsulation(children, wedges) as WEncapSpec;
+        hash = ev.insert(buildPreimage(ev.freeze_encapsulation(children, wedges, spec) as WUnit));
+      }
+    } catch (err) {
+      setDeployError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
+      return;
+    }
+    const caps = (ev.capabilities(hash) as WCapability[]).map(capabilityAcknowledgeName);
+    let interval: number | undefined;
+    if (!isServer && caps.includes("Clock")) {
+      interval = Number(settings.interval);
+      if (!Number.isInteger(interval) || interval < 1) {
+        setDeployError("this flow reads the clock: set how often it fires under ⚙ (whole seconds, at least 1)");
+        return;
+      }
+    }
+    const existing = deployments.some((d) => d.slug === name);
+    const question =
+      `${existing ? "Update" : "Deploy"} "${name}"?` +
+      (caps.length > 0 ? ` It may touch: ${caps.join(", ")}.` : "") +
+      (existing ? " Its state and sessions are kept." : "");
+    if (!(await dialog.confirm(question, existing ? "Update" : "Deploy"))) return;
+    setDeployBusy(true);
+    try {
+      await stageClosure(ev, hash, new Set());
+      await deployUnit(name, hash, caps, interval);
+      refreshDeployments();
+    } catch (err) {
+      setDeployError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeployBusy(false);
+    }
+  }, [flowName, dialog, derived, settings, groupUnits, ev, deployments, refreshDeployments]);
 
-  // Stage a unit's closure and deploy it: what the server panel calls for a server unit.
-  const deployServerHash = useCallback(
-    (hash: string, slug: string, acknowledge: string[]) =>
-      stageClosure(ev, hash, new Set())
-        .then(() => deployUnit(slug, hash, acknowledge))
-        .then(() => refreshDeployments()),
-    [ev, refreshDeployments],
+  const onFlowAction = useCallback(
+    (action: "run" | "pause" | "stop") => {
+      if (!flowName) return;
+      setDeployError("");
+      changeDeployment(flowName, action)
+        .then(() => refreshDeployments())
+        .catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e)));
+    },
+    [flowName, refreshDeployments],
   );
 
   const onDeleteDeployment = useCallback(
@@ -927,7 +959,7 @@ function Canvas({
         )
         // The server bumps trigger_count/error_count on every attempt, success or failure
         // alike — refreshed here unconditionally (a finally, not just the success branch), the
-        // same "always resync after touching the server" shape onDeploy already uses for its
+        // same "always resync after touching the server" shape onDeployFlow already uses for its
         // own busy flag. Without this, the count showing in the panel was real server state
         // gone stale the instant a trigger fired, not an actually-wrong count server-side.
         .finally(() => refreshDeployments());
@@ -1453,7 +1485,19 @@ function Canvas({
             >
               ⟳
             </button>
+            <DeployBar
+              entry={deployedEntry}
+              outOfDate={outOfDate}
+              busy={deployBusy}
+              settings={settings}
+              setSettings={setSettings}
+              onDeploy={onDeployFlow}
+              onAction={onFlowAction}
+            />
             {saveMsg && <span style={{ color: "#9ad29f", fontSize: 11 }}>{saveMsg}</span>}
+            {deployError && page === "canvas" && (
+              <span style={{ color: "#e0916f", fontSize: 11, maxWidth: 420 }}>{deployError}</span>
+            )}
           </div>
         </Panel>
         <Panel position="top-right">
@@ -1601,65 +1645,6 @@ function Canvas({
                 )}
               </div>
             )}
-            {projection && projectionCapabilities && (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                  alignItems: "flex-end",
-                  marginTop: 8,
-                  paddingTop: 8,
-                  borderTop: "1px solid #1b2a45",
-                }}
-              >
-                {projectionCapabilities.length > 0 && (
-                  <div style={{ fontSize: 10, color: "#9fb4d4", textAlign: "right", maxWidth: 240 }}>
-                    touches: {projectionCapabilities.map(capabilityAcknowledgeName).join(", ")}
-                  </div>
-                )}
-                <input
-                  className="nodrag"
-                  placeholder="slug"
-                  value={slugInput}
-                  onChange={(e) => setSlugInput(e.target.value)}
-                  style={{ ...boundaryFieldStyle, width: 100 }}
-                />
-                {projectionNeedsInterval && (
-                  <input
-                    className="nodrag"
-                    type="number"
-                    placeholder="interval (s)"
-                    value={intervalInput}
-                    onChange={(e) => setIntervalInput(e.target.value)}
-                    style={{ ...boundaryFieldStyle, width: 100 }}
-                  />
-                )}
-                <button
-                  onClick={onDeploy}
-                  disabled={deploying || !slugInput.trim()}
-                  style={{
-                    font: "inherit",
-                    fontSize: 12,
-                    letterSpacing: "0.04em",
-                    padding: "5px 12px",
-                    color: "#0e1a2f",
-                    background: "#6fd3e0",
-                    border: "none",
-                    borderRadius: 3,
-                    cursor: deploying || !slugInput.trim() ? "default" : "pointer",
-                    opacity: deploying || !slugInput.trim() ? 0.4 : 1,
-                  }}
-                >
-                  {deploying ? "deploying…" : "deploy"}
-                </button>
-                {deployError && (
-                  <div style={{ fontSize: 11, color: "#e0916f", maxWidth: 240, textAlign: "right" }}>
-                    {deployError}
-                  </div>
-                )}
-              </div>
-            )}
             {projError && (
               <div style={{ fontSize: 12, color: "#e0916f", maxWidth: 240, textAlign: "right" }}>
                 {projError}
@@ -1669,12 +1654,11 @@ function Canvas({
         </Panel>
         <Panel position="bottom-left" style={{ marginLeft: 56 }}>
           <ServerPanel
+            key={flowName ?? ""}
             ev={ev}
             endpoints={derived.endpoints}
             errors={derived.errors}
-            draft={serverDraft}
-            setDraft={setServerDraft}
-            deploy={deployServerHash}
+            liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
           />
         </Panel>
         {inspecting && (
