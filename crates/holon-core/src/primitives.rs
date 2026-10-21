@@ -298,6 +298,17 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             Some(Value::List(fields.keys().map(|k| Value::Text(k.clone())).collect()))
         }
 
+        // ── JSON (M1): request and response bodies. See json.rs for the mapping; malformed input,
+        // or a value with no JSON form, is absent. ──
+        "json_parse" => {
+            let [Value::Text(s)] = inputs else { return None };
+            crate::json::parse(s)
+        }
+        "json_stringify" => {
+            let [v] = inputs else { return None };
+            crate::json::stringify(v).map(Value::Text)
+        }
+
         "pair" => {
             let [a, b] = inputs else { return None };
             Some(Value::List(vec![(*a).clone(), (*b).clone()]))

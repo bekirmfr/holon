@@ -31,6 +31,8 @@ pub const GENESIS: &[&str] = &[
     "some", "none",
     // pure — record kit (5)
     "record", "field", "with_field", "without_field", "keys",
+    // pure — JSON (2)
+    "json_parse", "json_stringify",
     // pure — universal, any-typed (5)
     "to_text", "is_truthy", "guard", "default", "equals",
     // drivers — sourced, no compute (3)
@@ -145,6 +147,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         ),
         "without_field" => prim(vec![port("record", Type::Record)], vec![Param::frozen("name", "id")], Type::Record),
         "keys" => prim(vec![port("record", Type::Record)], vec![], Type::List(Box::new(Text))),
+        "json_parse" => prim(vec![port("text", Text)], vec![], Any),
+        "json_stringify" => prim(vec![port("value", Any)], vec![], Text),
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
 
         // ── pure — sum (Option) ──
@@ -209,12 +213,12 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_47_leaves() {
+    fn genesis_has_49_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
-        // deliberately for M1 (docs/PLATFORM_LAYOUT.md).
-        assert_eq!(GENESIS.len(), 47);
+        // deliberately for M1 (docs/PLATFORM_LAYOUT.md), and json_parse + json_stringify.
+        assert_eq!(GENESIS.len(), 49);
     }
 
     #[test]

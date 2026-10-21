@@ -34,6 +34,7 @@ mod memo;
 mod promote;
 mod hash;
 mod inspect;
+mod json;
 mod resolve;
 mod simulate;
 mod validate;
