@@ -58,7 +58,7 @@ import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
-import { closureOf, fromHex, toHex } from "./flowDoc";
+import { closureOf, fromHex, structuralKey, toHex } from "./flowDoc";
 import {
   boundaryLabels,
   isWEncapError,
@@ -442,6 +442,51 @@ function Canvas({
   // The one in-browser workspace every placed composite lives in (see Projection below).
   // Declared first because saving and opening a flow read and fill it too.
   const ev = useMemo(() => new Evaluator(), []);
+  // Projection state, declared here (not with the Projection section below) because New and
+  // Open reset it. See that section for what each field means.
+  const [projection, setProjection] = useState<{
+    hash: string;
+    pre: Uint8Array;
+    ports: WPort[];
+    source: (string | null)[];
+    values: (WValue | null)[];
+    outputs: WPort[];
+    resultSource: (string | null)[];
+    results: (WValue | null)[];
+    // The exact inputs this projection was built from, held so excludeOutput below can
+    // re-freeze without re-deriving from the (possibly since-changed) canvas — the same
+    // "frozen at project time" reasoning `pre` already follows for boundary re-eval.
+    children: string[];
+    wedges: WEdge[];
+    spec: WEncapSpec;
+    // The canvas's structuralKey when this was projected. Once the canvas no longer matches,
+    // the projection is dropped (below) rather than left on screen, deployable.
+    basis: string;
+  } | null>(null);
+  const [projError, setProjError] = useState<string>("");
+  // Which placed nodes a projection error implicates — derived from the structured error's own
+  // indices (see encapErrorNodeIndices), not guessed. Purely presentational: never read by
+  // onProject/onDrop, never affects hashing — a node's identity doesn't know it's "wrong."
+  const [errorNodeIds, setErrorNodeIds] = useState<Set<string>>(new Set());
+  // Which hash is currently shown in the inspect panel (P4.4.1) — null when closed. Purely a
+  // view concern, like errorNodeIds above: never read by onProject/onGroup/onExpand, never
+  // affects the canvas or hashing. Read-only, deliberately unlike expand (P4.3.1): opening this
+  // never touches `nodes`/`edges` at all.
+  const [inspecting, setInspecting] = useState<string | null>(null);
+
+  const canvasKey = useMemo(() => structuralKey(nodes, edges), [nodes, edges]);
+  useEffect(() => {
+    setProjection((p) => (p && p.basis !== canvasKey ? null : p));
+  }, [canvasKey]);
+
+  // New and Open start from a clean slate: no projection, error highlight or inspect panel
+  // carried over from the previous flow.
+  const resetProjectionView = useCallback(() => {
+    setProjection(null);
+    setProjError("");
+    setErrorNodeIds(new Set());
+    setInspecting(null);
+  }, []);
 
   // ── the current flow (P4.8): its name, save, and undo/redo ────────────────────────────
   // A saved flow is a named workspace document — nodes/edges/viewport exactly as left, stored
@@ -551,8 +596,9 @@ function Canvas({
     history.current = { past: [], future: [] };
     committed.current = { nodes: [], edges: [] };
     setSaveMsg("");
+    resetProjectionView();
     setHistVersion((v) => v + 1);
-  }, [pendingNew, setNodes, setEdges, setViewport]);
+  }, [pendingNew, setNodes, setEdges, setViewport, resetProjectionView]);
 
   const onSave = useCallback(() => {
     let name = flowName;
@@ -626,10 +672,11 @@ function Canvas({
       }
       idRef.current = max + 1;
       setSaveMsg(openMsg);
+      resetProjectionView();
       setHistVersion((v) => v + 1);
       setPage("canvas");
     },
-    [setNodes, setEdges, setViewport, setPage, snapshotOf, ev],
+    [setNodes, setEdges, setViewport, setPage, snapshotOf, ev, resetProjectionView],
   );
 
   const byName = useMemo(() => {
@@ -735,32 +782,6 @@ function Canvas({
   // `default_spec` now proposes every free output automatically, so `results` may hold several
   // values, not one — a composite with zero free outputs is likewise just the empty case of this
   // same shape (`outputs: []`), not an error state.
-  const [projection, setProjection] = useState<{
-    hash: string;
-    pre: Uint8Array;
-    ports: WPort[];
-    source: (string | null)[];
-    values: (WValue | null)[];
-    outputs: WPort[];
-    resultSource: (string | null)[];
-    results: (WValue | null)[];
-    // The exact inputs this projection was built from, held so excludeOutput below can
-    // re-freeze without re-deriving from the (possibly since-changed) canvas — the same
-    // "frozen at project time" reasoning `pre` already follows for boundary re-eval.
-    children: string[];
-    wedges: WEdge[];
-    spec: WEncapSpec;
-  } | null>(null);
-  const [projError, setProjError] = useState<string>("");
-  // Which placed nodes a projection error implicates — derived from the structured error's own
-  // indices (see encapErrorNodeIndices), not guessed. Purely presentational: never read by
-  // onProject/onDrop, never affects hashing — a node's identity doesn't know it's "wrong."
-  const [errorNodeIds, setErrorNodeIds] = useState<Set<string>>(new Set());
-  // Which hash is currently shown in the inspect panel (P4.4.1) — null when closed. Purely a
-  // view concern, like errorNodeIds above: never read by onProject/onGroup/onExpand, never
-  // affects the canvas or hashing. Read-only, deliberately unlike expand (P4.3.1): opening this
-  // never touches `nodes`/`edges` at all.
-  const [inspecting, setInspecting] = useState<string | null>(null);
 
   // ── Deploy / manage (holon-server) ──────────────────────────────────────────────────────
   // Everything above this point (project, group, expand, inspect) is purely local — an
@@ -958,7 +979,7 @@ function Canvas({
       });
       const results = ev.eval(pre, values) as (WValue | null)[];
       setProjection({
-        hash, pre, ports, source, values, outputs, resultSource, results, children, wedges, spec,
+        hash, pre, ports, source, values, outputs, resultSource, results, children, wedges, spec, basis: canvasKey,
       });
       setProjError("");
       setErrorNodeIds(new Set());
@@ -975,7 +996,7 @@ function Canvas({
         setErrorNodeIds(new Set());
       }
     }
-  }, [nodes, edges, ev]);
+  }, [nodes, edges, ev, canvasKey]);
 
   // Group the current selection into one placed composite node (P4.3.1). React Flow's own
   // selection (shift-click / drag-box) is already live and already used for delete — this is

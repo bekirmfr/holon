@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { closureOf, fromHex, toHex } from "./flowDoc";
+import { closureOf, fromHex, structuralKey, toHex } from "./flowDoc";
 import type { WUnit } from "./holon";
 
 const prim = (name: string, params: WUnit["params"] = []): WUnit => ({
@@ -39,6 +39,30 @@ describe("closureOf", () => {
         throw new Error("unresolved: gone");
       }),
     ).toThrow("unresolved");
+  });
+});
+
+describe("structuralKey", () => {
+  // Regression: a projection outlived the canvas it was built from (an edit, or New/Open of
+  // another flow), so the deploy panel offered the old hash and clicking deploy shipped it.
+  // The projection now records this key and is dropped when the canvas's key moves.
+  const node = (id: string, value: string, x = 0) => ({
+    id,
+    position: { x, y: 0 },
+    selected: false,
+    data: { name: "const", params: [{ kind: "Frozen", name: "value", value }] },
+  });
+  const wire = (source: string, target: string) => ({ source, sourceHandle: "out", target, targetHandle: "a" });
+  const base = structuralKey([node("c1", "3"), node("c2", "4")], [wire("c1", "c2")]);
+
+  it("ignores layout, selection and ordering", () => {
+    const moved = { ...node("c1", "3", 500), selected: true };
+    expect(structuralKey([node("c2", "4"), moved], [wire("c1", "c2")])).toBe(base);
+  });
+  it("changes with a param, a node, or a wire", () => {
+    expect(structuralKey([node("c1", "5"), node("c2", "4")], [wire("c1", "c2")])).not.toBe(base);
+    expect(structuralKey([node("c1", "3")], [])).not.toBe(base);
+    expect(structuralKey([node("c1", "3"), node("c2", "4")], [])).not.toBe(base);
   });
 });
 

@@ -23,6 +23,20 @@ export function closureOf(roots: string[], getUnit: (hash: string) => WUnit): st
   return order;
 }
 
+// What a projection depends on: each node's id and data (primitive, params, ports, composite
+// hash) and each wire's endpoints. Positions, selection and drag state are left out, so moving a
+// node keeps a projection current; any edit that could change what it computes does not.
+export function structuralKey(
+  nodes: { id: string; data: unknown }[],
+  edges: { source: string; sourceHandle?: string | null; target: string; targetHandle?: string | null }[],
+): string {
+  const ns = nodes.map((n) => [n.id, n.data] as const).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const es = edges
+    .map((e) => [e.source, e.sourceHandle ?? null, e.target, e.targetHandle ?? null])
+    .sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
+  return JSON.stringify([ns, es]);
+}
+
 export function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
