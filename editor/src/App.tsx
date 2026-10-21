@@ -58,7 +58,7 @@ import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
-import { closureOf, fromHex, structuralKey, toHex } from "./flowDoc";
+import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import { History } from "./history";
 import {
   boundaryLabels,
@@ -358,6 +358,7 @@ function FlowsPage({ onOpen }: { onOpen: (rec: FlowRecord) => void }) {
       .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
   };
   const remove = (name: string) => {
+    if (!window.confirm(`Delete the saved flow "${name}"? This can't be undone.`)) return;
     deleteFlow(name)
       .then(refresh)
       .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
@@ -428,12 +429,14 @@ function Canvas({
   page,
   setPage,
   pendingNew,
+  onDirtyChange,
 }: {
   catalog: WUnit[];
   variadic: Set<string>;
   page: AppPage;
   setPage: (p: AppPage) => void;
   pendingNew: { name: string; nonce: number } | null;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -496,6 +499,18 @@ function Canvas({
   // and presentation stays out of identity by design.
   const [flowName, setFlowName] = useState<string | null>(null);
   const [saveMsg, setSaveMsg] = useState("");
+
+  // Unsaved changes: the canvas differs from what was last saved, opened, or started fresh.
+  // New and Open ask before replacing it, and closing the tab asks too.
+  const [savedKey, setSavedKey] = useState(() => documentKey([], []));
+  const dirty = useMemo(() => documentKey(nodes, edges) !== savedKey, [nodes, edges, savedKey]);
+  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   // Undo/redo: a debounced snapshot history over {nodes, edges}. React Flow has no built-in
   // history, so this is the standard minimal shape: commit a snapshot 400ms after the canvas
@@ -588,6 +603,7 @@ function Canvas({
     setViewport({ x: 0, y: 0, zoom: 1 });
     setFlowName(pendingNew.name);
     history.current.reset({ nodes: [], edges: [] });
+    setSavedKey(documentKey([], []));
     setSaveMsg("");
     resetProjectionView();
     setHistVersion((v) => v + 1);
@@ -616,15 +632,20 @@ function Canvas({
       viewport: getViewport(),
       units,
     };
+    const key = documentKey(nodes, edges);
     saveFlow(name, doc)
-      .then((entry) =>
-        setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`),
-      )
+      .then((entry) => {
+        setSavedKey(key);
+        setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
+      })
       .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
   }, [flowName, nodes, edges, getViewport, ev]);
 
   const onOpenFlow = useCallback(
     (rec: FlowRecord) => {
+      if (dirty && !window.confirm(`Discard unsaved changes to "${flowName ?? "untitled"}" and open "${rec.name}"?`)) {
+        return;
+      }
       const ns = rec.document.nodes as PrimitiveNodeType[];
       const es = rec.document.edges as Edge[];
       // Put the flow's composites back into the workspace before anything can reference them.
@@ -654,6 +675,7 @@ function Canvas({
       setViewport(rec.document.viewport);
       setFlowName(rec.name);
       history.current.reset(snapshotOf(ns, es));
+      setSavedKey(documentKey(ns, es));
       // A loaded flow's node ids carry the counters they were minted with — the fresh idRef
       // must start PAST all of them, or the next drop would mint a colliding id.
       let max = -1;
@@ -668,7 +690,7 @@ function Canvas({
       setHistVersion((v) => v + 1);
       setPage("canvas");
     },
-    [setNodes, setEdges, setViewport, setPage, snapshotOf, ev, resetProjectionView],
+    [setNodes, setEdges, setViewport, setPage, snapshotOf, ev, resetProjectionView, dirty, flowName],
   );
 
   const byName = useMemo(() => {
@@ -863,6 +885,8 @@ function Canvas({
 
   const onDeleteDeployment = useCallback(
     (slug: string) => {
+      // Undeploying is also the one way a deployment's state is discarded (a redeploy keeps it).
+      if (!window.confirm(`Undeploy "${slug}"? Its stored state is deleted too. This can't be undone.`)) return;
       deleteDeployment(slug)
         .then(() => refreshDeployments())
         .catch((e: unknown) => setDeployError(e instanceof ServerError ? e.message : String(e)));
@@ -1356,6 +1380,7 @@ function Canvas({
           <div data-hist={histVersion} style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ color: "#9fb4d4", fontSize: 12, letterSpacing: "0.04em" }}>
               {flowName ?? "untitled"}
+              {dirty && <span title="unsaved changes"> •</span>}
             </span>
             <button
               onClick={onSave}
@@ -1694,6 +1719,12 @@ function Editor() {
   // "New" carries the prompted name down to the canvas; `nonce` makes a second New with the
   // same name still take effect (the object identity changes even when the name doesn't).
   const [pendingNew, setPendingNew] = useState<{ name: string; nonce: number } | null>(null);
+  // Whether the canvas has unsaved changes, reported up by Canvas so New can ask first. A ref:
+  // only read when New is clicked, so it never needs to re-render the header.
+  const canvasDirty = useRef(false);
+  const onDirtyChange = useCallback((d: boolean) => {
+    canvasDirty.current = d;
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -1704,6 +1735,7 @@ function Editor() {
   }, []);
 
   const onNew = () => {
+    if (canvasDirty.current && !window.confirm("Discard unsaved changes and start a new flow?")) return;
     const name = window.prompt("Flow name (letters, digits, - and _ only):")?.trim();
     if (!name) return;
     setPendingNew((p) => ({ name, nonce: (p?.nonce ?? 0) + 1 }));
@@ -1764,6 +1796,7 @@ function Editor() {
                 page={page}
                 setPage={setPage}
                 pendingNew={pendingNew}
+                onDirtyChange={onDirtyChange}
               />
             )}
           </ReactFlowProvider>

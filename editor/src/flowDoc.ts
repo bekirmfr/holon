@@ -37,6 +37,19 @@ export function structuralKey(
   return JSON.stringify([ns, es]);
 }
 
+// What saving a flow would record: the structure plus each node's position. Selection, drag
+// state and React Flow's own measurements are left out, so only a real change marks the canvas
+// as unsaved.
+export function documentKey(
+  nodes: { id: string; data: unknown; position: { x: number; y: number } }[],
+  edges: Parameters<typeof structuralKey>[1],
+): string {
+  const positions = nodes
+    .map((n) => [n.id, n.position.x, n.position.y] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify([structuralKey(nodes, edges), positions]);
+}
+
 export function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }

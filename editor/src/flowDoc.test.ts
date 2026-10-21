@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { closureOf, fromHex, structuralKey, toHex } from "./flowDoc";
+import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import type { WUnit } from "./holon";
 
 const prim = (name: string, params: WUnit["params"] = []): WUnit => ({
@@ -63,6 +63,23 @@ describe("structuralKey", () => {
     expect(structuralKey([node("c1", "5"), node("c2", "4")], [wire("c1", "c2")])).not.toBe(base);
     expect(structuralKey([node("c1", "3")], [])).not.toBe(base);
     expect(structuralKey([node("c1", "3"), node("c2", "4")], [])).not.toBe(base);
+  });
+});
+
+describe("documentKey", () => {
+  // Backs the unsaved-changes prompt: New/Open used to replace an unsaved canvas silently.
+  const node = (x: number, extra: object = {}) => ({
+    id: "c1",
+    position: { x, y: 0 },
+    data: { name: "const" },
+    ...extra,
+  });
+  it("counts a move as unsaved, but not selection or React Flow's measurements", () => {
+    const saved = documentKey([node(0)], []);
+    expect(documentKey([node(10)], [])).not.toBe(saved);
+    expect(documentKey([node(0, { selected: true, dragging: false, measured: { width: 160, height: 80 } })], [])).toBe(
+      saved,
+    );
   });
 });
 
