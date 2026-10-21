@@ -1060,13 +1060,13 @@ fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<String, Deployme
 /// the empty table. Each record is re-materialized against the
 /// **current** store and re-derives its `triggers`/`state`-eligibility fresh via
 /// `capabilities()` — exactly what a live `/deploy` call would compute, not a cached copy that
-/// could go stale. A record whose unit no longer resolves in the store (e.g. the store
-/// directory was touched separately) is skipped with a warning, not a crash — the rest of the
-/// file still loads. `state` in the record is only trusted if the unit still genuinely derives
-/// a state capability (defensive: a hand-edited or foreign file claiming state for a
-/// state-free unit is ignored, not silently restored); a state-capable unit with no persisted
-/// state (an old file predating this feature) starts from an empty map, same as a fresh
-/// `/deploy`.
+/// could go stale. A record that can't be loaded (a bad hash, a store error, or a unit no
+/// longer in the store, e.g. `--store :memory:` against a persisted file) is also an `Err`:
+/// skipping it would let the next save drop it and its state for good. Persisted state is
+/// restored whenever the record has some, even for a unit that no longer derives a state
+/// capability, matching `/deploy`, which keeps a slug's state across a stateless version; a
+/// state-capable unit with no persisted state (an old file predating this feature) starts from
+/// an empty map, same as a fresh `/deploy`.
 fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeMap<String, Deployment>, String> {
     let mut loaded = BTreeMap::new();
     if path == ":memory:" {
@@ -1082,20 +1082,18 @@ fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeMap<String, 
         .map_err(|e| format!("{path:?} is not valid deployment JSON: {e}"))?;
 
     for record in records {
+        let slug = &record.slug;
         let Some(unit_hash) = parse_hash(&record.unit) else {
-            eprintln!("warning: skipping deployment {:?} — {:?} is not a valid hash", record.slug, record.unit);
-            continue;
+            return Err(format!("deployment {slug:?} in {path:?}: {:?} is not a valid hash", record.unit));
         };
-        let resolver = match materialize_closure(store, unit_hash) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("warning: skipping deployment {:?} — store error: {e:?}", record.slug);
-                continue;
-            }
-        };
+        let resolver = materialize_closure(store, unit_hash)
+            .map_err(|e| format!("deployment {slug:?} in {path:?}: store error: {e:?}"))?;
         let Some(root_unit) = resolver.resolve(&unit_hash) else {
-            eprintln!("warning: skipping deployment {:?} — unit no longer resolves in the store", record.slug);
-            continue;
+            return Err(format!(
+                "deployment {slug:?} in {path:?}: unit {} is not in the store. Start with the --store it \
+                 was deployed into, run with --deployments :memory:, or move {path:?} aside",
+                record.unit
+            ));
         };
         let caps = capabilities(root_unit, &resolver);
         let mut triggers = Vec::new();
@@ -1107,16 +1105,13 @@ fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeMap<String, 
         }
         let next_due = record.interval_seconds.map(|_| SystemTime::now());
 
-        let state = if derives_state(caps.iter()) {
-            let map: BTreeMap<String, Value> = match record.state {
-                Some(persisted) => {
-                    persisted.into_iter().map(|(k, v)| (k, SValue::into_core(v))).collect()
-                }
-                None => BTreeMap::new(),
-            };
-            Some(Arc::new(Mutex::new(map)))
-        } else {
-            None
+        let state = match record.state {
+            Some(persisted) => {
+                let map = persisted.into_iter().map(|(k, v)| (k, SValue::into_core(v))).collect();
+                Some(Arc::new(Mutex::new(map)))
+            }
+            None if derives_state(caps.iter()) => Some(Arc::new(Mutex::new(BTreeMap::new()))),
+            None => None,
         };
         let deployed_at = record
             .deployed_at_epoch_seconds
@@ -1163,9 +1158,8 @@ fn persist_flows(path: &str, flows: &BTreeMap<String, FlowRecord>) {
 /// Load flows at startup — the inverse of `persist_flows`. A missing file (first run) or
 /// `":memory:"` yields an empty table; an unreadable or unparseable file is an `Err` and the
 /// server refuses to start, for the same reason as `load_deployments`: the next save would
-/// overwrite every flow with the empty table. A record whose name fails `is_valid_slug` is
-/// skipped with a warning rather than trusted — same defensive stance `load_deployments`
-/// takes toward hand-edited files.
+/// overwrite every flow with the empty table. A record whose name fails `is_valid_slug` is an
+/// `Err` too, for the same reason.
 fn load_flows(path: &str) -> Result<BTreeMap<String, FlowRecord>, String> {
     if path == ":memory:" {
         return Ok(BTreeMap::new());
@@ -1180,8 +1174,8 @@ fn load_flows(path: &str) -> Result<BTreeMap<String, FlowRecord>, String> {
     let mut loaded = BTreeMap::new();
     for record in records {
         if !is_valid_slug(&record.name) {
-            eprintln!("warning: skipping flow with invalid name {:?}", record.name);
-            continue;
+            // Skipping it would let the next save drop it; refuse instead, like a parse error.
+            return Err(format!("{path:?} has a flow with an invalid name: {:?}", record.name));
         }
         loaded.insert(record.name.clone(), record);
     }
@@ -2972,6 +2966,44 @@ mod tests {
         assert_eq!(loaded["document"], doc);
 
         let _ = std::fs::remove_file(&flows_path);
+    }
+
+    /// Loading never skips what it can't load, and never drops persisted state.
+    #[test]
+    fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
+        // Regression 1: a record whose unit wasn't in the store (e.g. `--store :memory:` against
+        // a persisted file) was skipped, and the next save then dropped it and its state.
+        let state = test_state();
+        let path = unique_temp_path("unloadable");
+        let missing = format!("{{\"slug\":\"gone\",\"unit\":\"{}\",\"trigger_count\":3,\"error_count\":0}}", "ab".repeat(32));
+        for contents in [format!("[{missing}]"), r#"[{"slug":"bad","unit":"not-hex","trigger_count":0,"error_count":0}]"#.to_string()] {
+            std::fs::write(&path, &contents).unwrap();
+            let e = load_deployments(&path, &state.store).err().expect("must refuse, not skip");
+            assert!(e.contains("deployment"), "{e}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), contents, "file left as it was");
+        }
+        std::fs::write(&path, r#"[{"name":"../evil","document":{},"saved_at_epoch_seconds":0}]"#).unwrap();
+        assert!(load_flows(&path).is_err());
+
+        // Regression 2: a redeploy keeps a slug's state across a stateless version, but loading
+        // only restored state for units deriving a state capability, so a restart dropped it.
+        let mut state = test_state();
+        state.deployments_path = path.clone();
+        let deploy = |unit: Hash, ack: serde_json::Value| {
+            let body = serde_json::to_vec(&serde_json::json!({ "slug": "writer", "unit": to_hex(&unit), "acknowledge": ack }))
+                .unwrap();
+            assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
+        };
+        let writer = stage_stateful_writer(&state, test_ingress(), "k");
+        deploy(writer, serde_json::json!(["NetworkIngress", "StateWrite(\"k\")"]));
+        assert_eq!(route(&state, &req("POST", "/trigger/writer", b"kept".to_vec())).status_code, 200);
+        let stateless = stage_ingress_plus_driver(&state, test_random());
+        deploy(stateless, serde_json::json!(["NetworkIngress", "Random"]));
+
+        let reloaded = load_deployments(&path, &state.store).unwrap();
+        let held = reloaded["writer"].state.as_ref().expect("state must survive the restart").lock().unwrap().clone();
+        assert_eq!(held.get("k"), Some(&Value::Text("kept".into())));
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Regression: a persistence file that failed to parse used to load as an empty table, so
