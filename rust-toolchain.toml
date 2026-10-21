@@ -1,2 +1,5 @@
 [toolchain]
-channel = "stable"   # better: pin exact, e.g. "1.83.0"
+# Pinned so native, wasm and CI builds all use the same compiler; bump deliberately.
+channel = "1.96.0"
+targets = ["wasm32-unknown-unknown"]
+components = ["clippy"]
