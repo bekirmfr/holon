@@ -769,6 +769,17 @@ impl Evaluator {
             .map_err(|e| JsValue::from_str(&format!("spec: {e}")))
     }
 
+    /// The reordering core applies to a composite's children when it hashes (and so stores) it:
+    /// element `k` is the index, as given here, of the child that is child `k` once stored. The
+    /// editor records it at deploy time, to trace the server's per-child timings back to canvas
+    /// nodes. Same `children`/`edges` shape as `propose_encapsulation`.
+    pub fn canonical_child_order(&self, children: Vec<String>, edges: JsValue) -> Result<Vec<u32>, JsValue> {
+        let (hashes, core_edges) = Self::parse_children_and_edges(&children, edges)?;
+        holon_core::canonical_child_order(&hashes, &core_edges)
+            .map(|order| order.into_iter().map(|i| i as u32).collect())
+            .map_err(|e| JsValue::from_str(&format!("order: {e:?}")))
+    }
+
     /// Freeze a (possibly edited) encapsulation spec into a composite — core's
     /// `derive_and_freeze` directly, no `default_spec` call inside (P4.3, fork 3). The
     /// `children`/`edges` here must be the exact same values passed to

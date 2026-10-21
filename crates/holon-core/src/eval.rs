@@ -43,6 +43,39 @@ pub type EvalOutputs = SmallVec<[Option<Value>; 1]>;
 /// composite-only capability — every primitive declares exactly one output, so its arm always
 /// returns a 1-element vec; only a composite's own boundary can expose several).
 pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> EvalOutputs {
+    eval_observed(unit, inputs, resolver, &mut NoObserver)
+}
+
+/// Told when each composite child starts and finishes evaluating, by its path of child indices
+/// from the root (`[2]`, then `[2, 0]` inside it, …). Core never reads a clock or does IO: an
+/// observer is how the host times each step (the flow log's timeline) without that impurity
+/// entering here. `map`/`fold` bodies are not observed, only composite children.
+pub trait Observer {
+    fn enter(&mut self, _path: &[u32]) {}
+    fn leave(&mut self, _path: &[u32]) {}
+}
+
+/// Observes nothing: what plain [`eval`] uses.
+pub struct NoObserver;
+impl Observer for NoObserver {}
+
+/// [`eval`], reporting each composite child's evaluation to `observer`. The result is identical.
+pub fn eval_observed(
+    unit: &Unit,
+    inputs: &[Option<Value>],
+    resolver: &impl Resolver,
+    observer: &mut impl Observer,
+) -> EvalOutputs {
+    eval_at(unit, inputs, resolver, observer, &mut Vec::new())
+}
+
+fn eval_at(
+    unit: &Unit,
+    inputs: &[Option<Value>],
+    resolver: &impl Resolver,
+    observer: &mut impl Observer,
+    path: &mut Vec<u32>,
+) -> EvalOutputs {
     match &unit.body {
         // `map` is higher-order — it invokes the evaluator — so it lives here, where
         // recursion lives, rather than in first-order `compute`.
@@ -67,7 +100,7 @@ pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> 
             smallvec![primitives::compute(name, &present, &unit.params)]
         }
         UnitBody::Composite { children, edges } => {
-            eval_composite(children, edges, unit.outputs.len(), inputs, resolver)
+            eval_composite(children, edges, unit.outputs.len(), inputs, resolver, observer, path)
         }
     }
 }
@@ -94,6 +127,8 @@ fn eval_composite(
     n_outputs: usize,
     inputs: &[Option<Value>],
     resolver: &impl Resolver,
+    observer: &mut impl Observer,
+    path: &mut Vec<u32>,
 ) -> EvalOutputs {
     let n = children.len();
 
@@ -147,7 +182,11 @@ fn eval_composite(
             };
             gathered.push(val);
         }
-        scratch[ci] = eval(child, &gathered, resolver);
+        path.push(ci as u32);
+        observer.enter(path);
+        scratch[ci] = eval_at(child, &gathered, resolver, observer, path);
+        observer.leave(path);
+        path.pop();
     }
 
     // Each exposed output is whatever feeds that boundary-output port: a child's output at the
@@ -364,6 +403,36 @@ mod tests {
         assert_eq!(eval(&c, &[], &r).into_vec(), vec![None]);
         let c = composite(vec![], Type::Any, vec![hnot], vec![edge(0, 3, BOUNDARY, 0)]);
         assert_eq!(eval(&c, &[], &r).into_vec(), vec![None]);
+    }
+
+    #[test]
+    fn an_observer_sees_each_composite_child_by_path_and_changes_nothing() {
+        #[derive(Default)]
+        struct Paths(Vec<String>);
+        impl Observer for Paths {
+            fn enter(&mut self, path: &[u32]) {
+                self.0.push(format!("+{path:?}"));
+            }
+            fn leave(&mut self, path: &[u32]) {
+                self.0.push(format!("-{path:?}"));
+            }
+        }
+        let mut r = MapResolver::new();
+        let inner = add2(&mut r); // a composite holding one add
+        let hinner = r.insert(inner).unwrap();
+        let hneg = r.insert(prim("multiply", 2, Type::Number)).unwrap();
+        let outer = composite(
+            vec![nport("a"), nport("b")],
+            Type::Number,
+            vec![hinner, hneg],
+            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, 1, 0), edge(BOUNDARY, 1, 1, 1), edge(1, 0, BOUNDARY, 0)],
+        );
+        let inputs = [Some(num(3.0)), Some(num(4.0))];
+        let mut seen = Paths::default();
+        let observed = eval_observed(&outer, &inputs, &r, &mut seen);
+        assert_eq!(observed, eval(&outer, &inputs, &r), "observing changes nothing");
+        assert_eq!(observed.into_vec(), vec![Some(num(28.0))]);
+        assert_eq!(seen.0, vec!["+[0]", "+[0, 0]", "-[0, 0]", "-[0]", "+[1]", "-[1]"]);
     }
 
     #[test]

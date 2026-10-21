@@ -25,9 +25,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use holon_core::{
-    capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval,
+    capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval, eval_observed,
     entry_key, hash_unit, memo_key, refork, verify_entry, adoption_counts, CacheEntry,
-    MapResolver, Refork, Capability, DecodeError, Edge, EncodeError, Hash, Param, Port, Resolver,
+    MapResolver, NoObserver, Observer, Refork, Capability, DecodeError, Edge, EncodeError, Hash, Param, Port, Resolver,
     Type, Unit, UnitBody, Value, BOUNDARY,
 };
 
@@ -58,7 +58,19 @@ pub trait Host {
 /// every effect any of its outputs carries — not fewer, not more, and never a silent pick of
 /// just one, which `eval_one` refused for the identical reason.
 pub fn fire(root: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver, host: &mut impl Host) -> Vec<Option<Value>> {
-    let outputs = eval(root, inputs, resolver).into_vec();
+    fire_observed(root, inputs, resolver, host, &mut NoObserver)
+}
+
+/// [`fire`], reporting each composite child's evaluation to `observer` (core's `eval_observed`):
+/// how the server times every step of a run for the flow log.
+pub fn fire_observed(
+    root: &Unit,
+    inputs: &[Option<Value>],
+    resolver: &impl Resolver,
+    host: &mut impl Host,
+    observer: &mut impl Observer,
+) -> Vec<Option<Value>> {
+    let outputs = eval_observed(root, inputs, resolver, observer).into_vec();
     for output in outputs.iter().flatten() {
         perform_effects(output, host);
     }
@@ -132,8 +144,20 @@ pub fn fire_sourced_with(
     real: &impl Resolver,
     host: &mut impl Host,
 ) -> Vec<Option<Value>> {
+    fire_sourced_observed(root, inputs, sourced, real, host, &mut NoObserver)
+}
+
+/// [`fire_sourced_with`], reporting each composite child's evaluation to `observer`.
+pub fn fire_sourced_observed(
+    root: &Unit,
+    inputs: &[Option<Value>],
+    sourced: &[(Capability, Value)],
+    real: &impl Resolver,
+    host: &mut impl Host,
+    observer: &mut impl Observer,
+) -> Vec<Option<Value>> {
     let resolver = SourcedResolver::new(sourced, real);
-    fire(root, inputs, &resolver, host)
+    fire_observed(root, inputs, &resolver, host, observer)
 }
 
 /// The two firing modes the host offers over one graph. The **core never learns about them** —

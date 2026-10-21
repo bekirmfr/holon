@@ -327,6 +327,15 @@ fn canonical_composite(
     children: &[Hash],
     edges: &[Edge],
 ) -> Result<(Vec<Hash>, Vec<Edge>), EncodeError> {
+    let order = canonical_child_order(children, edges)?;
+    Ok(apply_child_order(children, edges, &order))
+}
+
+/// The reordering [`encode_preimage`] applies to a composite's children: `order[k]` is the index,
+/// as given, of the child that is child `k` in the canonical (hashed, stored) form. A unit that
+/// went through a store comes back in canonical order, so this is how a child index seen there
+/// (in a timing, say) is traced back to the child as it was authored.
+pub fn canonical_child_order(children: &[Hash], edges: &[Edge]) -> Result<Vec<usize>, EncodeError> {
     let k = children.len();
 
     // Child indices ordered by hash; equal-hash children become adjacent.
@@ -335,7 +344,7 @@ fn canonical_composite(
 
     // Fast path: all hashes distinct ⇒ the hash order is the unique canonical order.
     if base.windows(2).all(|w| children[w[0]] != children[w[1]]) {
-        return Ok(apply_child_order(children, edges, &base));
+        return Ok(base);
     }
 
     // Group the sorted indices into equal-hash runs (the ambiguous groups).
@@ -373,8 +382,7 @@ fn canonical_composite(
         }
     });
 
-    let winner = best.expect("at least one ordering exists").1;
-    Ok(apply_child_order(children, edges, &winner))
+    Ok(best.expect("at least one ordering exists").1)
 }
 
 /// `n!`, or `None` if it overflows `usize`.
@@ -798,6 +806,38 @@ mod tests {
         assert!(matches!(hash_unit(&composite(9)), Err(EncodeError::TooSymmetric)));
         for k in [21, 66, 70, 200] {
             assert!(matches!(hash_unit(&composite(k)), Err(EncodeError::TooSymmetric)), "{k} children");
+        }
+    }
+
+    /// The reordering `canonical_child_order` reports is the one encoding applies: decoding the
+    /// preimage gives the children in exactly that order, even with interchangeable twins.
+    #[test]
+    fn canonical_child_order_is_the_order_a_stored_unit_comes_back_in() {
+        let a = hash_unit(&prim("add")).unwrap();
+        let m = hash_unit(&prim("multiply")).unwrap();
+        // add twice (twins) and multiply, wired so the twins are told apart only by their edges.
+        let children = vec![m, a, a];
+        let edges = vec![
+            Edge { from_child: BOUNDARY, from_port: 0, to_child: 2, to_port: 0 },
+            Edge { from_child: 2, from_port: 0, to_child: 1, to_port: 0 },
+            Edge { from_child: 1, from_port: 0, to_child: 0, to_port: 0 },
+            Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+        ];
+        let unit = Unit {
+            body: UnitBody::Composite { children: children.clone(), edges: edges.clone() },
+            params: vec![],
+            inputs: vec![Port { name: "x".into(), ty: Type::Number }],
+            outputs: vec![Port { name: "y".into(), ty: Type::Number }],
+        };
+        let order = canonical_child_order(&children, &edges).unwrap();
+        let stored = decode_preimage(&encode_preimage(&unit).unwrap()).unwrap();
+        let UnitBody::Composite { children: stored_children, edges: stored_edges } = stored.body else { unreachable!() };
+        assert_eq!(stored_children, order.iter().map(|&i| children[i]).collect::<Vec<_>>());
+        // Each stored edge, mapped back through the order, is one of the authored edges.
+        let back = |c: u32| if c == BOUNDARY { c } else { order[c as usize] as u32 };
+        for e in stored_edges {
+            let authored = Edge { from_child: back(e.from_child), from_port: e.from_port, to_child: back(e.to_child), to_port: e.to_port };
+            assert!(edges.contains(&authored), "{authored:?}");
         }
     }
 

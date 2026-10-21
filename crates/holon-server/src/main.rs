@@ -155,7 +155,7 @@ use holon_core::{
     Value, BOUNDARY,
 };
 use holon_host::{
-    fire, fire_sourced_with, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
+    fire, fire_sourced_observed, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
     PublishError, Registry, SharedCache, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
@@ -955,8 +955,14 @@ impl Host for RecordingHost {
 /// it from there. `perform_effects` already walks every non-`None` slot, so a state-write and
 /// a text response left as two separate exposed outputs are both correctly handled now,
 /// without combining them into anything.
-/// A fired run: its outputs, the effects performed, and the state it read (for the flow log).
-type FiredRun = (Vec<Option<Value>>, Vec<(Capability, Value)>, BTreeMap<String, Value>);
+/// A fired run: its outputs, the effects performed, the state it read, and when each step ran
+/// (the last two for the flow log).
+struct FiredRun {
+    outputs: Vec<Option<Value>>,
+    performed: Vec<(Capability, Value)>,
+    state_before: BTreeMap<String, Value>,
+    timeline: Vec<recorder::NodeTiming>,
+}
 
 fn fire_with_state(
     root_unit: &Unit,
@@ -978,7 +984,8 @@ fn fire_with_state(
     sourced.extend_from_slice(extra_sourced);
 
     let mut host = RecordingHost { performed: Vec::new() };
-    let outputs = fire_sourced_with(root_unit, inputs, &sourced, resolver, &mut host);
+    let mut timer = recorder::Timer::new();
+    let outputs = fire_sourced_observed(root_unit, inputs, &sourced, resolver, &mut host, &mut timer);
 
     if let Some(storage) = guard.as_deref_mut() {
         for (cap, payload) in &host.performed {
@@ -992,7 +999,7 @@ fn fire_with_state(
         }
     }
 
-    (outputs, host.performed, state_before)
+    FiredRun { outputs, performed: host.performed, state_before, timeline: timer.timeline }
 }
 
 /// `POST /fire?root=<hex>` — settle a published unit **once**, on request. Not "deploy": there
@@ -1673,10 +1680,11 @@ fn handle_post_trigger(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let (outputs, performed, before) = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
 
     record_trigger(deployments, slug, false);
-    log_run(deployments, slug, run_entry("trigger", started, &extra_sourced, &before, &outputs, &performed));
+    log_run(deployments, slug, run_entry("trigger", started, &extra_sourced, &run));
+    let FiredRun { outputs, performed, .. } = run;
     if state.is_some() {
         persist_deployments(deployments_path, deployments);
     }
@@ -1776,8 +1784,9 @@ fn fire_one_clock_tick(
     ];
     let is_state = state.is_some();
     let started = started_now();
-    let (outputs, performed, before) = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
-    log_run(deployments, &slug, run_entry("tick", started, &extra_sourced, &before, &outputs, &performed));
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
+    log_run(deployments, &slug, run_entry("tick", started, &extra_sourced, &run));
+    let FiredRun { outputs, performed, .. } = run;
 
     println!(
         "clock tick [{slug}] at {epoch_seconds}: outputs={outputs:?}, {} effect(s) performed",
@@ -1836,9 +1845,7 @@ fn run_entry(
     kind: &'static str,
     started: (u64, std::time::Instant),
     sourced: &[(Capability, Value)],
-    state_before: &BTreeMap<String, Value>,
-    outputs: &[Option<Value>],
-    performed: &[(Capability, Value)],
+    run: &FiredRun,
 ) -> LogEntry {
     LogEntry {
         seq: 0,
@@ -1852,14 +1859,23 @@ fn run_entry(
         status: None,
         request: None,
         sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
-        state_before: state_before.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
-        outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
-        performed: performed
+        state_before: run.state_before.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
+        outputs: run.outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
+        performed: run
+            .performed
             .iter()
             .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
             .collect(),
         response_body: None,
         error: None,
+        timeline: run.timeline.clone(),
+    }
+}
+
+impl FiredRun {
+    /// No run at all: an unrouted request.
+    fn nothing() -> FiredRun {
+        FiredRun { outputs: vec![], performed: vec![], state_before: BTreeMap::new(), timeline: vec![] }
     }
 }
 
@@ -2016,19 +2032,18 @@ fn serve_data(
         &resolver,
         &http,
         |endpoint, route, req, sourced| {
-            let (outputs, performed, before) =
-                fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced);
-            let mut entry = run_entry("request", started, sourced, &before, &outputs, &performed);
+            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced);
+            let mut entry = run_entry("request", started, sourced, &run);
             entry.route = Some(route.to_string());
             entry.request = Some(SValue::from_core(&req));
             ran = Some(entry);
-            outputs
+            run.outputs
         },
         &sourced,
     );
     record_trigger(deployments, slug, answer.status >= 500);
     // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.
-    let mut entry = ran.unwrap_or_else(|| run_entry("request", started, &sourced, &BTreeMap::new(), &[], &[]));
+    let mut entry = ran.unwrap_or_else(|| run_entry("request", started, &sourced, &FiredRun::nothing()));
     entry.duration_ms = started.1.elapsed().as_secs_f64() * 1000.0;
     entry.method = Some(request.method().to_string());
     entry.url = Some(request.raw_url().to_string());
@@ -2635,6 +2650,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use holon_host::fire_sourced_with;
 
     fn test_state() -> AppState {
         let backend: DynStore = Box::new(MemStore::new());
@@ -3851,6 +3867,19 @@ mod tests {
         assert_eq!(second["state_before"]["todos"]["value"].as_array().unwrap().len(), 1, "it read the list with one item");
         assert_eq!(second["performed"][0]["capability"], "StateWrite(\"todos\")");
         assert_eq!((entries[2]["status"].as_u64(), entries[2]["route"].is_null()), (Some(404), true), "an unrouted request is logged too");
+        // Each step's timing. This fixture's endpoint holds its 6 nodes directly ([k]); the stored
+        // list a store_read reads is injected as a small composite, timed one level down.
+        let paths: Vec<Vec<u64>> = second["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["path"].as_array().unwrap().iter().map(|p| p.as_u64().unwrap()).collect())
+            .collect();
+        let mut top: Vec<u64> = paths.iter().filter(|p| p.len() == 1).map(|p| p[0]).collect();
+        top.sort();
+        assert_eq!(top, vec![0, 1, 2, 3, 4, 5], "one timing per node");
+        assert!(paths.iter().all(|p| p.len() <= recorder::Timer::DEPTH));
+        assert!(second["timeline"].as_array().unwrap().iter().all(|t| t["end_us"].as_f64() >= t["start_us"].as_f64()));
         let newer = body_json(route(&state, &req("GET", "/deployments/todo/log?after=1", vec![])));
         assert_eq!(newer["entries"].as_array().unwrap().len(), 1);
 

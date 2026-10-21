@@ -49,6 +49,56 @@ pub struct LogEntry {
     pub response_body: Option<String>,
     /// Why the run failed before it could settle, if it did.
     pub error: Option<String>,
+    /// When each step ran, relative to the run's start (see [`Timer`]).
+    #[serde(default)]
+    pub timeline: Vec<NodeTiming>,
+}
+
+/// One composite child's evaluation: its path of child indices from the run's root unit, and
+/// when it started and finished, in microseconds since the run began.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct NodeTiming {
+    pub path: Vec<u32>,
+    pub start_us: f64,
+    pub end_us: f64,
+}
+
+/// Times each composite child of a run as core evaluates it (core's `Observer`), down to
+/// [`Timer::DEPTH`] levels: for a request, the endpoint's handler and the handler's nodes (the
+/// canvas nodes); for a whole-flow unit, its nodes. Deeper levels (a template's insides) are left
+/// out to keep entries small.
+pub struct Timer {
+    start: std::time::Instant,
+    open: Vec<f64>,
+    pub timeline: Vec<NodeTiming>,
+}
+
+impl Timer {
+    pub const DEPTH: usize = 2;
+
+    pub fn new() -> Timer {
+        Timer { start: std::time::Instant::now(), open: Vec::new(), timeline: Vec::new() }
+    }
+
+    fn now_us(&self) -> f64 {
+        self.start.elapsed().as_secs_f64() * 1e6
+    }
+}
+
+impl holon_core::Observer for Timer {
+    fn enter(&mut self, path: &[u32]) {
+        if path.len() <= Self::DEPTH {
+            let t = self.now_us();
+            self.open.push(t);
+        }
+    }
+    fn leave(&mut self, path: &[u32]) {
+        if path.len() <= Self::DEPTH {
+            let start_us = self.open.pop().unwrap_or(0.0);
+            let end_us = self.now_us();
+            self.timeline.push(NodeTiming { path: path.to_vec(), start_us, end_us });
+        }
+    }
 }
 
 #[derive(Default, Debug)]
@@ -113,6 +163,7 @@ mod tests {
             performed: vec![],
             response_body: None,
             error: None,
+            timeline: vec![],
         }
     }
 
@@ -129,6 +180,22 @@ mod tests {
         let newer = log.after(Some((CAPACITY + 2) as u64), 10);
         assert_eq!(newer.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![(CAPACITY + 3) as u64, (CAPACITY + 4) as u64]);
         assert_eq!(log.after(None, 3).iter().map(|e| e.seq).collect::<Vec<_>>(), vec![502, 503, 504], "the newest 3");
+    }
+
+    #[test]
+    fn the_timer_records_each_step_up_to_its_depth_in_order_of_finishing() {
+        use holon_core::Observer;
+        let mut t = Timer::new();
+        for path in [&[0u32][..], &[0, 0], &[0, 0, 0]] {
+            t.enter(path);
+        }
+        for path in [&[0u32, 0, 0][..], &[0, 0], &[0]] {
+            t.leave(path);
+        }
+        let paths: Vec<Vec<u32>> = t.timeline.iter().map(|n| n.path.clone()).collect();
+        assert_eq!(paths, vec![vec![0, 0], vec![0]], "depth 3 left out; inner steps finish first");
+        assert!(t.timeline.iter().all(|n| n.end_us >= n.start_us));
+        assert!(t.timeline[1].start_us <= t.timeline[0].start_us, "the outer step started first");
     }
 
     #[test]

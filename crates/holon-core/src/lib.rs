@@ -45,13 +45,14 @@ pub mod primitives;
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
-pub use eval::{eval, eval_one};
+pub use eval::{eval, eval_observed, eval_one, NoObserver, Observer};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
 pub use catalog::{genesis_units, interface_of, GENESIS, VARIADIC};
 pub use inspect::{adoption_counts, child_refs, dependencies};
 pub use memo::{entry_key, memo_key, verify_entry, CacheEntry};
 pub use hash::{
+    canonical_child_order,
     decode_preimage, encode_preimage, hash_unit, parse_hash, DecodeError, Edge, EncodeError, Hash,
     Param, Port, Type, Unit, UnitBody, ENCODING_VERSION, MAX_TYPE_DEPTH,
 };
