@@ -60,6 +60,12 @@ import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./Pri
 import { InspectPanel } from "./InspectPanel";
 import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import { History } from "./history";
+import { ServerPanel, type ServerDraft } from "./ServerPanel";
+
+const EMPTY_SERVER: ServerDraft = { port: "8080", endpoints: [] };
+// What a save records, for unsaved-change tracking: the canvas plus the server draft.
+const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], server: ServerDraft) =>
+  documentKey(ns, es) + JSON.stringify(server);
 import {
   boundaryLabels,
   isWEncapError,
@@ -502,8 +508,13 @@ function Canvas({
 
   // Unsaved changes: the canvas differs from what was last saved, opened, or started fresh.
   // New and Open ask before replacing it, and closing the tab asks too.
-  const [savedKey, setSavedKey] = useState(() => documentKey([], []));
-  const dirty = useMemo(() => documentKey(nodes, edges) !== savedKey, [nodes, edges, savedKey]);
+  // The flow's HTTP server draft (ServerPanel): saved and opened with the flow.
+  const [serverDraft, setServerDraft] = useState<ServerDraft>(EMPTY_SERVER);
+  const [savedKey, setSavedKey] = useState(() => savedKeyOf([], [], EMPTY_SERVER));
+  const dirty = useMemo(
+    () => savedKeyOf(nodes, edges, serverDraft) !== savedKey,
+    [nodes, edges, serverDraft, savedKey],
+  );
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => {
     if (!dirty) return;
@@ -603,7 +614,8 @@ function Canvas({
     setViewport({ x: 0, y: 0, zoom: 1 });
     setFlowName(pendingNew.name);
     history.current.reset({ nodes: [], edges: [] });
-    setSavedKey(documentKey([], []));
+    setServerDraft(EMPTY_SERVER);
+    setSavedKey(savedKeyOf([], [], EMPTY_SERVER));
     setSaveMsg("");
     resetProjectionView();
     setHistVersion((v) => v + 1);
@@ -618,7 +630,10 @@ function Canvas({
     }
     let units: string[];
     try {
-      const roots = nodes.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : []));
+      const roots = [
+        ...nodes.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])),
+        ...serverDraft.endpoints.map((e) => e.hash),
+      ];
       units = closureOf(roots, (h) => ev.get_unit(h) as WUnit).map((h) =>
         toHex(buildPreimage(ev.get_unit(h) as WUnit)),
       );
@@ -631,15 +646,16 @@ function Canvas({
       edges: edges as unknown[],
       viewport: getViewport(),
       units,
+      server: serverDraft,
     };
-    const key = documentKey(nodes, edges);
+    const key = savedKeyOf(nodes, edges, serverDraft);
     saveFlow(name, doc)
       .then((entry) => {
         setSavedKey(key);
         setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
       })
       .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
-  }, [flowName, nodes, edges, getViewport, ev]);
+  }, [flowName, nodes, edges, getViewport, ev, serverDraft]);
 
   const onOpenFlow = useCallback(
     (rec: FlowRecord) => {
@@ -675,7 +691,9 @@ function Canvas({
       setViewport(rec.document.viewport);
       setFlowName(rec.name);
       history.current.reset(snapshotOf(ns, es));
-      setSavedKey(documentKey(ns, es));
+      const server = rec.document.server ?? EMPTY_SERVER;
+      setServerDraft(server);
+      setSavedKey(savedKeyOf(ns, es, server));
       // A loaded flow's node ids carry the counters they were minted with — the fresh idRef
       // must start PAST all of them, or the next drop would mint a colliding id.
       let max = -1;
@@ -882,6 +900,15 @@ function Canvas({
       .catch((e: unknown) => setDeployError(e instanceof ServerError ? e.message : String(e)))
       .finally(() => setDeploying(false));
   }, [projection, projectionCapabilities, projectionNeedsInterval, slugInput, intervalInput, refreshDeployments, ev]);
+
+  // Stage a unit's closure and deploy it: what the server panel calls for a server unit.
+  const deployServerHash = useCallback(
+    (hash: string, slug: string, acknowledge: string[]) =>
+      stageClosure(ev, hash, new Set())
+        .then(() => deployUnit(slug, hash, acknowledge))
+        .then(() => refreshDeployments()),
+    [ev, refreshDeployments],
+  );
 
   const onDeleteDeployment = useCallback(
     (slug: string) => {
@@ -1646,6 +1673,15 @@ function Canvas({
               </div>
             )}
           </div>
+        </Panel>
+        <Panel position="bottom-left" style={{ marginLeft: 56 }}>
+          <ServerPanel
+            ev={ev}
+            handler={projection ? { hash: projection.hash, ports: projection.ports, outputs: projection.outputs } : null}
+            draft={serverDraft}
+            setDraft={setServerDraft}
+            deploy={deployServerHash}
+          />
         </Panel>
         {inspecting && (
           <Panel position="bottom-right">
