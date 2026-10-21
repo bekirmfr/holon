@@ -64,7 +64,7 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 |---|---|
 | `value.rs`: Number, Boolean, Text, List, Effect, Sum | **+ `Record(BTreeMap<String, Value>)`**. Keys sorted, so canonical encoding is free. `ENCODING_VERSION` bump. |
 | `kind.rs` `Type` | **+ `Type::Record`**. Start with open records (`Record(Any)`), add field-typed records later. |
-| `primitives.rs`: arithmetic, text kit, list kit, `const`, `guard`, `default`, `equals`, `to_text`… | **+ record kit** (`record`, `field`, `with_field`, `keys`, `has_field`; keyed by an input: `lookup`, `insert`, `remove`), **+ `json_parse` / `json_stringify`**, **+ `sha256`, `hmac_sha256`, `hex`, `base64`** (admission gate: inexpressible / hot-and-pervasive) |
+| `primitives.rs`: arithmetic, text kit, list kit, `const`, `guard`, `default`, `equals`, `to_text`… | **+ record kit** (`record`, `field`, `with_field`, `keys`, `has_field`; keyed by an input: `lookup`, `insert`, `remove`; `find` over a list of records), **+ `json_parse` / `json_stringify`**, **+ `sha256`, `hmac_sha256`, `hex`, `base64`** (admission gate: inexpressible / hot-and-pervasive) |
 | `kind.rs` sinks: `egress` | **+ `http_request` sink** (method, url, headers, body), classified `NetworkEgress`. Its response comes back via the effect loop (§4). |
 | `memo.rs`, `fork.rs`, `inspect.rs` (adoption), `advisory.rs` | Stay in core: they are pure and cost nothing. They're marked parked in docs only, not moved. |
 

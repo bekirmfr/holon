@@ -29,9 +29,10 @@ pub const GENESIS: &[&str] = &[
     "pair",
     // pure — sum constructor (2)
     "some", "none",
-    // pure — record kit (8): field names frozen (field, with_field, without_field), or keys that
-    // arrive on a wire (lookup, insert, remove), e.g. a route's path param
-    "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove",
+    // pure — record kit (9): field names frozen (field, with_field, without_field), or keys that
+    // arrive on a wire (lookup, insert, remove), e.g. a route's path param; and find, a list of
+    // records searched by one field's value
+    "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove", "find",
     // pure — JSON (2)
     "json_parse", "json_stringify",
     // pure — universal, any-typed (5)
@@ -156,6 +157,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             Type::Record,
         ),
         "remove" => prim(vec![port("record", Type::Record), port("key", Text)], vec![], Type::Record),
+        // The first record in a list whose `name` field equals `value`.
+        "find" => prim(vec![port("list", Type::list_any()), port("value", Any)], vec![Param::frozen("name", "id")], Any),
         "json_parse" => prim(vec![port("text", Text)], vec![], Any),
         "json_stringify" => prim(vec![port("value", Any)], vec![], Text),
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
@@ -222,13 +225,13 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_52_leaves() {
+    fn genesis_has_53_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
         // deliberately for M1 (docs/PLATFORM_LAYOUT.md), json_parse + json_stringify, and the
-        // keyed record kit (lookup, insert, remove).
-        assert_eq!(GENESIS.len(), 52);
+        // keyed record kit (lookup, insert, remove), and find.
+        assert_eq!(GENESIS.len(), 53);
     }
 
     #[test]

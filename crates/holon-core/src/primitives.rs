@@ -316,6 +316,14 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             fields.remove(key);
             Some(Value::Record(fields))
         }
+        // Search a list of records: the first whose `name` field equals `value` (structural
+        // equality, as `equals`: Text "1" is not Number 1). Items that aren't records, or lack
+        // the field, never match; no match is absent.
+        "find" => {
+            let [Value::List(items), v] = inputs else { return None };
+            let name = param(params, "name")?;
+            items.iter().find(|item| matches!(item, Value::Record(fields) if fields.get(name) == Some(*v))).cloned()
+        }
 
         // ── JSON (M1): request and response bodies. See json.rs for the mapping; malformed input,
         // or a value with no JSON form, is absent. ──
@@ -548,6 +556,24 @@ mod tests {
         assert_eq!(compute("insert", &[&r, &num(1.0), &num(1.0)], &[]), None);
         assert_eq!(compute("remove", &[&num(1.0), &txt("x")], &[]), None);
         assert_eq!(compute("lookup", &[&r], &[]), None);
+    }
+
+    #[test]
+    fn find_returns_the_first_record_whose_field_matches() {
+        let rec = |pairs: &[(&str, Value)]| Value::Record(pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let milk = rec(&[("title", txt("buy milk"))]);
+        let dog = rec(&[("title", txt("walk the dog")), ("done", boo(false))]);
+        let dog2 = rec(&[("title", txt("walk the dog")), ("done", boo(true))]);
+        let list = Value::List(vec![num(1.0), rec(&[("name", txt("x"))]), milk.clone(), dog.clone(), dog2]);
+        let by_title = [p("name", "title")];
+        assert_eq!(compute("find", &[&list, &txt("buy milk")], &by_title), Some(milk));
+        assert_eq!(compute("find", &[&list, &txt("walk the dog")], &by_title), Some(dog), "the first match");
+        assert_eq!(compute("find", &[&list, &txt("nope")], &by_title), None, "no match is absent");
+        assert!(compute("find", &[&list, &boo(false)], &[p("name", "done")]).is_some());
+        assert_eq!(compute("find", &[&list, &num(1.0)], &by_title), None, "no coercion, and non-records never match");
+        assert_eq!(compute("find", &[&Value::List(vec![]), &txt("x")], &by_title), None);
+        assert_eq!(compute("find", &[&txt("not a list"), &txt("x")], &by_title), None);
+        assert_eq!(compute("find", &[&list], &by_title), None);
     }
 
     #[test]
