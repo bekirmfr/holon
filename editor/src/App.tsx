@@ -42,6 +42,7 @@ import {
   deployUnit,
   listDeployments,
   deleteDeployment,
+  changeDeployment,
   triggerDeployment,
   saveFlow,
   listFlows,
@@ -61,6 +62,7 @@ import { InspectPanel } from "./InspectPanel";
 import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import { History } from "./history";
 import { DialogProvider, useDialog } from "./Dialog";
+import { DeploymentCard } from "./DeploymentCard";
 import { ServerPanel, type ServerDraft } from "./ServerPanel";
 import { buildTemplate, isTemplate, templateDefaults, templateInterface, TEMPLATES, type TemplateName } from "./templates";
 import { findRoutes, routeSpec } from "./derive";
@@ -76,7 +78,6 @@ import {
   encapErrorNodeIndices,
   capabilityAcknowledgeName,
   formatValue,
-  formatOutputs,
 } from "./diagnostics";
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
@@ -250,95 +251,6 @@ function BoundaryField({
     <div style={row}>
       {label}
       <span style={{ ...boundaryFieldStyle, color: "#5a6d8c", textAlign: "center" }}>wire in</span>
-    </div>
-  );
-}
-
-// One deployed flow, in the deployments panel. Ingress-triggered flows get their own inline
-// "try it" input — the actual payoff of this whole boundary: type something, hit trigger, see
-// the real response come back from the real running server, not a preview. A Clock-only
-// deployment has nothing to type into — it fires on its own — so it just shows what it's doing.
-function DeploymentRow({
-  entry,
-  triggerInput,
-  onTriggerInputChange,
-  onTrigger,
-  onDelete,
-  result,
-}: {
-  entry: DeploymentEntry;
-  triggerInput: string;
-  onTriggerInputChange: (v: string) => void;
-  onTrigger: () => void;
-  onDelete: () => void;
-  result?: { ok: true; result: TriggerResult } | { ok: false; message: string };
-}) {
-  // entry.triggers holds trigger NAMES ("Ingress"/"Clock" — see handle_post_deploy's own
-  // triggers.push("Ingress".to_string())), a different vocabulary from acknowledge's CAPABILITY
-  // names ("NetworkIngress"). Checking against "NetworkIngress" here was conflating the two —
-  // the trigger box never rendered because that string never actually appears in `triggers`.
-  const canTrigger = entry.triggers.includes("Ingress");
-  return (
-    <div style={{ borderTop: "1px solid #1b2a45", padding: "6px 0", fontSize: 11 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <span style={{ color: "#6fd3e0" }}>{entry.slug}</span>
-        <span style={{ color: "#9fb4d4" }}>{entry.triggers.join(", ")}</span>
-        <button
-          className="nodrag"
-          onClick={onDelete}
-          title="stop and remove this deployment"
-          style={{
-            font: "inherit",
-            fontSize: 10,
-            color: "#9fb4d4",
-            background: "transparent",
-            border: "1px solid #1b2a45",
-            borderRadius: 3,
-            width: 16,
-            height: 16,
-            padding: 0,
-            cursor: "pointer",
-          }}
-        >
-          ×
-        </button>
-      </div>
-      <div style={{ color: "#7e8ea8", fontSize: 10, marginTop: 2 }}>
-        {entry.has_state && <span>state · </span>}
-        {entry.trigger_count} fired{entry.error_count > 0 ? `, ${entry.error_count} errored` : ""}
-      </div>
-      {canTrigger && (
-        <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
-          <input
-            className="nodrag"
-            placeholder="request body"
-            value={triggerInput}
-            onChange={(e) => onTriggerInputChange(e.target.value)}
-            style={{ ...boundaryFieldStyle, width: 120 }}
-          />
-          <button
-            className="nodrag"
-            onClick={onTrigger}
-            style={{
-              font: "inherit",
-              fontSize: 11,
-              color: "#0e1a2f",
-              background: "#6fd3e0",
-              border: "none",
-              borderRadius: 3,
-              padding: "1px 8px",
-              cursor: "pointer",
-            }}
-          >
-            trigger
-          </button>
-        </div>
-      )}
-      {result && (
-        <div style={{ marginTop: 4, color: result.ok ? "#9ad29f" : "#e0916f", wordBreak: "break-word" }}>
-          {result.ok ? formatOutputs(result.result.outputs) : result.message}
-        </div>
-      )}
     </div>
   );
 }
@@ -1791,7 +1703,7 @@ function Canvas({
         >
           {page === "flows" && <FlowsPage onOpen={onOpenFlow} />}
           {page === "deployed" && (
-            <div style={{ maxWidth: 560 }}>
+            <div style={{ maxWidth: 760 }}>
               <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 4 }}>
                 deployed
               </div>
@@ -1809,9 +1721,12 @@ function Canvas({
                 </div>
               )}
               {deployments.map((entry) => (
-                <DeploymentRow
+                <DeploymentCard
                   key={entry.slug}
                   entry={entry}
+                  onAction={(action, from) =>
+                    changeDeployment(entry.slug, action, from).then(() => refreshDeployments())
+                  }
                   triggerInput={triggerInputs[entry.slug] ?? ""}
                   onTriggerInputChange={(v) =>
                     setTriggerInputs((t) => ({ ...t, [entry.slug]: v }))

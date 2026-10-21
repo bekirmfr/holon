@@ -16,7 +16,24 @@ import {
   capabilityAcknowledgeName,
   formatValue,
   formatOutputs,
+  summarizeState,
 } from "./diagnostics";
+
+describe("summarizeState", () => {
+  it("sums up lists and records by size and shows short scalars", () => {
+    const n = (value: number): WValue => ({ type: "Number", value });
+    expect(
+      summarizeState({
+        todos: { type: "List", value: [n(1), n(2)] },
+        count: n(3),
+        user: { type: "Record", value: [["id", n(1)]] },
+        note: { type: "Text", value: "a very long note that keeps going and going" },
+      }),
+    ).toBe('count: 3, note: "a very long note that …, todos: 2 items, user: 1 field');
+    expect(summarizeState({})).toBe("empty");
+    expect(summarizeState(null)).toBe("no saved state");
+  });
+});
 import type { WPort, WEdge, WEncapError, WValidationError, WCapability, WValue } from "./holon";
 
 // Inlined rather than imported: importing a real VALUE (not a type) from holon.ts would evaluate

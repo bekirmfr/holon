@@ -117,7 +117,52 @@ export type DeploymentEntry = {
   trigger_count: number;
   error_count: number;
   deployed_at_epoch_seconds: number;
+  /** The port a server deployment answers on; null for any other deployment. */
+  port: number | null;
+  status: DeploymentStatus;
+  /** The current session's number (the last one's when stopped). */
+  session: number;
+  sessions: number;
 };
+
+/** Running answers and fires; paused keeps its port and session but answers 503; stopped has
+ *  ended its session (saving its state) and released its port. Mirrors lifecycle.rs. */
+export type DeploymentStatus = "running" | "paused" | "stopped";
+
+/** One run session of a deployment (lifecycle.rs's `Session`). `state` is the state when it
+ *  ended: null while it runs, and for a deployment without state. */
+export type SessionEntry = {
+  number: number;
+  started_at: number;
+  ended_at: number | null;
+  requests: number;
+  errors: number;
+  /** "deploy", "latest", "fresh" or "session N": what it started from. */
+  from: string;
+  state: Record<string, WValue> | null;
+};
+
+/** `POST /deployments/<slug>/run|pause|stop`. `from` (run after a stop only): "latest", "fresh",
+ *  or a session number whose saved state to start from. Throws {@link ServerError} (409) when
+ *  the move doesn't apply, e.g. pausing a stopped deployment. */
+export async function changeDeployment(
+  slug: string,
+  action: "run" | "pause" | "stop",
+  from?: "latest" | "fresh" | number,
+): Promise<DeploymentEntry> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(from === undefined ? {} : { from }),
+  });
+  return asJson<DeploymentEntry>(res);
+}
+
+/** `GET /deployments/<slug>/sessions` — every run session, oldest first. */
+export async function getSessions(slug: string): Promise<{ status: DeploymentStatus; sessions: SessionEntry[] }> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/sessions`);
+  return asJson(res);
+}
 
 /** `GET /deployments` — every currently deployed flow. */
 export async function listDeployments(): Promise<DeploymentEntry[]> {

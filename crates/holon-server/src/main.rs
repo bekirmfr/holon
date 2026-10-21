@@ -139,6 +139,7 @@
 //! auth *for*.
 
 mod data;
+mod lifecycle;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -156,6 +157,7 @@ use holon_host::{
     fire, fire_sourced_with, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
     PublishError, Registry, SharedCache, Store, StoreError,
 };
+use lifecycle::{Lifecycle, RunFrom, Session, Status};
 use rouille::{Request, Response};
 use serde::{Deserialize, Serialize};
 
@@ -278,6 +280,9 @@ struct Deployment {
     /// When this deployment was first created. Persisted, so a restart doesn't reset it to
     /// "now" and quietly lie about how long it's actually been running.
     deployed_at: SystemTime,
+    /// Running, paused or stopped, and every run session so far with its end-of-session state
+    /// snapshot (lifecycle.rs). Persisted.
+    life: Lifecycle,
 }
 
 #[derive(Serialize)]
@@ -307,7 +312,7 @@ struct RegistryBody {
 /// entirely by using `serde-wasm-bindgen` instead of JSON, since JS numbers carry non-finite
 /// values natively; a plain-JSON HTTP boundary doesn't have that option. Not fixed here —
 /// naming it is the honest move until it's a real, hit problem, not a hypothetical one.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", content = "value")]
 enum SValue {
     Number(f64),
@@ -473,6 +478,11 @@ struct DeploymentRecord {
     trigger_count: u64,
     #[serde(default)]
     error_count: u64,
+    /// Absent in files written before the lifecycle existed: such a deployment was running.
+    #[serde(default)]
+    status: Option<Status>,
+    #[serde(default)]
+    sessions: Vec<Session>,
 }
 
 #[derive(Serialize)]
@@ -499,6 +509,10 @@ struct DeploymentEntry {
     has_state: bool,
     /// The port a server deployment answers on; `None` for any other deployment.
     port: Option<u16>,
+    status: Status,
+    /// The current session's number, or the last one's when stopped.
+    session: u32,
+    sessions: usize,
     trigger_count: u64,
     error_count: u64,
     deployed_at_epoch_seconds: u64,
@@ -1052,6 +1066,8 @@ fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<String, Deployme
                     .map(|d| d.as_secs()),
                 trigger_count: dep.trigger_count,
                 error_count: dep.error_count,
+                status: Some(dep.life.status),
+                sessions: dep.life.sessions.clone(),
             };
             (record, dep.state.clone())
         })
@@ -1159,6 +1175,14 @@ fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeMap<String, 
                 history: Vec::new(),
                 state,
                 server,
+                life: {
+                    let started = deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                    let mut life = Lifecycle { status: record.status.unwrap_or(Status::Running), sessions: record.sessions };
+                    if life.sessions.is_empty() {
+                        life.sessions = Lifecycle::deployed(started).sessions;
+                    }
+                    life
+                },
                 trigger_count: record.trigger_count,
                 error_count: record.error_count,
                 deployed_at,
@@ -1402,6 +1426,17 @@ fn handle_post_deploy(
         // in flight against the old version commits into the map the new version reads. Kept
         // even when the new unit is stateless, so redeploying a stateful version later finds
         // its data again; `DELETE /deployments/<slug>` is the one way to discard it.
+        let now_secs = epoch_now();
+        // A redeploy keeps the slug's sessions too, and runs it: a stopped deployment starts a new
+        // session from its latest state, a paused one resumes.
+        let life = match deployments.get(&body.slug) {
+            Some(old) => {
+                let mut life = old.life.clone();
+                let _ = life.run(RunFrom::Latest, now_secs);
+                life
+            }
+            None => Lifecycle::deployed(now_secs),
+        };
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
         let state = match carried {
             Some(arc) => Some(arc),
@@ -1421,6 +1456,7 @@ fn handle_post_deploy(
                 trigger_count: 0,
                 error_count: 0,
                 deployed_at: SystemTime::now(),
+                life,
             },
         );
     }
@@ -1440,6 +1476,9 @@ fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry {
         interval_seconds: dep.interval_seconds,
         has_state: dep.state.is_some(),
         port: dep.server.as_ref().map(|s| s.port),
+        status: dep.life.status,
+        session: dep.life.sessions.last().map_or(0, |s| s.number),
+        sessions: dep.life.sessions.len(),
         trigger_count: dep.trigger_count,
         error_count: dep.error_count,
         deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
@@ -1501,7 +1540,15 @@ fn handle_delete_deployment(
     deployments_path: &str,
     slug: &str,
 ) -> Response {
-    let removed = deployments.lock().unwrap().remove(slug);
+    let removed = {
+        let mut table = deployments.lock().unwrap();
+        match table.get(slug) {
+            Some(dep) if dep.life.status != Status::Stopped => {
+                return err(409, format!("stop {slug:?} before deleting it"));
+            }
+            _ => table.remove(slug),
+        }
+    };
     match removed {
         Some(dep) => {
             persist_deployments(deployments_path, deployments);
@@ -1532,6 +1579,7 @@ fn record_trigger(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str,
         if is_error {
             dep.error_count += 1;
         }
+        dep.life.record(is_error);
     }
 }
 
@@ -1561,6 +1609,9 @@ fn handle_post_trigger(
     let (unit_hash, state) = {
         let deployments = deployments.lock().unwrap();
         match deployments.get(slug) {
+            Some(dep) if dep.life.status != Status::Running => {
+                return err(409, format!("{slug:?} is {}", status_word(dep.life.status)));
+            }
             Some(dep) if dep.server.is_some() => {
                 return err(400, "this deployment is an HTTP server: send requests to its own port");
             }
@@ -1629,7 +1680,7 @@ fn run_due_clock_ticks(
         deployments
             .iter()
             .filter_map(|(slug, dep)| match (dep.interval_seconds, dep.next_due) {
-                (Some(interval), Some(next_due)) if now >= next_due => {
+                (Some(interval), Some(next_due)) if now >= next_due && dep.life.status == Status::Running => {
                     Some((slug.clone(), dep.unit, dep.state.clone(), interval))
                 }
                 _ => None,
@@ -1741,6 +1792,91 @@ fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<Str
     });
 }
 
+fn epoch_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+fn status_word(status: Status) -> &'static str {
+    match status {
+        Status::Running => "running",
+        Status::Paused => "paused",
+        Status::Stopped => "stopped",
+    }
+}
+
+/// `POST /deployments/<slug>/run|pause|stop` — move a deployment through its lifecycle
+/// (lifecycle.rs). `run` takes an optional `{"from": "latest" | "fresh" | <session number>}`,
+/// used only when starting after a stop. Answers with the deployment's entry; 409 when the
+/// move doesn't apply (pausing a stopped deployment, running a running one, a session with no
+/// saved state).
+fn handle_lifecycle(state: &AppState, slug: &str, action: &str, request: &Request) -> Response {
+    let from = if action == "run" {
+        let bytes = match read_body(request) {
+            Ok(b) => b,
+            Err(r) => return r,
+        };
+        if bytes.is_empty() {
+            RunFrom::Latest
+        } else {
+            let v: serde_json::Value = match serde_json::from_slice(&bytes) {
+                Ok(v) => v,
+                Err(e) => return err(400, format!("not a valid run request JSON: {e}")),
+            };
+            let from = match &v["from"] {
+                serde_json::Value::Null => Some(RunFrom::Latest),
+                serde_json::Value::String(s) => RunFrom::parse(s),
+                serde_json::Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()).map(RunFrom::Session),
+                _ => None,
+            };
+            match from {
+                Some(f) => f,
+                None => return err(400, "from must be \"latest\", \"fresh\" or a session number"),
+            }
+        }
+    } else {
+        RunFrom::Latest
+    };
+    let entry = {
+        let mut table = state.deployments.lock().unwrap();
+        let Some(dep) = table.get_mut(slug) else {
+            return err(404, format!("no deployment {slug:?}"));
+        };
+        let now = epoch_now();
+        let live = dep.state.clone();
+        let result = match action {
+            "pause" => dep.life.pause(),
+            "stop" => {
+                let held = live.as_ref().map(|arc| arc.lock().unwrap().clone());
+                dep.life.stop(held.as_ref(), now)
+            }
+            _ => dep.life.run(from, now).map(|start_from| {
+                if let (Some(arc), Some(map)) = (&live, start_from) {
+                    *arc.lock().unwrap() = map;
+                }
+                // A clock deployment fires on its next pass once running again.
+                if dep.interval_seconds.is_some() {
+                    dep.next_due = Some(SystemTime::now());
+                }
+            }),
+        };
+        if let Err(e) = result {
+            return err(409, format!("can't {action} {slug:?}: {}", e.message()));
+        }
+        deployment_entry(slug, dep)
+    };
+    persist_deployments(&state.deployments_path, &state.deployments);
+    Response::json(&entry)
+}
+
+/// `GET /deployments/<slug>/sessions` — every run session, oldest first, each with its
+/// end-of-session state snapshot (`null` while it runs, or for a deployment without state).
+fn handle_get_sessions(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
+    match deployments.lock().unwrap().get(slug) {
+        Some(dep) => Response::json(&serde_json::json!({ "status": dep.life.status, "sessions": dep.life.sessions })),
+        None => err(404, format!("no deployment {slug:?}")),
+    }
+}
+
 /// Answer one data-plane request for the server deployment `slug`: route it, settle the matched
 /// endpoint with its request record and the deployment's state, and send its response (see
 /// `data.rs`). The deployment is looked up per request, so a redeploy on the same port takes
@@ -1752,10 +1888,13 @@ fn serve_data(
     slug: &str,
     request: &Request,
 ) -> Response {
-    let found = deployments.lock().unwrap().get(slug).map(|d| (d.unit, d.state.clone(), d.server.clone()));
-    let Some((unit_hash, state, Some(server))) = found else {
+    let found = deployments.lock().unwrap().get(slug).map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status));
+    let Some((unit_hash, state, Some(server), status)) = found else {
         return err(503, format!("{slug:?} is not deployed as a server"));
     };
+    if status != Status::Running {
+        return err(503, format!("{slug:?} is {}", status_word(status)));
+    }
     let body = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
@@ -1817,6 +1956,7 @@ fn sync_listeners(state: &AppState) {
         .lock()
         .unwrap()
         .iter()
+        .filter(|(_, d)| d.life.status != Status::Stopped)
         .filter_map(|(slug, d)| d.server.as_ref().map(|s| (slug.clone(), s.port)))
         .collect();
     let mut running = listeners.lock().unwrap();
@@ -1988,6 +2128,18 @@ fn route(state: &AppState, request: &Request) -> Response {
         } else if let Some(slug) = rest.strip_suffix("/state") {
             if method == "GET" {
                 return handle_get_state(&state.deployments, slug);
+            }
+        } else if let Some(slug) = rest.strip_suffix("/sessions") {
+            if method == "GET" {
+                return handle_get_sessions(&state.deployments, slug);
+            }
+        } else if let Some((slug, action)) = rest.rsplit_once('/')
+            && matches!(action, "run" | "pause" | "stop")
+        {
+            if method == "POST" {
+                let response = handle_lifecycle(state, slug, action, request);
+                sync_listeners(state);
+                return response;
             }
         } else if let Some(slug) = rest.strip_suffix("/request") {
             if method == "POST" {
@@ -2907,6 +3059,8 @@ mod tests {
         // Works before deletion.
         assert_eq!(route(&state, &req("POST", "/trigger/echo", b"x".to_vec())).status_code, 200);
 
+        assert_eq!(route(&state, &req("DELETE", "/deployments/echo", vec![])).status_code, 409, "stop it first");
+        assert_eq!(route(&state, &req("POST", "/deployments/echo/stop", vec![])).status_code, 200);
         let deleted = route(&state, &req("DELETE", "/deployments/echo", vec![]));
         assert_eq!(deleted.status_code, 200);
         assert_eq!(body_json(deleted)["unit"], to_hex(&flow_hash));
@@ -2942,6 +3096,7 @@ mod tests {
         let h1 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
         assert_eq!(body_json(h1)["ticks"].as_array().unwrap().len(), 1);
 
+        assert_eq!(route(&state, &req("POST", "/deployments/tick/stop", vec![])).status_code, 200);
         assert_eq!(route(&state, &req("DELETE", "/deployments/tick", vec![])).status_code, 200);
 
         // The scheduler now has nothing to find for this slug — a tick "due" by the old
@@ -3534,6 +3689,68 @@ mod tests {
         assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
         let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap()["todos"].clone();
         assert!(matches!(todos, Value::List(ref xs) if xs.len() == 2));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Run, pause, stop, and the sessions a deployment keeps until it is deleted.
+    #[test]
+    fn a_deployment_runs_pauses_stops_and_keeps_every_session() {
+        let mut state = test_state();
+        let path = unique_temp_path("lifecycle");
+        state.deployments_path = path.clone();
+        let api = todo_server(&state, "18082");
+        assert_eq!(deploy_server(&state, "todo", api).status_code, 200);
+        let call = |method: &str, body: &str| {
+            let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "todo",
+                &Request::fake_http(method, "/todos", vec![], body.as_bytes().to_vec()));
+            (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+        };
+        let act = |action: &str, body: &str| {
+            let r = route(&state, &req("POST", &format!("/deployments/todo/{action}"), body.as_bytes().to_vec()));
+            (r.status_code, body_json(r))
+        };
+
+        assert_eq!(call("POST", r#"{"n":1}"#).0, 200);
+        // Paused: no answers, nothing to trigger, the session goes on.
+        let (code, entry) = act("pause", "");
+        assert_eq!((code, entry["status"].as_str()), (200, Some("paused")));
+        assert_eq!(call("GET", "").0, 503);
+        assert_eq!(act("pause", "").0, 409, "already paused");
+        assert_eq!(act("run", "").1["session"], 1, "resume continues session 1");
+        assert_eq!(call("GET", ""), (200, r#"[{"n":1}]"#.to_string()));
+
+        // Delete only once stopped. Stopping ends session 1 and keeps its state.
+        assert_eq!(route(&state, &req("DELETE", "/deployments/todo", vec![])).status_code, 409);
+        assert_eq!(act("stop", "").1["status"], "stopped");
+        assert_eq!(call("GET", "").0, 503);
+        assert_eq!(act("stop", "").0, 409, "already stopped");
+
+        // Session 2 starts fresh; session 3 restores session 1's snapshot.
+        assert_eq!(act("run", r#"{"from":"fresh"}"#).1["session"], 2);
+        assert_eq!(call("GET", ""), (200, "[]".to_string()));
+        assert_eq!(call("POST", r#"{"n":2}"#).0, 200);
+        act("stop", "");
+        assert_eq!(act("run", r#"{"from":1}"#).1["session"], 3);
+        assert_eq!(call("GET", ""), (200, r#"[{"n":1}]"#.to_string()));
+        assert_eq!(act("run", r#"{"from":"sideways"}"#).0, 400);
+
+        let sessions = body_json(route(&state, &req("GET", "/deployments/todo/sessions", vec![])));
+        let summary: Vec<(u64, &str, u64)> = sessions["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["number"].as_u64().unwrap(), s["from"].as_str().unwrap(), s["requests"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(summary, vec![(1, "deploy", 2), (2, "fresh", 2), (3, "session 1", 1)], "a refused (paused) request is not counted");
+        assert_eq!(sessions["sessions"][1]["state"]["todos"]["value"][0]["value"][0][1]["value"], 2.0);
+        assert!(sessions["sessions"][2]["state"].is_null(), "the running session has no snapshot yet");
+
+        // A restart keeps the status and every session.
+        act("stop", "");
+        let reloaded = load_deployments(&path, &state.store).unwrap();
+        assert_eq!(reloaded["todo"].life.status, Status::Stopped);
+        assert_eq!(reloaded["todo"].life.sessions.len(), 3);
+        assert_eq!(route(&state, &req("DELETE", "/deployments/todo", vec![])).status_code, 200);
         let _ = std::fs::remove_file(&path);
     }
 

@@ -154,3 +154,18 @@ export function formatOutputs(outputs: (WValue | null)[]): string {
   if (outputs.every((o) => o === null)) return "(no output)";
   return outputs.map((o) => (o ? formatValue(o) : "(none)")).join(", ");
 }
+
+/** A one-line summary of a deployment's state for a session row: lists and records by size,
+ *  other values as themselves (cut short). `todos: 5 items, count: 3`. */
+export function summarizeState(state: Record<string, WValue> | null): string {
+  if (!state) return "no saved state";
+  const keys = Object.keys(state).sort();
+  if (keys.length === 0) return "empty";
+  const one = (v: WValue): string => {
+    if (v.type === "List") return `${v.value.length} item${v.value.length === 1 ? "" : "s"}`;
+    if (v.type === "Record") return `${v.value.length} field${v.value.length === 1 ? "" : "s"}`;
+    const s = formatValue(v);
+    return s.length > 24 ? `${s.slice(0, 23)}…` : s;
+  };
+  return keys.map((k) => `${k}: ${one(state[k])}`).join(", ");
+}
