@@ -1,0 +1,35 @@
+// Pure helpers for saved flow documents. Like diagnostics.ts, this imports only TYPES from
+// ./holon, so it can be tested without loading the wasm package.
+
+import type { WUnit } from "./holon";
+
+// Every hash reachable from `roots` (children, plus a `map`/`fold` `fn` param, the same closure
+// stageClosure walks), each listed once, children before the units that reference them. A saved
+// flow carries these units' preimages: a grouped composite exists only in the in-memory
+// Evaluator, so without them a reopened flow references hashes nothing can resolve.
+export function closureOf(roots: string[], getUnit: (hash: string) => WUnit): string[] {
+  const seen = new Set<string>();
+  const order: string[] = [];
+  const visit = (hash: string) => {
+    if (seen.has(hash)) return;
+    seen.add(hash);
+    const unit = getUnit(hash);
+    if (unit.body.kind === "Composite") unit.body.children.forEach(visit);
+    const fn = (unit.params ?? []).find((p) => p.kind === "Frozen" && p.name === "fn");
+    if (fn && fn.kind === "Frozen") visit(fn.value);
+    order.push(hash);
+  };
+  roots.forEach(visit);
+  return order;
+}
+
+export function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function fromHex(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0 || /[^0-9a-f]/i.test(hex)) throw new Error("not a hex string");
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}

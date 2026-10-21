@@ -185,6 +185,9 @@ export type FlowDocument = {
   nodes: unknown[];
   edges: unknown[];
   viewport: { x: number; y: number; zoom: number };
+  /** Hex preimages of every unit the canvas's composite nodes reference (their whole closure),
+   *  inserted back into the Evaluator on open. Absent in flows saved before it existed. */
+  units?: string[];
 };
 
 /** One entry in `GET /flows` — name + freshness only, never the (possibly large) document. */

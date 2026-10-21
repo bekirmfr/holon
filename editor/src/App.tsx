@@ -58,6 +58,7 @@ import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
+import { closureOf, fromHex, toHex } from "./flowDoc";
 import {
   boundaryLabels,
   isWEncapError,
@@ -438,6 +439,9 @@ function Canvas({
   const { screenToFlowPosition, getNode, getEdges, getViewport, setViewport } =
     useReactFlow<PrimitiveNodeType>();
   const idRef = useRef(0);
+  // The one in-browser workspace every placed composite lives in (see Projection below).
+  // Declared first because saving and opening a flow read and fill it too.
+  const ev = useMemo(() => new Evaluator(), []);
 
   // ── the current flow (P4.8): its name, save, and undo/redo ────────────────────────────
   // A saved flow is a named workspace document — nodes/edges/viewport exactly as left, stored
@@ -557,22 +561,54 @@ function Canvas({
       if (!name) return;
       setFlowName(name);
     }
+    let units: string[];
+    try {
+      const roots = nodes.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : []));
+      units = closureOf(roots, (h) => ev.get_unit(h) as WUnit).map((h) =>
+        toHex(buildPreimage(ev.get_unit(h) as WUnit)),
+      );
+    } catch (e) {
+      setSaveMsg(`not saved: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     const doc: FlowDocument = {
       nodes: nodes as unknown[],
       edges: edges as unknown[],
       viewport: getViewport(),
+      units,
     };
     saveFlow(name, doc)
       .then((entry) =>
         setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`),
       )
       .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
-  }, [flowName, nodes, edges, getViewport]);
+  }, [flowName, nodes, edges, getViewport, ev]);
 
   const onOpenFlow = useCallback(
     (rec: FlowRecord) => {
       const ns = rec.document.nodes as PrimitiveNodeType[];
       const es = rec.document.edges as Edge[];
+      // Put the flow's composites back into the workspace before anything can reference them.
+      // A preimage is re-hashed on insert, so a tampered entry can only add a unit nobody
+      // points at, never stand in for one.
+      let openMsg = "";
+      try {
+        for (const hex of rec.document.units ?? []) ev.insert(fromHex(hex));
+      } catch (e) {
+        openMsg = `some saved units could not be restored: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      const missing = ns.filter((n) => {
+        if (n.data.body.kind !== "Composite") return false;
+        try {
+          ev.get_unit(n.data.body.hash);
+          return false;
+        } catch {
+          return true;
+        }
+      });
+      if (missing.length > 0) {
+        openMsg = `${missing.length} grouped node(s) can't be resolved (saved before composites were stored) — rebuild them, then save`;
+      }
       restoring.current = true;
       setNodes(ns);
       setEdges(es);
@@ -589,11 +625,11 @@ function Canvas({
         }
       }
       idRef.current = max + 1;
-      setSaveMsg("");
+      setSaveMsg(openMsg);
       setHistVersion((v) => v + 1);
       setPage("canvas");
     },
-    [setNodes, setEdges, setViewport, setPage, snapshotOf],
+    [setNodes, setEdges, setViewport, setPage, snapshotOf, ev],
   );
 
   const byName = useMemo(() => {
@@ -699,7 +735,6 @@ function Canvas({
   // `default_spec` now proposes every free output automatically, so `results` may hold several
   // values, not one — a composite with zero free outputs is likewise just the empty case of this
   // same shape (`outputs: []`), not an error state.
-  const ev = useMemo(() => new Evaluator(), []);
   const [projection, setProjection] = useState<{
     hash: string;
     pre: Uint8Array;
