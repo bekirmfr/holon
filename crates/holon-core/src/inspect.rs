@@ -36,10 +36,10 @@ pub fn child_refs(unit: &Unit) -> Vec<Hash> {
     for p in &unit.params {
         // The `fn` param is a reference; every other param is data — even one whose value
         // happens to look like a hash.
-        if p.name() == "fn" {
-            if let Some(h) = p.value().and_then(parse_hash) {
-                refs.push(h);
-            }
+        if p.name() == "fn"
+            && let Some(h) = p.value().and_then(parse_hash)
+        {
+            refs.push(h);
         }
     }
     refs
