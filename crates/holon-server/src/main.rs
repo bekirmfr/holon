@@ -3737,10 +3737,18 @@ mod tests {
         )
     }
 
-    /// GET /todos lists the stored items (`[]` until the first write); POST /todos parses the body,
-    /// appends it, stores the list, and answers with the item.
+    /// A todo API keyed by title: the stored `todos` is a record from title to item. GET /todos
+    /// answers the whole record (`{}` until the first write); POST /todos parses the body and
+    /// inserts it under its title; GET /todos/{title} looks one up; DELETE /todos/{title} removes
+    /// it (answered 204, the write being its only output).
     fn todo_server(state: &AppState, port: &str) -> Hash {
-        let todos = || leaf("default", vec![Param::frozen("type", "Json"), Param::frozen("value", "[]")], vec![("value", Type::Any)], Type::Any);
+        let todos = || leaf("default", vec![Param::frozen("type", "Json"), Param::frozen("value", "{}")], vec![("value", Type::Any)], Type::Any);
+        let field = |name: &str| leaf("field", vec![Param::frozen("name", name)], vec![("record", Type::Record)], Type::Any);
+        let keyed = |name: &str, extra: Vec<(&'static str, Type)>, out: Type| {
+            let mut inputs = vec![("record", Type::Record), ("key", Type::Text)];
+            inputs.extend(extra);
+            leaf(name, vec![], inputs, out)
+        };
         let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
         let list = endpoint(state, "GET", "/todos", vec![test_store_read("todos"), todos()], vec![e(0, 0, 1, 0), e(1, 0, BOUNDARY, 0)], 0);
         let create = endpoint(
@@ -3748,29 +3756,70 @@ mod tests {
             "POST",
             "/todos",
             vec![
-                leaf("field", vec![Param::frozen("name", "body")], vec![("record", Type::Record)], Type::Any),
+                field("body"),
                 leaf("json_parse", vec![], vec![("text", Type::Text)], Type::Any),
+                field("title"),
                 test_store_read("todos"),
                 todos(),
-                leaf("append", vec![], vec![("list", Type::list_any()), ("item", Type::Any)], Type::list_any()),
+                keyed("insert", vec![("value", Type::Any)], Type::Record),
                 test_store_write("todos"),
             ],
             vec![
                 e(BOUNDARY, 0, 0, 0), // request → field(body)
                 e(0, 0, 1, 0),        // body → json_parse
-                e(2, 0, 3, 0),        // store_read → default([])
-                e(3, 0, 4, 0),        // list → append
-                e(1, 0, 4, 1),        // item → append
-                e(4, 0, 5, 0),        // appended → store_write
+                e(1, 0, 2, 0),        // item → field(title)
+                e(3, 0, 4, 0),        // store_read → default({})
+                e(4, 0, 5, 0),        // todos → insert
+                e(2, 0, 5, 1),        // title → insert's key
+                e(1, 0, 5, 2),        // item → insert's value
+                e(5, 0, 6, 0),        // inserted → store_write
                 e(1, 0, BOUNDARY, 0), // response: the item
-                e(5, 0, BOUNDARY, 1), // effect: the write
+                e(6, 0, BOUNDARY, 1), // effect: the write
             ],
             1,
+        );
+        let one = endpoint(
+            state,
+            "GET",
+            "/todos/{title}",
+            vec![field("params"), field("title"), test_store_read("todos"), todos(), keyed("lookup", vec![], Type::Any)],
+            vec![
+                e(BOUNDARY, 0, 0, 0), // request → field(params)
+                e(0, 0, 1, 0),        // params → field(title)
+                e(2, 0, 3, 0),        // store_read → default({})
+                e(3, 0, 4, 0),        // todos → lookup
+                e(1, 0, 4, 1),        // title → lookup's key
+                e(4, 0, BOUNDARY, 0), // response: the item
+            ],
+            0,
+        );
+        let delete = endpoint(
+            state,
+            "DELETE",
+            "/todos/{title}",
+            vec![
+                field("params"),
+                field("title"),
+                test_store_read("todos"),
+                todos(),
+                keyed("remove", vec![], Type::Record),
+                test_store_write("todos"),
+            ],
+            vec![
+                e(BOUNDARY, 0, 0, 0),
+                e(0, 0, 1, 0),
+                e(2, 0, 3, 0),
+                e(3, 0, 4, 0),
+                e(1, 0, 4, 1),
+                e(4, 0, 5, 0),
+                e(5, 0, BOUNDARY, 0), // the write is the response: 204
+            ],
+            0,
         );
         stage(
             state,
             &Unit {
-                body: UnitBody::Composite { children: vec![list, create], edges: vec![] },
+                body: UnitBody::Composite { children: vec![list, create, one, delete], edges: vec![] },
                 params: vec![Param::frozen("declare", "server"), Param::frozen("port", port)],
                 inputs: vec![],
                 outputs: vec![],
@@ -3805,10 +3854,20 @@ mod tests {
                 &Request::fake_http(method, url, vec![], body.as_bytes().to_vec()));
             (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
         };
-        assert_eq!(call("GET", "/todos", ""), (200, "[]".to_string()));
+        assert_eq!(call("GET", "/todos", ""), (200, "{}".to_string()));
         assert_eq!(call("POST", "/todos", r#"{"title":"buy milk"}"#), (200, r#"{"title":"buy milk"}"#.to_string()));
-        assert_eq!(call("POST", "/todos", r#"{"title":"walk"}"#).0, 200);
-        assert_eq!(call("GET", "/todos?ignored=1", ""), (200, r#"[{"title":"buy milk"},{"title":"walk"}]"#.to_string()));
+        assert_eq!(call("POST", "/todos", r#"{"title":"walk","done":true}"#).0, 200);
+        assert_eq!(
+            call("GET", "/todos?ignored=1", ""),
+            (200, r#"{"buy milk":{"title":"buy milk"},"walk":{"done":true,"title":"walk"}}"#.to_string())
+        );
+        // The title in the path is the key, percent-decoded.
+        assert_eq!(call("GET", "/todos/buy%20milk", ""), (200, r#"{"title":"buy milk"}"#.to_string()));
+        assert_eq!(call("GET", "/todos/nope", "").0, 500, "a missing key settles to no response");
+        assert_eq!(call("POST", "/todos", r#"{"title":"walk"}"#).0, 200, "the same title overwrites");
+        assert_eq!(call("GET", "/todos/walk", ""), (200, r#"{"title":"walk"}"#.to_string()));
+        assert_eq!(call("DELETE", "/todos/walk", "").0, 204);
+        assert_eq!(call("GET", "/todos", ""), (200, r#"{"buy milk":{"title":"buy milk"}}"#.to_string()));
         assert_eq!(call("POST", "/todos", "not json").0, 500, "a body json_parse refuses settles to no response");
         assert_eq!(call("GET", "/nope", "").0, 404);
         assert_eq!(call("DELETE", "/todos", "").0, 405);
@@ -3816,7 +3875,7 @@ mod tests {
         // The listing shows the port and the request count; /trigger is refused for a server.
         let listed = body_json(route(&state, &req("GET", "/deployments", vec![])));
         assert_eq!(listed["deployments"][0]["port"], 18080);
-        assert_eq!(listed["deployments"][0]["trigger_count"], 7);
+        assert_eq!(listed["deployments"][0]["trigger_count"], 13);
         assert_eq!(route(&state, &req("POST", "/trigger/todo-api", b"x".to_vec())).status_code, 400);
 
         // A second server on the same port is refused; a broken declaration is a 400.
@@ -3829,7 +3888,7 @@ mod tests {
         let reloaded = load_deployments(&path, &state.store).unwrap();
         assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
         let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap()["todos"].clone();
-        assert!(matches!(todos, Value::List(ref xs) if xs.len() == 2));
+        assert!(matches!(todos, Value::Record(ref items) if items.len() == 1));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -3852,8 +3911,8 @@ mod tests {
                 &Request::fake_http(method, url, vec![], body.as_bytes().to_vec()))
             .status_code
         };
-        assert_eq!(call("POST", "/todos", r#"{"t":1}"#), 200);
-        assert_eq!(call("POST", "/todos", r#"{"t":2}"#), 200);
+        assert_eq!(call("POST", "/todos", r#"{"title":"a"}"#), 200);
+        assert_eq!(call("POST", "/todos", r#"{"title":"b"}"#), 200);
         assert_eq!(call("GET", "/nope", ""), 404);
 
         let log = body_json(route(&state, &req("GET", "/deployments/todo/log", vec![])));
@@ -3863,12 +3922,12 @@ mod tests {
         let second = &entries[1];
         assert_eq!((second["kind"].as_str(), second["route"].as_str(), second["status"].as_u64()), (Some("request"), Some("POST /todos"), Some(200)));
         assert_eq!(second["session"], 1);
-        assert_eq!(second["response_body"], r#"{"t":2}"#);
-        assert_eq!(second["state_before"]["todos"]["value"].as_array().unwrap().len(), 1, "it read the list with one item");
+        assert_eq!(second["response_body"], r#"{"title":"b"}"#);
+        assert_eq!(second["state_before"]["todos"]["value"].as_array().unwrap().len(), 1, "it read the record with one item");
         assert_eq!(second["performed"][0]["capability"], "StateWrite(\"todos\")");
         assert_eq!((entries[2]["status"].as_u64(), entries[2]["route"].is_null()), (Some(404), true), "an unrouted request is logged too");
-        // Each step's timing. This fixture's endpoint holds its 6 nodes directly ([k]); the stored
-        // list a store_read reads is injected as a small composite, timed one level down.
+        // Each step's timing. This fixture's endpoint holds its 7 nodes directly ([k]); the stored
+        // record a store_read reads is injected as a small composite, timed one level down.
         let paths: Vec<Vec<u64>> = second["timeline"]
             .as_array()
             .unwrap()
@@ -3877,7 +3936,7 @@ mod tests {
             .collect();
         let mut top: Vec<u64> = paths.iter().filter(|p| p.len() == 1).map(|p| p[0]).collect();
         top.sort();
-        assert_eq!(top, vec![0, 1, 2, 3, 4, 5], "one timing per node");
+        assert_eq!(top, vec![0, 1, 2, 3, 4, 5, 6], "one timing per node");
         assert!(paths.iter().all(|p| p.len() <= recorder::Timer::DEPTH));
         assert!(second["timeline"].as_array().unwrap().iter().all(|t| t["end_us"].as_f64() >= t["start_us"].as_f64()));
         let newer = body_json(route(&state, &req("GET", "/deployments/todo/log?after=1", vec![])));
@@ -3939,14 +3998,14 @@ mod tests {
             (r.status_code, body_json(r))
         };
 
-        assert_eq!(call("POST", r#"{"n":1}"#).0, 200);
+        assert_eq!(call("POST", r#"{"title":"a"}"#).0, 200);
         // Paused: no answers, nothing to trigger, the session goes on.
         let (code, entry) = act("pause", "");
         assert_eq!((code, entry["status"].as_str()), (200, Some("paused")));
         assert_eq!(call("GET", "").0, 503);
         assert_eq!(act("pause", "").0, 409, "already paused");
         assert_eq!(act("run", "").1["session"], 1, "resume continues session 1");
-        assert_eq!(call("GET", ""), (200, r#"[{"n":1}]"#.to_string()));
+        assert_eq!(call("GET", ""), (200, r#"{"a":{"title":"a"}}"#.to_string()));
 
         // Delete only once stopped. Stopping ends session 1 and keeps its state.
         assert_eq!(route(&state, &req("DELETE", "/deployments/todo", vec![])).status_code, 409);
@@ -3956,11 +4015,11 @@ mod tests {
 
         // Session 2 starts fresh; session 3 restores session 1's snapshot.
         assert_eq!(act("run", r#"{"from":"fresh"}"#).1["session"], 2);
-        assert_eq!(call("GET", ""), (200, "[]".to_string()));
-        assert_eq!(call("POST", r#"{"n":2}"#).0, 200);
+        assert_eq!(call("GET", ""), (200, "{}".to_string()));
+        assert_eq!(call("POST", r#"{"title":"b"}"#).0, 200);
         act("stop", "");
         assert_eq!(act("run", r#"{"from":1}"#).1["session"], 3);
-        assert_eq!(call("GET", ""), (200, r#"[{"n":1}]"#.to_string()));
+        assert_eq!(call("GET", ""), (200, r#"{"a":{"title":"a"}}"#.to_string()));
         assert_eq!(act("run", r#"{"from":"sideways"}"#).0, 400);
 
         let sessions = body_json(route(&state, &req("GET", "/deployments/todo/sessions", vec![])));
@@ -3971,7 +4030,7 @@ mod tests {
             .map(|s| (s["number"].as_u64().unwrap(), s["from"].as_str().unwrap(), s["requests"].as_u64().unwrap()))
             .collect();
         assert_eq!(summary, vec![(1, "deploy", 2), (2, "fresh", 2), (3, "session 1", 1)], "a refused (paused) request is not counted");
-        assert_eq!(sessions["sessions"][1]["state"]["todos"]["value"][0]["value"][0][1]["value"], 2.0);
+        assert_eq!(sessions["sessions"][1]["state"]["todos"]["value"][0][0], "b", "session 2 held only b");
         assert!(sessions["sessions"][2]["state"].is_null(), "the running session has no snapshot yet");
 
         // A restart keeps the status and every session.
@@ -4000,7 +4059,7 @@ mod tests {
         assert_eq!((code, &sent["status"], &sent["body"]), (200, &serde_json::json!(200), &serde_json::json!("{\"title\":\"milk\"}")));
         let (_, listed) = send("todo", serde_json::json!({ "method": "GET", "url": "/todos?x=1" }));
         assert_eq!(listed["status"], 200);
-        assert_eq!(listed["body"], "[{\"title\":\"milk\"}]");
+        assert_eq!(listed["body"], "{\"milk\":{\"title\":\"milk\"}}");
         assert!(listed["headers"].as_array().unwrap().iter().any(|h| h[0] == "content-type" && h[1] == "application/json"));
         assert_eq!(send("todo", serde_json::json!({ "method": "GET", "url": "/nope" })).1["status"], 404);
 

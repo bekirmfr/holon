@@ -25,6 +25,18 @@ describe("parsePath", () => {
       expect(parsePath(bad)).toBeNull();
     }
   });
+
+  it("takes {name} as the same param as :name", () => {
+    expect(parsePath("/todos/{title}")).toEqual(parsePath("/todos/:title"));
+    for (const bad of ["/todos/{}", "/todos/{title", "/todos/title}", "/a/{x}/:x", "/a/{{x}}"]) {
+      expect(parsePath(bad)).toBeNull();
+    }
+    const r = requestRecord("GET", "/todos/{title}", "/todos/buy%20milk", "");
+    expect(r?.type === "Record" && r.value.find(([k]) => k === "params")?.[1]).toEqual({
+      type: "Record",
+      value: [["title", { type: "Text", value: "buy milk" }]],
+    });
+  });
 });
 
 describe("endpointUnit", () => {

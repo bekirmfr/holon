@@ -29,8 +29,9 @@ pub const GENESIS: &[&str] = &[
     "pair",
     // pure — sum constructor (2)
     "some", "none",
-    // pure — record kit (5)
-    "record", "field", "with_field", "without_field", "keys",
+    // pure — record kit (8): field names frozen (field, with_field, without_field), or keys that
+    // arrive on a wire (lookup, insert, remove), e.g. a route's path param
+    "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove",
     // pure — JSON (2)
     "json_parse", "json_stringify",
     // pure — universal, any-typed (5)
@@ -147,6 +148,14 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         ),
         "without_field" => prim(vec![port("record", Type::Record)], vec![Param::frozen("name", "id")], Type::Record),
         "keys" => prim(vec![port("record", Type::Record)], vec![], Type::List(Box::new(Text))),
+        // The same three operations with the key as an input: a record used as a keyed collection.
+        "lookup" => prim(vec![port("record", Type::Record), port("key", Text)], vec![], Any),
+        "insert" => prim(
+            vec![port("record", Type::Record), port("key", Text), port("value", Any)],
+            vec![],
+            Type::Record,
+        ),
+        "remove" => prim(vec![port("record", Type::Record), port("key", Text)], vec![], Type::Record),
         "json_parse" => prim(vec![port("text", Text)], vec![], Any),
         "json_stringify" => prim(vec![port("value", Any)], vec![], Text),
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
@@ -213,12 +222,13 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_49_leaves() {
+    fn genesis_has_52_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
-        // deliberately for M1 (docs/PLATFORM_LAYOUT.md), and json_parse + json_stringify.
-        assert_eq!(GENESIS.len(), 49);
+        // deliberately for M1 (docs/PLATFORM_LAYOUT.md), json_parse + json_stringify, and the
+        // keyed record kit (lookup, insert, remove).
+        assert_eq!(GENESIS.len(), 52);
     }
 
     #[test]

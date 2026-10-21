@@ -13,7 +13,8 @@ export type Method = (typeof METHODS)[number];
 /** One endpoint of the server being built: its route, and the endpoint unit's hash. */
 export type EndpointDraft = { method: Method; path: string; hash: string };
 
-/** Mirrors core's `parse_path`: `/`, or `/` then segments that are literals or `:name` params. */
+/** Mirrors core's `parse_path`: `/`, or `/` then segments that are literals or params, written
+ *  `:name` or `{name}`. */
 export function parsePath(path: string): { literal: string | null; param: string | null }[] | null {
   if (!path.startsWith("/")) return null;
   const rest = path.slice(1);
@@ -22,8 +23,12 @@ export function parsePath(path: string): { literal: string | null; param: string
   const names = new Set<string>();
   const out: { literal: string | null; param: string | null }[] = [];
   for (const part of rest.split("/")) {
-    if (part.startsWith(":")) {
-      const name = part.slice(1);
+    const name = part.startsWith(":")
+      ? part.slice(1)
+      : part.startsWith("{") && part.endsWith("}") && part.length >= 2
+        ? part.slice(1, -1)
+        : null;
+    if (name !== null) {
       if (!word.test(name) || names.has(name)) return null;
       names.add(name);
       out.push({ literal: null, param: name });

@@ -297,6 +297,25 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             let [Value::Record(fields)] = inputs else { return None };
             Some(Value::List(fields.keys().map(|k| Value::Text(k.clone())).collect()))
         }
+        // The keyed kit: the same reads and writes, with the key a Text input, so a record can be
+        // a collection keyed by something a request brings (`/todos/:title`). Any other key is
+        // refused, never coerced to text first.
+        "lookup" => {
+            let [Value::Record(fields), Value::Text(key)] = inputs else { return None };
+            fields.get(key).cloned()
+        }
+        "insert" => {
+            let [Value::Record(fields), Value::Text(key), v] = inputs else { return None };
+            let mut fields = fields.clone();
+            fields.insert(key.clone(), (*v).clone());
+            Some(Value::Record(fields))
+        }
+        "remove" => {
+            let [Value::Record(fields), Value::Text(key)] = inputs else { return None };
+            let mut fields = fields.clone();
+            fields.remove(key);
+            Some(Value::Record(fields))
+        }
 
         // ── JSON (M1): request and response bodies. See json.rs for the mapping; malformed input,
         // or a value with no JSON form, is absent. ──
@@ -508,6 +527,27 @@ mod tests {
         assert_eq!(compute("field", &[&num(1.0)], &[p("name", "id")]), None);
         assert_eq!(compute("is_truthy", &[&empty], &[]), Some(boo(false)));
         assert_eq!(compute("equals", &[&r, &r2], &[]), Some(boo(false)));
+    }
+
+    #[test]
+    fn keyed_record_kit_takes_its_key_from_an_input() {
+        let empty = compute("record", &[], &[]).unwrap();
+        let r = compute("insert", &[&empty, &txt("buy milk"), &num(1.0)], &[]).unwrap();
+        let r = compute("insert", &[&r, &txt("a b/c"), &num(2.0)], &[]).unwrap();
+        assert_eq!(compute("lookup", &[&r, &txt("buy milk")], &[]), Some(num(1.0)));
+        assert_eq!(compute("lookup", &[&r, &txt("a b/c")], &[]), Some(num(2.0)), "any text is a key");
+        assert_eq!(compute("lookup", &[&r, &txt("nope")], &[]), None, "a missing key is absent");
+        // Insert overwrites; remove drops the key and leaves a missing one alone.
+        let r = compute("insert", &[&r, &txt("buy milk"), &num(3.0)], &[]).unwrap();
+        assert_eq!(compute("lookup", &[&r, &txt("buy milk")], &[]), Some(num(3.0)));
+        let r = compute("remove", &[&r, &txt("buy milk")], &[]).unwrap();
+        assert_eq!(compute("keys", &[&r], &[]), Some(Value::List(vec![txt("a b/c")])));
+        assert_eq!(compute("remove", &[&r, &txt("nope")], &[]), Some(r.clone()));
+        // A key that isn't text, or a collection that isn't a record, is refused.
+        assert_eq!(compute("lookup", &[&r, &num(1.0)], &[]), None);
+        assert_eq!(compute("insert", &[&r, &num(1.0), &num(1.0)], &[]), None);
+        assert_eq!(compute("remove", &[&num(1.0), &txt("x")], &[]), None);
+        assert_eq!(compute("lookup", &[&r], &[]), None);
     }
 
     #[test]

@@ -144,7 +144,8 @@ pub fn read_endpoint(unit: &Unit) -> Result<(String, String), EndpointError> {
 }
 
 /// Parse a route path: `/`, or `/` followed by segments that are literals (letters, digits,
-/// `-`, `_`, `.`, `~`) or `:name` params. `None` if malformed, including a repeated param name.
+/// `-`, `_`, `.`, `~`) or params, written `:name` or `{name}` (the same param either way).
+/// `None` if malformed, including a repeated param name.
 pub fn parse_path(path: &str) -> Option<Vec<Segment>> {
     let rest = path.strip_prefix('/')?;
     if rest.is_empty() {
@@ -156,7 +157,8 @@ pub fn parse_path(path: &str) -> Option<Vec<Segment>> {
     let mut segments = Vec::new();
     let mut names: Vec<&str> = Vec::new();
     for part in rest.split('/') {
-        match part.strip_prefix(':') {
+        let param = part.strip_prefix(':').or_else(|| part.strip_prefix('{').and_then(|p| p.strip_suffix('}')));
+        match param {
             Some(name) if word(name) && !names.contains(&name) => {
                 names.push(name);
                 segments.push(Segment::Param(name.to_string()));
@@ -264,6 +266,24 @@ mod tests {
         assert!(match_route(&s, "DELETE", "/todos/1").is_none());
         assert!(match_route(&s, "GET", "/todos/1/extra").is_none());
         assert!(match_route(&s, "GET", "/todos/").is_none(), "an empty segment is not an id");
+    }
+
+    #[test]
+    fn a_param_is_written_colon_or_braces_alike() {
+        let p = |name: &str| Some(vec![Segment::Literal("todos".into()), Segment::Param(name.into())]);
+        assert_eq!(parse_path("/todos/{title}"), p("title"));
+        assert_eq!(parse_path("/todos/:title"), p("title"));
+        for bad in ["/todos/{}", "/todos/{title", "/todos/title}", "/todos/{a b}", "/a/{x}/:x", "/a/{{x}}"] {
+            assert_eq!(parse_path(bad), None, "{bad}");
+        }
+        // A route matches the same either way, and the two spellings clash on one server.
+        let mut r = MapResolver::new();
+        let braces = endpoint(&mut r, "GET", "/todos/{title}");
+        let colon = endpoint(&mut r, "GET", "/todos/:title");
+        let s = read_server(&server("80", vec![braces]), &r).unwrap();
+        let (_, params) = match_route(&s, "GET", "/todos/buy%20milk").unwrap();
+        assert_eq!(params.get("title").map(String::as_str), Some("buy%20milk"), "raw here; the host decodes");
+        assert!(matches!(read_server(&server("80", vec![braces, colon]), &r), Err(DeclError::DuplicateRoute { .. })));
     }
 
     #[test]
