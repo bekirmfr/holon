@@ -60,3 +60,14 @@ export function fromHex(hex: string): Uint8Array {
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
+
+/**
+ * What opening a saved flow from the flows page does, given the flow on the canvas: go back to
+ * it (`"resume"`, when it is that same flow with unsaved changes, so they are never thrown away
+ * by a plain "open"), ask before discarding them (`"confirm"`, another flow while this one has
+ * changes), or just load it.
+ */
+export function openChoice(target: string, current: { name: string | null; dirty: boolean }): "resume" | "confirm" | "load" {
+  if (!current.dirty) return "load";
+  return target === current.name ? "resume" : "confirm";
+}

@@ -61,7 +61,7 @@ import { outputColor, typeColor, typeLabel } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
-import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
+import { closureOf, documentKey, fromHex, openChoice, structuralKey, toHex } from "./flowDoc";
 import { History } from "./history";
 import { DialogProvider, useDialog } from "./Dialog";
 import { DeploymentCard } from "./DeploymentCard";
@@ -266,8 +266,18 @@ function BoundaryField({
 type AppPage = "canvas" | "flows" | "deployed";
 
 /** The saved-flows page: list, open, delete. Publishing to the marketplace is deferred — the
- *  button is real but disabled, honestly labeled, rather than wired to something half-built. */
-function FlowsPage({ onOpen }: { onOpen: (rec: FlowRecord) => void }) {
+ *  button is real but disabled, honestly labeled, rather than wired to something half-built.
+ *  "open" on the flow being edited goes back to its unsaved changes; only "reload saved" (shown
+ *  for that flow) loads the saved copy over them. */
+function FlowsPage({
+  current,
+  onOpen,
+  onResume,
+}: {
+  current: { name: string | null; dirty: boolean };
+  onOpen: (rec: FlowRecord) => void;
+  onResume: () => void;
+}) {
   const dialog = useDialog();
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
   const [msg, setMsg] = useState("");
@@ -285,6 +295,10 @@ function FlowsPage({ onOpen }: { onOpen: (rec: FlowRecord) => void }) {
   }, [refresh]);
 
   const open = (name: string) => {
+    if (openChoice(name, current) === "resume") return onResume();
+    reload(name);
+  };
+  const reload = (name: string) => {
     getFlow(name)
       .then(onOpen)
       .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
@@ -336,9 +350,21 @@ function FlowsPage({ onOpen }: { onOpen: (rec: FlowRecord) => void }) {
           <span style={{ color: "#9fb4d4", fontSize: 11 }}>
             saved {new Date(f.saved_at_epoch_seconds * 1000).toLocaleString()}
           </span>
-          <button style={smallBtn} onClick={() => open(f.name)}>
-            open
-          </button>
+          {openChoice(f.name, current) === "resume" ? (
+            <>
+              <span style={{ color: "#e0c36f", fontSize: 11 }}>unsaved changes</span>
+              <button style={smallBtn} onClick={() => open(f.name)} title="back to the canvas, changes kept">
+                open
+              </button>
+              <button style={smallBtn} onClick={() => reload(f.name)} title="discard your changes and load the saved copy">
+                reload saved
+              </button>
+            </>
+          ) : (
+            <button style={smallBtn} onClick={() => open(f.name)}>
+              open
+            </button>
+          )}
           <button
             style={{ ...smallBtn, opacity: 0.4, cursor: "default" }}
             disabled
@@ -606,8 +632,13 @@ function Canvas({
 
   const onOpenFlow = useCallback(
     async (rec: FlowRecord) => {
-      const discard = `Discard unsaved changes to "${flowName ?? "untitled"}" and open "${rec.name}"?`;
-      if (dirty && !(await dialog.confirm(discard, "Discard"))) {
+      // Opening the flow being edited only reloads it when asked to ("reload saved"), and still
+      // asks first; FlowsPage resumes it instead (openChoice).
+      const discard =
+        rec.name === flowName
+          ? `Discard your unsaved changes to "${rec.name}" and reload the saved copy?`
+          : `Discard unsaved changes to "${flowName ?? "untitled"}" and open "${rec.name}"?`;
+      if (dirty && !(await dialog.confirm(discard, rec.name === flowName ? "Reload saved" : "Discard"))) {
         return;
       }
       setViewing(null);
@@ -1041,6 +1072,13 @@ function Canvas({
       setViewport(before.viewport);
     }
   }, [setNodes, setEdges, setViewport]);
+
+  // "open" on the flow already being edited: back to the canvas, unsaved changes and all (out of
+  // a deployed flow's view, if one is shown over it).
+  const onResumeFlow = useCallback(() => {
+    if (viewing) onExitView();
+    setPage("canvas");
+  }, [viewing, onExitView, setPage]);
 
   // One node of a replay: its unit, evaluated on the inputs its wires brought.
   const evalNode = useCallback(
@@ -1925,7 +1963,9 @@ function Canvas({
             padding: 24,
           }}
         >
-          {page === "flows" && <FlowsPage onOpen={onOpenFlow} />}
+          {page === "flows" && (
+            <FlowsPage current={{ name: flowName, dirty }} onOpen={onOpenFlow} onResume={onResumeFlow} />
+          )}
           {page === "deployed" && (
             <div style={{ maxWidth: 760 }}>
               <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 4 }}>
