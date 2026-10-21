@@ -20,8 +20,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use holon_core::{
     capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval,
@@ -419,10 +420,31 @@ impl FileStore {
     }
 }
 
+/// Replace `path` with `bytes` so a crash leaves either the old file or the new one, never a
+/// truncated mix: write a sibling temp file, flush it to disk, then rename it over `path` (an
+/// atomic replace on Unix and Windows alike). The temp name is unique per process and call, so
+/// two threads writing the same path never share one.
+pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let tmp = PathBuf::from(tmp);
+    let result = (|| {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 impl Store for FileStore {
     fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
         let (key, bytes) = encode_keyed(unit)?;
-        fs::write(self.path(&key), &bytes).map_err(StoreError::Io)?;
+        write_atomically(&self.path(&key), &bytes).map_err(StoreError::Io)?;
         Ok(key)
     }
     fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
@@ -1691,6 +1713,20 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("holon-store-{nanos}-{n}"))
+    }
+
+    #[test]
+    fn write_atomically_replaces_and_leaves_no_temp_files() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.json");
+        write_atomically(&path, b"first").unwrap();
+        write_atomically(&path, b"second, longer than the first").unwrap();
+        write_atomically(&path, b"third").unwrap(); // shorter: no leftover tail from a truncate
+        assert_eq!(fs::read(&path).unwrap(), b"third");
+        let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("doc.json")]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

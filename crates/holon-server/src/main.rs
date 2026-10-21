@@ -138,6 +138,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -148,7 +149,7 @@ use holon_core::{
     Value, BOUNDARY,
 };
 use holon_host::{
-    fire, fire_sourced, is_storable, CacheIngestError, FileStore, ForkError, Host, MemStore,
+    fire, fire_sourced, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
     PublishError, Registry, SharedCache, Store, StoreError,
 };
 use rouille::{Request, Response};
@@ -968,7 +969,7 @@ fn persist_deployments(path: &str, deployments: &BTreeMap<String, Deployment>) {
         .collect();
     match serde_json::to_vec_pretty(&records) {
         Ok(bytes) => {
-            if let Err(e) = std::fs::write(path, bytes) {
+            if let Err(e) = write_atomically(Path::new(path), &bytes) {
                 eprintln!("warning: failed to persist deployments to {path:?}: {e}");
             }
         }
@@ -977,9 +978,10 @@ fn persist_deployments(path: &str, deployments: &BTreeMap<String, Deployment>) {
 }
 
 /// Load deployments from `path` at startup — the inverse of `persist_deployments`. Returns an
-/// empty table for the `":memory:"` sentinel, a missing file (first run), or any read/parse
-/// failure (logged, not fatal — a corrupt or foreign file shouldn't stop the server from
-/// starting, just start it with nothing deployed). Each record is re-materialized against the
+/// empty table for the `":memory:"` sentinel or a missing file (first run). A file that exists
+/// but can't be read or parsed is an `Err`, and the server refuses to start: starting empty
+/// would let the first deploy overwrite the file — every deployment and all its state — with
+/// the empty table. Each record is re-materialized against the
 /// **current** store and re-derives its `triggers`/`state`-eligibility fresh via
 /// `capabilities()` — exactly what a live `/deploy` call would compute, not a cached copy that
 /// could go stale. A record whose unit no longer resolves in the store (e.g. the store
@@ -989,27 +991,19 @@ fn persist_deployments(path: &str, deployments: &BTreeMap<String, Deployment>) {
 /// state-free unit is ignored, not silently restored); a state-capable unit with no persisted
 /// state (an old file predating this feature) starts from an empty map, same as a fresh
 /// `/deploy`.
-fn load_deployments(path: &str, store: &SharedStore) -> BTreeMap<String, Deployment> {
+fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeMap<String, Deployment>, String> {
     let mut loaded = BTreeMap::new();
     if path == ":memory:" {
-        return loaded;
+        return Ok(loaded);
     }
 
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return loaded,
-        Err(e) => {
-            eprintln!("warning: could not read {path:?}: {e} — starting with no deployments");
-            return loaded;
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(loaded),
+        Err(e) => return Err(format!("could not read {path:?}: {e}")),
     };
-    let records: Vec<DeploymentRecord> = match serde_json::from_slice(&bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("warning: {path:?} is not valid deployment JSON: {e} — starting with no deployments");
-            return loaded;
-        }
-    };
+    let records: Vec<DeploymentRecord> = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("{path:?} is not valid deployment JSON: {e}"))?;
 
     for record in records {
         let Some(unit_hash) = parse_hash(&record.unit) else {
@@ -1069,7 +1063,7 @@ fn load_deployments(path: &str, store: &SharedStore) -> BTreeMap<String, Deploym
             },
         );
     }
-    loaded
+    Ok(loaded)
 }
 
 /// Persist the flows table — same write-through discipline and `":memory:"` opt-out as
@@ -1082,7 +1076,7 @@ fn persist_flows(path: &str, flows: &BTreeMap<String, FlowRecord>) {
     let records: Vec<&FlowRecord> = flows.values().collect();
     match serde_json::to_vec_pretty(&records) {
         Ok(bytes) => {
-            if let Err(e) = std::fs::write(path, bytes) {
+            if let Err(e) = write_atomically(Path::new(path), &bytes) {
                 eprintln!("warning: failed to persist flows to {path:?}: {e}");
             }
         }
@@ -1090,31 +1084,23 @@ fn persist_flows(path: &str, flows: &BTreeMap<String, FlowRecord>) {
     }
 }
 
-/// Load flows at startup — the inverse of `persist_flows`. Missing file (first run),
-/// `":memory:"`, or a corrupt/foreign file all yield an empty table (logged, never fatal),
-/// the same failure posture `load_deployments` already takes: a bad file shouldn't stop the
-/// server, just start it with nothing saved. A record whose name fails `is_valid_slug` is
+/// Load flows at startup — the inverse of `persist_flows`. A missing file (first run) or
+/// `":memory:"` yields an empty table; an unreadable or unparseable file is an `Err` and the
+/// server refuses to start, for the same reason as `load_deployments`: the next save would
+/// overwrite every flow with the empty table. A record whose name fails `is_valid_slug` is
 /// skipped with a warning rather than trusted — same defensive stance `load_deployments`
 /// takes toward hand-edited files.
-fn load_flows(path: &str) -> BTreeMap<String, FlowRecord> {
+fn load_flows(path: &str) -> Result<BTreeMap<String, FlowRecord>, String> {
     if path == ":memory:" {
-        return BTreeMap::new();
+        return Ok(BTreeMap::new());
     }
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return BTreeMap::new(),
-        Err(e) => {
-            eprintln!("warning: failed to read flows from {path:?}: {e}");
-            return BTreeMap::new();
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => return Err(format!("could not read {path:?}: {e}")),
     };
-    let records: Vec<FlowRecord> = match serde_json::from_slice(&bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("warning: failed to parse flows file {path:?}: {e}");
-            return BTreeMap::new();
-        }
-    };
+    let records: Vec<FlowRecord> =
+        serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} is not valid flows JSON: {e}"))?;
     let mut loaded = BTreeMap::new();
     for record in records {
         if !is_valid_slug(&record.name) {
@@ -1123,7 +1109,7 @@ fn load_flows(path: &str) -> BTreeMap<String, FlowRecord> {
         }
         loaded.insert(record.name.clone(), record);
     }
-    loaded
+    Ok(loaded)
 }
 
 /// `POST /flows` — save (upsert) a flow document by name. The name follows the same rule as
@@ -2041,10 +2027,15 @@ fn main() {
     let store = SharedStore(Arc::new(Mutex::new(backend)));
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
-    let initial_deployments = load_deployments(&deployments_arg, &store);
+    let refuse_to_start = |e: String| -> ! {
+        eprintln!("holon-server: {e}");
+        eprintln!("holon-server: refusing to start rather than overwrite it — fix the file or move it aside");
+        std::process::exit(1);
+    };
+    let initial_deployments = load_deployments(&deployments_arg, &store).unwrap_or_else(|e| refuse_to_start(e));
+    let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
-    let flows = Mutex::new(load_flows(&flows_arg));
     let state = AppState { store, registry, cache, deployments, deployments_path: deployments_arg, flows, flows_path: flows_arg };
 
     println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
@@ -2706,7 +2697,7 @@ mod tests {
 
         // "First run": nothing to load yet, deploy, which persists write-through.
         {
-            let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store)));
+            let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store).unwrap()));
             assert_eq!(deployments.lock().unwrap().len(), 0);
 
             let state = AppState {
@@ -2729,7 +2720,7 @@ mod tests {
 
         // "Restart": a fresh load from the same path/store reconstructs the deployment, with
         // triggers re-derived (not read back from disk), and it actually works.
-        let reloaded = load_deployments(&deployments_path, &store);
+        let reloaded = load_deployments(&deployments_path, &store).unwrap();
         assert_eq!(reloaded.len(), 1);
         let dep = reloaded.get("echo").unwrap();
         assert_eq!(dep.unit, flow_hash);
@@ -2873,12 +2864,54 @@ mod tests {
 
         // "Restart": a fresh state loads the table the way main() does, from the same path.
         let mut state2 = test_state();
-        state2.flows = Mutex::new(load_flows(&flows_path));
+        state2.flows = Mutex::new(load_flows(&flows_path).unwrap());
         state2.flows_path = flows_path.clone();
         let loaded = body_json(route(&state2, &req("GET", "/flows/keeper", vec![])));
         assert_eq!(loaded["document"], doc);
 
         let _ = std::fs::remove_file(&flows_path);
+    }
+
+    /// Regression: a persistence file that failed to parse used to load as an empty table, so
+    /// the first deploy or save after startup overwrote every deployment, its state, or every
+    /// flow. Loading is now an `Err` (main() refuses to start) and the file is left untouched.
+    #[test]
+    fn corrupt_persistence_file_is_an_error_not_an_empty_table() {
+        let state = test_state();
+        for (label, contents) in [("truncated", &b"[{\"slug\": \"wri"[..]), ("foreign", &b"{\"not\": \"a list\"}"[..])] {
+            let path = unique_temp_path(&format!("corrupt-{label}"));
+            std::fs::write(&path, contents).unwrap();
+            assert!(load_deployments(&path, &state.store).is_err(), "{label} deployments file");
+            assert!(load_flows(&path).is_err(), "{label} flows file");
+            assert_eq!(std::fs::read(&path).unwrap(), contents, "the bad file must be left as it was");
+            let _ = std::fs::remove_file(&path);
+        }
+        // A missing file is still a normal first run, not an error.
+        let missing = unique_temp_path("missing");
+        assert!(load_deployments(&missing, &state.store).unwrap().is_empty());
+        assert!(load_flows(&missing).unwrap().is_empty());
+    }
+
+    /// Persisting goes through `write_atomically`: the file always holds one whole, parseable
+    /// table, and no temp file is left next to it.
+    #[test]
+    fn persist_writes_whole_files_and_leaves_no_temp_files() {
+        let dir = unique_temp_path("persist-dir");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = format!("{dir}/flows.json");
+        let mut flows = BTreeMap::new();
+        for name in ["a", "b"] {
+            flows.insert(
+                name.to_string(),
+                FlowRecord { name: name.to_string(), saved_at_epoch_seconds: 0, document: serde_json::json!({}) },
+            );
+            persist_flows(&path, &flows);
+        }
+        flows.remove("a");
+        persist_flows(&path, &flows); // shrinking: no stale tail from the longer write
+        assert_eq!(load_flows(&path).unwrap().keys().collect::<Vec<_>>(), vec!["b"]);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── every honestly-answerable driver is actually sourced, regardless of which one
@@ -3194,7 +3227,7 @@ mod tests {
 
         // "First run": deploy and trigger once — writes "before-restart".
         {
-            let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store)));
+            let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store).unwrap()));
             let state = AppState {
                 store: store.clone(),
                 registry: Mutex::new(Registry::new(store.clone())),
@@ -3217,7 +3250,7 @@ mod tests {
 
         // "Restart": a fresh load from the same path/store — the state survives, and the
         // deployment can still be triggered again afterward.
-        let reloaded = load_deployments(&deployments_path, &store);
+        let reloaded = load_deployments(&deployments_path, &store).unwrap();
         let dep = reloaded.get("writer").unwrap();
         let restored_state = dep.state.as_ref().unwrap().lock().unwrap();
         assert_eq!(restored_state.get("counter"), Some(&Value::Text("before-restart".to_string())));
