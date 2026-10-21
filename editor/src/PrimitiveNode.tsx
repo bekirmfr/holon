@@ -6,7 +6,8 @@
 
 import { memo, type CSSProperties } from "react";
 import { Handle, Position, useReactFlow, type NodeProps, type Node } from "@xyflow/react";
-import { compatible, type WParam, type WPort, type WType } from "./holon";
+import { compatible, type WParam, type WPort, type WType, type WValue } from "./holon";
+import { formatValue } from "./diagnostics";
 import { METHODS } from "./endpoint";
 import { templateInterface, type TemplateName } from "./templates";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
@@ -42,7 +43,19 @@ export type PrimitiveData = {
   /** Inputs fed from outside the canvas, so drawn without handles: a `request` template's
    *  request record, which the endpoint its route derives into supplies. */
   hiddenInputs?: boolean;
+  /** View mode: params can't be edited and ports can't be added. Rendering only. */
+  readOnly?: boolean;
+  /** View mode: what this node computed in the replayed run, and where the step-through is.
+   *  Rendering only, like `error`: set on a copy of the node, never on the canvas state. */
+  trace?: { outputs: (WValue | null)[]; state: "active" | "done" | "pending" | "outside" };
 };
+
+/** A value short enough for a badge under a port. */
+function badge(v: WValue | null): string {
+  if (v === null) return "—";
+  const s = formatValue(v);
+  return s.length > 28 ? `${s.slice(0, 27)}…` : s;
+}
 
 export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
 
@@ -109,7 +122,8 @@ const portButtonStyle: CSSProperties = {
 };
 
 function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
-  const { name, inputs, outputs, params, variadic, minInputs, error, body, hiddenInputs } = data;
+  const { name, inputs, outputs, params, variadic, minInputs, error, body, hiddenInputs, readOnly, trace } = data;
+  const shown = trace && (trace.state === "active" || trace.state === "done");
   const { updateNodeData, setEdges, getNode } = useReactFlow<PrimitiveNodeType>();
 
   // Grow/shrink a variadic node's port count (P4.1: variadic-arity editing). Every port a
@@ -195,7 +209,12 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
   return (
     <div
       className="hl-node"
-      style={error ? { borderColor: TYPE_COLOR.Effect, boxShadow: `0 0 0 1px ${TYPE_COLOR.Effect}` } : undefined}
+      style={{
+        ...(error ? { borderColor: TYPE_COLOR.Effect, boxShadow: `0 0 0 1px ${TYPE_COLOR.Effect}` } : {}),
+        ...(trace?.state === "active" ? { borderColor: "#6fd3e0", boxShadow: "0 0 0 2px #6fd3e0" } : {}),
+        ...(trace?.state === "pending" ? { opacity: 0.55 } : {}),
+        ...(trace?.state === "outside" ? { opacity: 0.3 } : {}),
+      }}
     >
       <div className="hl-node__title">{name}</div>
 
@@ -224,6 +243,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                     className="nodrag"
                     style={fieldStyle}
                     value={p.value}
+                    disabled={readOnly}
                     onChange={(e) => setParam(p.name, e.target.value)}
                   >
                     {METHODS.map((m) => (
@@ -235,6 +255,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                     className="nodrag"
                     style={fieldStyle}
                     value={p.value}
+                    disabled={readOnly}
                     onChange={(e) => setLiteralType(e.target.value as ConstType)}
                   >
                     {CONST_TYPES.map((t) => (
@@ -248,6 +269,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                     className="nodrag"
                     style={{ ...fieldStyle, width: body.kind === "Template" && p.name === "path" ? 110 : 64 }}
                     value={p.value}
+                    readOnly={readOnly}
                     onChange={(e) => setParam(p.name, e.target.value)}
                   />
                 )}
@@ -277,7 +299,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
               </span>
             </div>
           ))}
-          {variadic && (
+          {variadic && !readOnly && (
             <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
               <button
                 className="nodrag"
@@ -312,6 +334,25 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
               >
                 {outputs.length > 1 ? port.name : typeLabel(port.ty)}
               </span>
+              {shown && (
+                <span
+                  title={trace.outputs[outputs.indexOf(port)] ? formatValue(trace.outputs[outputs.indexOf(port)]!) : "no value"}
+                  style={{
+                    fontSize: 10,
+                    color: trace.outputs[outputs.indexOf(port)] ? "#9ad29f" : "#7e8ea8",
+                    background: "#0b1527",
+                    border: "1px solid #1b2a45",
+                    borderRadius: 3,
+                    padding: "0 4px",
+                    maxWidth: 180,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {badge(trace.outputs[outputs.indexOf(port)] ?? null)}
+                </span>
+              )}
               <Handle
                 type="source"
                 position={Position.Right}

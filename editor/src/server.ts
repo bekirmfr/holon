@@ -91,6 +91,8 @@ export async function deployUnit(
   unitHash: string,
   acknowledge: string[],
   intervalSeconds?: number,
+  /** The flow's canvas, kept with the deployment so view mode shows exactly what runs. */
+  document?: FlowDocument,
 ): Promise<DeployResult> {
   const res = await fetch(`${BASE}/deploy`, {
     method: "POST",
@@ -100,6 +102,7 @@ export async function deployUnit(
       unit: unitHash,
       acknowledge,
       ...(intervalSeconds !== undefined ? { interval_seconds: intervalSeconds } : {}),
+      ...(document !== undefined ? { document } : {}),
     }),
   });
   return asJson<DeployResult>(res);
@@ -156,6 +159,44 @@ export async function changeDeployment(
     body: JSON.stringify(from === undefined ? {} : { from }),
   });
   return asJson<DeploymentEntry>(res);
+}
+
+/** One run in a deployment's flow log (holon-server's recorder.rs): what it read and produced,
+ *  enough to replay it exactly (replay.ts). */
+export type LogEntry = {
+  seq: number;
+  session: number;
+  at_ms: number;
+  duration_ms: number;
+  kind: "request" | "trigger" | "tick";
+  /** The matched route, e.g. "GET /todos/:id". */
+  route: string | null;
+  method: string | null;
+  url: string | null;
+  status: number | null;
+  request: WValue | null;
+  /** By capability: "Clock", "Random", "NetworkIngress". */
+  sourced: [string, WValue][];
+  state_before: Record<string, WValue>;
+  outputs: (WValue | null)[];
+  performed: PerformedEntry[];
+  response_body: string | null;
+  error: string | null;
+};
+
+/** `GET /deployments/<slug>/log` — entries past `after` (all without), oldest first. `next` is
+ *  the seq the next entry will get. */
+export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number }> {
+  const q = after === undefined ? "" : `?after=${after}`;
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
+  return asJson(res);
+}
+
+/** `GET /deployments/<slug>/document` — the canvas it was deployed from. Throws
+ *  {@link ServerError} (404) for one deployed without it. */
+export async function getDeployedDocument(slug: string): Promise<FlowDocument> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/document`);
+  return asJson<FlowDocument>(res);
 }
 
 /** `GET /deployments/<slug>/sessions` — every run session, oldest first. */

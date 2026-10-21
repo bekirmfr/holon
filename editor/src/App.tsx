@@ -43,6 +43,8 @@ import {
   listDeployments,
   deleteDeployment,
   changeDeployment,
+  getDeployedDocument,
+  type LogEntry,
   triggerDeployment,
   saveFlow,
   listFlows,
@@ -63,6 +65,8 @@ import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc
 import { History } from "./history";
 import { DialogProvider, useDialog } from "./Dialog";
 import { DeploymentCard } from "./DeploymentCard";
+import { LogPanel } from "./LogPanel";
+import { replay, type ReplayNode } from "./replay";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { buildTemplate, isTemplate, templateDefaults, templateInterface, TEMPLATES, type TemplateName } from "./templates";
@@ -435,9 +439,22 @@ function Canvas({
   // The flow's deploy settings (DeployBar's ⚙): saved and opened with the flow.
   const [settings, setSettings] = useState<FlowSettings>(DEFAULT_SETTINGS);
   const [savedKey, setSavedKey] = useState(() => savedKeyOf([], [], DEFAULT_SETTINGS));
+  // View mode: a deployed flow's canvas, read-only, with its live flow log (onView). The flow
+  // being edited is set aside meanwhile and comes back on exit, unsaved changes included.
+  const [viewing, setViewing] = useState<string | null>(null);
+  const [selectedRun, setSelectedRun] = useState<LogEntry | null>(null);
+  const [step, setStep] = useState<number | null>(null);
+  const beforeView = useRef<{
+    nodes: PrimitiveNodeType[];
+    edges: Edge[];
+    viewport: { x: number; y: number; zoom: number };
+    history: History<{ nodes: PrimitiveNodeType[]; edges: Edge[] }>;
+    dirty: boolean;
+  } | null>(null);
   const dirty = useMemo(
-    () => savedKeyOf(nodes, edges, settings) !== savedKey,
-    [nodes, edges, settings, savedKey],
+    // While viewing, what counts is whether the flow set aside had unsaved changes.
+    () => (viewing ? (beforeView.current?.dirty ?? false) : savedKeyOf(nodes, edges, settings) !== savedKey),
+    [nodes, edges, settings, savedKey, viewing],
   );
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => {
@@ -494,16 +511,18 @@ function Canvas({
   );
 
   const undo = useCallback(() => {
+    if (viewing) return;
     const prev = history.current.undo(snapshotOf(live.current.nodes, live.current.edges));
     if (prev) applySnapshot(prev);
     setHistVersion((v) => v + 1);
-  }, [applySnapshot, snapshotOf]);
+  }, [applySnapshot, snapshotOf, viewing]);
 
   const redo = useCallback(() => {
+    if (viewing) return;
     const next = history.current.redo(snapshotOf(live.current.nodes, live.current.edges));
     if (next) applySnapshot(next);
     setHistVersion((v) => v + 1);
-  }, [applySnapshot, snapshotOf]);
+  }, [applySnapshot, snapshotOf, viewing]);
 
   // Ctrl/Cmd+Z / Shift+Z / Y — skipped entirely while a text field has focus, so undo inside a
   // param input stays the browser's own text undo, never a canvas mutation under the cursor.
@@ -532,6 +551,8 @@ function Canvas({
   // with the same name still fire.
   useEffect(() => {
     if (!pendingNew) return;
+    setViewing(null);
+    beforeView.current = null;
     restoring.current = true;
     setNodes([]);
     setEdges([]);
@@ -586,6 +607,8 @@ function Canvas({
       if (dirty && !(await dialog.confirm(discard, "Discard"))) {
         return;
       }
+      setViewing(null);
+      beforeView.current = null;
       const ns = rec.document.nodes as PrimitiveNodeType[];
       const es = rec.document.edges as Edge[];
       // Put the flow's composites back into the workspace before anything can reference them.
@@ -656,6 +679,7 @@ function Canvas({
     (e: DragEvent<HTMLDivElement>) => {
       e.preventDefault();
       const name = e.dataTransfer.getData(DND_MIME);
+      if (viewing) return;
       if (isTemplate(name)) {
         const params = templateDefaults(name);
         const iface = templateInterface(name, params);
@@ -703,7 +727,7 @@ function Canvas({
       };
       setNodes((ns) => ns.concat(node));
     },
-    [byName, screenToFlowPosition, setNodes],
+    [byName, screenToFlowPosition, setNodes, viewing],
   );
 
   // A group of canvas nodes as core children plus the wires among them, by index.
@@ -798,12 +822,13 @@ function Canvas({
   // Resolved from `sourceHandle`, the same as isValidConnection above — not always the first output.
   const onConnect = useCallback(
     (c: Connection) => {
+      if (viewing) return;
       const srcPort = getNode(c.source)?.data.outputs.find((p) => p.name === c.sourceHandle);
       const srcTy = srcPort?.ty ?? null;
       const edge = { ...c, style: { stroke: outputColor(srcTy), strokeWidth: 1.6 } };
       setEdges((es) => addEdge(edge, es));
     },
-    [getNode, setEdges],
+    [getNode, setEdges, viewing],
   );
 
   // ── Projection ────────────────────────────────────────────────────────────────────────────────
@@ -914,14 +939,20 @@ function Canvas({
     setDeployBusy(true);
     try {
       await stageClosure(ev, hash, new Set());
-      await deployUnit(name, hash, caps, interval);
+      const { nodes: ns, edges: es } = live.current;
+      const units = closureOf(
+        ns.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])),
+        (h) => ev.get_unit(h) as WUnit,
+      ).map((h) => toHex(buildPreimage(ev.get_unit(h) as WUnit)));
+      const document: FlowDocument = { nodes: ns, edges: es, viewport: getViewport(), units, server: settings };
+      await deployUnit(name, hash, caps, interval, document);
       refreshDeployments();
     } catch (err) {
       setDeployError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeployBusy(false);
     }
-  }, [flowName, dialog, derived, settings, groupUnits, ev, deployments, refreshDeployments]);
+  }, [flowName, dialog, derived, settings, groupUnits, ev, deployments, refreshDeployments, getViewport]);
 
   const onFlowAction = useCallback(
     (action: "run" | "pause" | "stop") => {
@@ -933,6 +964,97 @@ function Canvas({
     },
     [flowName, refreshDeployments],
   );
+
+  // ── View mode ──────────────────────────────────────────────────────────────────────────
+  const onView = useCallback(
+    async (slug: string) => {
+      let doc: FlowDocument;
+      try {
+        doc = await getDeployedDocument(slug);
+      } catch (e) {
+        setDeployError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+      if (!viewing) {
+        beforeView.current = {
+          nodes: live.current.nodes,
+          edges: live.current.edges,
+          viewport: getViewport(),
+          history: history.current,
+          dirty,
+        };
+      }
+      for (const hex of doc.units ?? []) {
+        try {
+          ev.insert(fromHex(hex));
+        } catch {
+          // a unit that won't decode just stays unresolvable, like on Open
+        }
+      }
+      history.current = new History(snapshotOf([], []), (a, b) => JSON.stringify(a) === JSON.stringify(b));
+      restoring.current = true;
+      setNodes(doc.nodes as PrimitiveNodeType[]);
+      setEdges(doc.edges as Edge[]);
+      setViewport(doc.viewport);
+      setViewing(slug);
+      setSelectedRun(null);
+      setStep(null);
+      resetProjectionView();
+      setPage("canvas");
+    },
+    [viewing, getViewport, dirty, ev, snapshotOf, setNodes, setEdges, setViewport, resetProjectionView, setPage],
+  );
+
+  const onExitView = useCallback(() => {
+    const before = beforeView.current;
+    beforeView.current = null;
+    setViewing(null);
+    setSelectedRun(null);
+    setStep(null);
+    if (before) {
+      history.current = before.history;
+      restoring.current = true;
+      setNodes(before.nodes);
+      setEdges(before.edges);
+      setViewport(before.viewport);
+    }
+  }, [setNodes, setEdges, setViewport]);
+
+  // One node of a replay: its unit, evaluated on the inputs its wires brought.
+  const evalNode = useCallback(
+    (node: ReplayNode, inputs: (WValue | null)[]): (WValue | null)[] => {
+      try {
+        const hash = unitFor(node as PrimitiveNodeType, ev, byName);
+        return ev.eval(buildPreimage(ev.get_unit(hash) as WUnit), inputs) as (WValue | null)[];
+      } catch {
+        return node.data.outputs.map(() => null);
+      }
+    },
+    [ev, byName],
+  );
+
+  // The selected run, replayed on the canvas; and whether that reproduced what the server sent.
+  const replayed = useMemo(() => {
+    if (!viewing || !selectedRun) return null;
+    const { nodes: ns, edges: es } = live.current;
+    const run = replay(ns, es, selectedRun, evalNode);
+    let verdict: boolean | null = null;
+    const respond = run.order.find((id) => {
+      const n = ns.find((x) => x.id === id);
+      return n?.data.name === "respond" && n.data.body.kind === "Template";
+    });
+    if (selectedRun.kind === "request" && respond && selectedRun.outputs.length > 0) {
+      verdict = JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(selectedRun.outputs[0]);
+    }
+    return { ...run, verdict };
+    // live.current is read on purpose: canvasKey changes exactly when the structure does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewing, selectedRun, canvasKey, evalNode]);
+
+  const onSelectRun = useCallback((e: LogEntry | null) => {
+    setSelectedRun(e);
+    setStep(null);
+  }, []);
 
   const onDeleteDeployment = useCallback(
     async (slug: string) => {
@@ -1382,15 +1504,21 @@ function Canvas({
   // Purely a rendering decoration for React Flow — never touches the underlying `nodes` state
   // that onProject/onDrop read and write, so flagging a node as errored has zero effect on
   // hashing or identity (the same "cosmetic vs. structural" line I5 already draws elsewhere).
-  const decoratedNodes = useMemo(
-    () =>
-      errorNodeIds.size === 0
-        ? nodes
-        : nodes.map((n) =>
-            errorNodeIds.has(n.id) ? { ...n, data: { ...n.data, error: true } } : n,
-          ),
-    [nodes, errorNodeIds],
-  );
+  const decoratedNodes = useMemo(() => {
+    if (viewing) {
+      const order = replayed?.order ?? [];
+      return nodes.map((n) => {
+        const i = order.indexOf(n.id);
+        const state: "active" | "done" | "pending" | "outside" =
+          i < 0 ? "outside" : step === null || i < step ? "done" : i === step ? "active" : "pending";
+        const trace = replayed ? { outputs: replayed.traces.get(n.id)?.outputs ?? [], state } : undefined;
+        return { ...n, data: { ...n.data, readOnly: true, trace } };
+      });
+    }
+    return errorNodeIds.size === 0
+      ? nodes
+      : nodes.map((n) => (errorNodeIds.has(n.id) ? { ...n, data: { ...n.data, error: true } } : n));
+  }, [nodes, errorNodeIds, viewing, replayed, step]);
 
   // How many placed nodes are currently selected — React Flow's own selection state
   // (shift-click / drag-box), already live for delete, now also gating the "group" button
@@ -1421,7 +1549,9 @@ function Canvas({
         // here). The default is Backspace only; Delete is added because it's the key most people
         // reach for first, especially on Windows. React Flow itself skips this handling while a
         // text input/select inside a node has focus, so editing a const's value or type is safe.
-        deleteKeyCode={["Backspace", "Delete"]}
+        deleteKeyCode={viewing ? null : ["Backspace", "Delete"]}
+        nodesDraggable={!viewing}
+        nodesConnectable={!viewing}
       >
         <Background variant={BackgroundVariant.Lines} gap={26} color="#1b2a45" />
         <Controls showInteractive={false} />
@@ -1430,6 +1560,30 @@ function Canvas({
               ref (pushing must not re-render the canvas mid-drag), so the buttons re-render off
               this counter instead. */}
           <div data-hist={histVersion} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {viewing ? (
+              <>
+                <span style={{ color: "#e6eefb", fontSize: 12, letterSpacing: "0.04em" }}>
+                  viewing <span style={{ color: "#6fd3e0" }}>{viewing}</span>
+                </span>
+                <span style={{ color: "#7e8ea8", fontSize: 11 }}>deployed · read only</span>
+                <button
+                  onClick={onExitView}
+                  style={{
+                    font: "inherit",
+                    fontSize: 11,
+                    padding: "3px 10px",
+                    color: "#0e1a2f",
+                    background: "#6fd3e0",
+                    border: "none",
+                    borderRadius: 3,
+                    cursor: "pointer",
+                  }}
+                >
+                  exit view
+                </button>
+              </>
+            ) : (
+              <>
             <span style={{ color: "#9fb4d4", fontSize: 12, letterSpacing: "0.04em" }}>
               {flowName ?? "untitled"}
               {dirty && <span title="unsaved changes"> •</span>}
@@ -1495,11 +1649,14 @@ function Canvas({
               onAction={onFlowAction}
             />
             {saveMsg && <span style={{ color: "#9ad29f", fontSize: 11 }}>{saveMsg}</span>}
+              </>
+            )}
             {deployError && page === "canvas" && (
               <span style={{ color: "#e0916f", fontSize: 11, maxWidth: 420 }}>{deployError}</span>
             )}
           </div>
         </Panel>
+        {!viewing && (
         <Panel position="top-right">
           <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
             <button
@@ -1652,14 +1809,27 @@ function Canvas({
             )}
           </div>
         </Panel>
+        )}
         <Panel position="bottom-left" style={{ marginLeft: 56 }}>
-          <ServerPanel
-            key={flowName ?? ""}
-            ev={ev}
-            endpoints={derived.endpoints}
-            errors={derived.errors}
-            liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
-          />
+          {viewing ? (
+            <LogPanel
+              slug={viewing}
+              selected={selectedRun}
+              onSelect={onSelectRun}
+              step={step}
+              steps={replayed?.order.length ?? 0}
+              onStep={setStep}
+              verdict={replayed?.verdict ?? null}
+            />
+          ) : (
+            <ServerPanel
+              key={flowName ?? ""}
+              ev={ev}
+              endpoints={derived.endpoints}
+              errors={derived.errors}
+              liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
+            />
+          )}
         </Panel>
         {inspecting && (
           <Panel position="bottom-right">
@@ -1717,6 +1887,7 @@ function Canvas({
                   }
                   onTrigger={() => onTriggerDeployment(entry.slug)}
                   onDelete={() => onDeleteDeployment(entry.slug)}
+                  onView={() => onView(entry.slug)}
                   result={triggerResults[entry.slug]}
                 />
               ))}

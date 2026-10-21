@@ -36,6 +36,7 @@ export function DeploymentCard({
   entry,
   onAction,
   onDelete,
+  onView,
   triggerInput,
   onTriggerInputChange,
   onTrigger,
@@ -45,6 +46,8 @@ export function DeploymentCard({
   /** Run (optionally from a session or fresh), pause or stop. */
   onAction: (action: "run" | "pause" | "stop", from?: "latest" | "fresh" | number) => Promise<void>;
   onDelete: () => void;
+  /** Open it in view mode: its deployed canvas, read only, with its live flow log. */
+  onView: () => void;
   triggerInput: string;
   onTriggerInputChange: (v: string) => void;
   onTrigger: () => void;
@@ -126,6 +129,9 @@ export function DeploymentCard({
             </button>
           </>
         )}
+        <button style={small} onClick={onView} title="open it read only, with its live flow log and replay">
+          view
+        </button>
         <button
           style={{ ...small, opacity: stopped ? 1 : 0.35, cursor: stopped ? "pointer" : "default" }}
           disabled={!stopped}
