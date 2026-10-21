@@ -1,5 +1,5 @@
 // HTTP node templates: `request` and `respond`. They are not new primitives. Each is a small
-// composite of existing genesis leaves (field, json_parse, record, with_field, const), rebuilt
+// composite of existing genesis leaves (field, json_parse, record, with_field, const, default), rebuilt
 // from the node's params whenever it is hashed, the same way a primitive node is rebuilt from its
 // catalog entry. Pure (types only from ./holon), so it is testable without the wasm package.
 //
@@ -7,10 +7,12 @@
 //   the canvas: it is fed by the endpoint the route derives into (derive.ts), never by a wire.
 //   Its outputs are the request's parts: the whole record, path params, query, headers, the raw
 //   body text, and the body parsed as JSON.
-// - `respond` (param: status) builds the `{status, body}` envelope the data plane sends. It also
-//   takes the request (from the request node), which it doesn't read: that wire is what makes a
-//   route one connected group even when the handler never looks at the request, e.g. a listing.
-//   Status 204 has no body input.
+// - `respond` (params: status, missing) builds the `{status, body}` envelope the data plane sends.
+//   It also takes the request (from the request node), which it doesn't read: that wire is what
+//   makes a route one connected group even when the handler never looks at the request, e.g. a
+//   listing. Status 204 has no body input. When the body input is absent (a lookup that found
+//   nothing), it answers its `missing` status instead (404 by default) with `{"error": …}`. A
+//   respond node without `missing` (placed before it existed) answers nothing, sent as a 500.
 
 import type { WEdge, WParam, WPort, WUnit } from "./holon";
 
@@ -58,7 +60,9 @@ export function templateInterface(
 
 /** The params a freshly dropped template node starts with. */
 export function templateDefaults(name: TemplateName): WParam[] {
-  return name === "request" ? [frozen("method", "GET"), frozen("path", "/")] : [frozen("status", "200")];
+  return name === "request"
+    ? [frozen("method", "GET"), frozen("path", "/")]
+    : [frozen("status", "200"), frozen("missing", "404")];
 }
 
 /**
@@ -112,6 +116,11 @@ export function buildTemplate(
   const status = param(params, "status") ?? "";
   const n = Number(status);
   if (!/^\d{3}$/.test(status) || n < 100 || n > 599) return `status "${status}" is not an HTTP status (100–599)`;
+  const missing = param(params, "missing") ?? "";
+  const m = Number(missing);
+  if (missing !== "" && (!/^\d{3}$/.test(missing) || m < 400 || m > 599)) {
+    return `missing "${missing}" is not an error status (400–599)`;
+  }
   const children = [
     leaf("record"),
     leaf("const", [frozen("value", status), frozen("type", "Number")]),
@@ -123,7 +132,16 @@ export function buildTemplate(
     edges.push(e(2, 0, BOUNDARY, 0));
   } else {
     children.push(leaf("with_field", [frozen("name", "body")]));
-    edges.push(e(2, 0, 3, 0), e(BOUNDARY, 1, 3, 1), e(3, 0, BOUNDARY, 0));
+    edges.push(e(2, 0, 3, 0), e(BOUNDARY, 1, 3, 1));
+    if (missing === "") {
+      edges.push(e(3, 0, BOUNDARY, 0));
+    } else {
+      // No body, no envelope: `default` stands in the error envelope (it fires on an absent input).
+      const error = m === 404 ? "not found" : "no value to answer with";
+      const fallback = JSON.stringify({ status: m, body: { error } });
+      children.push(leaf("default", [frozen("value", fallback), frozen("type", "Json")]));
+      edges.push(e(3, 0, 4, 0), e(4, 0, BOUNDARY, 0));
+    }
   }
   return { body: { kind: "Composite", children, edges }, params: [], inputs, outputs };
 }

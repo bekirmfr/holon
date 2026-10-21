@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { components, findRoutes, routeSpec, type CanvasNode } from "./derive";
-import { buildTemplate, templateInterface } from "./templates";
+import { buildTemplate, templateDefaults, templateInterface } from "./templates";
 import type { WParam, WUnit } from "./holon";
 
 const BOUNDARY = 4294967295;
@@ -89,7 +89,7 @@ describe("routeSpec", () => {
 
 describe("buildTemplate", () => {
   const catalog = new Map<string, WUnit>(
-    ["field", "json_parse", "record", "with_field", "const"].map((n) => [
+    ["field", "json_parse", "record", "with_field", "const", "default"].map((n) => [
       n,
       { body: { kind: "Primitive", name: n }, params: [], inputs: [], outputs: [{ name: "out", ty: "Any" }] },
     ]),
@@ -117,5 +117,31 @@ describe("buildTemplate", () => {
     expect(noBody.inputs?.map((p) => p.name)).toEqual(["request"]);
     expect(buildTemplate("respond", [frozen("status", "99")], catalog, insert)).toMatch(/not an HTTP status/);
     expect(buildTemplate("respond", [frozen("status", "2xx")], catalog, insert)).toMatch(/not an HTTP status/);
+  });
+
+  it("ends respond in a default that answers the missing status when the body is absent", () => {
+    const named = (u: WUnit) => (u.body.kind === "Primitive" ? u.body.name : "");
+    const before = inserted.length;
+    const u = buildTemplate("respond", [frozen("status", "200"), frozen("missing", "404")], catalog, insert);
+    if (typeof u === "string") throw new Error(u);
+    const fallback = inserted.slice(before).find((c) => named(c) === "default");
+    expect(fallback?.params).toEqual([
+      frozen("value", JSON.stringify({ status: 404, body: { error: "not found" } })),
+      frozen("type", "Json"),
+    ]);
+    // with_field(body) → default → the response; nothing else reaches the output.
+    const edges = u.body.kind === "Composite" ? u.body.edges : [];
+    expect(edges).toContainEqual({ from_child: 3, from_port: 0, to_child: 4, to_port: 0 });
+    expect(edges.filter((x) => x.to_child === BOUNDARY)).toEqual([{ from_child: 4, from_port: 0, to_child: BOUNDARY, to_port: 0 }]);
+    // Without the param (an older node), or for a 204 (no body to miss), no fallback.
+    for (const params of [[frozen("status", "200")], [frozen("status", "204"), frozen("missing", "404")]]) {
+      const at = inserted.length;
+      expect(typeof buildTemplate("respond", params, catalog, insert)).not.toBe("string");
+      expect(inserted.slice(at).some((c) => named(c) === "default")).toBe(false);
+    }
+    expect(buildTemplate("respond", [frozen("status", "200"), frozen("missing", "200")], catalog, insert)).toMatch(
+      /not an error status/,
+    );
+    expect(templateDefaults("respond")).toEqual([frozen("status", "200"), frozen("missing", "404")]);
   });
 });

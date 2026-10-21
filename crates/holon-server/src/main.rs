@@ -3739,8 +3739,9 @@ mod tests {
 
     /// A todo API keyed by title: the stored `todos` is a record from title to item. GET /todos
     /// answers the whole record (`{}` until the first write); POST /todos parses the body and
-    /// inserts it under its title; GET /todos/{title} looks one up; DELETE /todos/{title} removes
-    /// it (answered 204, the write being its only output).
+    /// inserts it under its title; GET /todos/{title} looks one up, through the editor's respond
+    /// template (a 404 when the title isn't there); DELETE /todos/{title} removes it (answered
+    /// 204, the write being its only output).
     fn todo_server(state: &AppState, port: &str) -> Hash {
         let todos = || leaf("default", vec![Param::frozen("type", "Json"), Param::frozen("value", "{}")], vec![("value", Type::Any)], Type::Any);
         let field = |name: &str| leaf("field", vec![Param::frozen("name", name)], vec![("record", Type::Record)], Type::Any);
@@ -3782,14 +3783,36 @@ mod tests {
             state,
             "GET",
             "/todos/{title}",
-            vec![field("params"), field("title"), test_store_read("todos"), todos(), keyed("lookup", vec![], Type::Any)],
+            vec![
+                field("params"),
+                field("title"),
+                test_store_read("todos"),
+                todos(),
+                keyed("lookup", vec![], Type::Any),
+                // The respond template (editor/src/templates.ts) at status 200, missing 404.
+                leaf("record", vec![], vec![], Type::Record),
+                leaf("const", vec![Param::frozen("value", "200"), Param::frozen("type", "Number")], vec![], Type::Number),
+                leaf("with_field", vec![Param::frozen("name", "status")], vec![("record", Type::Record), ("value", Type::Any)], Type::Record),
+                leaf("with_field", vec![Param::frozen("name", "body")], vec![("record", Type::Record), ("value", Type::Any)], Type::Record),
+                leaf(
+                    "default",
+                    vec![Param::frozen("value", r#"{"status":404,"body":{"error":"not found"}}"#), Param::frozen("type", "Json")],
+                    vec![("value", Type::Any)],
+                    Type::Any,
+                ),
+            ],
             vec![
                 e(BOUNDARY, 0, 0, 0), // request → field(params)
                 e(0, 0, 1, 0),        // params → field(title)
                 e(2, 0, 3, 0),        // store_read → default({})
                 e(3, 0, 4, 0),        // todos → lookup
                 e(1, 0, 4, 1),        // title → lookup's key
-                e(4, 0, BOUNDARY, 0), // response: the item
+                e(5, 0, 7, 0),        // {} → with_field(status)
+                e(6, 0, 7, 1),        // 200 → its value
+                e(7, 0, 8, 0),        // {status} → with_field(body)
+                e(4, 0, 8, 1),        // the item → body; absent when the title isn't there
+                e(8, 0, 9, 0),        // the envelope → default: passed through, or the 404
+                e(9, 0, BOUNDARY, 0), // response
             ],
             0,
         );
@@ -3863,7 +3886,7 @@ mod tests {
         );
         // The title in the path is the key, percent-decoded.
         assert_eq!(call("GET", "/todos/buy%20milk", ""), (200, r#"{"title":"buy milk"}"#.to_string()));
-        assert_eq!(call("GET", "/todos/nope", "").0, 500, "a missing key settles to no response");
+        assert_eq!(call("GET", "/todos/nope", ""), (404, r#"{"error":"not found"}"#.to_string()), "a missing title is a 404");
         assert_eq!(call("POST", "/todos", r#"{"title":"walk"}"#).0, 200, "the same title overwrites");
         assert_eq!(call("GET", "/todos/walk", ""), (200, r#"{"title":"walk"}"#.to_string()));
         assert_eq!(call("DELETE", "/todos/walk", "").0, 204);
