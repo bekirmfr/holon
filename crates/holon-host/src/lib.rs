@@ -196,10 +196,10 @@ impl StateHost {
         self.pending.clear();
         fire_sourced(graph, &sourced, real, self);
         for (cap, payload) in std::mem::take(&mut self.pending) {
-            if let Capability::StateWrite(key) = cap {
-                if is_storable(&payload) {
-                    self.storage.insert(key, payload); // the Model-out (loops back to next round's read)
-                }
+            if let Capability::StateWrite(key) = cap
+                && is_storable(&payload)
+            {
+                self.storage.insert(key, payload); // the Model-out (loops back to next round's read)
             }
         }
     }

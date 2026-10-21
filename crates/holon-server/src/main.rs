@@ -218,6 +218,9 @@ struct AppState {
     port: u16,
 }
 
+/// One deployment's keyed state, shared between its fires and persistence (see `Deployment::state`).
+type DeploymentState = Arc<Mutex<BTreeMap<String, Value>>>;
+
 /// A registered deployment. `triggers` is derived **once**, at deploy time, from the unit's
 /// own capability closure (`capabilities()`) — safe to cache rather than re-derive on every
 /// `GET /deployments`, since a unit's hash is its whole identity: the same hash can never later
@@ -250,7 +253,7 @@ struct Deployment {
     /// needed for "first ever fire." Persisted write-through alongside the rest of
     /// `Deployment`, since surviving a restart is the whole point of giving a flow its own
     /// durable state.
-    state: Option<Arc<Mutex<BTreeMap<String, Value>>>>,
+    state: Option<DeploymentState>,
     /// Every trigger attempt for this deployment, success or failure — ingress calls and
     /// clock ticks alike.
     trigger_count: u64,
@@ -558,10 +561,10 @@ fn reject_untrusted(request: &Request, port: u16) -> Option<Response> {
     if !host_ok {
         return Some(err(403, format!("Host {host:?} is not this server on loopback")));
     }
-    if let Some(origin) = request.header("Origin") {
-        if !is_allowed_origin(origin) {
-            return Some(err(403, format!("Origin {origin:?} is not allowed")));
-        }
+    if let Some(origin) = request.header("Origin")
+        && !is_allowed_origin(origin)
+    {
+        return Some(err(403, format!("Origin {origin:?} is not allowed")));
     }
     if request.method() == "POST" {
         let media_type = request.header("Content-Type").unwrap_or("").split(';').next().unwrap_or("").trim();
@@ -996,27 +999,48 @@ fn handle_post_fire(store: &SharedStore, request: &Request) -> Response {
 /// keeps working even if the disk write failed; they just won't survive a restart until it
 /// succeeds again, which is the honest degradation for something that was opt-in persistence
 /// to begin with.
-fn persist_deployments(path: &str, deployments: &BTreeMap<String, Deployment>) {
+///
+/// Takes the table's mutex rather than a locked table: the table lock is held only long enough
+/// to copy each deployment's fields and clone its state `Arc`. Each state map is then locked on
+/// its own, and the disk write happens with no lock held but `PERSIST`. Before, the table lock
+/// was held throughout, so one deployment mid-fire (holding its state lock) or one slow disk
+/// write stalled every endpoint and the clock scheduler. `PERSIST` serializes whole
+/// snapshot-and-write passes, so an older snapshot can never land on disk after a newer one.
+fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<String, Deployment>>) {
+    static PERSIST: Mutex<()> = Mutex::new(());
     if path == ":memory:" {
         return;
     }
-    let records: Vec<DeploymentRecord> = deployments
+    let _persist = PERSIST.lock().unwrap();
+    let snapshot: Vec<(DeploymentRecord, Option<DeploymentState>)> = deployments
+        .lock()
+        .unwrap()
         .iter()
-        .map(|(slug, dep)| DeploymentRecord {
-            slug: slug.clone(),
-            unit: to_hex(&dep.unit),
-            interval_seconds: dep.interval_seconds,
-            state: dep.state.as_ref().map(|arc| {
+        .map(|(slug, dep)| {
+            let record = DeploymentRecord {
+                slug: slug.clone(),
+                unit: to_hex(&dep.unit),
+                interval_seconds: dep.interval_seconds,
+                state: None,
+                deployed_at_epoch_seconds: dep
+                    .deployed_at
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs()),
+                trigger_count: dep.trigger_count,
+                error_count: dep.error_count,
+            };
+            (record, dep.state.clone())
+        })
+        .collect();
+    let records: Vec<DeploymentRecord> = snapshot
+        .into_iter()
+        .map(|(mut record, state)| {
+            record.state = state.map(|arc| {
                 let storage = arc.lock().unwrap();
                 storage.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect()
-            }),
-            deployed_at_epoch_seconds: dep
-                .deployed_at
-                .duration_since(UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_secs()),
-            trigger_count: dep.trigger_count,
-            error_count: dep.error_count,
+            });
+            record
         })
         .collect();
     match serde_json::to_vec_pretty(&records) {
@@ -1356,7 +1380,7 @@ fn handle_post_deploy(
             },
         );
     }
-    persist_deployments(deployments_path, &deployments.lock().unwrap());
+    persist_deployments(deployments_path, deployments);
 
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds })
 }
@@ -1435,7 +1459,7 @@ fn handle_delete_deployment(
     let removed = deployments.lock().unwrap().remove(slug);
     match removed {
         Some(dep) => {
-            persist_deployments(deployments_path, &deployments.lock().unwrap());
+            persist_deployments(deployments_path, deployments);
             Response::json(&deployment_entry(slug, &dep))
         }
         None => Response::empty_404(),
@@ -1527,7 +1551,7 @@ fn handle_post_trigger(
 
     record_trigger(deployments, slug, false);
     if state.is_some() {
-        persist_deployments(deployments_path, &deployments.lock().unwrap());
+        persist_deployments(deployments_path, deployments);
     }
 
     Response::json(&FireResponseBody {
@@ -1652,7 +1676,7 @@ fn fire_one_clock_tick(
         }
     }
     if is_state {
-        persist_deployments(deployments_path, &deployments.lock().unwrap());
+        persist_deployments(deployments_path, deployments);
     }
 }
 
@@ -3115,6 +3139,52 @@ mod tests {
         let s = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
         assert_eq!(s["state"]["counter"]["value"], "hello");
         assert!(Arc::ptr_eq(&before, &state_arc()));
+    }
+
+    /// Regression: `persist_deployments` ran with the table lock held, and inside it locked
+    /// every deployment's state. So while one deployment was mid-fire (holding its own state
+    /// lock), any persist parked on that lock *while holding the table*, and every endpoint
+    /// and the clock scheduler waited behind it.
+    #[test]
+    fn a_fire_in_progress_does_not_stall_the_table() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let mut state = test_state();
+        let path = unique_temp_path("stall");
+        state.deployments_path = path.clone();
+        let deploy = |state: &AppState, slug: &str, unit: Hash, ack: serde_json::Value| {
+            let body = serde_json::to_vec(&serde_json::json!({ "slug": slug, "unit": to_hex(&unit), "acknowledge": ack }))
+                .unwrap();
+            route(state, &req("POST", "/deploy", body)).status_code
+        };
+        let a = stage_stateful_writer(&state, test_ingress(), "k");
+        assert_eq!(deploy(&state, "a", a, serde_json::json!(["NetworkIngress", "StateWrite(\"k\")"])), 200);
+
+        // Simulate "a" mid-fire: hold its state lock, as fire_with_state does for a whole round.
+        let a_state = state.deployments.lock().unwrap()["a"].state.clone().unwrap();
+        let mid_fire = a_state.lock().unwrap();
+
+        std::thread::scope(|s| {
+            // Deploying "b" persists, and persisting needs "a"'s state, so this waits for "a".
+            let deploying = s.spawn(|| deploy(&state, "b", a, serde_json::json!(["NetworkIngress", "StateWrite(\"k\")"])));
+            std::thread::sleep(Duration::from_millis(200));
+
+            // ...but the table itself must stay usable meanwhile.
+            let (tx, rx) = mpsc::channel();
+            let shared = &state;
+            s.spawn(move || tx.send(route(shared, &req("GET", "/deployments", vec![])).status_code).unwrap());
+            let listed = rx.recv_timeout(Duration::from_secs(5));
+
+            // Let "a" finish before asserting, so a failure reports instead of hanging the scope.
+            drop(mid_fire);
+            assert_eq!(listed, Ok(200), "GET /deployments stalled behind a fire");
+            assert_eq!(deploying.join().unwrap(), 200);
+        });
+
+        let reloaded = load_deployments(&path, &state.store).unwrap();
+        assert_eq!(reloaded.keys().collect::<Vec<_>>(), vec!["a", "b"]);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Regression: `ingress → egress → store_write` stored the `Effect` itself, the next fire
