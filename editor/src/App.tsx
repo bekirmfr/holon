@@ -60,6 +60,7 @@ import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./Pri
 import { InspectPanel } from "./InspectPanel";
 import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import { History } from "./history";
+import { DialogProvider, useDialog } from "./Dialog";
 import { ServerPanel, type ServerDraft } from "./ServerPanel";
 import { buildTemplate, isTemplate, templateDefaults, templateInterface, TEMPLATES, type TemplateName } from "./templates";
 import { findRoutes, routeSpec } from "./derive";
@@ -351,6 +352,7 @@ type AppPage = "canvas" | "flows" | "deployed";
 /** The saved-flows page: list, open, delete. Publishing to the marketplace is deferred — the
  *  button is real but disabled, honestly labeled, rather than wired to something half-built. */
 function FlowsPage({ onOpen }: { onOpen: (rec: FlowRecord) => void }) {
+  const dialog = useDialog();
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
   const [msg, setMsg] = useState("");
 
@@ -371,8 +373,8 @@ function FlowsPage({ onOpen }: { onOpen: (rec: FlowRecord) => void }) {
       .then(onOpen)
       .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
   };
-  const remove = (name: string) => {
-    if (!window.confirm(`Delete the saved flow "${name}"? This can't be undone.`)) return;
+  const remove = async (name: string) => {
+    if (!(await dialog.confirm(`Delete the saved flow "${name}"? This can't be undone.`, "Delete"))) return;
     deleteFlow(name)
       .then(refresh)
       .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
@@ -452,6 +454,7 @@ function Canvas({
   pendingNew: { name: string; nonce: number } | null;
   onDirtyChange: (dirty: boolean) => void;
 }) {
+  const dialog = useDialog();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { screenToFlowPosition, getNode, getEdges, getViewport, setViewport } =
@@ -629,10 +632,10 @@ function Canvas({
     setHistVersion((v) => v + 1);
   }, [pendingNew, setNodes, setEdges, setViewport, resetProjectionView]);
 
-  const onSave = useCallback(() => {
+  const onSave = useCallback(async () => {
     let name = flowName;
     if (!name) {
-      name = window.prompt("Flow name (letters, digits, - and _ only):")?.trim() || null;
+      name = await dialog.prompt("Flow name (letters, digits, - and _ only):");
       if (!name) return;
       setFlowName(name);
     }
@@ -662,11 +665,12 @@ function Canvas({
         setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
       })
       .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
-  }, [flowName, nodes, edges, getViewport, ev, serverDraft]);
+  }, [flowName, nodes, edges, getViewport, ev, serverDraft, dialog]);
 
   const onOpenFlow = useCallback(
-    (rec: FlowRecord) => {
-      if (dirty && !window.confirm(`Discard unsaved changes to "${flowName ?? "untitled"}" and open "${rec.name}"?`)) {
+    async (rec: FlowRecord) => {
+      const discard = `Discard unsaved changes to "${flowName ?? "untitled"}" and open "${rec.name}"?`;
+      if (dirty && !(await dialog.confirm(discard, "Discard"))) {
         return;
       }
       const ns = rec.document.nodes as PrimitiveNodeType[];
@@ -715,7 +719,7 @@ function Canvas({
       setHistVersion((v) => v + 1);
       setPage("canvas");
     },
-    [setNodes, setEdges, setViewport, setPage, snapshotOf, ev, resetProjectionView, dirty, flowName],
+    [setNodes, setEdges, setViewport, setPage, snapshotOf, ev, resetProjectionView, dirty, flowName, dialog],
   );
 
   const byName = useMemo(() => {
@@ -987,14 +991,15 @@ function Canvas({
   );
 
   const onDeleteDeployment = useCallback(
-    (slug: string) => {
+    async (slug: string) => {
       // Undeploying is also the one way a deployment's state is discarded (a redeploy keeps it).
-      if (!window.confirm(`Undeploy "${slug}"? Its stored state is deleted too. This can't be undone.`)) return;
+      const question = `Undeploy "${slug}"? Its stored state is deleted too. This can't be undone.`;
+      if (!(await dialog.confirm(question, "Undeploy"))) return;
       deleteDeployment(slug)
         .then(() => refreshDeployments())
         .catch((e: unknown) => setDeployError(e instanceof ServerError ? e.message : String(e)));
     },
-    [refreshDeployments],
+    [refreshDeployments, dialog],
   );
 
   const onTriggerDeployment = useCallback(
@@ -1825,6 +1830,7 @@ function Canvas({
 }
 
 function Editor() {
+  const dialog = useDialog();
   const [catalog, setCatalog] = useState<WUnit[] | null>(null);
   const [variadic, setVariadic] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>("");
@@ -1847,9 +1853,11 @@ function Editor() {
     })().catch((e: unknown) => setError(String(e)));
   }, []);
 
-  const onNew = () => {
-    if (canvasDirty.current && !window.confirm("Discard unsaved changes and start a new flow?")) return;
-    const name = window.prompt("Flow name (letters, digits, - and _ only):")?.trim();
+  const onNew = async () => {
+    if (canvasDirty.current && !(await dialog.confirm("Discard unsaved changes and start a new flow?", "Discard"))) {
+      return;
+    }
+    const name = await dialog.prompt("Flow name (letters, digits, - and _ only):");
     if (!name) return;
     setPendingNew((p) => ({ name, nonce: (p?.nonce ?? 0) + 1 }));
     setPage("canvas");
@@ -1920,5 +1928,9 @@ function Editor() {
 }
 
 export default function App() {
-  return <Editor />;
+  return (
+    <DialogProvider>
+      <Editor />
+    </DialogProvider>
+  );
 }
