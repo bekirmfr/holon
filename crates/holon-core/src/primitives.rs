@@ -426,6 +426,9 @@ fn parse_literal(ty: &str, value: &str) -> Option<Value> {
             .map(Value::Number),
         "Boolean" => parse_bool(value).map(Value::Boolean),
         "Text" => Some(Value::Text(value.to_string())),
+        // Any structured literal: `[]` for an empty list, `{"done": false}`, … (M1: a state
+        // read that falls back to an empty list, via `default`).
+        "Json" => crate::json::parse(value),
         _ => None,
     }
 }
@@ -476,6 +479,15 @@ mod tests {
     fn boo(x: bool) -> Value { Value::Boolean(x) }
     fn list(xs: Vec<Value>) -> Value { Value::List(xs) }
     fn p(name: &str, value: &str) -> Param { Param::frozen(name, value) }
+
+    #[test]
+    fn json_literals_for_const_and_default() {
+        let j = |v: &str| [p("type", "Json"), p("value", v)];
+        assert_eq!(compute("const", &[], &j("[]")), Some(Value::List(vec![])));
+        assert_eq!(compute("default", &[], &j("[1]")), Some(Value::List(vec![num(1.0)])));
+        assert_eq!(compute("default", &[&txt("x")], &j("[1]")), Some(txt("x")), "a present input wins");
+        assert_eq!(compute("const", &[], &j("[1,")), None);
+    }
 
     #[test]
     fn record_kit_builds_reads_and_lists_fields() {

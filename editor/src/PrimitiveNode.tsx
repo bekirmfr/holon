@@ -6,7 +6,7 @@
 
 import { memo, type CSSProperties } from "react";
 import { Handle, Position, useReactFlow, type NodeProps, type Node } from "@xyflow/react";
-import { compatible, type WParam, type WPort } from "./holon";
+import { compatible, type WParam, type WPort, type WType } from "./holon";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
 
 /** What a placed primitive node carries. Mirrors the catalog interface; `position`/`id` (view-only) live on the React Flow node, not here.
@@ -58,8 +58,11 @@ export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
  *  `default`'s input alongside its output is what keeps the output honest rather than a
  *  guess: once `value`'s own declared type matches, `compatible()` refuses a wrong-typed
  *  source at connect time, the same way it already refused a wrong-typed destination. */
-type ConstType = "Number" | "Boolean" | "Text";
-const CONST_TYPES: readonly ConstType[] = ["Number", "Boolean", "Text"];
+type ConstType = "Number" | "Boolean" | "Text" | "Json";
+const CONST_TYPES: readonly ConstType[] = ["Number", "Boolean", "Text", "Json"];
+// The wire type a literal produces. A Json literal can be any shape (`[]`, `{...}`), so its port
+// is `Any`; the scalar literals produce exactly their own type.
+const literalPortType = (ty: ConstType): WType => (ty === "Json" ? "Any" : ty);
 
 // The next port name for a variadic node, continuing the catalog's own single-letter convention
 // ("a", "b", …) every current variadic leaf uses. Falls back to a numbered name if that
@@ -149,8 +152,9 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
     const next = params.map((p) =>
       p.kind === "Frozen" && p.name === "type" ? { ...p, value: ty } : p,
     );
-    const nextInputs = inputs.map((p) => ({ ...p, ty }));
-    const nextOutputs = outputs.map((p) => ({ ...p, ty }));
+    const portTy = literalPortType(ty);
+    const nextInputs = inputs.map((p) => ({ ...p, ty: portTy }));
+    const nextOutputs = outputs.map((p) => ({ ...p, ty: portTy }));
     updateNodeData(id, { params: next, inputs: nextInputs, outputs: nextOutputs });
 
     const outName = outputs[0]?.name;
@@ -160,12 +164,12 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
         if (e.source === id && e.sourceHandle === outName) {
           // Outgoing: this node's own (newly retyped) output feeding something else.
           const dstTy = getNode(e.target)?.data.inputs.find((p) => p.name === e.targetHandle)?.ty;
-          return dstTy ? compatible(ty, dstTy) : false;
+          return dstTy ? compatible(portTy, dstTy) : false;
         }
         if (e.target === id && e.targetHandle && inputNames.has(e.targetHandle)) {
           // Incoming: something else feeding one of this node's (newly retyped) inputs.
           const srcTy = getNode(e.source)?.data.outputs.find((p) => p.name === e.sourceHandle)?.ty;
-          return srcTy ? compatible(srcTy, ty) : false;
+          return srcTy ? compatible(srcTy, portTy) : false;
         }
         return true;
       }),
