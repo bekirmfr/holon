@@ -23,8 +23,8 @@ pub const GENESIS: &[&str] = &[
     "cons", "head", "tail", "is_empty", "fold", "map",
     // pure — text (6)
     "concat", "uppercase", "lowercase", "text_length", "slice", "index_of",
-    // pure — list convenience, demotion-deferred (6)
-    "list", "get", "append", "length", "sum", "join",
+    // pure — list convenience, demotion-deferred (7)
+    "list", "get", "append", "extend", "length", "sum", "join",
     // pure — product constructor (1)
     "pair",
     // pure — sum constructor (2)
@@ -128,6 +128,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "list" => prim(vec![port("a", Any), port("b", Any)], vec![], Type::list_any()),
         "get" => prim(vec![port("list", Type::list_any()), port("index", Number)], vec![], Any),
         "append" => prim(vec![port("list", Type::list_any()), port("item", Any)], vec![], Type::list_any()),
+        // `append` adds one item; `extend` adds every item of a second list (`concat` is text's).
+        "extend" => prim(vec![port("list", Type::list_any()), port("items", Type::list_any())], vec![], Type::list_any()),
         "length" => prim(vec![port("list", Type::list_any())], vec![], Number),
         // sum/join are monomorphic in their element, so they declare it precisely: a typed
         // List<Text> is now refused by sum at wire time (core validate), caught earlier than the
@@ -225,13 +227,13 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_53_leaves() {
+    fn genesis_has_54_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
         // deliberately for M1 (docs/PLATFORM_LAYOUT.md), json_parse + json_stringify, and the
-        // keyed record kit (lookup, insert, remove), and find.
-        assert_eq!(GENESIS.len(), 53);
+        // keyed record kit (lookup, insert, remove), find, and extend.
+        assert_eq!(GENESIS.len(), 54);
     }
 
     #[test]

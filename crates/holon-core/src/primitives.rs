@@ -219,6 +219,14 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             xs.push((*item).clone());
             Some(Value::List(xs))
         }
+        // Both lists' items, in order: the first list's, then the second's. Each input must be a
+        // list; a single item is `append`'s job, never wrapped here.
+        "extend" => {
+            let [l, items] = inputs else { return None };
+            let mut xs = as_list(l)?.to_vec();
+            xs.extend_from_slice(as_list(items)?);
+            Some(Value::List(xs))
+        }
         "length" => {
             let [l] = inputs else { return None };
             Some(Value::Number(as_list(l)?.len() as f64))
@@ -706,6 +714,21 @@ mod tests {
             compute("append", &[&l, &num(9.0)], &[]),
             Some(list(vec![num(3.0), num(7.0), num(5.0), num(9.0)]))
         );
+    }
+    #[test]
+    fn extend_adds_every_item_of_the_second_list() {
+        let a = list(vec![num(1.0), num(2.0)]);
+        let b = list(vec![txt("x"), list(vec![num(3.0)])]);
+        assert_eq!(
+            compute("extend", &[&a, &b], &[]),
+            Some(list(vec![num(1.0), num(2.0), txt("x"), list(vec![num(3.0)])])),
+            "one level: an inner list stays one item"
+        );
+        assert_eq!(compute("extend", &[&list(vec![]), &a], &[]), Some(a.clone()));
+        assert_eq!(compute("extend", &[&a, &list(vec![])], &[]), Some(a.clone()));
+        assert_eq!(compute("extend", &[&a, &num(3.0)], &[]), None, "an item is not a list");
+        assert_eq!(compute("extend", &[&txt("ab"), &a], &[]), None);
+        assert_eq!(compute("extend", &[&a], &[]), None);
     }
     #[test]
     fn join_strings() {

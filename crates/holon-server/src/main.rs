@@ -3915,6 +3915,64 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A list of todos filled in bulk: POST /todos/bulk extends the stored list with the posted
+    /// array (where `append` would store the array as one item), and GET /todos lists them.
+    #[test]
+    fn a_bulk_route_extends_the_stored_list_with_an_array() {
+        let state = test_state();
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let empty = || leaf("default", vec![Param::frozen("type", "Json"), Param::frozen("value", "[]")], vec![("value", Type::Any)], Type::Any);
+        let list = endpoint(&state, "GET", "/todos", vec![test_store_read("todos"), empty()], vec![e(0, 0, 1, 0), e(1, 0, BOUNDARY, 0)], 0);
+        let bulk = endpoint(
+            &state,
+            "POST",
+            "/todos/bulk",
+            vec![
+                leaf("field", vec![Param::frozen("name", "body")], vec![("record", Type::Record)], Type::Any),
+                leaf("json_parse", vec![], vec![("text", Type::Text)], Type::Any),
+                test_store_read("todos"),
+                empty(),
+                leaf("extend", vec![], vec![("list", Type::list_any()), ("items", Type::list_any())], Type::list_any()),
+                test_store_write("todos"),
+            ],
+            vec![
+                e(BOUNDARY, 0, 0, 0), // request → field(body)
+                e(0, 0, 1, 0),        // body → json_parse
+                e(2, 0, 3, 0),        // store_read → default([])
+                e(3, 0, 4, 0),        // the stored list → extend
+                e(1, 0, 4, 1),        // the posted array → extend's items
+                e(4, 0, 5, 0),        // extended → store_write
+                e(4, 0, BOUNDARY, 0), // response: the whole list
+                e(5, 0, BOUNDARY, 1), // effect: the write
+            ],
+            1,
+        );
+        let api = stage(
+            &state,
+            &Unit {
+                body: UnitBody::Composite { children: vec![list, bulk], edges: vec![] },
+                params: vec![Param::frozen("declare", "server"), Param::frozen("port", "18084")],
+                inputs: vec![],
+                outputs: vec![],
+            },
+        );
+        assert_eq!(deploy_server(&state, "bulk", api).status_code, 200);
+        let call = |method: &str, url: &str, body: &str| {
+            let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "bulk",
+                &Request::fake_http(method, url, vec![], body.as_bytes().to_vec()));
+            (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+        };
+        assert_eq!(call("POST", "/todos/bulk", r#"[{"title":"buy milk"},{"done":false,"title":"walk"}]"#).0, 200);
+        assert_eq!(call("POST", "/todos/bulk", r#"[{"title":"later"}]"#).0, 200);
+        assert_eq!(
+            call("GET", "/todos", ""),
+            (200, r#"[{"title":"buy milk"},{"done":false,"title":"walk"},{"title":"later"}]"#.to_string()),
+            "a flat list, in order"
+        );
+        assert_eq!(call("POST", "/todos/bulk", r#"{"title":"not an array"}"#).0, 500, "one item is not a list: no response");
+        assert_eq!(call("GET", "/todos", "").1.matches("title").count(), 3, "and nothing was written");
+    }
+
     /// The flow log records every run with what it read and produced, enough to run it again
     /// exactly; and a deployment keeps the canvas it was deployed from.
     #[test]
