@@ -59,6 +59,7 @@ import { Palette, DND_MIME } from "./Palette";
 import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
 import { closureOf, fromHex, structuralKey, toHex } from "./flowDoc";
+import { History } from "./history";
 import {
   boundaryLabels,
   isWEncapError,
@@ -502,12 +503,17 @@ function Canvas({
   // Selection and drag flags are normalized out of snapshots — undoing a *selection* would be
   // noise, and restoring a node mid-"dragging" would wedge it to the cursor. `restoring` marks
   // programmatic setNodes/setEdges (undo, redo, open, new) so the watcher records them as the
-  // new baseline instead of pushing them into history as if the user had made an edit.
+  // new baseline instead of pushing them into history as if the user had made an edit. The
+  // bookkeeping itself lives in ./history (History), which undo/redo hand the live canvas so an
+  // edit still inside the debounce window is committed first rather than lost.
   type Snapshot = { nodes: PrimitiveNodeType[]; edges: Edge[] };
-  const history = useRef<{ past: Snapshot[]; future: Snapshot[] }>({ past: [], future: [] });
-  const committed = useRef<Snapshot>({ nodes: [], edges: [] });
+  const history = useRef(
+    new History<Snapshot>({ nodes: [], edges: [] }, (a, b) => JSON.stringify(a) === JSON.stringify(b)),
+  );
   const restoring = useRef(false);
   const [histVersion, setHistVersion] = useState(0); // buttons re-render on history changes
+  const live = useRef({ nodes, edges });
+  live.current = { nodes, edges };
 
   const snapshotOf = useCallback((ns: PrimitiveNodeType[], es: Edge[]): Snapshot => {
     return {
@@ -519,17 +525,11 @@ function Canvas({
   useEffect(() => {
     if (restoring.current) {
       restoring.current = false;
-      committed.current = snapshotOf(nodes, edges);
+      history.current.committed = snapshotOf(nodes, edges);
       return;
     }
     const t = setTimeout(() => {
-      const next = snapshotOf(nodes, edges);
-      if (JSON.stringify(next) === JSON.stringify(committed.current)) return;
-      history.current.past.push(committed.current);
-      if (history.current.past.length > 50) history.current.past.shift();
-      history.current.future = [];
-      committed.current = next;
-      setHistVersion((v) => v + 1);
+      if (history.current.commit(snapshotOf(nodes, edges))) setHistVersion((v) => v + 1);
     }, 400);
     return () => clearTimeout(t);
   }, [nodes, edges, snapshotOf]);
@@ -544,22 +544,16 @@ function Canvas({
   );
 
   const undo = useCallback(() => {
-    const h = history.current;
-    if (h.past.length === 0) return;
-    const prev = h.past.pop()!;
-    h.future.push(committed.current);
-    applySnapshot(prev);
+    const prev = history.current.undo(snapshotOf(live.current.nodes, live.current.edges));
+    if (prev) applySnapshot(prev);
     setHistVersion((v) => v + 1);
-  }, [applySnapshot]);
+  }, [applySnapshot, snapshotOf]);
 
   const redo = useCallback(() => {
-    const h = history.current;
-    if (h.future.length === 0) return;
-    const next = h.future.pop()!;
-    h.past.push(committed.current);
-    applySnapshot(next);
+    const next = history.current.redo(snapshotOf(live.current.nodes, live.current.edges));
+    if (next) applySnapshot(next);
     setHistVersion((v) => v + 1);
-  }, [applySnapshot]);
+  }, [applySnapshot, snapshotOf]);
 
   // Ctrl/Cmd+Z / Shift+Z / Y — skipped entirely while a text field has focus, so undo inside a
   // param input stays the browser's own text undo, never a canvas mutation under the cursor.
@@ -593,8 +587,7 @@ function Canvas({
     setEdges([]);
     setViewport({ x: 0, y: 0, zoom: 1 });
     setFlowName(pendingNew.name);
-    history.current = { past: [], future: [] };
-    committed.current = { nodes: [], edges: [] };
+    history.current.reset({ nodes: [], edges: [] });
     setSaveMsg("");
     resetProjectionView();
     setHistVersion((v) => v + 1);
@@ -660,8 +653,7 @@ function Canvas({
       setEdges(es);
       setViewport(rec.document.viewport);
       setFlowName(rec.name);
-      history.current = { past: [], future: [] };
-      committed.current = snapshotOf(ns, es);
+      history.current.reset(snapshotOf(ns, es));
       // A loaded flow's node ids carry the counters they were minted with — the fresh idRef
       // must start PAST all of them, or the next drop would mint a colliding id.
       let max = -1;
