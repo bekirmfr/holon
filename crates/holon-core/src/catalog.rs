@@ -12,7 +12,7 @@
 //! polymorphic leaves use [`Type::Any`] (the wiring check already treats `Any` as compatible);
 //! `map`/`fold` carry their function as an **open** `fn` param (the editor binds it), matching the
 //! evaluator. `interface_of` returns a *default-configured* unit (`const` at `Number 0`, `compare` at
-//! `op="eq"`) so the palette drops a usable, valid node. See primitive-catalog-L4.
+//! `op="="`) so the palette drops a usable, valid node. See primitive-catalog-L4.
 
 use crate::{Param, Port, Type, Unit, UnitBody};
 
@@ -85,7 +85,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         }
         "compare" => prim(
             vec![port("a", Number), port("b", Number)],
-            vec![Param::frozen("op", "eq")],
+            vec![Param::frozen("op", "=")],
             Boolean,
         ),
         "and" | "or" => prim(vec![port("a", Boolean), port("b", Boolean)], vec![], Boolean),
@@ -166,7 +166,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // same standard an unrecognized name already gets held to; the default here
         // ("value") keeps a freshly palette-dropped node immediately valid and usable,
         // matching every other leaf's own default-configured convention (`const` at
-        // `Number 0`, `compare` at `op="eq"`).
+        // `Number 0`, `compare` at `op="="`).
         "store_read" => prim(vec![], vec![Param::frozen("key", "value")], Any),
         "store_write" => prim(vec![port("value", Any)], vec![Param::frozen("key", "value")], Effect),
 
@@ -272,6 +272,17 @@ mod tests {
         for &name in VARIADIC {
             assert!(GENESIS.contains(&name), "{name} is in VARIADIC but not GENESIS");
         }
+    }
+
+    /// Regression: the palette dropped `compare` with `op="eq"`, an operator `compare` doesn't
+    /// accept (its ops are `< > <= >= = !=`), so a freshly placed compare node never fired.
+    #[test]
+    fn compare_default_op_is_one_compare_accepts() {
+        use crate::primitives::compute;
+        let params = interface_of("compare").unwrap().params;
+        let n = |x: f64| Value::Number(x);
+        assert_eq!(compute("compare", &[&n(5.0), &n(5.0)], &params), Some(Value::Boolean(true)));
+        assert_eq!(compute("compare", &[&n(5.0), &n(6.0)], &params), Some(Value::Boolean(false)));
     }
 
     #[test]
