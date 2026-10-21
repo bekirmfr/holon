@@ -137,14 +137,29 @@ Stored per deployment with a bounded retention. The editor's `replay/` reads it 
 
 ---
 
-## 5. Server and endpoint units: **open fork**
+## 5. Server and endpoint units: **decided, option A** (2026-10-21)
 
 | Option | How | For | Against |
 |---|---|---|---|
-| **A. Declaration units** (recommended) | `endpoint` = composite with frozen `method` and `path` params, one child = handler. `server` = composite with frozen `port`, children = endpoints. | The whole API is one hash, so versioning, rollback and diffing are free. Consent derives from the closure as it does today. | `eval` of a server unit is meaningless, so a new `Kind::Declaration` is needed so validate/eval refuse it cleanly. |
+| **A. Declaration units** (chosen) | `endpoint` = composite with frozen `method` and `path` params, one child = handler. `server` = composite with frozen `port`, children = endpoints. | The whole API is one hash, so versioning, rollback and diffing are free. Consent derives from the closure as it does today. | A little core code to read and check the declarations. |
 | B. Runtime manifest | `ServerSpec { port, routes: [(method, path, handler_hash)] }` as JSON in the host | No core change | The API version is not a unit hash, which breaks "hand the host a hash". |
 
-A handler is an ordinary unit: `request: Record → response: Record` (or an Effect plus `next`, via the
+**As built** (`holon-core/src/declare.rs`):
+- The markers are ordinary frozen params, so there is no encoding change and no new unit
+  kind. The earlier idea of a `Kind::Declaration` did not fit: in core, "kind" means effect
+  kind (Pure, Driver, State, Sink).
+- **An endpoint** has `declare=endpoint`, `method` and `path`, wraps one handler, and has
+  one `Record`-compatible input and one output. Evaluating it runs the handler, so testing
+  an endpoint is plain `eval`.
+- **A server** has `declare=server` and `port`. Its children are endpoints; it has no wiring
+  and no ports, so evaluating it yields nothing. Its capability manifest includes
+  `NetworkIngress`, because it listens, plus whatever its handlers touch.
+- `read_server` checks everything and fails closed: port, methods
+  (`GET POST PUT PATCH DELETE`), paths (`/todos/:id`), endpoint shape, and duplicate
+  routes. `match_route` picks the most specific match, so `/todos/new` beats
+  `/todos/:id`. The host and the editor both call these.
+
+A handler is an ordinary unit: `request: Record → response` (or an Effect plus `next`, via the
 effect loop). It can be tested in the editor with no server running.
 
 ---
@@ -178,7 +193,7 @@ packs/hooks/
 | Milestone | Core | Host | Server | Editor | Packs | Done when |
 |---|---|---|---|---|---|---|
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`), eval edge bounds (out of range → None), `factorial` `checked_mul`, `compare` default op | no panic on Effect in state, List/Sum read-back, atomic `FileStore` | **redeploy keeps state**, atomic persist + refuse to start on parse error, no disk I/O or per-deployment locks under the table lock, Host check / required Content-Type / body cap, split `main.rs` | reopen-flow fix (save composite preimages), clear projection on New/Open/edit, undo flushes the pending debounce, unsaved-changes and delete confirmations, split `App.tsx` | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a |
-| **M1 API** | Record + record kit + JSON (**depth and size limits on `json_parse`**), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b), declaration units (fork §5) | test-request panel | `http` | a todo CRUD built visually works with `curl` |
+| **M1 API** | Record + record kit ✅, declaration units ✅ (§5), JSON (**depth and size limits on `json_parse`**), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b) | test-request panel | `http` | a todo CRUD built visually works with `curl` |
 | **M2 effects + replay** | `http_request`, hashes/HMAC, Effects refused by `Any`-typed sink payloads | effect loop, `Performer`, `Recorder`, secrets | request-log API | `replay/` | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min |
 | **M3 door 1** | — | consent at load | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |

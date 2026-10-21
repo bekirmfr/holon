@@ -403,6 +403,12 @@ fn collect_caps(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capabi
         }
     }
 
+    // (1b) A server declaration listens for requests: the inbound side of its manifest. Its
+    //      endpoints' handlers contribute the rest through (2).
+    if crate::declaration_of(unit) == Some("server") {
+        acc.insert(Capability::NetworkIngress);
+    }
+
     // (2) Every reference — a composite's children and the `fn` param — via the shared
     //     `child_refs` (the one definition of what a unit references). A capability routed
     //     through a reference cannot hide; an unresolvable reference fails closed rather than
