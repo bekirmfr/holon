@@ -79,6 +79,9 @@ pub enum Type {
     /// data. Effects flow down and out, never back in.
     Effect,
     Any,
+    /// A record (named fields, see [`crate::Value::Record`]). Open for now: any fields, any
+    /// field types. Field-typed records can be added later under a new tag.
+    Record,
 }
 
 impl Type {
@@ -101,6 +104,7 @@ impl Type {
             Type::Effect => 6, // appended last — tags 1-5 unchanged, so no existing hash moves
             Type::Product(_) => 7, // n-ary, recursive — element types follow the tag, like List
             Type::Sum(_) => 8, // n-ary, recursive — same shape as Product, distinct tag
+            Type::Record => 9, // appended — no existing tag or hash moves
         }
     }
 
@@ -115,6 +119,7 @@ impl Type {
             3 => Some(Type::Text),
             5 => Some(Type::Any),
             6 => Some(Type::Effect),
+            9 => Some(Type::Record),
             _ => None, // 4 (List) / 7 (Product) / 8 (Sum) carry element types — the decoder reads them
         }
     }

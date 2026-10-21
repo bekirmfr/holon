@@ -130,6 +130,9 @@ export function formatValue(v: WValue): string {
       // the TYPE side, not guessing "this looks like Option"). Show the arm plainly instead of
       // guessing.
       return `sum#${v.value.arm}(${formatValue(v.value.payload)})`;
+    case "Record":
+      // Same shape as core's to_text: `{id: 7, title: "buy milk"}`, fields in key order.
+      return `{${v.value.map(([k, x]) => `${k}: ${formatValue(x)}`).join(", ")}}`;
   }
   // Exhaustiveness: this project's tsconfig doesn't enable noImplicitReturns, so a missing case
   // here was previously a silent runtime "undefined", not a compile error — exactly the gap

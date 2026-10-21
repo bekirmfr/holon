@@ -227,6 +227,17 @@ describe("capabilityAcknowledgeName", () => {
 });
 
 describe("formatValue", () => {
+  it("formats a record the way core's to_text does, fields in key order", () => {
+    const rec: WValue = {
+      type: "Record",
+      value: [
+        ["id", { type: "Number", value: 7 }],
+        ["title", { type: "Text", value: "buy milk" }],
+      ],
+    };
+    expect(formatValue(rec)).toBe('{id: 7, title: "buy milk"}');
+    expect(formatValue({ type: "Record", value: [] })).toBe("{}");
+  });
   it("formats every scalar plainly", () => {
     expect(formatValue({ type: "Number", value: 3 })).toBe("3");
     expect(formatValue({ type: "Boolean", value: true })).toBe("true");

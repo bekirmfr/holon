@@ -284,7 +284,7 @@ struct RegistryBody {
 
 /// A JSON mirror of `core::Value`, for this HTTP/JSON boundary — the same reasoning as
 /// `WValue` at the wasm boundary (`core::Value` deliberately carries no serde, keeping
-/// `holon-core` dependency-minimal). Grounded exactly against the real `Value` enum (six
+/// `holon-core` dependency-minimal). Grounded exactly against the real `Value` enum (seven
 /// variants — there is no `Product` at the *value* level, only at the `Type` level, so this
 /// mirror doesn't need one either) rather than assumed by symmetry with `Type`.
 ///
@@ -303,6 +303,9 @@ enum SValue {
     List(Vec<SValue>),
     Effect { sink: String, payload: Box<SValue> },
     Sum { arm: usize, payload: Box<SValue> },
+    /// `[key, value]` pairs in key order — the same shape as the wasm bridge's `WValue::Record`,
+    /// so the editor reads both boundaries with one type.
+    Record(Vec<(String, SValue)>),
 }
 
 impl SValue {
@@ -318,6 +321,9 @@ impl SValue {
             Value::Sum { arm, payload } => {
                 SValue::Sum { arm: *arm, payload: Box::new(SValue::from_core(payload)) }
             }
+            Value::Record(fields) => {
+                SValue::Record(fields.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect())
+            }
         }
     }
     fn into_core(self) -> Value {
@@ -330,6 +336,7 @@ impl SValue {
                 Value::Effect { sink, payload: Box::new(payload.into_core()) }
             }
             SValue::Sum { arm, payload } => Value::Sum { arm, payload: Box::new(payload.into_core()) },
+            SValue::Record(fields) => Value::Record(fields.into_iter().map(|(k, v)| (k, v.into_core())).collect()),
         }
     }
 }

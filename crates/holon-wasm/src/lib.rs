@@ -64,6 +64,10 @@ pub enum WValue {
     /// became recursive), so a tagged choice crosses intact:
     /// `{ "type": "Sum", "value": { "arm": 0, "payload": {...} } }`.
     Sum { arm: usize, payload: Box<WValue> },
+    /// Mirrors `core::Value::Record` as `[key, value]` pairs in key order:
+    /// `{ "type": "Record", "value": [["id", {...}], ...] }`. Pairs rather than a map because
+    /// serde-wasm-bindgen turns a map into a JS `Map`, not a plain object.
+    Record(Vec<(String, WValue)>),
 }
 
 impl WValue {
@@ -80,6 +84,9 @@ impl WValue {
             Value::Sum { arm, payload } => {
                 WValue::Sum { arm: *arm, payload: Box::new(WValue::from_core(payload)) }
             }
+            Value::Record(fields) => {
+                WValue::Record(fields.iter().map(|(k, v)| (k.clone(), WValue::from_core(v))).collect())
+            }
         }
     }
 
@@ -95,6 +102,10 @@ impl WValue {
             },
             WValue::Sum { arm, payload } => {
                 Value::Sum { arm, payload: Box::new(payload.into_core()) }
+            }
+            // A repeated key keeps the last value, as a JS object literal would.
+            WValue::Record(fields) => {
+                Value::Record(fields.into_iter().map(|(k, v)| (k, v.into_core())).collect())
             }
         }
     }
@@ -125,6 +136,7 @@ pub enum WType {
     Sum(Vec<WType>),
     Effect,
     Any,
+    Record,
 }
 
 impl WType {
@@ -138,6 +150,7 @@ impl WType {
             Type::Sum(elems) => WType::Sum(elems.iter().map(WType::from_core).collect()),
             Type::Effect => WType::Effect,
             Type::Any => WType::Any,
+            Type::Record => WType::Record,
         }
     }
 
@@ -175,6 +188,7 @@ impl WType {
             ),
             WType::Effect => Type::Effect,
             WType::Any => Type::Any,
+            WType::Record => Type::Record,
         })
     }
 }
@@ -987,6 +1001,9 @@ fn check_wvalue_roundtrip() {
         Value::Effect { sink: "egress".into(), payload: Box::new(Value::Number(2.0)) },
         Value::Sum { arm: 0, payload: Box::new(Value::Number(2.0)) },
         Value::Sum { arm: 1, payload: Box::new(Value::List(vec![])) }, // none
+        Value::Record(
+            [("id".to_string(), Value::Number(1.0)), ("tags".to_string(), Value::List(vec![]))].into(),
+        ),
     ];
     for v in cases {
         assert_eq!(WValue::from_core(&v).into_core(), v);
@@ -1023,7 +1040,7 @@ fn check_wunit_roundtrip() {
 fn check_primitive_catalog() {
     let cat = catalog_wunits();
     // The §13a count crosses the mirror intact.
-    assert_eq!(cat.len(), 42);
+    assert_eq!(cat.len(), 47);
     // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
     let add = cat
         .iter()
@@ -1394,7 +1411,7 @@ mod wasm_tests {
     fn primitive_catalog_crosses_js_boundary() {
         let js = primitive_catalog().unwrap();
         let cat: Vec<WUnit> = serde_wasm_bindgen::from_value(js).unwrap();
-        assert_eq!(cat.len(), 42);
+        assert_eq!(cat.len(), 47);
         assert!(cat
             .iter()
             .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));

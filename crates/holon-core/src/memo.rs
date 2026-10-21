@@ -37,6 +37,7 @@ const TAG_TEXT: u8 = 3;
 const TAG_LIST: u8 = 4;
 const TAG_EFFECT: u8 = 5;
 const TAG_SUM: u8 = 6;
+const TAG_RECORD: u8 = 7;
 
 // Input-slot tags: an absent input must never collide with a present one.
 const SLOT_ABSENT: u8 = 0;
@@ -155,6 +156,14 @@ fn encode_value(buf: &mut Vec<u8>, v: &Value) -> Result<(), EncodeError> {
             put_len(buf, *arm)?;
             encode_value(buf, payload)?;
         }
+        Value::Record(fields) => {
+            buf.push(TAG_RECORD);
+            put_len(buf, fields.len())?;
+            for (k, v) in fields {
+                put_bytes(buf, k.as_bytes())?; // key order is the BTreeMap's: canonical
+                encode_value(buf, v)?;
+            }
+        }
     }
     Ok(())
 }
@@ -207,6 +216,22 @@ mod tests {
 
     fn key(inputs: &[Option<Value>]) -> Hash {
         memo_key(&H, inputs).unwrap()
+    }
+
+    #[test]
+    fn records_key_by_content_not_insertion_order() {
+        let rec = |pairs: &[(&str, f64)]| {
+            let mut m = std::collections::BTreeMap::new();
+            for (k, v) in pairs {
+                m.insert(k.to_string(), Value::Number(*v));
+            }
+            Some(Value::Record(m))
+        };
+        assert_eq!(key(&[rec(&[("a", 1.0), ("b", 2.0)])]), key(&[rec(&[("b", 2.0), ("a", 1.0)])]));
+        assert_ne!(key(&[rec(&[("a", 1.0)])]), key(&[rec(&[("a", 2.0)])]));
+        assert_ne!(key(&[rec(&[("a", 1.0)])]), key(&[rec(&[("b", 1.0)])]));
+        // A record never collides with a list of the same contents.
+        assert_ne!(key(&[rec(&[])]), key(&[Some(Value::List(vec![]))]));
     }
 
     #[test]

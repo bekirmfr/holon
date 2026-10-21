@@ -35,6 +35,7 @@ export type WType =
   | "Text"
   | "Effect"
   | "Any"
+  | "Record"
   | { List: WType }
   | { Product: WType[] }
   | { Sum: WType[] };
@@ -136,7 +137,10 @@ export type WValue =
   | { type: "Text"; value: string }
   | { type: "List"; value: WValue[] }
   | { type: "Effect"; value: { sink: string; payload: WValue } }
-  | { type: "Sum"; value: { arm: number; payload: WValue } };
+  | { type: "Sum"; value: { arm: number; payload: WValue } }
+  /** Fields as `[key, value]` pairs in key order (a JS `Map` would not cross serde-wasm-bindgen as
+   *  a plain object). */
+  | { type: "Record"; value: [string, WValue][] };
 
 /** A category of effect a leaf may touch, outside its inputs. Mirrors `core::Capability` via
  *  the bridge's `WCapability` (P4.4.1, keyed as of the keyed-state-capability inch). Every

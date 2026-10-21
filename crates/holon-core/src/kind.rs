@@ -231,6 +231,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "cons" | "head" | "tail" | "is_empty"
         | "pair"
         | "some" | "none"
+        | "record" | "field" | "with_field" | "without_field" | "keys"
         | "to_text" | "is_truthy" | "guard" | "default" | "equals"
         | "fold" | "map" => vec![],
 

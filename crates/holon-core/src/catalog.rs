@@ -29,6 +29,8 @@ pub const GENESIS: &[&str] = &[
     "pair",
     // pure — sum constructor (2)
     "some", "none",
+    // pure — record kit (5)
+    "record", "field", "with_field", "without_field", "keys",
     // pure — universal, any-typed (5)
     "to_text", "is_truthy", "guard", "default", "equals",
     // drivers — sourced, no compute (3)
@@ -133,6 +135,16 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // pair: the binary Product constructor. Output Product([Any, Any]); the value rides the list
         // value, so its compute is list-of-two — only the declared TYPE differs from `list`, and the
         // recursive checker keeps Product and List apart. Dictionary<K,V> is sugar for List<Pair>.
+        // ── pure — record kit ── `name` defaults to "id", so a dropped node is valid at once.
+        "record" => prim(vec![], vec![], Type::Record),
+        "field" => prim(vec![port("record", Type::Record)], vec![Param::frozen("name", "id")], Any),
+        "with_field" => prim(
+            vec![port("record", Type::Record), port("value", Any)],
+            vec![Param::frozen("name", "id")],
+            Type::Record,
+        ),
+        "without_field" => prim(vec![port("record", Type::Record)], vec![Param::frozen("name", "id")], Type::Record),
+        "keys" => prim(vec![port("record", Type::Record)], vec![], Type::List(Box::new(Text))),
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
 
         // ── pure — sum (Option) ──
@@ -197,11 +209,12 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_42_leaves() {
+    fn genesis_has_47_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
-        // primitives).
-        assert_eq!(GENESIS.len(), 42);
+        // primitives) + the record kit (record, field, with_field, without_field, keys), added
+        // deliberately for M1 (docs/PLATFORM_LAYOUT.md).
+        assert_eq!(GENESIS.len(), 47);
     }
 
     #[test]

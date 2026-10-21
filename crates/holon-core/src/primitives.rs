@@ -10,6 +10,8 @@
 //! through an `any` port, since wire-time checking (P1.3.1) already rules out the rest.
 //! The higher-order `Map` (and the eval `ctx` it needs) arrive with P1.5.1.
 
+use std::collections::BTreeMap;
+
 use crate::{Param, Value};
 
 /// Dispatch a primitive by name to its native computation.
@@ -162,6 +164,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
                 Value::List(xs) => !xs.is_empty(),
                 Value::Effect { .. } => true,
                 Value::Sum { arm, .. } => *arm == 0,
+                Value::Record(fields) => !fields.is_empty(),
             };
             Some(Value::Boolean(truthy))
         }
@@ -267,6 +270,34 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // the list value (eval is untyped) — pair(a,b) builds the same Value::List a 2-list does;
         // only the declared TYPE differs (Product([A,B]) vs List<T>), and the recursive checker keeps
         // them apart. So Dictionary<K,V> is List<Pair<K,V>>, expressible with no new value kind. ──
+        // ── record kit (M1): build a record field by field, read one field, list the keys. A
+        // field name is a frozen `name` param, so it is part of the unit's identity, like a
+        // state key. A missing field reads as absent, not as a null value. ──
+        "record" => {
+            let [] = inputs else { return None };
+            Some(Value::Record(BTreeMap::new()))
+        }
+        "field" => {
+            let [Value::Record(fields)] = inputs else { return None };
+            fields.get(param(params, "name")?).cloned()
+        }
+        "with_field" => {
+            let [Value::Record(fields), v] = inputs else { return None };
+            let mut fields = fields.clone();
+            fields.insert(param(params, "name")?.to_string(), (*v).clone());
+            Some(Value::Record(fields))
+        }
+        "without_field" => {
+            let [Value::Record(fields)] = inputs else { return None };
+            let mut fields = fields.clone();
+            fields.remove(param(params, "name")?);
+            Some(Value::Record(fields))
+        }
+        "keys" => {
+            let [Value::Record(fields)] = inputs else { return None };
+            Some(Value::List(fields.keys().map(|k| Value::Text(k.clone())).collect()))
+        }
+
         "pair" => {
             let [a, b] = inputs else { return None };
             Some(Value::List(vec![(*a).clone(), (*b).clone()]))
@@ -339,6 +370,10 @@ fn to_text_str(v: &Value) -> String {
         Value::List(xs) => format!("[{}]", xs.iter().map(to_text_str).collect::<Vec<_>>().join(", ")),
         Value::Effect { sink, payload } => format!("effect({sink}, {})", to_text_str(payload)),
         Value::Sum { arm, payload } => format!("sum#{arm}({})", to_text_str(payload)),
+        Value::Record(fields) => format!(
+            "{{{}}}",
+            fields.iter().map(|(k, v)| format!("{k}: {}", to_text_str(v))).collect::<Vec<_>>().join(", ")
+        ),
     }
 }
 
@@ -430,6 +465,27 @@ mod tests {
     fn boo(x: bool) -> Value { Value::Boolean(x) }
     fn list(xs: Vec<Value>) -> Value { Value::List(xs) }
     fn p(name: &str, value: &str) -> Param { Param::frozen(name, value) }
+
+    #[test]
+    fn record_kit_builds_reads_and_lists_fields() {
+        let empty = compute("record", &[], &[]).unwrap();
+        assert_eq!(empty, Value::Record(BTreeMap::new()));
+        // Fields added out of order still come out in key order.
+        let r = compute("with_field", &[&empty, &txt("buy milk")], &[p("name", "title")]).unwrap();
+        let r = compute("with_field", &[&r, &num(7.0)], &[p("name", "id")]).unwrap();
+        assert_eq!(compute("field", &[&r], &[p("name", "id")]), Some(num(7.0)));
+        assert_eq!(compute("field", &[&r], &[p("name", "missing")]), None, "a missing field is absent");
+        assert_eq!(compute("keys", &[&r], &[]), Some(Value::List(vec![txt("id"), txt("title")])));
+        assert_eq!(compute("to_text", &[&r], &[]), Some(txt("{id: 7, title: \"buy milk\"}")));
+        // Overwrite, remove, and refuse a non-record input.
+        let r2 = compute("with_field", &[&r, &num(8.0)], &[p("name", "id")]).unwrap();
+        assert_eq!(compute("field", &[&r2], &[p("name", "id")]), Some(num(8.0)));
+        let r3 = compute("without_field", &[&r2], &[p("name", "id")]).unwrap();
+        assert_eq!(compute("keys", &[&r3], &[]), Some(Value::List(vec![txt("title")])));
+        assert_eq!(compute("field", &[&num(1.0)], &[p("name", "id")]), None);
+        assert_eq!(compute("is_truthy", &[&empty], &[]), Some(boo(false)));
+        assert_eq!(compute("equals", &[&r, &r2], &[]), Some(boo(false)));
+    }
 
     #[test]
     fn add_sums() {

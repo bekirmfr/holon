@@ -37,6 +37,7 @@ export const TYPE_COLOR: Record<string, string> = {
   Sum: "#5c8ee0", // blue — the one hue family nothing else was using
   Effect: "#ff6f6f", // coral — the effectful edge
   Any: "#8295b0", // slate — polymorphic, uncommitted
+  Record: "#e8955a", // orange — named fields, distinct from Number's amber
 };
 
 /** The hue for any concrete wire type (an input port's type, e.g.) — never `null`. */

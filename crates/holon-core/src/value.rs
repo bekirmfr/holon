@@ -5,6 +5,8 @@
 //! has exactly one *concrete* type ([`Value::ty`]) — never the `Any` wildcard, which
 //! is a wire-time type, not a runtime value.
 
+use std::collections::BTreeMap;
+
 use crate::Type;
 
 /// A runtime value — the concrete counterpart of the monomorphic base types in
@@ -33,6 +35,10 @@ pub enum Value {
     /// Sum([T, Unit])`: `none()` is `{arm: 1, payload: List([])}` (`Unit` = the empty product,
     /// which already rides the list value); `some(x)` is `{arm: 0, payload: x}`.
     Sum { arm: usize, payload: Box<Value> },
+    /// Named fields (M1): request and response bodies, stored rows, JSON objects. A `BTreeMap`,
+    /// so fields are always in key order: equality, the memo encoding and `to_text` never
+    /// depend on the order fields were added in.
+    Record(BTreeMap<String, Value>),
 }
 
 impl Value {
@@ -54,6 +60,7 @@ impl Value {
             Value::List(_) => Type::list_any(),
             Value::Effect { .. } => Type::Effect,
             Value::Sum { .. } => Type::Sum(vec![Type::Any, Type::Any]),
+            Value::Record(_) => Type::Record,
         }
     }
 }

@@ -215,6 +215,7 @@ pub fn is_storable(value: &Value) -> bool {
         Value::Effect { .. } => false,
         Value::List(xs) => xs.iter().all(is_storable),
         Value::Sum { payload, .. } => is_storable(payload),
+        Value::Record(fields) => fields.values().all(is_storable),
         Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
     }
 }
@@ -277,8 +278,9 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
 /// A niladic unit that evaluates to `value` — used to inject a sourced value (a held state
 /// value, the clock, an ingress body) at its leaf. A scalar is one `const`. A list or an Option
 /// is a small composite: one constant per element (built the same way, recursively) wired into
-/// `list` or `some`, whose pieces go into `parts` so the resolver can hand them out. `none()`
-/// and the empty `list()` are niladic already.
+/// `list` or `some`, whose pieces go into `parts` so the resolver can hand them out. A record
+/// starts from `record()` and adds one `with_field` per field. `none()`, the empty `list()` and
+/// `record()` are niladic already.
 ///
 /// `None` where `value` can't be **faithfully** rebuilt: an `Effect` (writes refuse them, see
 /// `is_storable`, but storage loaded from disk predates that rule), or a sum that isn't an
@@ -300,8 +302,41 @@ fn constant_unit(value: &Value, parts: &mut Parts) -> Option<Unit> {
             built_from(parts, vec![inner], "some", option())
         }
         Value::Sum { arm: 1, payload } if **payload == Value::List(vec![]) => built_from(parts, vec![], "none", option()),
+        Value::Record(fields) => {
+            let mut acc = built_from(parts, vec![], "record", Type::Record);
+            for (name, v) in fields {
+                let value = constant_unit(v, parts)?;
+                acc = with_field(parts, acc, value, name);
+            }
+            acc
+        }
         Value::Sum { .. } | Value::Effect { .. } => return None,
     })
+}
+
+/// `with_field(record, value)` at `name`, as a composite over the two given units.
+fn with_field(parts: &mut Parts, record: Unit, value: Unit, name: &str) -> Unit {
+    let setter = Unit {
+        body: UnitBody::Primitive { name: "with_field".into() },
+        params: vec![Param::frozen("name", name)],
+        inputs: vec![
+            Port { name: "record".into(), ty: Type::Record },
+            Port { name: "value".into(), ty: Type::Any },
+        ],
+        outputs: vec![Port { name: "out".into(), ty: Type::Record }],
+    };
+    let children = vec![parts.add(record), parts.add(value), parts.add(setter)];
+    let edges = vec![
+        Edge { from_child: 0, from_port: 0, to_child: 2, to_port: 0 },
+        Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 1 },
+        Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+    ];
+    Unit {
+        body: UnitBody::Composite { children, edges },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Record }],
+    }
 }
 
 /// `ctor(e0, e1, …)` as a unit: the constructor primitive itself when there are no elements,
@@ -1357,6 +1392,12 @@ mod tests {
             some(list(vec![num(1.0), num(2.0)])),
             none.clone(),
             some(none.clone()),
+            Value::Record(BTreeMap::new()),
+            Value::Record(
+                [("id".to_string(), num(1.0)), ("done".to_string(), Value::Boolean(false)), ("tags".to_string(), list(vec![text("a")]))]
+                    .into(),
+            ),
+            list(vec![Value::Record([("n".to_string(), some(num(2.0)))].into())]),
         ] {
             assert_eq!(read_back(held.clone()), vec![Some(held.clone())], "{held:?}");
         }
