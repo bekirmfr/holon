@@ -131,7 +131,9 @@
 //! flag is lost. Not a bug in this inch; a pre-existing, named scope boundary of `Registry`.
 //!
 //! Localhost-only by design (the L4's Fork 1 resolution): binds `127.0.0.1`, and CORS is
-//! scoped to `localhost`/`127.0.0.1` origins only — never `*`. No auth: there is no "who" to
+//! scoped to `localhost`/`127.0.0.1` origins only — never `*`. CORS alone never stopped a
+//! request from *running*, though, so every request first passes `reject_untrusted` (Host,
+//! Origin, Content-Type) and bodies are capped at `MAX_BODY_BYTES`. No auth: there is no "who" to
 //! gatekeep on a single local process, and content-addressing already answers "can I trust
 //! what I got back," which is the only question a stranger-facing boundary would have needed
 //! auth *for*.
@@ -211,6 +213,9 @@ struct AppState {
     /// Where `flows` is persisted (write-through, same discipline as `deployments_path`), or
     /// `":memory:"` to opt out.
     flows_path: String,
+    /// The port this server listens on — the one a request's `Host` must name
+    /// (`reject_untrusted`).
+    port: u16,
 }
 
 /// A registered deployment. `triggers` is derived **once**, at deploy time, from the unit's
@@ -518,10 +523,53 @@ fn err(status: u16, message: impl Into<String>) -> Response {
 /// deliberately narrow — see the L4's Fork 1: this server is not meant to be reached from
 /// anywhere but the editor's own dev server on the same machine.
 fn is_allowed_origin(origin: &str) -> bool {
-    origin.starts_with("http://localhost:")
-        || origin == "http://localhost"
-        || origin.starts_with("http://127.0.0.1:")
-        || origin == "http://127.0.0.1"
+    ["http://localhost", "http://127.0.0.1"].iter().any(|base| match origin.strip_prefix(base) {
+        Some("") => true,
+        Some(rest) => rest
+            .strip_prefix(':')
+            .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())),
+        None => false,
+    })
+}
+
+/// The largest request body any endpoint accepts. Units and flow documents are kilobytes; this
+/// only exists so one oversized POST can't exhaust memory.
+const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The control plane's request gate, checked before any routing. CORS headers only decide
+/// whether a page may *read* a response, never whether the request runs, so without this any
+/// web page the user visits could drive the API:
+///
+/// - **Host** must name this server on loopback (`localhost`, `127.0.0.1` or `[::1]` at the
+///   listening port). A DNS-rebinding page reaches 127.0.0.1 under its own hostname, and would
+///   otherwise be same-origin with full access.
+/// - **Origin**, when a browser sends one, must be an allowed localhost origin. Browsers attach
+///   it to every cross-origin POST/DELETE, including "simple" requests that skip preflight.
+/// - **Content-Type** of a POST must be `application/json` or `application/octet-stream`,
+///   neither of which is CORS-safelisted, so a cross-origin POST always needs a preflight this
+///   server never grants. Defense in depth behind the Origin check.
+///
+/// Clients without a browser (curl, tests) send no Origin and pass by setting the two headers.
+fn reject_untrusted(request: &Request, port: u16) -> Option<Response> {
+    let host = request.header("Host").unwrap_or("");
+    let host_ok = ["localhost", "127.0.0.1", "[::1]"]
+        .iter()
+        .any(|name| host == format!("{name}:{port}") || (port == 80 && host == *name));
+    if !host_ok {
+        return Some(err(403, format!("Host {host:?} is not this server on loopback")));
+    }
+    if let Some(origin) = request.header("Origin") {
+        if !is_allowed_origin(origin) {
+            return Some(err(403, format!("Origin {origin:?} is not allowed")));
+        }
+    }
+    if request.method() == "POST" {
+        let media_type = request.header("Content-Type").unwrap_or("").split(';').next().unwrap_or("").trim();
+        if !["application/json", "application/octet-stream"].iter().any(|t| media_type.eq_ignore_ascii_case(t)) {
+            return Some(err(415, "POST bodies must be sent as application/json or application/octet-stream"));
+        }
+    }
+    None
 }
 
 /// Add CORS headers to every response, in one place — so a new endpoint can never forget them
@@ -542,12 +590,16 @@ fn with_cors(request: &Request, mut response: Response) -> Response {
 }
 
 fn read_body(request: &Request) -> Result<Vec<u8>, Response> {
-    let Some(mut body) = request.data() else {
+    let Some(body) = request.data() else {
         return Err(err(400, "body already consumed"));
     };
     let mut bytes = Vec::new();
-    if body.read_to_end(&mut bytes).is_err() {
+    // One byte past the cap is enough to tell "too large" apart from "exactly at the cap".
+    if body.take(MAX_BODY_BYTES + 1).read_to_end(&mut bytes).is_err() {
         return Err(err(400, "failed to read request body"));
+    }
+    if bytes.len() as u64 > MAX_BODY_BYTES {
+        return Err(err(413, format!("request body exceeds {MAX_BODY_BYTES} bytes")));
     }
     Ok(bytes)
 }
@@ -1625,6 +1677,10 @@ fn route(state: &AppState, request: &Request) -> Response {
     let url = request.url();
     let method = request.method();
 
+    if let Some(rejection) = reject_untrusted(request, state.port) {
+        return rejection;
+    }
+
     // Preflight — answered before touching any endpoint logic.
     if method == "OPTIONS" {
         return Response::empty_204();
@@ -2036,7 +2092,12 @@ fn main() {
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
-    let state = AppState { store, registry, cache, deployments, deployments_path: deployments_arg, flows, flows_path: flows_arg };
+    let port = addr
+        .parse::<std::net::SocketAddr>()
+        .unwrap_or_else(|e| panic!("HOLON_SERVER_ADDR {addr:?} is not host:port: {e}"))
+        .port();
+    let state =
+        AppState { store, registry, cache, deployments, deployments_path: deployments_arg, flows, flows_path: flows_arg, port };
 
     println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
     rouille::start_server(addr, move |request| with_cors(request, route(&state, request)));
@@ -2068,11 +2129,26 @@ mod tests {
             deployments_path: ":memory:".to_string(),
             flows: Mutex::new(BTreeMap::new()),
             flows_path: ":memory:".to_string(),
+            port: TEST_PORT,
         }
     }
 
+    const TEST_PORT: u16 = 7420;
+
+    fn host_header() -> (String, String) {
+        ("Host".to_string(), format!("127.0.0.1:{TEST_PORT}"))
+    }
+
+    /// A request as the editor sends it: our Host, and for a POST the Content-Type its body is
+    /// (a JSON body starts with `{` or `[`; preimages and trigger text go as raw bytes).
     fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
-        Request::fake_http(method, url, vec![], body)
+        let mut headers = vec![host_header()];
+        if method == "POST" {
+            let json = matches!(body.first(), Some(b'{' | b'['));
+            let ty = if json { "application/json" } else { "application/octet-stream" };
+            headers.push(("Content-Type".to_string(), ty.to_string()));
+        }
+        Request::fake_http(method, url, headers, body)
     }
 
     fn body_bytes(response: Response) -> Vec<u8> {
@@ -2708,6 +2784,7 @@ mod tests {
                 deployments_path: deployments_path.clone(),
                 flows: Mutex::new(BTreeMap::new()),
                 flows_path: ":memory:".to_string(),
+                port: TEST_PORT,
             };
             let body = serde_json::to_vec(&serde_json::json!({
                 "slug": "echo",
@@ -2734,6 +2811,7 @@ mod tests {
             deployments_path: deployments_path.clone(),
             flows: Mutex::new(BTreeMap::new()),
             flows_path: ":memory:".to_string(),
+            port: TEST_PORT,
         };
         let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
         assert_eq!(triggered.status_code, 200);
@@ -3236,6 +3314,7 @@ mod tests {
                 deployments_path: deployments_path.clone(),
                 flows: Mutex::new(BTreeMap::new()),
                 flows_path: ":memory:".to_string(),
+                port: TEST_PORT,
             };
             let deploy_body = serde_json::to_vec(&serde_json::json!({
                 "slug": "writer",
@@ -3264,6 +3343,7 @@ mod tests {
             deployments_path: deployments_path.clone(),
             flows: Mutex::new(BTreeMap::new()),
             flows_path: ":memory:".to_string(),
+            port: TEST_PORT,
         };
         let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
         assert_eq!(triggered2.status_code, 200);
@@ -3281,7 +3361,7 @@ mod tests {
         let state = test_state();
 
         let allowed =
-            Request::fake_http("GET", "/health", vec![("Origin".to_string(), "http://localhost:5173".to_string())], vec![]);
+            Request::fake_http("GET", "/health", vec![host_header(), ("Origin".to_string(), "http://localhost:5173".to_string())], vec![]);
         let r1 = with_cors(&allowed, route(&state, &allowed));
         assert!(r1
             .headers
@@ -3289,7 +3369,7 @@ mod tests {
             .any(|(k, v)| k.as_ref() == "Access-Control-Allow-Origin" && v.as_ref() == "http://localhost:5173"));
 
         let disallowed =
-            Request::fake_http("GET", "/health", vec![("Origin".to_string(), "http://evil.example".to_string())], vec![]);
+            Request::fake_http("GET", "/health", vec![host_header(), ("Origin".to_string(), "http://evil.example".to_string())], vec![]);
         let r2 = with_cors(&disallowed, route(&state, &disallowed));
         assert!(!r2.headers.iter().any(|(k, _)| k.as_ref() == "Access-Control-Allow-Origin"));
     }
@@ -3309,7 +3389,7 @@ mod tests {
         let req = Request::fake_http(
             "OPTIONS",
             "/deployments/whatever",
-            vec![("Origin".to_string(), "http://localhost:5173".to_string())],
+            vec![host_header(), ("Origin".to_string(), "http://localhost:5173".to_string())],
             vec![],
         );
         let res = with_cors(&req, route(&state, &req));
@@ -3322,5 +3402,61 @@ mod tests {
         for method in ["GET", "POST", "DELETE"] {
             assert!(methods.contains(method), "Access-Control-Allow-Methods {methods:?} is missing {method}");
         }
+    }
+
+    // ── control-plane request gate ───────────────────────────────────────────────────────
+
+    fn raw(method: &str, url: &str, headers: &[(&str, &str)], body: &[u8]) -> Request {
+        let headers = headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        Request::fake_http(method, url, headers, body.to_vec())
+    }
+
+    fn saved_flow_names(state: &AppState) -> Vec<String> {
+        state.flows.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// Regression: CORS only hid responses, so any web page could still *send* a simple
+    /// `text/plain` POST and overwrite a saved flow, deploy, or trigger. And with no Host check,
+    /// a DNS-rebinding page was same-origin with full access.
+    #[test]
+    fn cross_site_and_rebinding_requests_are_refused_before_routing() {
+        let state = test_state();
+        let host = ("Host", "127.0.0.1:7420");
+        let save = br#"{"name": "victim", "document": {}}"#;
+        let attacks: [(&str, Vec<(&str, &str)>, u16); 7] = [
+            ("simple text/plain POST from another site", vec![host, ("Origin", "http://evil.example"), ("Content-Type", "text/plain")], 403),
+            ("JSON POST from another site", vec![host, ("Origin", "http://evil.example"), ("Content-Type", "application/json")], 403),
+            ("sandboxed iframe (Origin: null)", vec![host, ("Origin", "null"), ("Content-Type", "application/json")], 403),
+            ("look-alike origin", vec![host, ("Origin", "http://localhost.evil.example"), ("Content-Type", "application/json")], 403),
+            ("DNS rebinding (attacker's hostname)", vec![("Host", "rebind.evil.example:7420"), ("Content-Type", "application/json")], 403),
+            ("wrong port in Host", vec![("Host", "127.0.0.1:9999"), ("Content-Type", "application/json")], 403),
+            ("form POST with no Origin", vec![host, ("Content-Type", "application/x-www-form-urlencoded")], 415),
+        ];
+        for (label, headers, status) in attacks {
+            let r = route(&state, &raw("POST", "/flows", &headers, save));
+            assert_eq!(r.status_code, status, "{label}");
+        }
+        assert!(saved_flow_names(&state).is_empty(), "no attack may have saved a flow");
+
+        // A missing Host is refused too, even for a GET.
+        assert_eq!(route(&state, &raw("GET", "/health", &[], b"")).status_code, 403);
+
+        // The editor (allowed origin) and curl (no Origin) both still work.
+        let editor = [host, ("Origin", "http://localhost:5173"), ("Content-Type", "application/json; charset=utf-8")];
+        assert_eq!(route(&state, &raw("POST", "/flows", &editor, save)).status_code, 200);
+        let curl = [("Host", "localhost:7420"), ("Content-Type", "application/json")];
+        assert_eq!(route(&state, &raw("POST", "/flows", &curl, save)).status_code, 200);
+        assert_eq!(saved_flow_names(&state), vec!["victim"]);
+    }
+
+    /// Regression: `read_body` had no cap, so one huge POST could exhaust memory.
+    #[test]
+    fn oversized_body_is_refused() {
+        let state = test_state();
+        let at_cap = vec![b' '; MAX_BODY_BYTES as usize];
+        let r = route(&state, &req("POST", "/flows", at_cap));
+        assert_ne!(r.status_code, 413, "a body exactly at the cap is read (and then fails to parse)");
+        let over = vec![b' '; MAX_BODY_BYTES as usize + 1];
+        assert_eq!(route(&state, &req("POST", "/flows", over)).status_code, 413);
     }
 }

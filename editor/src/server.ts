@@ -152,7 +152,13 @@ export type TriggerResult = {
 /** `POST /trigger/<slug>` — fire an ingress-triggered deployment with a real request body.
  *  Throws {@link ServerError} (404) if the slug isn't deployed. */
 export async function triggerDeployment(slug: string, body: string): Promise<TriggerResult> {
-  const res = await fetch(`${BASE}/trigger/${encodeURIComponent(slug)}`, { method: "POST", body });
+  // A string body would default to text/plain, which the server refuses (a CORS-safelisted type
+  // any site could send without preflight); the ingress text goes as raw bytes instead.
+  const res = await fetch(`${BASE}/trigger/${encodeURIComponent(slug)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body,
+  });
   return asJson<TriggerResult>(res);
 }
 
