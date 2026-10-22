@@ -1165,6 +1165,18 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     assert!(String::from_utf8(body_bytes(refused)).unwrap().contains("isn't set"));
     assert_eq!(from("env:PATH").status_code, 400);
     assert_eq!(state.secrets.names("s"), vec!["api_key"]);
+    // History and rollback, over the control plane: versions and events, never a value.
+    assert_eq!(set("another-value-xyz"), 200);
+    let history = |name: &str| route(&state, &req("GET", &format!("/deployments/s/secrets/{name}"), vec![]));
+    let h: serde_json::Value = serde_json::from_slice(&body_bytes(history("api_key"))).unwrap();
+    assert_eq!(h["versions"][0]["version"], 2);
+    assert_eq!(h["events"].as_array().unwrap().len(), 2);
+    assert!(!h.to_string().contains(value) && !h.to_string().contains("another-value"), "{h}");
+    assert_eq!(history("nope").status_code, 404);
+    let rollback = |v: u32| route(&state, &req("POST", "/deployments/s/secrets/api_key/rollback", serde_json::to_vec(&serde_json::json!({ "version": v })).unwrap()));
+    assert_eq!(rollback(2).status_code, 400, "already current");
+    assert_eq!(String::from_utf8(body_bytes(rollback(1))).unwrap(), r#"{"version":3}"#);
+    assert_eq!(*state.secrets.vault("s").lock().unwrap().current["api_key"], value);
 
     let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", "SecretRead(\"api_key\")", "StateWrite(\"k\")"]);
     assert_eq!(deploy_json(&state, "s", flow_hash, serde_json::json!({ "acknowledge": ack })).status_code, 200);

@@ -9,6 +9,7 @@
 # holon-server runtime state: deployments, saved flows, and the on-disk unit store.
 # Per machine, rewritten on every deploy/save, so never committed.
 .holon-*.json
+.holon-*.jsonl
 .holon-host-key
 .holon-store/
 # The dev launch config's (.claude/launch.json) copy of the same, kept apart from a default run's.

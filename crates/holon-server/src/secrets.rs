@@ -11,7 +11,10 @@
 //! - Sealed here, or a reference to where the value is kept (secret_sources.rs: an environment
 //!   variable, a dotenv file in development, HashiCorp Vault), resolved by the host.
 //! - Versioned: setting a secret adds a version and keeps the last [`MAX_VERSIONS`], so a change
-//!   can be seen and undone. Values a secret no longer has are still redacted.
+//!   can be seen and rolled back. Values a secret no longer has are still redacted.
+//! - Audited: every change, and a source that stops or starts reading, is appended to an audit
+//!   log beside the store (`<secrets>.audit.jsonl`, owner-only): what, when, which version and
+//!   source, never a value.
 //! - Redacted: every value a run logs, and every reply the control plane sends about a
 //!   deployment (its state, its sessions, a trigger's or a "send live" answer), has each secret
 //!   value replaced by `‹secret:name›`. Only literal occurrences are caught: a value transformed
@@ -19,7 +22,7 @@
 //!   [`MIN_SECRET_LEN`] are refused, since they would match ordinary text.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -98,11 +101,91 @@ pub(crate) struct SecretInfo {
     pub(crate) problem: Option<String>,
 }
 
+/// One version of a secret, as its history lists it.
+#[derive(Serialize, Debug, PartialEq)]
+pub(crate) struct VersionInfo {
+    pub(crate) version: u32,
+    pub(crate) source: String,
+    pub(crate) set_at: u64,
+    pub(crate) current: bool,
+}
+
+/// One entry of the audit log: never a value.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct SecretEvent {
+    pub(crate) at: u64,
+    pub(crate) slug: String,
+    /// The secret's name, or `*` for all of a deployment's.
+    pub(crate) name: String,
+    /// `set`, `rolled back`, `removed`, `forgotten` (its deployment was deleted), `sealed` (a
+    /// plain value sealed on open), `unreadable` or `readable again` (its source).
+    pub(crate) action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) detail: Option<String>,
+}
+
+/// The audit log: appended to a file, or kept in memory for an in-memory store.
+struct Audit {
+    path: Option<PathBuf>,
+    kept: Mutex<Vec<SecretEvent>>,
+}
+
+impl Audit {
+    fn record(&self, event: SecretEvent) {
+        let Some(path) = &self.path else {
+            self.kept.lock().unwrap().push(event);
+            return;
+        };
+        let line = match serde_json::to_string(&event) {
+            Ok(l) => l + "\n",
+            Err(_) => return,
+        };
+        let appended = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            let new = !path.exists();
+            let mut options = std::fs::OpenOptions::new();
+            options.append(true).create(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(path)?;
+            if new {
+                crate::sealing::restrict_to_owner(path)?;
+            }
+            file.write_all(line.as_bytes())
+        })();
+        if let Err(e) = appended {
+            eprintln!("holon-server: could not append to the secrets audit log {path:?}: {e}");
+        }
+    }
+
+    /// The last `limit` events for `slug`'s `name` (and its deployment-wide ones), oldest first.
+    fn read(&self, slug: &str, name: &str, limit: usize) -> Vec<SecretEvent> {
+        let all: Vec<SecretEvent> = match &self.path {
+            None => self.kept.lock().unwrap().clone(),
+            Some(path) => std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect(),
+        };
+        let mine: Vec<SecretEvent> = all.into_iter().filter(|e| e.slug == slug && (e.name == name || e.name == "*")).collect();
+        mine[mine.len().saturating_sub(limit)..].to_vec()
+    }
+}
+
 /// Every deployment's secrets, by slug. A slug may have secrets before it is first deployed.
 pub(crate) struct SecretStore {
     path: String,
     sealer: Sealer,
     sources: Sources,
+    audit: Audit,
     slugs: Mutex<BTreeMap<String, Slug>>,
 }
 
@@ -114,7 +197,13 @@ pub(crate) fn is_valid_name(name: &str) -> bool {
 impl SecretStore {
     /// An empty store that is never written (`":memory:"`), under a key that is never kept.
     pub(crate) fn memory() -> SecretStore {
-        SecretStore { path: ":memory:".into(), sealer: Sealer::ephemeral(), sources: Sources::none(), slugs: Mutex::new(BTreeMap::new()) }
+        SecretStore {
+            path: ":memory:".into(),
+            sealer: Sealer::ephemeral(),
+            sources: Sources::none(),
+            audit: Audit { path: None, kept: Mutex::new(Vec::new()) },
+            slugs: Mutex::new(BTreeMap::new()),
+        }
     }
 
     /// This store, resolving references against `sources`.
@@ -132,6 +221,7 @@ impl SecretStore {
         if path == ":memory:" {
             return Ok(SecretStore::memory());
         }
+        let audit = || Audit { path: Some(Path::new(path).with_extension("audit.jsonl")), kept: Mutex::new(Vec::new()) };
         let bytes = match std::fs::read(path) {
             Ok(b) => {
                 // One written before files were restricted on every OS is restricted now.
@@ -150,7 +240,7 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            return Ok(SecretStore { path: path.into(), sealer: Sealer::new(&master), sources, slugs: Mutex::new(BTreeMap::new()) });
+            return Ok(SecretStore { path: path.into(), sealer: Sealer::new(&master), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) });
         };
         if parsed.get("format").is_none() {
             // Plain values, from before sealing: seal them under a key (kept from now on).
@@ -160,12 +250,13 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            let store = SecretStore { path: path.into(), sealer: Sealer::new(&master), sources, slugs: Mutex::new(BTreeMap::new()) };
+            let store = SecretStore { path: path.into(), sealer: Sealer::new(&master), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
             let count: usize = plain.values().map(|names| names.len()).sum();
             for (slug, names) in plain {
                 for (name, value) in names {
                     let value = Zeroizing::new(value);
-                    store.add_version(&slug, &name, "local", Some(&value), false)?;
+                    let version = store.add_version(&slug, &name, "local", Some(&value), false)?;
+                    store.event(&slug, &name, "sealed", Some(version), Some("local"), None);
                 }
             }
             for (slug, entry) in store.slugs.lock().unwrap().iter() {
@@ -193,7 +284,7 @@ impl SecretStore {
         if has_secrets && sealer.check() != file.key_check {
             return Err(format!("{key} holds a different key from the one that sealed {path:?}"));
         }
-        let store = SecretStore { path: path.into(), sealer, sources, slugs: Mutex::new(BTreeMap::new()) };
+        let store = SecretStore { path: path.into(), sealer, sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
         {
             let mut slugs = store.slugs.lock().unwrap();
             for (slug, secrets) in file.deployments {
@@ -242,6 +333,7 @@ impl SecretStore {
         }
         let version = self.add_version(slug, name, "local", Some(value), true)?;
         self.persist()?;
+        self.event(slug, name, "set", Some(version), Some("local"), None);
         Ok(version)
     }
 
@@ -254,7 +346,56 @@ impl SecretStore {
         }
         let version = self.add_version(slug, name, source, None, true)?;
         self.persist()?;
+        self.event(slug, name, "set", Some(version), Some(source), None);
         Ok(version)
+    }
+
+    /// Make version `to` of `slug`'s `name` current again, as a new version (history is kept);
+    /// that version's number. Refused unless `to` is kept, isn't current, and still reads.
+    pub(crate) fn rollback(&self, slug: &str, name: &str, to: u32) -> Result<u32, String> {
+        let old = {
+            let slugs = self.slugs.lock().unwrap();
+            let versions = slugs.get(slug).and_then(|s| s.secrets.get(name)).ok_or_else(|| format!("{slug:?} has no secret {name:?}"))?;
+            if versions.last().is_some_and(|v| v.version == to) {
+                return Err(format!("version {to} is already current"));
+            }
+            versions.iter().find(|v| v.version == to).cloned().ok_or_else(|| format!("version {to} isn't kept (the last {MAX_VERSIONS} are)"))?
+        };
+        let value = self.value_of(slug, name, &old).map_err(|e| format!("version {to} can't be read: {e}"))?;
+        let sealed = (old.source == "local").then_some(value);
+        let version = self.add_version(slug, name, &old.source, sealed.as_deref().map(|v| v.as_str()), true)?;
+        self.persist()?;
+        self.event(slug, name, "rolled back", Some(version), Some(&old.source), Some(format!("to version {to}")));
+        Ok(version)
+    }
+
+    /// `slug`'s secret `name`: its kept versions, newest first, and its last audit events.
+    pub(crate) fn history(&self, slug: &str, name: &str) -> Option<(Vec<VersionInfo>, Vec<SecretEvent>)> {
+        let versions: Vec<VersionInfo> = {
+            let slugs = self.slugs.lock().unwrap();
+            let versions = slugs.get(slug).and_then(|s| s.secrets.get(name));
+            let last = versions.and_then(|v| v.last()).map(|v| v.version);
+            versions
+                .into_iter()
+                .flatten()
+                .rev()
+                .map(|v| VersionInfo { version: v.version, source: v.source.clone(), set_at: v.set_at, current: Some(v.version) == last })
+                .collect()
+        };
+        let events = self.audit.read(slug, name, 50);
+        (!versions.is_empty() || !events.is_empty()).then_some((versions, events))
+    }
+
+    fn event(&self, slug: &str, name: &str, action: &str, version: Option<u32>, source: Option<&str>, detail: Option<String>) {
+        self.audit.record(SecretEvent {
+            at: epoch_now(),
+            slug: slug.into(),
+            name: name.into(),
+            action: action.into(),
+            version,
+            source: source.map(String::from),
+            detail,
+        });
     }
 
     /// Read every reference again (and the dotenv file): a value changed or revoked where it is
@@ -309,6 +450,7 @@ impl SecretStore {
         };
         if removed {
             self.persist()?;
+            self.event(slug, name, "removed", None, None, None);
         }
         Ok(removed)
     }
@@ -319,6 +461,7 @@ impl SecretStore {
         if let Some(s) = removed {
             *s.vault.lock().unwrap() = Resolved::default();
             self.persist()?;
+            self.event(slug, "*", "forgotten", None, None, Some("its deployment was deleted".into()));
         }
         Ok(())
     }
@@ -370,6 +513,16 @@ impl SecretStore {
                     resolved.retired.push((name.clone(), value));
                 }
             }
+        }
+        // A source that stops or starts reading is audited once, not at every refresh.
+        for (name, problem) in &resolved.problems {
+            if !before.problems.contains_key(name) {
+                let source = entry.secrets.get(name).and_then(|v| v.last()).map(|v| v.source.as_str());
+                self.event(slug, name, "unreadable", None, source, Some(problem.clone()));
+            }
+        }
+        for name in before.problems.keys().filter(|n| !resolved.problems.contains_key(*n) && resolved.current.contains_key(*n)) {
+            self.event(slug, name, "readable again", None, None, None);
         }
         *entry.vault.lock().unwrap() = resolved;
     }
@@ -646,6 +799,51 @@ mod tests {
             assert_eq!(current(), None);
         }
         let _ = stop.send(());
+    }
+
+    #[test]
+    fn a_rollback_restores_an_older_version_as_a_new_one_and_everything_is_audited() {
+        let (path, key) = temp("rollback");
+        let store = SecretStore::open(&path, &key, Sources::of(&[("HOLON_SECRET_K", "from-the-env")])).unwrap();
+        store.set("api", "k", "first-value").unwrap();
+        store.set_from("api", "k", "env:HOLON_SECRET_K").unwrap();
+        store.set("api", "k", "third-value").unwrap();
+        assert!(store.rollback("api", "k", 3).unwrap_err().contains("already current"));
+        assert!(store.rollback("api", "k", 9).unwrap_err().contains("isn't kept"));
+        assert_eq!(store.rollback("api", "k", 1).unwrap(), 4);
+        assert_eq!(*store.vault("api").lock().unwrap().current["k"], "first-value", "re-sealed for its new version");
+        assert_eq!(store.rollback("api", "k", 2).unwrap(), 5);
+        assert_eq!(store.list("api")[0].source, "env:HOLON_SECRET_K");
+
+        let (versions, events) = store.history("api", "k").unwrap();
+        assert_eq!(versions.iter().map(|v| (v.version, v.current)).collect::<Vec<_>>(), [(5, true), (4, false), (3, false), (2, false), (1, false)]);
+        let actions: Vec<(&str, Option<u32>)> = events.iter().map(|e| (e.action.as_str(), e.version)).collect();
+        assert_eq!(actions, [("set", Some(1)), ("set", Some(2)), ("set", Some(3)), ("rolled back", Some(4)), ("rolled back", Some(5))]);
+        assert_eq!(events[3].detail.as_deref(), Some("to version 1"));
+        let log = std::fs::read_to_string(Path::new(&path).with_extension("audit.jsonl")).unwrap();
+        assert!(!log.contains("first-value") && !log.contains("third-value") && !log.contains("from-the-env"), "never a value: {log}");
+
+        store.remove("api", "k").unwrap();
+        let (versions, events) = store.history("api", "k").unwrap();
+        assert!(versions.is_empty());
+        assert_eq!(events.last().unwrap().action, "removed");
+        assert!(store.history("api", "never").is_none());
+    }
+
+    #[test]
+    fn a_source_that_stops_reading_is_audited_once() {
+        let store = SecretStore::memory().with_sources(Sources::of(&[("VAULT_ADDR", "http://127.0.0.1:9"), ("VAULT_TOKEN", "t")]));
+        {
+            // Stored as if set while Vault was up; it isn't now.
+            let mut slugs = store.slugs.lock().unwrap();
+            let entry = slugs.entry("pay".into()).or_default();
+            entry.secrets.insert("s".into(), vec![Stored { version: 1, set_at: 0, source: "vault:secret/x#f".into(), nonce: None, sealed: None }]);
+        }
+        store.refresh();
+        store.refresh();
+        let (_, events) = store.history("pay", "s").unwrap();
+        assert_eq!(events.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(), ["unreadable"]);
+        assert!(events[0].detail.as_deref().unwrap().contains("can't be reached"));
     }
 
     #[test]

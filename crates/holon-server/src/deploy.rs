@@ -283,15 +283,43 @@ pub(crate) fn handle_post_deploy_preview(
 /// `GET /deployments/<slug>/secrets` — its secrets' names, versions and sources, never values.
 /// `POST /deployments/<slug>/secrets/<name>` (`{"value": "..."}`, or `{"from": "env:…"}` /
 /// `{"from": "vault:…"}` for one kept elsewhere: secret_sources.rs) sets one, as a new version;
-/// `DELETE` removes it, every version.
+/// `DELETE` removes it, every version. `GET /deployments/<slug>/secrets/<name>` — its kept
+/// versions and audit events; `POST …/<name>/rollback` (`{"version": n}`) makes an older version
+/// current again, as a new one.
 /// A slug may have secrets before it is first deployed.
 pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&str>, method: &str, request: &Request) -> Response {
     if !is_valid_slug(slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
     }
-    match (method, name) {
-        ("GET", None) => Response::json(&serde_json::json!({ "names": secrets.names(slug), "secrets": secrets.list(slug) })),
-        ("POST", Some(name)) => {
+    // `<name>/rollback`: a secret name never holds a '/'.
+    let (name, action) = match name.map(|n| n.split_once('/')) {
+        Some(Some((name, action))) => (Some(name), Some(action)),
+        _ => (name, None),
+    };
+    match (method, name, action) {
+        ("GET", None, None) => Response::json(&serde_json::json!({ "names": secrets.names(slug), "secrets": secrets.list(slug) })),
+        ("GET", Some(name), None) => match secrets.history(slug, name) {
+            Some((versions, events)) => Response::json(&serde_json::json!({ "name": name, "versions": versions, "events": events })),
+            None => err(404, format!("{slug:?} has no secret {name:?}")),
+        },
+        ("POST", Some(name), Some("rollback")) => {
+            let bytes = match read_body(request) {
+                Ok(b) => b,
+                Err(r) => return r,
+            };
+            #[derive(Deserialize)]
+            struct Rollback {
+                version: u32,
+            }
+            match serde_json::from_slice::<Rollback>(&bytes) {
+                Ok(body) => match secrets.rollback(slug, name, body.version) {
+                    Ok(version) => Response::json(&serde_json::json!({ "version": version })),
+                    Err(e) => err(400, e),
+                },
+                Err(e) => err(400, format!("expected {{\"version\": n}}: {e}")),
+            }
+        }
+        ("POST", Some(name), None) => {
             let bytes = match read_body(request) {
                 Ok(b) => b,
                 Err(r) => return r,
@@ -313,7 +341,7 @@ pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&st
                 Err(e) => err(400, e),
             }
         }
-        ("DELETE", Some(name)) => match secrets.remove(slug, name) {
+        ("DELETE", Some(name), None) => match secrets.remove(slug, name) {
             Ok(true) => Response::empty_204(),
             Ok(false) => err(404, format!("{slug:?} has no secret {name:?}")),
             Err(e) => err(500, e),
