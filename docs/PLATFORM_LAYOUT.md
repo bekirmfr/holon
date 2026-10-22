@@ -432,7 +432,7 @@ effect loop). It can be tested in the editor with no server running.
 packs/hooks/
   pack.toml            name, version, door = "hooks", requires = ["auth", "http"]
   units/
-    stripe_verify.holon     composite: hmac_sha256 + secure_equals + text kit
+    stripe_verify.holon     composite: split + fold + hmac_sha256 + secure_equals (an editor template today, editor/src/templates.ts)
     github_event.holon      composite: json_parse + field + select
     slack_post.holon        composite: record + json_stringify + http_request
   templates/
@@ -456,7 +456,7 @@ packs/hooks/
 |---|---|---|---|---|---|---|
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` ✅ | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met** |
 | **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params ✅ | — | `data/` listener on a maintained HTTP stack (§7b) ✅: `hyper` on `tokio`, with timeouts, a body cap and a connection cap | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
-| **M2 effects + replay** | `http_request` ✅, hashes/HMAC ✅ (`sha256`, `hmac_sha256`, `hex`, `base64`, `secure_equals`), Effects refused by `Any`-typed sink payloads ✅ | effect loop ✅, `Performer` ✅, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets ✅, durable runs ✅ | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half built (§4: rounds, permissions, secrets, durable runs); signature primitives built; the live Stripe → Slack run remains** |
+| **M2 effects + replay** | `http_request` ✅, hashes/HMAC ✅ (`sha256`, `hmac_sha256`, `hex`, `base64`, `secure_equals`), Effects refused by `Any`-typed sink payloads ✅ | effect loop ✅, `Performer` ✅, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets ✅, durable runs ✅ | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Met (2026-10-22), with an echo service standing in for Slack** (see the status below) |
 | **M3 door 1** | — | (consent at load moved to M2, §4.2.1) | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
 
@@ -465,8 +465,26 @@ landed early (the recorder came with view mode); its effects half, and durable r
 outbound requests in rounds, host permissions, secrets, and runs that wait and resume. The signature
 primitives are in core too (`sha256`, `hmac_sha256`, `hex`, `base64`, and `secure_equals`, a
 constant-time compare), checked against RFC 4231 / FIPS 180 / RFC 4648 vectors and GitHub's
-webhook example. What M2 still lacks for its "done when" is the live run: a Stripe webhook verified,
-posted to Slack, a failure replayed, fixed and redeployed.
+webhook example.
+
+**M2's live run (2026-10-22).** A flow built in the editor: `request` (POST `/stripe`) →
+`stripe_verify` (a template: the `stripe-signature` header taken apart with `split` and `fold`,
+HMAC-SHA256 of `<t>.<body>` under a `secret`, compared in constant time, `t` within 300 s of a
+`clock`) → `{"text": "Stripe: <type>"}` → `http_request` POST, its path a `secret` →
+`respond` (400 when unverified). Deployed through the consent screen (the clock, one host, two named
+secrets), it answered webhooks signed the way Stripe signs them with 200 and posted the Slack-shaped
+message; a tampered body or no signature got 400 and posted nothing. The outbound host was httpbin.org,
+an echo service, standing in for `hooks.slack.com`: pointing it at Slack is the node's `host` param
+and the `slack_webhook_path` secret. A bug deployed on purpose (the message read the event's `kind`,
+not `type`) was found in view mode by stepping to the node whose output was absent, and fixed and
+redeployed; from the failing webhook to a succeeding one took 76 s.
+
+The run found two real bugs, both fixed with regression tests: an `http_request` whose wired body
+was absent (the check upstream had failed) still went out, bodiless; and a replay recomputed a
+node fed a secret from its placeholder, so the signature check replayed as failing when it had
+passed. The flow log now keeps each node's outputs (redacted), and replay shows those for such a
+node. Left for M3: the `hooks` pack (`stripe_verify` is an editor template today, not a published
+unit), and a run against Stripe and Slack themselves (`stripe listen`, a real incoming webhook).
 
 ### 7a. Review findings, triaged against this direction
 The 2026-10-21 project review is sorted by what matters for a **single-user backend builder with a
