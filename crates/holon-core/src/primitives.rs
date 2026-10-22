@@ -484,6 +484,13 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
     Some(Value::Record(BTreeMap::from([("resume_token".to_string(), Value::Text(name))])))
 }
 
+/// Whether leaf `name` has optional input ports, read as "none" when left unwired: only
+/// `http_request` (headers, body). Inside a composite, such a port that *is* wired holds the
+/// node back while its value is absent (eval.rs), like any other leaf's input.
+pub(crate) fn has_optional_ports(name: &str) -> bool {
+    name == "http_request"
+}
+
 /// The methods `http_request` sends.
 const HTTP_METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 

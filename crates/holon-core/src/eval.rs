@@ -204,9 +204,15 @@ fn eval_composite(
             };
             gathered.push(val);
         }
+        // A leaf with optional ports (an `http_request`'s headers and body) reads an *unwired*
+        // one as "none"; a *wired* one whose value is absent means what absence means
+        // everywhere else: the node doesn't fire. Otherwise a request downstream of a check
+        // that failed (a webhook whose signature didn't verify) still went out, bodiless.
+        let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
+        let held = wired_but_absent && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name));
         path.push(ci as u32);
         observer.enter(path);
-        scratch[ci] = eval_at(child, &gathered, resolver, observer, path);
+        scratch[ci] = if held { smallvec![None; child.outputs.len()] } else { eval_at(child, &gathered, resolver, observer, path) };
         observer.leave(path);
         path.pop();
     }
@@ -492,6 +498,38 @@ mod tests {
         let Value::Record(req) = req else { panic!("{req:?}") };
         assert_eq!(req["url"], Value::Text("https://api.example.com/items".into()));
         assert_eq!(eval(&flow, &inputs, &r).into_vec(), vec![None], "no one to answer: absent");
+    }
+
+    /// Regression: an `http_request` whose wired body was absent (a webhook that failed its
+    /// signature check upstream) still went out, with an empty body. Unwired, the body is
+    /// optional ("none"); wired, its absence holds the request back, like any input.
+    #[test]
+    fn a_wired_but_absent_body_holds_an_http_request_back() {
+        struct Count(usize);
+        impl Observer for Count {
+            fn answer(&mut self, _: &[u32], _: &Value) -> Option<Value> {
+                self.0 += 1;
+                Some(num(200.0))
+            }
+        }
+        let mut r = MapResolver::new();
+        let request = Unit {
+            params: vec![Param::frozen("method", "POST"), Param::frozen("host", "hooks.slack.com")],
+            ..prim("http_request", 3, Type::Record)
+        };
+        let hreq = r.insert(request).unwrap();
+        let ports = vec![Port { name: "path".into(), ty: Type::Text }, Port { name: "body".into(), ty: Type::Any }];
+        let wired = composite(ports.clone(), Type::Any, vec![hreq], vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 2), edge(0, 0, BOUNDARY, 0)]);
+        let unwired = composite(ports, Type::Any, vec![hreq], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)]);
+        let path = Some(Value::Text("/services/x".into()));
+        let send = |flow: &Unit, body: Option<Value>| {
+            let mut sent = Count(0);
+            let out = eval_observed(flow, &[path.clone(), body], &r, &mut sent).into_vec();
+            (out, sent.0)
+        };
+        assert_eq!(send(&wired, Some(Value::Text("hi".into()))), (vec![Some(num(200.0))], 1));
+        assert_eq!(send(&wired, None), (vec![None], 0), "wired, absent: not sent");
+        assert_eq!(send(&unwired, None), (vec![Some(num(200.0))], 1), "unwired: optional, sent without a body");
     }
 
     #[test]
