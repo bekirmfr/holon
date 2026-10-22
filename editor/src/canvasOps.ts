@@ -10,6 +10,84 @@ import { boundaryLabels, encapErrorNodeIndices, isWEncapError } from "./diagnost
 import { outputColor } from "./theme";
 import { unitFor } from "./canvasUnits";
 import { defaultBoundaryValue } from "./BoundaryField";
+import { findRoutes, routeSpec } from "./derive";
+import { endpointUnit, serverUnit, type EndpointDraft } from "./endpoint";
+
+/** A group of canvas nodes as core children (each node's hash) plus the wires among them, by
+ *  index. */
+export function groupOf(group: PrimitiveNodeType[], es: Edge[], ev: Evaluator, byName: Map<string, WUnit>) {
+  const indexOf = new Map(group.map((n, i) => [n.id, i]));
+  const children = group.map((n) => unitFor(n, ev, byName));
+  const wedges: WEdge[] = es
+    .filter((e) => indexOf.has(e.source) && indexOf.has(e.target))
+    .map((e) => {
+      const from = indexOf.get(e.source)!;
+      const to = indexOf.get(e.target)!;
+      return {
+        from_child: from,
+        from_port: group[from].data.outputs.findIndex((p) => p.name === e.sourceHandle),
+        to_child: to,
+        to_port: group[to].data.inputs.findIndex((p) => p.name === e.targetHandle),
+      };
+    });
+  return { children, wedges };
+}
+
+/** Which canvas node each child of a frozen unit is, in the order the unit is stored (and run,
+ *  and timed) in: core sorts a composite's children canonically when it hashes it. */
+export function traceOfUnit(unit: WUnit, group: PrimitiveNodeType[], ev: Evaluator): string[] {
+  return unit.body.kind === "Composite"
+    ? Array.from(ev.canonical_child_order(unit.body.children, unit.body.edges), (i) => group[i].id)
+    : [];
+}
+
+/** The server a canvas declares: its endpoints, why any route can't be one, the server unit's
+ *  hash once every route is sound and `portText` is a port, and the trace from each route's
+ *  stored children to canvas nodes. */
+export type DerivedServer = {
+  endpoints: EndpointDraft[];
+  errors: string[];
+  serverHash: string | null;
+  trace: Record<string, string[]>;
+};
+
+/** Derive the server from the canvas: each connected group holding a request node is one route
+ *  (derive.ts). Each group is projected through core like a selection being grouped, narrowed to
+ *  the request input and the response/effect outputs, and wrapped as an endpoint. */
+export function deriveServer(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, byName: Map<string, WUnit>, portText: string): DerivedServer {
+  const { routes, errors } = findRoutes(ns, es);
+  const endpoints: EndpointDraft[] = [];
+  const trace: Record<string, string[]> = {};
+  for (const r of routes) {
+    const label = `${r.method} ${r.path}`;
+    try {
+      const group = r.nodeIds.map((id) => ns.find((n) => n.id === id)!);
+      const { children, wedges } = groupOf(group, es, ev, byName);
+      const spec = routeSpec(ev.propose_encapsulation(children, wedges) as WEncapSpec, group, label);
+      if (typeof spec === "string") {
+        errors.push(spec);
+        continue;
+      }
+      const handler = ev.freeze_encapsulation(children, wedges, spec) as WUnit;
+      trace[label] = traceOfUnit(handler, group, ev);
+      const handlerHash = ev.insert(buildPreimage(handler));
+      const unit = endpointUnit(handlerHash, handler.inputs ?? [], handler.outputs ?? [], r.method, r.path, r.resume);
+      if (typeof unit === "string") {
+        errors.push(`${label}: ${unit}`);
+        continue;
+      }
+      endpoints.push({ method: r.method, path: r.path, hash: ev.insert(buildPreimage(unit)) });
+    } catch (err) {
+      errors.push(`${label}: ${messageOf(err)}`);
+    }
+  }
+  const port = Number(portText);
+  const serverHash =
+    endpoints.length > 0 && errors.length === 0 && Number.isInteger(port) && port >= 1 && port <= 65535
+      ? ev.insert(buildPreimage(serverUnit(endpoints.map((e) => e.hash), port)))
+      : null;
+  return { endpoints, errors, serverHash, trace };
+}
 
 /** A projected canvas: the frozen composite, its promoted inputs with the values supplied for
  *  them, and its outputs with their current results. */

@@ -1,0 +1,353 @@
+// Sample flows: one per capability, opened from the flows page as an unsaved copy. Each is built
+// here from the live catalog (and the template interfaces), never from hand-copied node shapes,
+// so a sample can't drift from core: samples.test.ts builds every one and derives it through the
+// real core. Every new feature ships with a sample that shows it (CLAUDE.md).
+
+import type { WParam, WPort, WType, WUnit } from "./holon";
+import type { FlowDocument } from "./server";
+import type { PrimitiveNodeType } from "./PrimitiveNode";
+import { isTemplate, templateDefaults, templateInterface } from "./templates";
+
+/** Places nodes and wires them. Every name is checked: an unknown leaf, param or port throws. */
+export type SampleBuilder = {
+  /** A leaf from the catalog or a template, with params set by name, at a canvas position. */
+  node(name: string, params?: Record<string, string>, at?: [number, number]): string;
+  wire(from: string, output: string, to: string, input: string): void;
+};
+
+export type Sample = {
+  /** The flow's name when opened (and its deployment's slug once deployed). */
+  name: string;
+  title: string;
+  /** One line: what it demonstrates. */
+  description: string;
+  /** The features it shows, as the palette and docs name them. */
+  shows: string[];
+  /** Deploy settings: a server's port, or a clock flow's interval in seconds. */
+  port?: string;
+  interval?: string;
+  /** Secrets to set under ⚙ before it works, and what each is. */
+  secrets?: { name: string; what: string }[];
+  /** How to try it once deployed. */
+  tryIt: string;
+  build(b: SampleBuilder): void;
+};
+
+/** A literal's wire type, as the editor sets it when a const's or default's type changes. */
+const literalType = (ty: string): WType => (ty === "Json" ? "Any" : (ty as WType));
+
+/** Lay out `sample` on a canvas: the flow document opening it loads. */
+export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadic: Set<string>): FlowDocument {
+  const nodes: PrimitiveNodeType[] = [];
+  const edges: FlowDocument["edges"] = [];
+  let next = 0;
+  const fail = (what: string): never => {
+    throw new Error(`sample "${sample.name}": ${what}`);
+  };
+  const b: SampleBuilder = {
+    node(name, set = {}, at = [40 + 260 * (next % 5), 40 + 160 * Math.floor(next / 5)]) {
+      const id = `${name}-${next++}`;
+      const position = { x: at[0], y: at[1] };
+      if (isTemplate(name)) {
+        const defaults = templateDefaults(name);
+        for (const k of Object.keys(set)) if (!defaults.some((p) => p.name === k)) fail(`${name} has no param "${k}"`);
+        const params: WParam[] = defaults.map((p) => (p.name in set ? { kind: "Frozen", name: p.name, value: set[p.name] } : p));
+        const iface = templateInterface(name, params);
+        nodes.push({
+          id,
+          type: "primitive",
+          position,
+          data: { name, body: { kind: "Template" }, ...iface, params, variadic: false, minInputs: 0 },
+        } as PrimitiveNodeType);
+        return id;
+      }
+      const u = catalog.get(name) ?? fail(`no leaf "${name}" in the catalog`);
+      for (const k of Object.keys(set)) if (!(u.params ?? []).some((p) => p.name === k)) fail(`${name} has no param "${k}"`);
+      const params: WParam[] = (u.params ?? []).map((p) => (p.name in set ? { kind: "Frozen", name: p.name, value: set[p.name] } : p));
+      let inputs: WPort[] = u.inputs ?? [];
+      let outputs: WPort[] = u.outputs ?? [];
+      if (name === "const" || name === "default") {
+        const typeParam = params.find((p) => p.name === "type");
+        const ty = literalType(typeParam?.kind === "Frozen" ? typeParam.value : "Number");
+        inputs = inputs.map((p) => ({ ...p, ty }));
+        outputs = outputs.map((p) => ({ ...p, ty }));
+      }
+      nodes.push({
+        id,
+        type: "primitive",
+        position,
+        data: { name, body: { kind: "Primitive" }, inputs, outputs, params, variadic: variadic.has(name), minInputs: inputs.length },
+      } as PrimitiveNodeType);
+      return id;
+    },
+    wire(from, output, to, input) {
+      const src = nodes.find((n) => n.id === from) ?? fail(`no node ${from}`);
+      const dst = nodes.find((n) => n.id === to) ?? fail(`no node ${to}`);
+      if (!src.data.outputs.some((p) => p.name === output)) fail(`${src.data.name} has no output "${output}"`);
+      if (!dst.data.inputs.some((p) => p.name === input)) fail(`${dst.data.name} has no input "${input}"`);
+      edges.push({
+        id: `xy-edge__${from}${output}-${to}${input}`,
+        source: from,
+        sourceHandle: output,
+        target: to,
+        targetHandle: input,
+        style: { stroke: "#8295b0", strokeWidth: 1.6 },
+      });
+    },
+  };
+  sample.build(b);
+  // Zoomed so the whole sample shows at once, clear of the canvas's panels.
+  const right = Math.max(...nodes.map((n) => n.position.x)) + 320;
+  const bottom = Math.max(...nodes.map((n) => n.position.y)) + 220;
+  const zoom = Math.min(0.8, 820 / right, 640 / bottom);
+  return {
+    nodes,
+    edges,
+    viewport: { x: 10, y: 50, zoom: Math.round(zoom * 100) / 100 },
+    units: [],
+    server: { port: sample.port ?? "", interval: sample.interval ?? "" },
+  };
+}
+
+export const SAMPLES: Sample[] = [
+  {
+    name: "hello-api",
+    title: "Hello API",
+    description: "A route with a path parameter, answered with text: the smallest server.",
+    shows: ["request", "respond", "path params", "concat"],
+    port: "8101",
+    tryIt: "curl http://127.0.0.1:8101/hello/Ada",
+    build(b) {
+      const req = b.node("request", { method: "GET", path: "/hello/:name" }, [40, 40]);
+      const who = b.node("field", { name: "name" }, [380, 60]);
+      const hello = b.node("const", { value: "Hello, ", type: "Text" }, [380, 180]);
+      const text = b.node("concat", {}, [640, 100]);
+      const res = b.node("respond", { status: "200", missing: "404" }, [880, 60]);
+      b.wire(req, "params", who, "record");
+      b.wire(hello, "out", text, "a");
+      b.wire(who, "out", text, "b");
+      b.wire(req, "request", res, "request");
+      b.wire(text, "out", res, "body");
+    },
+  },
+  {
+    name: "notes-api",
+    title: "Notes API",
+    description: "Create, read, list and delete notes kept in the deployment's state, keyed by id.",
+    shows: ["state (store_read, store_write)", "lookup", "insert", "remove", "JSON bodies", "404 and 204"],
+    port: "8102",
+    tryIt:
+      'curl -X PUT -H "Content-Type: application/json" -d \'{"text":"buy milk"}\' http://127.0.0.1:8102/notes/1, then GET /notes, GET /notes/1, DELETE /notes/1',
+    build(b) {
+      // Each route reads the notes on its own: routes are separate groups on the canvas.
+      const notes = (x: number, y: number) => {
+        const read = b.node("store_read", { key: "notes" }, [x, y]);
+        const all = b.node("default", { value: "{}", type: "Json" }, [x + 180, y]);
+        b.wire(read, "out", all, "value");
+        return all;
+      };
+      const id = (req: string, x: number, y: number) => {
+        const f = b.node("field", { name: "id" }, [x, y]);
+        b.wire(req, "params", f, "record");
+        return f;
+      };
+
+      // GET /notes: every note.
+      const list = b.node("request", { method: "GET", path: "/notes" }, [40, 40]);
+      const listRes = b.node("respond", { status: "200", missing: "404" }, [760, 40]);
+      b.wire(list, "request", listRes, "request");
+      b.wire(notes(400, 120), "out", listRes, "body");
+
+      // PUT /notes/:id: store the body under the id, answer with it.
+      const put = b.node("request", { method: "PUT", path: "/notes/:id" }, [40, 320]);
+      const putId = id(put, 400, 300);
+      const added = b.node("insert", {}, [760, 380]);
+      const save = b.node("store_write", { key: "notes" }, [1000, 380]);
+      const putRes = b.node("respond", { status: "200", missing: "400" }, [1000, 280]);
+      b.wire(notes(400, 420), "out", added, "record");
+      b.wire(putId, "out", added, "key");
+      b.wire(put, "json", added, "value");
+      b.wire(added, "out", save, "value");
+      b.wire(put, "request", putRes, "request");
+      b.wire(put, "json", putRes, "body");
+
+      // GET /notes/:id: one note, or 404.
+      const get = b.node("request", { method: "GET", path: "/notes/:id" }, [40, 620]);
+      const found = b.node("lookup", {}, [760, 660]);
+      const getRes = b.node("respond", { status: "200", missing: "404" }, [1000, 620]);
+      b.wire(notes(400, 700), "out", found, "record");
+      b.wire(id(get, 400, 600), "out", found, "key");
+      b.wire(get, "request", getRes, "request");
+      b.wire(found, "out", getRes, "body");
+
+      // DELETE /notes/:id: drop it, answer 204.
+      const del = b.node("request", { method: "DELETE", path: "/notes/:id" }, [40, 920]);
+      const removed = b.node("remove", {}, [760, 960]);
+      const drop = b.node("store_write", { key: "notes" }, [1000, 1000]);
+      const delRes = b.node("respond", { status: "204" }, [1000, 900]);
+      b.wire(notes(400, 1000), "out", removed, "record");
+      b.wire(id(del, 400, 900), "out", removed, "key");
+      b.wire(removed, "out", drop, "value");
+      b.wire(del, "request", delRes, "request");
+    },
+  },
+  {
+    name: "stripe-to-slack",
+    title: "Stripe → Slack",
+    description: "Verify a Stripe webhook's signature and post the event to a Slack channel; anything unsigned gets 400 and posts nothing.",
+    shows: ["stripe_verify", "secrets", "http_request", "clock", "hmac_sha256", "split"],
+    port: "8103",
+    secrets: [
+      { name: "stripe_webhook_secret", what: "the endpoint's signing secret from Stripe (whsec_…)" },
+      { name: "slack_webhook_path", what: "your Slack incoming webhook's path (/services/…)" },
+    ],
+    tryIt: "stripe listen --forward-to 127.0.0.1:8103/stripe, then stripe trigger payment_intent.succeeded",
+    build(b) {
+      const req = b.node("request", { method: "POST", path: "/stripe" }, [40, 40]);
+      const signing = b.node("secret", { name: "stripe_webhook_secret" }, [40, 300]);
+      const clock = b.node("clock", {}, [40, 400]);
+      const verify = b.node("stripe_verify", { tolerance: "300" }, [380, 240]);
+      const type = b.node("field", { name: "type" }, [680, 160]);
+      const prefix = b.node("const", { value: "Stripe: ", type: "Text" }, [680, 40]);
+      const text = b.node("concat", {}, [940, 80]);
+      const empty = b.node("record", {}, [940, 220]);
+      const message = b.node("with_field", { name: "text" }, [1180, 140]);
+      const body = b.node("json_stringify", {}, [1420, 140]);
+      const noHeaders = b.node("record", {}, [940, 340]);
+      const jsonType = b.node("const", { value: "application/json", type: "Text" }, [940, 430]);
+      const headers = b.node("with_field", { name: "content-type" }, [1180, 360]);
+      const path = b.node("secret", { name: "slack_webhook_path" }, [1180, 520]);
+      const post = b.node("http_request", { method: "POST", host: "hooks.slack.com" }, [1660, 300]);
+      const status = b.node("field", { name: "status" }, [1920, 300]);
+      const res = b.node("respond", { status: "200", missing: "400" }, [2160, 120]);
+      b.wire(req, "request", verify, "request");
+      b.wire(signing, "out", verify, "secret");
+      b.wire(clock, "out", verify, "now");
+      b.wire(verify, "event", type, "record");
+      b.wire(prefix, "out", text, "a");
+      b.wire(type, "out", text, "b");
+      b.wire(empty, "out", message, "record");
+      b.wire(text, "out", message, "value");
+      b.wire(message, "out", body, "value");
+      b.wire(noHeaders, "out", headers, "record");
+      b.wire(jsonType, "out", headers, "value");
+      b.wire(path, "out", post, "path");
+      b.wire(headers, "out", post, "headers");
+      b.wire(body, "out", post, "body");
+      b.wire(post, "out", status, "record");
+      b.wire(req, "request", res, "request");
+      b.wire(status, "out", res, "body");
+    },
+  },
+  {
+    name: "heartbeat",
+    title: "Heartbeat",
+    description: "A clock flow: every 10 seconds it records the time and counts the beats in its state.",
+    shows: ["clock", "interval", "state across runs", "default", "add"],
+    interval: "10",
+    tryIt: "deploy it, wait, then look at its state on the deployed page (or GET /deployments/heartbeat/state)",
+    build(b) {
+      const clock = b.node("clock", {}, [40, 40]);
+      const last = b.node("store_write", { key: "last_beat" }, [300, 40]);
+      const read = b.node("store_read", { key: "beats" }, [40, 200]);
+      const count = b.node("default", { value: "0", type: "Number" }, [260, 200]);
+      const one = b.node("const", { value: "1", type: "Number" }, [260, 320]);
+      const more = b.node("add", {}, [520, 240]);
+      const save = b.node("store_write", { key: "beats" }, [760, 240]);
+      b.wire(clock, "out", last, "value");
+      b.wire(read, "out", count, "value");
+      b.wire(count, "out", more, "a");
+      b.wire(one, "out", more, "b");
+      b.wire(more, "out", save, "value");
+    },
+  },
+  {
+    name: "approval",
+    title: "Order approval (durable run)",
+    description: "An order waits for payment: the run hands out a pay link, parks, and finishes when the link is opened, hours or days later.",
+    shows: ["await", "resume_token", "resume routes", "durable runs"],
+    port: "8105",
+    tryIt:
+      'curl -X POST -H "Content-Type: application/json" -d \'{"item":"book"}\' http://127.0.0.1:8105/orders (answers /paid/<token>), then open that path; the order is written to state "last_order"',
+    build(b) {
+      // POST /orders: answer with the pay link, then wait at "paid".
+      const order = b.node("request", { method: "POST", path: "/orders" }, [40, 40]);
+      const token = b.node("resume_token", { await: "paid" }, [380, 40]);
+      const base = b.node("const", { value: "/paid/", type: "Text" }, [380, 140]);
+      const link = b.node("concat", {}, [640, 60]);
+      const res = b.node("respond", { status: "200", missing: "404" }, [880, 40]);
+      const paid = b.node("await", { name: "paid", expires: "86400" }, [380, 300]);
+      const via = b.node("field", { name: "method" }, [640, 300]);
+      const done = b.node("with_field", { name: "paid_via" }, [880, 300]);
+      const save = b.node("store_write", { key: "last_order" }, [1120, 300]);
+      b.wire(base, "out", link, "a");
+      b.wire(token, "out", link, "b");
+      b.wire(order, "request", res, "request");
+      b.wire(link, "out", res, "body");
+      b.wire(paid, "out", via, "record");
+      b.wire(order, "json", done, "record");
+      b.wire(via, "out", done, "value");
+      b.wire(done, "out", save, "value");
+
+      // GET /paid/:token: delivers itself to the waiting run, and thanks the payer.
+      const pay = b.node("request", { method: "GET", path: "/paid/:token", resume: "paid" }, [40, 520]);
+      const thanks = b.node("const", { value: "thanks, the order is paid", type: "Text" }, [380, 560]);
+      const payRes = b.node("respond", { status: "200", missing: "404" }, [640, 520]);
+      b.wire(pay, "request", payRes, "request");
+      b.wire(thanks, "out", payRes, "body");
+    },
+  },
+  {
+    name: "fetch-json",
+    title: "Fetch and reshape",
+    description: "Call another API, parse its JSON and answer with the one field you need.",
+    shows: ["http_request", "json_parse", "field", "host permissions"],
+    port: "8106",
+    tryIt: "curl http://127.0.0.1:8106/slideshow (calls https://httpbin.org/json, answers its title)",
+    build(b) {
+      const req = b.node("request", { method: "GET", path: "/slideshow" }, [40, 40]);
+      const path = b.node("const", { value: "/json", type: "Text" }, [40, 260]);
+      const call = b.node("http_request", { method: "GET", host: "httpbin.org" }, [300, 240]);
+      const body = b.node("field", { name: "body" }, [560, 240]);
+      const parsed = b.node("json_parse", {}, [780, 240]);
+      const show = b.node("field", { name: "slideshow" }, [1000, 240]);
+      const title = b.node("field", { name: "title" }, [1220, 240]);
+      const res = b.node("respond", { status: "200", missing: "404" }, [1460, 40]);
+      b.wire(path, "out", call, "path");
+      b.wire(call, "out", body, "record");
+      b.wire(body, "out", parsed, "text");
+      b.wire(parsed, "out", show, "record");
+      b.wire(show, "out", title, "record");
+      b.wire(req, "request", res, "request");
+      b.wire(title, "out", res, "body");
+    },
+  },
+  {
+    name: "sign-payload",
+    title: "Sign a payload",
+    description: "Sign whatever is posted with a secret key (HMAC-SHA256) and answer the signature with the body in base64.",
+    shows: ["hmac_sha256", "base64", "secrets", "record building"],
+    port: "8107",
+    secrets: [{ name: "signing_key", what: "any secret of 6 characters or more to sign with" }],
+    tryIt: "curl -X POST -H \"Content-Type: application/json\" -d 'hello' http://127.0.0.1:8107/sign",
+    build(b) {
+      const req = b.node("request", { method: "POST", path: "/sign" }, [40, 40]);
+      const key = b.node("secret", { name: "signing_key" }, [40, 300]);
+      const sig = b.node("hmac_sha256", { encoding: "hex" }, [380, 200]);
+      const b64 = b.node("base64", { mode: "encode", alphabet: "standard" }, [380, 360]);
+      const empty = b.node("record", {}, [620, 80]);
+      const withSig = b.node("with_field", { name: "signature" }, [860, 140]);
+      const withBody = b.node("with_field", { name: "body_base64" }, [1100, 220]);
+      const res = b.node("respond", { status: "200", missing: "400" }, [1340, 40]);
+      b.wire(key, "out", sig, "key");
+      b.wire(req, "body", sig, "message");
+      b.wire(req, "body", b64, "text");
+      b.wire(empty, "out", withSig, "record");
+      b.wire(sig, "out", withSig, "value");
+      b.wire(withSig, "out", withBody, "record");
+      b.wire(b64, "out", withBody, "value");
+      b.wire(req, "request", res, "request");
+      b.wire(withBody, "out", res, "body");
+    },
+  },
+];

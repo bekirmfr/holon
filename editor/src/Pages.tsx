@@ -5,6 +5,7 @@ import { deleteFlow, getFlow, listFlows, type DeploymentEntry, type FlowListEntr
 import { openChoice } from "./flowDoc";
 import { useDialog } from "./Dialog";
 import { DeploymentCard } from "./DeploymentCard";
+import type { Sample } from "./samples";
 
 /** Which top-level view is showing. The canvas is never unmounted (React Flow's own state —
  *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
@@ -20,10 +21,15 @@ export function FlowsPage({
   current,
   onOpen,
   onResume,
+  samples,
+  onOpenSample,
 }: {
   current: { name: string | null; dirty: boolean };
   onOpen: (rec: FlowRecord) => void;
   onResume: () => void;
+  /** Sample flows (samples.ts), one per capability: opening one starts an unsaved copy. */
+  samples: Sample[];
+  onOpenSample: (sample: Sample) => void;
 }) {
   const dialog = useDialog();
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
@@ -121,6 +127,41 @@ export function FlowsPage({
           </button>
           <button style={smallBtn} onClick={() => remove(f.name)} title="delete this saved flow">
             ×
+          </button>
+        </div>
+      ))}
+
+      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", margin: "24px 0 4px" }}>samples</div>
+      <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 10 }}>
+        one per capability; opening one starts an unsaved copy you can change, save and deploy
+      </div>
+      {samples.map((s) => (
+        <div
+          key={s.name}
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            padding: "8px 10px",
+            marginBottom: 6,
+            background: "#0e1a2f",
+            border: "1px solid #1b2a45",
+            borderRadius: 4,
+          }}
+        >
+          <div style={{ flex: 1 }}>
+            <div style={{ color: "#6fd3e0", fontSize: 13 }}>{s.title}</div>
+            <div style={{ color: "#cfe3ff", fontSize: 11, margin: "2px 0" }}>{s.description}</div>
+            <div style={{ color: "#7e8ea8", fontSize: 10 }}>
+              shows {s.shows.join(" · ")}
+              {s.secrets && s.secrets.length > 0 && <> · needs secrets {s.secrets.map((x) => x.name).join(", ")} (set under ⚙)</>}
+            </div>
+            <div style={{ color: "#7e8ea8", fontSize: 10 }} title="once deployed">
+              try: {s.tryIt}
+            </div>
+          </div>
+          <button style={smallBtn} onClick={() => onOpenSample(s)} title={`open "${s.name}" as an unsaved copy`}>
+            open
           </button>
         </div>
       ))}

@@ -105,6 +105,7 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 |---|---|
 | `App.tsx` (~2200 lines) | ✅ split by concern: `canvasOps.ts` (project, group, expand), `canvasUnits.ts`, `CanvasPanels.tsx`, `BoundaryField.tsx`, `Pages.tsx` (flows, deployed), `useCanvasHistory.ts`, `useDeployments.ts`; `App.tsx` (~1100 lines) keeps the canvas's state, save/open, deploy and view mode |
 | (new) | `test-request/`: build a request record, eval the endpoint locally via wasm, show the response |
+| (new) | `samples.ts` ✅: one sample flow per capability (hello API, notes API with state, Stripe → Slack, a clock heartbeat, a durable order approval, fetch-and-reshape, signing), opened from the flows page as an unsaved copy, built from the live catalog and derived through core in `samples.test.ts`. Every new feature ships with a sample that shows it (`CLAUDE.md`). |
 | (new) | `replay/`: request log list → open one in the canvas with recorded sourced values → step and inspect |
 | (new) | `doors/`: one config per door (title, palette sections, templates, first-run flow). The door is selected by route or subdomain. |
 | `holon.ts`, `server.ts`, `diagnostics.ts` | stay. `holon.ts` gains the Record type, `server.ts` gains the request-log API. |

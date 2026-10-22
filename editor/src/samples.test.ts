@@ -1,0 +1,93 @@
+// Every sample flow builds from the live catalog and derives through the real core (the wasm
+// package, loaded from disk): a server sample becomes a server unit with one endpoint per request
+// node, a clock sample projects whole, and none asks for more than it uses (an unknown leaf would
+// make core fail closed and ask for everything). A sample that stops building fails here, so the
+// samples can't silently rot as core changes (CLAUDE.md).
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { beforeAll, describe, expect, it } from "vitest";
+import { initSync, Evaluator, primitive_catalog, variadic_primitives } from "../wasm/holon_wasm.js";
+import { buildPreimage, type WEncapSpec, type WUnit } from "./holon";
+import { deriveServer, groupOf } from "./canvasOps";
+import { capabilityAcknowledgeName } from "./diagnostics";
+import type { PrimitiveNodeType } from "./PrimitiveNode";
+import type { Edge } from "@xyflow/react";
+import { SAMPLES, buildSample } from "./samples";
+
+let catalog: Map<string, WUnit>;
+let variadic: Set<string>;
+
+beforeAll(() => {
+  initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
+  catalog = new Map();
+  for (const u of primitive_catalog() as WUnit[]) if (u.body.kind === "Primitive") catalog.set(u.body.name, u);
+  variadic = new Set(variadic_primitives() as string[]);
+});
+
+/** What deploying `sample` asks for, by consent name, or why it can't deploy. */
+function derive(name: string): { caps: string[]; endpoints: number } {
+  const sample = SAMPLES.find((s) => s.name === name)!;
+  const doc = buildSample(sample, catalog, variadic);
+  const nodes = doc.nodes as PrimitiveNodeType[];
+  const edges = doc.edges as Edge[];
+  const ev = new Evaluator();
+  let hash: string;
+  let endpoints = 0;
+  if (sample.port) {
+    const server = deriveServer(nodes, edges, ev, catalog, sample.port);
+    expect(server.errors).toEqual([]);
+    expect(server.serverHash).not.toBeNull();
+    hash = server.serverHash!;
+    endpoints = server.endpoints.length;
+  } else {
+    const { children, wedges } = groupOf(nodes, edges, ev, catalog);
+    const whole = ev.freeze_encapsulation(children, wedges, ev.propose_encapsulation(children, wedges) as WEncapSpec) as WUnit;
+    hash = ev.insert(buildPreimage(whole));
+  }
+  const caps = (ev.capabilities(hash) as Parameters<typeof capabilityAcknowledgeName>[0][]).map(capabilityAcknowledgeName).sort();
+  return { caps, endpoints };
+}
+
+describe("sample flows", () => {
+  it("have unique names, and a port or an interval", () => {
+    expect(new Set(SAMPLES.map((s) => s.name)).size).toBe(SAMPLES.length);
+    for (const s of SAMPLES) expect(Boolean(s.port) !== Boolean(s.interval), s.name).toBe(true);
+    const ports = SAMPLES.flatMap((s) => (s.port ? [s.port] : []));
+    expect(new Set(ports).size, "each server its own port").toBe(ports.length);
+  });
+
+  for (const s of SAMPLES) {
+    it(`${s.name} builds, derives, and asks for exactly what it uses`, () => {
+      const doc = buildSample(s, catalog, variadic);
+      const requests = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.name === "request" && n.data.body.kind === "Template");
+      const { caps, endpoints } = derive(s.name);
+      expect(endpoints).toBe(requests.length);
+      expect(caps.some((c) => c.includes("FileRead") || c.includes("ProcessSpawn")), `${s.name} saturated: ${caps}`).toBe(false);
+      for (const secret of s.secrets ?? []) expect(caps).toContain(`SecretRead("${secret.name}")`);
+    });
+  }
+
+  it("ask for what each one shows", () => {
+    expect(derive("hello-api").caps).toEqual(["NetworkIngress"]);
+    expect(derive("notes-api").caps).toEqual(["NetworkIngress", 'StateRead("notes")', 'StateWrite("notes")']);
+    expect(derive("stripe-to-slack").caps).toEqual([
+      "Clock",
+      'HttpRequest("hooks.slack.com")',
+      "NetworkIngress",
+      'SecretRead("slack_webhook_path")',
+      'SecretRead("stripe_webhook_secret")',
+    ]);
+    expect(derive("heartbeat").caps).toEqual(["Clock", 'StateRead("beats")', 'StateWrite("beats")', 'StateWrite("last_beat")']);
+    expect(derive("approval").caps).toEqual(['Await("paid")', "NetworkIngress", 'StateWrite("last_order")']);
+    expect(derive("fetch-json").caps).toEqual(['HttpRequest("httpbin.org")', "NetworkIngress"]);
+    expect(derive("sign-payload").caps).toEqual(["NetworkIngress", 'SecretRead("signing_key")']);
+  });
+
+  it("refuse a misspelt leaf, param or port, naming the sample", () => {
+    const broken = { ...SAMPLES[0], build: (b: Parameters<(typeof SAMPLES)[0]["build"]>[0]) => b.wire(b.node("field"), "nope", b.node("concat"), "a") };
+    expect(() => buildSample(broken, catalog, variadic)).toThrow('sample "hello-api": field has no output "nope"');
+    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("fieldd") }, catalog, variadic)).toThrow('no leaf "fieldd"');
+    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("field", { nam: "x" }) }, catalog, variadic)).toThrow('has no param "nam"');
+  });
+});

@@ -31,7 +31,6 @@ import {
   Evaluator,
   type WUnit,
   type WValue,
-  type WEdge,
   type WEncapSpec,
   type WCapability,
 } from "./holon";
@@ -57,15 +56,23 @@ import { nodeExchanges, nodeOutputs, nodeTimings, recordedResponses, replay, sta
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
-import { findRoutes, routeSpec } from "./derive";
-import { endpointUnit, serverUnit, type EndpointDraft } from "./endpoint";
 import { isWEncapError, capabilityAcknowledgeName, describeItem } from "./diagnostics";
 import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
-import { excludeProjectedOutput, expandComposite, groupSelection, projectCanvas, type Projection } from "./canvasOps";
+import {
+  deriveServer,
+  excludeProjectedOutput,
+  expandComposite,
+  groupOf,
+  groupSelection,
+  projectCanvas,
+  traceOfUnit,
+  type Projection,
+} from "./canvasOps";
 import { FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { DeployedPage, FlowsPage, type AppPage } from "./Pages";
 import { newHistory, snapshotOf, useCanvasHistory, type Snapshot } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
+import { SAMPLES, buildSample, type Sample } from "./samples";
 
 // What a save records, for unsaved-change tracking: the canvas plus the server draft.
 const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) =>
@@ -244,7 +251,7 @@ function Canvas({
           ? `Discard your unsaved changes to "${rec.name}" and reload the saved copy?`
           : `Discard unsaved changes to "${flowName ?? "untitled"}" and open "${rec.name}"?`;
       if (dirty && !(await dialog.confirm(discard, rec.name === flowName ? "Reload saved" : "Discard"))) {
-        return;
+        return false;
       }
       setViewing(null);
       beforeView.current = null;
@@ -297,9 +304,11 @@ function Canvas({
       resetProjectionView();
       bump();
       setPage("canvas");
+      return true;
     },
     [setNodes, setEdges, setViewport, setPage, snapshotOf, ev, resetProjectionView, dirty, flowName, dialog],
   );
+
 
   const byName = useMemo(() => {
     const m = new Map<string, WUnit>();
@@ -309,6 +318,15 @@ function Canvas({
     }
     return m;
   }, [catalog]);
+
+  // A sample (samples.ts) opens as an unsaved copy under its own name: saving it keeps it.
+  const onOpenSample = useCallback(
+    async (sample: Sample) => {
+      const document = buildSample(sample, byName, variadic);
+      if (await onOpenFlow({ name: sample.name, document, saved_at_epoch_seconds: 0 })) setSavedKey("");
+    },
+    [onOpenFlow, byName, variadic],
+  );
 
   const onDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -370,80 +388,19 @@ function Canvas({
     [byName, screenToFlowPosition, setNodes, viewing],
   );
 
-  // A group of canvas nodes as core children plus the wires among them, by index.
-  const groupUnits = useCallback(
-    (group: PrimitiveNodeType[], es: Edge[]) => {
-      const indexOf = new Map(group.map((n, i) => [n.id, i]));
-      const children = group.map((n) => unitFor(n, ev, byName));
-      const wedges: WEdge[] = es
-        .filter((e) => indexOf.has(e.source) && indexOf.has(e.target))
-        .map((e) => {
-          const from = indexOf.get(e.source)!;
-          const to = indexOf.get(e.target)!;
-          return {
-            from_child: from,
-            from_port: group[from].data.outputs.findIndex((p) => p.name === e.sourceHandle),
-            to_child: to,
-            to_port: group[to].data.inputs.findIndex((p) => p.name === e.targetHandle),
-          };
-        });
-      return { children, wedges };
-    },
-    [ev, byName],
-  );
+  // A group of canvas nodes as core children and wires, and the canvas node behind each child of
+  // a frozen unit (canvasOps.ts).
+  const groupUnits = useCallback((group: PrimitiveNodeType[], es: Edge[]) => groupOf(group, es, ev, byName), [ev, byName]);
+  const traceOf = useCallback((unit: WUnit, group: PrimitiveNodeType[]) => traceOfUnit(unit, group, ev), [ev]);
 
-  // Which canvas node each child of a frozen unit is, in the order the unit is stored (and run,
-  // and timed) in: core sorts a composite's children canonically when it hashes it.
-  const traceOf = useCallback(
-    (unit: WUnit, group: PrimitiveNodeType[]) =>
-      unit.body.kind === "Composite"
-        ? Array.from(ev.canonical_child_order(unit.body.children, unit.body.edges), (i) => group[i].id)
-        : [],
-    [ev],
-  );
-
-  // The server this flow declares, derived from the canvas: each connected group holding a
-  // request node is one route (derive.ts). Each group is projected through core like a
-  // selection being grouped, narrowed to the request input and the response/effect outputs,
-  // and wrapped as an endpoint. Recomputed when the canvas's structure changes, not on moves.
+  // The server this flow declares, derived from the canvas (canvasOps.deriveServer). Recomputed
+  // when the canvas's structure changes, not on moves.
   const derived = useMemo(() => {
     const { nodes: ns, edges: es } = live.current;
-    const { routes, errors } = findRoutes(ns, es);
-    const endpoints: EndpointDraft[] = [];
-    const trace: Record<string, string[]> = {};
-    for (const r of routes) {
-      const label = `${r.method} ${r.path}`;
-      try {
-        const group = r.nodeIds.map((id) => ns.find((n) => n.id === id)!);
-        const { children, wedges } = groupUnits(group, es);
-        const spec = routeSpec(ev.propose_encapsulation(children, wedges) as WEncapSpec, group, label);
-        if (typeof spec === "string") {
-          errors.push(spec);
-          continue;
-        }
-        const handler = ev.freeze_encapsulation(children, wedges, spec) as WUnit;
-        trace[label] = traceOf(handler, group);
-        const handlerHash = ev.insert(buildPreimage(handler));
-        const unit = endpointUnit(handlerHash, handler.inputs ?? [], handler.outputs ?? [], r.method, r.path, r.resume);
-        if (typeof unit === "string") {
-          errors.push(`${label}: ${unit}`);
-          continue;
-        }
-        endpoints.push({ method: r.method, path: r.path, hash: ev.insert(buildPreimage(unit)) });
-      } catch (err) {
-        errors.push(`${label}: ${isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    // The server unit itself, once every route is sound and the port is a port.
-    const port = Number(settings.port);
-    const serverHash =
-      endpoints.length > 0 && errors.length === 0 && Number.isInteger(port) && port >= 1 && port <= 65535
-        ? ev.insert(buildPreimage(serverUnit(endpoints.map((e) => e.hash), port)))
-        : null;
-    return { endpoints, errors, serverHash, trace };
+    return deriveServer(ns, es, ev, byName, settings.port);
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, groupUnits, traceOf, settings.port]);
+  }, [canvasKey, ev, byName, settings.port]);
 
   // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to
@@ -1014,7 +971,13 @@ function Canvas({
           }}
         >
           {page === "flows" && (
-            <FlowsPage current={{ name: flowName, dirty }} onOpen={onOpenFlow} onResume={onResumeFlow} />
+            <FlowsPage
+              current={{ name: flowName, dirty }}
+              onOpen={onOpenFlow}
+              onResume={onResumeFlow}
+              samples={SAMPLES}
+              onOpenSample={onOpenSample}
+            />
           )}
           {page === "deployed" && (
             <DeployedPage
