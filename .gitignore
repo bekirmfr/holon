@@ -10,3 +10,5 @@
 # Per machine, rewritten on every deploy/save, so never committed.
 .holon-*.json
 .holon-store/
+# The dev launch config's (.claude/launch.json) copy of the same, kept apart from a default run's.
+.holon/

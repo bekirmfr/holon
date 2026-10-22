@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "holon-server",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "-p", "holon-server", "--", "--store", ".holon/dev/store", "--deployments", ".holon/dev/deployments.json", "--flows", ".holon/dev/flows.json"],
+      "port": 7420
+    },
+    {
+      "name": "editor",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "editor", "run", "dev", "--", "--port", "5173", "--strictPort"],
+      "port": 5173
+    }
+  ]
+}
