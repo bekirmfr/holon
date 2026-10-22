@@ -86,9 +86,10 @@
 //! — but *not* holding a lock across the whole round reopens the lost-update race between two
 //! near-simultaneous triggers of the *same* deployment, flagged and resolved earlier in this
 //! project's own history. `Deployment.state` is `Arc<Mutex<...>>`, not a bare map: the table
-//! lock is only ever held briefly (to clone the `Arc` out), and the *inner* mutex is what's
-//! held for the whole round — so two different deployments never contend, and two triggers of
-//! the same deployment correctly serialize instead of racing.
+//! lock is only ever held briefly (to clone the `Arc` out). Runs of one deployment no longer
+//! hold the inner mutex either: each runs on a copy and commits only if what it read is
+//! unchanged, running again otherwise (firing.rs), so they proceed side by side and still lose
+//! no update.
 //!
 //! Also added, unconditionally on every deployment (not gated on state at all):
 //! `trigger_count`/`error_count`/`deployed_at`, all persisted, all visible on

@@ -32,11 +32,10 @@ impl Host for RecordingHost {
 /// to the caller, not silently dropped. `RecordingHost` already captures everything performed;
 /// this just adds the one extra step `round()` would otherwise hide.
 ///
-/// Locks `state` itself, for the whole round, if this deployment is stateful — the caller
-/// hands in the deployment's own `Arc<Mutex<...>>` dereferenced to `&Mutex<...>`, already
-/// cloned out from under the deployments-table lock, which is never held here. That's what
-/// keeps two triggers of two *different* deployments from ever contending, while two triggers
-/// of the *same* deployment correctly serialize instead of racing.
+/// Takes the deployment's own `Arc<Mutex<State>>` (cloned out from under the table lock, which
+/// is never held here), and holds it only to copy the state and, at the end, to commit: runs of
+/// one deployment proceed side by side, each committing only if what it read is unchanged and
+/// running again otherwise (`fire_with_state`).
 ///
 /// A `store_read` for a key that's never been written simply isn't in `sourced` at all, so it
 /// evaluates to nothing — the same honest-absence behavior any other unsupplied sourced
@@ -85,6 +84,18 @@ pub(crate) struct FiredRun {
     pub(crate) start_state: Option<State>,
     /// The collection reads it made, and what each answered.
     pub(crate) reads: Vec<collections::Read>,
+    /// How many times it ran again because what it read changed before it could commit.
+    pub(crate) retries: u32,
+}
+
+/// How many times a run is tried without holding its state's lock before it runs holding it.
+const OPTIMISTIC_ATTEMPTS: u32 = 4;
+
+/// What one attempt at a run produced, before it is committed (or found stale and tried again).
+struct Attempt {
+    run: FiredRun,
+    /// What it started from (and validates against at commit).
+    start: Option<State>,
 }
 
 // Everything a run is held to arrives here, so it takes them all.
@@ -102,18 +113,111 @@ pub(crate) fn fire_with_state(
     waits: &mut RunWaits,
     resumed: Option<Resumed>,
 ) -> FiredRun {
-    let mut guard = state.map(|m| m.lock().unwrap());
-    // A resumed run starts from what it first started from: the same state, nonce and requests,
-    // so it is the same run (and the same run id). Its writes still land on the live state.
-    let (start, nonce, prior) = match resumed {
-        Some(r) => (guard.as_ref().map(|_| r.state_before), r.nonce, r.prior),
-        None => (guard.as_deref().cloned(), new_nonce(), Vec::new()),
+    let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, waits: &mut RunWaits| {
+        run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior)
     };
+    // A resumed run is the same run it started as: pinned to the state it first read, run once,
+    // its writes landing on the live state when it finishes.
+    if let Some(r) = resumed {
+        let a = attempt(state.map(|_| r.state_before), &r.nonce, r.prior, waits);
+        if let Some(cell) = state {
+            commit(&mut cell.lock().unwrap(), store, &a.run.performed);
+        }
+        return a.run;
+    }
+    let nonce = new_nonce();
+    let Some(cell) = state else {
+        return attempt(None, &nonce, Vec::new(), waits).run;
+    };
+    // Optimistic: run on a copy, no lock held, so runs of one deployment proceed side by side;
+    // then commit only if everything it could have read is still as it found it. Otherwise run
+    // again from the state as it now is: the requests it already made are answered from its own
+    // record (`prior`), not sent again, and nothing it did is kept but its answer.
+    let mut prior = Vec::new();
+    for retries in 0..OPTIMISTIC_ATTEMPTS {
+        waits.tokens.clear();
+        // Copied in its own statement: a lock taken inside the call's arguments would be held
+        // until the call returns, the whole run long.
+        let start = cell.lock().unwrap().clone();
+        let mut a = attempt(Some(start), &nonce, prior, waits);
+        let mut live = cell.lock().unwrap();
+        if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store) {
+            commit(&mut live, store, &a.run.performed);
+            a.run.retries = retries;
+            return a.run;
+        }
+        drop(live);
+        prior = a.run.rounds;
+    }
+    // Contended that long: run once more holding the lock, so it can't be overtaken again.
+    waits.tokens.clear();
+    let mut live = cell.lock().unwrap();
+    let mut a = attempt(Some(live.clone()), &nonce, prior, waits);
+    commit(&mut live, store, &a.run.performed);
+    a.run.retries = OPTIMISTIC_ATTEMPTS;
+    a.run
+}
+
+/// Whether `live` still holds everything a run that started from `start` could have read: each
+/// state cell it was granted (by its hash), and each collection read it made (asked again).
+fn still_as_read(start: &State, live: &State, reads: &[collections::Read], permit: &Permit, store: &SharedStore) -> bool {
+    let cells: BTreeSet<&String> = start.iter().chain(live.iter()).map(|(k, _)| k).collect();
+    let cells_unchanged = cells
+        .into_iter()
+        .filter(|k| !k.starts_with('#') && permit.allows(&Capability::StateRead((*k).clone())))
+        .all(|k| start.hash_of(k) == live.hash_of(k));
+    if !cells_unchanged {
+        return false;
+    }
+    let now = collections::Readable { store: store.clone(), roots: collections::roots(live), granted: permit.collections_read() };
+    reads.iter().all(|r| now.answer(&r.request) == r.answer)
+}
+
+/// Apply a run's writes to the live state: each state write, then each collection put and delete,
+/// in the order the run made them.
+fn commit(live: &mut State, store: &SharedStore, performed: &[(Capability, Value)]) {
+    for (cap, payload) in performed {
+        if let Capability::StateWrite(key) = cap {
+            if !is_storable(payload) {
+                eprintln!("holon-server: refused to store an effect request in state key {key:?}");
+            } else if let Err(e) = live.insert(key.clone(), payload.clone()) {
+                eprintln!("holon-server: state key {key:?} not written (too large to encode): {e:?}");
+            }
+        }
+    }
+    let mut store = store.clone();
+    for (cap, payload) in performed {
+        if let Capability::CollectionWrite(name) = cap
+            && let Err(e) = collections::apply(live, &mut store, name, payload)
+        {
+            eprintln!("holon-server: collection {name:?} not written: {e}");
+        }
+    }
+}
+
+/// One run of `root_unit` from `start`, nothing committed: its outputs, what it would perform
+/// (refused effects already dropped), and what it read.
+#[allow(clippy::too_many_arguments)]
+fn run_attempt(
+    root_unit: &Unit,
+    inputs: &[Option<Value>],
+    resolver: &impl Resolver,
+    store: &SharedStore,
+    start: Option<State>,
+    extra_sourced: &[(Capability, Value)],
+    permit: &Permit,
+    clock: bool,
+    secrets: &Vault,
+    waits: &mut RunWaits,
+    nonce: &[u8; 16],
+    prior: Vec<Round>,
+) -> Attempt {
     let state_before = start.as_ref().map(State::values).unwrap_or_default();
-    let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, &nonce);
+    let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce);
     // Its resume tokens are derived from its id (durable.rs).
     waits.run_id = Some(to_hex(&run_id));
     // Its collections, as it found them, for the reads it was granted.
+    waits.reads.clear();
     waits.collections = Some(collections::Readable {
         store: store.clone(),
         roots: start.as_ref().map(collections::roots).unwrap_or_default(),
@@ -144,8 +248,7 @@ pub(crate) fn fire_with_state(
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &permit.outbound, limits, &mut timer, waits, &prior);
-    let outputs = outcome.outputs;
-    // An effect the grant doesn't cover is refused, whatever the graph says; so is a state write
+    // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, which would put it on disk and in every later snapshot.
     host.performed.retain(|(cap, payload)| {
         if !permit.allows(cap) {
@@ -161,41 +264,22 @@ pub(crate) fn fire_with_state(
         true
     });
 
-    if let Some(storage) = guard.as_deref_mut() {
-        for (cap, payload) in &host.performed {
-            if let Capability::StateWrite(key) = cap {
-                if !is_storable(payload) {
-                    eprintln!("holon-server: refused to store an effect request in state key {key:?}");
-                } else if let Err(e) = storage.insert(key.clone(), payload.clone()) {
-                    eprintln!("holon-server: state key {key:?} not written (too large to encode): {e:?}");
-                }
-            }
-        }
-        // Puts and deletes, in the order the run made them.
-        let mut store = store.clone();
-        for (cap, payload) in &host.performed {
-            if let Capability::CollectionWrite(name) = cap
-                && let Err(e) = collections::apply(storage, &mut store, name, payload)
-            {
-                eprintln!("holon-server: collection {name:?} not written: {e}");
-            }
-        }
-    }
-
-    FiredRun {
-        outputs,
+    let run = FiredRun {
+        outputs: outcome.outputs,
         performed: host.performed,
         state_before,
         timeline: timer.timeline,
         rounds: outcome.rounds,
         error: outcome.error.map(|e| e.message()),
         run_id: to_hex(&run_id),
-        nonce: hex_bytes(&nonce),
+        nonce: hex_bytes(nonce),
         grant: permit.grant.clone(),
         waiting: outcome.waiting,
-        start_state: start,
+        start_state: start.clone(),
         reads: std::mem::take(&mut waits.reads),
-    }
+        retries: 0,
+    };
+    Attempt { run, start }
 }
 
 /// 128 bits from the operating system's secure generator.
@@ -328,6 +412,7 @@ pub(crate) fn run_entry(
         grant: run.grant.clone(),
         parked: vec![],
         events: BTreeMap::new(),
+        retries: run.retries,
         reads: run
             .reads
             .iter()
@@ -356,6 +441,7 @@ impl FiredRun {
             waiting: vec![],
             start_state: None,
             reads: vec![],
+            retries: 0,
         }
     }
 }

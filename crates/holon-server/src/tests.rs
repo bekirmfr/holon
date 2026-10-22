@@ -2128,6 +2128,108 @@ fn a_collection_keeps_items_by_key_across_runs_and_restarts() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// `ingress → (ignored)`, and `store_read(count) → default 0 → +1 → store_write(count)`, with
+/// `extra` children wired after: a counter every trigger bumps.
+fn counter(state: &AppState, extra: Vec<Unit>, extra_edges: Vec<Edge>) -> Hash {
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let mut children = vec![
+        test_ingress(),
+        iface("store_read", vec![frozen("key", "count")]),
+        iface("default", vec![frozen("value", "0"), frozen("type", "Number")]),
+        iface("const", vec![frozen("value", "1"), frozen("type", "Number")]),
+        iface("add", vec![]),
+        test_store_write("count"),
+    ];
+    let outputs = 1 + extra_edges.iter().filter(|x| x.to_child == BOUNDARY).count();
+    children.extend(extra);
+    let mut edges = vec![e(1, 0, 2, 0), e(2, 0, 4, 0), e(3, 0, 4, 1), e(4, 0, 5, 0), e(5, 0, BOUNDARY, 0)];
+    edges.extend(extra_edges);
+    let unit = Unit {
+        body: UnitBody::Composite { children: children.iter().map(|u| stage(state, u)).collect(), edges },
+        params: vec![],
+        inputs: vec![],
+        outputs: (0..outputs).map(|i| Port { name: format!("out{i}"), ty: Type::Effect }).collect(),
+    };
+    stage(state, &unit)
+}
+
+/// Runs of one deployment no longer queue on its state: they run side by side and commit only
+/// if what they read is unchanged, running again otherwise. Many at once lose no update.
+#[test]
+fn concurrent_runs_lose_no_update() {
+    let state = test_state();
+    let unit = counter(&state, vec![], vec![]);
+    let ack = serde_json::json!(["NetworkIngress", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    assert_eq!(deploy_json(&state, "c", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    std::thread::scope(|s| {
+        for _ in 0..24 {
+            s.spawn(|| assert_eq!(route(&state, &req("POST", "/trigger/c", b"go".to_vec())).status_code, 200));
+        }
+    });
+    let shown = body_json(route(&state, &req("GET", "/deployments/c/state", vec![])));
+    assert_eq!(shown["state"]["count"]["value"], 24.0, "{shown}");
+}
+
+/// A run waiting on a slow outbound call no longer holds up the next: the second finishes while
+/// the first still waits. The first then finds the counter it read has changed, and runs again
+/// from the new state; the call it already made is answered from its record, not sent again.
+#[test]
+fn a_slow_run_holds_up_no_other_and_retries_without_resending() {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    let hits = std::sync::Arc::new(AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&hits);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(2) {
+            let mut stream = stream.unwrap();
+            let counted = std::sync::Arc::clone(&counted);
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                counted.fetch_add(1, Ordering::SeqCst);
+                if String::from_utf8_lossy(&buf[..n]).starts_with("GET /slow") {
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            });
+        }
+    });
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let call = Unit {
+        params: vec![Param::frozen("method", "GET"), Param::frozen("host", &host)],
+        ..holon_core::interface_of("http_request").unwrap()
+    };
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    // The ingress body is the path it calls; the call's answer is egressed.
+    let unit = counter(&state, vec![call, test_sink()], vec![e(0, 0, 6, 0), e(6, 0, 7, 0), e(7, 0, BOUNDARY, 1)]);
+    let ack = serde_json::json!([
+        "NetworkIngress", "NetworkEgress", "StateRead(\"count\")", "StateWrite(\"count\")",
+        format!("HttpRequest({host:?})"), format!("PlainHttp({host:?})"), "PrivateAddresses",
+    ]);
+    let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
+    assert_eq!(deploy_json(&state, "slow", unit, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
+
+    std::thread::scope(|s| {
+        let first = s.spawn(|| route(&state, &req("POST", "/trigger/slow", b"/slow".to_vec())).status_code);
+        std::thread::sleep(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        assert_eq!(route(&state, &req("POST", "/trigger/slow", b"/fast".to_vec())).status_code, 200);
+        assert!(started.elapsed() < Duration::from_millis(250), "held up {:?} by the slow run", started.elapsed());
+        assert_eq!(first.join().unwrap(), 200);
+    });
+    let shown = body_json(route(&state, &req("GET", "/deployments/slow/state", vec![])));
+    assert_eq!(shown["state"]["count"]["value"], 2.0, "both counted: {shown}");
+    assert_eq!(hits.load(Ordering::SeqCst), 2, "the slow call went out once");
+    let log = body_json(route(&state, &req("GET", "/deployments/slow/log", vec![])));
+    let retried: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|x| x["retries"].as_u64().unwrap_or(0)).collect();
+    assert_eq!(retried.iter().sum::<u64>(), 1, "the slow run ran once more: {retried:?}");
+}
+
 /// A port nothing listens on just now.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()

@@ -72,6 +72,13 @@ pub struct LogEntry {
     /// from here.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<LoggedRead>,
+    /// How many times it ran again because what it read changed before it could commit.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub retries: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// One collection read in a run.
@@ -258,6 +265,7 @@ mod tests {
             parked: vec![],
             events: BTreeMap::new(),
             reads: vec![],
+            retries: 0,
         }
     }
 
