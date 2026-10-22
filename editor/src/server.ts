@@ -358,6 +358,8 @@ export async function changeDeployment(
  *  enough to replay it exactly (replay.ts). */
 export type LogEntry = {
   seq: number;
+  /** The unit it ran (hex): the deployment's version then. Absent in entries from before. */
+  unit?: string;
   session: number;
   at_ms: number;
   duration_ms: number;
@@ -409,8 +411,11 @@ export async function getLog(slug: string, after?: number): Promise<{ entries: L
 
 /** `GET /deployments/<slug>/document` — the canvas it was deployed from. Throws
  *  {@link ServerError} (404) for one deployed without it. */
-export async function getDeployedDocument(slug: string): Promise<FlowDocument> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/document`);
+/** The flow document a deployment was deployed from; with `unit`, that version's (the current
+ *  one, or an earlier one it keeps), for a run logged on it. */
+export async function getDeployedDocument(slug: string, unit?: string): Promise<FlowDocument> {
+  const q = unit ? `?unit=${encodeURIComponent(unit)}` : "";
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/document${q}`);
   return asJson<FlowDocument>(res);
 }
 

@@ -186,6 +186,7 @@ function Canvas({
   // The deployed document shown in view mode: what edit mode starts from when there is no saved
   // flow of that name.
   const viewDoc = useRef<FlowDocument | null>(null);
+  const [viewUnit, setViewUnit] = useState<string | null>(null);
   const { history, restoring, histVersion, bump, undo, redo } = useCanvasHistory(
     nodes,
     edges,
@@ -225,13 +226,14 @@ function Canvas({
       viewing,
       beforeView: beforeView.current,
       viewDoc: viewDoc.current,
+      viewUnit,
       viewTrace,
       selectedRun,
       step,
       inspectNode,
       dirty,
     }),
-    [flowName, savedOnServer, getViewport, history, settings, savedKey, saveMsg, viewing, viewTrace, selectedRun, step, inspectNode, dirty],
+    [flowName, savedOnServer, getViewport, history, settings, savedKey, saveMsg, viewing, viewUnit, viewTrace, selectedRun, step, inspectNode, dirty],
   );
 
   const applyTab = useCallback(
@@ -250,6 +252,7 @@ function Canvas({
       setViewing(t.viewing);
       beforeView.current = t.beforeView;
       viewDoc.current = t.viewDoc;
+      setViewUnit(t.viewUnit);
       setViewTrace(t.viewTrace);
       setSelectedRun(t.selectedRun);
       setStep(t.step);
@@ -818,14 +821,55 @@ function Canvas({
         history: newHistory(snapshotOf([], [])),
         viewing: slug,
         viewDoc: doc,
+        viewUnit: deployments.find((d) => d.slug === slug)?.unit ?? null,
         viewTrace: doc.trace,
         selectedRun: null,
         step: null,
         inspectNode: null,
       });
     },
-    [ev, tabOf, activeId, captureTab, showTab],
+    [ev, tabOf, activeId, captureTab, showTab, deployments],
   );
+
+  // A run shows on the canvas of the version it ran on: selecting one logged on an earlier
+  // version brings that version's canvas (kept by the deployment), and one on the current
+  // version brings the current one back. Until it's there, or when it isn't kept, the replay
+  // isn't compared with the run: it would be the wrong flow.
+  const [versionNote, setVersionNote] = useState("");
+  const runUnit = viewing ? selectedRun?.unit : undefined;
+  const onOtherVersion = !!runUnit && viewUnit !== null && runUnit !== viewUnit;
+  const currentUnit = viewing ? deployments.find((d) => d.slug === viewing)?.unit : undefined;
+  useEffect(() => {
+    if (!viewing || !runUnit || runUnit === viewUnit) return;
+    let stale = false;
+    getDeployedDocument(viewing, runUnit)
+      .then((doc) => {
+        if (stale) return;
+        for (const hex of doc.units ?? []) {
+          try {
+            ev.insert(fromHex(hex));
+          } catch {
+            // a unit that won't decode stays unresolvable, as on Open
+          }
+        }
+        restoring.current = true;
+        setNodes(doc.nodes as PrimitiveNodeType[]);
+        setEdges(doc.edges as Edge[]);
+        viewDoc.current = doc;
+        setViewTrace(doc.trace);
+        setViewUnit(runUnit);
+        setVersionNote("");
+      })
+      .catch(() => !stale && setVersionNote(`ran on an earlier version (${runUnit.slice(0, 8)}…) whose canvas isn't kept: not compared`));
+    return () => {
+      stale = true;
+    };
+  }, [viewing, runUnit, viewUnit, ev, restoring, setNodes, setEdges]);
+  const shownNote = onOtherVersion
+    ? versionNote || "loading the version it ran on…"
+    : viewUnit && currentUnit && viewUnit !== currentUnit
+      ? `shown on the version it ran on (${viewUnit.slice(0, 8)}…), an earlier deploy`
+      : "";
 
   // Edit mode: the flow as edited, put back as it was left; for a tab opened to view, the saved
   // flow of that name, else a draft of what is deployed.
@@ -849,7 +893,8 @@ function Canvas({
       return;
     }
     const name = flowName;
-    const doc = viewDoc.current;
+    // What is deployed now, not an earlier version a run may be shown on.
+    const doc = viewing ? await getDeployedDocument(viewing).catch(() => viewDoc.current) : viewDoc.current;
     let t: TabState | null = null;
     if (name) {
       try {
@@ -1264,7 +1309,8 @@ function Canvas({
             nodes={nodes}
             timings={timings}
             exchanges={exchanges}
-            verdict={replayed?.verdict ?? null}
+            verdict={onOtherVersion ? null : (replayed?.verdict ?? null)}
+            versionNote={shownNote}
             onPickNode={setInspectNode}
             diagnosis={replayed?.diagnosis ?? null}
             onShowNode={showNode}

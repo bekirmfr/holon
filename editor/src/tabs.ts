@@ -36,6 +36,9 @@ export type TabState = {
   viewing: string | null;
   beforeView: EditCopy | null;
   viewDoc: FlowDocument | null;
+  /** The version (unit, hex) whose canvas view mode shows: the deployment's current one, or the
+   *  earlier one the selected run ran on. */
+  viewUnit: string | null;
   viewTrace: Record<string, string[]> | undefined;
   selectedRun: LogEntry | null;
   step: number | null;
@@ -62,6 +65,7 @@ export function blankTab(name: string | null): TabState {
     viewing: null,
     beforeView: null,
     viewDoc: null,
+    viewUnit: null,
     viewTrace: undefined,
     selectedRun: null,
     step: null,

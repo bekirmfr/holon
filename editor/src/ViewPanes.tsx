@@ -183,6 +183,7 @@ export function BottomPane({
   timings,
   exchanges,
   verdict,
+  versionNote,
   onPickNode,
   diagnosis,
   onShowNode,
@@ -202,6 +203,8 @@ export function BottomPane({
   exchanges: NodeExchange[];
   /** Whether replaying the selected run reproduced what was recorded; null when not checkable. */
   verdict: boolean | null;
+  /** Which version the run is shown on, when not the deployment's current one (or why it can't be). */
+  versionNote?: string;
   onPickNode: (id: string) => void;
   /** Why the selected run failed, when it did (replay.ts's diagnose). */
   diagnosis: Diagnosis | null;
@@ -244,6 +247,7 @@ export function BottomPane({
               {verdict ? "✓ replay reproduces the run" : "✗ replay differs from the run"}
             </span>
           )}
+          {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
           <Stepper step={step} steps={order.length} onStep={onStep} />
           <button
             style={{ ...small, color: live ? "#0e1a2f" : "#9fb4d4", background: live ? good : "transparent" }}
