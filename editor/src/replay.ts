@@ -65,8 +65,58 @@ export function stateAtStep(
   return { after, changed: [...changed].sort() };
 }
 
-/** When one node ran, in microseconds from the run's start (holon-server's NodeTiming). */
-export type NodeTiming = { path: number[]; start_us: number; end_us: number };
+/** When one node ran, in microseconds from the run's start, and in which round of the run
+ *  (holon-server's NodeTiming; `round` absent from servers before rounds). */
+export type NodeTiming = { path: number[]; start_us: number; end_us: number; round?: number };
+
+/** A run's step paths, as the server records them, against canvas node ids. `trace` comes with
+ *  the deployed flow: for each route (or `"*"` for a whole-flow unit), which canvas node is each
+ *  child of the unit as stored (canonical order). A request's steps sit one level down, inside its
+ *  endpoint (`[0, k]`); a whole-flow unit's at the top (`[k]`). */
+function nodeAtPath(
+  entry: { kind: string; route: string | null },
+  trace: Record<string, string[]> | undefined,
+): (path: number[]) => string | undefined {
+  const map = trace?.[entry.kind === "request" ? (entry.route ?? "") : "*"];
+  const depth = entry.kind === "request" ? 2 : 1;
+  return (path) => {
+    if (!map || path.length !== depth || (depth === 2 && path[0] !== 0)) return undefined;
+    return map[path[depth - 1]];
+  };
+}
+
+/** One outbound request a run made, by the canvas node that made it. */
+export type NodeExchange = {
+  id: string;
+  round: number;
+  request: WValue;
+  response: WValue;
+  start_us: number;
+  end_us: number;
+};
+
+/** The run's outbound requests, round by round, each placed on its canvas node (one the trace
+ *  can't place is left out). */
+export function nodeExchanges(
+  entry: { kind: string; route: string | null; rounds?: { exchanges: { path: number[]; request: WValue; response: WValue; start_us: number; end_us: number }[] }[] },
+  trace: Record<string, string[]> | undefined,
+): NodeExchange[] {
+  const at = nodeAtPath(entry, trace);
+  return (entry.rounds ?? []).flatMap((r, round) =>
+    r.exchanges.flatMap((x) => {
+      const id = at(x.path);
+      return id ? [{ id, round, request: x.request, response: x.response, start_us: x.start_us, end_us: x.end_us }] : [];
+    }),
+  );
+}
+
+/** What each `http_request` node was answered, from the run's record: the last answer it got,
+ *  which is the one its final round used. Replay feeds these back instead of calling anything. */
+export function recordedResponses(exchanges: NodeExchange[]): Map<string, WValue> {
+  const out = new Map<string, WValue>();
+  for (const x of exchanges) out.set(x.id, x.response);
+  return out;
+}
 
 /**
  * The server's per-step timings, by canvas node. `trace` comes with the deployed flow: for each
@@ -79,12 +129,13 @@ export function nodeTimings(
   trace: Record<string, string[]> | undefined,
 ): Map<string, { start_us: number; end_us: number }> {
   const out = new Map<string, { start_us: number; end_us: number }>();
-  const map = trace?.[entry.kind === "request" ? (entry.route ?? "") : "*"];
-  if (!map) return out;
-  const depth = entry.kind === "request" ? 2 : 1;
+  const at = nodeAtPath(entry, trace);
+  // The final round is the one whose outputs and effects counted; earlier rounds ran with
+  // answers still missing.
+  const last = Math.max(0, ...(entry.timeline ?? []).map((t) => t.round ?? 0));
   for (const t of entry.timeline ?? []) {
-    if (t.path.length !== depth || (depth === 2 && t.path[0] !== 0)) continue;
-    const id = map[t.path[depth - 1]];
+    if ((t.round ?? 0) !== last) continue;
+    const id = at(t.path);
     if (id) out.set(id, { start_us: t.start_us, end_us: t.end_us });
   }
   return out;
@@ -118,6 +169,8 @@ export function replay(
   edges: ReplayEdge[],
   entry: ReplayInput,
   evalNode: (node: ReplayNode, inputs: (WValue | null)[]) => (WValue | null)[],
+  /** What each `http_request` node was answered in the run (`recordedResponses`). */
+  responses: Map<string, WValue> = new Map(),
 ): Replay {
   const ids = new Set(runGroup(nodes, edges, entry));
   const group = nodes.filter((n) => ids.has(n.id));
@@ -162,6 +215,9 @@ export function replay(
       outputs = [sourced.get("Random") ?? null];
     } else if (node.data.body.kind === "Primitive" && name === "ingress") {
       outputs = [sourced.get("NetworkIngress") ?? null];
+    } else if (node.data.body.kind === "Primitive" && name === "http_request") {
+      // Answered from the record, never the network: a replay is offline and exact.
+      outputs = [responses.get(id) ?? null];
     } else if (name === "request" && node.data.body.kind === "Template") {
       const fed = [entry.request];
       outputs = evalNode(node, fed);

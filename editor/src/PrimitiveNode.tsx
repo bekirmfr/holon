@@ -238,7 +238,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
             return (
               <label className="hl-node__param" key={p.name}>
                 {p.name}{" "}
-                {body.kind === "Template" && p.name === "method" ? (
+                {(body.kind === "Template" || name === "http_request") && p.name === "method" ? (
                   <select
                     className="nodrag"
                     style={fieldStyle}
@@ -267,7 +267,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                 ) : (
                   <input
                     className="nodrag"
-                    style={{ ...fieldStyle, width: body.kind === "Template" && p.name === "path" ? 110 : 64 }}
+                    style={{ ...fieldStyle, width: (body.kind === "Template" && p.name === "path") || (name === "http_request" && p.name === "host") ? 120 : 64 }}
                     value={p.value}
                     readOnly={readOnly}
                     onChange={(e) => setParam(p.name, e.target.value)}

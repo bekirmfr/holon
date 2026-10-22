@@ -215,6 +215,49 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
     }
 }
 
+/// `POST /deploy/preview` — what deploying would ask for, without deploying: the manifest's items,
+/// which of them need approval (what `/deploy` will want acknowledged), which are already
+/// granted (by host policy or the slug's current grant), and why policy would refuse it, if it
+/// would. The body is a deploy request's (`acknowledge` is ignored). This is the consent screen's
+/// source: it shows asked against granted before anything changes.
+pub(crate) fn handle_post_deploy_preview(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    policy: &Policy,
+    request: &Request,
+) -> Response {
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let body: DeployRequestBody = match serde_json::from_slice(&bytes) {
+        Ok(b) => b,
+        Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
+    };
+    let Some(unit_hash) = parse_hash(&body.unit) else {
+        return err(400, "unit is not a 64-char hex hash");
+    };
+    let resolver = match materialize_closure(store, unit_hash) {
+        Ok(r) => r,
+        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+    };
+    let Some(root_unit) = resolver.resolve(&unit_hash) else {
+        return err(404, "no unit stored at that hash — stage or publish it first");
+    };
+    let manifest = Manifest::new(capabilities(root_unit, &resolver).iter(), body.requirements);
+    let previous = deployments.lock().unwrap().get(&body.slug).map(|d| d.grant.clone());
+    let needs = policy.needs_approval(&manifest, previous.as_ref());
+    let items = manifest.items();
+    let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i)).collect();
+    Response::json(&serde_json::json!({
+        "manifest": to_hex(&manifest.hash()),
+        "items": items,
+        "needs_approval": needs,
+        "already_granted": granted,
+        "refused": policy.refuses(&manifest),
+    }))
+}
+
 /// `GET /permissions` — this host's policy: each limit's default and ceiling, what it grants
 /// without asking, and which exceptions it ever grants.
 pub(crate) fn handle_get_permissions(policy: &Policy) -> Response {

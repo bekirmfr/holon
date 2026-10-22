@@ -774,6 +774,20 @@ fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
     assert!(body_json(huge)["error"].as_str().unwrap().contains("ceiling of 1000"));
     let private = deploy_json(&state, "w", writer, serde_json::json!({ "requirements": { "private_addresses": true } }));
     assert!(body_json(private)["error"].as_str().unwrap().contains("never grants private addresses"));
+    // A preview says what a deploy would ask for, and changes nothing.
+    let preview = |extra: serde_json::Value| {
+        let mut body = serde_json::json!({ "slug": "w", "unit": to_hex(&writer) });
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&body).unwrap())))
+    };
+    let p = preview(serde_json::json!({ "requirements": { "limits": { "max_requests": 80 } } }));
+    assert_eq!(p["needs_approval"], serde_json::json!(["Limit(max_requests=80)"]), "the rest is already granted");
+    assert!(p["already_granted"].as_array().unwrap().contains(&serde_json::json!("NetworkIngress")));
+    assert!(p["refused"].is_null());
+    let p = preview(serde_json::json!({ "requirements": { "private_addresses": true } }));
+    assert!(p["refused"].as_str().unwrap().contains("private addresses"));
     // The policy and the deployment's manifest are readable.
     let policy = body_json(route(&state, &req("GET", "/permissions", vec![])));
     assert_eq!(policy["defaults"]["max_requests"], 50);

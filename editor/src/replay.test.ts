@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nodeTimings, replay, runGroup, stateAtStep, type ReplayInput, type ReplayNode } from "./replay";
+import { nodeExchanges, nodeTimings, recordedResponses, replay, runGroup, stateAtStep, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
@@ -137,5 +137,41 @@ describe("nodeTimings", () => {
     const tick = { kind: "tick", route: null, timeline: [{ path: [0], start_us: 0, end_us: 5 }] };
     expect([...nodeTimings(tick, trace)]).toEqual([["k", { start_us: 0, end_us: 5 }]]);
     expect(nodeTimings(req, undefined).size).toBe(0);
+  });
+});
+
+describe("outbound requests in a recorded run", () => {
+  const trace = { "GET /proxy": ["r", "h", "x"], "*": ["h2"] };
+  const rec = (status: number): WValue => ({ type: "Record", value: [["status", num(status)]] });
+  const exchange = (path: number[], status: number) => ({ path, request: rec(0), response: rec(status), start_us: 5, end_us: 9 });
+
+  it("places each round's exchanges on their nodes, and replays with the last answer", () => {
+    const entry = {
+      kind: "request",
+      route: "GET /proxy",
+      rounds: [{ exchanges: [exchange([0, 1], 503)] }, { exchanges: [exchange([0, 1], 200), exchange([7], 1)] }],
+    };
+    const xs = nodeExchanges(entry, trace);
+    expect(xs.map((x) => [x.id, x.round])).toEqual([["h", 0], ["h", 1]]);
+    expect(recordedResponses(xs).get("h")).toEqual(rec(200));
+
+    // replay answers the http_request node from the record; nothing else changes.
+    const nodes = [n("h", "http_request", ["path", "headers", "body"], ["response"])];
+    const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode, recordedResponses(xs));
+    expect(traces.get("h")?.outputs).toEqual([rec(200)]);
+    const unanswered = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode);
+    expect(unanswered.traces.get("h")?.outputs).toEqual([null]);
+  });
+
+  it("times a run by its final round", () => {
+    const entry = {
+      kind: "tick",
+      route: null,
+      timeline: [
+        { path: [0], start_us: 0, end_us: 1, round: 0 },
+        { path: [0], start_us: 50, end_us: 52, round: 1 },
+      ],
+    };
+    expect(nodeTimings(entry, trace).get("h2")).toEqual({ start_us: 50, end_us: 52 });
   });
 });

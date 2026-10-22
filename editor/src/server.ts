@@ -94,6 +94,8 @@ export async function deployUnit(
   intervalSeconds?: number,
   /** The flow's canvas, kept with the deployment so view mode shows exactly what runs. */
   document?: FlowDocument,
+  /** What it needs beyond its graph (limits, exceptions): part of its manifest. */
+  requirements?: Requirements,
 ): Promise<DeployResult> {
   const res = await fetch(`${BASE}/deploy`, {
     method: "POST",
@@ -104,9 +106,52 @@ export async function deployUnit(
       acknowledge,
       ...(intervalSeconds !== undefined ? { interval_seconds: intervalSeconds } : {}),
       ...(document !== undefined ? { document } : {}),
+      ...(requirements !== undefined ? { requirements } : {}),
     }),
   });
   return asJson<DeployResult>(res);
+}
+
+/** What a flow declares it needs beyond its graph (permissions.rs's `Requirements`): limits set
+ *  away from the host defaults, by name, and exceptions to the outbound rules. */
+export type Requirements = {
+  limits?: Record<string, number>;
+  plain_http?: string[];
+  private_addresses?: boolean;
+};
+
+/** `POST /deploy/preview` — what deploying would ask for, without deploying. */
+export type DeployPreview = {
+  manifest: string;
+  items: string[];
+  /** What `/deploy` will want acknowledged. */
+  needs_approval: string[];
+  /** Granted already: by host policy, or by the deployment's current grant. */
+  already_granted: string[];
+  /** Why the host would refuse it, if it would. */
+  refused: string | null;
+};
+
+export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements): Promise<DeployPreview> {
+  const res = await fetch(`${BASE}/deploy/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slug, unit: unitHash, ...(requirements !== undefined ? { requirements } : {}) }),
+  });
+  return asJson<DeployPreview>(res);
+}
+
+/** `GET /permissions` — this host's policy. Limits by name: milliseconds, bytes, counts. */
+export type HostPolicy = {
+  defaults: Record<string, number>;
+  ceilings: Record<string, number>;
+  auto: string[];
+  allow_plain_http: boolean;
+  allow_private_addresses: boolean;
+};
+
+export async function getPermissions(): Promise<HostPolicy> {
+  return asJson<HostPolicy>(await fetch(`${BASE}/permissions`));
 }
 
 /** One entry from `GET /deployments` (or `DELETE /deployments/<slug>`'s response) — mirrors
@@ -127,6 +172,8 @@ export type DeploymentEntry = {
   /** The current session's number (the last one's when stopped). */
   session: number;
   sessions: number;
+  /** Why it can't run until deployed again (its grant no longer covers what it needs). */
+  attention?: string;
 };
 
 /** Running answers and fires; paused keeps its port and session but answers 503; stopped has
@@ -185,6 +232,18 @@ export type LogEntry = {
   error: string | null;
   /** When each step ran (absent from servers before it was recorded). */
   timeline?: NodeTiming[];
+  /** The outbound requests it made, round by round (absent when none). */
+  rounds?: LoggedRound[];
+  /** The run's id, the nonce in it, and the grant it was held to (hex; empty for no run). */
+  run_id?: string;
+  nonce?: string;
+  grant?: string;
+};
+
+/** The requests one round made: each node (by its path in the run's root unit), its request,
+ *  its response, and when, in microseconds from the run's start. */
+export type LoggedRound = {
+  exchanges: { path: number[]; request: WValue; response: WValue; start_us: number; end_us: number }[];
 };
 
 /** `GET /deployments/<slug>/log` — entries past `after` (all without), oldest first. `next` is
@@ -298,7 +357,7 @@ export type FlowDocument = {
   /** The flow's deploy settings (DeployBar): the port for a flow with routes, the interval for a
    *  clock flow. Absent in older flows; `endpoints`, from flows saved before routes were
    *  derived, is ignored. */
-  server?: { port: string; interval?: string; endpoints?: EndpointDraft[] };
+  server?: { port: string; interval?: string; endpoints?: EndpointDraft[]; requirements?: Requirements };
   /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow
    *  deployed whole), so the log's timings land on the canvas (replay.ts's `nodeTimings`). */
   trace?: Record<string, string[]>;

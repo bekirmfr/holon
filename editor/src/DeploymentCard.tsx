@@ -151,6 +151,9 @@ export function DeploymentCard({
           {entry.sessions} session{entry.sessions === 1 ? "" : "s"} {open ? "▾" : "▸"}
         </span>
       </div>
+      {entry.attention && (
+        <div style={{ color: "#e0916f", fontSize: 11 }}>⚠ {entry.attention}</div>
+      )}
 
       {open &&
         (sessions ?? []).slice().reverse().map((s) => (

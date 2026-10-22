@@ -173,6 +173,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         }
     }
 
+    if method == "POST" && url == "/deploy/preview" {
+        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy, request);
+    }
+
     if method == "GET" && url == "/permissions" {
         return handle_get_permissions(&state.policy);
     }

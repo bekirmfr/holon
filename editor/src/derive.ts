@@ -83,11 +83,14 @@ export function findRoutes(nodes: CanvasNode[], edges: CanvasEdge[]): { routes: 
  * Narrow core's proposed boundary for one route's group to what an endpoint needs. The only input
  * left open must be the request node's (the endpoint feeds it); the outputs kept are the respond
  * node's (the response) and every effect (state writes, which the host performs). Anything else
- * dangling is dropped from the endpoint, not an error: an unused `query` output is normal.
+ * dangling is dropped from the endpoint, not an error: an unused `query` output is normal. An
+ * input that may be left empty (an `http_request`'s `headers` or `body`) stays unbound, so it is
+ * absent when the endpoint runs, rather than refusing the route.
  * `group` is in the same order as the children the spec was proposed over.
  */
 export function routeSpec(spec: WEncapSpec, group: CanvasNode[], label: string): WEncapSpec | string {
-  for (const p of spec.promote) {
+  const promote = spec.promote.filter((p) => !isOptionalInput(group[p.child], group[p.child].data.inputs[p.port]?.name));
+  for (const p of promote) {
     const n = group[p.child];
     if (!isRequestNode(n)) {
       return `${label}: ${n.data.name} · ${n.data.inputs[p.port]?.name ?? p.port} is not wired`;
@@ -101,5 +104,10 @@ export function routeSpec(spec: WEncapSpec, group: CanvasNode[], label: string):
   if (responses.length > 1) return `${label}: more than one respond node`;
   if (expose.length === 0) return `${label}: add a respond node (or an effect, answered 204)`;
   // The response first: endpoint.ts takes the first non-effect output as output 0.
-  return { promote: spec.promote, expose: [...responses, ...expose.filter((x) => !responses.includes(x))] };
+  return { promote, expose: [...responses, ...expose.filter((x) => !responses.includes(x))] };
+}
+
+/** Inputs a node works without: core treats them as empty when absent. */
+function isOptionalInput(n: CanvasNode, port: string | undefined): boolean {
+  return n.data.name === "http_request" && n.data.body.kind === "Primitive" && (port === "headers" || port === "body");
 }

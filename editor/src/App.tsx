@@ -40,6 +40,7 @@ import {
 import {
   stageUnit,
   deployUnit,
+  previewDeploy,
   listDeployments,
   deleteDeployment,
   changeDeployment,
@@ -66,7 +67,7 @@ import { History } from "./history";
 import { DialogProvider, useDialog } from "./Dialog";
 import { DeploymentCard } from "./DeploymentCard";
 import { BottomPane, SidePane } from "./ViewPanes";
-import { nodeTimings, replay, stateAtStep, type ReplayNode } from "./replay";
+import { nodeExchanges, nodeTimings, recordedResponses, replay, stateAtStep, type ReplayNode } from "./replay";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { buildTemplate, isTemplate, templateDefaults, templateInterface, TEMPLATES, type TemplateName } from "./templates";
@@ -81,6 +82,7 @@ import {
   isWEncapError,
   encapErrorNodeIndices,
   capabilityAcknowledgeName,
+  describeItem,
   formatValue,
 } from "./diagnostics";
 
@@ -675,6 +677,7 @@ function Canvas({
       const server: FlowSettings = {
         port: rec.document.server?.port ?? DEFAULT_SETTINGS.port,
         interval: rec.document.server?.interval ?? DEFAULT_SETTINGS.interval,
+        ...(rec.document.server?.requirements ? { requirements: rec.document.server.requirements } : {}),
       };
       setSettings(server);
       setSavedKey(savedKeyOf(ns, es, server));
@@ -979,22 +982,40 @@ function Canvas({
         return;
       }
     }
+    // The host decides what needs approval (its policy, and what this deployment was already
+    // granted): ask it, then show asked against granted, and acknowledge exactly what it asks.
     const existing = deployments.some((d) => d.slug === name);
-    const question =
-      `${existing ? "Update" : "Deploy"} "${name}"?` +
-      (caps.length > 0 ? ` It may touch: ${caps.join(", ")}.` : "") +
-      (existing ? " Its state and sessions are kept." : "");
-    if (!(await dialog.confirm(question, existing ? "Update" : "Deploy"))) return;
-    setDeployBusy(true);
+    const requirements = settings.requirements;
+    let ask: string[];
     try {
       await stageClosure(ev, hash, new Set());
+      const preview = await previewDeploy(name, hash, requirements);
+      if (preview.refused) {
+        setDeployError(`this host can't grant that: ${preview.refused}`);
+        return;
+      }
+      ask = preview.needs_approval;
+      const lines = [`${existing ? "Update" : "Deploy"} "${name}"?`];
+      if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map((i) => `• ${describeItem(i)}`));
+      if (preview.already_granted.length > 0) {
+        lines.push("", "Already granted:", ...preview.already_granted.map((i) => `• ${describeItem(i)}`));
+      }
+      if (existing) lines.push("", "Its state and sessions are kept.");
+      const action = ask.length > 0 ? "Approve and deploy" : existing ? "Update" : "Deploy";
+      if (!(await dialog.confirm(lines.join("\n"), action))) return;
+    } catch (err) {
+      setDeployError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    setDeployBusy(true);
+    try {
       const { nodes: ns, edges: es } = live.current;
       const units = closureOf(
         ns.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])),
         (h) => ev.get_unit(h) as WUnit,
       ).map((h) => toHex(buildPreimage(ev.get_unit(h) as WUnit)));
       const document: FlowDocument = { nodes: ns, edges: es, viewport: getViewport(), units, server: settings, trace };
-      await deployUnit(name, hash, caps, interval, document);
+      await deployUnit(name, hash, ask, interval, document, requirements);
       refreshDeployments();
     } catch (err) {
       setDeployError(err instanceof Error ? err.message : String(err));
@@ -1097,7 +1118,8 @@ function Canvas({
   const replayed = useMemo(() => {
     if (!viewing || !selectedRun) return null;
     const { nodes: ns, edges: es } = live.current;
-    const run = replay(ns, es, selectedRun, evalNode);
+    // Outbound requests are answered from the run's record, never the network.
+    const run = replay(ns, es, selectedRun, evalNode, recordedResponses(nodeExchanges(selectedRun, viewTrace)));
     let verdict: boolean | null = null;
     const respond = run.order.find((id) => {
       const n = ns.find((x) => x.id === id);
@@ -1109,7 +1131,7 @@ function Canvas({
     return { ...run, verdict };
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewing, selectedRun, canvasKey, evalNode]);
+  }, [viewing, selectedRun, canvasKey, evalNode, viewTrace]);
 
   const onSelectRun = useCallback((e: LogEntry | null) => {
     setSelectedRun(e);
@@ -1137,6 +1159,7 @@ function Canvas({
     () => (selectedRun ? nodeTimings(selectedRun, viewTrace) : new Map<string, { start_us: number; end_us: number }>()),
     [selectedRun, viewTrace],
   );
+  const exchanges = useMemo(() => (selectedRun ? nodeExchanges(selectedRun, viewTrace) : []), [selectedRun, viewTrace]);
   const flowState = useMemo(
     () =>
       selectedRun && replayed
@@ -1943,6 +1966,7 @@ function Canvas({
             order={replayed?.order ?? []}
             nodes={nodes}
             timings={timings}
+            exchanges={exchanges}
             verdict={replayed?.verdict ?? null}
             onPickNode={setInspectNode}
           />

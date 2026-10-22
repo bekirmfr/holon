@@ -9,7 +9,7 @@ import { getLog, type LogEntry } from "./server";
 import { formatValue } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
-import type { NodeTrace } from "./replay";
+import type { NodeExchange, NodeTrace } from "./replay";
 
 const KEEP = 500;
 const POLL_MS = 1500;
@@ -35,6 +35,20 @@ const runLabel = (e: LogEntry) =>
   e.kind === "request" ? (e.route ?? `${e.method ?? ""} ${e.url ?? ""} (no route)`) : e.kind === "tick" ? "clock tick" : "trigger";
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)}ms` : `${t.toFixed(0)}µs`);
+
+/** A record's field, or null. */
+const field = (v: WValue | null | undefined, k: string): WValue | null =>
+  v?.type === "Record" ? (v.value.find(([key]) => key === k)?.[1] ?? null) : null;
+const text = (v: WValue | null) => (v?.type === "Text" ? v.value : v?.type === "Number" ? String(v.value) : "");
+
+/** An outbound request as one line: `GET https://… → 200`, or `→ blocked_host`. */
+function exchangeLine(request: WValue, response: WValue): { line: string; ok: boolean } {
+  const error = text(field(response, "error"));
+  const status = text(field(response, "status"));
+  const answer = error !== "" ? error : status;
+  const ok = error === "" && Number(status) > 0 && Number(status) < 400;
+  return { line: `${text(field(request, "method"))} ${text(field(request, "url"))} → ${answer}`, ok };
+}
 
 /** What a view-mode pane needs to know about a canvas node. */
 export type ViewNode = {
@@ -160,6 +174,7 @@ export function BottomPane({
   order,
   nodes,
   timings,
+  exchanges,
   verdict,
   onPickNode,
 }: {
@@ -174,6 +189,8 @@ export function BottomPane({
   nodes: ViewNode[];
   /** When each node ran, by node id, from the server (empty when it didn't record it). */
   timings: Map<string, { start_us: number; end_us: number }>;
+  /** The run's outbound requests, by the node that made each. */
+  exchanges: NodeExchange[];
   /** Whether replaying the selected run reproduced what was recorded; null when not checkable. */
   verdict: boolean | null;
   onPickNode: (id: string) => void;
@@ -233,6 +250,7 @@ export function BottomPane({
           order={order}
           nodes={nodes}
           timings={timings}
+          exchanges={exchanges}
           step={step}
           onStep={onStep}
           onPickNode={onPickNode}
@@ -292,6 +310,26 @@ function LogTab({ entries, selected, pick }: { entries: LogEntry[]; selected: Lo
               <Field name={`answered ${selected.status}`} value={selected.response_body || "(empty)"} />
             )}
             {selected.error && <Field name="error" value={selected.error} color={bad} />}
+            {(selected.rounds ?? []).map((r, i) =>
+              r.exchanges.map((x, j) => {
+                const { line, ok } = exchangeLine(x.request, x.response);
+                return (
+                  <Field
+                    key={`${i}-${j}`}
+                    name={`round ${i + 1} · ${us(x.end_us - x.start_us)}`}
+                    value={line}
+                    color={ok ? ink : bad}
+                  />
+                );
+              }),
+            )}
+            {selected.run_id && (
+              <Field
+                name="run"
+                value={`${selected.run_id.slice(0, 16)}… · grant ${(selected.grant ?? "").slice(0, 12)}…`}
+                color={dim}
+              />
+            )}
           </>
         ) : (
           <div>select a run</div>
@@ -320,6 +358,7 @@ function TimelineTab({
   order,
   nodes,
   timings,
+  exchanges,
   step,
   onStep,
   onPickNode,
@@ -328,6 +367,7 @@ function TimelineTab({
   order: string[];
   nodes: ViewNode[];
   timings: Map<string, { start_us: number; end_us: number }>;
+  exchanges: NodeExchange[];
   step: number | null;
   onStep: (s: number | null) => void;
   onPickNode: (id: string) => void;
@@ -335,7 +375,10 @@ function TimelineTab({
   if (!run) return <div style={scroll}>select a run</div>;
   if (order.length === 0) return <div style={scroll}>this run touched no node on the canvas</div>;
   const timed = timings.size > 0;
-  const span = timed ? Math.max(...[...timings.values()].map((t) => t.end_us), 1) : order.length;
+  // One scale for the steps and the requests between rounds.
+  const span = timed
+    ? Math.max(...[...timings.values()].map((t) => t.end_us), ...exchanges.map((x) => x.end_us), 1)
+    : order.length;
   const ticks = timed ? [0, span / 2, span] : [];
   return (
     <div style={scroll}>
@@ -419,8 +462,43 @@ function TimelineTab({
           </div>
         );
       })}
+      {timed && exchanges.length > 0 && (
+        <div style={{ color: dim, margin: "6px 0 2px" }}>outbound requests, performed between rounds</div>
+      )}
+      {timed &&
+        exchanges.map((x, i) => {
+          const { line, ok } = exchangeLine(x.request, x.response);
+          return (
+            <div
+              key={`x${i}`}
+              onClick={() => onPickNode(x.id)}
+              style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0", cursor: "pointer" }}
+              title={line}
+            >
+              <span style={{ width: 22, textAlign: "right", color: dim }}>↗</span>
+              <span style={{ width: 170, color: ok ? ink : bad, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                round {x.round + 1} · {line}
+              </span>
+              <div style={{ flex: 1, position: "relative", height: 10, background: "#0e1a2f", borderRadius: 2 }}>
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${(x.start_us / span) * 100}%`,
+                    width: `max(2px, ${((x.end_us - x.start_us) / span) * 100}%)`,
+                    top: 0,
+                    bottom: 0,
+                    borderRadius: 2,
+                    background: ok ? "#c58af2" : bad,
+                  }}
+                />
+              </div>
+              <span style={{ width: 60, textAlign: "right", color: dim }}>{us(x.end_us - x.start_us)}</span>
+            </div>
+          );
+        })}
       <div style={{ color: dim, marginTop: 6 }}>
         whole run {run.duration_ms.toFixed(2)}ms · ✎ writes state (committed when the run finishes)
+        {exchanges.length > 0 ? " · steps shown from the final round" : ""}
       </div>
     </div>
   );

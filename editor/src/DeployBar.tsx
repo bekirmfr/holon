@@ -1,13 +1,38 @@
 // The flow's deploy controls, in the canvas header next to save: one Deploy (or Update) for the
 // whole flow, its live status with pause / stop / run, and the flow's deploy settings (port,
-// clock interval). The deployment is named after the flow, so there is no separate slug.
+// clock interval, and what it needs beyond its graph: limits and exceptions, which become part
+// of its manifest). The deployment is named after the flow, so there is no separate slug.
 
-import { useState, type CSSProperties } from "react";
-import type { DeploymentEntry } from "./server";
+import { useEffect, useState, type CSSProperties } from "react";
+import { getPermissions, type DeploymentEntry, type HostPolicy, type Requirements } from "./server";
 
 /** A flow's deploy settings, saved with it. `port` is for a flow with routes (a server),
- *  `interval` (seconds) for a flow that reads the clock. Either may be unused. */
-export type FlowSettings = { port: string; interval: string };
+ *  `interval` (seconds) for a flow that reads the clock. Either may be unused. `requirements`:
+ *  limits away from the host's defaults, and exceptions, which the host must grant. */
+export type FlowSettings = { port: string; interval: string; requirements?: Requirements };
+
+/** The limits a flow can ask for, with what a person reads for each (permissions.rs's names). */
+const LIMITS: [string, string][] = [
+  ["request_timeout_ms", "request timeout (ms)"],
+  ["connect_timeout_ms", "connect timeout (ms)"],
+  ["run_budget_ms", "run budget, request (ms)"],
+  ["clock_run_budget_ms", "run budget, clock (ms)"],
+  ["max_requests", "requests per run"],
+  ["per_host_concurrency", "concurrent per host"],
+  ["max_request_bytes", "request size (bytes)"],
+  ["max_response_bytes", "response size (bytes)"],
+  ["max_header_bytes", "header size (bytes)"],
+  ["max_redirects", "redirects"],
+];
+
+/** `requirements` with `limit` set to `text` (blank: back to the host default). */
+export function withLimit(requirements: Requirements | undefined, limit: string, text: string): Requirements {
+  const limits = { ...(requirements?.limits ?? {}) };
+  const n = Number(text);
+  if (text.trim() === "" || !Number.isInteger(n) || n < 0) delete limits[limit];
+  else limits[limit] = n;
+  return { ...requirements, limits };
+}
 export const DEFAULT_SETTINGS: FlowSettings = { port: "8080", interval: "" };
 
 const base: CSSProperties = {
@@ -49,6 +74,11 @@ export function DeployBar({
   onAction: (action: "run" | "pause" | "stop") => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [policy, setPolicy] = useState<HostPolicy | null>(null);
+  useEffect(() => {
+    if (open && !policy) getPermissions().then(setPolicy).catch(() => {});
+  }, [open, policy]);
+  const req = settings.requirements;
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
   const title = entry
@@ -72,6 +102,11 @@ export function DeployBar({
             {look.mark} {entry.status}
             {entry.port !== null && entry.status !== "stopped" ? ` :${entry.port}` : ""}
           </span>
+          {entry.attention && (
+            <span style={{ color: "#e0916f", fontSize: 11 }} title={entry.attention}>
+              ⚠ needs approval
+            </span>
+          )}
           {entry.status === "running" && (
             <button style={base} onClick={() => onAction("pause")} title="stop answering, keep the session">
               pause
@@ -93,7 +128,7 @@ export function DeployBar({
           )}
         </>
       )}
-      <button style={base} onClick={() => setOpen(!open)} title="deploy settings: port, clock interval">
+      <button style={base} onClick={() => setOpen(!open)} title="deploy settings: port, clock interval, what it needs">
         ⚙
       </button>
       {open && (
@@ -125,6 +160,44 @@ export function DeployBar({
             placeholder="clock flows"
             onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
             style={input}
+          />
+          <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="what it needs beyond its graph; the host must grant it">
+            needs (blank: this host's default)
+          </span>
+          {LIMITS.map(([name, label]) => (
+            <label key={name} style={{ display: "contents" }}>
+              <span>{label}</span>
+              <input
+                value={req?.limits?.[name] ?? ""}
+                placeholder={policy ? String(policy.defaults[name]) : ""}
+                title={policy ? `default ${policy.defaults[name]}, ceiling ${policy.ceilings[name]}` : undefined}
+                onChange={(e) => setSettings({ ...settings, requirements: withLimit(req, name, e.target.value) })}
+                style={{ ...input, width: 84 }}
+              />
+            </label>
+          ))}
+          <span title="hosts it may call over plain HTTP; this host must allow plain HTTP at all">plain HTTP to</span>
+          <input
+            value={(req?.plain_http ?? []).join(", ")}
+            placeholder="none"
+            disabled={policy !== null && !policy.allow_plain_http}
+            title={policy && !policy.allow_plain_http ? "this host never grants plain HTTP" : "comma-separated host[:port]"}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
+              })
+            }
+            style={{ ...input, width: 140 }}
+          />
+          <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
+          <input
+            type="checkbox"
+            checked={req?.private_addresses ?? false}
+            disabled={policy !== null && !policy.allow_private_addresses}
+            title={policy && !policy.allow_private_addresses ? "this host never grants private addresses" : undefined}
+            onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
+            style={{ justifySelf: "start" }}
           />
         </div>
       )}

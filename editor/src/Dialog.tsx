@@ -92,7 +92,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               border: "1px solid #1b2a45",
               borderRadius: 6,
               padding: 16,
-              width: 360,
+              width: 420,
               maxWidth: "calc(100vw - 32px)",
               color: "#e6eefb",
               fontSize: 13,
@@ -101,7 +101,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               gap: 12,
             }}
           >
-            <div>{ask.message}</div>
+            <div style={{ whiteSpace: "pre-line", maxHeight: "60vh", overflowY: "auto" }}>{ask.message}</div>
             {ask.kind === "prompt" && (
               <input
                 ref={input}

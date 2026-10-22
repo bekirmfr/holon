@@ -85,6 +85,30 @@ describe("routeSpec", () => {
     ).toBe("POST /todos: more than one respond node");
     expect(routeSpec(base, group, label)).toBe("POST /todos: add a respond node (or an effect, answered 204)");
   });
+  it("leaves an http_request's optional inputs unbound, but not its path", () => {
+    const http: CanvasNode = {
+      id: "h",
+      data: {
+        name: "http_request",
+        body: { kind: "Primitive" },
+        params: [],
+        inputs: ["path", "headers", "body"].map((name) => ({ name, ty: "Any" as const })),
+        outputs: [{ name: "out", ty: "Record" as const }],
+      },
+    };
+    const g = [req("r", "GET", "/fetch"), http, res("s")];
+    const spec = {
+      promote: [
+        { child: 0, port: 0, name: "request" },
+        { child: 1, port: 1, name: "headers" },
+        { child: 1, port: 2, name: "body" },
+      ],
+      expose: [{ child: 2, port: 0, name: "response" }],
+    };
+    expect(routeSpec(spec, g, "GET /fetch")).toEqual({ promote: [spec.promote[0]], expose: spec.expose });
+    const unwiredPath = { ...spec, promote: [...spec.promote, { child: 1, port: 0, name: "path" }] };
+    expect(routeSpec(unwiredPath, g, "GET /fetch")).toBe("GET /fetch: http_request · path is not wired");
+  });
 });
 
 describe("buildTemplate", () => {
