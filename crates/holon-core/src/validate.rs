@@ -97,6 +97,16 @@ pub fn compatible(src: &Type, dst: &Type) -> bool {
     }
 }
 
+/// Whether a type is or contains `Effect`.
+fn mentions_effect(ty: &Type) -> bool {
+    match ty {
+        Type::Effect => true,
+        Type::List(t) => mentions_effect(t),
+        Type::Product(ts) | Type::Sum(ts) => ts.iter().any(mentions_effect),
+        Type::Number | Type::Boolean | Type::Text | Type::Any | Type::Record => false,
+    }
+}
+
 /// Validate a unit's graph. A primitive always passes. A composite is checked for
 /// well-formedness, acyclicity, and type compatibility — including its boundary edges.
 pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<ValidationError>> {
@@ -190,7 +200,11 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
             }
         };
 
-        if !compatible(&src_ty, &dst_ty) {
+        // A sink's payload is data: an Effect-typed source never fits it, `Any` port or not
+        // (primitives.rs's `sink_effect` refuses one that only shows up at run time).
+        let into_sink = e.to_child != BOUNDARY
+            && matches!(resolved[e.to_child as usize], Some(Unit { body: UnitBody::Primitive { name }, .. }) if crate::primitives::is_sink(name));
+        if !compatible(&src_ty, &dst_ty) || (into_sink && mentions_effect(&src_ty)) {
             errors.push(ValidationError::TypeMismatch { edge: ei, src: src_ty, dst: dst_ty });
         }
     }
@@ -359,6 +373,31 @@ mod tests {
         let c = composite(vec![ht, hn], vec![edge(0, 0, 1, 0)]);
         let errs = validate(&c, &r).unwrap_err();
         assert!(errs.contains(&ValidationError::TypeMismatch { edge: 0, src: Type::Text, dst: Type::Number }));
+    }
+
+    #[test]
+    fn an_effect_never_fits_a_sink_payload() {
+        let mut r = MapResolver::new();
+        let egress = r.insert(crate::interface_of("egress").unwrap()).unwrap();
+        let store_write = r.insert(crate::interface_of("store_write").unwrap()).unwrap();
+        let text = r.insert(text_source()).unwrap();
+        let mut effects = text_source();
+        effects.outputs[0].ty = Type::List(Box::new(Type::Effect));
+        let effects = r.insert(effects).unwrap();
+        let mismatch = |src| ValidationError::TypeMismatch { edge: 0, src, dst: Type::Any };
+
+        // egress(egress(x)): the outer payload port is Any, and still refuses the Effect.
+        let nested = composite(vec![egress, egress], vec![edge(0, 0, 1, 0)]);
+        assert_eq!(validate(&nested, &r), Err(vec![mismatch(Type::Effect)]));
+        // The same for a state write, and for effects inside a list.
+        assert_eq!(validate(&composite(vec![egress, store_write], vec![edge(0, 0, 1, 0)]), &r), Err(vec![mismatch(Type::Effect)]));
+        let listed = composite(vec![effects, egress], vec![edge(0, 0, 1, 0)]);
+        assert_eq!(validate(&listed, &r), Err(vec![mismatch(Type::List(Box::new(Type::Effect)))]));
+        // Data into a sink is fine; an Effect out to the composite boundary is how effects leave.
+        assert_eq!(validate(&composite(vec![text, egress], vec![edge(0, 0, 1, 0)]), &r), Ok(()));
+        let mut out = composite(vec![egress], vec![edge(0, 0, BOUNDARY, 0)]);
+        out.outputs = vec![Port { name: "out".into(), ty: Type::Effect }];
+        assert_eq!(validate(&out, &r), Ok(()));
     }
 
     #[test]

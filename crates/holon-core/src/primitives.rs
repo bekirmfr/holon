@@ -398,8 +398,34 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
 /// Construct a sink's settled request: `Effect { sink-name, payload }`. The payload is the
 /// first (and only) input it was given; no input ⇒ nothing to construct. The capability is
 /// derived from the name downstream, never stored here.
+///
+/// A payload holding an Effect anywhere (`egress(egress(x))`, or one inside a list or record)
+/// constructs nothing: a sink's payload is data, and an effect riding inside another one would
+/// be performed, or not, by whatever reads that data, outside the host's view. Validation
+/// refuses the wiring when the Effect is declared ([`is_sink`]); this catches one that arrives
+/// through an `Any`-typed port.
 fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
-    inputs.first().map(|p| Value::Effect { sink: sink.into(), payload: Box::new((*p).clone()) })
+    let p = inputs.first()?;
+    if contains_effect(p) {
+        return None;
+    }
+    Some(Value::Effect { sink: sink.into(), payload: Box::new((*p).clone()) })
+}
+
+/// The primitives that construct an Effect from a payload input (see [`sink_effect`]).
+pub(crate) fn is_sink(name: &str) -> bool {
+    matches!(name, "egress" | "store_write")
+}
+
+/// Whether an Effect occurs anywhere in `v`.
+fn contains_effect(v: &Value) -> bool {
+    match v {
+        Value::Effect { .. } => true,
+        Value::List(items) => items.iter().any(contains_effect),
+        Value::Record(fields) => fields.values().any(contains_effect),
+        Value::Sum { payload, .. } => contains_effect(payload),
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) => false,
+    }
 }
 
 /// The one recursive, total stringifier for an arbitrary `Value` — `to_text`'s own
@@ -833,6 +859,20 @@ mod tests {
             Some(Value::Effect { sink: "egress".into(), payload: Box::new(txt("hello")) })
         );
         assert_eq!(compute("egress", &[], &[]), None); // no payload ⇒ nothing to construct
+    }
+    #[test]
+    fn a_sink_refuses_a_payload_holding_an_effect() {
+        let inner = compute("egress", &[&txt("hi")], &[]).unwrap();
+        let in_list = list(vec![txt("a"), inner.clone()]);
+        let in_record = Value::Record([("send".to_string(), inner.clone())].into());
+        let in_sum = Value::Sum { arm: 0, payload: Box::new(inner.clone()) };
+        for payload in [&inner, &in_list, &in_record, &in_sum] {
+            assert_eq!(compute("egress", &[payload], &[]), None, "{payload:?}");
+            assert_eq!(compute("store_write", &[payload], &[p("key", "k")]), None, "{payload:?}");
+        }
+        // Plain data, however nested, still constructs.
+        let data = list(vec![txt("a"), Value::Record([("n".to_string(), num(1.0))].into())]);
+        assert!(compute("egress", &[&data], &[]).is_some());
     }
     #[test]
     fn store_write_constructs_an_effect() {

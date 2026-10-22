@@ -195,13 +195,13 @@ packs/hooks/
 |---|---|---|---|---|---|---|
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met**; splitting `App.tsx` remains |
 | **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b): runs today on the control plane's `rouille`, move pending | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
-| **M2 effects + replay** | `http_request`, hashes/HMAC, Effects refused by `Any`-typed sink payloads | effect loop, `Performer`, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half not started** |
+| **M2 effects + replay** | `http_request`, hashes/HMAC, Effects refused by `Any`-typed sink payloads ✅ | effect loop, `Performer`, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half not started** |
 | **M3 door 1** | — | consent at load | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
 
 **Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is splitting
 `App.tsx`, the data plane's move to `hyper`, and `instantiate` following `fn` params. M2's replay half
-landed early (the recorder came with view mode); next is closing `Any`-typed sinks to Effects, then
+landed early (the recorder came with view mode); sinks now refuse Effects; next is
 `http_request` and the effect loop.
 
 ### 7a. Review findings, triaged against this direction
@@ -245,7 +245,8 @@ public data plane**, not for an open marketplace.
   `map` / `fold` with promoted params.
 - `json_parse` needs depth and size limits, because request bodies are untrusted. ✅ (depth 64;
   size bounded by the body cap)
-- `Any`-typed sink payloads accept Effects (`egress(egress(x))` validates). This must be closed
+- `Any`-typed sink payloads accept Effects (`egress(egress(x))` validates). ✅ Closed: a sink builds nothing from a payload holding an
+  Effect, and validation refuses the wiring. This must be closed
   before `http_request` exists.
 - Consent isn't re-checked at load (M3, §3).
 
