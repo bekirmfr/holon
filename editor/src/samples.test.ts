@@ -92,8 +92,8 @@ describe("sample flows", () => {
   it("place a whole flow as a node: one unit, wherever it's placed, that works", () => {
     const ev = new Evaluator();
     const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
-    const placed = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.body.kind === "Composite");
-    expect(placed.map((n) => n.data.name)).toEqual(["slugify", "slugify"]);
+    const placed = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.body.kind === "Composite" && n.data.name === "slugify");
+    expect(placed.length).toBe(2);
     const hashes = new Set(placed.map((n) => (n.data.body.kind === "Composite" ? n.data.body.hash : "")));
     expect(hashes.size, "the same unit twice").toBe(1);
     expect(placed[0].data.inputs.map((p) => p.name)).toEqual(["text"]);
@@ -106,6 +106,26 @@ describe("sample flows", () => {
     expect(() =>
       buildSample({ ...SAMPLES[0], build: (b) => void b.holon("h", (i) => void i.node("lowercase"), { inputs: ["a", "b"], outputs: ["c"] }) }, catalog, variadic, new Evaluator()),
     ).toThrow('holon "h" has inputs');
+  });
+
+  it("place a holon that reads and writes outside: its ports are what they say, its needs in the manifest", () => {
+    const ev = new Evaluator();
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const publish = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "publish")!;
+    if (publish.data.body.kind !== "Composite") throw new Error("not a composite");
+    const unit = ev.get_unit(publish.data.body.hash) as WUnit;
+    // Evaluated offline: no clock or secret is sourced, so the post isn't put and the receipt is
+    // unsigned; the state write still comes out, naming the slug. Each output is what it's named.
+    const out = ev.eval(buildPreimage(unit), [{ type: "Text", value: "hello-holon" }, { type: "Text", value: "ada" }]) as (WValue | null)[];
+    const at = (name: string) => out[publish.data.outputs.findIndex((p) => p.name === name)] ?? null;
+    expect(at("receipt")).toEqual({ type: "Text", value: "unsigned" });
+    expect(at("saved")).toEqual({ type: "Effect", value: { sink: "store_write:last_post", payload: { type: "Text", value: "hello-holon" } } });
+    expect(at("put")).toBeNull();
+    // Everything it reads and writes inside is in the flow's manifest; the receipt key optional.
+    const { caps } = derive("slugs");
+    for (const c of ["Clock", 'CollectionWrite("posts")', 'CollectionRead("posts")', 'StateWrite("last_post")', 'SecretRead("receipt_key")']) {
+      expect(caps).toContain(c);
+    }
   });
 
   it("place a saved flow as one node: grouped whole, holons inside it and all; never a server", () => {

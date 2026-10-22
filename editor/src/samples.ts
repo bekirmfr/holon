@@ -324,13 +324,15 @@ export const SAMPLES: Sample[] = [
     name: "slugs",
     title: "A flow inside a flow (holon)",
     description:
-      "slugify, a small flow of its own (lowercase, split on spaces, join with -), grouped into one node and placed twice: a holon is a whole flow used as a node, the same unit wherever it's placed. A saved flow without routes is placed the same way, from the palette's flows.",
-    shows: ["holons", "group / expand", "saved flows as nodes", "composite reuse", "lowercase", "split", "join"],
+      "Two holons, each a whole flow placed as one node: slugify (lowercase, split, join with -) only computes, placed twice; publish reads and writes outside (the clock, a collection, state, an optional secret) and its manifest, permissions, replay and flow state count all of it. A saved flow without routes is placed the same way, from the palette's flows.",
+    shows: ["holons", "group / expand", "saved flows as nodes", "composite reuse", "holons with effects", "optional permissions"],
     port: "8110",
+    secrets: [{ name: "receipt_key", what: "signs each publish receipt; optional: without it receipts read \"unsigned\"" }],
+    optional: ['SecretRead("receipt_key")'],
     tryIt:
-      "curl -X POST -H \"Content-Type: application/json\" -d '{\"title\": \"Hello Holon World\", \"author\": \"Ada Lovelace\"}' http://127.0.0.1:8110/slugs answers {\"author\": \"ada-lovelace\", \"title\": \"hello-holon-world\"}; select a slugify node and expand to see inside",
+      "curl -X POST -H \"Content-Type: application/json\" -d '{\"title\": \"Hello Holon World\", \"author\": \"Ada Lovelace\"}' http://127.0.0.1:8110/slugs answers the two slugs and a receipt; GET /slugs lists what was published; view a run to see the holons replayed and the post written, and expand a holon to see inside",
     build(b) {
-      // The inner flow: one Text in, its slug out.
+      // A holon that only computes: one Text in, its slug out.
       const slugify = b.holon(
         "slugify",
         (inner) => {
@@ -346,25 +348,66 @@ export const SAMPLES: Sample[] = [
         },
         { inputs: ["text"], outputs: ["slug"] },
       );
+      // A holon that reads and writes outside: the post goes into the "posts" collection under its
+      // slug, with its author and the time; the last slug into state; and a receipt, signed when
+      // the receipt key is granted, "unsigned" when it isn't.
+      const publish = b.holon(
+        "publish",
+        (inner) => {
+          const slug = inner.node("default", { value: "", type: "Text" }, [0, 0]);
+          const none = inner.node("record", {}, [0, 120]);
+          const byAuthor = inner.node("with_field", { name: "author" }, [240, 120]);
+          const clock = inner.node("clock", {}, [240, 260]);
+          const post = inner.node("with_field", { name: "at" }, [480, 160]);
+          const put = inner.node("collection_put", { collection: "posts" }, [720, 40]);
+          const last = inner.node("store_write", { key: "last_post" }, [720, 180]);
+          const key = inner.node("secret", { name: "receipt_key" }, [240, 380]);
+          const sig = inner.node("hmac_sha256", { encoding: "hex" }, [480, 360]);
+          const receipt = inner.node("default", { value: "unsigned", type: "Text" }, [720, 360]);
+          inner.wire(none, "out", byAuthor, "record");
+          inner.wire(byAuthor, "out", post, "record");
+          inner.wire(clock, "out", post, "value");
+          inner.wire(slug, "out", put, "key");
+          inner.wire(post, "out", put, "value");
+          inner.wire(slug, "out", last, "value");
+          inner.wire(key, "out", sig, "key");
+          inner.wire(slug, "out", sig, "message");
+          inner.wire(sig, "out", receipt, "value");
+        },
+        { inputs: ["slug", "author"], outputs: ["put", "saved", "receipt"] },
+      );
+      // POST /slugs: slug the title and the author, publish the post, answer with both and the receipt.
       const req = b.node("request", { method: "POST", path: "/slugs" }, [40, 40]);
       const title = b.node("field", { name: "title" }, [380, 40]);
       const author = b.node("field", { name: "author" }, [380, 240]);
       const titleSlug = b.place(slugify, [640, 40]);
       const authorSlug = b.place(slugify, [640, 240]);
-      const empty = b.node("record", {}, [640, 400]);
+      const published = b.place(publish, [900, 380]);
+      const empty = b.node("record", {}, [640, 560]);
       const withTitle = b.node("with_field", { name: "title" }, [900, 120]);
       const withAuthor = b.node("with_field", { name: "author" }, [1140, 200]);
-      const res = b.node("respond", { status: "200", missing: "400" }, [1380, 40]);
+      const withReceipt = b.node("with_field", { name: "receipt" }, [1380, 300]);
+      const res = b.node("respond", { status: "200", missing: "400" }, [1620, 40]);
       b.wire(req, "json", title, "record");
       b.wire(req, "json", author, "record");
       b.wire(title, "out", titleSlug, "text");
       b.wire(author, "out", authorSlug, "text");
+      b.wire(titleSlug, "slug", published, "slug");
+      b.wire(authorSlug, "slug", published, "author");
       b.wire(empty, "out", withTitle, "record");
       b.wire(titleSlug, "slug", withTitle, "value");
       b.wire(withTitle, "out", withAuthor, "record");
       b.wire(authorSlug, "slug", withAuthor, "value");
+      b.wire(withAuthor, "out", withReceipt, "record");
+      b.wire(published, "receipt", withReceipt, "value");
       b.wire(req, "request", res, "request");
-      b.wire(withAuthor, "out", res, "body");
+      b.wire(withReceipt, "out", res, "body");
+      // GET /slugs: what was published, by slug.
+      const list = b.node("request", { method: "GET", path: "/slugs" }, [40, 720]);
+      const posts = b.node("collection_list", { collection: "posts", limit: "100" }, [640, 740]);
+      const listRes = b.node("respond", { status: "200", missing: "404" }, [1620, 720]);
+      b.wire(list, "request", listRes, "request");
+      b.wire(posts, "out", listRes, "body");
     },
   },
   {
