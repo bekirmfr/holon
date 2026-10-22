@@ -3,8 +3,8 @@
 // server's lifecycle.rs.
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { describeItem, formatOutputs, summarizeState } from "./diagnostics";
-import { ManifestSection } from "./Manifest";
+import { describeItem, formatOutputs, permissionKind, summarizeState } from "./diagnostics";
+import { KindBadge, ManifestSection } from "./Manifest";
 import {
   changeGrant,
   getGrant,
@@ -167,7 +167,9 @@ export function DeploymentCard({
       {(entry.waiting ?? 0) > 0 && <WaitingRuns slug={entry.slug} count={entry.waiting ?? 0} />}
       <ManifestSection
         version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`}
-        load={() => getManifest(entry.slug).then((m) => ({ items: m.items, notGranted: m.not_granted, hash: m.hash }))}
+        load={() =>
+          getManifest(entry.slug).then((m) => ({ items: m.items, optional: m.optional, trigger: m.trigger, notGranted: m.not_granted, hash: m.hash }))
+        }
       />
       <Permissions slug={entry.slug} version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`} onChanged={onChanged} />
 
@@ -223,13 +225,24 @@ export function DeploymentCard({
 function Permissions({ slug, version, onChanged }: { slug: string; version: string; onChanged: () => void }) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<GrantView | null>(null);
+  // Which items it can run without, and what starts it: from its manifest.
+  const [kinds, setKinds] = useState<{ optional: string[]; trigger: string | null }>({ optional: [], trigger: null });
   const [msg, setMsg] = useState("");
   useEffect(() => {
     if (!open) return;
     getGrant(slug)
       .then(setView)
       .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
+    getManifest(slug)
+      .then((m) => setKinds({ optional: m.optional, trigger: m.trigger }))
+      .catch(() => {});
   }, [open, slug, version]);
+  const revokeTitle = (item: string) =>
+    permissionKind(item, kinds.optional, kinds.trigger).kind === "optional"
+      ? "take this back without redeploying: it keeps running, these calls refused"
+      : grant?.keep_running
+        ? "take this back without redeploying: it keeps running (as set below), these calls failing"
+        : "take this back without redeploying: it pauses until this is granted back";
   const change = (c: Parameters<typeof changeGrant>[1]) => {
     setMsg("");
     changeGrant(slug, c)
@@ -252,7 +265,8 @@ function Permissions({ slug, version, onChanged }: { slug: string; version: stri
           {grant.items.map((item) => (
             <div key={item} style={{ ...row, color: "#9fb4d4" }} title={item}>
               <span style={{ flex: 1 }}>✓ {describeItem(item)}</span>
-              <button style={small} onClick={() => change({ revoke: [item] })} title="take this back without redeploying">
+              {!item.startsWith("Limit(") && <KindBadge item={item} optional={kinds.optional} trigger={kinds.trigger} />}
+              <button style={small} onClick={() => change({ revoke: [item] })} title={revokeTitle(item)}>
                 revoke
               </button>
             </div>
@@ -260,6 +274,7 @@ function Permissions({ slug, version, onChanged }: { slug: string; version: stri
           {(grant.revoked ?? []).map((item) => (
             <div key={item} style={{ ...row, color: "#e0916f" }} title={item}>
               <span style={{ flex: 1, textDecoration: "line-through" }}>{describeItem(item)}</span>
+              {!item.startsWith("Limit(") && <KindBadge item={item} optional={kinds.optional} trigger={kinds.trigger} />}
               <button style={small} onClick={() => change({ grant: [item] })} title="grant it back">
                 grant back
               </button>
@@ -276,7 +291,7 @@ function Permissions({ slug, version, onChanged }: { slug: string; version: stri
               checked={grant.keep_running ?? false}
               onChange={(e) => change({ keep_running: e.target.checked })}
             />
-            keep running when something is revoked (those calls fail) instead of pausing
+            keep running when something required is revoked (those calls fail) instead of pausing
           </label>
           {(grant.changes ?? []).slice(-5).map((c, i) => (
             <div key={i} style={{ ...row, color: "#7e8ea8" }}>

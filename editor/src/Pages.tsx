@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { deleteFlow, getFlow, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
-import { ManifestSection } from "./Manifest";
+import { ManifestSection, type ManifestView } from "./Manifest";
 import { openChoice } from "./flowDoc";
 import { useDialog } from "./Dialog";
 import { DeploymentCard } from "./DeploymentCard";
@@ -29,7 +29,7 @@ export function FlowsPage({
   current: { name: string | null; dirty: boolean };
   /** A saved document's manifest items, derived as deploying it would (App: core's capabilities
    *  plus its deploy settings' requirements). Throws why it can't be derived. */
-  manifestOf: (doc: FlowDocument) => string[];
+  manifestOf: (doc: FlowDocument) => ManifestView;
   onOpen: (rec: FlowRecord) => void;
   onResume: () => void;
   /** Sample flows (samples.ts), one per capability: opening one starts an unsaved copy. */
@@ -125,7 +125,7 @@ export function FlowsPage({
           </div>
           <ManifestSection
             version={String(f.saved_at_epoch_seconds)}
-            load={() => getFlow(f.name).then((rec) => ({ items: manifestOf(rec.document) }))}
+            load={() => getFlow(f.name).then((rec) => manifestOf(rec.document))}
           />
         </div>
       ))}

@@ -4,10 +4,21 @@
 // the host's controls over it) are DeploymentCard's own section, shown only there.
 
 import { useEffect, useState } from "react";
-import { describeItem } from "./diagnostics";
+import { describeItem, permissionKind } from "./diagnostics";
 
-/** What a manifest view shows: its items, and on a deployment the ones not granted. */
-export type ManifestView = { items: string[]; notGranted?: string[]; hash?: string };
+/** What a manifest view shows: its items, which it can run without and what starts it, and on a
+ *  deployment the ones not granted. */
+export type ManifestView = { items: string[]; optional?: string[]; trigger?: string | null; notGranted?: string[]; hash?: string };
+
+/** "required" or "optional", with why on hover: the same badge in the manifest and permissions. */
+export function KindBadge({ item, optional, trigger }: { item: string; optional?: string[]; trigger?: string | null }) {
+  const { kind, why } = permissionKind(item, optional, trigger);
+  return (
+    <span title={why} style={{ color: kind === "required" ? "#e0c36f" : "#7e8ea8", border: "1px solid #1b2a45", borderRadius: 3, padding: "0 4px" }}>
+      {kind}
+    </span>
+  );
+}
 
 export function ManifestSection({ load, version = "" }: { load: () => Promise<ManifestView>; version?: string }) {
   const [open, setOpen] = useState(false);
@@ -39,6 +50,7 @@ export function ManifestSection({ load, version = "" }: { load: () => Promise<Ma
           <div key={item} style={{ ...row, color: missing.has(item) ? "#e0916f" : "#9fb4d4" }} title={item}>
             <span style={{ flex: 1 }}>• {describeItem(item)}</span>
             {missing.has(item) && <span>not granted</span>}
+            {!item.startsWith("Limit(") && <KindBadge item={item} optional={view.optional} trigger={view.trigger} />}
           </div>
         ))}
       {open && view?.hash && (

@@ -392,6 +392,8 @@ pub(crate) fn handle_get_permission_view(
         "capabilities": manifest.capabilities,
         "requirements": manifest.requirements,
         "items": manifest.items(),
+        "optional": manifest.requirements.optional,
+        "trigger": manifest.trigger(),
         "not_granted": grant.missing(&manifest),
     }))
 }

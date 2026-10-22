@@ -118,6 +118,9 @@ export type Requirements = {
   limits?: Record<string, number>;
   plain_http?: string[];
   private_addresses?: boolean;
+  /** Capabilities it can run without: one not granted leaves it running with those calls
+   *  refused, where a required one pauses it. Never its trigger (permissions.rs). */
+  optional?: string[];
 };
 
 /** `POST /deploy/preview` — what deploying would ask for, without deploying. */
@@ -284,7 +287,16 @@ export type GrantView = { grant: Grant; hash: string; attention: string | null }
 
 /** `GET /deployments/<slug>/manifest`: what the deployment needs, re-derived from its unit, and
  *  what of it its grant doesn't cover. */
-export type ManifestReply = { hash: string; capabilities: string[]; requirements: Requirements; items: string[]; not_granted: string[] };
+export type ManifestReply = {
+  hash: string;
+  capabilities: string[];
+  requirements: Requirements;
+  items: string[];
+  /** The items it can run without, and what starts its runs (never optional). */
+  optional: string[];
+  trigger: string | null;
+  not_granted: string[];
+};
 
 export async function getManifest(slug: string): Promise<ManifestReply> {
   return asJson<ManifestReply>(await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/manifest`));

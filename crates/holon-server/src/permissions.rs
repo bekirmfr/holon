@@ -127,6 +127,12 @@ pub(crate) struct Requirements {
     /// Whether it calls private addresses: an exception to "no private destinations".
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) private_addresses: bool,
+    /// Capabilities it can run without, in the author's word (as Chrome's `optional_permissions`
+    /// or Android's `required="false"`): one not granted, or revoked, leaves it running with
+    /// those calls refused, where a required one pauses it. Everything else is required, and its
+    /// trigger ([`Manifest::trigger`]) is never optional.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) optional: BTreeSet<String>,
 }
 
 /// What a deployment needs: its derived capabilities and its declared requirements.
@@ -161,10 +167,47 @@ impl Manifest {
         items
     }
 
-    /// The manifest's content hash: equal manifests, equal hashes.
+    /// The manifest's content hash: equal manifests, equal hashes. Which items are optional is
+    /// part of it once any are (so hashes from before optional items still match).
     pub(crate) fn hash(&self) -> Hash {
         let items = Value::List(self.items().into_iter().map(Value::Text).collect());
-        hash_value(&items).expect("a manifest is small text")
+        if self.requirements.optional.is_empty() {
+            return hash_value(&items).expect("a manifest is small text");
+        }
+        let optional = Value::List(self.requirements.optional.iter().cloned().map(Value::Text).collect());
+        let record = Value::Record(BTreeMap::from([("items".to_string(), items), ("optional".to_string(), optional)]));
+        hash_value(&record).expect("a manifest is small text")
+    }
+
+    /// What starts its runs, which it can't do without: `NetworkIngress` for a flow with routes,
+    /// else `Clock` for one the clock fires.
+    pub(crate) fn trigger(&self) -> Option<&'static str> {
+        let has = |c: &str| self.capabilities.iter().any(|x| x == c);
+        if has("NetworkIngress") {
+            Some("NetworkIngress")
+        } else if has("Clock") {
+            Some("Clock")
+        } else {
+            None
+        }
+    }
+
+    /// Whether it can run without `item`: the author marked it optional.
+    pub(crate) fn is_optional(&self, item: &str) -> bool {
+        self.requirements.optional.contains(item)
+    }
+
+    /// Why its optional items don't hold, if they don't: one it doesn't need, or its trigger.
+    pub(crate) fn optional_problem(&self) -> Option<String> {
+        self.requirements.optional.iter().find_map(|item| {
+            if Some(item.as_str()) == self.trigger() {
+                Some(format!("{item} is what starts its runs, so it can't be optional"))
+            } else if !self.capabilities.contains(item) {
+                Some(format!("{item} is marked optional, but the flow doesn't use it"))
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -278,7 +321,7 @@ impl Policy {
     /// Why policy can't grant `manifest` at all, if it can't: a limit above its ceiling, an
     /// unknown limit, or an exception policy never grants.
     pub(crate) fn refuses(&self, manifest: &Manifest) -> Option<String> {
-        manifest.items().iter().find_map(|item| self.refuses_item(item))
+        manifest.optional_problem().or_else(|| manifest.items().iter().find_map(|item| self.refuses_item(item)))
     }
 
     /// Why policy can't grant `item`, if it can't.
@@ -486,10 +529,10 @@ impl Grant {
     }
 
     /// Why the deployment can't run under this grant and the policy in force, if it can't: it
-    /// needs items it isn't granted (unless it keeps running without them), or the host no
-    /// longer grants what it asks for.
+    /// needs required items it isn't granted (unless it keeps running without them), or the host
+    /// no longer grants what it asks for. Optional items it lacks never stop it.
     pub(crate) fn attention(&self, manifest: &Manifest, policy: &Policy) -> Option<String> {
-        let missing = self.missing(manifest);
+        let missing: Vec<String> = self.missing(manifest).into_iter().filter(|i| !manifest.is_optional(i)).collect();
         if !missing.is_empty() && !self.keep_running {
             return Some(format!(
                 "it needs {} it isn't granted; grant it back, or deploy it again to approve",
@@ -665,6 +708,7 @@ mod tests {
             limits: BTreeMap::from([("request_timeout_ms".into(), 90_000), ("clock_run_budget_ms".into(), 120_000)]),
             plain_http: ["api.example.com".to_string()].into(),
             private_addresses: true,
+            ..Requirements::default()
         };
         let grant = Grant::for_manifest(&manifest(&caps, req), 0, "deploy");
         let open = Policy { allow_plain_http: true, allow_private_addresses: true, ..Policy::default() };
@@ -682,6 +726,32 @@ mod tests {
         let p = Permit::new([1; 32], &grant, &strict);
         assert_eq!(p.request_limits.request_timeout, Duration::from_secs(45));
         assert!(!p.outbound.allow_private && p.outbound.plain_http.is_empty());
+    }
+
+    #[test]
+    fn an_optional_item_missing_keeps_it_running_and_a_required_one_pauses_it() {
+        let policy = Policy::default();
+        let caps = [Capability::NetworkIngress, Capability::SecretRead("receipt".into()), Capability::SecretRead("token".into())];
+        let optional = |items: &[&str]| Requirements { optional: items.iter().map(|i| i.to_string()).collect(), ..Requirements::default() };
+        let m = manifest(&caps, optional(&["SecretRead(\"receipt\")"]));
+        assert_eq!(policy.refuses(&m), None);
+        let mut grant = Grant::for_manifest(&m, 0, "deploy");
+        grant.items.remove("SecretRead(\"receipt\")");
+        assert_eq!(grant.attention(&m, &policy), None, "optional: it keeps running, those reads refused");
+        grant.items.remove("SecretRead(\"token\")");
+        assert!(grant.attention(&m, &policy).unwrap().contains("SecretRead(\"token\")"), "required: it pauses");
+        assert!(!grant.attention(&m, &policy).unwrap().contains("receipt"), "the optional one isn't named");
+
+        // Its trigger can't be optional, nor can something it doesn't use.
+        assert!(policy.refuses(&manifest(&caps, optional(&["NetworkIngress"]))).unwrap().contains("starts its runs"));
+        assert!(policy.refuses(&manifest(&caps, optional(&["Clock"]))).unwrap().contains("doesn't use it"));
+        let clock_flow = manifest(&[Capability::Clock, Capability::StateWrite("beats".into())], optional(&["Clock"]));
+        assert!(policy.refuses(&clock_flow).unwrap().contains("starts its runs"));
+
+        // Which items are optional is part of the manifest; without any, hashes are as before.
+        assert_ne!(m.hash(), manifest(&caps, Requirements::default()).hash());
+        let items = Value::List(manifest(&caps, Requirements::default()).items().into_iter().map(Value::Text).collect());
+        assert_eq!(manifest(&caps, Requirements::default()).hash(), hash_value(&items).unwrap());
     }
 
     #[test]

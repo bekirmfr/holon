@@ -253,6 +253,14 @@ exactly when what the flow needs changes):
    the person paused. Raising a limit still takes a deploy, which asks for approval; a redeploy
    starts a fresh grant, so a limit the host lowered on a limit the flow didn't ask about is not
    carried over.)
+   **Required or optional** ✅: the author marks which capabilities the flow can run without
+   (deploy settings, `requirements.optional`, part of the manifest and its hash; Chrome's
+   `optional_permissions`, Android's `required="false"`). One not granted, or revoked, leaves it
+   running with those calls refused, so the flow should cope with that node staying empty; a
+   required one pauses it as above. Everything else is required, and its trigger
+   (`NetworkIngress`, or `Clock` for a clock flow) can never be optional; marking it, or something
+   the flow doesn't use, is refused at deploy. Each item shows its kind in the manifest, the
+   permissions and the consent screen.
 5. **Everything is visible.** `GET /deployments/<slug>/manifest` and `.../grant`; the editor's
    deployment view shows asked against granted, pending approvals and revoke controls; each
    flow-log entry records the grant hash in effect, so a log always explains why a call was
@@ -451,7 +459,7 @@ One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable 
 | 3 ✅ | Core: `http_request` node, its capability `HttpRequest(host)` and validation | a flow with it validates and its derived hosts show at deploy |
 | 4 ✅ | Host: the round loop (`holon-host`, network-free, with a `Performer` trait); the `ureq` performer and the §4.2 rules (`holon-server/src/outbound.rs`); the host-default limits per run kind | a run calls a local test server, uses the answer, and each limit stops it as specified. Resolving limits node → deployment → host, and the exceptions (private addresses, plain HTTP), arrive with grants in step 5 |
 | 5 ✅ | Host and server (`holon-server/src/permissions.rs`): manifests (derived capabilities with hosts, declared requirements), policy in `holon.toml` (`--policy`) and `GET /permissions`, grants per deployment (`GET /deployments/<slug>/manifest`, `.../grant`), enforcement at perform time, the re-check at load (older records migrate); run ids and the nonce; `rounds` and the grant in effect in the flow log | a deploy asks only for what policy doesn't already allow; an ungranted host or a limit above a ceiling is refused; each log entry has a verifiable run id. Since then: changing or revoking a grant without a redeploy, and reloading the policy (§4.2.1 lifecycle point 4, `holon-server/src/grants.rs`) ✅. **Left for later:** large values by reference in the log (§4.5) |
-| 6 ✅ | Editor: the node and its params, requirements in deploy settings (bounded by `GET /permissions`), the consent screen showing asked against granted (`POST /deploy/preview`), attention on deployments, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round. Checked live: a deployed route called `https://example.com`, answered with its page, and view mode replayed the run offline with "✓ replay reproduces the run". Revoke controls ✅ since: the deployment card's permissions (revoke, grant back, keep running) |
+| 6 ✅ | Editor: the node and its params, requirements in deploy settings (bounded by `GET /permissions`), the consent screen showing asked against granted (`POST /deploy/preview`), attention on deployments, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round. Checked live: a deployed route called `https://example.com`, answered with its page, and view mode replayed the run offline with "✓ replay reproduces the run". Revoke controls ✅ since: the deployment card's permissions (revoke, grant back, keep running); a manifest on saved and deployed flows, and required or optional permissions ✅ (sample: `guarded-api`) |
 | 7 ✅ | Secrets: store, `secret` node, redaction, set from the editor's ⚙ | a token never appears in a log, a replay or the editor. Checked live: set from ⚙, read by a run, found nowhere but the secrets file, and gone with its deployment. Since: sealed at rest under a key kept apart, sources in the environment or Vault, versions with rollback, and an audit log ✅ (sample: `guarded-api`) |
 | 8 ✅ | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on. Checked live: an order waited, was paid by a link (even across a server restart), and wrote its state once; the token appeared in no log or reply. Since: expiry and the waiting cap as host-granted limits ✅, and tokens derived under a host-held key, so a run record stores none ✅ |
 

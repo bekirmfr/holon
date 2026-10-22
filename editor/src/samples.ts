@@ -29,6 +29,8 @@ export type Sample = {
   /** Secrets to set under ⚙ before it works, what each is, and where to keep it when not a
    *  value sealed by the server (`env:HOLON_SECRET_…`, `vault:…`). */
   secrets?: { name: string; what: string; from?: string }[];
+  /** Permissions it can run without (deploy settings' `optional`); the rest are required. */
+  optional?: string[];
   /** How to try it once deployed. */
   tryIt: string;
   build(b: SampleBuilder): void;
@@ -106,7 +108,11 @@ export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadi
     edges,
     viewport: { x: 10, y: 50, zoom: Math.round(zoom * 100) / 100 },
     units: [],
-    server: { port: sample.port ?? "", interval: sample.interval ?? "" },
+    server: {
+      port: sample.port ?? "",
+      interval: sample.interval ?? "",
+      ...(sample.optional ? { requirements: { optional: sample.optional } } : {}),
+    },
   };
 }
 
@@ -235,15 +241,17 @@ export const SAMPLES: Sample[] = [
     name: "guarded-api",
     title: "Token-guarded API",
     description:
-      "Answer only callers holding the API token, with a receipt signed by a key from the server's environment: secrets sealed by the server or kept elsewhere, versioned, rolled back.",
-    shows: ["secrets", "secret sources", "secret versions", "secure_equals", "guard", "hmac_sha256"],
+      "Answer only callers holding the API token, with a receipt signed by a key from the server's environment: secrets sealed by the server or kept elsewhere, versioned, rolled back; the receipt key is an optional permission.",
+    shows: ["secrets", "secret sources", "secret versions", "optional permissions", "secure_equals", "guard", "hmac_sha256", "default"],
     port: "8109",
     secrets: [
       { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back under ⚙ → ▸" },
       { name: "receipt_key", what: "the key receipts are signed with", from: "env:HOLON_SECRET_RECEIPT_KEY" },
     ],
+    // Without the receipt key it still answers, the receipt "unsigned": revoking it doesn't pause it.
+    optional: ['SecretRead("receipt_key")'],
     tryIt:
-      "curl -H \"Authorization: Bearer <api_token>\" http://127.0.0.1:8109/me answers a receipt; without it, or after the token is rotated, 401",
+      "curl -H \"Authorization: Bearer <api_token>\" http://127.0.0.1:8109/me answers a receipt; without it, or after the token is rotated, 401; revoke receipt_key and it answers \"unsigned\"",
     build(b) {
       const req = b.node("request", { method: "GET", path: "/me" }, [40, 40]);
       const auth = b.node("field", { name: "authorization" }, [320, 40]);
@@ -254,6 +262,7 @@ export const SAMPLES: Sample[] = [
       const path = b.node("field", { name: "path" }, [320, 480]);
       const key = b.node("secret", { name: "receipt_key" }, [320, 600]);
       const receipt = b.node("hmac_sha256", { encoding: "hex" }, [580, 520]);
+      const orUnsigned = b.node("default", { value: "unsigned", type: "Text" }, [840, 540]);
       const empty = b.node("record", {}, [580, 360]);
       const body = b.node("with_field", { name: "receipt" }, [840, 400]);
       const allowed = b.node("guard", {}, [1080, 220]);
@@ -267,7 +276,8 @@ export const SAMPLES: Sample[] = [
       b.wire(key, "out", receipt, "key");
       b.wire(path, "out", receipt, "message");
       b.wire(empty, "out", body, "record");
-      b.wire(receipt, "out", body, "value");
+      b.wire(receipt, "out", orUnsigned, "value");
+      b.wire(orUnsigned, "out", body, "value");
       b.wire(match, "out", allowed, "cond");
       b.wire(body, "out", allowed, "value");
       b.wire(req, "request", res, "request");

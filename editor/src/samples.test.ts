@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator, primitive_catalog, variadic_primitives } from "../wasm/holon_wasm.js";
 import { type WUnit } from "./holon";
 import { deriveServer, flowUnitHash } from "./canvasOps";
-import { capabilityAcknowledgeName, manifestItems } from "./diagnostics";
+import { capabilityAcknowledgeName, manifestItems, manifestTrigger, permissionKind } from "./diagnostics";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { SAMPLES, buildSample } from "./samples";
@@ -55,6 +55,11 @@ describe("sample flows", () => {
       expect(endpoints).toBe(requests.length);
       expect(caps.some((c) => c.includes("FileRead") || c.includes("ProcessSpawn")), `${s.name} saturated: ${caps}`).toBe(false);
       for (const secret of s.secrets ?? []) expect(caps).toContain(`SecretRead("${secret.name}")`);
+      // What it can run without is something it uses, and never what starts it.
+      for (const item of s.optional ?? []) {
+        expect(caps).toContain(item);
+        expect(item).not.toBe(manifestTrigger(caps));
+      }
     });
   }
 
@@ -68,6 +73,17 @@ describe("sample flows", () => {
       'SecretRead("receipt_key")',
     ]);
     expect(manifestItems(derive("hello-api").caps)).toEqual(["NetworkIngress"]);
+  });
+
+  it("tell required permissions from optional ones, the trigger always required", () => {
+    const { caps } = derive("guarded-api");
+    const optional = SAMPLES.find((s) => s.name === "guarded-api")!.optional;
+    const trigger = manifestTrigger(caps);
+    expect(trigger).toBe("NetworkIngress");
+    expect(manifestTrigger(derive("heartbeat").caps)).toBe("Clock");
+    expect(permissionKind('SecretRead("receipt_key")', optional, trigger).kind).toBe("optional");
+    expect(permissionKind('SecretRead("api_token")', optional, trigger).kind).toBe("required");
+    expect(permissionKind("NetworkIngress", ["NetworkIngress"], trigger).kind, "a trigger even if marked").toBe("required");
   });
 
   it("ask for what each one shows", () => {

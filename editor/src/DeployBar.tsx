@@ -5,6 +5,7 @@
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { describeItem, manifestTrigger } from "./diagnostics";
 import {
   deleteSecret,
   getPermissions,
@@ -79,6 +80,7 @@ export function DeployBar({
   onAction,
   slug,
   secretNames,
+  capabilities,
 }: {
   /** This flow's deployment, if it has one. */
   entry: DeploymentEntry | undefined;
@@ -89,6 +91,8 @@ export function DeployBar({
   setSettings: (s: FlowSettings) => void;
   onDeploy: () => void;
   onAction: (action: "run" | "pause" | "stop") => void;
+  /** What the flow asks for, by consent name: each but its trigger can be marked optional. */
+  capabilities: string[];
   /** The flow's name: its deployment's slug, and whose secrets these are. */
   slug: string | null;
   /** The secret names the canvas reads. */
@@ -253,6 +257,7 @@ export function DeployBar({
                 onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
                 style={{ justifySelf: "start" }}
               />
+              <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} />
               {secretNames.length > 0 && (
                 <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
                   secrets{slug ? "" : " (name the flow first)"}
@@ -413,6 +418,56 @@ function SecretRow({ slug, name, info, onChanged }: { slug: string | null; name:
             ))}
         </span>
       )}
+    </>
+  );
+}
+
+/**
+ * Which of the flow's permissions it can run without (permissions.rs: `optional`). A required
+ * one not granted pauses the flow; an optional one leaves it running with those calls refused,
+ * so the flow should cope with the node staying empty. Its trigger is always required. One
+ * marked optional that the flow no longer uses is shown so it can be cleared (deploy refuses it).
+ */
+function OptionalPermissions({
+  capabilities,
+  settings,
+  setSettings,
+}: {
+  capabilities: string[];
+  settings: FlowSettings;
+  setSettings: (s: FlowSettings) => void;
+}) {
+  const optional = settings.requirements?.optional ?? [];
+  const trigger = manifestTrigger(capabilities);
+  const listed = [...new Set([...capabilities.filter((c) => c !== trigger), ...optional])].sort();
+  if (listed.length === 0) return null;
+  const toggle = (item: string, on: boolean) => {
+    const next = on ? [...optional, item] : optional.filter((x) => x !== item);
+    setSettings({ ...settings, requirements: { ...settings.requirements, optional: next.length > 0 ? next.sort() : undefined } });
+  };
+  return (
+    <>
+      <span
+        style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }}
+        title="a required permission not granted pauses the flow; an optional one leaves it running, those calls refused"
+      >
+        permissions: optional ones it can run without
+      </span>
+      {listed.map((item) => {
+        const unused = !capabilities.includes(item);
+        return (
+          <label key={item} style={{ display: "contents" }} title={item}>
+            <span style={{ color: unused ? "#e0916f" : undefined }}>
+              {describeItem(item)}
+              {unused ? " (no longer used)" : ""}
+            </span>
+            <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+              <input type="checkbox" checked={optional.includes(item)} onChange={(e) => toggle(item, e.target.checked)} />
+              <span style={{ color: optional.includes(item) ? "#7e8ea8" : "#e0c36f" }}>{optional.includes(item) ? "optional" : "required"}</span>
+            </span>
+          </label>
+        );
+      })}
     </>
   );
 }

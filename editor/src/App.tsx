@@ -69,7 +69,7 @@ import {
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
-import { isWEncapError, capabilityAcknowledgeName, describeItem, manifestItems, valueChip } from "./diagnostics";
+import { isWEncapError, capabilityAcknowledgeName, describeItem, manifestItems, manifestTrigger, valueChip } from "./diagnostics";
 import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
@@ -418,7 +418,7 @@ function Canvas({
       for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
       const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, byName, doc.server?.port ?? DEFAULT_SETTINGS.port);
       const caps = (ev.capabilities(hash) as WCapability[]).map(capabilityAcknowledgeName);
-      return manifestItems(caps, doc.server?.requirements);
+      return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
     },
     [ev, byName],
   );
@@ -429,6 +429,20 @@ function Canvas({
     const { nodes: ns, edges: es } = live.current;
     return deriveServer(ns, es, ev, byName, settings.port);
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasKey, ev, byName, settings.port]);
+
+  // What the canvas's flow would ask for, by consent name (empty while it doesn't derive): the
+  // deploy settings offer each one but its trigger as something it can run without.
+  const flowCapabilities = useMemo(() => {
+    try {
+      const { nodes: ns, edges: es } = live.current;
+      const hash = flowUnitHash(ns, es, ev, byName, settings.port);
+      return ((ev.capabilities(hash) as WCapability[]).map(capabilityAcknowledgeName)).sort();
+    } catch {
+      return [];
+    }
+    // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port]);
 
@@ -570,10 +584,13 @@ function Canvas({
         return;
       }
       ask = preview.needs_approval;
+      // Each item says whether the flow can run without it (deploy settings' optional ones).
+      const optional = requirements?.optional ?? [];
+      const said = (i: string) => `• ${describeItem(i)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
       const lines = [`${existing ? "Update" : "Deploy"} "${name}"?`];
-      if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map((i) => `• ${describeItem(i)}`));
+      if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map(said));
       if (preview.already_granted.length > 0) {
-        lines.push("", "Already granted:", ...preview.already_granted.map((i) => `• ${describeItem(i)}`));
+        lines.push("", "Already granted:", ...preview.already_granted.map(said));
       }
       if (preview.missing_secrets.length > 0) {
         lines.push(
@@ -972,6 +989,7 @@ function Canvas({
                   onAction={onFlowAction}
                   slug={flowName}
                   secretNames={secretNames}
+                  capabilities={flowCapabilities}
                 />
               }
               saveMsg={saveMsg}
