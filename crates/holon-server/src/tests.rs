@@ -1158,6 +1158,13 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     assert_eq!(listed["secrets"][0]["version"], 1);
     assert_eq!(listed["secrets"][0]["source"], "local");
     assert!(!listed.to_string().contains(value), "never the value: {listed}");
+    // A source other than a value: refused when it can't be read, never added half-set.
+    let from = |f: &str| route(&state, &req("POST", "/deployments/s/secrets/other", serde_json::to_vec(&serde_json::json!({ "from": f })).unwrap()));
+    let refused = from("env:HOLON_SECRET_NOT_SET_ANYWHERE");
+    assert_eq!(refused.status_code, 400);
+    assert!(String::from_utf8(body_bytes(refused)).unwrap().contains("isn't set"));
+    assert_eq!(from("env:PATH").status_code, 400);
+    assert_eq!(state.secrets.names("s"), vec!["api_key"]);
 
     let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", "SecretRead(\"api_key\")", "StateWrite(\"k\")"]);
     assert_eq!(deploy_json(&state, "s", flow_hash, serde_json::json!({ "acknowledge": ack })).status_code, 200);

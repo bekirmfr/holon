@@ -281,7 +281,8 @@ pub(crate) fn handle_post_deploy_preview(
 }
 
 /// `GET /deployments/<slug>/secrets` — its secrets' names, versions and sources, never values.
-/// `POST /deployments/<slug>/secrets/<name>` (`{"value": "..."}`) sets one, as a new version;
+/// `POST /deployments/<slug>/secrets/<name>` (`{"value": "..."}`, or `{"from": "env:…"}` /
+/// `{"from": "vault:…"}` for one kept elsewhere: secret_sources.rs) sets one, as a new version;
 /// `DELETE` removes it, every version.
 /// A slug may have secrets before it is first deployed.
 pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&str>, method: &str, request: &Request) -> Response {
@@ -297,13 +298,17 @@ pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&st
             };
             #[derive(Deserialize)]
             struct SetSecret {
-                value: String,
+                value: Option<String>,
+                from: Option<String>,
             }
-            let body: SetSecret = match serde_json::from_slice(&bytes) {
-                Ok(b) => b,
-                Err(e) => return err(400, format!("expected {{\"value\": \"...\"}}: {e}")),
+            let set = match serde_json::from_slice(&bytes) {
+                Ok(SetSecret { value: Some(value), from: None }) => secrets.set(slug, name, &value),
+                Ok(SetSecret { value: None, from: Some(from) }) if from == "local" => Err("a local secret is set with a value".to_string()),
+                Ok(SetSecret { value: None, from: Some(from) }) => secrets.set_from(slug, name, &from),
+                Ok(_) => Err("expected {\"value\": \"...\"} or {\"from\": \"env:… | vault:…\"}".to_string()),
+                Err(e) => Err(format!("expected {{\"value\": \"...\"}} or {{\"from\": \"...\"}}: {e}")),
             };
-            match secrets.set(slug, name, &body.value) {
+            match set {
                 Ok(version) => Response::json(&serde_json::json!({ "version": version })),
                 Err(e) => err(400, e),
             }

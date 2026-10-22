@@ -157,6 +157,7 @@ mod persist;
 mod recorder;
 mod scheduler;
 mod sealing;
+mod secret_sources;
 mod secrets;
 #[cfg(test)]
 mod tests;
@@ -405,6 +406,7 @@ fn main() {
     let mut policy_arg = "holon.toml".to_string();
     let mut secrets_arg = ".holon-secrets.json".to_string();
     let mut secrets_key_arg: Option<String> = None;
+    let mut dotenv_arg: Option<String> = None;
     let mut host_key_arg = ".holon-host-key".to_string();
     let mut data_limits = dataplane::DataLimits::default();
     while let Some(a) = args.next() {
@@ -431,6 +433,12 @@ fn main() {
             // where there is one), `env:VAR` or `file:PATH` (sealing.rs).
             if let Some(v) = args.next() {
                 secrets_key_arg = Some(v);
+            }
+        } else if a == "--dotenv" {
+            // A dotenv file `env:HOLON_SECRET_…` sources also read (secret_sources.rs): for
+            // development; the real environment wins.
+            if let Some(v) = args.next() {
+                dotenv_arg = Some(v);
             }
         } else if a == "--new-secrets-key" {
             // A fresh master key, for `--secrets-key env:VAR`: keep it safe, and set the variable.
@@ -600,7 +608,19 @@ fn main() {
     };
     let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let secrets_key = sealing::KeySource::parse(secrets_key_arg.as_deref(), &secrets_arg).unwrap_or_else(|e| refuse_to_start(e));
-    let secrets = Arc::new(SecretStore::open(&secrets_arg, &secrets_key).unwrap_or_else(|e| refuse_to_start(e)));
+    let sources = secret_sources::Sources::new(dotenv_arg.map(std::path::PathBuf::from)).unwrap_or_else(|e| refuse_to_start(e));
+    let secrets = Arc::new(SecretStore::open(&secrets_arg, &secrets_key, sources).unwrap_or_else(|e| refuse_to_start(e)));
+    {
+        // References are read again every minute: a value changed or revoked where it is kept
+        // reaches the runs without a restart.
+        let secrets = Arc::clone(&secrets);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(secret_sources::REFRESH);
+                secrets.refresh();
+            }
+        });
+    }
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));
     let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     for (slug, dep) in initial_deployments.iter_mut() {

@@ -8,6 +8,8 @@
 //!   deployment records and anything copied from them never carry a value. Each value is sealed
 //!   under a master key kept elsewhere (sealing.rs: the OS key store by default), and the file is
 //!   written atomically, readable only by its owner.
+//! - Sealed here, or a reference to where the value is kept (secret_sources.rs: an environment
+//!   variable, a dotenv file in development, HashiCorp Vault), resolved by the host.
 //! - Versioned: setting a secret adds a version and keeps the last [`MAX_VERSIONS`], so a change
 //!   can be seen and undone. Values a secret no longer has are still redacted.
 //! - Redacted: every value a run logs, and every reply the control plane sends about a
@@ -26,6 +28,7 @@ use zeroize::Zeroizing;
 use crate::deploy::epoch_now;
 use crate::recorder::LogEntry;
 use crate::sealing::{KeySource, Sealer, context, write_private};
+use crate::secret_sources::{Reference, STALE_AFTER, Sources};
 use crate::SValue;
 
 /// One deployment's secrets as its runs see them, kept current as they are set.
@@ -39,8 +42,10 @@ pub(crate) struct Resolved {
     /// Values its secrets had before (versions still kept): never read, still redacted, so a
     /// client still sending a rotated-out credential doesn't put it in the log.
     pub(crate) retired: Vec<(String, Zeroizing<String>)>,
-    /// name → why its current version has no value.
+    /// name → why its current version has no value, or why the value it has may be stale.
     pub(crate) problems: BTreeMap<String, String>,
+    /// name → the version its current value is of, and when it was last read from its source.
+    fetched: BTreeMap<String, (u32, std::time::Instant)>,
 }
 
 /// The shortest value accepted: shorter ones would match ordinary text when redacting.
@@ -54,7 +59,8 @@ pub(crate) const MAX_VERSIONS: usize = 5;
 struct Stored {
     version: u32,
     set_at: u64,
-    /// Where the value comes from: `local` (sealed here).
+    /// Where the value comes from: `local` (sealed here, in `nonce` and `sealed`), or a
+    /// reference resolved by the host (`env:…`, `vault:…`).
     source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nonce: Option<String>,
@@ -96,6 +102,7 @@ pub(crate) struct SecretInfo {
 pub(crate) struct SecretStore {
     path: String,
     sealer: Sealer,
+    sources: Sources,
     slugs: Mutex<BTreeMap<String, Slug>>,
 }
 
@@ -107,14 +114,21 @@ pub(crate) fn is_valid_name(name: &str) -> bool {
 impl SecretStore {
     /// An empty store that is never written (`":memory:"`), under a key that is never kept.
     pub(crate) fn memory() -> SecretStore {
-        SecretStore { path: ":memory:".into(), sealer: Sealer::ephemeral(), slugs: Mutex::new(BTreeMap::new()) }
+        SecretStore { path: ":memory:".into(), sealer: Sealer::ephemeral(), sources: Sources::none(), slugs: Mutex::new(BTreeMap::new()) }
+    }
+
+    /// This store, resolving references against `sources`.
+    #[cfg(test)]
+    pub(crate) fn with_sources(mut self, sources: Sources) -> SecretStore {
+        self.sources = sources;
+        self
     }
 
     /// The store at `path`, its master key from `key` (created there when there's nothing to
     /// open yet). A file that exists but doesn't parse, or a key that's missing or doesn't match,
     /// is an error: starting empty would lose every secret at the next write. A file from before
     /// sealing (plain values) is sealed and rewritten.
-    pub(crate) fn open(path: &str, key: &KeySource) -> Result<SecretStore, String> {
+    pub(crate) fn open(path: &str, key: &KeySource, sources: Sources) -> Result<SecretStore, String> {
         if path == ":memory:" {
             return Ok(SecretStore::memory());
         }
@@ -136,7 +150,7 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            return Ok(SecretStore { path: path.into(), sealer: Sealer::new(&master), slugs: Mutex::new(BTreeMap::new()) });
+            return Ok(SecretStore { path: path.into(), sealer: Sealer::new(&master), sources, slugs: Mutex::new(BTreeMap::new()) });
         };
         if parsed.get("format").is_none() {
             // Plain values, from before sealing: seal them under a key (kept from now on).
@@ -146,7 +160,7 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            let store = SecretStore { path: path.into(), sealer: Sealer::new(&master), slugs: Mutex::new(BTreeMap::new()) };
+            let store = SecretStore { path: path.into(), sealer: Sealer::new(&master), sources, slugs: Mutex::new(BTreeMap::new()) };
             let count: usize = plain.values().map(|names| names.len()).sum();
             for (slug, names) in plain {
                 for (name, value) in names {
@@ -179,7 +193,7 @@ impl SecretStore {
         if has_secrets && sealer.check() != file.key_check {
             return Err(format!("{key} holds a different key from the one that sealed {path:?}"));
         }
-        let store = SecretStore { path: path.into(), sealer, slugs: Mutex::new(BTreeMap::new()) };
+        let store = SecretStore { path: path.into(), sealer, sources, slugs: Mutex::new(BTreeMap::new()) };
         {
             let mut slugs = store.slugs.lock().unwrap();
             for (slug, secrets) in file.deployments {
@@ -229,6 +243,32 @@ impl SecretStore {
         let version = self.add_version(slug, name, "local", Some(value), true)?;
         self.persist()?;
         Ok(version)
+    }
+
+    /// Point `slug`'s secret `name` at `source` (`env:…`, `vault:…`), as a new version; that
+    /// version's number. Refused unless it can be read now, and long enough to redact.
+    pub(crate) fn set_from(&self, slug: &str, name: &str, source: &str) -> Result<u32, String> {
+        let value = self.sources.fetch(&Reference::parse(source)?)?;
+        if value.chars().count() < MIN_SECRET_LEN {
+            return Err(format!("{source} is shorter than {MIN_SECRET_LEN} characters, too short to redact"));
+        }
+        let version = self.add_version(slug, name, source, None, true)?;
+        self.persist()?;
+        Ok(version)
+    }
+
+    /// Read every reference again (and the dotenv file): a value changed or revoked where it is
+    /// kept reaches the runs within a refresh.
+    pub(crate) fn refresh(&self) {
+        if let Err(e) = self.sources.reload() {
+            eprintln!("holon-server: {e}");
+        }
+        let slugs = self.slugs.lock().unwrap();
+        for (slug, entry) in slugs.iter() {
+            if entry.secrets.values().flatten().any(|v| v.source != "local") {
+                self.resolve(slug, entry);
+            }
+        }
     }
 
     /// Add a version of `name` from `source` (`value`: a local one's, to seal), keeping the last
@@ -290,27 +330,40 @@ impl SecretStore {
                 (Some(nonce), Some(sealed)) => self.sealer.open(&context(slug, name, v.version), nonce, sealed),
                 _ => Err("no sealed value".into()),
             },
-            other => Err(format!("unknown source {other:?}")),
+            other => self.sources.fetch(&Reference::parse(other)?),
         }
     }
 
     /// Recompute `slug`'s vault from its versions, in place: the deployments holding it see it.
+    /// A value from a remote source that can't be read now is kept, for [`STALE_AFTER`] at most.
     fn resolve(&self, slug: &str, entry: &Slug) {
         let mut resolved = Resolved::default();
+        let mut before = std::mem::take(&mut *entry.vault.lock().unwrap());
+        let now = std::time::Instant::now();
         for (name, versions) in &entry.secrets {
             let Some((current, older)) = versions.split_last() else { continue };
             match self.value_of(slug, name, current) {
                 Ok(value) if value.chars().count() >= MIN_SECRET_LEN => {
                     resolved.current.insert(name.clone(), value);
+                    resolved.fetched.insert(name.clone(), (current.version, now));
                 }
                 Ok(_) => {
                     resolved.problems.insert(name.clone(), format!("shorter than {MIN_SECRET_LEN} characters, too short to redact"));
                 }
-                Err(e) => {
-                    resolved.problems.insert(name.clone(), e);
-                }
+                Err(e) => match (before.fetched.get(name).copied(), before.current.remove(name)) {
+                    (Some((version, at)), Some(value)) if version == current.version && now.duration_since(at) < STALE_AFTER => {
+                        let ago = now.duration_since(at).as_secs();
+                        resolved.problems.insert(name.clone(), format!("{e}; using the value read {ago}s ago"));
+                        resolved.current.insert(name.clone(), value);
+                        resolved.fetched.insert(name.clone(), (version, at));
+                    }
+                    _ => {
+                        resolved.problems.insert(name.clone(), e);
+                    }
+                },
             }
-            for v in older {
+            // Older versions are read again only from here or the environment, never fetched.
+            for v in older.iter().filter(|v| !Reference::parse(&v.source).is_ok_and(|r| r.is_remote())) {
                 if let Ok(value) = self.value_of(slug, name, v)
                     && value.chars().count() >= MIN_SECRET_LEN
                 {
@@ -484,7 +537,7 @@ mod tests {
     #[test]
     fn a_store_keeps_values_sealed_and_survives_a_restart() {
         let (path, key) = temp("restart");
-        let store = SecretStore::open(&path, &key).unwrap();
+        let store = SecretStore::open(&path, &key, Sources::none()).unwrap();
         assert_eq!(store.set("api", "stripe_key", "sk_live_123456").unwrap(), 1);
         assert!(store.set("api", "bad name", "longenough").is_err());
         assert!(store.set("api", "short", "12345").unwrap_err().contains("at least 6"));
@@ -493,29 +546,29 @@ mod tests {
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(!on_disk.contains("sk_live"), "sealed on disk: {on_disk}");
 
-        let again = SecretStore::open(&path, &key).unwrap();
+        let again = SecretStore::open(&path, &key, Sources::none()).unwrap();
         assert_eq!(*again.vault("api").lock().unwrap().current["stripe_key"], "sk_live_123456");
         assert!(store.remove("api", "stripe_key").unwrap());
         assert!(vault.lock().unwrap().current.is_empty(), "a running deployment's vault sees the change");
         store.set("api", "k", "longenough").unwrap();
         store.forget("api").unwrap();
-        assert!(SecretStore::open(&path, &key).unwrap().names("api").is_empty());
+        assert!(SecretStore::open(&path, &key, Sources::none()).unwrap().names("api").is_empty());
         std::fs::write(&path, "{not json").unwrap();
-        assert!(SecretStore::open(&path, &key).is_err());
+        assert!(SecretStore::open(&path, &key, Sources::none()).is_err());
     }
 
     #[test]
     fn a_missing_or_wrong_key_refuses_instead_of_starting_empty() {
         let (path, key) = temp("wrongkey");
-        SecretStore::open(&path, &key).unwrap().set("api", "k", "sk_live_123456").unwrap();
+        SecretStore::open(&path, &key, Sources::none()).unwrap().set("api", "k", "sk_live_123456").unwrap();
         let KeySource::File(key_file) = &key else { unreachable!() };
         let kept = std::fs::read(key_file).unwrap();
         std::fs::remove_file(key_file).unwrap();
-        assert!(SecretStore::open(&path, &key).err().unwrap().contains("isn't in"));
+        assert!(SecretStore::open(&path, &key, Sources::none()).err().unwrap().contains("isn't in"));
         key.create().unwrap();
-        assert!(SecretStore::open(&path, &key).err().unwrap().contains("different key"));
+        assert!(SecretStore::open(&path, &key, Sources::none()).err().unwrap().contains("different key"));
         std::fs::write(key_file, kept).unwrap();
-        assert_eq!(SecretStore::open(&path, &key).unwrap().names("api"), vec!["k"]);
+        assert_eq!(SecretStore::open(&path, &key, Sources::none()).unwrap().names("api"), vec!["k"]);
     }
 
     #[test]
@@ -538,11 +591,61 @@ mod tests {
     fn a_file_of_plain_values_is_sealed_on_open() {
         let (path, key) = temp("migrate");
         std::fs::write(&path, r#"{"sign-payload": {"signing_key": "sample-signing-key-42"}}"#).unwrap();
-        let store = SecretStore::open(&path, &key).unwrap();
+        let store = SecretStore::open(&path, &key, Sources::none()).unwrap();
         assert_eq!(*store.vault("sign-payload").lock().unwrap().current["signing_key"], "sample-signing-key-42");
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(on_disk.contains("\"format\": 2") && !on_disk.contains("sample-signing"), "{on_disk}");
-        assert_eq!(SecretStore::open(&path, &key).unwrap().list("sign-payload")[0].version, 1);
+        assert_eq!(SecretStore::open(&path, &key, Sources::none()).unwrap().list("sign-payload")[0].version, 1);
+    }
+
+    #[test]
+    fn a_secret_can_come_from_the_environment_and_is_redacted_like_any_other() {
+        let store = SecretStore::memory().with_sources(Sources::of(&[("HOLON_SECRET_API", "env-value-123"), ("HOLON_SECRET_TINY", "abc")]));
+        assert!(store.set_from("api", "k", "env:PATH").unwrap_err().contains(crate::secret_sources::ENV_PREFIX));
+        assert!(store.set_from("api", "k", "env:HOLON_SECRET_MISSING").unwrap_err().contains("isn't set"));
+        assert!(store.set_from("api", "k", "env:HOLON_SECRET_TINY").unwrap_err().contains("too short"));
+        assert!(store.names("api").is_empty(), "a refused source adds nothing");
+        assert_eq!(store.set_from("api", "k", "env:HOLON_SECRET_API").unwrap(), 1);
+        let vault = store.vault("api");
+        assert_eq!(*vault.lock().unwrap().current["k"], "env-value-123");
+        assert_eq!(store.list("api")[0].source, "env:HOLON_SECRET_API");
+        // Replaced by a sealed value: the env one is retired, still redacted.
+        store.set("api", "k", "sealed-value-456").unwrap();
+        assert_eq!(Redactor::of(&vault).text("env-value-123 / sealed-value-456"), "‹secret:k› / ‹secret:k›");
+    }
+
+    #[test]
+    fn a_vault_value_follows_its_source_and_outlives_an_outage_only_briefly() {
+        let value: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(Some("whsec_first".into())));
+        let served = Arc::clone(&value);
+        let server = rouille::Server::new("127.0.0.1:0", move |_| match served.lock().unwrap().clone() {
+            Some(v) => rouille::Response::json(&serde_json::json!({ "data": { "data": { "signing": v } } })),
+            None => rouille::Response::text("sealed").with_status_code(503),
+        })
+        .unwrap();
+        let addr = format!("http://{}", server.server_addr());
+        let (_handle, stop) = server.stoppable();
+        let store = SecretStore::memory().with_sources(Sources::of(&[("VAULT_ADDR", &addr), ("VAULT_TOKEN", "t")]));
+        store.set_from("pay", "signing", "vault:secret/stripe#signing").unwrap();
+        let vault = store.vault("pay");
+        let current = || vault.lock().unwrap().current.get("signing").map(|v| v.to_string());
+
+        *value.lock().unwrap() = Some("whsec_second".into());
+        store.refresh();
+        assert_eq!(current().as_deref(), Some("whsec_second"), "a change where it's kept reaches the runs");
+
+        *value.lock().unwrap() = None;
+        store.refresh();
+        assert_eq!(current().as_deref(), Some("whsec_second"), "kept through a short outage");
+        assert!(store.list("pay")[0].problem.as_deref().unwrap().contains("503"));
+
+        // Past STALE_AFTER without a successful read, it's dropped: a revoked value stops working.
+        if let Some(long_ago) = std::time::Instant::now().checked_sub(STALE_AFTER + std::time::Duration::from_secs(1)) {
+            vault.lock().unwrap().fetched.get_mut("signing").unwrap().1 = long_ago;
+            store.refresh();
+            assert_eq!(current(), None);
+        }
+        let _ = stop.send(());
     }
 
     #[test]
