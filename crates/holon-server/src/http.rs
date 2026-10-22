@@ -150,7 +150,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy, &state.secrets, request);
+        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, request);
         sync_listeners(state);
         return response;
     }
@@ -174,11 +174,15 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy/preview" {
-        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy, &state.secrets, request);
+        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy(), &state.secrets, request);
     }
 
     if method == "GET" && url == "/permissions" {
-        return handle_get_permissions(&state.policy);
+        return handle_get_permissions(&state.policy());
+    }
+
+    if method == "POST" && url == "/permissions/reload" {
+        return grants::handle_post_permissions_reload(state);
     }
 
     if method == "GET" && url == "/deployments" {
@@ -218,6 +222,9 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         {
             if method == "GET" {
                 return handle_get_permission_view(&state.store, &state.deployments, slug, which);
+            }
+            if method == "POST" && which == "grant" {
+                return grants::handle_post_grant(state, slug, request);
             }
         } else if let Some(slug) = rest.strip_suffix("/sessions") {
             if method == "GET" {

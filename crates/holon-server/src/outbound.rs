@@ -24,6 +24,9 @@ use holon_host::{Limits, Performer};
 pub(crate) struct Outbound {
     /// The `host[:port]`s it may call (lowercase).
     pub(crate) allowed: BTreeSet<String>,
+    /// Hosts the host revoked since the deploy: a call to one fails as `revoked`, not
+    /// `blocked_host`, so the log says why.
+    pub(crate) revoked: BTreeSet<String>,
     /// Hosts it may call over plain HTTP: an exception the host grants (§4.2.1), never a default.
     pub(crate) plain_http: BTreeSet<String>,
     /// Whether private addresses are allowed: an exception too.
@@ -67,6 +70,9 @@ fn parse_url(url: &str) -> Option<Target> {
 impl Outbound {
     /// Whether `target` may be called: a granted host, over HTTPS unless granted plain HTTP.
     fn check(&self, target: &Target) -> Result<(), Value> {
+        if self.revoked.contains(&target.authority) {
+            return Err(failure("revoked", format!("the host revoked {} for this deployment", target.authority)));
+        }
         if !self.allowed.contains(&target.authority) {
             return Err(failure("blocked_host", format!("{} wasn't granted to this deployment", target.authority)));
         }
@@ -335,7 +341,7 @@ mod tests {
     /// needs, and what the host would have to grant explicitly.
     fn local(addr: &str) -> Outbound {
         let hosts: BTreeSet<String> = [addr.to_string()].into();
-        Outbound { allowed: hosts.clone(), plain_http: hosts, allow_private: true }
+        Outbound { allowed: hosts.clone(), revoked: BTreeSet::new(), plain_http: hosts, allow_private: true }
     }
 
     #[test]
@@ -399,7 +405,7 @@ mod tests {
             }
         });
         let both: BTreeSet<String> = [hop.clone(), target.clone()].into();
-        let o = Outbound { allowed: both.clone(), plain_http: both, allow_private: true };
+        let o = Outbound { allowed: both.clone(), revoked: BTreeSet::new(), plain_http: both, allow_private: true };
         let out = o.perform(&request("POST", &format!("https://{hop}/start"), "{}"), &Limits::request_run());
         assert_eq!(field(&out, "body"), &Value::Text("landed GET /done HTTP/1.1".into()), "303 becomes a GET");
         let out = o.perform(&request("GET", &format!("https://{hop}/away"), ""), &Limits::request_run());

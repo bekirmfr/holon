@@ -27,7 +27,8 @@ fn test_state() -> AppState {
         flows_path: ":memory:".to_string(),
         port: TEST_PORT,
         listeners: None,
-        policy: Arc::new(Policy::default()),
+        policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
     }
 }
@@ -751,8 +752,8 @@ fn deploy_json(state: &AppState, slug: &str, unit: Hash, extra: serde_json::Valu
 /// previous grant didn't cover; and what policy never grants is refused, naming why.
 #[test]
 fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
-    let mut state = test_state();
-    state.policy = Arc::new(Policy::parse("[grants]\nauto = [\"StateWrite(*)\"]").unwrap());
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nauto = [\"StateWrite(*)\"]").unwrap());
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     // StateWrite is granted by policy; NetworkIngress isn't.
     let refused = deploy_json(&state, "w", writer, serde_json::json!({}));
@@ -811,8 +812,8 @@ fn granted_exceptions_let_a_request_reach_a_local_server() {
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
         }
     });
-    let mut state = test_state();
-    state.policy = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
     let request = Unit {
         params: vec![Param::frozen("method", "GET"), Param::frozen("host", &host)],
         ..holon_core::interface_of("http_request").unwrap()
@@ -858,12 +859,171 @@ fn an_effect_outside_the_grant_is_refused_at_perform_time() {
         let dep = table.get_mut("w").unwrap();
         let mut narrowed = dep.grant.clone();
         narrowed.items.remove("StateWrite(\"k\")");
-        dep.permit = Arc::new(Permit::new(dep.unit, &narrowed, &state.policy));
+        dep.permit = Arc::new(Permit::new(dep.unit, &narrowed, &state.policy()));
     }
     let fired = body_json(route(&state, &req("POST", "/trigger/w", b"value".to_vec())));
     assert_eq!(fired["performed"], serde_json::json!([]), "the write was refused");
     let current = body_json(route(&state, &req("GET", "/deployments/w/state", vec![])));
     assert!(current["state"].get("k").is_none(), "and nothing was stored: {current}");
+}
+
+fn change_grant(state: &AppState, slug: &str, change: serde_json::Value) -> Response {
+    route(state, &req("POST", &format!("/deployments/{slug}/grant"), serde_json::to_vec(&change).unwrap()))
+}
+
+/// The host takes an item back without a redeploy: the deployment pauses, flagged, until the item
+/// is granted back, and then resumes on its own. Every change is recorded on the grant, and a
+/// change that can't apply (an item it doesn't hold, or never asked for) changes nothing.
+#[test]
+fn revoking_an_item_pauses_until_it_is_granted_back() {
+    let state = test_state();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
+
+    let revoked = change_grant(&state, "w", serde_json::json!({ "revoke": ["StateWrite(\"k\")"] }));
+    assert_eq!(revoked.status_code, 200);
+    let view = body_json(revoked);
+    assert_eq!(view["status"], "paused");
+    assert!(view["attention"].as_str().unwrap().contains("StateWrite(\"k\")"), "{view}");
+    assert_eq!(view["grant"]["revoked"], serde_json::json!(["StateWrite(\"k\")"]));
+    assert_eq!(route(&state, &req("POST", "/trigger/w", b"v".to_vec())).status_code, 409, "paused");
+    assert_eq!(route(&state, &req("POST", "/deployments/w/run", vec![])).status_code, 409, "can't be run past it");
+
+    // What can't apply is refused whole.
+    for bad in [
+        serde_json::json!({ "revoke": ["StateWrite(\"k\")"] }),
+        serde_json::json!({ "grant": ["StateWrite(\"other\")"] }),
+        serde_json::json!({ "grant": ["StateWrite(\"k\")"], "revoke": ["Clock"] }),
+        serde_json::json!({}),
+        serde_json::json!({ "revoke_all": true }),
+    ] {
+        assert_eq!(change_grant(&state, "w", bad.clone()).status_code, 400, "{bad}");
+    }
+    assert_eq!(state.deployments.lock().unwrap()["w"].life.status, Status::Paused);
+
+    let restored = body_json(change_grant(&state, "w", serde_json::json!({ "grant": ["StateWrite(\"k\")"] })));
+    assert_eq!(restored["status"], "running", "covered again: it resumes");
+    assert!(restored["attention"].is_null());
+    let changes: Vec<&str> = restored["grant"]["changes"].as_array().unwrap().iter().map(|c| c["change"].as_str().unwrap()).collect();
+    assert_eq!(changes, ["revoked StateWrite(\"k\")", "granted StateWrite(\"k\")"]);
+    assert_eq!(route(&state, &req("POST", "/trigger/w", b"v".to_vec())).status_code, 200);
+    assert!(body_json(route(&state, &req("GET", "/deployments/w/state", vec![])))["state"].get("k").is_some());
+
+    // A pause the person chose isn't the grant's to undo.
+    change_grant(&state, "w", serde_json::json!({ "revoke": ["StateWrite(\"k\")"] }));
+    assert_eq!(route(&state, &req("POST", "/deployments/w/stop", vec![])).status_code, 200);
+    let regranted = body_json(change_grant(&state, "w", serde_json::json!({ "grant": ["StateWrite(\"k\")"] })));
+    assert_eq!(regranted["status"], "stopped");
+}
+
+/// Kept running instead: the deployment answers, and only what was revoked fails (an outbound
+/// call to a revoked host says `revoked`, not `blocked_host`).
+#[test]
+fn a_revocation_can_keep_the_deployment_running_with_the_revoked_calls_failing() {
+    let state = test_state();
+    let host = "api.example.com";
+    let request = Unit {
+        params: vec![Param::frozen("method", "GET"), Param::frozen("host", host)],
+        ..holon_core::interface_of("http_request").unwrap()
+    };
+    let flow = Unit {
+        body: UnitBody::Composite {
+            children: vec![stage(&state, &test_ingress()), stage(&state, &request), stage(&state, &test_sink())],
+            edges: vec![
+                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
+                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 },
+                Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+            ],
+        },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+    };
+    let flow_hash = stage(&state, &flow);
+    let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", format!("HttpRequest({host:?})")]);
+    assert_eq!(deploy_json(&state, "caller", flow_hash, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+
+    let change = serde_json::json!({ "revoke": [format!("HttpRequest({host:?})")], "keep_running": true });
+    let view = body_json(change_grant(&state, "caller", change));
+    assert_eq!(view["status"], "running");
+    assert!(view["attention"].is_null());
+    assert_eq!(view["grant"]["keep_running"], true);
+
+    assert_eq!(route(&state, &req("POST", "/trigger/caller", b"/status".to_vec())).status_code, 200);
+    let log = body_json(route(&state, &req("GET", "/deployments/caller/log", vec![])));
+    let exchange = &log["entries"][0]["rounds"][0]["exchanges"][0];
+    let error = exchange["response"]["value"].as_array().unwrap().iter().find(|kv| kv[0] == "error").unwrap()[1]["value"].clone();
+    assert_eq!(error, "revoked");
+    assert_eq!(log["entries"][0]["grant"], view["hash"], "the log names the grant in effect");
+
+    // Switched back to pausing, the uncovered grant pauses it.
+    let view = body_json(change_grant(&state, "caller", serde_json::json!({ "keep_running": false })));
+    assert_eq!(view["status"], "paused");
+}
+
+/// Lowering a limit applies to the next run, and needs nobody's approval; raising one takes a
+/// deploy. Lowering a limit the flow asked for below what it asked takes that item back.
+#[test]
+fn a_limit_can_be_lowered_without_a_redeploy_but_not_raised() {
+    let state = test_state();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let requirements = serde_json::json!({ "limits": { "request_timeout_ms": 60000 } });
+    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"k\")", "Limit(request_timeout_ms=60000)"]);
+    let deployed = deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ack, "requirements": requirements }));
+    assert_eq!(deployed.status_code, 200);
+    let limits = |state: &AppState| state.deployments.lock().unwrap()["w"].permit.request_limits.clone();
+    assert_eq!(limits(&state).request_timeout, Duration::from_secs(60));
+
+    // A limit it didn't ask about: lowered, and it keeps running.
+    let before = body_json(route(&state, &req("GET", "/deployments/w/grant", vec![])))["hash"].clone();
+    let view = body_json(change_grant(&state, "w", serde_json::json!({ "lower": { "max_requests": 5 } })));
+    assert_eq!(view["status"], "running");
+    assert_eq!(limits(&state).max_requests, 5);
+    assert_ne!(view["hash"], before, "a lowered limit changes the grant's hash");
+    assert_eq!(change_grant(&state, "w", serde_json::json!({ "lower": { "max_requests": 6 } })).status_code, 400, "raising");
+    assert_eq!(change_grant(&state, "w", serde_json::json!({ "lower": { "max_request": 1 } })).status_code, 400, "unknown");
+
+    // Below what it asked for: that item is no longer granted, so it pauses.
+    let view = body_json(change_grant(&state, "w", serde_json::json!({ "lower": { "request_timeout_ms": 20000 } })));
+    assert_eq!(view["status"], "paused");
+    assert_eq!(limits(&state).request_timeout, Duration::from_secs(20));
+    let view = body_json(change_grant(&state, "w", serde_json::json!({ "grant": ["Limit(request_timeout_ms=60000)"] })));
+    assert_eq!(view["status"], "running");
+    assert_eq!(limits(&state).request_timeout, Duration::from_secs(60));
+    assert_eq!(limits(&state).max_requests, 5, "the other lowered limit stays");
+}
+
+/// The policy file read again holds every deployment to it at once: a ceiling lowered below what a
+/// deployment was granted pauses it, and raising it back resumes it. A file that doesn't parse
+/// changes nothing.
+#[test]
+fn reloading_the_policy_holds_every_deployment_to_it() {
+    let mut state = test_state();
+    let path = unique_temp_path("policy");
+    state.policy_path = path.clone();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let requirements = serde_json::json!({ "limits": { "request_timeout_ms": 60000 } });
+    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"k\")", "Limit(request_timeout_ms=60000)"]);
+    assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
+    let reload = |state: &AppState| route(state, &req("POST", "/permissions/reload", b"{}".to_vec()));
+
+    std::fs::write(&path, "[ceilings]\nrequest_timeout_ms = 45000\n").unwrap();
+    let reloaded = reload(&state);
+    assert_eq!(reloaded.status_code, 200);
+    let reply = body_json(reloaded);
+    assert_eq!(reply["ceilings"]["request_timeout_ms"], 45000);
+    assert!(reply["attention"]["w"].as_str().unwrap().contains("no longer grants"), "{reply}");
+    assert_eq!(state.deployments.lock().unwrap()["w"].life.status, Status::Paused);
+
+    std::fs::write(&path, "[ceilings\n").unwrap();
+    assert_eq!(reload(&state).status_code, 400);
+    assert_eq!(state.policy().ceilings["request_timeout_ms"], 45000, "unchanged");
+
+    std::fs::write(&path, "").unwrap();
+    assert_eq!(body_json(reload(&state))["attention"]["w"], serde_json::Value::Null);
+    assert_eq!(state.deployments.lock().unwrap()["w"].life.status, Status::Running);
+    let _ = std::fs::remove_file(&path);
 }
 
 /// At load, a grant is checked against what the deployment needs now: one that no longer covers
@@ -882,7 +1042,7 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     file[0]["grant"]["items"] = serde_json::json!(["NetworkIngress"]);
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
     let w = &reloaded["w"];
     assert_eq!(w.life.status, Status::Paused);
     assert!(w.attention.as_deref().unwrap().contains("StateWrite(\"k\")"), "{:?}", w.attention);
@@ -899,7 +1059,7 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     file[0].as_object_mut().unwrap().remove("grant");
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-    let migrated = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let migrated = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(migrated["w"].grant.by, "migrated");
     assert!(migrated["w"].attention.is_none() && migrated["w"].grant.items.contains("StateWrite(\"k\")"));
     let _ = std::fs::remove_file(&path);
@@ -1084,7 +1244,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     assert!(!listed.contains(&token) && !log.contains(&token), "a token is never listed or logged");
     assert!(log.contains("‹token:paid›"));
     // It survives a restart.
-    assert_eq!(load_deployments(&path, &state.store, &state.policy).unwrap()["shop"].parked.len(), 1);
+    assert_eq!(load_deployments(&path, &state.store, &state.policy()).unwrap()["shop"].parked.len(), 1);
 
     // A wrong token: refused before the route's handler runs.
     assert_eq!(call("GET", "/paid/rt_nope").0, 404);
@@ -1159,7 +1319,8 @@ fn deployments_persist_across_a_simulated_restart() {
             flows_path: ":memory:".to_string(),
             port: TEST_PORT,
             listeners: None,
-            policy: Arc::new(Policy::default()),
+            policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
         };
         let body = serde_json::to_vec(&serde_json::json!({
@@ -1189,7 +1350,8 @@ fn deployments_persist_across_a_simulated_restart() {
         flows_path: ":memory:".to_string(),
         port: TEST_PORT,
         listeners: None,
-        policy: Arc::new(Policy::default()),
+        policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
     };
     let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
@@ -1339,7 +1501,7 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     let missing = format!("{{\"slug\":\"gone\",\"unit\":\"{}\",\"trigger_count\":3,\"error_count\":0}}", "ab".repeat(32));
     for contents in [format!("[{missing}]"), r#"[{"slug":"bad","unit":"not-hex","trigger_count":0,"error_count":0}]"#.to_string()] {
         std::fs::write(&path, &contents).unwrap();
-        let e = load_deployments(&path, &state.store, &state.policy).err().expect("must refuse, not skip");
+        let e = load_deployments(&path, &state.store, &state.policy()).err().expect("must refuse, not skip");
         assert!(e.contains("deployment"), "{e}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), contents, "file left as it was");
     }
@@ -1361,7 +1523,7 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     let stateless = stage_ingress_plus_driver(&state, test_random());
     deploy(stateless, serde_json::json!(["NetworkIngress", "Random"]));
 
-    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
     let held = reloaded["writer"].state.as_ref().expect("state must survive the restart").lock().unwrap().clone();
     assert_eq!(held.get("k"), Some(&Value::Text("kept".into())));
     let _ = std::fs::remove_file(&path);
@@ -1398,7 +1560,7 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     assert!(file[0].get("state").is_none(), "no inline values: {}", file[0]);
     let hash = hash_value(&Value::Text("kept".into())).unwrap();
     assert_eq!(file[0]["state_refs"]["k"], to_hex(&hash));
-    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(to_hex(&reloaded["writer"].state.as_ref().unwrap().lock().unwrap().root()), root);
 
     // Stop (session 1 keeps "kept"), start fresh and write something else (session 2), then
@@ -1441,7 +1603,7 @@ fn inline_state_from_older_files_moves_into_the_store() {
     }]);
     std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
-    let loaded = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let loaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(loaded["writer"].state.as_ref().unwrap().lock().unwrap().get("k"), Some(&Value::Text("live".into())));
     let first = loaded["writer"].life.snapshot(1).expect("the inline snapshot became references");
     assert_eq!(state.store.get_value(&first["k"]).unwrap(), Some(Value::Text("first".into())));
@@ -1451,13 +1613,13 @@ fn inline_state_from_older_files_moves_into_the_store() {
     persist_deployments(&path, &state.deployments, &state.store);
     let file = std::fs::read_to_string(&path).unwrap();
     assert!(!file.contains("\"live\"") && !file.contains("\"first\""), "no inline values left: {file}");
-    let again = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let again = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(again["writer"].life.snapshot(1), Some(first));
 
     // A reference to a value the store doesn't have: refuse, and leave the file alone.
     let dangling = file.replace(&to_hex(&hash_value(&Value::Text("live".into())).unwrap()), &"cd".repeat(32));
     std::fs::write(&path, &dangling).unwrap();
-    let e = load_deployments(&path, &state.store, &state.policy).err().expect("must refuse");
+    let e = load_deployments(&path, &state.store, &state.policy()).err().expect("must refuse");
     assert!(e.contains("can't be loaded"), "{e}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), dangling);
     let _ = std::fs::remove_file(&path);
@@ -1472,7 +1634,7 @@ fn corrupt_persistence_file_is_an_error_not_an_empty_table() {
     for (label, contents) in [("truncated", &b"[{\"slug\": \"wri"[..]), ("foreign", &b"{\"not\": \"a list\"}"[..])] {
         let path = unique_temp_path(&format!("corrupt-{label}"));
         std::fs::write(&path, contents).unwrap();
-        assert!(load_deployments(&path, &state.store, &state.policy).is_err(), "{label} deployments file");
+        assert!(load_deployments(&path, &state.store, &state.policy()).is_err(), "{label} deployments file");
         assert!(load_flows(&path).is_err(), "{label} flows file");
         assert_eq!(std::fs::read(&path).unwrap(), contents, "the bad file must be left as it was");
         let _ = std::fs::remove_file(&path);
@@ -1840,7 +2002,7 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
     assert_eq!(deploy_server(&state, "bad", bad).status_code, 400);
 
     // A restart reloads it as a server, with its items.
-    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
     assert_eq!(reloaded["todo-api"].triggers, vec!["Http :18080"], "labelled as when it was deployed");
     let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap().get("todos").unwrap().clone();
@@ -2049,7 +2211,7 @@ fn a_deployment_runs_pauses_stops_and_keeps_every_session() {
 
     // A restart keeps the status and every session.
     act("stop", "");
-    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["todo"].life.status, Status::Stopped);
     assert_eq!(reloaded["todo"].life.sessions.len(), 3);
     assert_eq!(route(&state, &req("DELETE", "/deployments/todo", vec![])).status_code, 200);
@@ -2123,7 +2285,7 @@ fn a_fire_in_progress_does_not_stall_the_table() {
         assert_eq!(deploying.join().unwrap(), 200);
     });
 
-    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded.keys().collect::<Vec<_>>(), vec!["a", "b"]);
     let _ = std::fs::remove_file(&path);
 }
@@ -2327,7 +2489,8 @@ fn state_persists_across_a_simulated_restart() {
             flows_path: ":memory:".to_string(),
             port: TEST_PORT,
             listeners: None,
-            policy: Arc::new(Policy::default()),
+            policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
         };
         let deploy_body = serde_json::to_vec(&serde_json::json!({
@@ -2359,7 +2522,8 @@ fn state_persists_across_a_simulated_restart() {
         flows_path: ":memory:".to_string(),
         port: TEST_PORT,
         listeners: None,
-        policy: Arc::new(Policy::default()),
+        policy: std::sync::RwLock::new(Arc::new(Policy::default())),
+        policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
     };
     let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));

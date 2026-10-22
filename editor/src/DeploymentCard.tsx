@@ -3,10 +3,13 @@
 // server's lifecycle.rs.
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { formatOutputs, summarizeState } from "./diagnostics";
+import { describeItem, formatOutputs, summarizeState } from "./diagnostics";
 import {
+  changeGrant,
+  getGrant,
   getSessions,
   listWaitingRuns,
+  type GrantView,
   type WaitingRun,
   type DeploymentEntry,
   type DeploymentStatus,
@@ -39,6 +42,7 @@ export function DeploymentCard({
   onAction,
   onDelete,
   onView,
+  onChanged,
   triggerInput,
   onTriggerInputChange,
   onTrigger,
@@ -50,6 +54,8 @@ export function DeploymentCard({
   onDelete: () => void;
   /** Open it in view mode: its deployed canvas, read only, with its live flow log. */
   onView: () => void;
+  /** It changed here (its grant): the table should be fetched again. */
+  onChanged: () => void;
   triggerInput: string;
   onTriggerInputChange: (v: string) => void;
   onTrigger: () => void;
@@ -157,6 +163,7 @@ export function DeploymentCard({
         <div style={{ color: "#e0916f", fontSize: 11 }}>⚠ {entry.attention}</div>
       )}
       {(entry.waiting ?? 0) > 0 && <WaitingRuns slug={entry.slug} count={entry.waiting ?? 0} />}
+      <Permissions slug={entry.slug} version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`} onChanged={onChanged} />
 
       {open &&
         (sessions ?? []).slice().reverse().map((s) => (
@@ -204,6 +211,78 @@ export function DeploymentCard({
 
 /** A deployment's runs waiting for an event: what each waits for, and until when. Never their
  *  tokens (the server doesn't list them). */
+/** What the deployment is granted, with the host's controls: revoke an item, grant back one it
+ *  asks for, and whether an uncovered grant pauses it or keeps it running. `version` changes when
+ *  the deployment might have (its status or attention), so an open list follows. */
+function Permissions({ slug, version, onChanged }: { slug: string; version: string; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState<GrantView | null>(null);
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    getGrant(slug)
+      .then(setView)
+      .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
+  }, [open, slug, version]);
+  const change = (c: Parameters<typeof changeGrant>[1]) => {
+    setMsg("");
+    changeGrant(slug, c)
+      .then((v) => {
+        setView(v);
+        onChanged();
+      })
+      .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
+  };
+  const grant = view?.grant;
+  const row: CSSProperties = { display: "flex", gap: 8, alignItems: "center", paddingLeft: 14 };
+  return (
+    <div style={{ fontSize: 10 }}>
+      <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setOpen(!open)}>
+        permissions {open ? "▾" : "▸"}
+      </span>
+      {open && msg && <div style={{ ...row, color: "#e0916f" }}>{msg}</div>}
+      {open && grant && (
+        <>
+          {grant.items.map((item) => (
+            <div key={item} style={{ ...row, color: "#9fb4d4" }} title={item}>
+              <span style={{ flex: 1 }}>✓ {describeItem(item)}</span>
+              <button style={small} onClick={() => change({ revoke: [item] })} title="take this back without redeploying">
+                revoke
+              </button>
+            </div>
+          ))}
+          {(grant.revoked ?? []).map((item) => (
+            <div key={item} style={{ ...row, color: "#e0916f" }} title={item}>
+              <span style={{ flex: 1, textDecoration: "line-through" }}>{describeItem(item)}</span>
+              <button style={small} onClick={() => change({ grant: [item] })} title="grant it back">
+                grant back
+              </button>
+            </div>
+          ))}
+          {Object.entries(grant.lowered ?? {}).map(([name, n]) => (
+            <div key={name} style={{ ...row, color: "#e0c36f" }}>
+              {name} lowered to {n}
+            </div>
+          ))}
+          <label style={{ ...row, color: "#9fb4d4" }} title="when the grant doesn't cover what it needs">
+            <input
+              type="checkbox"
+              checked={grant.keep_running ?? false}
+              onChange={(e) => change({ keep_running: e.target.checked })}
+            />
+            keep running when something is revoked (those calls fail) instead of pausing
+          </label>
+          {(grant.changes ?? []).slice(-5).map((c, i) => (
+            <div key={i} style={{ ...row, color: "#7e8ea8" }}>
+              {new Date(c.at * 1000).toLocaleString()} · {c.change}
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 function WaitingRuns({ slug, count }: { slug: string; count: number }) {
   const [open, setOpen] = useState(false);
   const [runs, setRuns] = useState<WaitingRun[] | null>(null);

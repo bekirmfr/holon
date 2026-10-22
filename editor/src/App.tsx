@@ -1020,6 +1020,7 @@ function Canvas({
               triggerResults={deploymentTable.triggerResults}
               onDelete={deploymentTable.onDelete}
               onView={onView}
+              onChanged={refreshDeployments}
             />
           )}
         </div>

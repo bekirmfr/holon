@@ -141,6 +141,7 @@ export function DeployedPage({
   triggerResults,
   onDelete,
   onView,
+  onChanged,
 }: {
   deployments: DeploymentEntry[];
   error: string;
@@ -151,6 +152,7 @@ export function DeployedPage({
   triggerResults: Record<string, TriggerOutcome>;
   onDelete: (slug: string) => void;
   onView: (slug: string) => void;
+  onChanged: () => void;
 }) {
   return (
     <div style={{ maxWidth: 760 }}>
@@ -178,6 +180,7 @@ export function DeployedPage({
           onTrigger={() => onTrigger(entry.slug)}
           onDelete={() => onDelete(entry.slug)}
           onView={() => onView(entry.slug)}
+          onChanged={onChanged}
           result={triggerResults[entry.slug]}
         />
       ))}

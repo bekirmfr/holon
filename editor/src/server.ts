@@ -216,6 +216,46 @@ export async function listWaitingRuns(slug: string): Promise<WaitingRun[]> {
   return (await asJson<{ runs: WaitingRun[] }>(res)).runs;
 }
 
+/** What the host granted a deployment (permissions.rs's `Grant`): the items it holds, what it
+ *  asked for beyond its graph, and what the host changed since the deploy. */
+export type Grant = {
+  manifest: string;
+  items: string[];
+  requirements: Requirements;
+  granted_at: number;
+  by: string;
+  /** Items the host took back since. */
+  revoked?: string[];
+  /** Limits the host lowered since, by name. */
+  lowered?: Record<string, number>;
+  /** Whether it keeps running, the calls it lacks failing, when the grant doesn't cover it. */
+  keep_running?: boolean;
+  changes?: { at: number; change: string }[];
+};
+
+/** `GET`/`POST /deployments/<slug>/grant`: the grant, its hash, and why the deployment can't run
+ *  under it, if it can't. */
+export type GrantView = { grant: Grant; hash: string; attention: string | null };
+
+export async function getGrant(slug: string): Promise<GrantView> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/grant`);
+  return asJson<GrantView>(res);
+}
+
+/** Change what a deployment is granted, without a redeploy: revoke items, grant back items its
+ *  manifest asks for, lower limits, or choose what an uncovered grant does. Whole or not at all. */
+export async function changeGrant(
+  slug: string,
+  change: { revoke?: string[]; grant?: string[]; lower?: Record<string, number>; keep_running?: boolean },
+): Promise<GrantView> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/grant`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(change),
+  });
+  return asJson<GrantView>(res);
+}
+
 /** Running answers and fires; paused keeps its port and session but answers 503; stopped has
  *  ended its session (saving its state) and released its port. Mirrors lifecycle.rs. */
 export type DeploymentStatus = "running" | "paused" | "stopped";

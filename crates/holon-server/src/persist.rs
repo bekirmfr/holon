@@ -143,19 +143,11 @@ pub(crate) fn load_deployments(
 
         // The grant, re-checked against what the unit needs now and the policy in force. A record
         // from before grants is granted what it was acknowledged for at its deploy.
-        let (grant, mut attention) = match record.grant {
-            Some(grant) => {
-                let manifest = Manifest::new(caps.iter(), grant.requirements.clone());
-                let missing = grant.missing(&manifest);
-                let attention = if !missing.is_empty() {
-                    Some(format!("it needs {} it wasn't granted; deploy it again to approve", missing.join(", ")))
-                } else {
-                    policy.refuses(&manifest).map(|why| format!("this host no longer grants it: {why}"))
-                };
-                (grant, attention)
-            }
-            None => (Grant::for_manifest(&Manifest::new(caps.iter(), Requirements::default()), epoch_now(), "migrated"), None),
+        let mut grant = match record.grant {
+            Some(grant) => grant,
+            None => Grant::for_manifest(&Manifest::new(caps.iter(), Requirements::default()), epoch_now(), "migrated"),
         };
+        let mut attention = grant.attention(&grant.manifest_of(caps.iter()), policy);
         if let Some(why) = &attention {
             eprintln!("holon-server: deployment {slug:?} is paused: {why}");
         }
@@ -209,9 +201,14 @@ pub(crate) fn load_deployments(
                     if life.sessions.is_empty() {
                         life.sessions = Lifecycle::deployed(started).sessions;
                     }
-                    // Not covered by its grant: it doesn't run until deployed again.
+                    // Not covered by its grant: it doesn't run until it is again. Covered again
+                    // (the policy changed while it was down), it runs if the grant paused it.
                     if attention.is_some() && life.status == Status::Running {
                         life.status = Status::Paused;
+                        grant.paused = true;
+                    } else if attention.is_none() && grant.paused && life.status == Status::Paused {
+                        life.status = Status::Running;
+                        grant.paused = false;
                     }
                     life
                 },

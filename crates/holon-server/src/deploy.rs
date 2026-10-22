@@ -311,13 +311,17 @@ pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&st
 /// `GET /permissions` — this host's policy: each limit's default and ceiling, what it grants
 /// without asking, and which exceptions it ever grants.
 pub(crate) fn handle_get_permissions(policy: &Policy) -> Response {
-    Response::json(&serde_json::json!({
+    Response::json(&permissions_view(policy))
+}
+
+pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
+    serde_json::json!({
         "defaults": policy.defaults(),
         "ceilings": policy.ceilings,
         "auto": policy.auto,
         "allow_plain_http": policy.allow_plain_http,
         "allow_private_addresses": policy.allow_private_addresses,
-    }))
+    })
 }
 
 /// `GET /deployments/<slug>/manifest` — what it needs, re-derived from its unit; and
@@ -661,6 +665,8 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         if let Err(e) = result {
             return err(409, format!("can't {action} {slug:?}: {}", e.message()));
         }
+        // From here on the status is the person's choice, not the grant's.
+        dep.grant.paused = false;
         deployment_entry(slug, dep)
     };
     persist_deployments(&state.deployments_path, &state.deployments, &state.store);

@@ -143,6 +143,7 @@ mod deploy;
 mod durable;
 mod firing;
 mod fixtures;
+mod grants;
 mod flows;
 mod http;
 mod lifecycle;
@@ -266,11 +267,20 @@ struct AppState {
     /// `serve_data` directly instead of opening sockets).
     listeners: Option<Mutex<Listeners>>,
     /// The host operator's policy (`--policy`, default `holon.toml`): limits, ceilings, what
-    /// is granted without asking. Read once at startup.
-    policy: Arc<Policy>,
+    /// is granted without asking. Read at startup, and again on `POST /permissions/reload`.
+    policy: std::sync::RwLock<Arc<Policy>>,
+    /// Where the policy is read from.
+    policy_path: String,
     /// Every deployment's secrets (`--secrets`, secrets.rs): written over the control plane,
     /// never returned.
     secrets: Arc<SecretStore>,
+}
+
+impl AppState {
+    /// The policy in force.
+    fn policy(&self) -> Arc<Policy> {
+        Arc::clone(&self.policy.read().unwrap())
+    }
 }
 
 /// slug → (port, stop signal) of each running data-plane listener.
@@ -577,7 +587,8 @@ fn main() {
         flows_path: flows_arg,
         port,
         listeners: Some(Mutex::new(BTreeMap::new())),
-        policy,
+        policy: std::sync::RwLock::new(policy),
+        policy_path: policy_arg,
         secrets,
     };
     sync_listeners(&state);

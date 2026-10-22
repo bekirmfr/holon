@@ -12,6 +12,10 @@
 //! - A **permit** is a grant applied to the policy in force: the limits, outbound hosts and
 //!   exceptions every run of the deployment is held to. Effects outside it are refused at perform
 //!   time, whatever the graph says.
+//! - The host can **change a grant** at any time, without a redeploy: revoke an item, grant back
+//!   one the manifest asks for, lower a limit. A grant that no longer covers its manifest pauses
+//!   the deployment until it does again, unless the host chose to keep it running, revoked calls
+//!   failing. Every change is recorded on the grant.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -235,19 +239,22 @@ impl Policy {
     /// Why policy can't grant `manifest` at all, if it can't: a limit above its ceiling, an
     /// unknown limit, or an exception policy never grants.
     pub(crate) fn refuses(&self, manifest: &Manifest) -> Option<String> {
-        for (name, n) in &manifest.requirements.limits {
-            match self.ceilings.get(name) {
-                None => return Some(format!("unknown limit {name:?} (known: {})", LIMIT_NAMES.join(", "))),
-                Some(ceiling) if n > ceiling => {
-                    return Some(format!("{name} = {n} is above this host's ceiling of {ceiling}"));
-                }
-                _ => {}
-            }
+        manifest.items().iter().find_map(|item| self.refuses_item(item))
+    }
+
+    /// Why policy can't grant `item`, if it can't.
+    pub(crate) fn refuses_item(&self, item: &str) -> Option<String> {
+        if let Some((name, n)) = parse_limit(item) {
+            return match self.ceilings.get(&name) {
+                None => Some(format!("unknown limit {name:?} (known: {})", LIMIT_NAMES.join(", "))),
+                Some(ceiling) if n > *ceiling => Some(format!("{name} = {n} is above this host's ceiling of {ceiling}")),
+                _ => None,
+            };
         }
-        if !manifest.requirements.plain_http.is_empty() && !self.allow_plain_http {
+        if item.starts_with("PlainHttp(") && !self.allow_plain_http {
             return Some("this host never grants plain HTTP (holon.toml: grants.allow_plain_http)".into());
         }
-        if manifest.requirements.private_addresses && !self.allow_private_addresses {
+        if item == "PrivateAddresses" && !self.allow_private_addresses {
             return Some("this host never grants private addresses (holon.toml: grants.allow_private_addresses)".into());
         }
         None
@@ -274,18 +281,70 @@ impl Policy {
     }
 }
 
+/// `Limit(name=n)` as its name and number.
+fn parse_limit(item: &str) -> Option<(String, u64)> {
+    let (name, n) = item.strip_prefix("Limit(")?.strip_suffix(')')?.split_once('=')?;
+    Some((name.to_string(), n.parse().ok()?))
+}
+
 /// What the host granted one deployment. Persisted with it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct Grant {
     /// The hash (hex) of the manifest it was granted for.
     pub(crate) manifest: String,
-    /// Every item granted: the manifest's, whether approved or granted by policy.
+    /// Every item granted: the manifest's, whether approved or granted by policy, less what the
+    /// host has revoked since.
     pub(crate) items: BTreeSet<String>,
+    /// What the deployment asked for beyond its graph (its manifest's requirements); what of it
+    /// is granted is in `items`.
     pub(crate) requirements: Requirements,
     pub(crate) granted_at: u64,
     /// How: `"deploy"` (acknowledged), or `"migrated"` (from a file before grants, whose
     /// capabilities were acknowledged at an earlier deploy).
     pub(crate) by: String,
+    /// Items the host took back since: offered back, and an outbound call to a revoked host
+    /// fails as `revoked`.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) revoked: BTreeSet<String>,
+    /// Limits the host lowered since, by name: each holds runs below what was asked or the
+    /// default, whichever applied.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) lowered: BTreeMap<String, u64>,
+    /// What a grant that no longer covers the manifest does: pause the deployment until it does
+    /// again (`false`), or keep it running, the calls it lacks failing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) keep_running: bool,
+    /// Whether the deployment is paused because of this grant (so covering it again resumes it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) paused: bool,
+    /// Every change the host made since the deploy, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) changes: Vec<GrantChange>,
+}
+
+/// One change the host made to a grant.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct GrantChange {
+    pub(crate) at: u64,
+    pub(crate) change: String,
+}
+
+/// A change to a grant, as the host asks for it (`POST /deployments/<slug>/grant`). Applied whole
+/// or not at all.
+#[derive(Deserialize, Default, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChangeRequest {
+    /// Granted items to take back.
+    #[serde(default)]
+    pub(crate) revoke: Vec<String>,
+    /// Items the manifest asks for, to grant (back).
+    #[serde(default)]
+    pub(crate) grant: Vec<String>,
+    /// Limits to lower, by name. Raising one takes a deploy, which asks for approval.
+    #[serde(default)]
+    pub(crate) lower: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub(crate) keep_running: Option<bool>,
 }
 
 impl Grant {
@@ -296,7 +355,109 @@ impl Grant {
             requirements: manifest.requirements.clone(),
             granted_at: now,
             by: by.into(),
+            revoked: BTreeSet::new(),
+            lowered: BTreeMap::new(),
+            keep_running: false,
+            paused: false,
+            changes: Vec::new(),
         }
+    }
+
+    /// The manifest this grant was made for, given what the unit's graph derives.
+    pub(crate) fn manifest_of(&self, caps: impl Iterator<Item = Capability>) -> Manifest {
+        Manifest::new(caps, self.requirements.clone())
+    }
+
+    /// This grant with the host's change applied, or why it can't be (nothing changes then).
+    pub(crate) fn change(&self, manifest: &Manifest, policy: &Policy, req: &ChangeRequest, now: u64) -> Result<Grant, String> {
+        let mut g = self.clone();
+        let mut changes = Vec::new();
+        for item in &req.revoke {
+            if !g.items.remove(item) {
+                return Err(format!("{item} isn't granted to this deployment"));
+            }
+            g.revoked.insert(item.clone());
+            changes.push(format!("revoked {item}"));
+        }
+        let asked = manifest.items();
+        for item in &req.grant {
+            if !asked.contains(item) {
+                return Err(format!("{item} isn't something this deployment asks for"));
+            }
+            if let Some(why) = policy.refuses_item(item) {
+                return Err(format!("this host can't grant {item}: {why}"));
+            }
+            if let Some((name, _)) = parse_limit(item) {
+                g.lowered.remove(&name);
+            }
+            g.items.insert(item.clone());
+            g.revoked.remove(item);
+            changes.push(format!("granted {item}"));
+        }
+        for (name, &n) in &req.lower {
+            let Some(current) = g.limit(name, policy) else {
+                return Err(format!("unknown limit {name:?} (known: {})", LIMIT_NAMES.join(", ")));
+            };
+            if n > current {
+                return Err(format!(
+                    "{name} is {current} for this deployment; raising it takes a deploy, which asks for approval"
+                ));
+            }
+            // A raised limit it asked for above the new value isn't granted any more.
+            if let Some(&asked_n) = g.requirements.limits.get(name)
+                && asked_n > n
+            {
+                let item = format!("Limit({name}={asked_n})");
+                if g.items.remove(&item) {
+                    g.revoked.insert(item);
+                }
+            }
+            g.lowered.insert(name.clone(), n);
+            changes.push(format!("lowered {name} to {n}"));
+        }
+        if let Some(keep) = req.keep_running
+            && keep != g.keep_running
+        {
+            g.keep_running = keep;
+            changes.push(if keep { "keeps running when not covered" } else { "pauses when not covered" }.into());
+        }
+        if changes.is_empty() {
+            return Err("nothing to change".into());
+        }
+        g.changes.extend(changes.into_iter().map(|change| GrantChange { at: now, change }));
+        Ok(g)
+    }
+
+    /// Limit `name` as this grant holds runs to it, before the policy's ceilings: what it asked
+    /// for if that is granted, else the host default, then no more than the host lowered it to.
+    fn limit(&self, name: &str, policy: &Policy) -> Option<u64> {
+        let default = *policy.defaults().get(name)?;
+        let base = self.granted_limits().get(name).copied().unwrap_or(default);
+        Some(self.lowered.get(name).map_or(base, |l| base.min(*l)))
+    }
+
+    /// The limits it asked for that are granted.
+    fn granted_limits(&self) -> BTreeMap<String, u64> {
+        self.requirements
+            .limits
+            .iter()
+            .filter(|(name, n)| self.items.contains(&format!("Limit({name}={n})")))
+            .map(|(name, n)| (name.clone(), *n))
+            .collect()
+    }
+
+    /// Why the deployment can't run under this grant and the policy in force, if it can't: it
+    /// needs items it isn't granted (unless it keeps running without them), or the host no
+    /// longer grants what it asks for.
+    pub(crate) fn attention(&self, manifest: &Manifest, policy: &Policy) -> Option<String> {
+        let missing = self.missing(manifest);
+        if !missing.is_empty() && !self.keep_running {
+            return Some(format!(
+                "it needs {} it isn't granted; grant it back, or deploy it again to approve",
+                missing.join(", ")
+            ));
+        }
+        policy.refuses(manifest).map(|why| format!("this host no longer grants it: {why}"))
     }
 
     /// What `manifest` needs that this grant doesn't give.
@@ -304,14 +465,19 @@ impl Grant {
         manifest.items().into_iter().filter(|i| !self.items.contains(i)).collect()
     }
 
-    /// The grant's content hash, recorded in every flow-log entry it governed.
+    /// The grant's content hash, recorded in every flow-log entry it governed. Covers what it
+    /// grants (lowered limits only once there are any, so older hashes still match).
     pub(crate) fn hash(&self) -> Hash {
         let items = Value::List(self.items.iter().cloned().map(Value::Text).collect());
-        let record = Value::Record(BTreeMap::from([
+        let mut record = BTreeMap::from([
             ("manifest".to_string(), Value::Text(self.manifest.clone())),
             ("items".to_string(), items),
-        ]));
-        hash_value(&record).expect("a grant is small text")
+        ]);
+        if !self.lowered.is_empty() {
+            let lowered = self.lowered.iter().map(|(k, n)| (k.clone(), Value::Number(*n as f64))).collect();
+            record.insert("lowered".to_string(), Value::Record(lowered));
+        }
+        hash_value(&Value::Record(record)).expect("a grant is small text")
     }
 }
 
@@ -330,26 +496,42 @@ pub(crate) struct Permit {
 
 impl Permit {
     pub(crate) fn new(deployment: Hash, grant: &Grant, policy: &Policy) -> Permit {
-        // A ceiling lowered since the grant wins: the operator's word is the last one.
-        let clamped: BTreeMap<String, u64> = grant
-            .requirements
-            .limits
+        // The limits it was granted, lowered where the host lowered them; then a ceiling lowered
+        // since the grant wins: the operator's word is the last one.
+        let mut numbers = grant.granted_limits();
+        for name in grant.lowered.keys() {
+            if let Some(n) = grant.limit(name, policy) {
+                numbers.insert(name.clone(), n);
+            }
+        }
+        let clamped: BTreeMap<String, u64> = numbers
             .iter()
             .map(|(name, n)| (name.clone(), policy.ceilings.get(name).map_or(*n, |c| (*n).min(*c))))
             .collect();
         let request_limits = numbers_to_limits(&policy.request, &clamped, false);
         let clock_base = Limits { run_budget: policy.clock_run_budget, ..policy.request.clone() };
         let clock_limits = numbers_to_limits(&clock_base, &clamped, true);
-        let allowed = grant
-            .items
+        let hosts = |items: &BTreeSet<String>| -> BTreeSet<String> {
+            items
+                .iter()
+                .filter_map(|i| i.strip_prefix("HttpRequest(\"")?.strip_suffix("\")").map(str::to_string))
+                .collect()
+        };
+        // An exception holds while it is granted and policy still allows it.
+        let plain_http = grant
+            .requirements
+            .plain_http
             .iter()
-            .filter_map(|i| i.strip_prefix("HttpRequest(\"")?.strip_suffix("\")").map(str::to_string))
+            .filter(|h| policy.allow_plain_http && grant.items.contains(&format!("PlainHttp({h:?})")))
+            .cloned()
             .collect();
-        let plain_http = if policy.allow_plain_http { grant.requirements.plain_http.clone() } else { BTreeSet::new() };
         let outbound = Outbound {
-            allowed,
+            allowed: hosts(&grant.items),
+            revoked: hosts(&grant.revoked),
             plain_http,
-            allow_private: grant.requirements.private_addresses && policy.allow_private_addresses,
+            allow_private: grant.requirements.private_addresses
+                && grant.items.contains("PrivateAddresses")
+                && policy.allow_private_addresses,
         };
         Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, outbound, grant: to_hex(&grant.hash()) }
     }
