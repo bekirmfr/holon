@@ -36,7 +36,7 @@ function derive(name: string): { caps: string[]; endpoints: number } {
   let endpoints = 0;
   if (sample.port) {
     const server = deriveServer(nodes, edges, ev, catalog, sample.port);
-    expect(server.errors).toEqual([]);
+    expect(server.errors, JSON.stringify(server.errors)).toEqual([]);
     expect(server.serverHash).not.toBeNull();
     hash = server.serverHash!;
     endpoints = server.endpoints.length;
@@ -70,7 +70,7 @@ describe("sample flows", () => {
 
   it("ask for what each one shows", () => {
     expect(derive("hello-api").caps).toEqual(["NetworkIngress"]);
-    expect(derive("notes-api").caps).toEqual(["NetworkIngress", 'StateRead("notes")', 'StateWrite("notes")']);
+    expect(derive("notes-api").caps).toEqual(['CollectionRead("notes")', 'CollectionWrite("notes")', "NetworkIngress"]);
     expect(derive("stripe-to-slack").caps).toEqual([
       "Clock",
       'HttpRequest("hooks.slack.com")',

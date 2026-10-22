@@ -374,6 +374,16 @@ function LogTab({ entries, selected, pick }: { entries: LogEntry[]; selected: Lo
                 );
               }),
             )}
+            {(selected.reads ?? []).map((r, i) => (
+              <Field key={`r${i}`} name="read" value={`${formatValue(r.request)} → ${r.answer ? formatValue(r.answer) : "nothing"}`} />
+            ))}
+            {(selected.retries ?? 0) > 0 && (
+              <Field
+                name="ran again"
+                value={`${selected.retries}× — what it read changed before it could commit, so it ran again from the new state`}
+                color="#e0c36f"
+              />
+            )}
             {(selected.parked ?? []).length > 0 && (
               <Field name="waiting at" value={(selected.parked ?? []).join(", ")} color="#e0c36f" />
             )}

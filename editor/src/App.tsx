@@ -58,6 +58,7 @@ import {
   nodeExchanges,
   nodeOutputs,
   nodeTimings,
+  recordedReads,
   recordedResponses,
   replay,
   stateAtStep,
@@ -690,7 +691,7 @@ function Canvas({
       es,
       selectedRun,
       evalNode,
-      recordedResponses(nodeExchanges(selectedRun, viewTrace)),
+      new Map([...recordedResponses(nodeExchanges(selectedRun, viewTrace)), ...recordedReads(selectedRun, viewTrace)]),
       nodeOutputs(selectedRun, viewTrace),
       // Stepped through in the order the run evaluated its nodes.
       executionOrder(nodeTimings(selectedRun, viewTrace)),

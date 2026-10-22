@@ -107,7 +107,13 @@ export function routeSpec(spec: WEncapSpec, group: CanvasNode[], label: string):
   return { promote, expose: [...responses, ...expose.filter((x) => !responses.includes(x))] };
 }
 
-/** Inputs a node works without: core treats them as empty when absent. */
+/** Inputs a node works without, left unwired: core treats them as none (its
+ *  `has_optional_ports`). An http_request's headers and body; a collection listing's prefix
+ *  and after. */
+const OPTIONAL_INPUTS: Record<string, string[]> = {
+  http_request: ["headers", "body"],
+  collection_list: ["prefix", "after"],
+};
 function isOptionalInput(n: CanvasNode, port: string | undefined): boolean {
-  return n.data.name === "http_request" && n.data.body.kind === "Primitive" && (port === "headers" || port === "body");
+  return n.data.body.kind === "Primitive" && port !== undefined && (OPTIONAL_INPUTS[n.data.name] ?? []).includes(port);
 }

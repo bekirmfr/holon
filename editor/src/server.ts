@@ -314,6 +314,10 @@ export type LogEntry = {
   timeline?: NodeTiming[];
   /** The outbound requests it made, round by round (absent when none). */
   rounds?: LoggedRound[];
+  /** The collection reads it made, by node path, and what each answered (absent when none). */
+  reads?: { path: number[]; request: WValue; answer: WValue | null }[];
+  /** How many times it ran again because what it read changed before it could commit. */
+  retries?: number;
   /** The run's id, the nonce in it, and the grant it was held to (hex; empty for no run). */
   run_id?: string;
   nonce?: string;

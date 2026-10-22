@@ -158,6 +158,22 @@ export function recordedResponses(exchanges: NodeExchange[]): Map<string, WValue
   return out;
 }
 
+/** What each collection read (`collection_get`, `collection_list`) was answered, by canvas
+ *  node, from the run's record: replay answers them from here, as the run found the collection.
+ *  A read that found nothing is left out, and replays as nothing. */
+export function recordedReads(
+  entry: { kind: string; route: string | null; reads?: { path: number[]; answer: WValue | null }[] },
+  trace: Record<string, string[]> | undefined,
+): Map<string, WValue> {
+  const out = new Map<string, WValue>();
+  const at = nodeAtPath(entry, trace);
+  for (const r of entry.reads ?? []) {
+    const id = at(r.path);
+    if (id && r.answer !== null) out.set(id, r.answer);
+  }
+  return out;
+}
+
 /**
  * The server's per-step timings, by canvas node. `trace` comes with the deployed flow: for each
  * route (or `"*"` for a whole-flow unit), which canvas node is each child of the unit as stored
@@ -303,8 +319,9 @@ export function replay(
     } else if (node.data.body.kind === "Primitive" && name === "secret") {
       // The editor never has a secret's value: a placeholder stands in, as the log shows it.
       outputs = [{ type: "Text", value: `‹secret:${frozen(node.data.params, "name") ?? ""}›` }];
-    } else if (node.data.body.kind === "Primitive" && name === "http_request") {
-      // Answered from the record, never the network: a replay is offline and exact.
+    } else if (node.data.body.kind === "Primitive" && (name === "http_request" || name === "collection_get" || name === "collection_list")) {
+      // Answered from the record, never the network or the store: a replay is offline and
+      // exact, and shows the collection as the run found it, whatever it holds now.
       outputs = [responses.get(id) ?? null];
     } else if (name === "request" && node.data.body.kind === "Template") {
       const fed = [entry.request];
@@ -371,6 +388,8 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
       const keys = keysOf(a);
       return keys ? `no key "${textOf(b) ?? "?"}" (it has ${listOf(keys)})` : "its input isn't a record";
     }
+    case "collection_get":
+      return `no item "${textOf(a) ?? "?"}" in the collection "${p("collection")}"`;
     case "find":
       return `no item whose "${p("name")}" matches`;
     case "get":

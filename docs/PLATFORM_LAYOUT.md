@@ -383,6 +383,36 @@ The answer is to hash hashes, the way units already work.
   - **Replay checks its inputs.** A replay can confirm it feeds exactly the recorded state by its
     root.
 
+#### 4.5.1 Collections, and runs side by side ✅ (2026-10-22)
+State cells hold one value each, so a growing set of records kept in one cell is read whole and
+rewritten whole by every run. A **collection** is a keyed, ordered set of records that doesn't:
+
+- **Nodes.** `collection_get` (key → item), `collection_list` (an optional `prefix` and `after` →
+  a record of up to `limit` items in key order, so a list pages: the next page starts after the
+  last key), `collection_put` and `collection_delete` (effects, committed when the run finishes).
+  Each names its collection; consent asks `CollectionRead(name)` and `CollectionWrite(name)`.
+- **Storage.** A radix trie in the content store (`holon-host/src/collection.rs`): canonical (the
+  same items, the same root, however they got there), persistent (a write stores only the nodes
+  on its key's path, at most 8 values in 5,000 items; every version stays readable), ordered.
+  Its root is a state cell under a reserved key (`#collection:<name>`; flows can't name `#` keys),
+  so persistence, session snapshots, run ids and the log's state before cover it unchanged.
+- **Reads** are answered on the spot from the collection as the run found it, logged with their
+  node, and replayed from the log.
+
+**Runs side by side.** A run no longer holds its deployment's state while it runs (outbound
+calls included). It runs on a copy, and commits only if everything it could have read is still as
+it found it: its granted state cells (by hash) and its collection reads (asked again). Writes to a
+collection apply key by key to the live one, so writes to different keys merge. A run whose reads
+changed runs again from the new state (`retries` in its log entry), its outbound requests
+answered from its own record rather than sent twice; after four tries it runs holding the lock,
+so a busy key can't starve it. A resumed durable run stays pinned to the state it started from.
+Tested: 24 concurrent increments lose none; a run waiting on a slow call no longer holds up the
+next; live, 200 notes from 20 concurrent clients all land and page back in order.
+
+Left for later: shared stores across deployments (granted like secrets), an external database
+node (performed by the host between rounds, like `http_request`), blobs by reference (§4.5's
+large values), and indexes beyond key order.
+
 ### 4.6 Build order for this section
 One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable runs follow.
 

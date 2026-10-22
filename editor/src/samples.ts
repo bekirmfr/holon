@@ -133,61 +133,52 @@ export const SAMPLES: Sample[] = [
   {
     name: "notes-api",
     title: "Notes API",
-    description: "Create, read, list and delete notes kept in the deployment's state, keyed by id.",
-    shows: ["state (store_read, store_write)", "lookup", "insert", "remove", "JSON bodies", "404 and 204", "tracing a failed run"],
+    description: "Create, read, list (a page at a time) and delete notes kept in a collection, keyed by id.",
+    shows: ["collections (get, list, put, delete)", "paging with after", "JSON bodies", "404 and 204", "tracing a failed run"],
     port: "8102",
     tryIt:
-      'curl -X PUT -H "Content-Type: application/json" -d \'{"text":"buy milk"}\' http://127.0.0.1:8102/notes/1, then GET /notes, GET /notes/1, DELETE /notes/1. GET /notes/9 fails (404): open the run in view mode to see where, and why',
+      'curl -X PUT -H "Content-Type: application/json" -d \'{"text":"buy milk"}\' http://127.0.0.1:8102/notes/1, then GET /notes (?after=1 for the next page), GET /notes/1, DELETE /notes/1. GET /notes/9 fails (404): open the run in view mode to see where, and why',
     build(b) {
-      // Each route reads the notes on its own: routes are separate groups on the canvas.
-      const notes = (x: number, y: number) => {
-        const read = b.node("store_read", { key: "notes" }, [x, y]);
-        const all = b.node("default", { value: "{}", type: "Json" }, [x + 240, y]);
-        b.wire(read, "out", all, "value");
-        return all;
-      };
       const id = (req: string, x: number, y: number) => {
         const f = b.node("field", { name: "id" }, [x, y]);
         b.wire(req, "params", f, "record");
         return f;
       };
 
-      // GET /notes: every note.
+      // GET /notes: a page of notes in id order, from after ?after= when it's given.
       const list = b.node("request", { method: "GET", path: "/notes" }, [40, 40]);
-      const listRes = b.node("respond", { status: "200", missing: "404" }, [860, 40]);
+      const after = b.node("field", { name: "after" }, [480, 60]);
+      const from = b.node("default", { value: "", type: "Text" }, [720, 60]);
+      const page = b.node("collection_list", { collection: "notes", limit: "50" }, [960, 60]);
+      const listRes = b.node("respond", { status: "200", missing: "404" }, [1220, 40]);
+      b.wire(list, "query", after, "record");
+      b.wire(after, "out", from, "value");
+      b.wire(from, "out", page, "after");
       b.wire(list, "request", listRes, "request");
-      b.wire(notes(480, 120), "out", listRes, "body");
+      b.wire(page, "out", listRes, "body");
 
-      // PUT /notes/:id: store the body under the id, answer with it.
-      const put = b.node("request", { method: "PUT", path: "/notes/:id" }, [40, 320]);
-      const putId = id(put, 480, 300);
-      const added = b.node("insert", {}, [860, 380]);
-      const save = b.node("store_write", { key: "notes" }, [1120, 380]);
-      const putRes = b.node("respond", { status: "200", missing: "400" }, [1120, 280]);
-      b.wire(notes(480, 420), "out", added, "record");
-      b.wire(putId, "out", added, "key");
-      b.wire(put, "json", added, "value");
-      b.wire(added, "out", save, "value");
+      // PUT /notes/:id: keep the body under the id, answer with it.
+      const put = b.node("request", { method: "PUT", path: "/notes/:id" }, [40, 340]);
+      const keep = b.node("collection_put", { collection: "notes" }, [960, 380]);
+      const putRes = b.node("respond", { status: "200", missing: "400" }, [1220, 320]);
+      b.wire(id(put, 480, 360), "out", keep, "key");
+      b.wire(put, "json", keep, "value");
       b.wire(put, "request", putRes, "request");
       b.wire(put, "json", putRes, "body");
 
       // GET /notes/:id: one note, or 404.
-      const get = b.node("request", { method: "GET", path: "/notes/:id" }, [40, 620]);
-      const found = b.node("lookup", {}, [860, 660]);
-      const getRes = b.node("respond", { status: "200", missing: "404" }, [1120, 620]);
-      b.wire(notes(480, 700), "out", found, "record");
-      b.wire(id(get, 480, 600), "out", found, "key");
+      const get = b.node("request", { method: "GET", path: "/notes/:id" }, [40, 640]);
+      const found = b.node("collection_get", { collection: "notes" }, [960, 680]);
+      const getRes = b.node("respond", { status: "200", missing: "404" }, [1220, 640]);
+      b.wire(id(get, 480, 660), "out", found, "key");
       b.wire(get, "request", getRes, "request");
       b.wire(found, "out", getRes, "body");
 
       // DELETE /notes/:id: drop it, answer 204.
-      const del = b.node("request", { method: "DELETE", path: "/notes/:id" }, [40, 920]);
-      const removed = b.node("remove", {}, [860, 960]);
-      const drop = b.node("store_write", { key: "notes" }, [1120, 1000]);
-      const delRes = b.node("respond", { status: "204" }, [1120, 900]);
-      b.wire(notes(480, 1000), "out", removed, "record");
-      b.wire(id(del, 480, 900), "out", removed, "key");
-      b.wire(removed, "out", drop, "value");
+      const del = b.node("request", { method: "DELETE", path: "/notes/:id" }, [40, 940]);
+      const drop = b.node("collection_delete", { collection: "notes" }, [960, 980]);
+      const delRes = b.node("respond", { status: "204" }, [1220, 940]);
+      b.wire(id(del, 480, 960), "out", drop, "key");
       b.wire(del, "request", delRes, "request");
     },
   },

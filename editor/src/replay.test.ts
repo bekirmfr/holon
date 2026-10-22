@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diagnose, executionOrder, nodeExchanges, nodeOutputs, nodeTimings, recordedResponses, replay, runGroup, stateAtStep, wireKey, type ReplayInput, type ReplayNode } from "./replay";
+import { diagnose, executionOrder, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, stateAtStep, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
@@ -210,6 +210,27 @@ describe("secrets in a replay", () => {
     const got = nodeOutputs({ kind: "tick", route: null, timeline }, trace);
     expect(got.get("a")).toEqual([num(2)]);
     expect(got.has("b")).toBe(false);
+  });
+});
+
+describe("collection reads in a replay", () => {
+  it("are answered from the run's record, by node, as it found the collection", () => {
+    const nodes = [n("g", "collection_get", ["key"], ["out"], [frozen("collection", "notes")]), n("l", "collection_list", ["prefix", "after"], ["out"], [frozen("collection", "notes")])];
+    const note: WValue = { type: "Record", value: [["text", { type: "Text", value: "buy milk" }]] };
+    const entry = {
+      kind: "tick",
+      route: null,
+      reads: [
+        { path: [0], request: num(0), answer: note },
+        { path: [1], request: num(0), answer: null },
+      ],
+    };
+    const reads = recordedReads(entry, { "*": ["g", "l"] });
+    expect(reads.get("g")).toEqual(note);
+    expect(reads.has("l")).toBe(false);
+    const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode, reads);
+    expect(traces.get("g")?.outputs).toEqual([note]);
+    expect(traces.get("l")?.outputs).toEqual([null]);
   });
 });
 
