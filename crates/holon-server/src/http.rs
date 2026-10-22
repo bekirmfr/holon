@@ -150,7 +150,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy, request);
+        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy, &state.secrets, request);
         sync_listeners(state);
         return response;
     }
@@ -174,7 +174,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy/preview" {
-        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy, request);
+        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy, &state.secrets, request);
     }
 
     if method == "GET" && url == "/permissions" {
@@ -186,6 +186,12 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if let Some(rest) = url.strip_prefix("/deployments/") {
+        if let Some(slug) = rest.strip_suffix("/secrets") {
+            return handle_secrets(&state.secrets, slug, None, &method, request);
+        }
+        if let Some((slug, name)) = rest.split_once("/secrets/") {
+            return handle_secrets(&state.secrets, slug, Some(name), &method, request);
+        }
         if let Some(slug) = rest.strip_suffix("/history") {
             if method == "GET" {
                 return handle_get_history(&state.deployments, slug);
@@ -226,6 +232,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if method == "DELETE" {
             let response = handle_delete_deployment(&state.store, &state.deployments, &state.deployments_path, rest);
+            if response.status_code == 200
+                && let Err(e) = state.secrets.forget(rest)
+            {
+                eprintln!("warning: {rest:?}'s secrets weren't removed: {e}");
+            }
             sync_listeners(state);
             return response;
         }

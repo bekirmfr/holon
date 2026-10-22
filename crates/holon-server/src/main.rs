@@ -151,6 +151,7 @@ mod permissions;
 mod persist;
 mod recorder;
 mod scheduler;
+mod secrets;
 #[cfg(test)]
 mod tests;
 mod units;
@@ -187,6 +188,7 @@ use flows::*;
 use http::*;
 use listeners::*;
 use permissions::{Grant, Manifest, Permit, Policy, Requirements};
+use secrets::{Redactor, SecretStore, Vault};
 use persist::*;
 use scheduler::*;
 use units::*;
@@ -264,6 +266,9 @@ struct AppState {
     /// The host operator's policy (`--policy`, default `holon.toml`): limits, ceilings, what
     /// is granted without asking. Read once at startup.
     policy: Arc<Policy>,
+    /// Every deployment's secrets (`--secrets`, secrets.rs): written over the control plane,
+    /// never returned.
+    secrets: Arc<SecretStore>,
 }
 
 /// slug → (port, stop signal) of each running data-plane listener.
@@ -331,6 +336,9 @@ struct Deployment {
     /// Why it can't run until it is deployed again, when its grant no longer covers what it
     /// needs (found at load). It is paused meanwhile.
     attention: Option<String>,
+    /// Its secrets (the store's vault for its slug): runs read the ones it was granted, and
+    /// everything it logs or answers has their values redacted.
+    secrets: Vault,
     /// Every run, with what it read and produced (recorder.rs). In memory only.
     log: Log,
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
@@ -373,8 +381,13 @@ fn main() {
     let mut deployments_arg = ".holon-deployments.json".to_string();
     let mut flows_arg = ".holon-flows.json".to_string();
     let mut policy_arg = "holon.toml".to_string();
+    let mut secrets_arg = ".holon-secrets.json".to_string();
     while let Some(a) = args.next() {
-        if a == "--policy" {
+        if a == "--secrets" {
+            if let Some(v) = args.next() {
+                secrets_arg = v;
+            }
+        } else if a == "--policy" {
             if let Some(v) = args.next() {
                 policy_arg = v;
             }
@@ -537,7 +550,11 @@ fn main() {
         std::process::exit(1);
     };
     let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
-    let initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
+    let secrets = Arc::new(SecretStore::load(&secrets_arg).unwrap_or_else(|e| refuse_to_start(e)));
+    let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
+    for (slug, dep) in initial_deployments.iter_mut() {
+        dep.secrets = secrets.vault(slug);
+    }
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
@@ -556,6 +573,7 @@ fn main() {
         port,
         listeners: Some(Mutex::new(BTreeMap::new())),
         policy,
+        secrets,
     };
     sync_listeners(&state);
 

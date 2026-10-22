@@ -130,7 +130,30 @@ export type DeployPreview = {
   already_granted: string[];
   /** Why the host would refuse it, if it would. */
   refused: string | null;
+  /** Secrets it reads that aren't set yet: those nodes stay empty until they are. */
+  missing_secrets: string[];
 };
+
+/** `GET /deployments/<slug>/secrets` — the names set, never the values. */
+export async function listSecrets(slug: string): Promise<string[]> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/secrets`);
+  return (await asJson<{ names: string[] }>(res)).names;
+}
+
+/** Set a secret. The value goes to the server and is never sent back. */
+export async function setSecret(slug: string, name: string, value: string): Promise<void> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+  if (!res.ok) await asJson(res);
+}
+
+export async function deleteSecret(slug: string, name: string): Promise<void> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (!res.ok) await asJson(res);
+}
 
 export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements): Promise<DeployPreview> {
   const res = await fetch(`${BASE}/deploy/preview`, {

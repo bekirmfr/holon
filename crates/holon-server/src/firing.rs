@@ -81,6 +81,8 @@ pub(crate) struct FiredRun {
     pub(crate) grant: String,
 }
 
+// Everything a run is held to arrives here, so it takes them all.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fire_with_state(
     root_unit: &Unit,
     inputs: &[Option<Value>],
@@ -89,6 +91,7 @@ pub(crate) fn fire_with_state(
     extra_sourced: &[(Capability, Value)],
     permit: &Permit,
     clock: bool,
+    secrets: &Vault,
 ) -> FiredRun {
     let mut guard = state.map(|m| m.lock().unwrap());
     let state_before = guard.as_deref().map(State::values).unwrap_or_default();
@@ -105,6 +108,14 @@ pub(crate) fn fire_with_state(
         None => Vec::new(),
     };
     sourced.extend_from_slice(extra_sourced);
+    // The secrets it was granted. Not part of the run's input record (nor its id): a log never
+    // holds them, and a replay stands a placeholder in.
+    for (name, value) in secrets.lock().unwrap().iter() {
+        let cap = Capability::SecretRead(name.clone());
+        if permit.allows(&cap) {
+            sourced.push((cap, Value::Text(value.clone())));
+        }
+    }
 
     let mut host = RecordingHost { performed: Vec::new() };
     let mut timer = recorder::Timer::new();
@@ -112,13 +123,20 @@ pub(crate) fn fire_with_state(
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &permit.outbound, limits, &mut timer);
     let outputs = outcome.outputs;
-    // An effect the grant doesn't cover is refused, whatever the graph says.
-    host.performed.retain(|(cap, _)| {
-        let allowed = permit.allows(cap);
-        if !allowed {
+    // An effect the grant doesn't cover is refused, whatever the graph says; so is a state write
+    // carrying a secret's value, which would put it on disk and in every later snapshot.
+    host.performed.retain(|(cap, payload)| {
+        if !permit.allows(cap) {
             eprintln!("holon-server: refused {cap:?}: not granted to this deployment");
+            return false;
         }
-        allowed
+        if let Capability::StateWrite(key) = cap
+            && let Some(name) = secrets::secret_in(payload, secrets)
+        {
+            eprintln!("holon-server: refused to store secret {name:?} in state key {key:?}");
+            return false;
+        }
+        true
     });
 
     if let Some(storage) = guard.as_deref_mut() {
@@ -235,6 +253,7 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
 /// Add a run to `slug`'s flow log, in its current session.
 pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry) {
     if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
+        Redactor::of(&dep.secrets).entry(&mut entry);
         entry.session = dep.life.sessions.last().map_or(0, |s| s.number);
         dep.log.push(entry);
     }

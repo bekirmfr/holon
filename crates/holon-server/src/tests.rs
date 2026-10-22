@@ -28,6 +28,7 @@ fn test_state() -> AppState {
         port: TEST_PORT,
         listeners: None,
         policy: Arc::new(Policy::default()),
+        secrets: Arc::new(SecretStore::memory()),
     }
 }
 
@@ -946,6 +947,75 @@ fn a_run_id_is_recomputable_from_its_log_entry() {
     assert_eq!(e["run_id"], to_hex(&recomputed));
 }
 
+/// A secret is set over the control plane and never returned by it; a run granted it reads it;
+/// and no log entry or reply carries its value, which reads `‹secret:name›` wherever it would
+/// have appeared.
+#[test]
+fn a_secret_reaches_its_runs_and_nothing_else() {
+    let state = test_state();
+    let secret = Unit { params: vec![Param::frozen("name", "api_key")], ..holon_core::interface_of("secret").unwrap() };
+    let equals = holon_core::interface_of("equals").unwrap();
+    let flow = Unit {
+        body: UnitBody::Composite {
+            children: vec![
+                stage(&state, &secret),
+                stage(&state, &test_ingress()),
+                stage(&state, &equals),
+                stage(&state, &test_sink()),
+                stage(&state, &test_store_write("k")),
+            ],
+            edges: vec![
+                Edge { from_child: 0, from_port: 0, to_child: 2, to_port: 0 }, // secret → equals.a
+                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 1 }, // ingress → equals.b
+                Edge { from_child: 2, from_port: 0, to_child: 3, to_port: 0 }, // → egress
+                Edge { from_child: 0, from_port: 0, to_child: 4, to_port: 0 }, // secret → state k
+                Edge { from_child: 3, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                Edge { from_child: 4, from_port: 0, to_child: BOUNDARY, to_port: 1 },
+            ],
+        },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "said".into(), ty: Type::Effect }, Port { name: "kept".into(), ty: Type::Effect }],
+    };
+    let flow_hash = stage(&state, &flow);
+    let value = "sk_test_123456";
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "s", "unit": to_hex(&flow_hash) })).unwrap())));
+    assert_eq!(preview["missing_secrets"], serde_json::json!(["api_key"]));
+    assert!(preview["needs_approval"].as_array().unwrap().contains(&serde_json::json!("SecretRead(\"api_key\")")));
+
+    // Set it (refusing a too-short one); listing gives names only.
+    let set = |v: &str| route(&state, &req("POST", "/deployments/s/secrets/api_key", serde_json::to_vec(&serde_json::json!({ "value": v })).unwrap())).status_code;
+    assert_eq!(set("short"), 400);
+    assert_eq!(set(value), 204);
+    let listed = route(&state, &req("GET", "/deployments/s/secrets", vec![]));
+    let listed = String::from_utf8(body_bytes(listed)).unwrap();
+    assert_eq!(listed, r#"{"names":["api_key"]}"#);
+
+    let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", "SecretRead(\"api_key\")", "StateWrite(\"k\")"]);
+    assert_eq!(deploy_json(&state, "s", flow_hash, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    let fire = |body: &str| String::from_utf8(body_bytes(route(&state, &req("POST", "/trigger/s", body.as_bytes().to_vec())))).unwrap();
+    let matched = fire(value);
+    assert!(matched.contains(r#""value":true"#), "the run read the secret: {matched}");
+    assert!(fire("something else").contains(r#""value":false"#));
+
+    // Nowhere in what the control plane says about it.
+    for url in ["/deployments/s/log", "/deployments/s/state", "/deployments/s/sessions", "/deployments/s/secrets", "/deployments/s/grant"] {
+        let text = String::from_utf8(body_bytes(route(&state, &req("GET", url, vec![])))).unwrap();
+        assert!(!text.contains(value), "{url} leaks it: {text}");
+        if url.ends_with("/state") {
+            assert!(!text.contains("\"k\""), "a secret is never stored in state: {text}");
+        }
+    }
+    // Not in the value store on disk either: nothing that contains it was ever written.
+    assert!(state.deployments.lock().unwrap()["s"].state.as_ref().unwrap().lock().unwrap().get("k").is_none());
+    assert!(!matched.contains(value), "the trigger's reply doesn't either");
+
+    // Deleting the deployment forgets its secrets.
+    route(&state, &req("POST", "/deployments/s/stop", vec![]));
+    assert_eq!(route(&state, &req("DELETE", "/deployments/s", vec![])).status_code, 200);
+    assert!(state.secrets.names("s").is_empty());
+}
+
 // ── persistence ──────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -984,6 +1054,7 @@ fn deployments_persist_across_a_simulated_restart() {
             port: TEST_PORT,
             listeners: None,
             policy: Arc::new(Policy::default()),
+            secrets: Arc::new(SecretStore::memory()),
         };
         let body = serde_json::to_vec(&serde_json::json!({
             "slug": "echo",
@@ -1013,6 +1084,7 @@ fn deployments_persist_across_a_simulated_restart() {
         port: TEST_PORT,
         listeners: None,
         policy: Arc::new(Policy::default()),
+        secrets: Arc::new(SecretStore::memory()),
     };
     let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
     assert_eq!(triggered.status_code, 200);
@@ -2150,6 +2222,7 @@ fn state_persists_across_a_simulated_restart() {
             port: TEST_PORT,
             listeners: None,
             policy: Arc::new(Policy::default()),
+            secrets: Arc::new(SecretStore::memory()),
         };
         let deploy_body = serde_json::to_vec(&serde_json::json!({
             "slug": "writer",
@@ -2181,6 +2254,7 @@ fn state_persists_across_a_simulated_restart() {
         port: TEST_PORT,
         listeners: None,
         policy: Arc::new(Policy::default()),
+        secrets: Arc::new(SecretStore::memory()),
     };
     let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
     assert_eq!(triggered2.status_code, 200);

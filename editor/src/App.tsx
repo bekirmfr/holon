@@ -942,6 +942,20 @@ function Canvas({
   // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
   const deployedEntry = flowName ? deployments.find((d) => d.slug === flowName) : undefined;
   const outOfDate = deployedEntry && derived.serverHash ? deployedEntry.unit !== derived.serverHash : null;
+  // The secrets the canvas reads, by name (its `secret` nodes): what ⚙ lets you set.
+  const secretNames = useMemo(
+    () =>
+      [
+        ...new Set(
+          nodes.flatMap((n) =>
+            n.data.name === "secret" && n.data.body.kind === "Primitive"
+              ? n.data.params.flatMap((p) => (p.name === "name" && p.kind === "Frozen" ? [p.value] : []))
+              : [],
+          ),
+        ),
+      ].sort(),
+    [nodes],
+  );
 
   const onDeployFlow = useCallback(async () => {
     setDeployError("");
@@ -999,6 +1013,15 @@ function Canvas({
       if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map((i) => `• ${describeItem(i)}`));
       if (preview.already_granted.length > 0) {
         lines.push("", "Already granted:", ...preview.already_granted.map((i) => `• ${describeItem(i)}`));
+      }
+      if (preview.missing_secrets.length > 0) {
+        lines.push("", );
+      }
+      if (preview.missing_secrets.length > 0) {
+        lines.push(
+          "",
+          `Not set yet: ${preview.missing_secrets.join(", ")} (set under ⚙ → secrets; until then those nodes stay empty)`,
+        );
       }
       if (existing) lines.push("", "Its state and sessions are kept.");
       const action = ask.length > 0 ? "Approve and deploy" : existing ? "Update" : "Deploy";
@@ -1761,6 +1784,8 @@ function Canvas({
                 setSettings={setSettings}
                 onDeploy={onDeployFlow}
                 onAction={onFlowAction}
+                slug={flowName}
+                secretNames={secretNames}
               />
               {saveMsg && <span style={{ color: "#9ad29f", fontSize: 11 }}>{saveMsg}</span>}
                 </>

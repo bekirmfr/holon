@@ -259,10 +259,18 @@ only the editor.
 
 - **Client:** `ureq` (synchronous, rustls), which fits the current thread-per-request server; it
   moves with the data plane if that moves to `hyper` (§7b).
-- **Secrets** (separate step): a per-deployment secret store on the server, written over the
-  control plane, never returned by it. A flow references a secret by name (a `secret` source node,
-  capability `SecretRead("stripe_key")` in its manifest, granted by the host). Values are redacted from the flow
-  log, from replay and from the editor; a replay substitutes a placeholder.
+- **Secrets** ✅ (`holon-server/src/secrets.rs`): a per-deployment secret store on the server
+  (`--secrets`, its own file, owner-only where the OS allows), written over the control plane
+  (`POST`/`DELETE /deployments/<slug>/secrets/<name>`), never returned by it (`GET` lists names).
+  A flow references a secret by name (a `secret` source node, capability `SecretRead("stripe_key")`
+  in its manifest, granted by the host); a run reads only the secrets it was granted, and its run
+  id doesn't include them. Every literal occurrence of a value is redacted, as `‹secret:name›`,
+  from the flow log and from what the control plane says about a deployment (state, sessions,
+  `/trigger` and "send live" replies); a replay substitutes the same placeholder. A state write
+  carrying a secret's value is refused, so one never reaches the state store, snapshots or disk.
+  Values under 6 characters are refused (too short to redact reliably), and a value transformed
+  before it's logged (hashed, encoded, sliced) can't be recognised. A flow may still send a secret
+  where it is meant to go: an outbound request's header, or its own response to a caller.
 
 ### 4.3 Durable runs: continuing a run later
 Rounds cover waiting inside one request: the caller is on the line, the wait is seconds. Many
@@ -355,7 +363,7 @@ One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable 
 | 4 ✅ | Host: the round loop (`holon-host`, network-free, with a `Performer` trait); the `ureq` performer and the §4.2 rules (`holon-server/src/outbound.rs`); the host-default limits per run kind | a run calls a local test server, uses the answer, and each limit stops it as specified. Resolving limits node → deployment → host, and the exceptions (private addresses, plain HTTP), arrive with grants in step 5 |
 | 5 ✅ | Host and server (`holon-server/src/permissions.rs`): manifests (derived capabilities with hosts, declared requirements), policy in `holon.toml` (`--policy`) and `GET /permissions`, grants per deployment (`GET /deployments/<slug>/manifest`, `.../grant`), enforcement at perform time, the re-check at load (older records migrate); run ids and the nonce; `rounds` and the grant in effect in the flow log | a deploy asks only for what policy doesn't already allow; an ungranted host or a limit above a ceiling is refused; each log entry has a verifiable run id. **Left for later:** changing or revoking a grant without a redeploy (§4.2.1 lifecycle point 4; today a grant changes by deploying again, and a host-policy change takes effect at restart), and large values by reference in the log (§4.5) |
 | 6 ✅ | Editor: the node and its params, requirements in deploy settings (bounded by `GET /permissions`), the consent screen showing asked against granted (`POST /deploy/preview`), attention on deployments, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round. Checked live: a deployed route called `https://example.com`, answered with its page, and view mode replayed the run offline with "✓ replay reproduces the run". **Left for later:** revoke controls (with revoking itself, step 5's note) |
-| 7 | Secrets: store, `secret` node, redaction | a token never appears in a log, a replay or the editor |
+| 7 ✅ | Secrets: store, `secret` node, redaction, set from the editor's ⚙ | a token never appears in a log, a replay or the editor. Checked live: set from ⚙, read by a run, found nowhere but the secrets file, and gone with its deployment |
 | 8 | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on |
 
 ---

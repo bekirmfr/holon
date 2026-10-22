@@ -18,8 +18,8 @@ pub(crate) fn serve_data(
         .lock()
         .unwrap()
         .get(slug)
-        .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit)));
-    let Some((unit_hash, state, Some(server), status, permit)) = found else {
+        .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit), Arc::clone(&d.secrets)));
+    let Some((unit_hash, state, Some(server), status, permit, secrets)) = found else {
         return err(503, format!("{slug:?} is not deployed as a server"));
     };
     if status != Status::Running {
@@ -47,7 +47,7 @@ pub(crate) fn serve_data(
         &resolver,
         &http,
         |endpoint, route, req, sourced| {
-            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced, &permit, false);
+            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced, &permit, false, &secrets);
             let mut entry = run_entry("request", started, sourced, &run);
             entry.route = Some(route.to_string());
             entry.request = Some(SValue::from_core(&req));
@@ -165,19 +165,19 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
     if !send.url.starts_with('/') {
         return err(400, "url must start with / (a path, plus an optional ?query)");
     }
-    match state.deployments.lock().unwrap().get(slug) {
+    let redactor = match state.deployments.lock().unwrap().get(slug) {
         None => return err(404, format!("no deployment {slug:?}")),
         Some(d) if d.server.is_none() => return err(400, format!("{slug:?} is not an HTTP server deployment")),
-        Some(_) => {}
-    }
+        Some(d) => Redactor::of(&d.secrets),
+    };
     let inner = Request::fake_http(send.method, send.url, send.headers, send.body.into_bytes());
     let answer = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &inner);
-    let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), redactor.text(v))).collect();
     let status = answer.status_code;
     let (mut reader, _) = answer.data.into_reader_and_size();
     let mut body = Vec::new();
     if reader.read_to_end(&mut body).is_err() {
         return err(500, "could not read the server's response");
     }
-    Response::json(&SentResponseBody { status, headers, body: String::from_utf8_lossy(&body).into_owned() })
+    Response::json(&SentResponseBody { status, headers, body: redactor.text(&String::from_utf8_lossy(&body)) })
 }

@@ -175,3 +175,11 @@ describe("outbound requests in a recorded run", () => {
     expect(nodeTimings(entry, trace).get("h2")).toEqual({ start_us: 50, end_us: 52 });
   });
 });
+
+describe("secrets in a replay", () => {
+  it("stand in as a placeholder: the editor never has the value", () => {
+    const nodes = [n("s", "secret", [], ["out"], [frozen("name", "api_key")])];
+    const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode);
+    expect(traces.get("s")?.outputs).toEqual([{ type: "Text", value: "‹secret:api_key›" }]);
+  });
+});

@@ -217,6 +217,7 @@ pub(crate) fn load_deployments(
                 grant,
                 permit,
                 attention: attention.take(),
+                secrets: Vault::default(),
                 log: Log::default(),
                 document: record.document,
                 trigger_count: record.trigger_count,

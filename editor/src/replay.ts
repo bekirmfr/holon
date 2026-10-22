@@ -215,6 +215,9 @@ export function replay(
       outputs = [sourced.get("Random") ?? null];
     } else if (node.data.body.kind === "Primitive" && name === "ingress") {
       outputs = [sourced.get("NetworkIngress") ?? null];
+    } else if (node.data.body.kind === "Primitive" && name === "secret") {
+      // The editor never has a secret's value: a placeholder stands in, as the log shows it.
+      outputs = [{ type: "Text", value: `‹secret:${frozen(node.data.params, "name") ?? ""}›` }];
     } else if (node.data.body.kind === "Primitive" && name === "http_request") {
       // Answered from the record, never the network: a replay is offline and exact.
       outputs = [responses.get(id) ?? null];

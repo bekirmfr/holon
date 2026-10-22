@@ -4,7 +4,7 @@
 // of its manifest). The deployment is named after the flow, so there is no separate slug.
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { getPermissions, type DeploymentEntry, type HostPolicy, type Requirements } from "./server";
+import { deleteSecret, getPermissions, listSecrets, setSecret, type DeploymentEntry, type HostPolicy, type Requirements } from "./server";
 
 /** A flow's deploy settings, saved with it. `port` is for a flow with routes (a server),
  *  `interval` (seconds) for a flow that reads the clock. Either may be unused. `requirements`:
@@ -62,6 +62,8 @@ export function DeployBar({
   setSettings,
   onDeploy,
   onAction,
+  slug,
+  secretNames,
 }: {
   /** This flow's deployment, if it has one. */
   entry: DeploymentEntry | undefined;
@@ -72,12 +74,39 @@ export function DeployBar({
   setSettings: (s: FlowSettings) => void;
   onDeploy: () => void;
   onAction: (action: "run" | "pause" | "stop") => void;
+  /** The flow's name: its deployment's slug, and whose secrets these are. */
+  slug: string | null;
+  /** The secret names the canvas reads. */
+  secretNames: string[];
 }) {
   const [open, setOpen] = useState(false);
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
   useEffect(() => {
     if (open && !policy) getPermissions().then(setPolicy).catch(() => {});
   }, [open, policy]);
+  // Which secrets are set (names only: the server never sends a value back).
+  const [setNames, setSetNames] = useState<string[]>([]);
+  const [typed, setTyped] = useState<Record<string, string>>({});
+  const [secretMsg, setSecretMsg] = useState("");
+  useEffect(() => {
+    if (open && slug) listSecrets(slug).then(setSetNames).catch(() => setSetNames([]));
+  }, [open, slug]);
+  const saveSecret = (name: string) => {
+    if (!slug) return;
+    setSecret(slug, name, typed[name] ?? "")
+      .then(() => {
+        setTyped({ ...typed, [name]: "" });
+        setSecretMsg(`${name} set`);
+        return listSecrets(slug).then(setSetNames);
+      })
+      .catch((e: unknown) => setSecretMsg(e instanceof Error ? e.message : String(e)));
+  };
+  const removeSecret = (name: string) => {
+    if (!slug) return;
+    deleteSecret(slug, name)
+      .then(() => listSecrets(slug).then(setSetNames))
+      .catch((e: unknown) => setSecretMsg(e instanceof Error ? e.message : String(e)));
+  };
   const req = settings.requirements;
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
@@ -199,6 +228,38 @@ export function DeployBar({
             onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
             style={{ justifySelf: "start" }}
           />
+          {secretNames.length > 0 && (
+            <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
+              secrets{slug ? "" : " (name the flow first)"}
+            </span>
+          )}
+          {secretNames.map((name) => (
+            <label key={name} style={{ display: "contents" }}>
+              <span>
+                {name} <span style={{ color: setNames.includes(name) ? "#9ad29f" : "#e0916f" }}>{setNames.includes(name) ? "set" : "not set"}</span>
+              </span>
+              <span style={{ display: "inline-flex", gap: 4 }}>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={typed[name] ?? ""}
+                  placeholder={setNames.includes(name) ? "replace…" : "value"}
+                  disabled={!slug}
+                  onChange={(e) => setTyped({ ...typed, [name]: e.target.value })}
+                  style={{ ...input, width: 100 }}
+                />
+                <button style={base} disabled={!slug || !(typed[name] ?? "")} onClick={() => saveSecret(name)}>
+                  set
+                </button>
+                {setNames.includes(name) && (
+                  <button style={base} onClick={() => removeSecret(name)} title="remove this secret">
+                    ×
+                  </button>
+                )}
+              </span>
+            </label>
+          ))}
+          {secretMsg && <span style={{ gridColumn: "1 / -1", color: "#9fb4d4" }}>{secretMsg}</span>}
         </div>
       )}
     </span>

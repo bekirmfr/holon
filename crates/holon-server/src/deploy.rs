@@ -43,6 +43,7 @@ pub(crate) fn handle_post_deploy(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &str,
     policy: &Policy,
+    secrets: &SecretStore,
     request: &Request,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -173,6 +174,7 @@ pub(crate) fn handle_post_deploy(
                 grant,
                 permit,
                 attention: None,
+                secrets: secrets.vault(&body.slug),
                 unit: unit_hash,
                 triggers: triggers.clone(),
                 interval_seconds,
@@ -224,6 +226,7 @@ pub(crate) fn handle_post_deploy_preview(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     policy: &Policy,
+    secrets: &SecretStore,
     request: &Request,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -255,7 +258,50 @@ pub(crate) fn handle_post_deploy_preview(
         "needs_approval": needs,
         "already_granted": granted,
         "refused": policy.refuses(&manifest),
+        // Secrets it reads that aren't set yet: it deploys, but those nodes stay empty until set.
+        "missing_secrets": manifest
+            .capabilities
+            .iter()
+            .filter_map(|c| c.strip_prefix("SecretRead(\"")?.strip_suffix("\")"))
+            .filter(|name| !secrets.names(&body.slug).iter().any(|n| n == name))
+            .collect::<Vec<_>>(),
     }))
+}
+
+/// `GET /deployments/<slug>/secrets` — the names of its secrets, never their values.
+/// `POST /deployments/<slug>/secrets/<name>` (`{"value": "..."}`) sets one; `DELETE` removes it.
+/// A slug may have secrets before it is first deployed.
+pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&str>, method: &str, request: &Request) -> Response {
+    if !is_valid_slug(slug) {
+        return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
+    }
+    match (method, name) {
+        ("GET", None) => Response::json(&serde_json::json!({ "names": secrets.names(slug) })),
+        ("POST", Some(name)) => {
+            let bytes = match read_body(request) {
+                Ok(b) => b,
+                Err(r) => return r,
+            };
+            #[derive(Deserialize)]
+            struct SetSecret {
+                value: String,
+            }
+            let body: SetSecret = match serde_json::from_slice(&bytes) {
+                Ok(b) => b,
+                Err(e) => return err(400, format!("expected {{\"value\": \"...\"}}: {e}")),
+            };
+            match secrets.set(slug, name, &body.value) {
+                Ok(()) => Response::empty_204(),
+                Err(e) => err(400, e),
+            }
+        }
+        ("DELETE", Some(name)) => match secrets.remove(slug, name) {
+            Ok(true) => Response::empty_204(),
+            Ok(false) => err(404, format!("{slug:?} has no secret {name:?}")),
+            Err(e) => err(500, e),
+        },
+        _ => Response::empty_404(),
+    }
 }
 
 /// `GET /permissions` — this host's policy: each limit's default and ceiling, what it grants
@@ -331,7 +377,10 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
             Some(arc) => {
                 let storage = arc.lock().unwrap();
                 let state = storage.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
-                Response::json(&StateBody { slug: slug.to_string(), state, root: to_hex(&storage.root()) })
+                let mut reply = serde_json::to_value(StateBody { slug: slug.to_string(), state, root: to_hex(&storage.root()) })
+                    .unwrap_or_default();
+                Redactor::of(&dep.secrets).json(&mut reply);
+                Response::json(&reply)
             }
             None => err(
                 400,
@@ -422,7 +471,7 @@ pub(crate) fn handle_post_trigger(
     slug: &str,
     request: &Request,
 ) -> Response {
-    let (unit_hash, state, permit) = {
+    let (unit_hash, state, permit, vault) = {
         let deployments = deployments.lock().unwrap();
         match deployments.get(slug) {
             Some(dep) if dep.life.status != Status::Running => {
@@ -431,7 +480,7 @@ pub(crate) fn handle_post_trigger(
             Some(dep) if dep.server.is_some() => {
                 return err(400, "this deployment is an HTTP server: send requests to its own port");
             }
-            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit)),
+            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets)),
             None => return Response::empty_404(),
         }
     };
@@ -463,7 +512,7 @@ pub(crate) fn handle_post_trigger(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &permit, false);
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &permit, false, &vault);
 
     record_trigger(deployments, slug, false);
     log_run(deployments, slug, run_entry("trigger", started, &extra_sourced, &run));
@@ -472,13 +521,17 @@ pub(crate) fn handle_post_trigger(
         persist_deployments(deployments_path, deployments, store);
     }
 
-    Response::json(&FireResponseBody {
+    let redactor = Redactor::of(&vault);
+    let mut reply = serde_json::to_value(FireResponseBody {
         outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
         performed: performed
             .into_iter()
             .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
             .collect(),
     })
+    .unwrap_or_default();
+    redactor.json(&mut reply);
+    Response::json(&reply)
 }
 
 /// `GET /deployments/<slug>/log?after=<seq>&limit=<n>` — the flow log past `after` (all of it
@@ -609,8 +662,8 @@ pub(crate) fn handle_get_sessions(
     store: &SharedStore,
     slug: &str,
 ) -> Response {
-    let (status, sessions) = match deployments.lock().unwrap().get(slug) {
-        Some(dep) => (dep.life.status, dep.life.sessions.clone()),
+    let (status, sessions, redactor) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (dep.life.status, dep.life.sessions.clone(), Redactor::of(&dep.secrets)),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     // Each snapshot with its values (from the store) and its root.
@@ -635,5 +688,7 @@ pub(crate) fn handle_get_sessions(
             json
         })
         .collect();
-    Response::json(&serde_json::json!({ "status": status, "sessions": sessions }))
+    let mut reply = serde_json::json!({ "status": status, "sessions": sessions });
+    redactor.json(&mut reply);
+    Response::json(&reply)
 }

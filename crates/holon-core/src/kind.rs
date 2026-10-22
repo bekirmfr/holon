@@ -108,6 +108,9 @@ pub enum Capability {
     FileRead,
     /// Reads a secret / credential (a security-sensitive read).
     SecretAccess,
+    /// Reads the named secret from the deployment's secret store: `secret`. Per name, so
+    /// consent names which secret a flow may read.
+    SecretRead(String),
     /// Sources entropy / nondeterminism.
     Random,
     /// Reads a value retained across firings, at the named key.
@@ -146,7 +149,7 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead | SecretAccess | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | FileWrite | Spawn => Kind::Sink,
         }
@@ -161,7 +164,7 @@ impl Capability {
     /// always meant. Takes `&self`, same reason as [`kind`](Capability::kind).
     pub fn is_sourced(&self) -> bool {
         use Capability::*;
-        matches!(self, Clock | NetworkIngress | FileRead | SecretAccess | Random | StateRead(_))
+        matches!(self, Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Random | StateRead(_))
     }
 }
 
@@ -248,6 +251,9 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         "store_read" => vec![StateRead(state_key(params)?)],
         "store_write" => vec![StateWrite(state_key(params)?)],
         "clock" => vec![Clock],
+        // A secret is sourced like a state read: the host supplies the named secret's value. The
+        // name is a frozen param, so the capability names it exactly.
+        "secret" => vec![SecretRead(secret_name(params)?)],
         "random" => vec![Random],
         "egress" => vec![NetworkEgress],
         // An outbound HTTP request: performed by the host between rounds, its response sourced
@@ -302,6 +308,16 @@ pub(crate) fn http_host(params: &[Param]) -> Option<String> {
         });
     let port_ok = port.is_none_or(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok_and(|n| n > 0));
     (name_ok && port_ok).then(|| host.to_ascii_lowercase())
+}
+
+/// The required `"name"` frozen param of `secret`: letters, digits, `-` and `_`, 1 to 64 of
+/// them. `None` (fail closed) otherwise.
+pub(crate) fn secret_name(params: &[Param]) -> Option<String> {
+    let name = params.iter().find(|p| p.name() == "name")?.value()?;
+    let ok = !name.is_empty()
+        && name.len() <= 64
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    ok.then(|| name.to_string())
 }
 
 /// The coarse [`Kind`] of a **primitive leaf**, *projected* from its capability
@@ -407,6 +423,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         NetworkIngress,
         FileRead,
         SecretAccess,
+        SecretRead(SATURATED_STATE_KEY.to_string()),
         Random,
         StateRead(SATURATED_STATE_KEY.to_string()),
         StateWrite(SATURATED_STATE_KEY.to_string()),
@@ -839,8 +856,20 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 11); // every capability — fail closed
+        assert_eq!(caps.len(), 12); // every capability — fail closed
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
+    }
+
+    #[test]
+    fn a_secret_names_itself_and_is_sourced() {
+        let named = |n: &str| Unit { params: vec![Param::frozen("name", n)], ..prim("secret") };
+        let caps = capabilities_of("secret", &named("stripe_key").params).unwrap();
+        assert_eq!(caps.iter().collect::<Vec<_>>(), vec![Capability::SecretRead("stripe_key".into())]);
+        assert!(Capability::SecretRead("x".into()).is_sourced());
+        assert_eq!(kind_of("secret", &named("k").params), Some(Kind::Driver));
+        for bad in ["", "a b", "a/b", &"x".repeat(65)] {
+            assert!(capabilities_of("secret", &named(bad).params).is_none(), "{bad:?}");
+        }
     }
 
     #[test]

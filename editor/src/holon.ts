@@ -161,6 +161,7 @@ export type WCapability =
   | "NetworkIngress"
   | "FileRead"
   | "SecretAccess"
+  | { SecretRead: string }
   | "Random"
   | { StateRead: string }
   | { StateWrite: string }
