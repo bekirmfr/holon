@@ -33,7 +33,7 @@ come back for free: packs are just published units.
 ```
 crates/
   holon-core      pure language: values (+ Record), types, hashing, eval, primitives, validate
-  holon-host      runtime: Host, fire, effect loop, state, stores, recorder/replay, consent
+  holon-host      runtime: Host, fire, effect loop, state, stores, recorder/replay, manifests and permissions
   holon-market    PARKED: registry, memo, shared cache, reputation, fork (moved out of host)
   holon-wasm      bridge (unchanged role)
   holon-server    lib + bin, split into modules:
@@ -79,7 +79,7 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 | (new) | **effect loop**: multi-round request handling (§4) |
 | (new) | **`Performer` trait**: real effects (HTTP client, secret store). `RecordingHost` becomes a `Performer` used in tests and Design mode. |
 | (new) | **`Recorder`**: per-request log of sourced values per round, effects, response. Replay input. |
-| (new) | **consent check at load**: persist the acknowledged capabilities and refuse to run if derived ⊄ acknowledged. |
+| (new) | **permissions**: per-deployment grants against each flow's manifest, enforced at perform time and re-checked at load (§4.2.1). |
 
 ### holon-server → modules + control/data planes
 | Today (`main.rs`) | Target module |
@@ -163,20 +163,21 @@ bounded:  by the run's limits (§4.2): its wall-clock budget and its outbound-re
 An outbound request is the first thing a flow does to the outside world, so the limits come with
 the node, not after it. Two kinds:
 
-**Rules** (on by default; a deployment opts out explicitly, and the opt-out is shown at consent):
+**Rules** (always on; a flow can ask for an exception in its manifest, and only the host can grant
+it, §4.2.1):
 
-- **Allowed hosts are part of consent.** Deploy derives each `http_request`'s host where it is a
-  literal (`https://hooks.slack.com/...`), and the person acknowledges
-  `NetworkEgress("hooks.slack.com")`, not just "the network". A URL built at run time needs an
-  explicit allowlist entry; a host not on it is refused at perform time.
+- **Hosts are in the manifest.** Each `http_request` whose URL has a literal host
+  (`https://hooks.slack.com/...`) puts `NetworkEgress("hooks.slack.com")` in the flow's manifest,
+  not just "the network". A URL built at run time needs its possible hosts declared as a
+  requirement; a host the deployment wasn't granted is refused at perform time.
 - **No private destinations.** Loopback, link-local, private, CGNAT and metadata ranges (127/8,
   10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, ::1, fc00::/7, fe80::/10) are refused after
   DNS resolution, against the address actually connected to, and again on every redirect. This is
   OWASP's SSRF guidance; it also stops DNS rebinding, since the check is on the resolved address.
 - **HTTPS only**, with certificate verification; plain HTTP is a per-host opt-out.
 
-**Limits** (numbers, so they are configurable; §4.2.1 says who sets them). Defaults follow what the
-systems a flow talks to already expect:
+**Limits** (numbers: a flow asks for what it needs, the host grants within its ceilings, §4.2.1).
+Host defaults follow what the systems a flow talks to already expect:
 
 | Limit | Default | Ceiling | Why this number |
 |---|---|---|---|
@@ -195,39 +196,68 @@ A request that breaks a limit doesn't fail the run: its node gets a response rec
 `{status: 0, error: "timeout" | "too_large" | "blocked_host" | ...}`, and the flow decides. Breaking
 the **run** budget does fail the run, and nothing is performed.
 
-#### 4.2.1 Who sets the limits
-Limits are authored params at two levels, inside ceilings the host operator manages:
+#### 4.2.1 Manifests and permissions: the flow asks, the host grants
+Every deployable flow has a **manifest**: what it needs. The **host** is the only authority over
+what it gets. A flow never grants itself anything, and nothing it says is trusted at run time.
+This is the model of Android's manifest and runtime permissions, or Deno's: the program declares,
+the platform decides, enforces and can take back.
 
-| Level | Where it is set | What it can do |
+**The manifest** has two parts, and is content-addressed like everything else (its hash changes
+exactly when what the flow needs changes):
+
+| Part | Where it comes from | Contents |
 |---|---|---|
-| **Host** (the operator) | server config file (`holon.toml`, `[limits]`), or flags and env vars | sets each limit's **default** and **ceiling**, for every deployment on this host |
-| **Deployment** (the author) | deploy settings in the editor (⚙, beside port and interval today), sent with the deploy | raises or lowers any limit, up to the ceiling; the allowlist and rule opt-outs live here too |
-| **Node** (the author) | `http_request` params (`timeout`, `max_response_bytes`, `follow_redirects`) | tightens one call further, never past the deployment's limit |
+| **Capabilities and effects** | **derived** from the graph by core (`capabilities()`, as consent works today), so they can't be understated | `NetworkIngress(port)`, `NetworkEgress(host)` per literal host, `StateRead(key)` / `StateWrite(key)`, `SecretRead(name)`, `Clock`, `Random`; which sinks the flow can reach |
+| **Requirements** | **declared** by the author: frozen node params (in the unit's hash) and the flow's deploy settings | limits it needs above the host defaults (e.g. a 60 s request timeout), hosts for URLs built at run time, rule exceptions (plain HTTP to a host, a private address), durable-run needs (parked runs, expiry) |
 
-- **The effective limit** is the node's value if set, else the deployment's, else the host default,
-  always clamped to the host ceiling.
-- **Deploy refuses a deployment limit above a ceiling,** with a message naming the ceiling, rather
-  than clamping silently. Consent shows any limit raised above the host default and any rule
-  opted out.
-- **Node params are frozen params,** so they are part of the unit's hash: changing a call's timeout
-  is a new version, like any other behaviour change. Deployment limits are not in the hash, but are
-  stored with the deployment and recorded in each flow-log entry as the limits in effect, so a log
-  always explains why a call timed out.
-- **Lowering a ceiling** later clamps running deployments to it, flags them in the deployment list,
-  and logs the change. Nothing is redeployed silently.
-- **The control plane exposes** `GET /limits` (defaults and ceilings) so the editor can show the
-  bounds while editing and validate before deploy.
-- **Limits that exist today move under the same config:** the data plane's inbound body cap
-  (hardcoded 8 MiB, `MAX_BODY_BYTES`; default becomes 10 MiB to match the outbound one) and the
-  flow log's retention (hardcoded 500 entries, `recorder::CAPACITY`) become host defaults with
-  ceilings, and the inbound cap a per-deployment setting. The control plane's own cap stays fixed:
-  it serves only the editor.
+**The host** keeps three things, and is the only place they change:
+
+- **Policy** (`holon.toml`, flags or env; read over `GET /permissions`): each limit's default and
+  ceiling (the table above), rules that grant without asking (e.g. state under the flow's own keys,
+  egress to hosts on an operator allowlist, limits within the defaults), and what can never be
+  granted (e.g. private addresses on a shared host).
+- **Grants, per deployment,** persisted with it: `{manifest hash, granted capabilities, granted
+  limits and exceptions, granted when, by whom}`.
+- **Enforcement:** every effect, at perform time, is checked against the deployment's grant: a
+  state key, host, secret or limit it wasn't granted is refused and logged, even if derivation had
+  a bug. The grant is the boundary, not the graph.
+
+**The lifecycle:**
+
+1. **Deploy is a request.** The host compares the manifest with its policy. What policy allows is
+   granted; what needs approval is shown in the editor's consent screen (the existing acknowledge
+   step, generalized to hosts, secrets, limits and exceptions); what policy forbids, or a limit
+   above its ceiling, refuses the deploy with a message naming the rule or ceiling. The host never
+   silently grants less than asked: a requirement is what the flow needs to work.
+2. **Redeploy asks only for the difference.** A new version whose manifest needs nothing new deploys
+   without a prompt; one that needs a new host or a higher limit asks for that alone, like an app
+   update requesting a new permission.
+3. **Load checks again.** On restart the host re-derives each manifest and compares it with the
+   stored grant; a deployment that now needs more than it was granted doesn't start, and is flagged.
+   (This is the review's "consent isn't re-checked at load", §7a.)
+4. **The host can change a grant at any time,** without a redeploy: revoke a host or a secret, lower
+   a limit, or lower a ceiling for everyone. The deployment is paused (the existing lifecycle) until
+   its grant covers its manifest again, or, where the operator chooses, keeps running and the
+   revoked call fails with `{status: 0, error: "revoked"}`. Every change is logged.
+5. **Everything is visible.** `GET /deployments/<slug>/manifest` and `.../grant`; the editor's
+   deployment view shows asked against granted, pending approvals and revoke controls; each
+   flow-log entry records the grant hash in effect, so a log always explains why a call was
+   refused or timed out.
+
+**The effective limit** for a call is the node's requirement if set, else the deployment's, else
+the host default, always within what was granted.
+
+**Limits that exist today move under the same model:** the data plane's inbound body cap
+(hardcoded 8 MiB, `MAX_BODY_BYTES`; the default becomes 10 MiB to match the outbound one) and the
+flow log's retention (hardcoded 500 entries, `recorder::CAPACITY`) become host defaults with
+ceilings, which a deployment may ask to raise. The control plane's own cap stays fixed: it serves
+only the editor.
 
 - **Client:** `ureq` (synchronous, rustls), which fits the current thread-per-request server; it
   moves with the data plane if that moves to `hyper` (§7b).
 - **Secrets** (separate step): a per-deployment secret store on the server, written over the
   control plane, never returned by it. A flow references a secret by name (a `secret` source node,
-  capability `SecretRead("stripe_key")`, acknowledged at deploy). Values are redacted from the flow
+  capability `SecretRead("stripe_key")` in its manifest, granted by the host). Values are redacted from the flow
   log, from replay and from the editor; a replay substitutes a placeholder.
 
 ### 4.3 Durable runs: continuing a run later
@@ -247,8 +277,8 @@ it. That needs an identity for the run and a way to resume it.
 - **Pinned version.** A run continues on the deployment hash it started on. Units are
   content-addressed, so the old version stays resolvable for as long as runs need it, even across
   redeploys; new runs start on the new version.
-- **Expiry.** Every parked run has a deadline: default 7 days, ceiling 90 days, set like the other
-  limits (§4.2.1; an `await` node may shorten it). Expiring is itself an event delivered to the
+- **Expiry.** Every parked run has a deadline: default 7 days, ceiling 90 days, asked for and granted like the
+  other limits (§4.2.1; an `await` node may shorten it). Expiring is itself an event delivered to the
   awaiting node (`{expired: true}`), so the flow decides what timing out means. For scale: Stripe
   retries a webhook for up to 3 days, so a payment wait fits the default.
 - **Parked runs per deployment:** default 10,000, ceiling set by the host, so a flood of starts
@@ -314,8 +344,8 @@ One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable 
 | 2 | Host: Merkle state (value hashes on write, state root) and large values by reference | state root stable across restarts; a snapshot shares unchanged values |
 | 3 | Core: `http_request` node, its capability `NetworkEgress(host)` and validation | a flow with it validates and its derived hosts show at deploy |
 | 4 | Host: the round loop, the `Performer` with `ureq`, the §4.2 rules, and limits resolved node → deployment → host default, clamped to the ceiling | a run calls a local test server, uses the answer, and each limit stops it as specified |
-| 5 | Server: `holon.toml` limits and `GET /limits`; deployment limits and consent with hosts; run ids and the nonce; `rounds` and limits in effect in the flow log | a deployment lists its hosts and limits, a limit above a ceiling is refused, and each log entry has a verifiable run id |
-| 6 | Editor: the node and its params, limits in deploy settings (bounded by `GET /limits`), rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round |
+| 5 | Host and server: manifests (derived capabilities with hosts, declared requirements), policy in `holon.toml` and `GET /permissions`, grants per deployment, enforcement at perform time, the re-check at load; run ids and the nonce; `rounds` and the grant in effect in the flow log | a deploy asks only for what policy doesn't already allow; an ungranted host or a limit above a ceiling is refused; revoking a host pauses the deployment; each log entry has a verifiable run id |
+| 6 | Editor: the node and its params, requirements in deploy settings, the consent screen showing asked against granted (bounded by `GET /permissions`), a deployment's grant with revoke controls, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round |
 | 7 | Secrets: store, `secret` node, redaction | a token never appears in a log, a replay or the editor |
 | 8 | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on |
 
@@ -380,7 +410,7 @@ packs/hooks/
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met**; splitting `App.tsx` remains |
 | **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b): runs today on the control plane's `rouille`, move pending | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
 | **M2 effects + replay** | `http_request`, hashes/HMAC, Effects refused by `Any`-typed sink payloads ✅ | effect loop, `Performer`, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half designed in §4 (build order §4.6), not started** |
-| **M3 door 1** | — | consent at load | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
+| **M3 door 1** | — | (consent at load moved to M2, §4.2.1) | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
 
 **Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is splitting
@@ -432,7 +462,7 @@ public data plane**, not for an open marketplace.
 - `Any`-typed sink payloads accept Effects (`egress(egress(x))` validates). ✅ Closed: a sink builds nothing from a payload holding an
   Effect, and validation refuses the wiring. This must be closed
   before `http_request` exists.
-- Consent isn't re-checked at load (M3, §3).
+- Consent isn't re-checked at load. Now part of the permissions design (§4.2.1), built with M2.
 
 **Deferred: these only matter when running other people's units (they return with `holon-market`).**
 - Exponential closure walks (`collect_caps`, `refork`, `instantiate`, `eval` on doubling DAGs).
