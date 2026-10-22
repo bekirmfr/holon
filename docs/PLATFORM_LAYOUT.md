@@ -455,13 +455,12 @@ packs/hooks/
 | Milestone | Core | Host | Server | Editor | Packs | Done when |
 |---|---|---|---|---|---|---|
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` ✅ | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met** |
-| **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b) ✅: `hyper` on `tokio`, with timeouts, a body cap and a connection cap | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
+| **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params ✅ | — | `data/` listener on a maintained HTTP stack (§7b) ✅: `hyper` on `tokio`, with timeouts, a body cap and a connection cap | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
 | **M2 effects + replay** | `http_request` ✅, hashes/HMAC ✅ (`sha256`, `hmac_sha256`, `hex`, `base64`, `secure_equals`), Effects refused by `Any`-typed sink payloads ✅ | effect loop ✅, `Performer` ✅, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets ✅, durable runs ✅ | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half built (§4: rounds, permissions, secrets, durable runs); signature primitives built; the live Stripe → Slack run remains** |
 | **M3 door 1** | — | (consent at load moved to M2, §4.2.1) | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
 
-**Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is
-`instantiate` following `fn` params. M2's replay half
+**Status (2026-10-22).** M0 and M1 are done. M2's replay half
 landed early (the recorder came with view mode); its effects half, and durable runs, are built (§4):
 outbound requests in rounds, host permissions, secrets, and runs that wait and resume. The signature
 primitives are in core too (`sha256`, `hmac_sha256`, `hex`, `base64`, and `secure_equals`, a
@@ -507,7 +506,8 @@ public data plane**, not for an open marketplace.
 
 **M1–M2: fix alongside the feature that needs it.**
 - `instantiate` / `open_params` don't follow `fn` params (`promote.rs`). Needed once handlers use
-  `map` / `fold` with promoted params.
+  `map` / `fold` with promoted params. ✅ (both walk `child_refs`, so a hole in a `fn` is found and
+  filled, and the `fn` re-pinned to the instance)
 - `json_parse` needs depth and size limits, because request bodies are untrusted. ✅ (depth 64;
   size bounded by the body cap)
 - `Any`-typed sink payloads accept Effects (`egress(egress(x))` validates). ✅ Closed: a sink builds nothing from a payload holding an

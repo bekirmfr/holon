@@ -6,13 +6,16 @@
 //!
 //! - [`open_param`] turns a frozen param into a hole (creates/extends a template).
 //! - [`open_params`] is the **derived** open interface: the set of `bind` keys across the
-//!   closure (union over children) — never stored (I8).
+//!   closure (union over every reference: children and a `map`/`fold`'s `fn`) — never stored (I8).
 //! - [`instantiate`] specializes a template: substitute bindings throughout the closure,
-//!   re-hash bottom-up, insert the new concrete units, return the top hash. Binding is by
+//!   re-hash bottom-up, insert the new concrete units, return the top hash. The closure is what
+//!   [`crate::child_refs`] says a unit references, so a hole inside a `fn` is filled too, and the
+//!   `fn` re-pinned to the instance (as a fork re-pins it). Binding is by
 //!   `bind` key; partial binding leaves the rest open. The result is a first-class,
 //!   content-addressed instance (I4/I5) — eval and the cache treat it like any other unit.
 
-use crate::{EncodeError, Hash, MapResolver, Param, Resolver, Unit, UnitBody};
+use crate::hash::{parse_hash, to_hex};
+use crate::{child_refs, EncodeError, Hash, MapResolver, Param, Resolver, Unit, UnitBody};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -55,11 +58,9 @@ fn collect_open(unit: &Unit, resolver: &impl Resolver, set: &mut BTreeSet<String
             set.insert(bind.to_string());
         }
     }
-    if let UnitBody::Composite { children, .. } = &unit.body {
-        for ch in children {
-            if let Some(child) = resolver.resolve(ch) {
-                collect_open(child, resolver, set);
-            }
+    for r in child_refs(unit) {
+        if let Some(child) = resolver.resolve(&r) {
+            collect_open(child, resolver, set);
         }
     }
 }
@@ -78,7 +79,16 @@ pub fn instantiate(
         .ok_or(ParamError::Unresolved(*template))?
         .clone();
 
-    let params: Vec<Param> = unit.params.iter().map(|p| substitute(p, bindings)).collect();
+    let mut params: Vec<Param> = unit.params.iter().map(|p| substitute(p, bindings)).collect();
+    // A `fn` param references a unit (a `map`'s function): specialized like a child, and
+    // re-pinned to the instance. Bound just now or already frozen, either way.
+    for p in &mut params {
+        if p.name() == "fn"
+            && let Some(target) = p.value().and_then(parse_hash)
+        {
+            *p = Param::frozen("fn", to_hex(&instantiate(&target, bindings, store)?));
+        }
+    }
 
     let body = match &unit.body {
         UnitBody::Primitive { name } => UnitBody::Primitive { name: name.clone() },
@@ -206,6 +216,43 @@ mod tests {
         let h3 = instantiate(&hcomp, &binding(&[("K", "3")]), &mut store).unwrap();
         let mul3 = store.resolve(&h3).unwrap().clone();
         assert_eq!(eval(&mul3, &[Some(num(7.0))], &store).into_vec(), vec![Some(num(21.0))]);
+    }
+
+    fn map_over(fn_param: Param) -> Unit {
+        Unit {
+            body: UnitBody::Primitive { name: "map".into() },
+            params: vec![fn_param],
+            inputs: vec![Port { name: "list".into(), ty: Type::list_any() }],
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
+        }
+    }
+
+    #[test]
+    fn a_hole_inside_a_fn_is_found_and_filled() {
+        // map(MultiplyByK) over [1, 2]: K is part of map's open interface, and binding it
+        // specializes the function map calls, re-pinned to the instance.
+        let mut store = MapResolver::new();
+        let (_, hk) = multiply_by_k(&mut store);
+        let template = map_over(Param::frozen("fn", to_hex(&hk)));
+        assert_eq!(open_params(&template, &store), BTreeSet::from(["K".to_string()]));
+        let ht = store.insert(template).unwrap();
+
+        let h3 = instantiate(&ht, &binding(&[("K", "3")]), &mut store).unwrap();
+        let map3 = store.resolve(&h3).unwrap().clone();
+        assert!(open_params(&map3, &store).is_empty());
+        assert_ne!(child_refs(&map3), vec![hk], "re-pinned off the template");
+        let list = Value::List(vec![num(1.0), num(2.0)]);
+        assert_eq!(eval(&map3, &[Some(list.clone())], &store).into_vec(), vec![Some(Value::List(vec![num(3.0), num(6.0)]))]);
+
+        // The function itself bound through an open `fn`: followed once bound, in the same pass.
+        let hopen = store.insert(map_over(Param::open("fn", "F"))).unwrap();
+        let h2 = instantiate(&hopen, &binding(&[("F", &to_hex(&hk)), ("K", "2")]), &mut store).unwrap();
+        let map2 = store.resolve(&h2).unwrap().clone();
+        assert_eq!(eval(&map2, &[Some(list)], &store).into_vec(), vec![Some(Value::List(vec![num(2.0), num(4.0)]))]);
+
+        // A fn that doesn't resolve is an error, as an unresolved child is.
+        let dangling = store.insert(map_over(Param::frozen("fn", to_hex(&[7; 32])))).unwrap();
+        assert_eq!(instantiate(&dangling, &binding(&[]), &mut store), Err(ParamError::Unresolved([7; 32])));
     }
 
     #[test]
