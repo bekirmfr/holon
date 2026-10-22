@@ -8,6 +8,7 @@
 //! tested with a controlled `now`, not real sleeping.
 
 use super::*;
+use holon_core::hash_value;
 use holon_host::fire_sourced_with;
 
 fn test_state() -> AppState {
@@ -889,6 +890,102 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// State is kept by reference: the deployments file holds each key's value hash, the values
+/// live in the content store, and the state's Merkle root comes back the same after a restart.
+/// A session snapshot is references too, so restoring a session gives back the very same root,
+/// and snapshots holding the same value share it.
+#[test]
+fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
+    let mut state = test_state();
+    let path = unique_temp_path("merkle");
+    state.deployments_path = path.clone();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let body = serde_json::to_vec(&serde_json::json!({
+        "slug": "writer", "unit": to_hex(&writer), "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"],
+    }))
+    .unwrap();
+    assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
+    let write = |text: &str| assert_eq!(route(&state, &req("POST", "/trigger/writer", text.as_bytes().to_vec())).status_code, 200);
+    let current = || body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
+    let act = |action: &str, body: &str| {
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/writer/{action}"), body.as_bytes().to_vec())).status_code, 200)
+    };
+    write("kept");
+    let first = current();
+    assert_eq!(first["state"]["k"]["value"], "kept");
+    let root = first["root"].as_str().unwrap().to_string();
+    assert_eq!(root.len(), 64);
+
+    // The file holds references only, and a restart gets the same root back.
+    let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(file[0].get("state").is_none(), "no inline values: {}", file[0]);
+    let hash = hash_value(&Value::Text("kept".into())).unwrap();
+    assert_eq!(file[0]["state_refs"]["k"], to_hex(&hash));
+    let reloaded = load_deployments(&path, &state.store).unwrap();
+    assert_eq!(to_hex(&reloaded["writer"].state.as_ref().unwrap().lock().unwrap().root()), root);
+
+    // Stop (session 1 keeps "kept"), start fresh and write something else (session 2), then
+    // restore session 1: the root is the one it had, and its snapshot shares the value's hash.
+    act("stop", "");
+    act("run", r#"{"from":"fresh"}"#);
+    write("other");
+    assert_ne!(current()["root"], root.as_str());
+    act("stop", "");
+    act("run", r#"{"from":1}"#);
+    assert_eq!(current()["root"], root.as_str(), "session 1 restored exactly");
+    act("stop", "");
+    let sessions = body_json(route(&state, &req("GET", "/deployments/writer/sessions", vec![])));
+    let s = |i: usize| &sessions["sessions"][i];
+    assert_eq!(s(0)["state"]["k"]["value"], "kept", "the sessions API still answers with values");
+    assert_eq!(s(0)["root"], root.as_str());
+    assert_eq!(s(1)["state"]["k"]["value"], "other");
+    assert_eq!(s(0)["state_refs"]["k"], s(2)["state_refs"]["k"], "one value, one hash, stored once");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A deployments file from before references (values inline, in the state and in session
+/// snapshots) still loads: its values move into the store, and the next save writes references.
+/// A reference whose value isn't in the store refuses to load rather than losing the state.
+#[test]
+fn inline_state_from_older_files_moves_into_the_store() {
+    let mut state = test_state();
+    let path = unique_temp_path("migrate");
+    state.deployments_path = path.clone();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let text = |s: &str| serde_json::json!({ "type": "Text", "value": s });
+    let old = serde_json::json!([{
+        "slug": "writer", "unit": to_hex(&writer), "trigger_count": 2, "error_count": 0,
+        "state": { "k": text("live") },
+        "status": "running",
+        "sessions": [
+            { "number": 1, "started_at": 0, "ended_at": 5, "from": "deploy", "state": { "k": text("first") } },
+            { "number": 2, "started_at": 6, "ended_at": null, "from": "latest" },
+        ],
+    }]);
+    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+
+    let loaded = load_deployments(&path, &state.store).unwrap();
+    assert_eq!(loaded["writer"].state.as_ref().unwrap().lock().unwrap().get("k"), Some(&Value::Text("live".into())));
+    let first = loaded["writer"].life.snapshot(1).expect("the inline snapshot became references");
+    assert_eq!(state.store.get_value(&first["k"]).unwrap(), Some(Value::Text("first".into())));
+
+    // Saved again, the file holds references only, and loads the same.
+    *state.deployments.lock().unwrap() = loaded;
+    persist_deployments(&path, &state.deployments, &state.store);
+    let file = std::fs::read_to_string(&path).unwrap();
+    assert!(!file.contains("\"live\"") && !file.contains("\"first\""), "no inline values left: {file}");
+    let again = load_deployments(&path, &state.store).unwrap();
+    assert_eq!(again["writer"].life.snapshot(1), Some(first));
+
+    // A reference to a value the store doesn't have: refuse, and leave the file alone.
+    let dangling = file.replace(&to_hex(&hash_value(&Value::Text("live".into())).unwrap()), &"cd".repeat(32));
+    std::fs::write(&path, &dangling).unwrap();
+    let e = load_deployments(&path, &state.store).err().expect("must refuse");
+    assert!(e.contains("can't be loaded"), "{e}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), dangling);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Regression: a persistence file that failed to parse used to load as an empty table, so
 /// the first deploy or save after startup overwrote every deployment, its state, or every
 /// flow. Loading is now an `Err` (main() refuses to start) and the file is left untouched.
@@ -1269,7 +1366,7 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
     let reloaded = load_deployments(&path, &state.store).unwrap();
     assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
     assert_eq!(reloaded["todo-api"].triggers, vec!["Http :18080"], "labelled as when it was deployed");
-    let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap()["todos"].clone();
+    let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap().get("todos").unwrap().clone();
     assert!(matches!(todos, Value::Record(ref items) if items.len() == 1));
     let _ = std::fs::remove_file(&path);
 }

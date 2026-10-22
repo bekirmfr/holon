@@ -24,8 +24,12 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod state;
+pub use state::{LoadError, State};
+
 use holon_core::{
-    capabilities, capabilities_of, child_refs, decode_preimage, design_eval, encode_preimage, eval, eval_observed,
+    capabilities, capabilities_of, child_refs, decode_preimage, decode_value, design_eval, encode_preimage, encode_value,
+    eval, eval_observed, hash_value,
     entry_key, hash_unit, memo_key, refork, verify_entry, adoption_counts, CacheEntry,
     MapResolver, NoObserver, Observer, Refork, Capability, DecodeError, Edge, EncodeError, Hash, Param, Port, Resolver,
     Type, Unit, UnitBody, Value, BOUNDARY,
@@ -457,12 +461,37 @@ pub enum StoreError {
 /// hash. Implementations differ only in the byte backend (memory, disk, and
 /// later a networked CAS, `P3.8.2`); the encode / key / verify / decode path is
 /// shared, so the content-addressing guarantee is identical across all of them.
+///
+/// Values are stored the same way, by their content hash (`holon_core::hash_value`), kept apart
+/// from units: a deployment's state and its session snapshots hold value hashes, so a value
+/// shared by several snapshots is stored once.
 pub trait Store {
     /// Persist `unit`; returns the hash it is filed under (its identity).
     fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError>;
     /// Fetch the unit filed under `key`. `Ok(None)` if absent; `Err(Corrupt)` if
     /// the stored bytes do not hash to `key`.
     fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError>;
+    /// Persist `value`; returns its content hash. Storing a value that is already there is a
+    /// no-op.
+    fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError>;
+    /// Fetch the value filed under `key`, verified against it like a unit.
+    fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError>;
+}
+
+/// A value's canonical bytes and its content hash.
+fn encode_value_keyed(value: &Value) -> Result<(Hash, Vec<u8>), StoreError> {
+    let bytes = encode_value(value).map_err(StoreError::Encode)?;
+    Ok((hash_value(value).map_err(StoreError::Encode)?, bytes))
+}
+
+/// Decode a fetched value and verify it against its key: the bytes must hash to it.
+fn decode_value_verified(key: &Hash, bytes: &[u8]) -> Result<Value, StoreError> {
+    let value = decode_value(bytes).map_err(StoreError::Decode)?;
+    let actual = hash_value(&value).map_err(StoreError::Encode)?;
+    if &actual != key {
+        return Err(StoreError::Corrupt { key: *key, actual });
+    }
+    Ok(value)
 }
 
 /// Encode a unit to its canonical bytes and the key they must be filed under.
@@ -497,6 +526,7 @@ fn hex(key: &Hash) -> String {
 #[derive(Default)]
 pub struct MemStore {
     blobs: BTreeMap<Hash, Vec<u8>>,
+    values: BTreeMap<Hash, Vec<u8>>,
 }
 
 impl MemStore {
@@ -517,6 +547,17 @@ impl Store for MemStore {
             None => Ok(None),
         }
     }
+    fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
+        let (key, bytes) = encode_value_keyed(value)?;
+        self.values.entry(key).or_insert(bytes);
+        Ok(key)
+    }
+    fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
+        match self.values.get(key) {
+            Some(bytes) => decode_value_verified(key, bytes).map(Some),
+            None => Ok(None),
+        }
+    }
 }
 
 /// On-disk content-addressed store: one file per unit, named by its hex hash,
@@ -534,6 +575,10 @@ impl FileStore {
     }
     fn path(&self, key: &Hash) -> PathBuf {
         self.root.join(hex(key))
+    }
+    /// Values live in `values/` under the root, apart from units.
+    fn value_path(&self, key: &Hash) -> PathBuf {
+        self.root.join("values").join(hex(key))
     }
 }
 
@@ -571,6 +616,24 @@ impl Store for FileStore {
             Err(e) => return Err(StoreError::Io(e)),
         };
         decode_verified(key, &bytes).map(Some)
+    }
+    fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
+        let (key, bytes) = encode_value_keyed(value)?;
+        let path = self.value_path(&key);
+        // Content-addressed: a file already there holds these very bytes (a read verifies it).
+        if !path.exists() {
+            fs::create_dir_all(self.root.join("values")).map_err(StoreError::Io)?;
+            write_atomically(&path, &bytes).map_err(StoreError::Io)?;
+        }
+        Ok(key)
+    }
+    fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
+        let bytes = match fs::read(self.value_path(key)) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(StoreError::Io(e)),
+        };
+        decode_value_verified(key, &bytes).map(Some)
     }
 }
 

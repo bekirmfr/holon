@@ -190,7 +190,12 @@ pub(crate) struct DeploymentRecord {
     pub(crate) slug: String,
     pub(crate) unit: String,
     pub(crate) interval_seconds: Option<u64>,
-    #[serde(default)]
+    /// The state by reference: each key's value hash (hex), the values in the content store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) state_refs: Option<BTreeMap<String, String>>,
+    /// The state as files before `state_refs` held it, values inline. Read once at load, when
+    /// the values move into the store; never written.
+    #[serde(default, skip_serializing)]
     pub(crate) state: Option<BTreeMap<String, SValue>>,
     #[serde(default)]
     pub(crate) deployed_at_epoch_seconds: Option<u64>,
@@ -265,6 +270,8 @@ pub(crate) struct HistoryBody {
 pub(crate) struct StateBody {
     pub(crate) slug: String,
     pub(crate) state: BTreeMap<String, SValue>,
+    /// The state's Merkle root (hex): equal for equal states.
+    pub(crate) root: String,
 }
 
 #[derive(Serialize)]

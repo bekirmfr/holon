@@ -75,11 +75,11 @@ pub(crate) fn fire_with_state(
     root_unit: &Unit,
     inputs: &[Option<Value>],
     resolver: &impl Resolver,
-    state: Option<&Mutex<BTreeMap<String, Value>>>,
+    state: Option<&Mutex<State>>,
     extra_sourced: &[(Capability, Value)],
 ) -> FiredRun {
     let mut guard = state.map(|m| m.lock().unwrap());
-    let state_before = guard.as_deref().cloned().unwrap_or_default();
+    let state_before = guard.as_deref().map(State::values).unwrap_or_default();
 
     let mut sourced: Vec<(Capability, Value)> = match guard.as_deref() {
         Some(storage) => storage
@@ -97,10 +97,10 @@ pub(crate) fn fire_with_state(
     if let Some(storage) = guard.as_deref_mut() {
         for (cap, payload) in &host.performed {
             if let Capability::StateWrite(key) = cap {
-                if is_storable(payload) {
-                    storage.insert(key.clone(), payload.clone());
-                } else {
+                if !is_storable(payload) {
                     eprintln!("holon-server: refused to store an effect request in state key {key:?}");
+                } else if let Err(e) = storage.insert(key.clone(), payload.clone()) {
+                    eprintln!("holon-server: state key {key:?} not written (too large to encode): {e:?}");
                 }
             }
         }

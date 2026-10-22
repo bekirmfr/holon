@@ -322,10 +322,15 @@ The answer is to hash hashes, the way units already work.
 - **State as a Merkle map.** Each key's value is hashed **once, when it is written**, and the hash
   kept beside it. The state root is `H(sorted (key, value hash) pairs)`. A run that writes one key
   re-hashes one value and a short list. Reads cost nothing.
-- **Large values by reference.** A value over a threshold (default 64 KiB encoded; a host setting,
-  not an author one, since it changes storage, not behaviour), and any uploaded file,
-  is stored in the content store under its hash, like a unit; state, the flow log and run records
-  hold the hash. Hashing it later is free, identical content is stored once, and logs stay small.
+- **Persisted state is references.** ✅ Every state value is stored in the content store under its
+  hash (`values/`, apart from units, verified on every read); a deployment record and each
+  session snapshot hold only `key → value hash`. Identical values are stored once, however many
+  snapshots hold them. Files written before this load as before, and move their values into the
+  store.
+- **Large values by reference in the flow log and run records** (with run ids, step 5). A value
+  over a threshold (default 64 KiB encoded; a host setting, not an author one, since it changes
+  storage, not behaviour), and any uploaded file, is recorded by its hash, not inline, so logs
+  stay small.
 - **Request bodies** are hashed as they are read.
 - **What else it buys:**
   - **Session snapshots share structure.** A snapshot is its list of `(key, value hash)`; unchanged
@@ -340,8 +345,8 @@ One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable 
 
 | Step | What | Done when |
 |---|---|---|
-| 1 | Core: public canonical `encode_value` / `hash_value` (±0, NaN pinned) | the encoding is fixed by tests; memo uses it |
-| 2 | Host: Merkle state (value hashes on write, state root) and large values by reference | state root stable across restarts; a snapshot shares unchanged values |
+| 1 ✅ | Core: public canonical `encode_value` / `hash_value` (±0, NaN pinned) | the encoding is fixed by tests; memo uses it |
+| 2 ✅ | Host: Merkle state (value hashes on write, state root), persisted by reference | state root stable across restarts; a snapshot shares unchanged values |
 | 3 | Core: `http_request` node, its capability `NetworkEgress(host)` and validation | a flow with it validates and its derived hosts show at deploy |
 | 4 | Host: the round loop, the `Performer` with `ureq`, the §4.2 rules, and limits resolved node → deployment → host default, clamped to the ceiling | a run calls a local test server, uses the answer, and each limit stops it as specified |
 | 5 | Host and server: manifests (derived capabilities with hosts, declared requirements), policy in `holon.toml` and `GET /permissions`, grants per deployment, enforcement at perform time, the re-check at load; run ids and the nonce; `rounds` and the grant in effect in the flow log | a deploy asks only for what policy doesn't already allow; an ungranted host or a limit above a ceiling is refused; revoking a host pauses the deployment; each log entry has a verifiable run id |

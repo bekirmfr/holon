@@ -15,7 +15,7 @@ pub(crate) fn run_due_clock_ticks(
     deployments_path: &str,
     now: SystemTime,
 ) {
-    let due: Vec<(String, Hash, Option<Arc<Mutex<BTreeMap<String, Value>>>>, u64)> = {
+    let due: Vec<(String, Hash, Option<DeploymentState>, u64)> = {
         let deployments = deployments.lock().unwrap();
         deployments
             .iter()
@@ -63,7 +63,7 @@ pub(crate) fn fire_one_clock_tick(
     deployments_path: &str,
     slug: String,
     unit_hash: Hash,
-    state: Option<Arc<Mutex<BTreeMap<String, Value>>>>,
+    state: Option<DeploymentState>,
     interval: u64,
     now: SystemTime,
 ) {
@@ -119,7 +119,7 @@ pub(crate) fn fire_one_clock_tick(
         }
     }
     if is_state {
-        persist_deployments(deployments_path, deployments);
+        persist_deployments(deployments_path, deployments, store);
     }
 }
 

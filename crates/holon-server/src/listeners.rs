@@ -62,7 +62,7 @@ pub(crate) fn serve_data(
     entry.response_body = Some(recorder::body_text(&answer.body));
     log_run(deployments, slug, entry);
     if state.is_some() {
-        persist_deployments(deployments_path, deployments);
+        persist_deployments(deployments_path, deployments, store);
     }
     Response {
         status_code: answer.status,

@@ -168,7 +168,7 @@ use holon_core::{
 };
 use holon_host::{
     fire, fire_sourced_observed, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
-    PublishError, Registry, SharedCache, Store, StoreError,
+    PublishError, Registry, SharedCache, State, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
 use recorder::{Log, LogEntry};
@@ -208,6 +208,12 @@ impl Store for SharedStore {
     }
     fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
         self.0.lock().unwrap().get(key)
+    }
+    fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
+        self.0.lock().unwrap().put_value(value)
+    }
+    fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
+        self.0.lock().unwrap().get_value(key)
     }
 }
 
@@ -257,7 +263,7 @@ struct AppState {
 type Listeners = BTreeMap<String, (u16, std::sync::mpsc::Sender<()>)>;
 
 /// One deployment's keyed state, shared between its fires and persistence (see `Deployment::state`).
-type DeploymentState = Arc<Mutex<BTreeMap<String, Value>>>;
+type DeploymentState = Arc<Mutex<State>>;
 
 /// A registered deployment. `triggers` is derived **once**, at deploy time, from the unit's
 /// own capability closure (`capabilities()`) — safe to cache rather than re-derive on every

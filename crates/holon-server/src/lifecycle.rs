@@ -9,13 +9,17 @@
 //!
 //! A deployment can only be deleted once stopped. Until then every session, with its snapshot,
 //! is kept.
+//!
+//! A snapshot is kept by reference: each key's value hash (the host's `State::refs`), with the
+//! values in the content store, so sessions share whatever values they have in common. This
+//! module only records references; the server stores and loads the values.
 
 use std::collections::BTreeMap;
 
-use holon_core::Value;
+use holon_core::{parse_hash, Hash};
 use serde::{Deserialize, Serialize};
 
-use crate::SValue;
+use crate::{to_hex, SValue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -38,9 +42,14 @@ pub struct Session {
     /// What it started from: `"deploy"`, `"latest"`, `"fresh"` or `"session N"`.
     #[serde(default)]
     pub from: String,
-    /// The state when the session ended. `None` while it runs (the live state is the
-    /// deployment's own) and for a deployment without state.
-    #[serde(default)]
+    /// The state when the session ended, by reference: each key's value hash (hex), the values
+    /// in the content store. `None` while it runs (the live state is the deployment's own) and
+    /// for a deployment without state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_refs: Option<BTreeMap<String, String>>,
+    /// A snapshot as files before `state_refs` held it, values inline. Read once at load, when
+    /// its values move into the store (`persist.rs`); never written.
+    #[serde(default, skip_serializing)]
     pub state: Option<BTreeMap<String, SValue>>,
 }
 
@@ -110,24 +119,25 @@ impl Lifecycle {
         Ok(())
     }
 
-    /// End the current session, keeping `live` (the deployment's state, if it has one) as its
-    /// snapshot.
-    pub fn stop(&mut self, live: Option<&BTreeMap<String, Value>>, now: u64) -> Result<(), LifecycleError> {
+    /// End the current session, keeping `live` (the deployment's state's references, if it has
+    /// state; its values must already be in the store) as its snapshot.
+    pub fn stop(&mut self, live: Option<&BTreeMap<String, Hash>>, now: u64) -> Result<(), LifecycleError> {
         if self.status == Status::Stopped {
             return Err(LifecycleError::AlreadyStopped);
         }
         self.status = Status::Stopped;
         if let Some(s) = self.current() {
             s.ended_at = Some(now);
-            s.state = live.map(snapshot);
+            s.state_refs = live.map(|refs| refs.iter().map(|(k, h)| (k.clone(), to_hex(h))).collect());
         }
         Ok(())
     }
 
     /// Resume a paused session, or start a new one after a stop. For a new session, returns the
-    /// state it should start with (`None`: keep the live state as it is); `from` is ignored on
-    /// resume, which always continues where the session was.
-    pub fn run(&mut self, from: RunFrom, now: u64) -> Result<Option<BTreeMap<String, Value>>, LifecycleError> {
+    /// references of the state it should start with (`None`: keep the live state as it is;
+    /// empty: start empty); `from` is ignored on resume, which always continues where the
+    /// session was.
+    pub fn run(&mut self, from: RunFrom, now: u64) -> Result<Option<BTreeMap<String, Hash>>, LifecycleError> {
         match self.status {
             Status::Running => Err(LifecycleError::AlreadyRunning),
             Status::Paused => {
@@ -139,13 +149,8 @@ impl Lifecycle {
                     RunFrom::Latest => (None, "latest".to_string()),
                     RunFrom::Fresh => (Some(BTreeMap::new()), "fresh".to_string()),
                     RunFrom::Session(n) => {
-                        let snap = self
-                            .sessions
-                            .iter()
-                            .find(|s| s.number == n)
-                            .and_then(|s| s.state.as_ref())
-                            .ok_or(LifecycleError::NoSuchSnapshot(n))?;
-                        (Some(restore(snap)), format!("session {n}"))
+                        let snap = self.snapshot(n).ok_or(LifecycleError::NoSuchSnapshot(n))?;
+                        (Some(snap), format!("session {n}"))
                     }
                 };
                 let number = self.sessions.last().map_or(1, |s| s.number + 1);
@@ -154,6 +159,12 @@ impl Lifecycle {
                 Ok(state)
             }
         }
+    }
+
+    /// Session `n`'s snapshot references, if it has a readable one.
+    pub fn snapshot(&self, n: u32) -> Option<BTreeMap<String, Hash>> {
+        let refs = self.sessions.iter().find(|s| s.number == n)?.state_refs.as_ref()?;
+        refs.iter().map(|(k, h)| Some((k.clone(), parse_hash(h)?))).collect()
     }
 
     /// Count one request (or tick) against the current session.
@@ -168,23 +179,25 @@ impl Lifecycle {
 }
 
 fn session(number: u32, now: u64, from: &str) -> Session {
-    Session { number, started_at: now, ended_at: None, requests: 0, errors: 0, from: from.into(), state: None }
-}
-
-fn snapshot(live: &BTreeMap<String, Value>) -> BTreeMap<String, SValue> {
-    live.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect()
-}
-
-fn restore(snap: &BTreeMap<String, SValue>) -> BTreeMap<String, Value> {
-    snap.iter().map(|(k, v)| (k.clone(), v.clone().into_core())).collect()
+    Session {
+        number,
+        started_at: now,
+        ended_at: None,
+        requests: 0,
+        errors: 0,
+        from: from.into(),
+        state_refs: None,
+        state: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn todos(n: usize) -> BTreeMap<String, Value> {
-        BTreeMap::from([("todos".to_string(), Value::List(vec![Value::Number(1.0); n]))])
+    /// A stand-in snapshot: the references of a state holding `n` todos.
+    fn todos(n: usize) -> BTreeMap<String, Hash> {
+        BTreeMap::from([("todos".to_string(), [n as u8; 32])])
     }
 
     #[test]
@@ -200,7 +213,8 @@ mod tests {
         assert_eq!(l.status, Status::Stopped);
         let s = &l.sessions[0];
         assert_eq!((s.number, s.started_at, s.ended_at, s.requests, s.errors), (1, 100, Some(120), 2, 1));
-        assert_eq!(s.state.as_ref().unwrap()["todos"], SValue::from_core(&todos(2)["todos"]));
+        assert_eq!(s.state_refs.as_ref().unwrap()["todos"], to_hex(&[2u8; 32]), "the snapshot, by reference");
+        assert_eq!(l.snapshot(1), Some(todos(2)));
     }
 
     #[test]

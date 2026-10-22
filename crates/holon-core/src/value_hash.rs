@@ -21,7 +21,7 @@
 
 use blake3::Hasher;
 
-use crate::{EncodeError, Hash, Value, ENCODING_VERSION};
+use crate::{DecodeError, EncodeError, Hash, Value, ENCODING_VERSION};
 
 // Value type tags — distinct, so a `Number 0`, a `Boolean false`, and an empty `Text` can never
 // collide once length prefixes are in play.
@@ -59,6 +59,124 @@ pub fn hash_value(v: &Value) -> Result<Hash, EncodeError> {
     let mut h = Hasher::new();
     h.update(&encode_value(v)?);
     Ok(*h.finalize().as_bytes())
+}
+
+/// Domain tag of a state root's preimage (see [`state_root`]).
+const DOMAIN_STATE: u8 = 0x21;
+
+/// How deep a decoded value may nest. Far beyond anything `json_parse` (depth 64) or a flow
+/// builds, and a hard stop for a hostile stream.
+const MAX_VALUE_DEPTH: usize = 256;
+
+/// The value [`encode_value`] encoded. Every read is bounds-checked and nothing is
+/// pre-allocated from a length the stream claims, so a malformed or hostile blob is an error,
+/// never a panic or a huge allocation. Trailing bytes are an error too: one encoding, one value.
+pub fn decode_value(bytes: &[u8]) -> Result<Value, DecodeError> {
+    let mut r = Reader { bytes, at: 0 };
+    let version = r.byte()?;
+    if version != ENCODING_VERSION {
+        return Err(DecodeError::WrongVersion { found: version, expected: ENCODING_VERSION });
+    }
+    let domain = r.byte()?;
+    if domain != DOMAIN_VALUE {
+        return Err(DecodeError::BadTag(domain));
+    }
+    let v = r.value(0)?;
+    if r.at != bytes.len() {
+        return Err(DecodeError::TrailingBytes);
+    }
+    Ok(v)
+}
+
+/// The Merkle root of a state: one hash for a whole key → value map, computed from each key and
+/// its value's hash ([`hash_value`]) rather than from the values themselves, so a state whose
+/// values are already hashed (once, when written) gets its root without re-reading them.
+/// `cells` must come in key order, as a `BTreeMap` iterates; two states are equal iff their
+/// roots are.
+pub fn state_root<'a>(cells: impl ExactSizeIterator<Item = (&'a str, &'a Hash)>) -> Result<Hash, EncodeError> {
+    let mut buf = vec![ENCODING_VERSION, DOMAIN_STATE];
+    put_len(&mut buf, cells.len())?;
+    for (key, hash) in cells {
+        put_bytes(&mut buf, key.as_bytes())?;
+        buf.extend_from_slice(hash);
+    }
+    Ok(*blake3::hash(&buf).as_bytes())
+}
+
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl Reader<'_> {
+    fn byte(&mut self) -> Result<u8, DecodeError> {
+        let b = *self.bytes.get(self.at).ok_or(DecodeError::UnexpectedEof)?;
+        self.at += 1;
+        Ok(b)
+    }
+    fn take(&mut self, n: usize) -> Result<&[u8], DecodeError> {
+        let end = self.at.checked_add(n).ok_or(DecodeError::UnexpectedEof)?;
+        let s = self.bytes.get(self.at..end).ok_or(DecodeError::UnexpectedEof)?;
+        self.at = end;
+        Ok(s)
+    }
+    fn len(&mut self) -> Result<usize, DecodeError> {
+        let b = self.take(4)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    }
+    fn text(&mut self) -> Result<String, DecodeError> {
+        let n = self.len()?;
+        String::from_utf8(self.take(n)?.to_vec()).map_err(|_| DecodeError::BadUtf8)
+    }
+    fn value(&mut self, depth: usize) -> Result<Value, DecodeError> {
+        if depth > MAX_VALUE_DEPTH {
+            return Err(DecodeError::TypeTooDeep);
+        }
+        Ok(match self.byte()? {
+            TAG_NUMBER => {
+                let b = self.take(8)?;
+                Value::Number(f64::from_bits(u64::from_le_bytes(b.try_into().expect("8 bytes"))))
+            }
+            TAG_BOOLEAN => match self.byte()? {
+                0 => Value::Boolean(false),
+                1 => Value::Boolean(true),
+                b => return Err(DecodeError::BadTag(b)),
+            },
+            TAG_TEXT => Value::Text(self.text()?),
+            TAG_LIST => {
+                let n = self.len()?;
+                let mut xs = Vec::new();
+                for _ in 0..n {
+                    xs.push(self.value(depth + 1)?);
+                }
+                Value::List(xs)
+            }
+            TAG_EFFECT => {
+                let sink = self.text()?;
+                Value::Effect { sink, payload: Box::new(self.value(depth + 1)?) }
+            }
+            TAG_SUM => {
+                let arm = self.len()?;
+                Value::Sum { arm, payload: Box::new(self.value(depth + 1)?) }
+            }
+            TAG_RECORD => {
+                let n = self.len()?;
+                let mut fields = std::collections::BTreeMap::new();
+                for _ in 0..n {
+                    let k = self.text()?;
+                    let v = self.value(depth + 1)?;
+                    // Keys must arrive in order and once each, or two encodings would decode
+                    // to the same record and the encoding would stop being canonical.
+                    if fields.keys().next_back().is_some_and(|last: &String| *last >= k) {
+                        return Err(DecodeError::BadTag(TAG_RECORD));
+                    }
+                    fields.insert(k, v);
+                }
+                Value::Record(fields)
+            }
+            t => return Err(DecodeError::BadTag(t)),
+        })
+    }
 }
 
 /// Canonical, collision-free encoding of a `Value` appended to `buf`.
@@ -206,6 +324,56 @@ mod tests {
                 assert_ne!(hashes[i], hashes[j], "{:?} vs {:?}", values[i], values[j]);
             }
         }
+    }
+
+    #[test]
+    fn decoding_inverts_encoding_and_refuses_anything_else() {
+        let v = Value::List(vec![
+            num(-2.5),
+            txt("ünïcode"),
+            Value::Record(BTreeMap::from([("a".to_string(), Value::Boolean(false)), ("b".to_string(), num(1.0))])),
+            Value::Sum { arm: 3, payload: Box::new(Value::List(vec![])) },
+            Value::Effect { sink: "store_write:k".into(), payload: Box::new(txt("x")) },
+        ]);
+        let bytes = encode_value(&v).unwrap();
+        assert_eq!(decode_value(&bytes).unwrap(), v);
+        // Every truncation fails cleanly; so do trailing bytes and a wrong version or domain.
+        for n in 0..bytes.len() {
+            assert!(decode_value(&bytes[..n]).is_err(), "truncated at {n}");
+        }
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert_eq!(decode_value(&longer), Err(DecodeError::TrailingBytes));
+        assert!(matches!(decode_value(&[ENCODING_VERSION + 1, 0x20, TAG_BOOLEAN, 1]), Err(DecodeError::WrongVersion { .. })));
+        assert_eq!(decode_value(&[ENCODING_VERSION, 0x01, TAG_BOOLEAN, 1]), Err(DecodeError::BadTag(0x01)));
+        // A list that claims four billion items, with none there, is an error, not an allocation.
+        assert_eq!(decode_value(&[ENCODING_VERSION, 0x20, TAG_LIST, 0xff, 0xff, 0xff, 0xff]), Err(DecodeError::UnexpectedEof));
+        // Record keys out of order would be a second encoding of the same record: refused.
+        let mut swapped = vec![ENCODING_VERSION, 0x20, TAG_RECORD, 2, 0, 0, 0];
+        swapped.extend([1, 0, 0, 0, b'b', TAG_BOOLEAN, 1, 1, 0, 0, 0, b'a', TAG_BOOLEAN, 1]);
+        assert!(decode_value(&swapped).is_err());
+        // Nesting has a floor.
+        let mut deep = num(1.0);
+        for _ in 0..300 {
+            deep = Value::List(vec![deep]);
+        }
+        assert_eq!(decode_value(&encode_value(&deep).unwrap()), Err(DecodeError::TypeTooDeep));
+    }
+
+    #[test]
+    fn a_state_root_is_the_hash_of_its_keys_and_value_hashes() {
+        let h = |v: &Value| hash_value(v).unwrap();
+        let state = |pairs: &[(&str, Value)]| -> BTreeMap<String, Hash> {
+            pairs.iter().map(|(k, v)| (k.to_string(), h(v))).collect()
+        };
+        let root = |s: &BTreeMap<String, Hash>| state_root(s.iter().map(|(k, h)| (k.as_str(), h))).unwrap();
+        let a = state(&[("todos", Value::List(vec![txt("milk")])), ("count", num(1.0))]);
+        let b = state(&[("count", num(1.0)), ("todos", Value::List(vec![txt("milk")]))]);
+        assert_eq!(root(&a), root(&b), "insertion order doesn't matter");
+        assert_ne!(root(&a), root(&state(&[("todos", Value::List(vec![txt("milk")]))])), "a missing key changes it");
+        assert_ne!(root(&a), root(&state(&[("todos", Value::List(vec![])), ("count", num(1.0))])), "a changed value too");
+        assert_ne!(root(&a), root(&state(&[("todo", Value::List(vec![txt("milk")])), ("count", num(1.0))])), "and a renamed key");
+        assert_ne!(root(&BTreeMap::new()), h(&Value::Record(BTreeMap::new())), "a state root is never a value hash");
     }
 
     #[test]

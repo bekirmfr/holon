@@ -155,7 +155,7 @@ pub(crate) fn handle_post_deploy(
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
         let state = match carried {
             Some(arc) => Some(arc),
-            None if is_state => Some(Arc::new(Mutex::new(BTreeMap::new()))),
+            None if is_state => Some(Arc::new(Mutex::new(State::new()))),
             None => None,
         };
         deployments.insert(
@@ -177,7 +177,7 @@ pub(crate) fn handle_post_deploy(
             },
         );
     }
-    persist_deployments(deployments_path, deployments);
+    persist_deployments(deployments_path, deployments, store);
 
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds })
 }
@@ -233,7 +233,7 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
             Some(arc) => {
                 let storage = arc.lock().unwrap();
                 let state = storage.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
-                Response::json(&StateBody { slug: slug.to_string(), state })
+                Response::json(&StateBody { slug: slug.to_string(), state, root: to_hex(&storage.root()) })
             }
             None => err(
                 400,
@@ -253,6 +253,7 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 /// slug that was never deployed. Returns the removed deployment's last known info, or 404 if
 /// the slug didn't exist.
 pub(crate) fn handle_delete_deployment(
+    store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &str,
     slug: &str,
@@ -268,7 +269,7 @@ pub(crate) fn handle_delete_deployment(
     };
     match removed {
         Some(dep) => {
-            persist_deployments(deployments_path, deployments);
+            persist_deployments(deployments_path, deployments, store);
             Response::json(&deployment_entry(slug, &dep))
         }
         None => Response::empty_404(),
@@ -370,7 +371,7 @@ pub(crate) fn handle_post_trigger(
     log_run(deployments, slug, run_entry("trigger", started, &extra_sourced, &run));
     let FiredRun { outputs, performed, .. } = run;
     if state.is_some() {
-        persist_deployments(deployments_path, deployments);
+        persist_deployments(deployments_path, deployments, store);
     }
 
     Response::json(&FireResponseBody {
@@ -456,15 +457,32 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         };
         let now = epoch_now();
         let live = dep.state.clone();
+        let mut values = state.store.clone();
+        // A session to restore is loaded (and verified) before anything changes, so a missing
+        // value leaves the deployment as it was.
+        let restored = match (action, from) {
+            ("run", RunFrom::Session(n)) if dep.life.status == Status::Stopped => match dep.life.snapshot(n) {
+                Some(refs) => match State::load(&refs, &values) {
+                    Ok(s) => Some(s),
+                    Err(e) => return err(500, format!("session {n}'s state can't be loaded: {e:?}")),
+                },
+                None => None, // `run` reports it
+            },
+            _ => None,
+        };
         let result = match action {
             "pause" => dep.life.pause(),
             "stop" => {
-                let held = live.as_ref().map(|arc| arc.lock().unwrap().clone());
-                dep.life.stop(held.as_ref(), now)
+                // The snapshot keeps references, so its values go into the store now.
+                let refs = match live.as_ref().map(|arc| arc.lock().unwrap().save(&mut values)).transpose() {
+                    Ok(refs) => refs,
+                    Err(e) => return err(500, format!("the state couldn't be stored: {e:?}")),
+                };
+                dep.life.stop(refs.as_ref(), now)
             }
             _ => dep.life.run(from, now).map(|start_from| {
-                if let (Some(arc), Some(map)) = (&live, start_from) {
-                    *arc.lock().unwrap() = map;
+                if let (Some(arc), Some(_)) = (&live, start_from) {
+                    *arc.lock().unwrap() = restored.unwrap_or_default();
                 }
                 // A clock deployment fires on its next pass once running again.
                 if dep.interval_seconds.is_some() {
@@ -477,15 +495,42 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         }
         deployment_entry(slug, dep)
     };
-    persist_deployments(&state.deployments_path, &state.deployments);
+    persist_deployments(&state.deployments_path, &state.deployments, &state.store);
     Response::json(&entry)
 }
 
 /// `GET /deployments/<slug>/sessions` — every run session, oldest first, each with its
 /// end-of-session state snapshot (`null` while it runs, or for a deployment without state).
-pub(crate) fn handle_get_sessions(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
-    match deployments.lock().unwrap().get(slug) {
-        Some(dep) => Response::json(&serde_json::json!({ "status": dep.life.status, "sessions": dep.life.sessions })),
-        None => err(404, format!("no deployment {slug:?}")),
-    }
+pub(crate) fn handle_get_sessions(
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    store: &SharedStore,
+    slug: &str,
+) -> Response {
+    let (status, sessions) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (dep.life.status, dep.life.sessions.clone()),
+        None => return err(404, format!("no deployment {slug:?}")),
+    };
+    // Each snapshot with its values (from the store) and its root.
+    let sessions: Vec<serde_json::Value> = sessions
+        .iter()
+        .map(|s| {
+            let mut json = serde_json::to_value(s).unwrap_or_default();
+            let refs = s.state_refs.as_ref().map(|r| {
+                r.iter().filter_map(|(k, h)| Some((k.clone(), parse_hash(h)?))).collect::<BTreeMap<String, Hash>>()
+            });
+            if let Some(refs) = refs {
+                match State::load(&refs, store) {
+                    Ok(state) => {
+                        let values: BTreeMap<String, SValue> =
+                            state.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
+                        json["state"] = serde_json::to_value(values).unwrap_or_default();
+                        json["root"] = serde_json::Value::String(to_hex(&state.root()));
+                    }
+                    Err(e) => json["state_error"] = serde_json::Value::String(format!("{e:?}")),
+                }
+            }
+            json
+        })
+        .collect();
+    Response::json(&serde_json::json!({ "status": status, "sessions": sessions }))
 }

@@ -196,7 +196,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/sessions") {
             if method == "GET" {
-                return handle_get_sessions(&state.deployments, slug);
+                return handle_get_sessions(&state.deployments, &state.store, slug);
             }
         } else if let Some((slug, action)) = rest.rsplit_once('/')
             && matches!(action, "run" | "pause" | "stop")
@@ -211,7 +211,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return handle_post_request(state, slug, request);
             }
         } else if method == "DELETE" {
-            let response = handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
+            let response = handle_delete_deployment(&state.store, &state.deployments, &state.deployments_path, rest);
             sync_listeners(state);
             return response;
         }
