@@ -1008,6 +1008,26 @@ fn check_eval_parity() {
     assert_eq!(holon_core::eval(&comp, &[], &r2).into_vec(), vec![Some(num(7.0))]);
 }
 
+/// The signature kit computes the same digests natively and in wasm (sha2/hmac are pure Rust, so
+/// they should; this is the check), through the catalog's own default-configured units.
+#[cfg(test)]
+fn check_signature_parity() {
+    let txt = |s: &str| Value::Text(s.to_string());
+    let r = MapResolver::new();
+    let run = |name: &str, inputs: &[Value]| {
+        let unit = holon_core::interface_of(name).unwrap();
+        let inputs: Vec<Option<Value>> = inputs.iter().cloned().map(Some).collect();
+        holon_core::eval(&unit, &inputs, &r).into_vec()
+    };
+    // RFC 4231 test case 2, FIPS 180-2 "abc", RFC 4648 "foobar".
+    let mac = txt("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+    assert_eq!(run("hmac_sha256", &[txt("Jefe"), txt("what do ya want for nothing?")]), vec![Some(mac.clone())]);
+    assert_eq!(run("sha256", &[txt("abc")]), vec![Some(txt("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"))]);
+    assert_eq!(run("base64", &[txt("foobar")]), vec![Some(txt("Zm9vYmFy"))]);
+    assert_eq!(run("hex", &[txt("foobar")]), vec![Some(txt("666f6f626172"))]);
+    assert_eq!(run("secure_equals", &[mac.clone(), mac]), vec![Some(Value::Boolean(true))]);
+}
+
 #[cfg(test)]
 fn check_wvalue_roundtrip() {
     let cases = [
@@ -1057,7 +1077,7 @@ fn check_wunit_roundtrip() {
 fn check_primitive_catalog() {
     let cat = catalog_wunits();
     // The §13a count crosses the mirror intact.
-    assert_eq!(cat.len(), 58);
+    assert_eq!(cat.len(), 63);
     // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
     let add = cat
         .iter()
@@ -1161,6 +1181,8 @@ mod native_tests {
     #[test]
     fn eval_parity_native() { check_eval_parity(); }
     #[test]
+    fn signature_parity_native() { check_signature_parity(); }
+    #[test]
     fn wvalue_roundtrip_native() { check_wvalue_roundtrip(); }
     #[test]
     fn wunit_roundtrip_native() { check_wunit_roundtrip(); }
@@ -1194,6 +1216,8 @@ mod wasm_tests {
     fn hash_parity_wasm() { check_hash_parity(); }
     #[wasm_bindgen_test]
     fn eval_parity_wasm() { check_eval_parity(); }
+    #[wasm_bindgen_test]
+    fn signature_parity_wasm() { check_signature_parity(); }
     #[wasm_bindgen_test]
     fn wvalue_roundtrip_wasm() { check_wvalue_roundtrip(); }
     #[wasm_bindgen_test]
@@ -1428,7 +1452,7 @@ mod wasm_tests {
     fn primitive_catalog_crosses_js_boundary() {
         let js = primitive_catalog().unwrap();
         let cat: Vec<WUnit> = serde_wasm_bindgen::from_value(js).unwrap();
-        assert_eq!(cat.len(), 58);
+        assert_eq!(cat.len(), 63);
         assert!(cat
             .iter()
             .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));

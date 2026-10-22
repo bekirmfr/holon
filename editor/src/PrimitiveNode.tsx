@@ -9,6 +9,15 @@ import { Handle, Position, useReactFlow, type NodeProps, type Node } from "@xyfl
 import { compatible, type WParam, type WPort, type WType, type WValue } from "./holon";
 import { formatValue } from "./diagnostics";
 import { METHODS } from "./endpoint";
+
+/** Params with a fixed set of values (crypto.rs in core): picked, never typed, so a node can't
+ *  hold a value its primitive would refuse. Keyed by primitive, then param. */
+const PARAM_CHOICES: Record<string, Record<string, readonly string[]>> = {
+  sha256: { encoding: ["hex", "base64"] },
+  hmac_sha256: { encoding: ["hex", "base64"] },
+  hex: { mode: ["encode", "decode"] },
+  base64: { mode: ["encode", "decode"], alphabet: ["standard", "url"] },
+};
 import { templateInterface, type TemplateName } from "./templates";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
 
@@ -235,6 +244,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
             // `default`), so there's no longer a reason to route them differently here.
             const isLiteralTypeParam =
               (name === "const" || name === "default") && p.name === "type";
+            const choices = body.kind === "Primitive" ? PARAM_CHOICES[name]?.[p.name] : undefined;
             return (
               <label className="hl-node__param" key={p.name}>
                 {p.name}{" "}
@@ -248,6 +258,18 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                   >
                     {METHODS.map((m) => (
                       <option key={m}>{m}</option>
+                    ))}
+                  </select>
+                ) : choices ? (
+                  <select
+                    className="nodrag"
+                    style={fieldStyle}
+                    value={p.value}
+                    disabled={readOnly}
+                    onChange={(e) => setParam(p.name, e.target.value)}
+                  >
+                    {choices.map((c) => (
+                      <option key={c}>{c}</option>
                     ))}
                   </select>
                 ) : isLiteralTypeParam ? (

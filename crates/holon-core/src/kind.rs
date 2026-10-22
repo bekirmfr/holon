@@ -243,6 +243,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "record" | "field" | "with_field" | "without_field" | "keys"
         | "lookup" | "insert" | "remove" | "find"
         | "json_parse" | "json_stringify"
+        | "sha256" | "hmac_sha256" | "hex" | "base64" | "secure_equals"
         | "to_text" | "is_truthy" | "guard" | "default" | "equals"
         | "fold" | "map" => vec![],
 

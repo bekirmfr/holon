@@ -28,6 +28,7 @@ mod catalog;
 mod declare;
 mod encapsulate;
 mod eval;
+mod crypto;
 mod fork;
 mod kind;
 mod memo;

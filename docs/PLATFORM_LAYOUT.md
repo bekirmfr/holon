@@ -65,7 +65,7 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 |---|---|
 | `value.rs`: Number, Boolean, Text, List, Effect, Sum | **+ `Record(BTreeMap<String, Value>)`**. Keys sorted, so canonical encoding is free. `ENCODING_VERSION` bump. |
 | `kind.rs` `Type` | **+ `Type::Record`**. Start with open records (`Record(Any)`), add field-typed records later. |
-| `primitives.rs`: arithmetic, text kit, list kit, `const`, `guard`, `default`, `equals`, `to_text`… | **+ record kit** (`record`, `field`, `with_field`, `keys`, `has_field`; keyed by an input: `lookup`, `insert`, `remove`; `find` over a list of records), **+ `json_parse` / `json_stringify`**, **+ `sha256`, `hmac_sha256`, `hex`, `base64`** (admission gate: inexpressible / hot-and-pervasive) |
+| `primitives.rs`: arithmetic, text kit, list kit, `const`, `guard`, `default`, `equals`, `to_text`… | **+ record kit** (`record`, `field`, `with_field`, `keys`, `has_field`; keyed by an input: `lookup`, `insert`, `remove`; `find` over a list of records), **+ `json_parse` / `json_stringify`**, **+ `sha256`, `hmac_sha256`, `hex`, `base64`, `secure_equals`** ✅ (admission gate: inexpressible / hot-and-pervasive) |
 | `kind.rs` sinks: `egress` | **+ `http_request` sink** (method, url, headers, body), classified `NetworkEgress`. Its response comes back via the effect loop (§4). |
 | `memo.rs`, `fork.rs`, `inspect.rs` (adoption), `advisory.rs` | Stay in core: they are pure and cost nothing. They're marked parked in docs only, not moved. |
 
@@ -416,7 +416,7 @@ effect loop). It can be tested in the editor with no server running.
 packs/hooks/
   pack.toml            name, version, door = "hooks", requires = ["auth", "http"]
   units/
-    stripe_verify.holon     composite: hmac_sha256 + hex + compare + text kit
+    stripe_verify.holon     composite: hmac_sha256 + secure_equals + text kit
     github_event.holon      composite: json_parse + field + select
     slack_post.holon        composite: record + json_stringify + http_request
   templates/
@@ -440,16 +440,18 @@ packs/hooks/
 |---|---|---|---|---|---|---|
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met**; splitting `App.tsx` remains |
 | **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b): runs today on the control plane's `rouille`, move pending | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
-| **M2 effects + replay** | `http_request` ✅, hashes/HMAC, Effects refused by `Any`-typed sink payloads ✅ | effect loop ✅, `Performer` ✅, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets ✅, durable runs ✅ | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half built (§4: rounds, permissions, secrets, durable runs); signature verification (`hmac_sha256`) remains** |
+| **M2 effects + replay** | `http_request` ✅, hashes/HMAC ✅ (`sha256`, `hmac_sha256`, `hex`, `base64`, `secure_equals`), Effects refused by `Any`-typed sink payloads ✅ | effect loop ✅, `Performer` ✅, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets ✅, durable runs ✅ | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half built (§4: rounds, permissions, secrets, durable runs); signature primitives built; the live Stripe → Slack run remains** |
 | **M3 door 1** | — | (consent at load moved to M2, §4.2.1) | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
 
 **Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is splitting
 `App.tsx`, the data plane's move to `hyper`, and `instantiate` following `fn` params. M2's replay half
 landed early (the recorder came with view mode); its effects half, and durable runs, are built (§4):
-outbound requests in rounds, host permissions, secrets, and runs that wait and resume. What M2 still
-lacks for its "done when" is the `auth` pack's pieces: `hmac_sha256` / `hex` for verifying a
-webhook's signature.
+outbound requests in rounds, host permissions, secrets, and runs that wait and resume. The signature
+primitives are in core too (`sha256`, `hmac_sha256`, `hex`, `base64`, and `secure_equals`, a
+constant-time compare), checked against RFC 4231 / FIPS 180 / RFC 4648 vectors and GitHub's
+webhook example. What M2 still lacks for its "done when" is the live run: a Stripe webhook verified,
+posted to Slack, a failure replayed, fixed and redeployed.
 
 ### 7a. Review findings, triaged against this direction
 The 2026-10-21 project review is sorted by what matters for a **single-user backend builder with a

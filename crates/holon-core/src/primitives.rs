@@ -344,6 +344,43 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             crate::json::stringify(v).map(Value::Text)
         }
 
+        // ── signatures and encodings (crypto.rs): over a text's UTF-8 bytes. An unknown
+        // encoding, mode or alphabet is absent, and so is a decode that isn't valid input or
+        // doesn't come back to UTF-8. ──
+        "sha256" => {
+            let [Value::Text(s)] = inputs else { return None };
+            crate::crypto::sha256(s, param(params, "encoding")?).map(Value::Text)
+        }
+        "hmac_sha256" => {
+            let [Value::Text(key), Value::Text(message)] = inputs else { return None };
+            crate::crypto::hmac_sha256(key, message, param(params, "encoding")?).map(Value::Text)
+        }
+        "hex" => {
+            let [Value::Text(s)] = inputs else { return None };
+            match param(params, "mode")? {
+                "encode" => Some(Value::Text(crate::crypto::hex_encode(s.as_bytes()))),
+                "decode" => String::from_utf8(crate::crypto::hex_decode(s)?).ok().map(Value::Text),
+                _ => None,
+            }
+        }
+        // `standard` encodes padded, `url` unpadded; either decodes with or without padding.
+        "base64" => {
+            let [Value::Text(s)] = inputs else { return None };
+            let name = param(params, "alphabet")?;
+            let alphabet = crate::crypto::alphabet(name)?;
+            match param(params, "mode")? {
+                "encode" => Some(Value::Text(crate::crypto::base64_encode(s.as_bytes(), alphabet, name == "standard"))),
+                "decode" => String::from_utf8(crate::crypto::base64_decode(s, alphabet)?).ok().map(Value::Text),
+                _ => None,
+            }
+        }
+        // Text equality in constant time: what a signature is checked with, so how long the
+        // comparison takes says nothing about how much of a guess was right.
+        "secure_equals" => {
+            let [Value::Text(a), Value::Text(b)] = inputs else { return None };
+            Some(Value::Boolean(crate::crypto::secure_equals(a, b)))
+        }
+
         "pair" => {
             let [a, b] = inputs else { return None };
             Some(Value::List(vec![(*a).clone(), (*b).clone()]))
@@ -647,6 +684,36 @@ mod tests {
         assert_eq!(compute("insert", &[&r, &num(1.0), &num(1.0)], &[]), None);
         assert_eq!(compute("remove", &[&num(1.0), &txt("x")], &[]), None);
         assert_eq!(compute("lookup", &[&r], &[]), None);
+    }
+
+    #[test]
+    fn signature_primitives_compute_through_their_params() {
+        // A webhook check end to end: GitHub's example signature, recomputed and compared.
+        let sig = compute("hmac_sha256", &[&txt("It's a Secret to Everybody"), &txt("Hello, World!")], &[p("encoding", "hex")]);
+        let expected = txt("757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17");
+        assert_eq!(sig.as_ref(), Some(&expected));
+        assert_eq!(compute("secure_equals", &[sig.as_ref().unwrap(), &expected], &[]), Some(boo(true)));
+        assert_eq!(compute("secure_equals", &[&txt("a"), &txt("b")], &[]), Some(boo(false)));
+        assert_eq!(compute("secure_equals", &[&txt("a"), &num(1.0)], &[]), None, "text only");
+        assert_eq!(
+            compute("sha256", &[&txt("abc")], &[p("encoding", "base64")]),
+            Some(txt("ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="))
+        );
+        assert_eq!(compute("sha256", &[&txt("abc")], &[p("encoding", "binary")]), None);
+        assert_eq!(compute("sha256", &[&num(1.0)], &[p("encoding", "hex")]), None);
+
+        let b64 = |mode: &str, alphabet: &str| vec![p("mode", mode), p("alphabet", alphabet)];
+        assert_eq!(compute("base64", &[&txt("foob")], &b64("encode", "standard")), Some(txt("Zm9vYg==")));
+        assert_eq!(compute("base64", &[&txt("foob")], &b64("encode", "url")), Some(txt("Zm9vYg")));
+        assert_eq!(compute("base64", &[&txt("w7xuw68=")], &b64("decode", "standard")), Some(txt("ünï")));
+        assert_eq!(compute("base64", &[&txt("_w")], &b64("decode", "url")), None, "0xff alone isn't UTF-8");
+        assert_eq!(compute("base64", &[&txt("Zm9v")], &b64("decode", "other")), None);
+        assert_eq!(compute("base64", &[&txt("Zm9v")], &b64("both", "url")), None);
+
+        assert_eq!(compute("hex", &[&txt("foobar")], &[p("mode", "encode")]), Some(txt("666f6f626172")));
+        assert_eq!(compute("hex", &[&txt("666f6f626172")], &[p("mode", "decode")]), Some(txt("foobar")));
+        assert_eq!(compute("hex", &[&txt("zz")], &[p("mode", "decode")]), None);
+        assert_eq!(compute("hex", &[&txt("ff")], &[p("mode", "decode")]), None, "not UTF-8");
     }
 
     #[test]

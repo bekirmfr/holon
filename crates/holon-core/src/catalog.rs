@@ -35,6 +35,8 @@ pub const GENESIS: &[&str] = &[
     "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove", "find",
     // pure — JSON (2)
     "json_parse", "json_stringify",
+    // pure — signatures and encodings (5): checking a webhook's signature
+    "sha256", "hmac_sha256", "hex", "base64", "secure_equals",
     // pure — universal, any-typed (5)
     "to_text", "is_truthy", "guard", "default", "equals",
     // request/response — performed by the host, answered in the next round (1)
@@ -169,6 +171,17 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "json_stringify" => prim(vec![port("value", Any)], vec![], Text),
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
 
+        // ── pure — signatures and encodings (crypto.rs) ── digests as lowercase `hex` or `base64`.
+        "sha256" => prim(vec![port("text", Text)], vec![Param::frozen("encoding", "hex")], Text),
+        "hmac_sha256" => prim(vec![port("key", Text), port("message", Text)], vec![Param::frozen("encoding", "hex")], Text),
+        "hex" => prim(vec![port("text", Text)], vec![Param::frozen("mode", "encode")], Text),
+        "base64" => prim(
+            vec![port("text", Text)],
+            vec![Param::frozen("mode", "encode"), Param::frozen("alphabet", "standard")],
+            Text,
+        ),
+        "secure_equals" => prim(vec![port("a", Text), port("b", Text)], vec![], Boolean),
+
         // ── pure — sum (Option) ──
         // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
         // already expressible with no new value kind for THAT half; the new kind is the tag itself
@@ -246,14 +259,15 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_58_leaves() {
+    fn genesis_has_63_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
         // deliberately for M1 (docs/PLATFORM_LAYOUT.md), json_parse + json_stringify, and the
         // keyed record kit (lookup, insert, remove), find, extend, http_request, secret, and the
-        // durable-run pair (await, resume_token).
-        assert_eq!(GENESIS.len(), 58);
+        // durable-run pair (await, resume_token), and the signature kit (sha256, hmac_sha256,
+        // hex, base64, secure_equals).
+        assert_eq!(GENESIS.len(), 63);
     }
 
     #[test]
