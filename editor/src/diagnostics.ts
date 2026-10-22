@@ -203,6 +203,22 @@ export function summarizeState(state: Record<string, WValue> | null): string {
   return keys.map((k) => `${k}: ${one(state[k])}`).join(", ");
 }
 /**
+ * A manifest's items (permissions.rs's `Manifest::items`): the capabilities derived from the
+ * graph, then what the deploy settings ask beyond the host's defaults, sorted as the server sorts
+ * them (a `BTreeSet`), so a saved flow lists what deploying it would ask for.
+ */
+export function manifestItems(
+  capabilities: string[],
+  requirements?: { limits?: Record<string, number>; plain_http?: string[]; private_addresses?: boolean },
+): string[] {
+  const items = new Set(capabilities);
+  for (const [name, n] of Object.entries(requirements?.limits ?? {})) items.add(`Limit(${name}=${n})`);
+  for (const host of requirements?.plain_http ?? []) items.add(`PlainHttp(${JSON.stringify(host)})`);
+  if (requirements?.private_addresses) items.add("PrivateAddresses");
+  return [...items].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
  * A manifest item (permissions.rs's names: `HttpRequest("a.com")`, `Limit(max_requests=80)`, …)
  * as a person reads it on the consent screen. An item this doesn't know is shown as it is.
  */

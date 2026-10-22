@@ -282,6 +282,14 @@ export type Grant = {
  *  under it, if it can't. */
 export type GrantView = { grant: Grant; hash: string; attention: string | null };
 
+/** `GET /deployments/<slug>/manifest`: what the deployment needs, re-derived from its unit, and
+ *  what of it its grant doesn't cover. */
+export type ManifestReply = { hash: string; capabilities: string[]; requirements: Requirements; items: string[]; not_granted: string[] };
+
+export async function getManifest(slug: string): Promise<ManifestReply> {
+  return asJson<ManifestReply>(await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/manifest`));
+}
+
 export async function getGrant(slug: string): Promise<GrantView> {
   const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/grant`);
   return asJson<GrantView>(res);

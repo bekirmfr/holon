@@ -13,6 +13,21 @@ import { defaultBoundaryValue } from "./BoundaryField";
 import { findRoutes, routeSpec } from "./derive";
 import { endpointUnit, serverUnit, type EndpointDraft } from "./endpoint";
 
+/** The unit a flow deploys as: its server when it has routes, else the whole canvas as one
+ *  composite. Throws why it can't be derived. */
+export function flowUnitHash(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, byName: Map<string, WUnit>, portText: string): string {
+  const derived = deriveServer(ns, es, ev, byName, portText);
+  if (derived.errors.length > 0) throw new Error(derived.errors.join("; "));
+  if (derived.endpoints.length > 0) {
+    if (!derived.serverHash) throw new Error(`"${portText}" is not a port (set it under ⚙)`);
+    return derived.serverHash;
+  }
+  if (ns.length === 0) throw new Error("the canvas is empty");
+  const { children, wedges } = groupOf(ns, es, ev, byName);
+  const whole = ev.freeze_encapsulation(children, wedges, ev.propose_encapsulation(children, wedges) as WEncapSpec) as WUnit;
+  return ev.insert(buildPreimage(whole));
+}
+
 /** A group of canvas nodes as core children (each node's hash) plus the wires among them, by
  *  index. */
 export function groupOf(group: PrimitiveNodeType[], es: Edge[], ev: Evaluator, byName: Map<string, WUnit>) {

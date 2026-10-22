@@ -69,11 +69,12 @@ import {
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
-import { isWEncapError, capabilityAcknowledgeName, describeItem, valueChip } from "./diagnostics";
+import { isWEncapError, capabilityAcknowledgeName, describeItem, manifestItems, valueChip } from "./diagnostics";
 import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
   excludeProjectedOutput,
+  flowUnitHash,
   expandComposite,
   groupOf,
   groupSelection,
@@ -409,6 +410,18 @@ function Canvas({
   // a frozen unit (canvasOps.ts).
   const groupUnits = useCallback((group: PrimitiveNodeType[], es: Edge[]) => groupOf(group, es, ev, byName), [ev, byName]);
   const traceOf = useCallback((unit: WUnit, group: PrimitiveNodeType[]) => traceOfUnit(unit, group, ev), [ev]);
+
+  // A saved flow's manifest (the flows page), derived from its document as deploying it would:
+  // its unit's capabilities from core, plus what its deploy settings ask beyond the defaults.
+  const manifestOfDocument = useCallback(
+    (doc: FlowDocument) => {
+      for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
+      const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, byName, doc.server?.port ?? DEFAULT_SETTINGS.port);
+      const caps = (ev.capabilities(hash) as WCapability[]).map(capabilityAcknowledgeName);
+      return manifestItems(caps, doc.server?.requirements);
+    },
+    [ev, byName],
+  );
 
   // The server this flow declares, derived from the canvas (canvasOps.deriveServer). Recomputed
   // when the canvas's structure changes, not on moves.
@@ -1060,6 +1073,7 @@ function Canvas({
               onResume={onResumeFlow}
               samples={SAMPLES}
               onOpenSample={onOpenSample}
+              manifestOf={manifestOfDocument}
             />
           )}
           {page === "deployed" && (

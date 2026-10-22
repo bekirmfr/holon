@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator, primitive_catalog, variadic_primitives } from "../wasm/holon_wasm.js";
-import { buildPreimage, type WEncapSpec, type WUnit } from "./holon";
-import { deriveServer, groupOf } from "./canvasOps";
-import { capabilityAcknowledgeName } from "./diagnostics";
+import { type WUnit } from "./holon";
+import { deriveServer, flowUnitHash } from "./canvasOps";
+import { capabilityAcknowledgeName, manifestItems } from "./diagnostics";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { SAMPLES, buildSample } from "./samples";
@@ -32,19 +32,9 @@ function derive(name: string): { caps: string[]; endpoints: number } {
   const nodes = doc.nodes as PrimitiveNodeType[];
   const edges = doc.edges as Edge[];
   const ev = new Evaluator();
-  let hash: string;
-  let endpoints = 0;
-  if (sample.port) {
-    const server = deriveServer(nodes, edges, ev, catalog, sample.port);
-    expect(server.errors, JSON.stringify(server.errors)).toEqual([]);
-    expect(server.serverHash).not.toBeNull();
-    hash = server.serverHash!;
-    endpoints = server.endpoints.length;
-  } else {
-    const { children, wedges } = groupOf(nodes, edges, ev, catalog);
-    const whole = ev.freeze_encapsulation(children, wedges, ev.propose_encapsulation(children, wedges) as WEncapSpec) as WUnit;
-    hash = ev.insert(buildPreimage(whole));
-  }
+  // The unit deploying it would deploy (and the flows page derives a saved flow's manifest from).
+  const hash = flowUnitHash(nodes, edges, ev, catalog, sample.port ?? "8080");
+  const endpoints = sample.port ? deriveServer(nodes, edges, ev, catalog, sample.port).endpoints.length : 0;
   const caps = (ev.capabilities(hash) as Parameters<typeof capabilityAcknowledgeName>[0][]).map(capabilityAcknowledgeName).sort();
   return { caps, endpoints };
 }
@@ -67,6 +57,18 @@ describe("sample flows", () => {
       for (const secret of s.secrets ?? []) expect(caps).toContain(`SecretRead("${secret.name}")`);
     });
   }
+
+  it("list a manifest as the server does: capabilities, then requirements, sorted", () => {
+    expect(manifestItems(derive("guarded-api").caps, { limits: { max_requests: 80 }, plain_http: ["a.local:8080"], private_addresses: true })).toEqual([
+      "Limit(max_requests=80)",
+      "NetworkIngress",
+      'PlainHttp("a.local:8080")',
+      "PrivateAddresses",
+      'SecretRead("api_token")',
+      'SecretRead("receipt_key")',
+    ]);
+    expect(manifestItems(derive("hello-api").caps)).toEqual(["NetworkIngress"]);
+  });
 
   it("ask for what each one shows", () => {
     expect(derive("hello-api").caps).toEqual(["NetworkIngress"]);

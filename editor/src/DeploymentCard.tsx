@@ -4,9 +4,11 @@
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { describeItem, formatOutputs, summarizeState } from "./diagnostics";
+import { ManifestSection } from "./Manifest";
 import {
   changeGrant,
   getGrant,
+  getManifest,
   getSessions,
   listWaitingRuns,
   type GrantView,
@@ -163,6 +165,10 @@ export function DeploymentCard({
         <div style={{ color: "#e0916f", fontSize: 11 }}>⚠ {entry.attention}</div>
       )}
       {(entry.waiting ?? 0) > 0 && <WaitingRuns slug={entry.slug} count={entry.waiting ?? 0} />}
+      <ManifestSection
+        version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`}
+        load={() => getManifest(entry.slug).then((m) => ({ items: m.items, notGranted: m.not_granted, hash: m.hash }))}
+      />
       <Permissions slug={entry.slug} version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`} onChanged={onChanged} />
 
       {open &&

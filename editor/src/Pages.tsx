@@ -1,7 +1,8 @@
 // The pages shown over the canvas: saved flows, and deployments.
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { deleteFlow, getFlow, listFlows, type DeploymentEntry, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
+import { deleteFlow, getFlow, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
+import { ManifestSection } from "./Manifest";
 import { openChoice } from "./flowDoc";
 import { useDialog } from "./Dialog";
 import { DeploymentCard } from "./DeploymentCard";
@@ -23,8 +24,12 @@ export function FlowsPage({
   onResume,
   samples,
   onOpenSample,
+  manifestOf,
 }: {
   current: { name: string | null; dirty: boolean };
+  /** A saved document's manifest items, derived as deploying it would (App: core's capabilities
+   *  plus its deploy settings' requirements). Throws why it can't be derived. */
+  manifestOf: (doc: FlowDocument) => string[];
   onOpen: (rec: FlowRecord) => void;
   onResume: () => void;
   /** Sample flows (samples.ts), one per capability: opening one starts an unsaved copy. */
@@ -86,48 +91,42 @@ export function FlowsPage({
         </div>
       )}
       {flows.map((f) => (
-        <div
-          key={f.name}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            padding: "8px 10px",
-            marginBottom: 6,
-            background: "#0e1a2f",
-            border: "1px solid #1b2a45",
-            borderRadius: 4,
-          }}
-        >
-          <span style={{ color: "#6fd3e0", fontSize: 13, flex: 1 }}>{f.name}</span>
-          <span style={{ color: "#9fb4d4", fontSize: 11 }}>
-            saved {new Date(f.saved_at_epoch_seconds * 1000).toLocaleString()}
-          </span>
-          {openChoice(f.name, current) === "resume" ? (
-            <>
-              <span style={{ color: "#e0c36f", fontSize: 11 }}>unsaved changes</span>
-              <button style={smallBtn} onClick={() => open(f.name)} title="back to the canvas, changes kept">
+        <div key={f.name} style={{ padding: "8px 10px", marginBottom: 6, background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ color: "#6fd3e0", fontSize: 13, flex: 1 }}>{f.name}</span>
+            <span style={{ color: "#9fb4d4", fontSize: 11 }}>
+              saved {new Date(f.saved_at_epoch_seconds * 1000).toLocaleString()}
+            </span>
+            {openChoice(f.name, current) === "resume" ? (
+              <>
+                <span style={{ color: "#e0c36f", fontSize: 11 }}>unsaved changes</span>
+                <button style={smallBtn} onClick={() => open(f.name)} title="back to the canvas, changes kept">
+                  open
+                </button>
+                <button style={smallBtn} onClick={() => reload(f.name)} title="discard your changes and load the saved copy">
+                  reload saved
+                </button>
+              </>
+            ) : (
+              <button style={smallBtn} onClick={() => open(f.name)}>
                 open
               </button>
-              <button style={smallBtn} onClick={() => reload(f.name)} title="discard your changes and load the saved copy">
-                reload saved
-              </button>
-            </>
-          ) : (
-            <button style={smallBtn} onClick={() => open(f.name)}>
-              open
+            )}
+            <button
+              style={{ ...smallBtn, opacity: 0.4, cursor: "default" }}
+              disabled
+              title="marketplace is deferred — publishing lands with it"
+            >
+              publish
             </button>
-          )}
-          <button
-            style={{ ...smallBtn, opacity: 0.4, cursor: "default" }}
-            disabled
-            title="marketplace is deferred — publishing lands with it"
-          >
-            publish
-          </button>
-          <button style={smallBtn} onClick={() => remove(f.name)} title="delete this saved flow">
-            ×
-          </button>
+            <button style={smallBtn} onClick={() => remove(f.name)} title="delete this saved flow">
+              ×
+            </button>
+          </div>
+          <ManifestSection
+            version={String(f.saved_at_epoch_seconds)}
+            load={() => getFlow(f.name).then((rec) => ({ items: manifestOf(rec.document) }))}
+          />
         </div>
       ))}
 
