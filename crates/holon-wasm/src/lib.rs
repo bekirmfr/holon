@@ -1026,6 +1026,8 @@ fn check_signature_parity() {
     assert_eq!(run("base64", &[txt("foobar")]), vec![Some(txt("Zm9vYmFy"))]);
     assert_eq!(run("hex", &[txt("foobar")]), vec![Some(txt("666f6f626172"))]);
     assert_eq!(run("secure_equals", &[mac.clone(), mac]), vec![Some(Value::Boolean(true))]);
+    // And split, which takes a signature header apart.
+    assert_eq!(run("split", &[txt("t=1,v1=ab"), txt(",")]), vec![Some(Value::List(vec![txt("t=1"), txt("v1=ab")]))]);
 }
 
 #[cfg(test)]
@@ -1077,7 +1079,7 @@ fn check_wunit_roundtrip() {
 fn check_primitive_catalog() {
     let cat = catalog_wunits();
     // The §13a count crosses the mirror intact.
-    assert_eq!(cat.len(), 63);
+    assert_eq!(cat.len(), 64);
     // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
     let add = cat
         .iter()
@@ -1452,7 +1454,7 @@ mod wasm_tests {
     fn primitive_catalog_crosses_js_boundary() {
         let js = primitive_catalog().unwrap();
         let cat: Vec<WUnit> = serde_wasm_bindgen::from_value(js).unwrap();
-        assert_eq!(cat.len(), 63);
+        assert_eq!(cat.len(), 64);
         assert!(cat
             .iter()
             .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));

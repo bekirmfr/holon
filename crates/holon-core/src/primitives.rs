@@ -195,6 +195,16 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             // start past the end ⇒ empty; len past the end ⇒ truncated. Total for valid types.
             Some(Value::Text(s.chars().skip(start).take(len).collect()))
         }
+        // The pieces of `text` between each occurrence of `sep`, in order: `join`'s inverse, so
+        // `join(split(t, s), s) == t`. Text without `sep` is one piece (the empty text too);
+        // an empty `sep` has no pieces to cut, and is absent.
+        "split" => {
+            let [Value::Text(text), Value::Text(sep)] = inputs else { return None };
+            if sep.is_empty() {
+                return None;
+            }
+            Some(Value::List(text.split(sep.as_str()).map(|s| Value::Text(s.to_string())).collect()))
+        }
         "index_of" => {
             let [h, n] = inputs else { return None };
             let (h, n) = (as_text(h)?, as_text(n)?);
@@ -684,6 +694,20 @@ mod tests {
         assert_eq!(compute("insert", &[&r, &num(1.0), &num(1.0)], &[]), None);
         assert_eq!(compute("remove", &[&num(1.0), &txt("x")], &[]), None);
         assert_eq!(compute("lookup", &[&r], &[]), None);
+    }
+
+    #[test]
+    fn split_is_joins_inverse() {
+        let texts = |xs: &[&str]| Some(Value::List(xs.iter().map(|x| txt(x)).collect()));
+        assert_eq!(compute("split", &[&txt("t=1,v1=ab"), &txt(",")], &[]), texts(&["t=1", "v1=ab"]));
+        assert_eq!(compute("split", &[&txt("a,,b,"), &txt(",")], &[]), texts(&["a", "", "b", ""]), "empty pieces kept");
+        assert_eq!(compute("split", &[&txt("a::b"), &txt("::")], &[]), texts(&["a", "b"]));
+        assert_eq!(compute("split", &[&txt("abc"), &txt(",")], &[]), texts(&["abc"]));
+        assert_eq!(compute("split", &[&txt(""), &txt(",")], &[]), texts(&[""]));
+        assert_eq!(compute("split", &[&txt("abc"), &txt("")], &[]), None, "an empty separator");
+        assert_eq!(compute("split", &[&txt("abc"), &num(1.0)], &[]), None);
+        let pieces = compute("split", &[&txt("x, y,,z"), &txt(", ")], &[]).unwrap();
+        assert_eq!(compute("join", &[&pieces, &txt(", ")], &[]), Some(txt("x, y,,z")));
     }
 
     #[test]
