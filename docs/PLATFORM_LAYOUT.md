@@ -137,8 +137,9 @@ round n:  sourced += {responses from rounds < n, by node}            → eval ag
 done:     a round with no unanswered request
           → its output is the response, its effects are performed; earlier rounds' outputs and
             effects are discarded (they were computed with responses missing)
-bounded:  at most MAX_ROUNDS (8) and a wall-clock budget per run; past either, the run fails
-          and nothing is performed
+bounded:  by the run's limits (§4.2): its wall-clock budget and its outbound-request budget
+          (every round past round 0 needs at least one request, so that budget also bounds the
+          rounds); past either, the run fails and nothing is performed
 ```
 
 - **`http_request`** (core, a sink-like node): inputs `method`, `url`, `headers`, `body`; output
@@ -158,19 +159,69 @@ bounded:  at most MAX_ROUNDS (8) and a wall-clock budget per run; past either, t
   the recorded responses back instead of calling the network, so a recorded run replays
   bit-identically offline, and the editor steps through it round by round.
 
-### 4.2 Outbound safety
+### 4.2 Outbound safety and limits
 An outbound request is the first thing a flow does to the outside world, so the limits come with
-the node, not after it:
+the node, not after it. Two kinds:
 
-| Rule | Default |
-|---|---|
-| **Allowed hosts are part of consent.** Deploy derives each `http_request`'s host where it is a literal (`https://hooks.slack.com/...`), and the person acknowledges `NetworkEgress("hooks.slack.com")`, not just "the network". A URL built at run time needs an explicit allowlist entry; a host not on it is refused at perform time. | deny |
-| **No private destinations.** Loopback, link-local, private and metadata ranges (127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, ::1, fc00::/7) are refused after DNS resolution, and on every redirect, unless the deployment opts in. This blocks SSRF into the machine and its network. | deny |
-| HTTPS only, unless opted out per host. | on |
-| Timeouts: connect 5 s, whole request 30 s; the run's wall-clock budget bounds the sum. | 5 s / 30 s |
-| Response size cap; bigger bodies fail the request (the run sees a `{status: 0, error}` response). | 8 MiB |
-| Redirects followed, at most 5, each re-checked against the rules above. | 5 |
-| Requests per run. | 32 |
+**Rules** (on by default; a deployment opts out explicitly, and the opt-out is shown at consent):
+
+- **Allowed hosts are part of consent.** Deploy derives each `http_request`'s host where it is a
+  literal (`https://hooks.slack.com/...`), and the person acknowledges
+  `NetworkEgress("hooks.slack.com")`, not just "the network". A URL built at run time needs an
+  explicit allowlist entry; a host not on it is refused at perform time.
+- **No private destinations.** Loopback, link-local, private, CGNAT and metadata ranges (127/8,
+  10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, ::1, fc00::/7, fe80::/10) are refused after
+  DNS resolution, against the address actually connected to, and again on every redirect. This is
+  OWASP's SSRF guidance; it also stops DNS rebinding, since the check is on the resolved address.
+- **HTTPS only**, with certificate verification; plain HTTP is a per-host opt-out.
+
+**Limits** (numbers, so they are configurable; §4.2.1 says who sets them). Defaults follow what the
+systems a flow talks to already expect:
+
+| Limit | Default | Ceiling | Why this number |
+|---|---|---|---|
+| Connect timeout, per request | 10 s | 30 s | A healthy TLS handshake takes well under a second; 10 s fails a dead host fast. Common client default. |
+| Request timeout (whole request, to the last byte) | 30 s | 300 s | Matches an inbound request's budget, below; long calls belong to durable runs (§4.3). |
+| Run budget, request-triggered run | 25 s | 120 s | The caller is waiting: webhook senders give up early (GitHub: 10 s; Slack wants an ack in 3 s), and gateways cut at about 30 s (AWS API Gateway: 29 s). A run must answer before its caller hangs up. |
+| Run budget, clock / trigger run | 60 s | 900 s | Nobody is waiting; the ceiling is AWS Lambda's 15 min. |
+| Outbound requests per run (also bounds the rounds) | 50 | 1,000 | Cloudflare Workers' subrequest limits (50 free, 1,000 paid). |
+| Concurrent requests per host, within a round | 6 | 32 | Browsers' per-host connection limit; polite to the APIs called. |
+| Response body size | 10 MiB | 100 MiB | AWS API Gateway's payload limit; larger downloads go to the content store by reference (§4.5). |
+| Request body size | 10 MiB | 100 MiB | Same as responses. |
+| Redirects followed | 10 | 20 | Go's `net/http` default (10); browsers stop near 20. |
+| Response header size | 64 KiB | 256 KiB | Above common server limits (8–16 KiB per line), well below abuse. |
+
+A request that breaks a limit doesn't fail the run: its node gets a response record
+`{status: 0, error: "timeout" | "too_large" | "blocked_host" | ...}`, and the flow decides. Breaking
+the **run** budget does fail the run, and nothing is performed.
+
+#### 4.2.1 Who sets the limits
+Limits are authored params at two levels, inside ceilings the host operator manages:
+
+| Level | Where it is set | What it can do |
+|---|---|---|
+| **Host** (the operator) | server config file (`holon.toml`, `[limits]`), or flags and env vars | sets each limit's **default** and **ceiling**, for every deployment on this host |
+| **Deployment** (the author) | deploy settings in the editor (⚙, beside port and interval today), sent with the deploy | raises or lowers any limit, up to the ceiling; the allowlist and rule opt-outs live here too |
+| **Node** (the author) | `http_request` params (`timeout`, `max_response_bytes`, `follow_redirects`) | tightens one call further, never past the deployment's limit |
+
+- **The effective limit** is the node's value if set, else the deployment's, else the host default,
+  always clamped to the host ceiling.
+- **Deploy refuses a deployment limit above a ceiling,** with a message naming the ceiling, rather
+  than clamping silently. Consent shows any limit raised above the host default and any rule
+  opted out.
+- **Node params are frozen params,** so they are part of the unit's hash: changing a call's timeout
+  is a new version, like any other behaviour change. Deployment limits are not in the hash, but are
+  stored with the deployment and recorded in each flow-log entry as the limits in effect, so a log
+  always explains why a call timed out.
+- **Lowering a ceiling** later clamps running deployments to it, flags them in the deployment list,
+  and logs the change. Nothing is redeployed silently.
+- **The control plane exposes** `GET /limits` (defaults and ceilings) so the editor can show the
+  bounds while editing and validate before deploy.
+- **Limits that exist today move under the same config:** the data plane's inbound body cap
+  (hardcoded 8 MiB, `MAX_BODY_BYTES`; default becomes 10 MiB to match the outbound one) and the
+  flow log's retention (hardcoded 500 entries, `recorder::CAPACITY`) become host defaults with
+  ceilings, and the inbound cap a per-deployment setting. The control plane's own cap stays fixed:
+  it serves only the editor.
 
 - **Client:** `ureq` (synchronous, rustls), which fits the current thread-per-request server; it
   moves with the data plane if that moves to `hyper` (§7b).
@@ -196,8 +247,12 @@ it. That needs an identity for the run and a way to resume it.
 - **Pinned version.** A run continues on the deployment hash it started on. Units are
   content-addressed, so the old version stays resolvable for as long as runs need it, even across
   redeploys; new runs start on the new version.
-- **Expiry.** Every parked run has a deadline. Expiring is itself an event delivered to the
-  awaiting node (`{expired: true}`), so the flow decides what timing out means.
+- **Expiry.** Every parked run has a deadline: default 7 days, ceiling 90 days, set like the other
+  limits (§4.2.1; an `await` node may shorten it). Expiring is itself an event delivered to the
+  awaiting node (`{expired: true}`), so the flow decides what timing out means. For scale: Stripe
+  retries a webhook for up to 3 days, so a payment wait fits the default.
+- **Parked runs per deployment:** default 10,000, ceiling set by the host, so a flood of starts
+  can't fill the disk.
 - **Visible.** The flow log groups one run's entries under its run id; the timeline shows the gap.
   The editor lists parked runs per deployment, with their expiry.
 - **Today, by hand:** the same pattern works now with state: the first route `insert`s its context
@@ -214,7 +269,8 @@ Two different things, kept apart:
   id, the log entry and the replay input are one thing, and the host can verify a run record
   against its id. The nonce makes two runs from the same flow and state distinct. A flow reads its
   id from a `run_id` source node; the id appears in logs and in the editor and grants nothing.
-- **Resume token: what lets an outsider continue it.** A separate 128-bit random value, minted by
+- **Resume token: what lets an outsider continue it.** A separate 128-bit random value (above
+  OWASP's 64-bit minimum for session identifiers), minted by
   the host when a flow asks for one (a `resume_token` node, naming the `await` it resumes), mapped
   to `(run id, await node, expiry)`. It goes into callback URLs, Stripe metadata, approval links.
   A run can hand out several (approve, reject), each can expire or be revoked, and a token is only
@@ -236,7 +292,8 @@ The answer is to hash hashes, the way units already work.
 - **State as a Merkle map.** Each key's value is hashed **once, when it is written**, and the hash
   kept beside it. The state root is `H(sorted (key, value hash) pairs)`. A run that writes one key
   re-hashes one value and a short list. Reads cost nothing.
-- **Large values by reference.** A value over a threshold (64 KiB encoded), and any uploaded file,
+- **Large values by reference.** A value over a threshold (default 64 KiB encoded; a host setting,
+  not an author one, since it changes storage, not behaviour), and any uploaded file,
   is stored in the content store under its hash, like a unit; state, the flow log and run records
   hold the hash. Hashing it later is free, identical content is stored once, and logs stay small.
 - **Request bodies** are hashed as they are read.
@@ -256,9 +313,9 @@ One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable 
 | 1 | Core: public canonical `encode_value` / `hash_value` (±0, NaN pinned) | the encoding is fixed by tests; memo uses it |
 | 2 | Host: Merkle state (value hashes on write, state root) and large values by reference | state root stable across restarts; a snapshot shares unchanged values |
 | 3 | Core: `http_request` node, its capability `NetworkEgress(host)` and validation | a flow with it validates and its derived hosts show at deploy |
-| 4 | Host: the round loop, the `Performer` with `ureq` and every §4.2 limit | a run calls a local test server, uses the answer, and is bounded |
-| 5 | Server: consent with hosts, run ids and the nonce, `rounds` in the flow log | a deployment lists its hosts; each log entry has a verifiable run id |
-| 6 | Editor: the node, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round |
+| 4 | Host: the round loop, the `Performer` with `ureq`, the §4.2 rules, and limits resolved node → deployment → host default, clamped to the ceiling | a run calls a local test server, uses the answer, and each limit stops it as specified |
+| 5 | Server: `holon.toml` limits and `GET /limits`; deployment limits and consent with hosts; run ids and the nonce; `rounds` and limits in effect in the flow log | a deployment lists its hosts and limits, a limit above a ceiling is refused, and each log entry has a verifiable run id |
+| 6 | Editor: the node and its params, limits in deploy settings (bounded by `GET /limits`), rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round |
 | 7 | Secrets: store, `secret` node, redaction | a token never appears in a log, a replay or the editor |
 | 8 | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on |
 
