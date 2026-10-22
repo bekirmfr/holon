@@ -4,6 +4,7 @@
 // of its manifest). The deployment is named after the flow, so there is no separate slug.
 
 import { useEffect, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { deleteSecret, getPermissions, listSecrets, setSecret, type DeploymentEntry, type HostPolicy, type Requirements } from "./server";
 
 /** A flow's deploy settings, saved with it. `port` is for a flow with routes (a server),
@@ -84,6 +85,12 @@ export function DeployBar({
   const [open, setOpen] = useState(false);
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
   useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  useEffect(() => {
     if (open && !policy) getPermissions().then(setPolicy).catch(() => {});
   }, [open, policy]);
   // Which secrets are set (names only: the server never sends a value back).
@@ -162,108 +169,131 @@ export function DeployBar({
       <button style={base} onClick={() => setOpen(!open)} title="deploy settings: port, clock interval, what it needs">
         ⚙
       </button>
-      {open && (
-        <div
-          className="nodrag"
-          style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            right: 0,
-            zIndex: 10,
-            background: "#0b1527",
-            border: "1px solid #1b2a45",
-            borderRadius: 4,
-            padding: 8,
-            display: "grid",
-            gridTemplateColumns: "auto auto",
-            gap: 6,
-            alignItems: "center",
-            fontSize: 11,
-            color: "#9fb4d4",
-            whiteSpace: "nowrap",
-          }}
-        >
-          <span title="the port a flow with routes (request nodes) answers on">port</span>
-          <input value={settings.port} onChange={(e) => setSettings({ ...settings, port: e.target.value })} style={input} />
-          <span title="how often a flow that reads the clock fires, in seconds">interval (s)</span>
-          <input
-            value={settings.interval}
-            placeholder="clock flows"
-            onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
-            style={input}
-          />
-          <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="what it needs beyond its graph; the host must grant it">
-            needs (blank: this host's default)
-          </span>
-          {LIMITS.map(([name, label]) => (
-            <label key={name} style={{ display: "contents" }}>
-              <span>{label}</span>
-              <input
-                value={req?.limits?.[name] ?? ""}
-                placeholder={policy ? String(policy.defaults[name]) : ""}
-                title={policy ? `default ${policy.defaults[name]}, ceiling ${policy.ceilings[name]}` : undefined}
-                onChange={(e) => setSettings({ ...settings, requirements: withLimit(req, name, e.target.value) })}
-                style={{ ...input, width: 84 }}
-              />
-            </label>
-          ))}
-          <span title="hosts it may call over plain HTTP; this host must allow plain HTTP at all">plain HTTP to</span>
-          <input
-            value={(req?.plain_http ?? []).join(", ")}
-            placeholder="none"
-            disabled={policy !== null && !policy.allow_plain_http}
-            title={policy && !policy.allow_plain_http ? "this host never grants plain HTTP" : "comma-separated host[:port]"}
-            onChange={(e) =>
-              setSettings({
-                ...settings,
-                requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
-              })
-            }
-            style={{ ...input, width: 140 }}
-          />
-          <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
-          <input
-            type="checkbox"
-            checked={req?.private_addresses ?? false}
-            disabled={policy !== null && !policy.allow_private_addresses}
-            title={policy && !policy.allow_private_addresses ? "this host never grants private addresses" : undefined}
-            onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
-            style={{ justifySelf: "start" }}
-          />
-          {secretNames.length > 0 && (
-            <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
-              secrets{slug ? "" : " (name the flow first)"}
-            </span>
-          )}
-          {secretNames.map((name) => (
-            <label key={name} style={{ display: "contents" }}>
-              <span>
-                {name} <span style={{ color: setNames.includes(name) ? "#9ad29f" : "#e0916f" }}>{setNames.includes(name) ? "set" : "not set"}</span>
-              </span>
-              <span style={{ display: "inline-flex", gap: 4 }}>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  value={typed[name] ?? ""}
-                  placeholder={setNames.includes(name) ? "replace…" : "value"}
-                  disabled={!slug}
-                  onChange={(e) => setTyped({ ...typed, [name]: e.target.value })}
-                  style={{ ...input, width: 100 }}
-                />
-                <button style={base} disabled={!slug || !(typed[name] ?? "")} onClick={() => saveSecret(name)}>
-                  set
+      {open &&
+        // A modal on the page itself: inside the canvas header it would be clipped by the canvas.
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="deploy settings"
+            onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(5, 10, 20, 0.6)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 1000,
+            }}
+          >
+            <div
+              style={{
+                maxHeight: "calc(100vh - 32px)",
+                maxWidth: "calc(100vw - 32px)",
+                overflow: "auto",
+                background: "#0b1527",
+                border: "1px solid #1b2a45",
+                borderRadius: 6,
+                padding: 14,
+                display: "grid",
+                gridTemplateColumns: "auto auto",
+                gap: 6,
+                alignItems: "center",
+                fontSize: 11,
+                color: "#9fb4d4",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ color: "#e6eefb", fontSize: 13, flex: 1 }}>deploy settings{slug ? ` · ${slug}` : ""}</span>
+                <button style={primary} onClick={() => setOpen(false)} title="close (Esc); settings are kept as you type">
+                  done
                 </button>
-                {setNames.includes(name) && (
-                  <button style={base} onClick={() => removeSecret(name)} title="remove this secret">
-                    ×
-                  </button>
-                )}
               </span>
-            </label>
-          ))}
-          {secretMsg && <span style={{ gridColumn: "1 / -1", color: "#9fb4d4" }}>{secretMsg}</span>}
-        </div>
-      )}
+              <span title="the port a flow with routes (request nodes) answers on">port</span>
+              <input value={settings.port} onChange={(e) => setSettings({ ...settings, port: e.target.value })} style={input} />
+              <span title="how often a flow that reads the clock fires, in seconds">interval (s)</span>
+              <input
+                value={settings.interval}
+                placeholder="clock flows"
+                onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
+                style={input}
+              />
+              <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="what it needs beyond its graph; the host must grant it">
+                needs (blank: this host's default)
+              </span>
+              {LIMITS.map(([name, label]) => (
+                <label key={name} style={{ display: "contents" }}>
+                  <span>{label}</span>
+                  <input
+                    value={req?.limits?.[name] ?? ""}
+                    placeholder={policy ? String(policy.defaults[name]) : ""}
+                    title={policy ? `default ${policy.defaults[name]}, ceiling ${policy.ceilings[name]}` : undefined}
+                    onChange={(e) => setSettings({ ...settings, requirements: withLimit(req, name, e.target.value) })}
+                    style={{ ...input, width: 84 }}
+                  />
+                </label>
+              ))}
+              <span title="hosts it may call over plain HTTP; this host must allow plain HTTP at all">plain HTTP to</span>
+              <input
+                value={(req?.plain_http ?? []).join(", ")}
+                placeholder="none"
+                disabled={policy !== null && !policy.allow_plain_http}
+                title={policy && !policy.allow_plain_http ? "this host never grants plain HTTP" : "comma-separated host[:port]"}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
+                  })
+                }
+                style={{ ...input, width: 140 }}
+              />
+              <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
+              <input
+                type="checkbox"
+                checked={req?.private_addresses ?? false}
+                disabled={policy !== null && !policy.allow_private_addresses}
+                title={policy && !policy.allow_private_addresses ? "this host never grants private addresses" : undefined}
+                onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
+                style={{ justifySelf: "start" }}
+              />
+              {secretNames.length > 0 && (
+                <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
+                  secrets{slug ? "" : " (name the flow first)"}
+                </span>
+              )}
+              {secretNames.map((name) => (
+                <label key={name} style={{ display: "contents" }}>
+                  <span>
+                    {name} <span style={{ color: setNames.includes(name) ? "#9ad29f" : "#e0916f" }}>{setNames.includes(name) ? "set" : "not set"}</span>
+                  </span>
+                  <span style={{ display: "inline-flex", gap: 4 }}>
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      value={typed[name] ?? ""}
+                      placeholder={setNames.includes(name) ? "replace…" : "value"}
+                      disabled={!slug}
+                      onChange={(e) => setTyped({ ...typed, [name]: e.target.value })}
+                      style={{ ...input, width: 100 }}
+                    />
+                    <button style={base} disabled={!slug || !(typed[name] ?? "")} onClick={() => saveSecret(name)}>
+                      set
+                    </button>
+                    {setNames.includes(name) && (
+                      <button style={base} onClick={() => removeSecret(name)} title="remove this secret">
+                        ×
+                      </button>
+                    )}
+                  </span>
+                </label>
+              ))}
+              {secretMsg && <span style={{ gridColumn: "1 / -1", color: "#9fb4d4" }}>{secretMsg}</span>}
+            </div>
+          </div>,
+          document.body,
+        )}
     </span>
   );
 }
