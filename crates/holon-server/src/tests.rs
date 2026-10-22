@@ -1016,6 +1016,112 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     assert!(state.secrets.names("s").is_empty());
 }
 
+/// A durable run end to end. \`POST /orders\` answers with a resume token and waits at \`paid\`; its
+/// state write depends on the event, so nothing is written yet. \`GET /paid/:token\`, declared
+/// \`resume = paid\`, answers its caller and delivers its request to the run, which finishes: the
+/// write happens then, once, under the same run id. A run started before a redeploy finishes on
+/// the version it started on; one nobody resumes expires; waiting runs survive a restart.
+#[test]
+fn a_durable_run_waits_resumes_by_token_and_expires() {
+    let mut state = test_state();
+    let path = unique_temp_path("durable");
+    state.deployments_path = path.clone();
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    // The order route, writing the event's \`field\` once paid.
+    let orders = |field: &str| {
+        let children = vec![
+            iface("resume_token", vec![frozen("await", "paid")]),
+            iface("await", vec![frozen("name", "paid"), frozen("expires", "3600")]),
+            iface("field", vec![frozen("name", field)]),
+            test_store_write("paid"),
+        ];
+        let edges = vec![e(1, 0, 2, 0), e(2, 0, 3, 0), e(0, 0, BOUNDARY, 0), e(3, 0, BOUNDARY, 1)];
+        endpoint(&state, "POST", "/orders", children, edges, 1)
+    };
+    // The resume route: answers "thanks".
+    let thanks = stage(&state, &iface("const", vec![frozen("value", "thanks"), frozen("type", "Text")]));
+    let paid_route = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![thanks], edges: vec![e(0, 0, BOUNDARY, 0)] },
+            params: vec![frozen("declare", "endpoint"), frozen("method", "GET"), frozen("path", "/paid/:token"), frozen("resume", "paid")],
+            inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+            outputs: vec![Port { name: "response".into(), ty: Type::Any }],
+        },
+    );
+    let server = |orders: Hash| {
+        stage(
+            &state,
+            &Unit {
+                body: UnitBody::Composite { children: vec![orders, paid_route], edges: vec![] },
+                params: vec![frozen("declare", "server"), frozen("port", "18090")],
+                inputs: vec![],
+                outputs: vec![],
+            },
+        )
+    };
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "Await(\"paid\")", "StateWrite(\"paid\")"] });
+    let v1 = server(orders("method"));
+    assert_eq!(deploy_json(&state, "shop", v1, ack.clone()).status_code, 200);
+    let call = |method: &str, url: &str| {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "shop", &Request::fake_http(method, url, vec![], vec![]));
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let written = || state.deployments.lock().unwrap()["shop"].state.as_ref().unwrap().lock().unwrap().get("paid").cloned();
+    let runs = || body_json(route(&state, &req("GET", "/deployments/shop/runs", vec![])))["runs"].as_array().unwrap().clone();
+
+    // Order: answered with its token, waiting, nothing written yet.
+    let (code, token) = call("POST", "/orders");
+    assert_eq!(code, 200);
+    assert!(token.starts_with("rt_"), "{token}");
+    assert_eq!(written(), None, "a waiting run performs nothing");
+    assert_eq!(runs().len(), 1);
+    assert_eq!(runs()[0]["waiting"][0]["name"], "paid");
+    let listed = String::from_utf8(body_bytes(route(&state, &req("GET", "/deployments/shop/runs", vec![])))).unwrap();
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", "/deployments/shop/log", vec![])))).unwrap();
+    assert!(!listed.contains(&token) && !log.contains(&token), "a token is never listed or logged");
+    assert!(log.contains("‹token:paid›"));
+    // It survives a restart.
+    assert_eq!(load_deployments(&path, &state.store, &state.policy).unwrap()["shop"].parked.len(), 1);
+
+    // A wrong token: refused before the route's handler runs.
+    assert_eq!(call("GET", "/paid/rt_nope").0, 404);
+    // The right one: the route answers, and the run finishes, once.
+    assert_eq!(call("GET", &format!("/paid/{token}")), (200, "thanks".to_string()));
+    assert_eq!(written(), Some(Value::Text("GET".into())), "the event reached the run, and its write happened");
+    assert!(runs().is_empty());
+    assert_eq!(call("GET", &format!("/paid/{token}")).0, 404, "a token resumes once");
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", "/deployments/shop/log", vec![])))).unwrap();
+    assert!(!log.contains(&token), "not in the paying request's entry (its URL carries it), nor in the event the run was given");
+    let entries = body_json(route(&state, &req("GET", "/deployments/shop/log", vec![])))["entries"].as_array().unwrap().clone();
+    let resumed = entries.iter().find(|x| x["kind"] == "resume").unwrap();
+    let first = entries.iter().find(|x| x["kind"] == "request" && x["route"] == "POST /orders").unwrap();
+    assert_eq!(resumed["run_id"], first["run_id"], "one run, two parts");
+    assert_eq!(first["parked"], serde_json::json!(["paid"]));
+
+    // Pinned: a run started on v1 finishes on v1 after v2 is deployed (v2 would write the path).
+    let (_, token2) = call("POST", "/orders");
+    let v2 = server(orders("path"));
+    assert_eq!(deploy_json(&state, "shop", v2, ack.clone()).status_code, 200);
+    assert_eq!(runs().len(), 1, "waiting runs are kept across a redeploy");
+    assert_eq!(call("GET", &format!("/paid/{token2}")).0, 200);
+    assert_eq!(written(), Some(Value::Text("GET".into())), "v1's behaviour, not v2's");
+
+    // Expiry: nobody pays; past its deadline it gets {expired: true} and finishes (its write
+    // reads a field the event doesn't have, so nothing is written).
+    *state.deployments.lock().unwrap().get_mut("shop").unwrap().state.as_ref().unwrap().lock().unwrap() = State::new();
+    call("POST", "/orders");
+    assert_eq!(runs().len(), 1);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    assert!(runs().is_empty(), "expired and finished");
+    assert_eq!(written(), None);
+    let entries = body_json(route(&state, &req("GET", "/deployments/shop/log", vec![])))["entries"].as_array().unwrap().clone();
+    assert_eq!(entries.last().unwrap()["events"]["paid"]["value"][0][0], "expired");
+    let _ = std::fs::remove_file(&path);
+}
+
 // ── persistence ──────────────────────────────────────────────────────────────────────
 
 #[test]

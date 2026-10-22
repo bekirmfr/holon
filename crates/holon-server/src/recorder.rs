@@ -62,6 +62,12 @@ pub struct LogEntry {
     pub nonce: String,
     /// The grant (hash, hex) the run was held to.
     pub grant: String,
+    /// The waiting points it settled waiting at (a parked run's part), if any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parked: Vec<String>,
+    /// For a resumed part: the events delivered to its waiting points so far.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub events: BTreeMap<String, SValue>,
 }
 
 /// The requests performed after one round, to answer the next.
@@ -219,6 +225,8 @@ mod tests {
             run_id: String::new(),
             nonce: String::new(),
             grant: String::new(),
+            parked: vec![],
+            events: BTreeMap::new(),
         }
     }
 

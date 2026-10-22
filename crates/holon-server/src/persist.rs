@@ -47,6 +47,7 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                 sessions: dep.life.sessions.clone(),
                 document: dep.document.clone(),
                 grant: Some(dep.grant.clone()),
+                parked: dep.parked.values().cloned().collect(),
             };
             (record, dep.state.clone())
         })
@@ -218,6 +219,7 @@ pub(crate) fn load_deployments(
                 permit,
                 attention: attention.take(),
                 secrets: Vault::default(),
+                parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
                 log: Log::default(),
                 document: record.document,
                 trigger_count: record.trigger_count,

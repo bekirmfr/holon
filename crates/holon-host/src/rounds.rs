@@ -14,6 +14,12 @@
 //!
 //! Every exchange (the node, its request, its response, and when) is recorded per round, so a run
 //! can be replayed offline by answering from the record instead of the network.
+//!
+//! **Durable runs** (§4.3): an `await` node is a waiting point, answered from the events the run
+//! has been delivered ([`Waits`]). One still unanswered when the run settles means the run is
+//! waiting: it performs no effects, and the host parks it ([`RunOutcome::waiting`]). Resuming
+//! it is running it again from the start with the same inputs, its earlier requests answered from
+//! its record (`prior`), and the new event delivered.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -123,18 +129,49 @@ impl RunError {
 }
 
 /// What a run produced: its outputs (all absent if it failed), the requests each round made,
-/// and why it failed, if it did. Effects were performed only if it didn't.
+/// why it failed, if it did, and the waiting points it is waiting at, if any. Effects were
+/// performed only if it neither failed nor waits.
 #[derive(Debug)]
 pub struct RunOutcome {
     pub outputs: Vec<Option<Value>>,
     pub rounds: Vec<Round>,
     pub error: Option<RunError>,
+    pub waiting: Vec<Waiting>,
+}
+
+/// A waiting point a run is waiting at: an `await` with no event yet.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Waiting {
+    pub name: String,
+    /// How long it waits, in seconds.
+    pub expires: u64,
+}
+
+/// What a durable run has been delivered, and its tokens.
+pub trait Waits {
+    /// The event delivered to waiting point `name`, if one has been.
+    fn event(&self, name: &str) -> Option<Value>;
+    /// The token that resumes waiting point `name`: the same every time this run asks.
+    fn token(&mut self, name: &str) -> String;
+}
+
+/// No events and no tokens (an empty token): a run that can't be resumed.
+pub struct NoWaits;
+impl Waits for NoWaits {
+    fn event(&self, _: &str) -> Option<Value> {
+        None
+    }
+    fn token(&mut self, _: &str) -> String {
+        String::new()
+    }
 }
 
 /// Run `root` on `inputs`, in rounds, sourcing `sourced` (clock, state, …) as `fire_sourced`
 /// does, performing outbound requests with `performer` within `limits`, and the final round's
-/// effects with `host`. `observer` sees every round's steps (after a `round(n)` call) as in a
-/// single evaluation.
+/// effects with `host`, unless the run waits. `observer` sees every round's steps (after a
+/// `round(n)` call) as in a single evaluation. `waits` answers waiting points and tokens;
+/// `prior` holds the rounds of an earlier part of the same run (a resumed one), whose requests
+/// are answered from it, not sent again. The outcome's rounds are the new ones.
 #[allow(clippy::too_many_arguments)]
 pub fn run_rounds(
     root: &Unit,
@@ -145,27 +182,38 @@ pub fn run_rounds(
     performer: &impl Performer,
     limits: &Limits,
     observer: &mut impl Observer,
+    waits: &mut impl Waits,
+    prior: &[Round],
 ) -> RunOutcome {
     let started = Instant::now();
     let resolver = SourcedResolver::new(sourced, real);
-    let mut answers: BTreeMap<(Vec<u32>, Hash), Value> = BTreeMap::new();
+    let mut answers: BTreeMap<(Vec<u32>, Hash), Value> = prior
+        .iter()
+        .flat_map(|r| &r.exchanges)
+        .map(|x| ((x.path.clone(), request_key(&x.request)), x.response.clone()))
+        .collect();
     let mut rounds: Vec<Round> = Vec::new();
     let mut sent = 0usize;
     let fail = |rounds: Vec<Round>, error: RunError| RunOutcome {
         outputs: vec![None; root.outputs.len()],
         rounds,
         error: Some(error),
+        waiting: Vec::new(),
     };
     loop {
         observer.round(rounds.len());
-        let mut asking = Asking { inner: &mut *observer, answers: &answers, pending: Vec::new() };
+        let mut asking =
+            Asking { inner: &mut *observer, answers: &answers, pending: Vec::new(), waits: &mut *waits, waiting: Vec::new() };
         let outputs = eval_observed(root, inputs, &resolver, &mut asking).into_vec();
-        let pending = asking.pending;
+        let (pending, waiting) = (asking.pending, asking.waiting);
         if pending.is_empty() {
-            for output in outputs.iter().flatten() {
-                perform_effects(output, host);
+            // A run still waiting performs nothing yet: what it does is decided when it finishes.
+            if waiting.is_empty() {
+                for output in outputs.iter().flatten() {
+                    perform_effects(output, host);
+                }
             }
-            return RunOutcome { outputs, rounds, error: None };
+            return RunOutcome { outputs, rounds, error: None, waiting };
         }
         sent += pending.len();
         if sent > limits.max_requests {
@@ -217,14 +265,28 @@ fn request_key(request: &Value) -> Hash {
 }
 
 /// The observer a round runs under: answers from earlier rounds, collects what's still
-/// unanswered, and passes timing through to the caller's observer.
-struct Asking<'a, O: Observer> {
+/// unanswered, answers waiting points and tokens from `waits`, and passes timing through to the
+/// caller's observer.
+struct Asking<'a, O: Observer, W: Waits> {
     inner: &'a mut O,
     answers: &'a BTreeMap<(Vec<u32>, Hash), Value>,
     pending: Vec<(Vec<u32>, Value)>,
+    waits: &'a mut W,
+    waiting: Vec<Waiting>,
 }
 
-impl<O: Observer> Observer for Asking<'_, O> {
+/// A text field of a request record.
+fn text_field<'v>(request: &'v Value, key: &str) -> Option<&'v str> {
+    match request {
+        Value::Record(r) => match r.get(key) {
+            Some(Value::Text(t)) => Some(t),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
     fn enter(&mut self, path: &[u32]) {
         self.inner.enter(path);
     }
@@ -232,6 +294,23 @@ impl<O: Observer> Observer for Asking<'_, O> {
         self.inner.leave(path);
     }
     fn answer(&mut self, path: &[u32], request: &Value) -> Option<Value> {
+        if let Some(name) = text_field(request, "await") {
+            let event = self.waits.event(name);
+            if event.is_none() && !self.waiting.iter().any(|w| w.name == name) {
+                let expires = match request {
+                    Value::Record(r) => match r.get("expires") {
+                        Some(Value::Number(n)) => *n as u64,
+                        _ => holon_core::MAX_AWAIT_SECONDS,
+                    },
+                    _ => holon_core::MAX_AWAIT_SECONDS,
+                };
+                self.waiting.push(Waiting { name: name.to_string(), expires });
+            }
+            return event;
+        }
+        if let Some(name) = text_field(request, "resume_token") {
+            return Some(Value::Text(self.waits.token(name)));
+        }
         let key = (path.to_vec(), request_key(request));
         if let Some(answer) = self.answers.get(&key) {
             return Some(answer.clone());
@@ -395,7 +474,7 @@ mod tests {
         let mut r = MapResolver::new();
         let flow = chained(&mut r);
         let (echo, mut host) = (Echo::default(), Performed::default());
-        let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver);
+        let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
         assert_eq!(out.error, None);
         assert_eq!(*echo.0.lock().unwrap(), vec!["https://api.example.com/first", "https://api.example.com/first/next"]);
         assert_eq!(out.rounds.len(), 2, "one request per round: the second needed the first's answer");
@@ -408,13 +487,58 @@ mod tests {
         assert_eq!(replayed, out.outputs);
     }
 
+    /// `resume_token → egress` and `await → egress`: the first run hands out a token, waits, and
+    /// performs nothing; resuming it with the event (and the first part's record) finishes it,
+    /// and the token is the same both times.
+    #[test]
+    fn a_run_waits_performing_nothing_and_finishes_when_its_event_arrives() {
+        #[derive(Default)]
+        struct Delivered {
+            events: BTreeMap<String, Value>,
+            minted: usize,
+        }
+        impl Waits for Delivered {
+            fn event(&self, name: &str) -> Option<Value> {
+                self.events.get(name).cloned()
+            }
+            fn token(&mut self, name: &str) -> String {
+                self.minted += 1;
+                format!("tok-{name}")
+            }
+        }
+        let mut r = MapResolver::new();
+        let wait = leaf("await", vec![Param::frozen("name", "paid"), Param::frozen("expires", "60")], 0, Type::Any);
+        let token = leaf("resume_token", vec![Param::frozen("await", "paid")], 0, Type::Text);
+        let egress = leaf("egress", vec![], 1, Type::Effect);
+        let flow = Unit {
+            body: UnitBody::Composite {
+                children: vec![r.insert(token).unwrap(), r.insert(egress.clone()).unwrap(), r.insert(wait).unwrap(), r.insert(egress).unwrap()],
+                edges: vec![e(0, 0, 1, 0), e(2, 0, 3, 0), e(1, 0, BOUNDARY, 0), e(3, 0, BOUNDARY, 1)],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "link".into(), ty: Type::Effect }, Port { name: "done".into(), ty: Type::Effect }],
+        };
+        let (echo, mut host) = (Echo::default(), Performed::default());
+        let mut waits = Delivered::default();
+        let first = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut waits, &[]);
+        assert_eq!(first.waiting, vec![Waiting { name: "paid".into(), expires: 60 }]);
+        assert!(host.0.is_empty(), "a waiting run performs nothing");
+        assert!(matches!(&first.outputs[0], Some(Value::Effect { payload, .. }) if **payload == txt("tok-paid")), "its interim output is there");
+
+        waits.events.insert("paid".into(), txt("ok"));
+        let resumed = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut waits, &first.rounds);
+        assert!(resumed.waiting.is_empty());
+        assert_eq!(host.0, vec![(Capability::NetworkEgress, txt("tok-paid")), (Capability::NetworkEgress, txt("ok"))]);
+    }
+
     #[test]
     fn the_request_budget_fails_the_run_and_performs_nothing() {
         let mut r = MapResolver::new();
         let flow = chained(&mut r);
         let (echo, mut host) = (Echo::default(), Performed::default());
         let limits = Limits { max_requests: 1, ..Limits::request_run() };
-        let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &limits, &mut holon_core::NoObserver);
+        let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
         assert_eq!(out.error, Some(RunError::RequestBudget { max: 1 }));
         assert_eq!(out.outputs, vec![None]);
         assert!(host.0.is_empty(), "nothing performed");
@@ -434,7 +558,7 @@ mod tests {
         let flow = chained(&mut r);
         let mut host = Performed::default();
         let limits = Limits { run_budget: Duration::from_millis(20), ..Limits::request_run() };
-        let out = run_rounds(&flow, &[], &[], &r, &mut host, &Slow, &limits, &mut holon_core::NoObserver);
+        let out = run_rounds(&flow, &[], &[], &r, &mut host, &Slow, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
         assert_eq!(out.error, Some(RunError::TimeBudget { budget: Duration::from_millis(20) }));
         assert!(host.0.is_empty());
     }
@@ -450,8 +574,8 @@ mod tests {
             outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
         let mut host = Performed::default();
-        let out = run_rounds(&flow, &[Some(txt("hi"))], &[], &r, &mut host, &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver);
-        assert!(out.rounds.is_empty() && out.error.is_none());
+        let out = run_rounds(&flow, &[Some(txt("hi"))], &[], &r, &mut host, &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        assert!(out.rounds.is_empty() && out.error.is_none() && out.waiting.is_empty());
         assert_eq!(host.0, vec![(Capability::NetworkEgress, txt("hi"))]);
     }
 

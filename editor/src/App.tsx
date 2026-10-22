@@ -821,7 +821,7 @@ function Canvas({
         const handler = ev.freeze_encapsulation(children, wedges, spec) as WUnit;
         trace[label] = traceOf(handler, group);
         const handlerHash = ev.insert(buildPreimage(handler));
-        const unit = endpointUnit(handlerHash, handler.inputs ?? [], handler.outputs ?? [], r.method, r.path);
+        const unit = endpointUnit(handlerHash, handler.inputs ?? [], handler.outputs ?? [], r.method, r.path, r.resume);
         if (typeof unit === "string") {
           errors.push(`${label}: ${unit}`);
           continue;

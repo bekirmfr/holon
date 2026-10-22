@@ -140,6 +140,7 @@
 
 mod data;
 mod deploy;
+mod durable;
 mod firing;
 mod fixtures;
 mod flows;
@@ -172,7 +173,7 @@ use holon_core::{
 };
 use holon_host::{
     fire, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
-    run_rounds, PublishError, Registry, Round, SharedCache, State, Store, StoreError,
+    run_rounds, PublishError, Waiting, Registry, Round, SharedCache, State, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
 use recorder::{Log, LogEntry};
@@ -189,6 +190,7 @@ use http::*;
 use listeners::*;
 use permissions::{Grant, Manifest, Permit, Policy, Requirements};
 use secrets::{Redactor, SecretStore, Vault};
+use durable::{ParkedRun, Resumed, RunWaits};
 use persist::*;
 use scheduler::*;
 use units::*;
@@ -339,6 +341,9 @@ struct Deployment {
     /// Its secrets (the store's vault for its slug): runs read the ones it was granted, and
     /// everything it logs or answers has their values redacted.
     secrets: Vault,
+    /// Its runs waiting for an event, by run id (durable.rs). Persisted; kept across redeploys,
+    /// each pinned to the unit it started on.
+    parked: BTreeMap<String, ParkedRun>,
     /// Every run, with what it read and produced (recorder.rs). In memory only.
     log: Log,
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so

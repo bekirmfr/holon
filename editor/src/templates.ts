@@ -61,7 +61,7 @@ export function templateInterface(
 /** The params a freshly dropped template node starts with. */
 export function templateDefaults(name: TemplateName): WParam[] {
   return name === "request"
-    ? [frozen("method", "GET"), frozen("path", "/")]
+    ? [frozen("method", "GET"), frozen("path", "/"), frozen("resume", "")]
     : [frozen("status", "200"), frozen("missing", "404")];
 }
 

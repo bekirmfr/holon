@@ -41,6 +41,8 @@ pub const GENESIS: &[&str] = &[
     "http_request",
     // drivers — sourced, no compute (4)
     "clock", "random", "ingress", "secret",
+    // durable runs — answered by the host when an event arrives (2)
+    "await", "resume_token",
     // state cell (2)
     "store_read", "store_write",
     // sink — performed (1)
@@ -194,6 +196,12 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "ingress" => prim(vec![], vec![], Any),
         // A named secret from the deployment's secret store (never in the unit: only its name).
         "secret" => prim(vec![], vec![Param::frozen("name", "api_key")], Text),
+        // A durable run's waiting point: its event (the request that resumed the run, or
+        // `{expired: true}`), absent until it arrives. `expires` is in seconds (7 days).
+        "await" => prim(vec![], vec![Param::frozen("name", "event"), Param::frozen("expires", "604800")], Any),
+        // The token that delivers an event to the waiting point named `await` (a callback URL's
+        // part, say). The same token for the whole run, however often it is evaluated.
+        "resume_token" => prim(vec![], vec![Param::frozen("await", "event")], Text),
 
         // ── state cell ── `"key"` (frozen) names which slot this leaf touches — see the
         // keyed-state-capability L4. `capabilities_of` now fails closed without one, the
@@ -238,13 +246,14 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_56_leaves() {
+    fn genesis_has_58_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
         // deliberately for M1 (docs/PLATFORM_LAYOUT.md), json_parse + json_stringify, and the
-        // keyed record kit (lookup, insert, remove), find, extend, http_request, and secret.
-        assert_eq!(GENESIS.len(), 56);
+        // keyed record kit (lookup, insert, remove), find, extend, http_request, secret, and the
+        // durable-run pair (await, resume_token).
+        assert_eq!(GENESIS.len(), 58);
     }
 
     #[test]

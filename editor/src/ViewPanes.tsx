@@ -32,7 +32,13 @@ const changedBg = "#2a2a14";
 
 const time = (ms: number) => new Date(ms).toLocaleTimeString();
 const runLabel = (e: LogEntry) =>
-  e.kind === "request" ? (e.route ?? `${e.method ?? ""} ${e.url ?? ""} (no route)`) : e.kind === "tick" ? "clock tick" : "trigger";
+  e.kind === "request"
+    ? (e.route ?? `${e.method ?? ""} ${e.url ?? ""} (no route)`)
+    : e.kind === "resume"
+      ? `resumed ${e.route ?? ""}`.trim()
+      : e.kind === "tick"
+        ? "clock tick"
+        : "trigger";
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)}ms` : `${t.toFixed(0)}µs`);
 
@@ -287,6 +293,7 @@ function LogTab({ entries, selected, pick }: { entries: LogEntry[]; selected: Lo
             </span>
             {e.status !== null && <span style={{ color: e.status < 400 ? good : bad, width: 26 }}>{e.status}</span>}
             {e.error && <span style={{ color: bad }}>error</span>}
+            {(e.parked ?? []).length > 0 && <span style={{ color: "#e0c36f" }} title="waiting for an event">⏸</span>}
             <span style={{ color: dim, width: 52, textAlign: "right" }}>{e.duration_ms.toFixed(2)}ms</span>
           </div>
         ))}
@@ -323,6 +330,12 @@ function LogTab({ entries, selected, pick }: { entries: LogEntry[]; selected: Lo
                 );
               }),
             )}
+            {(selected.parked ?? []).length > 0 && (
+              <Field name="waiting at" value={(selected.parked ?? []).join(", ")} color="#e0c36f" />
+            )}
+            {Object.entries(selected.events ?? {}).map(([name, v]) => (
+              <Field key={name} name={`event ${name}`} value={formatValue(v)} />
+            ))}
             {selected.run_id && (
               <Field
                 name="run"

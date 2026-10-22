@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod rounds;
 mod state;
-pub use rounds::{run_rounds, Exchange, Limits, Performer, Recorded, Round, RunError, RunOutcome};
+pub use rounds::{run_rounds, Exchange, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits};
 pub use state::{LoadError, State};
 
 use holon_core::{

@@ -22,6 +22,8 @@ export type ReplayInput = {
   request: WValue | null;
   sourced: [string, WValue][];
   state_before: Record<string, WValue>;
+  /** A resumed part's delivered events, by waiting point. */
+  events?: Record<string, WValue>;
 };
 
 /** What one node computed: its inputs as they arrived, and its outputs. */
@@ -215,6 +217,12 @@ export function replay(
       outputs = [sourced.get("Random") ?? null];
     } else if (node.data.body.kind === "Primitive" && name === "ingress") {
       outputs = [sourced.get("NetworkIngress") ?? null];
+    } else if (node.data.body.kind === "Primitive" && name === "await") {
+      // A waiting point answers with the event the log says was delivered, if any.
+      outputs = [entry.events?.[frozen(node.data.params, "name") ?? ""] ?? null];
+    } else if (node.data.body.kind === "Primitive" && name === "resume_token") {
+      // A token is a credential: the log has it redacted, and so does the replay.
+      outputs = [{ type: "Text", value: `‹token:${frozen(node.data.params, "await") ?? ""}›` }];
     } else if (node.data.body.kind === "Primitive" && name === "secret") {
       // The editor never has a secret's value: a placeholder stands in, as the log shows it.
       outputs = [{ type: "Text", value: `‹secret:${frozen(node.data.params, "name") ?? ""}›` }];

@@ -183,3 +183,18 @@ describe("secrets in a replay", () => {
     expect(traces.get("s")?.outputs).toEqual([{ type: "Text", value: "‹secret:api_key›" }]);
   });
 });
+
+describe("durable runs in a replay", () => {
+  it("answer a waiting point from the logged event, and show a token as the log does", () => {
+    const nodes = [
+      n("w", "await", [], ["out"], [frozen("name", "paid"), frozen("expires", "60")]),
+      n("t", "resume_token", [], ["out"], [frozen("await", "paid")]),
+    ];
+    const base = { kind: "resume", route: null, request: null, sourced: [], state_before: {} };
+    const resumed = replay(nodes, [], { ...base, events: { paid: num(1) } }, evalNode);
+    expect(resumed.traces.get("w")?.outputs).toEqual([num(1)]);
+    expect(resumed.traces.get("t")?.outputs).toEqual([{ type: "Text", value: "‹token:paid›" }]);
+    // not delivered yet
+    expect(replay(nodes, [], base, evalNode).traces.get("w")?.outputs).toEqual([null]);
+  });
+});

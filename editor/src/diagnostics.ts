@@ -103,6 +103,7 @@ export function capabilityAcknowledgeName(c: WCapability): string {
   if ("StateRead" in c) return `StateRead("${c.StateRead}")`;
   if ("HttpRequest" in c) return `HttpRequest("${c.HttpRequest}")`;
   if ("SecretRead" in c) return `SecretRead("${c.SecretRead}")`;
+  if ("Await" in c) return `Await("${c.Await}")`;
   return `StateWrite("${c.StateWrite}")`;
 }
 
@@ -187,6 +188,7 @@ export function describeItem(item: string): string {
     ["StateWrite", (a) => `write its state "${a}"`],
     ["PlainHttp", (a) => `call ${a} over plain HTTP (not encrypted)`],
     ["SecretRead", (a) => `read the secret "${a}"`],
+    ["Await", (a) => `wait for an event "${a}" and continue later`],
     ["Limit", (a) => `raise ${a.replace("=", " to ")}`],
   ];
   for (const [prefix, say] of named) {

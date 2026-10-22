@@ -31,7 +31,7 @@ pub struct DataResponse {
 }
 
 impl DataResponse {
-    fn json_error(status: u16, message: &str) -> DataResponse {
+    pub(crate) fn json_error(status: u16, message: &str) -> DataResponse {
         let body = Value::Record([("error".to_string(), Value::Text(message.to_string()))].into());
         DataResponse {
             status,
@@ -169,7 +169,7 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
 
 /// Decode `%XX` escapes and `+` (as a space, the query-string convention). Invalid escapes are
 /// kept as written, and the result is lossily UTF-8.
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

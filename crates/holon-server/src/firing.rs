@@ -79,6 +79,10 @@ pub(crate) struct FiredRun {
     pub(crate) nonce: String,
     /// The grant (hash, hex) it was held to.
     pub(crate) grant: String,
+    /// The waiting points it settled waiting at: then it performed nothing (durable.rs parks it).
+    pub(crate) waiting: Vec<Waiting>,
+    /// The state it started from (the live state, or a resumed run's recorded one).
+    pub(crate) start_state: Option<State>,
 }
 
 // Everything a run is held to arrives here, so it takes them all.
@@ -92,14 +96,21 @@ pub(crate) fn fire_with_state(
     permit: &Permit,
     clock: bool,
     secrets: &Vault,
+    waits: &mut RunWaits,
+    resumed: Option<Resumed>,
 ) -> FiredRun {
     let mut guard = state.map(|m| m.lock().unwrap());
-    let state_before = guard.as_deref().map(State::values).unwrap_or_default();
-    let nonce = new_nonce();
-    let run_id = run_id_of(permit.deployment, inputs, guard.as_deref(), extra_sourced, &nonce);
+    // A resumed run starts from what it first started from: the same state, nonce and requests,
+    // so it is the same run (and the same run id). Its writes still land on the live state.
+    let (start, nonce, prior) = match resumed {
+        Some(r) => (guard.as_ref().map(|_| r.state_before), r.nonce, r.prior),
+        None => (guard.as_deref().cloned(), new_nonce(), Vec::new()),
+    };
+    let state_before = start.as_ref().map(State::values).unwrap_or_default();
+    let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, &nonce);
 
     // Only the state keys the deployment was granted are read.
-    let mut sourced: Vec<(Capability, Value)> = match guard.as_deref() {
+    let mut sourced: Vec<(Capability, Value)> = match start.as_ref() {
         Some(storage) => storage
             .iter()
             .map(|(key, value)| (Capability::StateRead(key.clone()), value.clone()))
@@ -121,7 +132,7 @@ pub(crate) fn fire_with_state(
     let mut timer = recorder::Timer::new();
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
-    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &permit.outbound, limits, &mut timer);
+    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &permit.outbound, limits, &mut timer, waits, &prior);
     let outputs = outcome.outputs;
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a state write
     // carrying a secret's value, which would put it on disk and in every later snapshot.
@@ -161,6 +172,8 @@ pub(crate) fn fire_with_state(
         run_id: to_hex(&run_id),
         nonce: hex_bytes(&nonce),
         grant: permit.grant.clone(),
+        waiting: outcome.waiting,
+        start_state: start,
     }
 }
 
@@ -292,6 +305,8 @@ pub(crate) fn run_entry(
         run_id: run.run_id.clone(),
         nonce: run.nonce.clone(),
         grant: run.grant.clone(),
+        parked: vec![],
+        events: BTreeMap::new(),
     }
 }
 
@@ -308,6 +323,8 @@ impl FiredRun {
             run_id: String::new(),
             nonce: String::new(),
             grant: String::new(),
+            waiting: vec![],
+            start_state: None,
         }
     }
 }

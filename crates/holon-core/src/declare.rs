@@ -34,6 +34,9 @@ pub struct Route {
     pub segments: Vec<Segment>,
     /// The endpoint unit's hash (the server's child), which is what a request evaluates.
     pub endpoint: Hash,
+    /// The waiting point this route resumes (its endpoint's `resume` param), if it is a resume
+    /// route: a request carrying a run's token delivers itself to that run's `await` of this name.
+    pub resume: Option<String>,
 }
 
 /// A server unit, read and checked.
@@ -109,7 +112,11 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
         if routes.iter().any(|r| r.method == method && shape(&r.segments) == shape(&segments)) {
             return Err(DeclError::DuplicateRoute { method, path });
         }
-        routes.push(Route { method, path, segments, endpoint: *hash });
+        let resume = match frozen(endpoint, "resume") {
+            None | Some("") => None,
+            Some(_) => Some(crate::kind::ident(&endpoint.params, "resume").ok_or(DeclError::BadEndpointShape { child })?),
+        };
+        routes.push(Route { method, path, segments, endpoint: *hash, resume });
     }
     Ok(Server { port, routes })
 }

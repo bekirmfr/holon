@@ -12,7 +12,7 @@ export type CanvasNode = {
 export type CanvasEdge = { source: string; target: string };
 
 /** One route of the server: its request node, and every node wired (directly or not) to it. */
-export type RouteGroup = { method: Method; path: string; requestId: string; nodeIds: string[] };
+export type RouteGroup = { method: Method; path: string; requestId: string; nodeIds: string[]; resume: string };
 
 export const isRequestNode = (n: CanvasNode) => n.data.name === "request" && n.data.body.kind === "Template";
 export const isRespondNode = (n: CanvasNode) => n.data.name === "respond" && n.data.body.kind === "Template";
@@ -74,7 +74,7 @@ export function findRoutes(nodes: CanvasNode[], edges: CanvasEdge[]): { routes: 
       errors.push(`${method} ${path} clashes with ${clash.method} ${clash.path}`);
       continue;
     }
-    routes.push({ method: method as Method, path, requestId: req.id, nodeIds: ids });
+    routes.push({ method: method as Method, path, requestId: req.id, nodeIds: ids, resume: frozen(req, "resume") ?? "" });
   }
   return { routes, errors };
 }

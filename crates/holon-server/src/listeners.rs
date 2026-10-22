@@ -41,13 +41,35 @@ pub(crate) fn serve_data(
     ];
     let started = started_now();
     let http = data::HttpRequest { method: request.method(), url: request.raw_url(), headers: &headers, body: &body };
+
+    // A resume route needs a run waiting for its token, or it answers nothing at all.
+    let raw_url = request.raw_url();
+    let (path, query) = raw_url.split_once('?').unwrap_or((raw_url, ""));
+    let mut resume: Option<(String, String, Value, String)> = None;
+    if let Some((route, params)) = holon_core::match_route(&server, request.method(), path)
+        && let Some(name) = &route.resume
+    {
+        let from_query = query.split('&').find_map(|kv| kv.strip_prefix("token=")).map(data::percent_decode);
+        let token = params.get("token").map(|t| data::percent_decode(t)).or(from_query).unwrap_or_default();
+        let Some(run_id) = durable::find_by_token(deployments, slug, name, &token) else {
+            return err(404, "no run is waiting here for that token (it was used, or has expired)");
+        };
+        let params = params.into_iter().map(|(k, v)| (k, data::percent_decode(&v))).collect();
+        let event = data::request_record(request.method(), path, params, query, &headers, &String::from_utf8_lossy(&body));
+        resume = Some((run_id, name.clone(), event, token));
+    }
+
     let mut ran: Option<LogEntry> = None;
-    let answer = data::handle(
+    let mut waits = RunWaits::default();
+    let mut parked: Result<Vec<String>, String> = Ok(Vec::new());
+    let mut answer = data::handle(
         &server,
         &resolver,
         &http,
         |endpoint, route, req, sourced| {
-            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced, &permit, false, &secrets);
+            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced, &permit, false, &secrets, &mut waits, None);
+            let unit = hash_unit(endpoint).unwrap_or([0; 32]);
+            parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
             let mut entry = run_entry("request", started, sourced, &run);
             entry.route = Some(route.to_string());
             entry.request = Some(SValue::from_core(&req));
@@ -56,6 +78,9 @@ pub(crate) fn serve_data(
         },
         &sourced,
     );
+    if let Err(e) = &parked {
+        answer = data::DataResponse::json_error(503, e);
+    }
     record_trigger(deployments, slug, answer.status >= 500);
     // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.
     let mut entry = ran.unwrap_or_else(|| run_entry("request", started, &sourced, &FiredRun::nothing()));
@@ -64,9 +89,25 @@ pub(crate) fn serve_data(
     entry.url = Some(request.raw_url().to_string());
     entry.status = Some(answer.status);
     entry.response_body = Some(recorder::body_text(&answer.body));
+    match parked {
+        Ok(names) => entry.parked = names,
+        Err(e) => entry.error = Some(e),
+    }
+    Redactor::tokens(&waits.tokens).entry(&mut entry);
+    // A resume route's request carries the token it delivers (in its URL): redacted too.
+    if let Some((_, name, _, token)) = &resume {
+        Redactor::tokens(&BTreeMap::from([(name.clone(), token.clone())])).entry(&mut entry);
+    }
+    let parked_any = !entry.parked.is_empty();
     log_run(deployments, slug, entry);
-    if state.is_some() {
+    if state.is_some() || parked_any {
         persist_deployments(deployments_path, deployments, store);
+    }
+    // The route's own handler has answered; now the waiting run continues.
+    if let Some((run_id, name, event, _)) = resume
+        && let Err(e) = durable::resume_parked(store, deployments, deployments_path, slug, &run_id, &name, event)
+    {
+        eprintln!("holon-server: resuming run {run_id} in {slug:?}: {e}");
     }
     Response {
         status_code: answer.status,

@@ -113,8 +113,9 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 
 ## 4. Effects that answer, and runs that last (design, 2026-10-22)
 
-**Status:** design for review; nothing in this section is built yet, except the recorder it extends
-(the flow log, `holon-server/src/recorder.rs`).
+**Status:** built (2026-10-22), steps 1 to 8 of §4.6, each with its tests and a live check. Where
+the build settled a detail differently from the design, the section says so; what is left for
+later is listed in §4.6.
 
 **The principle all of it rests on:** an evaluation stays a pure, total function. A flow never
 blocks, never suspends, never runs open-ended. Waiting, suspending and resuming belong to the host,
@@ -278,25 +279,38 @@ integrations wait longer: a payment confirmed by a webhook minutes later, an app
 tomorrow, an export polled until ready. The first run has to end, and a later event has to continue
 it. That needs an identity for the run and a way to resume it.
 
-- **Park.** A flow ends a round waiting on an `await` node (a source, like `http_request`'s
-  response) that no request will answer. The host stores a **run record**:
-  `{run id, deployment hash, input record, rounds so far, the awaiting node, expiry}`, and answers
-  the current request with whatever the flow chose to say meanwhile (e.g. `202 Accepted`).
-- **Resume.** An event arrives on a route declared as resuming (`declare=endpoint`,
-  `resume=<await node name>`), carrying a resume token (§4.4). The host loads the run record and
-  evaluates the run's flow again from its recorded history, with the event delivered to the awaiting
-  node. The run finishes, or parks again on another `await`.
+**As built** (`holon-server/src/durable.rs`, the round loop's `Waits` in `holon-host`):
+
+- **Park.** A run settles still waiting at an `await` node (params `name`, `expires` in seconds)
+  that no event has answered. It **performs nothing** then: its caller gets its response output
+  (what the flow says meanwhile, e.g. a `202` with a link) and the host keeps a **run record**:
+  `{run id, the unit it ran, its inputs and sourced values, the state it read (by reference), its
+  nonce, the requests it made, its tokens, the events delivered so far, what it waits for and until
+  when}`, persisted with the deployment. Its other effects (state writes, egress) happen when it
+  finishes, once.
+- **Resume.** A request node may declare `resume = <await name>`; its route is then a resume route.
+  A request on it must carry a token the host issued for that waiting point of a run of this
+  deployment (path param or query `token`), or it is refused (`404`) before its handler runs. With
+  one, the route's own handler answers the caller, and the request record is delivered as the
+  event to the run's `await`: the run is evaluated again from its record (same inputs, nonce and
+  state read, its earlier requests answered from the record) and finishes, or waits again. A token
+  resumes once.
+- **State.** A resumed run reads the state as it was when it started (that is what makes it the
+  same run, and replayable); its writes apply when it finishes, over what is there then.
 - **Pinned version.** A run continues on the deployment hash it started on. Units are
   content-addressed, so the old version stays resolvable for as long as runs need it, even across
   redeploys; new runs start on the new version.
-- **Expiry.** Every parked run has a deadline: default 7 days, ceiling 90 days, asked for and granted like the
-  other limits (§4.2.1; an `await` node may shorten it). Expiring is itself an event delivered to the
-  awaiting node (`{expired: true}`), so the flow decides what timing out means. For scale: Stripe
-  retries a webhook for up to 3 days, so a payment wait fits the default.
-- **Parked runs per deployment:** default 10,000, ceiling set by the host, so a flood of starts
-  can't fill the disk.
-- **Visible.** The flow log groups one run's entries under its run id; the timeline shows the gap.
-  The editor lists parked runs per deployment, with their expiry.
+- **Expiry.** Every waiting point has a deadline: the `await`'s `expires`, default 7 days, at most
+  90 (built as the node's param; making it a limit the host grants is left for later). Expiring is
+  itself an event delivered to the awaiting node (`{expired: true}`), so the flow decides what
+  timing out means. For scale: Stripe retries a webhook for up to 3 days, so a payment wait fits
+  the default.
+- **Parked runs per deployment:** at most 10,000 (a constant for now); past it, a run that would
+  wait is refused with a `503` instead.
+- **Visible.** The flow log has an entry per part of a run, under one run id (`parked` names what it
+  waits for; a resumed part shows the events delivered). `GET /deployments/<slug>/runs` lists the
+  waiting runs, never their tokens; the editor's deployment card shows "⏸ N waiting" with each one's
+  route, waiting points and deadlines.
 - **Today, by hand:** the same pattern works now with state: the first route `insert`s its context
   under an id, the callback route `lookup`s it. Durable runs automate that and make it safe
   (minted ids, pinned versions, expiry, visibility).
@@ -364,7 +378,7 @@ One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable 
 | 5 ✅ | Host and server (`holon-server/src/permissions.rs`): manifests (derived capabilities with hosts, declared requirements), policy in `holon.toml` (`--policy`) and `GET /permissions`, grants per deployment (`GET /deployments/<slug>/manifest`, `.../grant`), enforcement at perform time, the re-check at load (older records migrate); run ids and the nonce; `rounds` and the grant in effect in the flow log | a deploy asks only for what policy doesn't already allow; an ungranted host or a limit above a ceiling is refused; each log entry has a verifiable run id. **Left for later:** changing or revoking a grant without a redeploy (§4.2.1 lifecycle point 4; today a grant changes by deploying again, and a host-policy change takes effect at restart), and large values by reference in the log (§4.5) |
 | 6 ✅ | Editor: the node and its params, requirements in deploy settings (bounded by `GET /permissions`), the consent screen showing asked against granted (`POST /deploy/preview`), attention on deployments, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round. Checked live: a deployed route called `https://example.com`, answered with its page, and view mode replayed the run offline with "✓ replay reproduces the run". **Left for later:** revoke controls (with revoking itself, step 5's note) |
 | 7 ✅ | Secrets: store, `secret` node, redaction, set from the editor's ⚙ | a token never appears in a log, a replay or the editor. Checked live: set from ⚙, read by a run, found nowhere but the secrets file, and gone with its deployment |
-| 8 | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on |
+| 8 ✅ | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on. Checked live: an order waited, was paid by a link (even across a server restart), and wrote its state once; the token appeared in no log or reply. **Left for later:** expiry and the waiting cap as host-granted limits, and a host-held key deriving tokens so a run record needn't store them |
 
 ---
 
@@ -426,14 +440,16 @@ packs/hooks/
 |---|---|---|---|---|---|---|
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met**; splitting `App.tsx` remains |
 | **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b): runs today on the control plane's `rouille`, move pending | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
-| **M2 effects + replay** | `http_request`, hashes/HMAC, Effects refused by `Any`-typed sink payloads ✅ | effect loop, `Performer`, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half designed in §4 (build order §4.6), not started** |
+| **M2 effects + replay** | `http_request` ✅, hashes/HMAC, Effects refused by `Any`-typed sink payloads ✅ | effect loop ✅, `Performer` ✅, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets ✅, durable runs ✅ | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half built (§4: rounds, permissions, secrets, durable runs); signature verification (`hmac_sha256`) remains** |
 | **M3 door 1** | — | (consent at load moved to M2, §4.2.1) | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
 
 **Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is splitting
 `App.tsx`, the data plane's move to `hyper`, and `instantiate` following `fn` params. M2's replay half
-landed early (the recorder came with view mode); sinks now refuse Effects; next is
-`http_request` and the effect loop, as designed in §4, followed by durable runs.
+landed early (the recorder came with view mode); its effects half, and durable runs, are built (§4):
+outbound requests in rounds, host permissions, secrets, and runs that wait and resume. What M2 still
+lacks for its "done when" is the `auth` pack's pieces: `hmac_sha256` / `hex` for verifying a
+webhook's signature.
 
 ### 7a. Review findings, triaged against this direction
 The 2026-10-21 project review is sorted by what matters for a **single-user backend builder with a

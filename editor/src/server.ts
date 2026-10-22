@@ -197,7 +197,24 @@ export type DeploymentEntry = {
   sessions: number;
   /** Why it can't run until deployed again (its grant no longer covers what it needs). */
   attention?: string;
+  /** How many of its runs are waiting for an event. */
+  waiting?: number;
 };
+
+/** A run waiting for an event (`GET /deployments/<slug>/runs`; never its tokens). */
+export type WaitingRun = {
+  run_id: string;
+  kind: string;
+  route: string | null;
+  parked_at: number;
+  waiting: { name: string; expires_at: number }[];
+  delivered: string[];
+};
+
+export async function listWaitingRuns(slug: string): Promise<WaitingRun[]> {
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/runs`);
+  return (await asJson<{ runs: WaitingRun[] }>(res)).runs;
+}
 
 /** Running answers and fires; paused keeps its port and session but answers 503; stopped has
  *  ended its session (saving its state) and released its port. Mirrors lifecycle.rs. */
@@ -239,7 +256,7 @@ export type LogEntry = {
   session: number;
   at_ms: number;
   duration_ms: number;
-  kind: "request" | "trigger" | "tick";
+  kind: "request" | "trigger" | "tick" | "resume";
   /** The matched route, e.g. "GET /todos/:id". */
   route: string | null;
   method: string | null;
@@ -261,6 +278,10 @@ export type LogEntry = {
   run_id?: string;
   nonce?: string;
   grant?: string;
+  /** The waiting points it settled waiting at (a durable run's part), if any. */
+  parked?: string[];
+  /** For a resumed part: the events delivered so far, by waiting point. */
+  events?: Record<string, WValue>;
 };
 
 /** The requests one round made: each node (by its path in the run's root unit), its request,

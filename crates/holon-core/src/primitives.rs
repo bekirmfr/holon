@@ -417,6 +417,26 @@ pub(crate) fn is_sink(name: &str) -> bool {
     matches!(name, "egress" | "store_write" | "http_request")
 }
 
+/// The longest a run may wait at one point: 90 days, in seconds.
+pub const MAX_AWAIT_SECONDS: u64 = 90 * 24 * 3600;
+
+/// What an `await` node asks the host: `{await: <name>, expires: <seconds>}`. `None` for a bad
+/// name or an `expires` that isn't a whole number of seconds from 1 to [`MAX_AWAIT_SECONDS`].
+pub(crate) fn await_request(params: &[Param]) -> Option<Value> {
+    let name = crate::kind::ident(params, "name")?;
+    let expires: u64 = param(params, "expires")?.parse().ok().filter(|s| (1..=MAX_AWAIT_SECONDS).contains(s))?;
+    Some(Value::Record(BTreeMap::from([
+        ("await".to_string(), Value::Text(name)),
+        ("expires".to_string(), Value::Number(expires as f64)),
+    ])))
+}
+
+/// What a `resume_token` node asks the host: `{resume_token: <await name>}`.
+pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
+    let name = crate::kind::ident(params, "await")?;
+    Some(Value::Record(BTreeMap::from([("resume_token".to_string(), Value::Text(name))])))
+}
+
 /// The methods `http_request` sends.
 const HTTP_METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 

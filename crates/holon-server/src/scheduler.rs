@@ -93,8 +93,16 @@ pub(crate) fn fire_one_clock_tick(
     ];
     let is_state = state.is_some();
     let started = started_now();
-    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, permit, true, secrets);
-    log_run(deployments, &slug, run_entry("tick", started, &extra_sourced, &run));
+    let mut waits = RunWaits::default();
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, permit, true, secrets, &mut waits, None);
+    let mut entry = run_entry("tick", started, &extra_sourced, &run);
+    match durable::park_if_waiting(deployments, store, &slug, &unit_hash, "tick", None, &[], &extra_sourced, &run, &waits) {
+        Ok(names) => entry.parked = names,
+        Err(e) => entry.error = Some(e),
+    }
+    Redactor::tokens(&waits.tokens).entry(&mut entry);
+    let parked_any = !entry.parked.is_empty();
+    log_run(deployments, &slug, entry);
     let FiredRun { outputs, performed, .. } = run;
 
     println!(
@@ -123,7 +131,7 @@ pub(crate) fn fire_one_clock_tick(
             }
         }
     }
-    if is_state {
+    if is_state || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
 }
@@ -138,5 +146,6 @@ pub(crate) fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<B
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
         run_due_clock_ticks(&store, &deployments, &deployments_path, SystemTime::now());
+        durable::expire_waiting(&store, &deployments, &deployments_path, epoch_now());
     });
 }

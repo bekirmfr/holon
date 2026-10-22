@@ -98,6 +98,13 @@ fn eval_at(
         UnitBody::Primitive { name } if name == "http_request" => {
             smallvec![primitives::http_request(inputs, &unit.params).and_then(|r| observer.answer(path, &r))]
         }
+        // A durable run's waiting point and its token: also the host's to answer.
+        UnitBody::Primitive { name } if name == "await" => {
+            smallvec![primitives::await_request(&unit.params).and_then(|r| observer.answer(path, &r))]
+        }
+        UnitBody::Primitive { name } if name == "resume_token" => {
+            smallvec![primitives::resume_token_request(&unit.params).and_then(|r| observer.answer(path, &r))]
+        }
         UnitBody::Primitive { name } => {
             // Gather present values in port order **by reference** — `compute` borrows them,
             // so an O(1) reader (head/length/is_empty) copies only what it returns, not the

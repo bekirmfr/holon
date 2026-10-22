@@ -217,6 +217,9 @@ pub(crate) struct DeploymentRecord {
     /// capabilities were acknowledged when it was deployed, and it is granted them at load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) grant: Option<Grant>,
+    /// Its runs waiting for an event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) parked: Vec<ParkedRun>,
 }
 
 #[derive(Serialize)]
@@ -253,6 +256,8 @@ pub(crate) struct DeploymentEntry {
     /// Why it can't run until deployed again, if so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) attention: Option<String>,
+    /// How many of its runs are waiting for an event.
+    pub(crate) waiting: usize,
 }
 
 /// One clock tick's result, kept in a deployment's bounded history. `outputs`: same shape

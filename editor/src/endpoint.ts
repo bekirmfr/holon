@@ -54,7 +54,12 @@ export function endpointUnit(
   handlerOutputs: WPort[],
   method: Method,
   path: string,
+  /** The waiting point this route resumes (a request node's `resume`), if it is a resume route. */
+  resume = "",
 ): WUnit | string {
+  if (resume !== "" && !/^[A-Za-z0-9_-]{1,64}$/.test(resume)) {
+    return `"${resume}" is not a waiting point's name (letters, digits, - and _)`;
+  }
   if (parsePath(path) === null) {
     return `"${path}" is not a route path (use /todos or /todos/:id)`;
   }
@@ -79,6 +84,8 @@ export function endpointUnit(
       { kind: "Frozen", name: "declare", value: "endpoint" },
       { kind: "Frozen", name: "method", value: method },
       { kind: "Frozen", name: "path", value: path },
+      // Only when set, so an ordinary route's endpoint hashes as it always did.
+      ...(resume !== "" ? [{ kind: "Frozen" as const, name: "resume", value: resume }] : []),
     ],
     inputs: [{ name: "request", ty: "Record" }],
     outputs: order.map((i, k) => ({ name: k === 0 ? "response" : handlerOutputs[i].name, ty: handlerOutputs[i].ty })),

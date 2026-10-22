@@ -165,6 +165,14 @@ impl Redactor {
         Redactor { pairs }
     }
 
+    /// A run's tokens, as `‹token:name›`: a token is a bearer credential for its waiting point.
+    pub(crate) fn tokens(tokens: &BTreeMap<String, String>) -> Redactor {
+        let mut pairs: Vec<(String, String)> =
+            tokens.iter().map(|(name, token)| (token.clone(), format!("‹token:{name}›"))).collect();
+        pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        Redactor { pairs }
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.pairs.is_empty()
     }
@@ -216,6 +224,7 @@ impl Redactor {
         e.state_before.values_mut().for_each(|v| self.svalue(v));
         e.outputs.iter_mut().flatten().for_each(|v| self.svalue(v));
         e.performed.iter_mut().for_each(|p| self.svalue(&mut p.payload));
+        e.events.values_mut().for_each(|v| self.svalue(v));
         for round in &mut e.rounds {
             for x in &mut round.exchanges {
                 self.svalue(&mut x.request);

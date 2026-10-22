@@ -111,6 +111,9 @@ pub enum Capability {
     /// Reads the named secret from the deployment's secret store: `secret`. Per name, so
     /// consent names which secret a flow may read.
     SecretRead(String),
+    /// Waits for an event at the named waiting point, a run continuing when it arrives (`await`,
+    /// and `resume_token`, which hands out the token that delivers it). A durable run.
+    Await(String),
     /// Sources entropy / nondeterminism.
     Random,
     /// Reads a value retained across firings, at the named key.
@@ -149,7 +152,7 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | FileWrite | Spawn => Kind::Sink,
         }
@@ -164,7 +167,7 @@ impl Capability {
     /// always meant. Takes `&self`, same reason as [`kind`](Capability::kind).
     pub fn is_sourced(&self) -> bool {
         use Capability::*;
-        matches!(self, Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Random | StateRead(_))
+        matches!(self, Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_))
     }
 }
 
@@ -254,6 +257,10 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
         "secret" => vec![SecretRead(secret_name(params)?)],
+        // A durable run's waiting point, and the token that resumes it: answered by the host when
+        // an event arrives (or the wait expires), never computed.
+        "await" => vec![Await(ident(params, "name")?)],
+        "resume_token" => vec![Await(ident(params, "await")?)],
         "random" => vec![Random],
         "egress" => vec![NetworkEgress],
         // An outbound HTTP request: performed by the host between rounds, its response sourced
@@ -313,7 +320,12 @@ pub(crate) fn http_host(params: &[Param]) -> Option<String> {
 /// The required `"name"` frozen param of `secret`: letters, digits, `-` and `_`, 1 to 64 of
 /// them. `None` (fail closed) otherwise.
 pub(crate) fn secret_name(params: &[Param]) -> Option<String> {
-    let name = params.iter().find(|p| p.name() == "name")?.value()?;
+    ident(params, "name")
+}
+
+/// The frozen param `key` when it is a name: letters, digits, `-` and `_`, 1 to 64.
+pub(crate) fn ident(params: &[Param], key: &str) -> Option<String> {
+    let name = params.iter().find(|p| p.name() == key)?.value()?;
     let ok = !name.is_empty()
         && name.len() <= 64
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
@@ -424,6 +436,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         FileRead,
         SecretAccess,
         SecretRead(SATURATED_STATE_KEY.to_string()),
+        Await(SATURATED_STATE_KEY.to_string()),
         Random,
         StateRead(SATURATED_STATE_KEY.to_string()),
         StateWrite(SATURATED_STATE_KEY.to_string()),
@@ -856,8 +869,19 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 12); // every capability — fail closed
+        assert_eq!(caps.len(), 13); // every capability — fail closed
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
+    }
+
+    #[test]
+    fn a_waiting_point_and_its_token_name_the_same_capability() {
+        let wait = Unit { params: vec![Param::frozen("name", "paid"), Param::frozen("expires", "3600")], ..prim("await") };
+        let token = Unit { params: vec![Param::frozen("await", "paid")], ..prim("resume_token") };
+        let want = vec![Capability::Await("paid".into())];
+        assert_eq!(capabilities_of("await", &wait.params).unwrap().iter().collect::<Vec<_>>(), want);
+        assert_eq!(capabilities_of("resume_token", &token.params).unwrap().iter().collect::<Vec<_>>(), want);
+        assert!(Capability::Await("paid".into()).is_sourced());
+        assert!(capabilities_of("await", &[Param::frozen("name", "a b")]).is_none());
     }
 
     #[test]

@@ -163,6 +163,8 @@ pub(crate) fn handle_post_deploy(
         };
         let document = body.document.clone().or(old_document);
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
+        // Runs waiting keep waiting, each on the unit it started on.
+        let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
         let state = match carried {
             Some(arc) => Some(arc),
             None if is_state => Some(Arc::new(Mutex::new(State::new()))),
@@ -175,6 +177,7 @@ pub(crate) fn handle_post_deploy(
                 permit,
                 attention: None,
                 secrets: secrets.vault(&body.slug),
+                parked,
                 unit: unit_hash,
                 triggers: triggers.clone(),
                 interval_seconds,
@@ -214,6 +217,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         error_count: dep.error_count,
         deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         attention: dep.attention.clone(),
+        waiting: dep.parked.len(),
     }
 }
 
@@ -512,12 +516,20 @@ pub(crate) fn handle_post_trigger(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &permit, false, &vault);
+    let mut waits = RunWaits::default();
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
 
     record_trigger(deployments, slug, false);
-    log_run(deployments, slug, run_entry("trigger", started, &extra_sourced, &run));
+    let mut entry = run_entry("trigger", started, &extra_sourced, &run);
+    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "trigger", None, &[], &extra_sourced, &run, &waits) {
+        Ok(names) => entry.parked = names,
+        Err(e) => entry.error = Some(e),
+    }
+    Redactor::tokens(&waits.tokens).entry(&mut entry);
+    let parked_any = !entry.parked.is_empty();
+    log_run(deployments, slug, entry);
     let FiredRun { outputs, performed, .. } = run;
-    if state.is_some() {
+    if state.is_some() || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
 
@@ -692,3 +704,4 @@ pub(crate) fn handle_get_sessions(
     redactor.json(&mut reply);
     Response::json(&reply)
 }
+

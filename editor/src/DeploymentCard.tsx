@@ -6,6 +6,8 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { formatOutputs, summarizeState } from "./diagnostics";
 import {
   getSessions,
+  listWaitingRuns,
+  type WaitingRun,
   type DeploymentEntry,
   type DeploymentStatus,
   type SessionEntry,
@@ -154,6 +156,7 @@ export function DeploymentCard({
       {entry.attention && (
         <div style={{ color: "#e0916f", fontSize: 11 }}>⚠ {entry.attention}</div>
       )}
+      {(entry.waiting ?? 0) > 0 && <WaitingRuns slug={entry.slug} count={entry.waiting ?? 0} />}
 
       {open &&
         (sessions ?? []).slice().reverse().map((s) => (
@@ -195,6 +198,31 @@ export function DeploymentCard({
         </div>
       )}
       {msg && <div style={{ color: "#e0916f" }}>{msg}</div>}
+    </div>
+  );
+}
+
+/** A deployment's runs waiting for an event: what each waits for, and until when. Never their
+ *  tokens (the server doesn't list them). */
+function WaitingRuns({ slug, count }: { slug: string; count: number }) {
+  const [open, setOpen] = useState(false);
+  const [runs, setRuns] = useState<WaitingRun[] | null>(null);
+  useEffect(() => {
+    if (open) listWaitingRuns(slug).then(setRuns).catch(() => setRuns([]));
+  }, [open, slug, count]);
+  const when = (s: number) => new Date(s * 1000).toLocaleString();
+  return (
+    <div style={{ fontSize: 10 }}>
+      <span style={{ cursor: "pointer", color: "#e0c36f" }} onClick={() => setOpen(!open)}>
+        ⏸ {count} waiting {open ? "▾" : "▸"}
+      </span>
+      {open &&
+        (runs ?? []).map((r) => (
+          <div key={r.run_id} style={{ paddingLeft: 14, color: "#9fb4d4" }} title={`run ${r.run_id}`}>
+            {r.route ?? r.kind} · since {when(r.parked_at)} ·{" "}
+            {r.waiting.map((w) => `waits for "${w.name}" until ${when(w.expires_at)}`).join("; ")}
+          </div>
+        ))}
     </div>
   );
 }

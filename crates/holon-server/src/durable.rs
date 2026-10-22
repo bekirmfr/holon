@@ -1,0 +1,421 @@
+//! Durable runs (§4.3, §4.4 of docs/PLATFORM_LAYOUT.md): a run that waits for an event, and
+//! continues when it arrives, minutes or days later.
+//!
+//! - **Park.** A run still waiting at an `await` when it settles performs nothing; its caller gets
+//!   whatever it answered meanwhile (a 202, say), and the host keeps a [`ParkedRun`]: the unit it
+//!   ran (pinned: units are content-addressed, so a redeploy doesn't change it), its inputs, the
+//!   state it read (by reference), its sourced values and nonce, the requests it made, its tokens
+//!   and the events delivered so far.
+//! - **Resume.** A request on a route declared `resume = <name>`, carrying a run's token (path
+//!   param or query `token`), delivers itself to that run's `await` of that name: the route's own
+//!   handler answers the caller, and the run is evaluated again from its record with the event.
+//!   It finishes (its effects are performed then, once) or waits again. A token is only accepted
+//!   by a resume route of the deployment that issued it, for the waiting point it was minted for.
+//! - **Expire.** Each waiting point has a deadline (the `await`'s `expires`, at most 90 days);
+//!   past it, `{expired: true}` is delivered as its event, so the flow decides what timing out
+//!   means.
+//! - **Visible.** `GET /deployments/<slug>/runs` lists waiting runs (never their tokens); the flow
+//!   log has an entry for each part of a run, under one run id.
+//!
+//! A resumed run reads the state as it was when the run started (that is what makes it the same
+//! run, and replayable); its state writes apply when it finishes, over whatever is there then.
+
+use std::collections::BTreeMap;
+
+use holon_host::{Exchange, Waits, Waiting};
+
+use crate::*;
+
+/// How many runs one deployment may have waiting at once.
+pub(crate) const MAX_PARKED: usize = 10_000;
+
+/// A run's waiting points and tokens: what [`holon_host::run_rounds`] asks for.
+#[derive(Default, Debug)]
+pub(crate) struct RunWaits {
+    /// Waiting point → its token (minted when the run first asks).
+    pub(crate) tokens: BTreeMap<String, String>,
+    /// Waiting point → the event delivered to it.
+    pub(crate) events: BTreeMap<String, Value>,
+}
+
+impl Waits for RunWaits {
+    fn event(&self, name: &str) -> Option<Value> {
+        self.events.get(name).cloned()
+    }
+    fn token(&mut self, name: &str) -> String {
+        self.tokens.entry(name.to_string()).or_insert_with(new_token).clone()
+    }
+}
+
+/// 128 bits from the OS's secure generator: a bearer credential for one waiting point.
+fn new_token() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("the OS has a secure random generator");
+    format!("rt_{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
+/// What a resumed run starts from instead of now: the state it first read, its nonce, and the
+/// requests it already made (answered from here, not sent again).
+pub(crate) struct Resumed {
+    pub(crate) state_before: State,
+    pub(crate) nonce: [u8; 16],
+    pub(crate) prior: Vec<Round>,
+}
+
+/// Everything to run a parked run again: its unit, inputs, sourced values, waits (the new event
+/// delivered) and what it started from.
+pub(crate) struct Resumption {
+    pub(crate) unit: Hash,
+    pub(crate) inputs: Vec<Option<Value>>,
+    pub(crate) sourced: Vec<(Capability, Value)>,
+    pub(crate) waits: RunWaits,
+    pub(crate) resumed: Resumed,
+}
+
+/// One waiting point of a parked run.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct StoredWaiting {
+    pub(crate) name: String,
+    /// When it expires, seconds since the epoch.
+    pub(crate) expires_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct StoredExchange {
+    pub(crate) path: Vec<u32>,
+    pub(crate) request: SValue,
+    pub(crate) response: SValue,
+    pub(crate) start_us: f64,
+    pub(crate) end_us: f64,
+}
+
+/// A run waiting for an event. Persisted with its deployment.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub(crate) struct ParkedRun {
+    pub(crate) run_id: String,
+    /// The unit it ran (hex): the endpoint for a request, the deployment's unit otherwise.
+    pub(crate) unit: String,
+    /// `"request"`, `"trigger"` or `"tick"`, and the route, for a request.
+    pub(crate) kind: String,
+    pub(crate) route: Option<String>,
+    pub(crate) inputs: Vec<Option<SValue>>,
+    /// The sourced values it saw (`"Clock"`, `"Random"`, `"NetworkIngress"`).
+    pub(crate) sourced: Vec<(String, SValue)>,
+    /// The state it read, by reference (absent for a stateless deployment).
+    pub(crate) state_refs: Option<BTreeMap<String, String>>,
+    pub(crate) nonce: String,
+    /// The requests it made, round by round, over all its parts so far.
+    pub(crate) rounds: Vec<Vec<StoredExchange>>,
+    /// Waiting point → token. Kept so a resumed run hands out the same tokens; never listed.
+    pub(crate) tokens: BTreeMap<String, String>,
+    /// Waiting point → the event delivered to it.
+    pub(crate) events: BTreeMap<String, SValue>,
+    pub(crate) waiting: Vec<StoredWaiting>,
+    pub(crate) parked_at: u64,
+}
+
+/// The capability a logged sourced value is for.
+fn capability_named(name: &str) -> Option<Capability> {
+    match name {
+        "Clock" => Some(Capability::Clock),
+        "Random" => Some(Capability::Random),
+        "NetworkIngress" => Some(Capability::NetworkIngress),
+        _ => None,
+    }
+}
+
+fn store_rounds(rounds: &[Round]) -> Vec<Vec<StoredExchange>> {
+    rounds
+        .iter()
+        .map(|r| {
+            r.exchanges
+                .iter()
+                .map(|x| StoredExchange {
+                    path: x.path.clone(),
+                    request: SValue::from_core(&x.request),
+                    response: SValue::from_core(&x.response),
+                    start_us: x.start_us,
+                    end_us: x.end_us,
+                })
+                .collect()
+        })
+        .collect()
+}
+
+impl ParkedRun {
+    /// The record of a run that settled waiting. `prior` are the rounds of its earlier parts.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        run_id: &str,
+        unit: &holon_core::Hash,
+        kind: &str,
+        route: Option<String>,
+        inputs: &[Option<Value>],
+        sourced: &[(Capability, Value)],
+        state_before: Option<&State>,
+        nonce: &str,
+        rounds: &[Round],
+        waits: &RunWaits,
+        waiting: &[Waiting],
+        now: u64,
+        store: &SharedStore,
+    ) -> Result<ParkedRun, String> {
+        let mut values = store.clone();
+        let state_refs = match state_before {
+            Some(state) => Some(
+                state
+                    .save(&mut values)
+                    .map_err(|e| format!("the run's state couldn't be stored: {e:?}"))?
+                    .iter()
+                    .map(|(k, h)| (k.clone(), to_hex(h)))
+                    .collect(),
+            ),
+            None => None,
+        };
+        Ok(ParkedRun {
+            run_id: run_id.to_string(),
+            unit: to_hex(unit),
+            kind: kind.to_string(),
+            route,
+            inputs: inputs.iter().map(|i| i.as_ref().map(SValue::from_core)).collect(),
+            sourced: sourced
+                .iter()
+                .filter(|(c, _)| matches!(c, Capability::Clock | Capability::Random | Capability::NetworkIngress))
+                .map(|(c, v)| (format!("{c:?}"), SValue::from_core(v)))
+                .collect(),
+            state_refs,
+            nonce: nonce.to_string(),
+            rounds: store_rounds(rounds),
+            tokens: waits.tokens.clone(),
+            events: waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
+            waiting: waiting.iter().map(|w| StoredWaiting { name: w.name.clone(), expires_at: now + w.expires }).collect(),
+            parked_at: now,
+        })
+    }
+
+    /// The waiting point `token` resumes, if it is one of this run's and it still waits there.
+    pub(crate) fn waiting_point_of(&self, token: &str) -> Option<&str> {
+        let (name, _) = self.tokens.iter().find(|(_, t)| t.as_str() == token)?;
+        self.waiting.iter().any(|w| &w.name == name).then_some(name.as_str())
+    }
+
+    /// Everything to run it again: its inputs, sourced values, waits (with `event` delivered at
+    /// `name`) and what it started from.
+    pub(crate) fn resume(
+        &self,
+        name: &str,
+        event: Value,
+        store: &SharedStore,
+    ) -> Result<Resumption, String> {
+        let unit = parse_hash(&self.unit).ok_or("the run's unit isn't a hash")?;
+        let inputs = self.inputs.iter().map(|i| i.clone().map(SValue::into_core)).collect();
+        let sourced = self
+            .sourced
+            .iter()
+            .filter_map(|(c, v)| Some((capability_named(c)?, v.clone().into_core())))
+            .collect();
+        let mut events: BTreeMap<String, Value> = self.events.iter().map(|(k, v)| (k.clone(), v.clone().into_core())).collect();
+        events.insert(name.to_string(), event);
+        let waits = RunWaits { tokens: self.tokens.clone(), events };
+        let refs = self
+            .state_refs
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, h)| Some((k, parse_hash(&h)?)))
+            .collect::<Option<BTreeMap<_, _>>>()
+            .ok_or("a state reference isn't a hash")?;
+        let state_before = State::load(&refs, store).map_err(|e| format!("the run's state can't be loaded: {e:?}"))?;
+        let nonce = (0..16)
+            .map(|i| u8::from_str_radix(self.nonce.get(2 * i..2 * i + 2)?, 16).ok())
+            .collect::<Option<Vec<u8>>>()
+            .and_then(|v| <[u8; 16]>::try_from(v).ok())
+            .ok_or("the run's nonce isn't 128 bits of hex")?;
+        let prior = self
+            .rounds
+            .iter()
+            .map(|r| Round {
+                exchanges: r
+                    .iter()
+                    .map(|x| Exchange {
+                        path: x.path.clone(),
+                        request: x.request.clone().into_core(),
+                        response: x.response.clone().into_core(),
+                        start_us: x.start_us,
+                        end_us: x.end_us,
+                    })
+                    .collect(),
+            })
+            .collect();
+        Ok(Resumption { unit, inputs, sourced, waits, resumed: Resumed { state_before, nonce, prior } })
+    }
+
+    /// What `GET .../runs` shows: never the tokens.
+    pub(crate) fn summary(&self) -> serde_json::Value {
+        serde_json::json!({
+            "run_id": self.run_id,
+            "kind": self.kind,
+            "route": self.route,
+            "parked_at": self.parked_at,
+            "waiting": self.waiting,
+            "delivered": self.events.keys().collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// After a fresh run: keep it as a parked run if it settled waiting (and didn't fail). The names
+/// it waits on, for its log entry; an error when the deployment already has [`MAX_PARKED`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn park_if_waiting(
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    store: &SharedStore,
+    slug: &str,
+    unit: &Hash,
+    kind: &str,
+    route: Option<String>,
+    inputs: &[Option<Value>],
+    sourced: &[(Capability, Value)],
+    run: &FiredRun,
+    waits: &RunWaits,
+) -> Result<Vec<String>, String> {
+    if run.waiting.is_empty() || run.error.is_some() {
+        return Ok(Vec::new());
+    }
+    let record = ParkedRun::new(
+        &run.run_id,
+        unit,
+        kind,
+        route,
+        inputs,
+        sourced,
+        run.start_state.as_ref(),
+        &run.nonce,
+        &run.rounds,
+        waits,
+        &run.waiting,
+        epoch_now(),
+        store,
+    )?;
+    let mut table = deployments.lock().unwrap();
+    let dep = table.get_mut(slug).ok_or("the deployment is gone")?;
+    if dep.parked.len() >= MAX_PARKED {
+        return Err(format!("{slug:?} already has {MAX_PARKED} runs waiting"));
+    }
+    let names = record.waiting.iter().map(|w| w.name.clone()).collect();
+    dep.parked.insert(record.run_id.clone(), record);
+    Ok(names)
+}
+
+/// The run waiting at `name` for `token` in `slug`, if there is one: what a resume route checks
+/// before it answers.
+pub(crate) fn find_by_token(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, name: &str, token: &str) -> Option<String> {
+    let table = deployments.lock().unwrap();
+    table.get(slug)?.parked.values().find(|p| p.waiting_point_of(token) == Some(name)).map(|p| p.run_id.clone())
+}
+
+/// Deliver `event` to parked run `run_id`'s waiting point `name`, and run it again from its
+/// record. It finishes (its effects performed now, once), waits again, or fails; the log gets an
+/// entry for this part, under the same run id.
+pub(crate) fn resume_parked(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    slug: &str,
+    run_id: &str,
+    name: &str,
+    event: Value,
+) -> Result<(), String> {
+    let (record, state, permit, secrets) = {
+        let table = deployments.lock().unwrap();
+        let dep = table.get(slug).ok_or("no such deployment")?;
+        let record = dep.parked.get(run_id).ok_or("no such waiting run")?.clone();
+        (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets))
+    };
+    let Resumption { unit, inputs, sourced, mut waits, resumed } = record.resume(name, event, store)?;
+    let resolver = materialize_closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
+    let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
+    let started = started_now();
+    let run = fire_with_state(root, &inputs, &resolver, state.as_deref(), &sourced, &permit, false, &secrets, &mut waits, Some(resumed));
+
+    let mut entry = run_entry("resume", started, &sourced, &run);
+    entry.route = record.route.clone();
+    entry.request = inputs.first().cloned().flatten().map(|r| SValue::from_core(&r));
+    entry.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
+    entry.parked = run.waiting.iter().map(|w| w.name.clone()).collect();
+    Redactor::tokens(&waits.tokens).entry(&mut entry);
+    log_run(deployments, slug, entry);
+
+    {
+        let mut table = deployments.lock().unwrap();
+        if let Some(dep) = table.get_mut(slug) {
+            if run.waiting.is_empty() || run.error.is_some() {
+                dep.parked.remove(run_id);
+            } else if let Some(kept) = dep.parked.get_mut(run_id) {
+                // Still waiting: what it learned is kept; a point it was already waiting at keeps
+                // its deadline.
+                let now = epoch_now();
+                kept.rounds.extend(store_rounds(&run.rounds));
+                kept.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
+                kept.tokens = waits.tokens.clone();
+                kept.waiting = run
+                    .waiting
+                    .iter()
+                    .map(|w| StoredWaiting {
+                        name: w.name.clone(),
+                        expires_at: kept.waiting.iter().find(|o| o.name == w.name).map_or(now + w.expires, |o| o.expires_at),
+                    })
+                    .collect();
+            }
+        }
+    }
+    persist_deployments(deployments_path, deployments, store);
+    match run.error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Deliver `{expired: true}` to every waiting point past its deadline.
+pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &str, now: u64) {
+    let mut due: Vec<(String, String, String)> = Vec::new();
+    for (slug, dep) in deployments.lock().unwrap().iter() {
+        for p in dep.parked.values() {
+            for w in p.waiting.iter().filter(|w| w.expires_at <= now) {
+                due.push((slug.clone(), p.run_id.clone(), w.name.clone()));
+            }
+        }
+    }
+    for (slug, run_id, name) in due {
+        if let Err(e) = resume_parked(store, deployments, deployments_path, &slug, &run_id, &name, expired_event()) {
+            eprintln!("holon-server: expiring {name:?} of run {run_id} in {slug:?}: {e}");
+        }
+    }
+}
+
+/// `GET /deployments/<slug>/runs` — the runs waiting in it, without their tokens.
+pub(crate) fn handle_get_runs(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
+    match deployments.lock().unwrap().get(slug) {
+        Some(dep) => Response::json(&serde_json::json!({ "runs": dep.parked.values().map(ParkedRun::summary).collect::<Vec<_>>() })),
+        None => err(404, format!("no deployment {slug:?}")),
+    }
+}
+
+/// The event an expired waiting point is given.
+pub(crate) fn expired_event() -> Value {
+    Value::Record(BTreeMap::from([("expired".to_string(), Value::Boolean(true))]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_runs_tokens_are_stable_and_unguessable() {
+        let mut w = RunWaits::default();
+        let a = w.token("paid");
+        assert_eq!(w.token("paid"), a, "the same waiting point, the same token");
+        assert_ne!(w.token("approved"), a);
+        assert!(a.starts_with("rt_") && a.len() == 3 + 32, "{a}");
+        assert_ne!(RunWaits::default().token("paid"), a, "another run, another token");
+    }
+}

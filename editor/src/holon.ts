@@ -162,6 +162,7 @@ export type WCapability =
   | "FileRead"
   | "SecretAccess"
   | { SecretRead: string }
+  | { Await: string }
   | "Random"
   | { StateRead: string }
   | { StateWrite: string }

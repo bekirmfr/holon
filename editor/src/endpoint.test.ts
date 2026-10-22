@@ -198,3 +198,15 @@ describe("toJson", () => {
     expect(toJson({ type: "Effect", value: { sink: "egress", payload: { type: "Number", value: 1 } } })).toBeNull();
   });
 });
+
+describe("a resume route's endpoint", () => {
+  const out: WPort[] = [{ name: "response", ty: "Any" }];
+  it("names its waiting point only when it has one, so ordinary routes hash as before", () => {
+    const plain = endpointUnit("h", [], out, "GET", "/paid/:token");
+    const resume = endpointUnit("h", [], out, "GET", "/paid/:token", "paid");
+    if (typeof plain === "string" || typeof resume === "string") throw new Error("not built");
+    expect(plain.params?.map((p) => p.name)).toEqual(["declare", "method", "path"]);
+    expect(resume.params).toContainEqual({ kind: "Frozen", name: "resume", value: "paid" });
+    expect(endpointUnit("h", [], out, "GET", "/x", "a b")).toMatch(/not a waiting point's name/);
+  });
+});

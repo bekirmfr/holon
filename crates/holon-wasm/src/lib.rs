@@ -206,6 +206,7 @@ pub enum WCapability {
     FileRead,
     SecretAccess,
     SecretRead(String),
+    Await(String),
     Random,
     StateRead(String),
     StateWrite(String),
@@ -223,6 +224,7 @@ impl WCapability {
             Capability::FileRead => WCapability::FileRead,
             Capability::SecretAccess => WCapability::SecretAccess,
             Capability::SecretRead(name) => WCapability::SecretRead(name),
+            Capability::Await(name) => WCapability::Await(name),
             Capability::Random => WCapability::Random,
             Capability::StateRead(key) => WCapability::StateRead(key),
             Capability::StateWrite(key) => WCapability::StateWrite(key),
@@ -1055,7 +1057,7 @@ fn check_wunit_roundtrip() {
 fn check_primitive_catalog() {
     let cat = catalog_wunits();
     // The §13a count crosses the mirror intact.
-    assert_eq!(cat.len(), 56);
+    assert_eq!(cat.len(), 58);
     // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
     let add = cat
         .iter()
@@ -1426,7 +1428,7 @@ mod wasm_tests {
     fn primitive_catalog_crosses_js_boundary() {
         let js = primitive_catalog().unwrap();
         let cat: Vec<WUnit> = serde_wasm_bindgen::from_value(js).unwrap();
-        assert_eq!(cat.len(), 56);
+        assert_eq!(cat.len(), 58);
         assert!(cat
             .iter()
             .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));
