@@ -187,15 +187,15 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
 
     if let Some(rest) = url.strip_prefix("/deployments/") {
         if let Some(slug) = rest.strip_suffix("/secrets") {
-            return handle_secrets(&state.secrets, slug, None, &method, request);
+            return handle_secrets(&state.secrets, slug, None, method, request);
         }
         if let Some((slug, name)) = rest.split_once("/secrets/") {
-            return handle_secrets(&state.secrets, slug, Some(name), &method, request);
+            return handle_secrets(&state.secrets, slug, Some(name), method, request);
         }
-        if let Some(slug) = rest.strip_suffix("/runs") {
-            if method == "GET" {
-                return durable::handle_get_runs(&state.deployments, slug);
-            }
+        if let Some(slug) = rest.strip_suffix("/runs")
+            && method == "GET"
+        {
+            return durable::handle_get_runs(&state.deployments, slug);
         }
         if let Some(slug) = rest.strip_suffix("/history") {
             if method == "GET" {
