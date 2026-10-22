@@ -4,10 +4,10 @@
 // names — inputs and outputs alike (P4.7: outputs are a Vec<Port>, symmetric with inputs, not a
 // single hardcoded "out") — stable references the wiring inch turns into Edges by index.
 
-import { memo, type CSSProperties } from "react";
-import { Handle, Position, useReactFlow, type NodeProps, type Node } from "@xyflow/react";
+import { memo, useState, type CSSProperties } from "react";
+import { Handle, NodeToolbar, Position, useReactFlow, type NodeProps, type Node } from "@xyflow/react";
 import { compatible, type WParam, type WPort, type WType, type WValue } from "./holon";
-import { formatValue } from "./diagnostics";
+import { formatValue, valueChip } from "./diagnostics";
 import { METHODS } from "./endpoint";
 
 /** Params with a fixed set of values (crypto.rs in core): picked, never typed, so a node can't
@@ -61,14 +61,90 @@ export type PrimitiveData = {
     state: "active" | "done" | "pending" | "outside";
     /** Its part in a failed run (replay.ts's diagnose): where the failure started, or starved. */
     issue?: { role: "origin" | "starved"; reason: string };
+    /** Whether its output values show as chips (the view toolbar's "values" toggle). */
+    showValues?: boolean;
   };
 };
 
-/** A value short enough for a badge under a port. */
-function badge(v: WValue | null): string {
-  if (v === null) return "—";
-  const s = formatValue(v);
-  return s.length > 28 ? `${s.slice(0, 27)}…` : s;
+// A node looks the same with or without a run's data in it: the box is the design. Everything a
+// run adds (a value chip by an output, the full value pinned beside the node, the failure pill on
+// its top edge) is drawn over the canvas, outside the node's layout, and marked `data-overlay`
+// (PrimitiveNode.test.tsx holds the box to that).
+
+const chipStyle = (present: boolean, pinned: boolean): CSSProperties => ({
+  position: "absolute",
+  left: "100%",
+  top: "50%",
+  transform: "translateY(-50%)",
+  marginLeft: 9,
+  fontSize: 10,
+  lineHeight: "14px",
+  whiteSpace: "nowrap",
+  maxWidth: 150,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  padding: "0 5px",
+  borderRadius: 7,
+  color: present ? "#bfe8c2" : "#7e8ea8",
+  background: pinned ? "#1d3654" : "#0b1527ee",
+  border: `1px solid ${pinned ? "#6fd3e0" : "#24384f"}`,
+  cursor: present ? "pointer" : "default",
+  zIndex: 5,
+  pointerEvents: "all",
+});
+
+/** The full value of each pinned output, beside the node. */
+function PinnedValues({ ports, values, onUnpin }: { ports: WPort[]; values: (WValue | null)[]; onUnpin: (name: string) => void }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {ports.map((p, i) => (
+        <div
+          key={p.name}
+          className="nodrag nowheel"
+          style={{
+            maxWidth: 360,
+            maxHeight: 260,
+            overflow: "auto",
+            fontFamily: "var(--mono)",
+            fontSize: 11,
+            color: "#cfe3ff",
+            background: "#0b1527",
+            border: "1px solid #6fd3e0",
+            borderRadius: 6,
+            padding: "4px 8px 6px",
+            boxShadow: "0 6px 18px #0009",
+          }}
+        >
+          <div style={{ display: "flex", gap: 8, color: "#7e8ea8", marginBottom: 2 }}>
+            <span style={{ flex: 1 }}>{p.name}</span>
+            <span style={{ cursor: "pointer" }} onClick={() => onUnpin(p.name)} title="unpin">
+              ×
+            </span>
+          </div>
+          <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{pretty(values[i] ?? null)}</pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** A value laid out to read: JSON-like, indented. */
+function pretty(v: WValue | null): string {
+  const plain = (x: WValue): unknown => {
+    switch (x.type) {
+      case "Record":
+        return Object.fromEntries(x.value.map(([k, y]) => [k, plain(y)]));
+      case "List":
+        return x.value.map(plain);
+      case "Effect":
+        return { effect: x.value.sink, payload: plain(x.value.payload) };
+      case "Sum":
+        return x.value.arm === 0 ? { some: plain(x.value.payload) } : "none";
+      default:
+        return x.value;
+    }
+  };
+  return v === null ? "— (no value)" : JSON.stringify(plain(v), null, 2);
 }
 
 export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
@@ -140,7 +216,10 @@ const portButtonStyle: CSSProperties = {
 
 function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
   const { name, inputs, outputs, params, variadic, minInputs, error, body, hiddenInputs, readOnly, trace } = data;
-  const shown = trace && (trace.state === "active" || trace.state === "done");
+  const shown = trace && (trace.state === "active" || trace.state === "done") && trace.showValues !== false;
+  const [pinned, setPinned] = useState<string[]>([]);
+  const togglePin = (port: string) => setPinned((p) => (p.includes(port) ? p.filter((x) => x !== port) : [...p, port]));
+  const pinnedPorts = shown ? outputs.filter((p) => pinned.includes(p.name)) : [];
   const { updateNodeData, setEdges, getNode } = useReactFlow<PrimitiveNodeType>();
 
   // Grow/shrink a variadic node's port count (P4.1: variadic-arity editing). Every port a
@@ -227,6 +306,7 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
     <div
       className="hl-node"
       style={{
+        position: "relative",
         ...(error ? { borderColor: TYPE_COLOR.Effect, boxShadow: `0 0 0 1px ${TYPE_COLOR.Effect}` } : {}),
         ...(trace?.issue?.role === "starved" ? { borderColor: "#b9735f", borderStyle: "dashed" } : {}),
         ...(trace?.issue?.role === "origin" ? { borderColor: FAIL, boxShadow: `0 0 0 2px ${FAIL}, 0 0 18px ${FAIL}66` } : {}),
@@ -238,19 +318,38 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
       <div className="hl-node__title">{name}</div>
       {trace?.issue && (
         <div
+          data-overlay
           title={trace.issue.reason}
           style={{
+            position: "absolute",
+            bottom: "100%",
+            left: -1,
+            marginBottom: 4,
+            maxWidth: 300,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
             fontSize: 10,
-            lineHeight: 1.3,
-            padding: "2px 8px",
-            maxWidth: 260,
-            color: trace.issue.role === "origin" ? "#ffd3cc" : "#d9a596",
-            background: trace.issue.role === "origin" ? `${FAIL}33` : "transparent",
+            lineHeight: "16px",
+            padding: "0 7px",
+            borderRadius: 8,
+            color: trace.issue.role === "origin" ? "#2a0d0a" : "#f1c7bb",
+            background: trace.issue.role === "origin" ? FAIL : "#3a2420",
+            border: `1px solid ${trace.issue.role === "origin" ? FAIL : "#b9735f"}`,
           }}
         >
-          {trace.issue.role === "origin" ? "✗ failed here: " : "↯ "}
+          {trace.issue.role === "origin" ? "✗ " : "↯ "}
           {trace.issue.reason}
         </div>
+      )}
+      {pinnedPorts.length > 0 && trace && (
+        <NodeToolbar isVisible position={Position.Right} offset={170}>
+          <PinnedValues
+            ports={pinnedPorts}
+            values={pinnedPorts.map((p) => trace.outputs[outputs.indexOf(p)] ?? null)}
+            onUnpin={togglePin}
+          />
+        </NodeToolbar>
       )}
 
       {params.length > 0 && (
@@ -347,8 +446,9 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
               </span>
             </div>
           ))}
-          {variadic && !readOnly && (
-            <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+          {/* Kept in place when read only, just hidden: the node keeps its designed size. */}
+          {variadic && (
+            <div style={{ display: "flex", gap: 4, marginTop: 2, visibility: readOnly ? "hidden" : "visible" }}>
               <button
                 className="nodrag"
                 onClick={addPort}
@@ -382,25 +482,20 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
               >
                 {outputs.length > 1 ? port.name : typeLabel(port.ty)}
               </span>
-              {shown && (
-                <span
-                  title={trace.outputs[outputs.indexOf(port)] ? formatValue(trace.outputs[outputs.indexOf(port)]!) : "no value"}
-                  style={{
-                    fontSize: 10,
-                    color: trace.outputs[outputs.indexOf(port)] ? "#9ad29f" : "#7e8ea8",
-                    background: "#0b1527",
-                    border: "1px solid #1b2a45",
-                    borderRadius: 3,
-                    padding: "0 4px",
-                    maxWidth: 180,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {badge(trace.outputs[outputs.indexOf(port)] ?? null)}
-                </span>
-              )}
+              {shown && (() => {
+                const v = trace.outputs[outputs.indexOf(port)] ?? null;
+                return (
+                  <span
+                    data-overlay
+                    className="nodrag"
+                    title={v ? `${formatValue(v)}\n\nclick to pin the whole value` : "no value"}
+                    onClick={v ? () => togglePin(port.name) : undefined}
+                    style={chipStyle(v !== null, pinned.includes(port.name))}
+                  >
+                    {valueChip(v)}
+                  </span>
+                );
+              })()}
               <Handle
                 type="source"
                 position={Position.Right}

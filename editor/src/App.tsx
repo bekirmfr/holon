@@ -67,7 +67,7 @@ import {
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
-import { isWEncapError, capabilityAcknowledgeName, describeItem } from "./diagnostics";
+import { isWEncapError, capabilityAcknowledgeName, describeItem, valueChip } from "./diagnostics";
 import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
@@ -169,6 +169,10 @@ function Canvas({
   // The deployed flow's map from a run's steps to canvas nodes, and the node the side pane shows.
   const [viewTrace, setViewTrace] = useState<Record<string, string[]> | undefined>(undefined);
   const [inspectNode, setInspectNode] = useState<string | null>(null);
+  // View mode: values as chips beside each output (on), or the flow exactly as designed (off);
+  // and the wire under the pointer, which shows the value it carried.
+  const [showValues, setShowValues] = useState(true);
+  const [hoveredWire, setHoveredWire] = useState<string | null>(null);
   const beforeView = useRef<{
     nodes: PrimitiveNodeType[];
     edges: Edge[];
@@ -845,14 +849,14 @@ function Canvas({
         const state: "active" | "done" | "pending" | "outside" =
           i < 0 ? "outside" : step === null || i < step ? "done" : i === step ? "active" : "pending";
         const issue = replayed?.diagnosis?.issues.get(n.id);
-        const trace = replayed ? { outputs: replayed.traces.get(n.id)?.outputs ?? [], state, issue } : undefined;
+        const trace = replayed ? { outputs: replayed.traces.get(n.id)?.outputs ?? [], state, issue, showValues } : undefined;
         return { ...n, data: { ...n.data, readOnly: true, trace } };
       });
     }
     return errorNodeIds.size === 0
       ? nodes
       : nodes.map((n) => (errorNodeIds.has(n.id) ? { ...n, data: { ...n.data, error: true } } : n));
-  }, [nodes, errorNodeIds, viewing, replayed, step]);
+  }, [nodes, errorNodeIds, viewing, replayed, step, showValues]);
 
   // In view mode, the wires show the run: the way a failure took in its colour, and a wire that
   // carried nothing faded.
@@ -864,12 +868,25 @@ function Canvas({
       const from = nodes.find((n) => n.id === e.source);
       const at = from ? from.data.outputs.findIndex((p) => p.name === e.sourceHandle) : -1;
       const value = replayed.traces.get(e.source)?.outputs[at] ?? null;
+      // The value it carried, on hover: an edge label, drawn over the canvas.
+      const hover =
+        hoveredWire === e.id
+          ? {
+              label: valueChip(value),
+              labelStyle: { fill: value === null ? "#7e8ea8" : "#bfe8c2", fontSize: 11, fontFamily: "var(--mono)" },
+              labelBgStyle: { fill: "#0b1527", stroke: "#6fd3e0" },
+              labelBgPadding: [6, 3] as [number, number],
+              labelBgBorderRadius: 6,
+            }
+          : {};
       if (replayed.diagnosis?.path.has(wireKey(e))) {
-        return { ...e, animated: true, style: { ...e.style, stroke: FAIL, strokeWidth: 2.6 } };
+        return { ...e, ...hover, animated: true, style: { ...e.style, stroke: FAIL, strokeWidth: 2.6 } };
       }
-      return value === null ? { ...e, style: { ...e.style, opacity: 0.35, strokeDasharray: "4 4" } } : e;
+      return value === null
+        ? { ...e, ...hover, style: { ...e.style, opacity: hoveredWire === e.id ? 1 : 0.35, strokeDasharray: "4 4" } }
+        : { ...e, ...hover };
     });
-  }, [edges, nodes, viewing, replayed]);
+  }, [edges, nodes, viewing, replayed, hoveredWire]);
 
   // How many placed nodes are currently selected — React Flow's own selection state
   // (shift-click / drag-box), already live for delete, now also gating the "group" button
@@ -886,6 +903,8 @@ function Canvas({
         <ReactFlow<PrimitiveNodeType>
           nodes={decoratedNodes}
           onNodeClick={onNodeClick}
+          onEdgeMouseEnter={viewing ? (_, edge) => setHoveredWire(edge.id) : undefined}
+          onEdgeMouseLeave={viewing ? () => setHoveredWire(null) : undefined}
           onNodesChange={onNodesChange}
           edges={decoratedEdges}
           onEdgesChange={onEdgesChange}
@@ -913,6 +932,8 @@ function Canvas({
               histVersion={histVersion}
               viewing={viewing}
               onExitView={onExitView}
+              showValues={showValues}
+              onToggleValues={() => setShowValues((v) => !v)}
               flowName={flowName}
               dirty={dirty}
               onSave={onSave}

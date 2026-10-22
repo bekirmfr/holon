@@ -35,6 +35,8 @@ export function FlowToolbar({
   histVersion,
   viewing,
   onExitView,
+  showValues,
+  onToggleValues,
   flowName,
   dirty,
   onSave,
@@ -49,6 +51,9 @@ export function FlowToolbar({
   histVersion: number;
   viewing: string | null;
   onExitView: () => void;
+  /** View mode: whether nodes show their outputs' values as chips. */
+  showValues: boolean;
+  onToggleValues: () => void;
   flowName: string | null;
   dirty: boolean;
   onSave: () => void;
@@ -72,6 +77,13 @@ export function FlowToolbar({
           <span style={{ color: "#7e8ea8", fontSize: 11 }}>deployed · read only</span>
           <button onClick={onExitView} style={primaryBtn}>
             exit view
+          </button>
+          <button
+            onClick={onToggleValues}
+            style={historyBtn(true)}
+            title={showValues ? "hide the values: the flow exactly as designed" : "show each output's value beside it"}
+          >
+            values {showValues ? "on" : "off"}
           </button>
         </>
       ) : (

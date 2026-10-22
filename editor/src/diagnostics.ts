@@ -115,6 +115,34 @@ export function capabilityAcknowledgeName(c: WCapability): string {
 // the sink name) that sat unnoticed until someone built a state-write flow and looked closely
 // at the result. That's exactly the class of regression this file exists to catch early instead
 // of by manual review.
+/**
+ * A value as a chip on a canvas port: short by construction, so it never needs cutting mid-value
+ * and never sizes anything. Text is quoted (cut at 16 characters), a record or list says what it
+ * holds, a secret or token stays its placeholder's kind. `null` (absent) is a dash.
+ */
+export function valueChip(v: WValue | null): string {
+  if (v === null) return "—";
+  switch (v.type) {
+    case "Number":
+      return String(Number.isInteger(v.value) ? v.value : Number(v.value.toPrecision(6)));
+    case "Boolean":
+      return String(v.value);
+    case "Text": {
+      const placeholder = /^‹(secret|token):[^›]*›$/.exec(v.value);
+      if (placeholder) return `‹${placeholder[1]}›`;
+      return v.value.length > 16 ? `"${v.value.slice(0, 15)}…"` : JSON.stringify(v.value);
+    }
+    case "Record":
+      return `{${v.value.length} field${v.value.length === 1 ? "" : "s"}}`;
+    case "List":
+      return `[${v.value.length} item${v.value.length === 1 ? "" : "s"}]`;
+    case "Effect":
+      return `effect ${v.value.sink.split(":")[0]}`;
+    case "Sum":
+      return v.value.arm === 0 ? `some ${valueChip(v.value.payload)}` : "none";
+  }
+}
+
 export function formatValue(v: WValue): string {
   switch (v.type) {
     case "Number":

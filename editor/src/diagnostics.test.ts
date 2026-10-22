@@ -18,6 +18,7 @@ import {
   formatValue,
   formatOutputs,
   summarizeState,
+  valueChip,
 } from "./diagnostics";
 
 describe("summarizeState", () => {
@@ -242,6 +243,26 @@ describe("capabilityAcknowledgeName", () => {
     const a = capabilityAcknowledgeName({ StateRead: "var1" });
     const b = capabilityAcknowledgeName({ StateRead: "var2" });
     expect(a).not.toBe(b);
+  });
+});
+
+describe("valueChip", () => {
+  it("summarizes any value in a few characters, cutting nothing mid-structure", () => {
+    const txt = (value: string): WValue => ({ type: "Text", value });
+    expect(valueChip(null)).toBe("—");
+    expect(valueChip({ type: "Number", value: 200 })).toBe("200");
+    expect(valueChip({ type: "Number", value: 1 / 3 })).toBe("0.333333");
+    expect(valueChip({ type: "Boolean", value: false })).toBe("false");
+    expect(valueChip(txt("Ada"))).toBe('"Ada"');
+    expect(valueChip(txt("payment_intent.succeeded"))).toBe('"payment_intent.…"');
+    expect(valueChip(txt("‹secret:stripe_webhook_secret›"))).toBe("‹secret›");
+    expect(valueChip(txt("‹token:paid›"))).toBe("‹token›");
+    const rec: WValue = { type: "Record", value: [["id", txt("evt_1")], ["data", { type: "List", value: [] }]] };
+    expect(valueChip(rec)).toBe("{2 fields}");
+    expect(valueChip({ type: "List", value: [txt("a")] })).toBe("[1 item]");
+    expect(valueChip({ type: "Effect", value: { sink: "store_write:notes", payload: rec } })).toBe("effect store_write");
+    expect(valueChip({ type: "Sum", value: { arm: 0, payload: txt("x") } })).toBe('some "x"');
+    expect(valueChip({ type: "Sum", value: { arm: 1, payload: { type: "List", value: [] } } })).toBe("none");
   });
 });
 
