@@ -7,7 +7,9 @@ use crate::*;
 /// deployment gets its own `state` slot at all. Takes the iterator `Capabilities::iter()`
 /// already gives, rather than the `Capabilities` type itself, so this needs no new import.
 pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool {
-    caps.any(|c| matches!(c, Capability::StateRead(_) | Capability::StateWrite(_)))
+    caps.any(|c| {
+        matches!(c, Capability::StateRead(_) | Capability::StateWrite(_) | Capability::CollectionRead(_) | Capability::CollectionWrite(_))
+    })
 }
 
 /// What a deployment shows as its triggers: a server's port, or plain `Ingress` for a unit that
@@ -527,7 +529,7 @@ pub(crate) fn handle_post_trigger(
     ];
     let started = started_now();
     let mut waits = RunWaits::default();
-    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
+    let run = fire_with_state(root_unit, &[], &resolver, store, state.as_deref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
 
     record_trigger(deployments, slug, false);
     let mut entry = run_entry("trigger", started, &extra_sourced, &run);

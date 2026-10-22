@@ -83,6 +83,8 @@ pub(crate) struct FiredRun {
     pub(crate) waiting: Vec<Waiting>,
     /// The state it started from (the live state, or a resumed run's recorded one).
     pub(crate) start_state: Option<State>,
+    /// The collection reads it made, and what each answered.
+    pub(crate) reads: Vec<collections::Read>,
 }
 
 // Everything a run is held to arrives here, so it takes them all.
@@ -91,6 +93,7 @@ pub(crate) fn fire_with_state(
     root_unit: &Unit,
     inputs: &[Option<Value>],
     resolver: &impl Resolver,
+    store: &SharedStore,
     state: Option<&Mutex<State>>,
     extra_sourced: &[(Capability, Value)],
     permit: &Permit,
@@ -110,6 +113,12 @@ pub(crate) fn fire_with_state(
     let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, &nonce);
     // Its resume tokens are derived from its id (durable.rs).
     waits.run_id = Some(to_hex(&run_id));
+    // Its collections, as it found them, for the reads it was granted.
+    waits.collections = Some(collections::Readable {
+        store: store.clone(),
+        roots: start.as_ref().map(collections::roots).unwrap_or_default(),
+        granted: permit.collections_read(),
+    });
 
     // Only the state keys the deployment was granted are read.
     let mut sourced: Vec<(Capability, Value)> = match start.as_ref() {
@@ -143,10 +152,10 @@ pub(crate) fn fire_with_state(
             eprintln!("holon-server: refused {cap:?}: not granted to this deployment");
             return false;
         }
-        if let Capability::StateWrite(key) = cap
+        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) = cap
             && let Some(name) = secrets::secret_in(payload, secrets)
         {
-            eprintln!("holon-server: refused to store secret {name:?} in state key {key:?}");
+            eprintln!("holon-server: refused to store secret {name:?} in {key:?}");
             return false;
         }
         true
@@ -160,6 +169,15 @@ pub(crate) fn fire_with_state(
                 } else if let Err(e) = storage.insert(key.clone(), payload.clone()) {
                     eprintln!("holon-server: state key {key:?} not written (too large to encode): {e:?}");
                 }
+            }
+        }
+        // Puts and deletes, in the order the run made them.
+        let mut store = store.clone();
+        for (cap, payload) in &host.performed {
+            if let Capability::CollectionWrite(name) = cap
+                && let Err(e) = collections::apply(storage, &mut store, name, payload)
+            {
+                eprintln!("holon-server: collection {name:?} not written: {e}");
             }
         }
     }
@@ -176,6 +194,7 @@ pub(crate) fn fire_with_state(
         grant: permit.grant.clone(),
         waiting: outcome.waiting,
         start_state: start,
+        reads: std::mem::take(&mut waits.reads),
     }
 }
 
@@ -309,6 +328,15 @@ pub(crate) fn run_entry(
         grant: run.grant.clone(),
         parked: vec![],
         events: BTreeMap::new(),
+        reads: run
+            .reads
+            .iter()
+            .map(|r| recorder::LoggedRead {
+                path: r.path.clone(),
+                request: SValue::from_core(&r.request),
+                answer: r.answer.as_ref().map(SValue::from_core),
+            })
+            .collect(),
     }
 }
 
@@ -327,6 +355,7 @@ impl FiredRun {
             grant: String::new(),
             waiting: vec![],
             start_state: None,
+            reads: vec![],
         }
     }
 }

@@ -64,7 +64,7 @@ pub(crate) fn serve_data(
         &resolver,
         &http,
         |endpoint, route, req, sourced| {
-            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced, &permit, false, &secrets, &mut waits, None);
+            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, store, state.as_deref(), sourced, &permit, false, &secrets, &mut waits, None);
             let unit = hash_unit(endpoint).unwrap_or([0; 32]);
             parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
             let mut entry = run_entry("request", started, sourced, &run);

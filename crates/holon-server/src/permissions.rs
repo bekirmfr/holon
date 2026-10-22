@@ -582,6 +582,14 @@ impl Permit {
     pub(crate) fn allows(&self, cap: &Capability) -> bool {
         self.items.contains(&format!("{cap:?}"))
     }
+
+    /// The collections it may read, by name.
+    pub(crate) fn collections_read(&self) -> BTreeSet<String> {
+        self.items
+            .iter()
+            .filter_map(|i| i.strip_prefix("CollectionRead(\"")?.strip_suffix("\")").map(str::to_string))
+            .collect()
+    }
 }
 
 #[cfg(test)]

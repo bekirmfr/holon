@@ -138,6 +138,7 @@
 //! what I got back," which is the only question a stranger-facing boundary would have needed
 //! auth *for*.
 
+mod collections;
 mod data;
 mod dataplane;
 mod deploy;

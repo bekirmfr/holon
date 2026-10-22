@@ -303,7 +303,8 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
 /// identifies nothing to key by.
 fn state_key(params: &[Param]) -> Option<String> {
     let key = params.iter().find(|p| p.name() == "key")?.value()?;
-    if key.is_empty() {
+    // A key starting with `#` is the host's (a collection's root lives at `#collection:<name>`).
+    if key.is_empty() || key.starts_with('#') {
         None
     } else {
         Some(key.to_string())
@@ -563,6 +564,10 @@ mod tests {
             assert!(capabilities_of(leaf, &named("not a name")).is_none(), "{leaf} fails closed");
         }
         assert!(Capability::CollectionRead("x".into()).is_sourced() && !Capability::CollectionWrite("x".into()).is_sourced());
+        // A collection's root lives in a host-reserved state cell no flow can name.
+        for leaf in ["store_read", "store_write"] {
+            assert!(capabilities_of(leaf, &[Param::frozen("key", "#collection:notes")]).is_none(), "{leaf}");
+        }
     }
 
     #[test]

@@ -2033,6 +2033,101 @@ fn todo_server(state: &AppState, port: &str) -> Hash {
     )
 }
 
+/// An items API over one collection: PUT /items/:id stores the body's JSON under the id,
+/// GET /items/:id reads it back, GET /items lists two at a time (from after `?after=`), and
+/// DELETE /items/:id removes it. Items persist between runs and across a reload, the collection's
+/// root is a cell of the state, and each run's reads are in its log entry.
+#[test]
+fn a_collection_keeps_items_by_key_across_runs_and_restarts() {
+    let mut state = test_state();
+    let path = unique_temp_path("collection");
+    state.deployments_path = path.clone();
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    let items = || frozen("collection", "items");
+    let id = || vec![iface("field", vec![frozen("name", "params")]), iface("field", vec![frozen("name", "id")])];
+
+    let put = endpoint(
+        &state,
+        "PUT",
+        "/items/:id",
+        [id(), vec![iface("field", vec![frozen("name", "body")]), iface("json_parse", vec![]), iface("collection_put", vec![items()])]].concat(),
+        vec![e(BOUNDARY, 0, 0, 0), e(0, 0, 1, 0), e(BOUNDARY, 0, 2, 0), e(2, 0, 3, 0), e(1, 0, 4, 0), e(3, 0, 4, 1), e(3, 0, BOUNDARY, 0), e(4, 0, BOUNDARY, 1)],
+        1,
+    );
+    let get = endpoint(
+        &state,
+        "GET",
+        "/items/:id",
+        [id(), vec![iface("collection_get", vec![items()])]].concat(),
+        vec![e(BOUNDARY, 0, 0, 0), e(0, 0, 1, 0), e(1, 0, 2, 0), e(2, 0, BOUNDARY, 0)],
+        0,
+    );
+    let list = endpoint(
+        &state,
+        "GET",
+        "/items",
+        vec![
+            iface("field", vec![frozen("name", "query")]),
+            iface("field", vec![frozen("name", "after")]),
+            iface("default", vec![frozen("value", ""), frozen("type", "Text")]),
+            iface("collection_list", vec![items(), frozen("limit", "2")]),
+        ],
+        vec![e(BOUNDARY, 0, 0, 0), e(0, 0, 1, 0), e(1, 0, 2, 0), e(2, 0, 3, 1), e(3, 0, BOUNDARY, 0)],
+        0,
+    );
+    let gone = endpoint(
+        &state,
+        "DELETE",
+        "/items/:id",
+        [id(), vec![iface("collection_delete", vec![items()]), iface("const", vec![frozen("value", "deleted"), frozen("type", "Text")])]].concat(),
+        vec![e(BOUNDARY, 0, 0, 0), e(0, 0, 1, 0), e(1, 0, 2, 0), e(3, 0, BOUNDARY, 0), e(2, 0, BOUNDARY, 1)],
+        1,
+    );
+    let server = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![put, get, list, gone], edges: vec![] },
+            params: vec![frozen("declare", "server"), frozen("port", "18093")],
+            inputs: vec![],
+            outputs: vec![],
+        },
+    );
+
+    // Deploying asks to read and write the collection by name.
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "shelf", "unit": to_hex(&server) })).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    assert_eq!(asked, ["CollectionRead(\"items\")", "CollectionWrite(\"items\")", "NetworkIngress"]);
+    assert_eq!(deploy_json(&state, "shelf", server, serde_json::json!({ "acknowledge": asked })).status_code, 200);
+
+    let call = |state: &AppState, method: &str, url: &str, body: &str| {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "shelf", &fake_data(method, url, body.as_bytes().to_vec()));
+        (r.status, String::from_utf8(r.body).unwrap())
+    };
+    for n in 1..=3 {
+        assert_eq!(call(&state, "PUT", &format!("/items/{n}"), &format!("{{\"n\":{n}}}")).0, 200);
+    }
+    assert_eq!(call(&state, "GET", "/items/2", ""), (200, r#"{"n":2}"#.to_string()));
+    assert_eq!(call(&state, "GET", "/items", ""), (200, r#"{"1":{"n":1},"2":{"n":2}}"#.to_string()), "a page of two");
+    assert_eq!(call(&state, "GET", "/items?after=2", ""), (200, r#"{"3":{"n":3}}"#.to_string()), "the next page");
+    assert_eq!(call(&state, "DELETE", "/items/2", "").0, 200);
+    assert_ne!(call(&state, "GET", "/items/2", "").0, 200, "gone");
+    assert_eq!(call(&state, "GET", "/items", ""), (200, r#"{"1":{"n":1},"3":{"n":3}}"#.to_string()));
+
+    // Its root is a state cell; a run's reads are in its log entry.
+    let shown = body_json(route(&state, &req("GET", "/deployments/shelf/state", vec![])));
+    assert!(shown["state"]["#collection:items"]["value"].as_str().unwrap().len() == 64, "{shown}");
+    let log = body_json(route(&state, &req("GET", "/deployments/shelf/log", vec![])));
+    let last = log["entries"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["reads"][0]["request"]["value"][1][0], "list", "{last}");
+
+    // Persisted: reloaded from disk, the items are there.
+    *state.deployments.lock().unwrap() = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    assert_eq!(call(&state, "GET", "/items/3", ""), (200, r#"{"n":3}"#.to_string()));
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A port nothing listens on just now.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()

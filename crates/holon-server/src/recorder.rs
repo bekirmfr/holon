@@ -68,6 +68,18 @@ pub struct LogEntry {
     /// For a resumed part: the events delivered to its waiting points so far.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub events: BTreeMap<String, SValue>,
+    /// The collection reads it made, by node path, and what each answered: replay answers them
+    /// from here.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<LoggedRead>,
+}
+
+/// One collection read in a run.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LoggedRead {
+    pub path: Vec<u32>,
+    pub request: SValue,
+    pub answer: Option<SValue>,
 }
 
 /// The requests performed after one round, to answer the next.
@@ -245,6 +257,7 @@ mod tests {
             grant: String::new(),
             parked: vec![],
             events: BTreeMap::new(),
+            reads: vec![],
         }
     }
 

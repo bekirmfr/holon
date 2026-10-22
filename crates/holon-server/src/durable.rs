@@ -143,9 +143,22 @@ pub(crate) struct RunWaits {
     pub(crate) tokens: BTreeMap<String, String>,
     /// Waiting point → the event delivered to it.
     pub(crate) events: BTreeMap<String, Value>,
+    /// The collections this run may read, as it found them (collections.rs); none outside a run.
+    pub(crate) collections: Option<collections::Readable>,
+    /// The collection reads it made, each once, with what each answered.
+    pub(crate) reads: Vec<collections::Read>,
 }
 
 impl Waits for RunWaits {
+    fn read(&mut self, path: &[u32], request: &Value) -> Option<Value> {
+        // A round evaluates again what an earlier one did: the same read, the same answer.
+        if let Some(seen) = self.reads.iter().find(|r| r.path == path && &r.request == request) {
+            return seen.answer.clone();
+        }
+        let answer = self.collections.as_ref().and_then(|c| c.answer(request));
+        self.reads.push(collections::Read { path: path.to_vec(), request: request.clone(), answer: answer.clone() });
+        answer
+    }
     fn event(&self, name: &str) -> Option<Value> {
         self.events.get(name).cloned()
     }
@@ -323,7 +336,7 @@ impl ParkedRun {
             .collect();
         let mut events: BTreeMap<String, Value> = self.events.iter().map(|(k, v)| (k.clone(), v.clone().into_core())).collect();
         events.insert(name.to_string(), event);
-        let waits = RunWaits { run_id: Some(self.run_id.clone()), tokens: self.tokens.clone(), events };
+        let waits = RunWaits { run_id: Some(self.run_id.clone()), tokens: self.tokens.clone(), events, ..Default::default() };
         let refs = self
             .state_refs
             .clone()
@@ -448,7 +461,7 @@ pub(crate) fn resume_parked(
     let resolver = materialize_closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();
-    let run = fire_with_state(root, &inputs, &resolver, state.as_deref(), &sourced, &permit, false, &secrets, &mut waits, Some(resumed));
+    let run = fire_with_state(root, &inputs, &resolver, store, state.as_deref(), &sourced, &permit, false, &secrets, &mut waits, Some(resumed));
 
     let mut entry = run_entry("resume", started, &sourced, &run);
     entry.route = record.route.clone();

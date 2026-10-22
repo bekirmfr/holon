@@ -156,7 +156,7 @@ pub trait Waits {
     /// The answer to a collection read (`{collection, get}` or `{collection, list}`), from the
     /// collection as the run found it; absent for a missing item, or with no collections (the
     /// default). A host keeps what it answered, to check the run against at commit and replay.
-    fn read(&mut self, _request: &Value) -> Option<Value> {
+    fn read(&mut self, _path: &[u32], _request: &Value) -> Option<Value> {
         None
     }
 }
@@ -321,7 +321,7 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
             return Some(Value::Text(self.waits.token(name)));
         }
         if text_field(request, "collection").is_some() {
-            return self.waits.read(request);
+            return self.waits.read(path, request);
         }
         let key = (path.to_vec(), request_key(request));
         if let Some(answer) = self.answers.get(&key) {
