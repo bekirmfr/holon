@@ -219,6 +219,7 @@ pub fn stringify(value: &Value) -> Option<String> {
 
 fn write(v: &Value, out: &mut String) -> Option<()> {
     match v {
+        Value::Number(n) if *n == 0.0 => out.push('0'), // `-0` too, as `to_text` prints it
         Value::Number(n) if n.is_finite() => out.push_str(&n.to_string()),
         Value::Number(_) => return None,
         Value::Boolean(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -346,6 +347,7 @@ mod tests {
 
     #[test]
     fn refuses_values_with_no_json_form() {
+        assert_eq!(stringify(&n(-0.0)).as_deref(), Some("0"), "-0 is 0, as the value hash has it");
         assert_eq!(stringify(&n(f64::NAN)), None);
         assert_eq!(stringify(&n(f64::INFINITY)), None);
         assert_eq!(stringify(&Value::Effect { sink: "egress".into(), payload: Box::new(n(1.0)) }), None);

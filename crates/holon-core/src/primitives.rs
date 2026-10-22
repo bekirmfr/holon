@@ -436,6 +436,8 @@ fn contains_effect(v: &Value) -> bool {
 /// impl: deterministic and portable (I2), not something to hand-roll.
 fn to_text_str(v: &Value) -> String {
     match v {
+        // `-0` prints as `0`: the two are equal, and the canonical value encoding folds them.
+        Value::Number(n) if *n == 0.0 => "0".to_string(),
         Value::Number(n) => n.to_string(),
         Value::Boolean(b) => b.to_string(),
         Value::Text(s) => format!("\"{s}\""),
@@ -666,6 +668,7 @@ mod tests {
     fn to_text_covers_every_value_shape() {
         // Number: Rust's own shortest-round-trip Display, not a hand-rolled formatter.
         assert_eq!(compute("to_text", &[&num(3.0)], &[]), Some(txt("3")));
+        assert_eq!(compute("to_text", &[&num(-0.0)], &[]), Some(txt("0")), "-0 is 0, as the value hash has it");
         assert_eq!(compute("to_text", &[&num(-2.5)], &[]), Some(txt("-2.5")));
         // Boolean.
         assert_eq!(compute("to_text", &[&boo(true)], &[]), Some(txt("true")));

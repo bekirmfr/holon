@@ -468,7 +468,7 @@ public data plane**, not for an open marketplace.
 - Exponential closure walks (`collect_caps`, `refork`, `instantiate`, `eval` on doubling DAGs).
 - The decoder accepts non-canonical bytes, so `encode(decode(b)) ≠ b`.
 - `refork` silently does a partial fork when a re-hash fails.
-- The memo key folds ±0 while `to_text` doesn't (parked cache only).
+- The memo key folds ±0 while `to_text` doesn't (parked cache only). ✅ Fixed: `to_text` and `json_stringify` print `-0` as `0` (§4.5).
 - Unbounded recursion on deeply nested units or values.
 - Unicode case mapping can drift between toolchains.
 

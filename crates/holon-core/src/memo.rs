@@ -12,40 +12,12 @@
 //! unit's `unit_hash` already captures its entire transitive closure (I6), so `(unit_hash,
 //! inputs)` fully determines the output.
 //!
-//! ## The canonical `Value` encoder
-//! `Value` derives only `PartialEq` (not `Eq`/`Hash`) because it carries an `f64`. So "are these
-//! two inputs the same, for caching?" is a **canonicalization decision**, not a free derive. The
-//! encoding is **tagged + `u32`-LE length-prefixed**, collision-free, mirroring the preimage
-//! encoder's discipline — deterministic across machines, the I2 guarantee at the value layer.
-//!
-//! The one hazardous case is `f64`. `NaN`/`inf` can't *enter* as literals (`const` rejects
-//! non-finite values) but are reachable as *computed* values (`1e308*1e308 → inf`, `inf-inf →
-//! NaN`), so they must encode deterministically. Two collapses, each sound because eval treats
-//! the collapsed values identically:
-//! - every `NaN` bit pattern → one canonical encoding (IEEE ops and comparisons are
-//!   payload-agnostic, so all `NaN` inputs produce the same output);
-//! - `-0.0` and `+0.0` → the same encoding (`-0.0 == +0.0`, and eval agrees).
+//! Inputs are encoded with `value_hash.rs`'s canonical value encoding (every `NaN` and both
+//! zeros folded together), the same one a value's content hash uses.
 
+use crate::value_hash::{encode_slots, put_len};
 use crate::{capabilities, eval, EncodeError, Hash, Resolver, Value, ENCODING_VERSION};
 use blake3::Hasher;
-
-// Value type tags — distinct, so a `Number 0`, a `Boolean false`, and an empty `Text` can never
-// collide once length prefixes are in play.
-const TAG_NUMBER: u8 = 1;
-const TAG_BOOLEAN: u8 = 2;
-const TAG_TEXT: u8 = 3;
-const TAG_LIST: u8 = 4;
-const TAG_EFFECT: u8 = 5;
-const TAG_SUM: u8 = 6;
-const TAG_RECORD: u8 = 7;
-
-// Input-slot tags: an absent input must never collide with a present one.
-const SLOT_ABSENT: u8 = 0;
-const SLOT_PRESENT: u8 = 1;
-
-// The single canonical quiet-NaN bit pattern every `NaN` collapses to. Hard-coded (not
-// `f64::NAN.to_bits()`) so it is unambiguous and platform-independent.
-const CANONICAL_NAN: u64 = 0x7ff8_0000_0000_0000;
 
 /// The memoization cache key for evaluating the unit identified by `unit_hash` on `inputs`:
 /// a content hash of the unit's identity and a canonical encoding of its inputs. Fails only if
@@ -113,78 +85,6 @@ pub fn verify_entry(entry: &CacheEntry, resolver: &impl Resolver) -> bool {
     }
 }
 
-/// Canonical, collision-free encoding of a `Value` appended to `buf`.
-fn encode_value(buf: &mut Vec<u8>, v: &Value) -> Result<(), EncodeError> {
-    match v {
-        Value::Number(n) => {
-            buf.push(TAG_NUMBER);
-            let bits = if n.is_nan() {
-                CANONICAL_NAN
-            } else if *n == 0.0 {
-                0 // collapses -0.0 and +0.0 (which are ==, and which eval treats equally)
-            } else {
-                n.to_bits()
-            };
-            buf.extend_from_slice(&bits.to_le_bytes());
-        }
-        Value::Boolean(b) => {
-            buf.push(TAG_BOOLEAN);
-            buf.push(*b as u8);
-        }
-        Value::Text(s) => {
-            buf.push(TAG_TEXT);
-            put_bytes(buf, s.as_bytes())?; // byte-exact: Text is opaque, no Unicode normalization
-        }
-        Value::List(xs) => {
-            buf.push(TAG_LIST);
-            put_len(buf, xs.len())?;
-            for x in xs {
-                encode_value(buf, x)?; // order significant
-            }
-        }
-        Value::Effect { sink, payload } => {
-            buf.push(TAG_EFFECT);
-            put_bytes(buf, sink.as_bytes())?;
-            encode_value(buf, payload)?;
-        }
-        Value::Sum { arm, payload } => {
-            buf.push(TAG_SUM);
-            // `arm` is a discriminant, not a length, but it's the same u32-LE shape `put_len`
-            // already writes — reused rather than duplicating the mechanics. The arm participates
-            // in the encoding (see `sum_arm_changes_the_key`), so the same payload at a different
-            // arm never collides.
-            put_len(buf, *arm)?;
-            encode_value(buf, payload)?;
-        }
-        Value::Record(fields) => {
-            buf.push(TAG_RECORD);
-            put_len(buf, fields.len())?;
-            for (k, v) in fields {
-                put_bytes(buf, k.as_bytes())?; // key order is the BTreeMap's: canonical
-                encode_value(buf, v)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The per-slot encoding `memo_key` uses for `inputs` — factored out so `verify_entry` can reuse
-/// the exact same shape for `outputs` (P4.7), rather than writing a second version of this loop.
-/// An absent slot never collides with a present one (`SLOT_ABSENT`/`SLOT_PRESENT` are distinct
-/// tags), the same discipline `memo_key`'s own doc already states for inputs.
-fn encode_slots(buf: &mut Vec<u8>, slots: &[Option<Value>]) -> Result<(), EncodeError> {
-    for slot in slots {
-        match slot {
-            None => buf.push(SLOT_ABSENT),
-            Some(v) => {
-                buf.push(SLOT_PRESENT);
-                encode_value(buf, v)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 /// The canonical bytes of a slot vector (a unit's `outputs`, in `verify_entry`) — length-prefixed
 /// then `encode_slots`, the same shape `memo_key` builds for `inputs`. Two slot vectors are the
 /// "same result" for the cache iff these agree: every NaN folded together, every ±0.0 together,
@@ -194,18 +94,6 @@ fn canonical_slots_bytes(slots: &[Option<Value>]) -> Result<Vec<u8>, EncodeError
     put_len(&mut buf, slots.len())?;
     encode_slots(&mut buf, slots)?;
     Ok(buf)
-}
-
-fn put_len(buf: &mut Vec<u8>, n: usize) -> Result<(), EncodeError> {
-    let len: u32 = n.try_into().map_err(|_| EncodeError::FieldTooLong)?;
-    buf.extend_from_slice(&len.to_le_bytes());
-    Ok(())
-}
-
-fn put_bytes(buf: &mut Vec<u8>, b: &[u8]) -> Result<(), EncodeError> {
-    put_len(buf, b.len())?;
-    buf.extend_from_slice(b);
-    Ok(())
 }
 
 #[cfg(test)]
