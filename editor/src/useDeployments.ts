@@ -6,8 +6,9 @@ import { useDialog } from "./Dialog";
 import type { AppPage, TriggerOutcome } from "./Pages";
 
 // `deployments` is the server's own table, re-fetched after every mutation rather than guessed
-// at locally, so the editor can never drift from what the server actually has running. Errors
-// go to `setError` (the canvas shows them as deploy errors).
+// at locally, so the editor can never drift from what the server actually has running. A failed
+// fetch is `listError`, cleared by the next one that succeeds (the server was restarting, say);
+// a failed action (undeploy) goes to `setError`, with the deploy errors.
 export function useDeployments(page: AppPage, setError: (message: string) => void) {
   const dialog = useDialog();
   const [deployments, setDeployments] = useState<DeploymentEntry[]>([]);
@@ -16,12 +17,18 @@ export function useDeployments(page: AppPage, setError: (message: string) => voi
   // own thing to try. Kept here, not in the page, so they survive leaving it.
   const [triggerInputs, setTriggerInputs] = useState<Record<string, string>>({});
   const [triggerResults, setTriggerResults] = useState<Record<string, TriggerOutcome>>({});
+  const [listError, setListError] = useState("");
 
   const refresh = useCallback(() => {
     listDeployments()
-      .then(setDeployments)
-      .catch((e: unknown) => setError(e instanceof ServerError ? e.message : String(e)));
-  }, [setError]);
+      .then((d) => {
+        setDeployments(d);
+        setListError("");
+      })
+      .catch((e: unknown) =>
+        setListError(e instanceof ServerError ? e.message : `holon-server isn't answering (${String(e)})`),
+      );
+  }, []);
 
   // Fetched at start and then every few seconds, so the header's live status (and the deployed
   // page) also follow changes made elsewhere: another tab, curl, a restart.
@@ -69,5 +76,5 @@ export function useDeployments(page: AppPage, setError: (message: string) => voi
     [triggerInputs, refresh],
   );
 
-  return { deployments, refresh, triggerInputs, onTriggerInputChange, triggerResults, onTrigger, onDelete };
+  return { deployments, listError, refresh, triggerInputs, onTriggerInputChange, triggerResults, onTrigger, onDelete };
 }

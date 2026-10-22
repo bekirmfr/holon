@@ -507,7 +507,7 @@ function Canvas({
   // Everything above this point (project, group, expand, inspect) is purely local — an
   // in-browser wasm workspace. Deploying talks to holon-server, over plain HTTP, localhost-only.
   const deploymentTable = useDeployments(page, setDeployError);
-  const { deployments, refresh: refreshDeployments } = deploymentTable;
+  const { deployments, listError, refresh: refreshDeployments } = deploymentTable;
   const [deployBusy, setDeployBusy] = useState(false);
 
   // ── Deploy: one action for the whole flow, named after it (DeployBar in the header) ──────
@@ -923,7 +923,7 @@ function Canvas({
                 />
               }
               saveMsg={saveMsg}
-              error={page === "canvas" ? deployError : ""}
+              error={page === "canvas" ? deployError || listError : ""}
             />
           </Panel>
           {!viewing && (
@@ -1012,7 +1012,7 @@ function Canvas({
           {page === "deployed" && (
             <DeployedPage
               deployments={deployments}
-              error={deployError}
+              error={deployError || listError}
               onAction={(slug, action, from) => changeDeployment(slug, action, from).then(() => refreshDeployments())}
               triggerInputs={deploymentTable.triggerInputs}
               onTriggerInputChange={deploymentTable.onTriggerInputChange}
