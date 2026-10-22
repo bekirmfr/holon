@@ -28,8 +28,9 @@ use crate::outbound::Outbound;
 use crate::to_hex;
 
 /// The limits a deployment may ask for, by name, and the unit each is counted in. Durations are
-/// milliseconds; sizes are bytes.
-pub(crate) const LIMIT_NAMES: [&str; 10] = [
+/// milliseconds (the durable-run wait is in seconds, like the `await` node's `expires`); sizes are
+/// bytes.
+pub(crate) const LIMIT_NAMES: [&str; 12] = [
     "connect_timeout_ms",
     "request_timeout_ms",
     "run_budget_ms",
@@ -40,10 +41,34 @@ pub(crate) const LIMIT_NAMES: [&str; 10] = [
     "max_response_bytes",
     "max_header_bytes",
     "max_redirects",
+    "max_await_seconds",
+    "max_waiting_runs",
 ];
 
-/// The limits as numbers by name: the request-run limits, plus the clock run's budget.
-fn limits_to_numbers(request: &Limits, clock_budget: Duration) -> BTreeMap<String, u64> {
+/// Limits on durable runs (§4.3): how long one waiting point may wait, and how many runs may wait
+/// at once. The host's, like the request limits; not part of a run (`holon_host::Limits`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DurableLimits {
+    pub(crate) max_await_seconds: u64,
+    pub(crate) max_waiting_runs: u64,
+}
+
+impl DurableLimits {
+    /// What a deployment gets without asking: a month's wait (a 7-day `await` fits), and as many
+    /// waiting runs as before this was a limit.
+    pub(crate) fn defaults() -> DurableLimits {
+        DurableLimits { max_await_seconds: 30 * 24 * 3600, max_waiting_runs: 10_000 }
+    }
+
+    /// What no grant can exceed: core's longest wait, and ten times the default number.
+    pub(crate) fn ceilings() -> DurableLimits {
+        DurableLimits { max_await_seconds: holon_core::MAX_AWAIT_SECONDS, max_waiting_runs: 100_000 }
+    }
+}
+
+/// The limits as numbers by name: the request-run limits, the clock run's budget, and the
+/// durable-run limits.
+fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits) -> BTreeMap<String, u64> {
     let ms = |d: Duration| d.as_millis() as u64;
     BTreeMap::from([
         ("connect_timeout_ms".into(), ms(request.connect_timeout)),
@@ -56,7 +81,17 @@ fn limits_to_numbers(request: &Limits, clock_budget: Duration) -> BTreeMap<Strin
         ("max_response_bytes".into(), request.max_response_bytes as u64),
         ("max_header_bytes".into(), request.max_header_bytes as u64),
         ("max_redirects".into(), request.max_redirects as u64),
+        ("max_await_seconds".into(), durable.max_await_seconds),
+        ("max_waiting_runs".into(), durable.max_waiting_runs),
     ])
+}
+
+/// `numbers` applied over `base`'s durable-run limits.
+fn numbers_to_durable(base: &DurableLimits, numbers: &BTreeMap<String, u64>) -> DurableLimits {
+    DurableLimits {
+        max_await_seconds: numbers.get("max_await_seconds").copied().unwrap_or(base.max_await_seconds),
+        max_waiting_runs: numbers.get("max_waiting_runs").copied().unwrap_or(base.max_waiting_runs),
+    }
 }
 
 /// `numbers` applied over `base`, for a request run, or (`clock`) a clock run.
@@ -140,6 +175,8 @@ pub(crate) struct Policy {
     pub(crate) request: Limits,
     /// The run budget a clock run gets without asking (its other limits are `request`'s).
     pub(crate) clock_run_budget: Duration,
+    /// The durable-run limits a deployment gets without asking.
+    pub(crate) durable: DurableLimits,
     /// What no grant can exceed.
     pub(crate) ceilings: BTreeMap<String, u64>,
     /// Items granted without asking: exact (`HttpRequest("hooks.slack.com")`) or a whole kind
@@ -155,7 +192,8 @@ impl Default for Policy {
         Policy {
             request: Limits::request_run(),
             clock_run_budget: Limits::clock_run().run_budget,
-            ceilings: limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget),
+            durable: DurableLimits::defaults(),
+            ceilings: limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings()),
             auto: Vec::new(),
             allow_plain_http: false,
             allow_private_addresses: false,
@@ -208,7 +246,7 @@ impl Policy {
             }
         }
         policy.ceilings.extend(file.ceilings);
-        let mut defaults = limits_to_numbers(&policy.request, policy.clock_run_budget);
+        let mut defaults = policy.defaults();
         defaults.extend(file.limits);
         for (name, n) in &defaults {
             if n > &policy.ceilings[name] {
@@ -217,6 +255,7 @@ impl Policy {
         }
         policy.request = numbers_to_limits(&policy.request, &defaults, false);
         policy.clock_run_budget = Duration::from_millis(defaults["clock_run_budget_ms"]);
+        policy.durable = numbers_to_durable(&policy.durable, &defaults);
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
         policy.allow_private_addresses = file.grants.allow_private_addresses;
@@ -225,7 +264,7 @@ impl Policy {
 
     /// The defaults, by name.
     pub(crate) fn defaults(&self) -> BTreeMap<String, u64> {
-        limits_to_numbers(&self.request, self.clock_run_budget)
+        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable)
     }
 
     /// Whether `item` is granted without asking.
@@ -489,6 +528,8 @@ pub(crate) struct Permit {
     pub(crate) items: BTreeSet<String>,
     pub(crate) request_limits: Limits,
     pub(crate) clock_limits: Limits,
+    /// How long a waiting point may wait, and how many runs may wait at once.
+    pub(crate) durable: DurableLimits,
     pub(crate) outbound: Outbound,
     /// The grant's hash (hex), for the flow log.
     pub(crate) grant: String,
@@ -511,6 +552,7 @@ impl Permit {
         let request_limits = numbers_to_limits(&policy.request, &clamped, false);
         let clock_base = Limits { run_budget: policy.clock_run_budget, ..policy.request.clone() };
         let clock_limits = numbers_to_limits(&clock_base, &clamped, true);
+        let durable = numbers_to_durable(&policy.durable, &clamped);
         let hosts = |items: &BTreeSet<String>| -> BTreeSet<String> {
             items
                 .iter()
@@ -533,7 +575,7 @@ impl Permit {
                 && grant.items.contains("PrivateAddresses")
                 && policy.allow_private_addresses,
         };
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, outbound, grant: to_hex(&grant.hash()) }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, outbound, grant: to_hex(&grant.hash()) }
     }
 
     /// Whether the grant covers this capability.
@@ -572,6 +614,12 @@ mod tests {
         assert!(Policy::parse("[limits]\nmax_request = 3").unwrap_err().contains("unknown limit"));
         assert!(Policy::parse("[limits]\nmax_requests = 5000").unwrap_err().contains("above its ceiling"));
         assert!(Policy::parse("[grant]\nauto = []").is_err(), "a misspelt section is an error, not ignored");
+
+        // The durable-run limits are limits like the others.
+        let p = Policy::parse("[limits]\nmax_waiting_runs = 500\n[ceilings]\nmax_waiting_runs = 1000").unwrap();
+        assert_eq!((p.durable.max_waiting_runs, p.ceilings["max_waiting_runs"]), (500, 1000));
+        assert_eq!(Policy::default().durable.max_await_seconds, 30 * 24 * 3600);
+        assert!(Policy::parse("[ceilings]\nmax_await_seconds = 86400").unwrap_err().contains("above its ceiling"), "the default month");
     }
 
     #[test]

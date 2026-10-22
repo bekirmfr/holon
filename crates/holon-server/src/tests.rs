@@ -1282,6 +1282,71 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// How long runs may wait and how many may wait at once are limits the host grants: an `await`
+/// longer than the default is refused until the deployment asks for it (and never past the
+/// ceiling), and parking holds to the grant in force, a lowered one included.
+#[test]
+fn waiting_is_held_to_the_granted_limits() {
+    let state = test_state();
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    let server = |expires: &str| {
+        let children = vec![
+            iface("resume_token", vec![frozen("await", "paid")]),
+            iface("await", vec![frozen("name", "paid"), frozen("expires", expires)]),
+            iface("field", vec![frozen("name", "method")]),
+            test_store_write("paid"),
+        ];
+        let edges = vec![e(1, 0, 2, 0), e(2, 0, 3, 0), e(0, 0, BOUNDARY, 0), e(3, 0, BOUNDARY, 1)];
+        let orders = endpoint(&state, "POST", "/orders", children, edges, 1);
+        stage(
+            &state,
+            &Unit {
+                body: UnitBody::Composite { children: vec![orders], edges: vec![] },
+                params: vec![frozen("declare", "server"), frozen("port", "18091")],
+                inputs: vec![],
+                outputs: vec![],
+            },
+        )
+    };
+    let sixty_days = (60 * 24 * 3600).to_string();
+    let long = server(&sixty_days);
+    let ack = ["NetworkIngress", "Await(\"paid\")", "StateWrite(\"paid\")"];
+
+    // Sixty days is longer than the default month: refused, naming the limit to ask for.
+    let refused = deploy_json(&state, "shop", long, serde_json::json!({ "acknowledge": ack }));
+    assert_eq!(refused.status_code, 400);
+    let why = body_json(refused)["error"].as_str().unwrap().to_string();
+    assert!(why.contains(&format!("max_await_seconds={sixty_days}")), "{why}");
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "shop", "unit": to_hex(&long) })).unwrap())));
+    assert!(preview["refused"].as_str().unwrap().contains("max_await_seconds"), "{preview}");
+
+    // Asked for, it needs approval like any raised limit; past the ceiling it is refused.
+    let asking = |n: u64| serde_json::json!({ "limits": { "max_await_seconds": n } });
+    let raise = format!("Limit(max_await_seconds={sixty_days})");
+    let approved = [&ack[..], &[raise.as_str()]].concat();
+    let n: u64 = sixty_days.parse().unwrap();
+    assert_eq!(deploy_json(&state, "shop", long, serde_json::json!({ "acknowledge": ack, "requirements": asking(n) })).status_code, 400);
+    assert!(body_json(deploy_json(&state, "shop", long, serde_json::json!({ "acknowledge": ack, "requirements": asking(100 * 24 * 3600) })))["error"]
+        .as_str()
+        .unwrap()
+        .contains("ceiling"));
+    assert_eq!(deploy_json(&state, "shop", long, serde_json::json!({ "acknowledge": approved, "requirements": asking(n) })).status_code, 200);
+
+    // Lowered to one waiting run, and to an hour's wait, kept running: the first order waits (an
+    // hour, not sixty days), the second is refused.
+    let lowered = serde_json::json!({ "lower": { "max_waiting_runs": 1, "max_await_seconds": 3600 }, "keep_running": true });
+    assert_eq!(body_json(change_grant(&state, "shop", lowered))["status"], "running");
+    let call = || serve_data(&state.store, &state.deployments, &state.deployments_path, "shop", &Request::fake_http("POST", "/orders", vec![], vec![])).status_code;
+    let before = epoch_now();
+    assert_eq!(call(), 200);
+    let deadline = state.deployments.lock().unwrap()["shop"].parked.values().next().unwrap().waiting[0].expires_at;
+    assert!(deadline <= before + 3600 + 1, "held to the lowered wait: {deadline} vs {before}");
+    assert_eq!(call(), 503, "as many runs waiting as it may");
+    assert_eq!(state.deployments.lock().unwrap()["shop"].parked.len(), 1);
+}
+
 // ── persistence ──────────────────────────────────────────────────────────────────────
 
 #[test]

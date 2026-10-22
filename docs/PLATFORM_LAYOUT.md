@@ -196,6 +196,8 @@ Host defaults follow what the systems a flow talks to already expect:
 | Request body size | 10 MiB | 100 MiB | Same as responses. |
 | Redirects followed | 10 | 20 | Go's `net/http` default (10); browsers stop near 20. |
 | Response header size | 64 KiB | 256 KiB | Above common server limits (8–16 KiB per line), well below abuse. |
+| Longest wait at one `await` (`max_await_seconds`) ✅ | 30 days | 90 days | A month covers the usual waits (Stripe retries a webhook for 3 days; approvals and invoices run to weeks); 90 days is core's longest `expires`. |
+| Runs waiting at once, per deployment (`max_waiting_runs`) ✅ | 10,000 | 100,000 | Bounds what one deployment keeps on disk and lists; the old fixed cap is the default. |
 
 A request that breaks a limit doesn't fail the run: its node gets a response record
 `{status: 0, error: "timeout" | "too_large" | "blocked_host" | ...}`, and the flow decides. Breaking
@@ -307,12 +309,14 @@ it. That needs an identity for the run and a way to resume it.
   content-addressed, so the old version stays resolvable for as long as runs need it, even across
   redeploys; new runs start on the new version.
 - **Expiry.** Every waiting point has a deadline: the `await`'s `expires`, default 7 days, at most
-  90 (built as the node's param; making it a limit the host grants is left for later). Expiring is
+  90 (the node's param), and no longer than the deployment's granted `max_await_seconds` ✅ (a
+  deploy whose `await` waits longer is refused, naming the limit to ask for; parking holds to the
+  grant in force, so a lowered one shortens new waits). Expiring is
   itself an event delivered to the awaiting node (`{expired: true}`), so the flow decides what
   timing out means. For scale: Stripe retries a webhook for up to 3 days, so a payment wait fits
   the default.
-- **Parked runs per deployment:** at most 10,000 (a constant for now); past it, a run that would
-  wait is refused with a `503` instead.
+- **Parked runs per deployment:** at most its granted `max_waiting_runs` ✅ (default 10,000); past
+  it, a run that would wait is refused with a `503` instead.
 - **Visible.** The flow log has an entry per part of a run, under one run id (`parked` names what it
   waits for; a resumed part shows the events delivered). `GET /deployments/<slug>/runs` lists the
   waiting runs, never their tokens; the editor's deployment card shows "⏸ N waiting" with each one's
@@ -384,7 +388,7 @@ One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable 
 | 5 ✅ | Host and server (`holon-server/src/permissions.rs`): manifests (derived capabilities with hosts, declared requirements), policy in `holon.toml` (`--policy`) and `GET /permissions`, grants per deployment (`GET /deployments/<slug>/manifest`, `.../grant`), enforcement at perform time, the re-check at load (older records migrate); run ids and the nonce; `rounds` and the grant in effect in the flow log | a deploy asks only for what policy doesn't already allow; an ungranted host or a limit above a ceiling is refused; each log entry has a verifiable run id. Since then: changing or revoking a grant without a redeploy, and reloading the policy (§4.2.1 lifecycle point 4, `holon-server/src/grants.rs`) ✅. **Left for later:** large values by reference in the log (§4.5) |
 | 6 ✅ | Editor: the node and its params, requirements in deploy settings (bounded by `GET /permissions`), the consent screen showing asked against granted (`POST /deploy/preview`), attention on deployments, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round. Checked live: a deployed route called `https://example.com`, answered with its page, and view mode replayed the run offline with "✓ replay reproduces the run". Revoke controls ✅ since: the deployment card's permissions (revoke, grant back, keep running) |
 | 7 ✅ | Secrets: store, `secret` node, redaction, set from the editor's ⚙ | a token never appears in a log, a replay or the editor. Checked live: set from ⚙, read by a run, found nowhere but the secrets file, and gone with its deployment |
-| 8 ✅ | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on. Checked live: an order waited, was paid by a link (even across a server restart), and wrote its state once; the token appeared in no log or reply. **Left for later:** expiry and the waiting cap as host-granted limits, and a host-held key deriving tokens so a run record needn't store them |
+| 8 ✅ | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on. Checked live: an order waited, was paid by a link (even across a server restart), and wrote its state once; the token appeared in no log or reply. Expiry and the waiting cap as host-granted limits ✅ since. **Left for later:** a host-held key deriving tokens so a run record needn't store them |
 
 ---
 

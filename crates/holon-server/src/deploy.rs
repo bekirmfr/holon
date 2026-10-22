@@ -113,6 +113,9 @@ pub(crate) fn handle_post_deploy(
     }
     let grant = Grant::for_manifest(&manifest, epoch_now(), "deploy");
     let permit = Arc::new(Permit::new(unit_hash, &grant, policy));
+    if let Some(why) = durable::refuses_waits(root_unit, &resolver, &permit) {
+        return err(400, format!("this host can't grant that: {why}"));
+    }
 
     let interval_seconds = if is_clock {
         match body.interval_seconds {
@@ -261,7 +264,10 @@ pub(crate) fn handle_post_deploy_preview(
         "items": items,
         "needs_approval": needs,
         "already_granted": granted,
-        "refused": policy.refuses(&manifest),
+        "refused": policy.refuses(&manifest).or_else(|| {
+            let permit = Permit::new(unit_hash, &Grant::for_manifest(&manifest, 0, "preview"), policy);
+            durable::refuses_waits(root_unit, &resolver, &permit)
+        }),
         // Secrets it reads that aren't set yet: it deploys, but those nodes stay empty until set.
         "missing_secrets": manifest
             .capabilities

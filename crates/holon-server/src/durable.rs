@@ -11,9 +11,12 @@
 //!   handler answers the caller, and the run is evaluated again from its record with the event.
 //!   It finishes (its effects are performed then, once) or waits again. A token is only accepted
 //!   by a resume route of the deployment that issued it, for the waiting point it was minted for.
-//! - **Expire.** Each waiting point has a deadline (the `await`'s `expires`, at most 90 days);
-//!   past it, `{expired: true}` is delivered as its event, so the flow decides what timing out
-//!   means.
+//! - **Expire.** Each waiting point has a deadline (the `await`'s `expires`); past it,
+//!   `{expired: true}` is delivered as its event, so the flow decides what timing out means.
+//! - **Limits.** How long a deployment's runs may wait (`max_await_seconds`) and how many may
+//!   wait at once (`max_waiting_runs`) are limits the host grants like any other (permissions.rs):
+//!   a deploy whose `await` waits longer than granted is refused, and parking holds to the grant
+//!   in force.
 //! - **Visible.** `GET /deployments/<slug>/runs` lists waiting runs (never their tokens); the flow
 //!   log has an entry for each part of a run, under one run id.
 //!
@@ -26,8 +29,45 @@ use holon_host::{Exchange, Waits, Waiting};
 
 use crate::*;
 
-/// How many runs one deployment may have waiting at once.
-pub(crate) const MAX_PARKED: usize = 10_000;
+/// Every `await` in `unit`'s closure, as its name and how long it waits (seconds): what a deploy
+/// holds to the deployment's `max_await_seconds`. One whose params don't parse never waits, and
+/// isn't listed.
+pub(crate) fn awaits_in(unit: &Unit, resolver: &impl Resolver) -> Vec<(String, u64)> {
+    let mut found = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![unit];
+    while let Some(u) = stack.pop() {
+        if let UnitBody::Primitive { name } = &u.body
+            && name == "await"
+            && let (Some(n), Some(secs)) = (
+                u.params.iter().find(|p| p.name() == "name").and_then(|p| p.value()),
+                u.params.iter().find(|p| p.name() == "expires").and_then(|p| p.value()).and_then(|v| v.parse().ok()),
+            )
+        {
+            found.push((n.to_string(), secs));
+        }
+        for child in child_refs(u) {
+            if seen.insert(child)
+                && let Some(c) = resolver.resolve(&child)
+            {
+                stack.push(c);
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Why `permit` can't hold `unit`'s waits, if it can't: an `await` that waits longer than the
+/// deployment may.
+pub(crate) fn refuses_waits(unit: &Unit, resolver: &impl Resolver, permit: &Permit) -> Option<String> {
+    let max = permit.durable.max_await_seconds;
+    let (name, secs) = awaits_in(unit, resolver).into_iter().find(|(_, secs)| *secs > max)?;
+    Some(format!(
+        "the await {name:?} waits up to {secs} s, longer than this deployment may ({max} s): ask for max_await_seconds={secs}"
+    ))
+}
 
 /// A run's waiting points and tokens: what [`holon_host::run_rounds`] asks for.
 #[derive(Default, Debug)]
@@ -264,7 +304,8 @@ impl ParkedRun {
 }
 
 /// After a fresh run: keep it as a parked run if it settled waiting (and didn't fail). The names
-/// it waits on, for its log entry; an error when the deployment already has [`MAX_PARKED`].
+/// it waits on, for its log entry; an error when the deployment already has as many runs waiting
+/// as it may (`max_waiting_runs`). Each deadline is held to its `max_await_seconds`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn park_if_waiting(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
@@ -296,10 +337,15 @@ pub(crate) fn park_if_waiting(
         epoch_now(),
         store,
     )?;
+    let mut record = record;
     let mut table = deployments.lock().unwrap();
     let dep = table.get_mut(slug).ok_or("the deployment is gone")?;
-    if dep.parked.len() >= MAX_PARKED {
-        return Err(format!("{slug:?} already has {MAX_PARKED} runs waiting"));
+    let limits = &dep.permit.durable;
+    if dep.parked.len() as u64 >= limits.max_waiting_runs {
+        return Err(format!("{slug:?} already has {} runs waiting, as many as it may (max_waiting_runs)", dep.parked.len()));
+    }
+    for w in &mut record.waiting {
+        w.expires_at = w.expires_at.min(record.parked_at + limits.max_await_seconds);
     }
     let names = record.waiting.iter().map(|w| w.name.clone()).collect();
     dep.parked.insert(record.run_id.clone(), record);
@@ -362,7 +408,11 @@ pub(crate) fn resume_parked(
                     .iter()
                     .map(|w| StoredWaiting {
                         name: w.name.clone(),
-                        expires_at: kept.waiting.iter().find(|o| o.name == w.name).map_or(now + w.expires, |o| o.expires_at),
+                        expires_at: kept
+                            .waiting
+                            .iter()
+                            .find(|o| o.name == w.name)
+                            .map_or(now + w.expires.min(dep.permit.durable.max_await_seconds), |o| o.expires_at),
                     })
                     .collect();
             }

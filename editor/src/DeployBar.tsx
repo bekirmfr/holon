@@ -23,6 +23,8 @@ const LIMITS: [string, string][] = [
   ["max_response_bytes", "response size (bytes)"],
   ["max_header_bytes", "header size (bytes)"],
   ["max_redirects", "redirects"],
+  ["max_await_seconds", "longest wait (s)"],
+  ["max_waiting_runs", "runs waiting at once"],
 ];
 
 /** `requirements` with `limit` set to `text` (blank: back to the host default). */
