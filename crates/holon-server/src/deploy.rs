@@ -10,6 +10,22 @@ pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool 
     caps.any(|c| matches!(c, Capability::StateRead(_) | Capability::StateWrite(_)))
 }
 
+/// What a deployment shows as its triggers: a server's port, or plain `Ingress` for a unit that
+/// takes requests some other way, plus `Clock` for a clock-driven one (`clock` is false for a
+/// server, which the scheduler never fires). Deploy and reload both derive it here.
+pub(crate) fn trigger_labels(server: Option<&Server>, ingress: bool, clock: bool) -> Vec<String> {
+    let mut triggers = Vec::new();
+    if let Some(s) = server {
+        triggers.push(format!("Http :{}", s.port));
+    } else if ingress {
+        triggers.push("Ingress".to_string());
+    }
+    if clock {
+        triggers.push("Clock".to_string());
+    }
+    triggers
+}
+
 pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
@@ -103,15 +119,7 @@ pub(crate) fn handle_post_deploy(
     // time — a person deploying a clock flow wants to see it work now, not in an hour.
     let next_due = interval_seconds.map(|_| SystemTime::now());
 
-    let mut triggers = Vec::new();
-    if let Some(s) = &server {
-        triggers.push(format!("Http :{}", s.port));
-    } else if is_ingress {
-        triggers.push("Ingress".to_string());
-    }
-    if is_clock {
-        triggers.push("Clock".to_string());
-    }
+    let triggers = trigger_labels(server.as_ref(), is_ingress, is_clock);
     let is_state = derives_state(caps.iter());
 
     {

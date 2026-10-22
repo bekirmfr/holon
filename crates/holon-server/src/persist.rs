@@ -112,13 +112,6 @@ pub(crate) fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeM
             ));
         };
         let caps = capabilities(root_unit, &resolver);
-        let mut triggers = Vec::new();
-        if caps.contains(Capability::NetworkIngress) {
-            triggers.push("Ingress".to_string());
-        }
-        if caps.contains(Capability::Clock) {
-            triggers.push("Clock".to_string());
-        }
         let server = match declaration_of(root_unit) {
             Some("server") => Some(
                 read_server(root_unit, &resolver)
@@ -126,6 +119,11 @@ pub(crate) fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeM
             ),
             _ => None,
         };
+        let triggers = trigger_labels(
+            server.as_ref(),
+            caps.contains(Capability::NetworkIngress),
+            caps.contains(Capability::Clock) && server.is_none(),
+        );
         let next_due = record.interval_seconds.filter(|_| server.is_none()).map(|_| SystemTime::now());
 
         let state = match record.state {

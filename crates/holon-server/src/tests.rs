@@ -1268,6 +1268,7 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
     // A restart reloads it as a server, with its items.
     let reloaded = load_deployments(&path, &state.store).unwrap();
     assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
+    assert_eq!(reloaded["todo-api"].triggers, vec!["Http :18080"], "labelled as when it was deployed");
     let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap()["todos"].clone();
     assert!(matches!(todos, Value::Record(ref items) if items.len() == 1));
     let _ = std::fs::remove_file(&path);
