@@ -341,4 +341,55 @@ export const SAMPLES: Sample[] = [
       b.wire(withBody, "out", res, "body");
     },
   },
+  {
+    name: "likes",
+    title: "Likes counter (runs side by side)",
+    description:
+      "Each like reads a post's count from a collection, adds one and writes it back. Likes arriving at once run side by side; one whose count changed under it runs again, so none is lost.",
+    shows: ["concurrent runs", "retries", "read-modify-write on a collection item", "collection_list"],
+    port: "8108",
+    tryIt:
+      "seq 50 | xargs -P 20 -I{} curl -s -X POST http://127.0.0.1:8108/posts/1/like, then GET /posts/1/likes (50) and GET /likes; the log marks runs that ran again",
+    build(b) {
+      const id = (req: string, x: number, y: number) => {
+        const f = b.node("field", { name: "id" }, [x, y]);
+        b.wire(req, "params", f, "record");
+        return f;
+      };
+      const countOf = (key: string, x: number, y: number) => {
+        const got = b.node("collection_get", { collection: "likes" }, [x, y]);
+        const count = b.node("default", { value: "0", type: "Number" }, [x + 260, y]);
+        b.wire(key, "out", got, "key");
+        b.wire(got, "out", count, "value");
+        return count;
+      };
+
+      // POST /posts/:id/like: read the count, add one, write it back, answer the new count.
+      const like = b.node("request", { method: "POST", path: "/posts/:id/like" }, [40, 40]);
+      const post = id(like, 480, 60);
+      const one = b.node("const", { value: "1", type: "Number" }, [740, 200]);
+      const more = b.node("add", {}, [1240, 80]);
+      const keep = b.node("collection_put", { collection: "likes" }, [1480, 140]);
+      const likeRes = b.node("respond", { status: "200", missing: "400" }, [1480, 20]);
+      b.wire(countOf(post, 740, 60), "out", more, "a");
+      b.wire(one, "out", more, "b");
+      b.wire(post, "out", keep, "key");
+      b.wire(more, "out", keep, "value");
+      b.wire(like, "request", likeRes, "request");
+      b.wire(more, "out", likeRes, "body");
+
+      // GET /posts/:id/likes: the count, 0 before the first like.
+      const show = b.node("request", { method: "GET", path: "/posts/:id/likes" }, [40, 380]);
+      const showRes = b.node("respond", { status: "200", missing: "404" }, [1240, 380]);
+      b.wire(show, "request", showRes, "request");
+      b.wire(countOf(id(show, 480, 400), 740, 400), "out", showRes, "body");
+
+      // GET /likes: every post's count, in id order.
+      const all = b.node("request", { method: "GET", path: "/likes" }, [40, 680]);
+      const counts = b.node("collection_list", { collection: "likes", limit: "100" }, [740, 700]);
+      const allRes = b.node("respond", { status: "200", missing: "404" }, [1240, 680]);
+      b.wire(all, "request", allRes, "request");
+      b.wire(counts, "out", allRes, "body");
+    },
+  },
 ];
