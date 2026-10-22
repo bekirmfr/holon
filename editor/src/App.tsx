@@ -42,11 +42,12 @@ import {
   getFlow,
   type LogEntry,
   saveFlow,
+  listFlows,
   type FlowDocument,
   type FlowRecord,
 } from "./server";
 import { outputColor } from "./theme";
-import { Palette, DND_MIME } from "./Palette";
+import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
 import { FAIL, PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
 import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
@@ -74,6 +75,7 @@ import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
   excludeProjectedOutput,
+  flowAsNode,
   flowUnitHash,
   expandComposite,
   groupOf,
@@ -475,6 +477,21 @@ function Canvas({
       e.preventDefault();
       const name = e.dataTransfer.getData(DND_MIME);
       if (viewing) return;
+      // A saved flow, placed as one node (canvasOps.flowAsNode).
+      if (name.startsWith(FLOW_PREFIX)) {
+        const flow = name.slice(FLOW_PREFIX.length);
+        const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+        getFlow(flow)
+          .then((rec) => {
+            const placed = flowAsNode(flow, rec.document, ev, byName, `${flow}-${idRef.current++}`, position);
+            if (placed.ok) {
+              setDeployError("");
+              setNodes((ns) => ns.concat(placed.node));
+            } else setDeployError(placed.message);
+          })
+          .catch((err: unknown) => setDeployError(err instanceof Error ? err.message : String(err)));
+        return;
+      }
       if (isTemplate(name)) {
         const params = templateDefaults(name);
         const iface = templateInterface(name, params);
@@ -522,8 +539,17 @@ function Canvas({
       };
       setNodes((ns) => ns.concat(node));
     },
-    [byName, screenToFlowPosition, setNodes, viewing],
+    [byName, screenToFlowPosition, setNodes, viewing, ev],
   );
+
+  // The saved flows the palette offers as nodes: read when the canvas shows and after a save.
+  const [savedFlows, setSavedFlows] = useState<string[]>([]);
+  useEffect(() => {
+    if (page !== "canvas") return;
+    listFlows()
+      .then((fs) => setSavedFlows(fs.map((f) => f.name)))
+      .catch(() => setSavedFlows([]));
+  }, [page, savedKey]);
 
   // A group of canvas nodes as core children and wires, and the canvas node behind each child of
   // a frozen unit (canvasOps.ts).
@@ -1089,7 +1115,10 @@ function Canvas({
   return (
     <>
     {/* Edit mode places nodes from the palette; view mode is read only, so it has none. */}
-    {!viewing && page === "canvas" && <Palette catalog={catalog} templates={TEMPLATES} />}
+    {!viewing && page === "canvas" && (
+      // A flow isn't offered inside itself.
+      <Palette catalog={catalog} templates={TEMPLATES} flows={savedFlows.filter((f) => f !== flowName)} />
+    )}
     <div className="hl-main">
     <FlowTabs tabs={tabList} active={activeId} onSelect={switchTab} onClose={closeTab} />
     <div className={viewing ? "hl-canvas hl-canvas--viewing" : "hl-canvas"} onDrop={onDrop} onDragOver={onDragOver}>

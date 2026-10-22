@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator, primitive_catalog, variadic_primitives } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit, type WValue } from "./holon";
 import { fromHex } from "./flowDoc";
-import { deriveServer, flowUnitHash } from "./canvasOps";
+import { deriveServer, flowAsNode, flowUnitHash } from "./canvasOps";
 import { capabilityAcknowledgeName, manifestItems, manifestTrigger, permissionKind } from "./diagnostics";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
@@ -106,6 +106,51 @@ describe("sample flows", () => {
     expect(() =>
       buildSample({ ...SAMPLES[0], build: (b) => void b.holon("h", (i) => void i.node("lowercase"), { inputs: ["a", "b"], outputs: ["c"] }) }, catalog, variadic, new Evaluator()),
     ).toThrow('holon "h" has inputs');
+  });
+
+  it("place a saved flow as one node: grouped whole, holons inside it and all; never a server", () => {
+    // A flow without routes that itself holds a holon: slugify, then uppercase.
+    const shout: (typeof SAMPLES)[number] = {
+      ...SAMPLES.find((s) => s.name === "slugs")!,
+      name: "shout",
+      build(b) {
+        const slugify = b.holon(
+          "slugify",
+          (inner) => {
+            const lower = inner.node("lowercase", {}, [0, 0]);
+            const space = inner.node("const", { value: " ", type: "Text" }, [0, 120]);
+            const words = inner.node("split", {}, [240, 40]);
+            const dash = inner.node("const", { value: "-", type: "Text" }, [240, 160]);
+            const slug = inner.node("join", {}, [480, 60]);
+            inner.wire(lower, "out", words, "text");
+            inner.wire(space, "out", words, "sep");
+            inner.wire(words, "out", slug, "list");
+            inner.wire(dash, "out", slug, "sep");
+          },
+          { inputs: ["text"], outputs: ["slug"] },
+        );
+        const placed = b.place(slugify);
+        const upper = b.node("uppercase");
+        b.wire(placed, "slug", upper, "s");
+      },
+    };
+    const saved = buildSample(shout, catalog, variadic, new Evaluator());
+    // Placed in another flow's workspace, from what the saved document carries.
+    const ev = new Evaluator();
+    const placed = flowAsNode("shout", saved, ev, catalog, "shout-1", { x: 0, y: 0 });
+    if (!placed.ok) throw new Error(placed.message);
+    expect(placed.node.data.name).toBe("shout");
+    expect([placed.node.data.inputs.length, placed.node.data.outputs.length]).toEqual([1, 1]);
+    const body = placed.node.data.body;
+    if (body.kind !== "Composite") throw new Error("not a composite");
+    const out = ev.eval(buildPreimage(ev.get_unit(body.hash) as WUnit), [{ type: "Text", value: "Hello Holon" }]) as (WValue | null)[];
+    expect(out).toEqual([{ type: "Text", value: "HELLO-HOLON" }]);
+
+    const server = buildSample(SAMPLES.find((s) => s.name === "hello-api")!, catalog, variadic, new Evaluator());
+    const refused = flowAsNode("hello-api", server, new Evaluator(), catalog, "x", { x: 0, y: 0 });
+    expect(refused.ok ? "" : refused.message).toContain("has routes");
+    const empty = flowAsNode("e", { nodes: [], edges: [] }, new Evaluator(), catalog, "x", { x: 0, y: 0 });
+    expect(empty.ok ? "" : empty.message).toContain("empty");
   });
 
   it("ask for what each one shows", () => {

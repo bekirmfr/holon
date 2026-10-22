@@ -324,8 +324,8 @@ export const SAMPLES: Sample[] = [
     name: "slugs",
     title: "A flow inside a flow (holon)",
     description:
-      "slugify, a small flow of its own (lowercase, split on spaces, join with -), grouped into one node and placed twice: a holon is a whole flow used as a node, the same unit wherever it's placed.",
-    shows: ["holons", "group / expand", "composite reuse", "lowercase", "split", "join"],
+      "slugify, a small flow of its own (lowercase, split on spaces, join with -), grouped into one node and placed twice: a holon is a whole flow used as a node, the same unit wherever it's placed. A saved flow without routes is placed the same way, from the palette's flows.",
+    shows: ["holons", "group / expand", "saved flows as nodes", "composite reuse", "lowercase", "split", "join"],
     port: "8110",
     tryIt:
       "curl -X POST -H \"Content-Type: application/json\" -d '{\"title\": \"Hello Holon World\", \"author\": \"Ada Lovelace\"}' http://127.0.0.1:8110/slugs answers {\"author\": \"ada-lovelace\", \"title\": \"hello-holon-world\"}; select a slugify node and expand to see inside",

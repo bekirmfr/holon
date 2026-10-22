@@ -12,6 +12,7 @@ import { unitFor } from "./canvasUnits";
 import { defaultBoundaryValue } from "./BoundaryField";
 import { findRoutes, routeSpec } from "./derive";
 import { endpointUnit, serverUnit, type EndpointDraft } from "./endpoint";
+import { fromHex } from "./flowDoc";
 
 /** The unit a flow deploys as: its server when it has routes, else the whole canvas as one
  *  composite. Throws why it can't be derived. */
@@ -443,4 +444,36 @@ export function expandComposite(
     // frozen, so there's no node to point at, just the message.
     return { ok: false, message: err instanceof Error ? err.message : String(err), nodeIds: [] };
   }
+}
+
+/**
+ * A saved flow placed in another as one node: a holon. Its whole canvas is grouped into one
+ * composite exactly as "group" does, its free inputs and outputs becoming the node's ports, and
+ * the node takes the flow's name. It is the flow as saved now (a unit is content-addressed, so
+ * later edits to the flow make a new unit and leave this one as it is). The flow's own composites
+ * are put back into `ev` first. A flow with routes is a server, answered by the host, not a part
+ * of another flow: it is refused, as is an empty one.
+ */
+export function flowAsNode(
+  name: string,
+  doc: { nodes: unknown[]; edges: unknown[]; units?: string[] },
+  ev: Evaluator,
+  byName: Map<string, WUnit>,
+  id: string,
+  position: { x: number; y: number },
+): { ok: true; node: PrimitiveNodeType } | { ok: false; message: string } {
+  const ns = doc.nodes as PrimitiveNodeType[];
+  const es = doc.edges as Edge[];
+  if (ns.length === 0) return { ok: false, message: `"${name}" is empty: nothing to place` };
+  if (ns.some((n) => n.data.body.kind === "Template" && (n.data.name === "request" || n.data.name === "respond"))) {
+    return { ok: false, message: `"${name}" has routes: it is a server, deployed on its own, not a node of another flow` };
+  }
+  try {
+    for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
+  } catch (e) {
+    return { ok: false, message: `"${name}": its grouped nodes can't be restored: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const grouped = groupSelection(ns, es, ev, byName, () => 0);
+  if (!grouped.ok) return { ok: false, message: `"${name}" can't be placed as a node: ${grouped.message}` };
+  return { ok: true, node: { ...grouped.node, id, position, data: { ...grouped.node.data, name } } };
 }
