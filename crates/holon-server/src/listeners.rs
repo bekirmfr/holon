@@ -14,8 +14,12 @@ pub(crate) fn serve_data(
     slug: &str,
     request: &Request,
 ) -> Response {
-    let found = deployments.lock().unwrap().get(slug).map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status));
-    let Some((unit_hash, state, Some(server), status)) = found else {
+    let found = deployments
+        .lock()
+        .unwrap()
+        .get(slug)
+        .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit)));
+    let Some((unit_hash, state, Some(server), status, permit)) = found else {
         return err(503, format!("{slug:?} is not deployed as a server"));
     };
     if status != Status::Running {
@@ -43,7 +47,7 @@ pub(crate) fn serve_data(
         &resolver,
         &http,
         |endpoint, route, req, sourced| {
-            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced, &Limits::request_run());
+            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced, &permit, false);
             let mut entry = run_entry("request", started, sourced, &run);
             entry.route = Some(route.to_string());
             entry.request = Some(SValue::from_core(&req));

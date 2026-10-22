@@ -103,6 +103,20 @@ pub fn state_root<'a>(cells: impl ExactSizeIterator<Item = (&'a str, &'a Hash)>)
     Ok(*blake3::hash(&buf).as_bytes())
 }
 
+/// Domain tag of a run id's preimage (see [`run_id`]).
+const DOMAIN_RUN: u8 = 0x22;
+
+/// A run's id: the hash of the deployment it ran on and the Merkle root of everything it started
+/// from (its inputs, the state it read, its sourced values and a host nonce, as the caller lays
+/// them out with [`state_root`]). Anyone holding the run's recorded input can recompute it; the
+/// nonce makes two runs from the same deployment and input distinct.
+pub fn run_id(deployment: &Hash, input_root: &Hash) -> Hash {
+    let mut buf = vec![ENCODING_VERSION, DOMAIN_RUN];
+    buf.extend_from_slice(deployment);
+    buf.extend_from_slice(input_root);
+    *blake3::hash(&buf).as_bytes()
+}
+
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,

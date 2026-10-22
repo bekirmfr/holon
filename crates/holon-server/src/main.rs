@@ -147,6 +147,7 @@ mod http;
 mod lifecycle;
 mod listeners;
 mod outbound;
+mod permissions;
 mod persist;
 mod recorder;
 mod scheduler;
@@ -163,13 +164,14 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use holon_core::{
-    capabilities, child_refs, declaration_of, decode_preimage, encode_preimage, hash_unit, parse_hash,
+    capabilities, child_refs, declaration_of, decode_preimage, encode_preimage, hash_unit, hash_value, parse_hash, run_id,
+    state_root,
     read_server, Capability, CacheEntry, Server, Edge, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody,
     Value, BOUNDARY,
 };
 use holon_host::{
     fire, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
-    run_rounds, Limits, PublishError, Registry, Round, SharedCache, State, Store, StoreError,
+    run_rounds, PublishError, Registry, Round, SharedCache, State, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
 use recorder::{Log, LogEntry};
@@ -184,7 +186,7 @@ use fixtures::*;
 use flows::*;
 use http::*;
 use listeners::*;
-use outbound::Outbound;
+use permissions::{Grant, Manifest, Permit, Policy, Requirements};
 use persist::*;
 use scheduler::*;
 use units::*;
@@ -259,6 +261,9 @@ struct AppState {
     /// deployments table by `sync_listeners`. `None` turns listening off (the tests, which call
     /// `serve_data` directly instead of opening sockets).
     listeners: Option<Mutex<Listeners>>,
+    /// The host operator's policy (`--policy`, default `holon.toml`): limits, ceilings, what
+    /// is granted without asking. Read once at startup.
+    policy: Arc<Policy>,
 }
 
 /// slug → (port, stop signal) of each running data-plane listener.
@@ -318,6 +323,14 @@ struct Deployment {
     /// Running, paused or stopped, and every run session so far with its end-of-session state
     /// snapshot (lifecycle.rs). Persisted.
     life: Lifecycle,
+    /// What the host granted it (permissions.rs). Persisted.
+    grant: Grant,
+    /// The grant applied to the policy in force: what every run is held to. Derived at deploy
+    /// and load, never persisted.
+    permit: Arc<Permit>,
+    /// Why it can't run until it is deployed again, when its grant no longer covers what it
+    /// needs (found at load). It is paused meanwhile.
+    attention: Option<String>,
     /// Every run, with what it read and produced (recorder.rs). In memory only.
     log: Log,
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
@@ -359,8 +372,13 @@ fn main() {
     let mut store_arg = ".holon-store".to_string();
     let mut deployments_arg = ".holon-deployments.json".to_string();
     let mut flows_arg = ".holon-flows.json".to_string();
+    let mut policy_arg = "holon.toml".to_string();
     while let Some(a) = args.next() {
-        if a == "--store" {
+        if a == "--policy" {
+            if let Some(v) = args.next() {
+                policy_arg = v;
+            }
+        } else if a == "--store" {
             if let Some(v) = args.next() {
                 store_arg = v;
             }
@@ -518,7 +536,8 @@ fn main() {
         eprintln!("holon-server: refusing to start rather than overwrite it — fix the file or move it aside");
         std::process::exit(1);
     };
-    let initial_deployments = load_deployments(&deployments_arg, &store).unwrap_or_else(|e| refuse_to_start(e));
+    let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
+    let initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
@@ -536,6 +555,7 @@ fn main() {
         flows_path: flows_arg,
         port,
         listeners: Some(Mutex::new(BTreeMap::new())),
+        policy,
     };
     sync_listeners(&state);
 

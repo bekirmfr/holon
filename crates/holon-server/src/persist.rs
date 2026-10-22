@@ -46,6 +46,7 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                 status: Some(dep.life.status),
                 sessions: dep.life.sessions.clone(),
                 document: dep.document.clone(),
+                grant: Some(dep.grant.clone()),
             };
             (record, dep.state.clone())
         })
@@ -92,7 +93,11 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
 /// capability, matching `/deploy`, which keeps a slug's state across a stateless version; a
 /// state-capable unit with no persisted state (an old file predating this feature) starts from
 /// an empty map, same as a fresh `/deploy`.
-pub(crate) fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeMap<String, Deployment>, String> {
+pub(crate) fn load_deployments(
+    path: &str,
+    store: &SharedStore,
+    policy: &Policy,
+) -> Result<BTreeMap<String, Deployment>, String> {
     let mut loaded = BTreeMap::new();
     if path == ":memory:" {
         return Ok(loaded);
@@ -134,6 +139,26 @@ pub(crate) fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeM
             caps.contains(Capability::Clock) && server.is_none(),
         );
         let next_due = record.interval_seconds.filter(|_| server.is_none()).map(|_| SystemTime::now());
+
+        // The grant, re-checked against what the unit needs now and the policy in force. A record
+        // from before grants is granted what it was acknowledged for at its deploy.
+        let (grant, mut attention) = match record.grant {
+            Some(grant) => {
+                let manifest = Manifest::new(caps.iter(), grant.requirements.clone());
+                let missing = grant.missing(&manifest);
+                let attention = if !missing.is_empty() {
+                    Some(format!("it needs {} it wasn't granted; deploy it again to approve", missing.join(", ")))
+                } else {
+                    policy.refuses(&manifest).map(|why| format!("this host no longer grants it: {why}"))
+                };
+                (grant, attention)
+            }
+            None => (Grant::for_manifest(&Manifest::new(caps.iter(), Requirements::default()), epoch_now(), "migrated"), None),
+        };
+        if let Some(why) = &attention {
+            eprintln!("holon-server: deployment {slug:?} is paused: {why}");
+        }
+        let permit = Arc::new(Permit::new(unit_hash, &grant, policy));
 
         let mut values = store.clone();
         let state = match (&record.state_refs, record.state) {
@@ -183,8 +208,15 @@ pub(crate) fn load_deployments(path: &str, store: &SharedStore) -> Result<BTreeM
                     if life.sessions.is_empty() {
                         life.sessions = Lifecycle::deployed(started).sessions;
                     }
+                    // Not covered by its grant: it doesn't run until deployed again.
+                    if attention.is_some() && life.status == Status::Running {
+                        life.status = Status::Paused;
+                    }
                     life
                 },
+                grant,
+                permit,
+                attention: attention.take(),
                 log: Log::default(),
                 document: record.document,
                 trigger_count: record.trigger_count,

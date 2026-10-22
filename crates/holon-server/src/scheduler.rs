@@ -2,6 +2,9 @@
 
 use crate::*;
 
+/// A deployment due to tick: its slug, unit, state, interval and permit.
+type DueTick = (String, Hash, Option<DeploymentState>, u64, Arc<Permit>);
+
 /// The tick-firing logic for one scheduler pass, callable directly with a controlled `now` —
 /// pulled out of `spawn_clock_scheduler`'s sleep loop specifically so it's testable without real
 /// sleeping (the same "extract the testable logic out of the untestable wrapper" move the
@@ -15,13 +18,13 @@ pub(crate) fn run_due_clock_ticks(
     deployments_path: &str,
     now: SystemTime,
 ) {
-    let due: Vec<(String, Hash, Option<DeploymentState>, u64)> = {
+    let due: Vec<DueTick> = {
         let deployments = deployments.lock().unwrap();
         deployments
             .iter()
             .filter_map(|(slug, dep)| match (dep.interval_seconds, dep.next_due) {
                 (Some(interval), Some(next_due)) if now >= next_due && dep.life.status == Status::Running => {
-                    Some((slug.clone(), dep.unit, dep.state.clone(), interval))
+                    Some((slug.clone(), dep.unit, dep.state.clone(), interval, Arc::clone(&dep.permit)))
                 }
                 _ => None,
             })
@@ -43,9 +46,9 @@ pub(crate) fn run_due_clock_ticks(
     // enough to matter, the fix is a bounded worker pool (or a semaphore capping concurrent
     // fires), not more threads. Left open on purpose.
     thread::scope(|scope| {
-        for (slug, unit_hash, state, interval) in due {
+        for (slug, unit_hash, state, interval, permit) in due {
             scope.spawn(move || {
-                fire_one_clock_tick(store, deployments, deployments_path, slug, unit_hash, state, interval, now)
+                fire_one_clock_tick(store, deployments, deployments_path, slug, unit_hash, state, &permit, interval, now)
             });
         }
     });
@@ -64,6 +67,7 @@ pub(crate) fn fire_one_clock_tick(
     slug: String,
     unit_hash: Hash,
     state: Option<DeploymentState>,
+    permit: &Permit,
     interval: u64,
     now: SystemTime,
 ) {
@@ -88,7 +92,7 @@ pub(crate) fn fire_one_clock_tick(
     ];
     let is_state = state.is_some();
     let started = started_now();
-    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &Limits::clock_run());
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, permit, true);
     log_run(deployments, &slug, run_entry("tick", started, &extra_sourced, &run));
     let FiredRun { outputs, performed, .. } = run;
 

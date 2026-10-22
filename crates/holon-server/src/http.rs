@@ -150,7 +150,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, request);
+        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy, request);
         sync_listeners(state);
         return response;
     }
@@ -173,6 +173,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         }
     }
 
+    if method == "GET" && url == "/permissions" {
+        return handle_get_permissions(&state.policy);
+    }
+
     if method == "GET" && url == "/deployments" {
         return handle_get_deployments(&state.deployments);
     }
@@ -193,6 +197,12 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         } else if let Some(slug) = rest.strip_suffix("/document") {
             if method == "GET" {
                 return handle_get_document(&state.deployments, slug);
+            }
+        } else if let Some((slug, which)) = rest.rsplit_once('/')
+            && matches!(which, "manifest" | "grant")
+        {
+            if method == "GET" {
+                return handle_get_permission_view(&state.store, &state.deployments, slug, which);
             }
         } else if let Some(slug) = rest.strip_suffix("/sessions") {
             if method == "GET" {

@@ -42,6 +42,7 @@ pub(crate) fn handle_post_deploy(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &str,
+    policy: &Policy,
     request: &Request,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -86,23 +87,31 @@ pub(crate) fn handle_post_deploy(
         );
     }
 
-    // Capability-consent, before this unit ever gets to run on a schedule or answer a request.
-    // The set itself is still fully derived (`caps`, above) — only "has the caller actually
-    // reviewed it" is asserted, which is the one part that genuinely can't come from the graph.
-    let missing: Vec<String> = caps
-        .iter()
-        .map(|c| format!("{c:?}"))
-        .filter(|name| !body.acknowledge.contains(name))
+    // Deploy is a request (permissions.rs): the manifest is what the unit's graph derives plus
+    // what its author declares; policy refuses what it never grants, grants what it grants
+    // without asking, and everything else must be acknowledged. A redeploy asks only for what
+    // the previous grant didn't already cover.
+    let manifest = Manifest::new(caps.iter(), body.requirements.clone());
+    if let Some(why) = policy.refuses(&manifest) {
+        return err(400, format!("this host can't grant that: {why}"));
+    }
+    let previous = deployments.lock().unwrap().get(&body.slug).map(|d| d.grant.clone());
+    let missing: Vec<String> = policy
+        .needs_approval(&manifest, previous.as_ref())
+        .into_iter()
+        .filter(|item| !body.acknowledge.contains(item))
         .collect();
     if !missing.is_empty() {
         return err(
             400,
             format!(
-                "this unit's derived capabilities include {} — list them in \"acknowledge\" to confirm you've reviewed what it may do",
+                "this unit's manifest includes {} — list them in \"acknowledge\" to confirm you've reviewed what it may do",
                 missing.join(", ")
             ),
         );
     }
+    let grant = Grant::for_manifest(&manifest, epoch_now(), "deploy");
+    let permit = Arc::new(Permit::new(unit_hash, &grant, policy));
 
     let interval_seconds = if is_clock {
         match body.interval_seconds {
@@ -161,6 +170,9 @@ pub(crate) fn handle_post_deploy(
         deployments.insert(
             body.slug.clone(),
             Deployment {
+                grant,
+                permit,
+                attention: None,
                 unit: unit_hash,
                 triggers: triggers.clone(),
                 interval_seconds,
@@ -199,7 +211,50 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         trigger_count: dep.trigger_count,
         error_count: dep.error_count,
         deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+        attention: dep.attention.clone(),
     }
+}
+
+/// `GET /permissions` — this host's policy: each limit's default and ceiling, what it grants
+/// without asking, and which exceptions it ever grants.
+pub(crate) fn handle_get_permissions(policy: &Policy) -> Response {
+    Response::json(&serde_json::json!({
+        "defaults": policy.defaults(),
+        "ceilings": policy.ceilings,
+        "auto": policy.auto,
+        "allow_plain_http": policy.allow_plain_http,
+        "allow_private_addresses": policy.allow_private_addresses,
+    }))
+}
+
+/// `GET /deployments/<slug>/manifest` — what it needs, re-derived from its unit; and
+/// `GET /deployments/<slug>/grant` — what the host granted it, with the grant's hash.
+pub(crate) fn handle_get_permission_view(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    which: &str,
+) -> Response {
+    let (unit, grant, attention) = match deployments.lock().unwrap().get(slug) {
+        Some(d) => (d.unit, d.grant.clone(), d.attention.clone()),
+        None => return err(404, format!("no deployment {slug:?}")),
+    };
+    if which == "grant" {
+        return Response::json(&serde_json::json!({ "grant": grant, "hash": to_hex(&grant.hash()), "attention": attention }));
+    }
+    let resolver = match materialize_closure(store, unit) {
+        Ok(r) => r,
+        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+    };
+    let Some(root) = resolver.resolve(&unit) else { return err(500, "deployed unit no longer resolves in the store") };
+    let manifest = Manifest::new(capabilities(root, &resolver).iter(), grant.requirements.clone());
+    Response::json(&serde_json::json!({
+        "hash": to_hex(&manifest.hash()),
+        "capabilities": manifest.capabilities,
+        "requirements": manifest.requirements,
+        "items": manifest.items(),
+        "not_granted": grant.missing(&manifest),
+    }))
 }
 
 /// `GET /deployments` — every deployment, its derived triggers, and its interval if clock-bound.
@@ -324,7 +379,7 @@ pub(crate) fn handle_post_trigger(
     slug: &str,
     request: &Request,
 ) -> Response {
-    let (unit_hash, state) = {
+    let (unit_hash, state, permit) = {
         let deployments = deployments.lock().unwrap();
         match deployments.get(slug) {
             Some(dep) if dep.life.status != Status::Running => {
@@ -333,7 +388,7 @@ pub(crate) fn handle_post_trigger(
             Some(dep) if dep.server.is_some() => {
                 return err(400, "this deployment is an HTTP server: send requests to its own port");
             }
-            Some(dep) => (dep.unit, dep.state.clone()),
+            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit)),
             None => return Response::empty_404(),
         }
     };
@@ -365,7 +420,7 @@ pub(crate) fn handle_post_trigger(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &Limits::request_run());
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &permit, false);
 
     record_trigger(deployments, slug, false);
     log_run(deployments, slug, run_entry("trigger", started, &extra_sourced, &run));
@@ -456,6 +511,11 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
             return err(404, format!("no deployment {slug:?}"));
         };
         let now = epoch_now();
+        if action == "run"
+            && let Some(why) = &dep.attention
+        {
+            return err(409, format!("can't run {slug:?}: {why}"));
+        }
         let live = dep.state.clone();
         let mut values = state.store.clone();
         // A session to restore is loaded (and verified) before anything changes, so a missing

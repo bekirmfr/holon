@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+getrandom = "0.3"
 # The transport's whole job is to move bytes to code that already exists and is already tested —
 # no logic lives here that isn't already in holon-core/holon-host. See
 # docs/L4s/P4.5-P4.6-transport-scoping-L4.md.
@@ -16,5 +17,6 @@ rand = "0.10.2"
 # nothing here needs an async runtime to serve. See the L4's framework-choice note.
 rouille = "3.6"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+toml = "0.8"
 ureq = "2"

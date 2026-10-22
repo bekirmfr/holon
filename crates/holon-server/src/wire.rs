@@ -176,6 +176,9 @@ pub(crate) struct DeployRequestBody {
     /// The flow document (canvas) being deployed, for view mode. Optional.
     #[serde(default)]
     pub(crate) document: Option<serde_json::Value>,
+    /// What it needs beyond its graph: limits, exceptions (permissions.rs).
+    #[serde(default)]
+    pub(crate) requirements: Requirements,
 }
 
 /// The on-disk, persisted shape of one deployment. `triggers` is still not persisted — it's
@@ -210,6 +213,10 @@ pub(crate) struct DeploymentRecord {
     pub(crate) sessions: Vec<Session>,
     #[serde(default)]
     pub(crate) document: Option<serde_json::Value>,
+    /// What the host granted it. Absent in files written before grants: such a deployment's
+    /// capabilities were acknowledged when it was deployed, and it is granted them at load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) grant: Option<Grant>,
 }
 
 #[derive(Serialize)]
@@ -243,6 +250,9 @@ pub(crate) struct DeploymentEntry {
     pub(crate) trigger_count: u64,
     pub(crate) error_count: u64,
     pub(crate) deployed_at_epoch_seconds: u64,
+    /// Why it can't run until deployed again, if so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) attention: Option<String>,
 }
 
 /// One clock tick's result, kept in a deployment's bounded history. `outputs`: same shape

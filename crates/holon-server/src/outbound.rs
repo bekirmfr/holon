@@ -16,10 +16,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
-use holon_core::{Capability, Value};
+use holon_core::Value;
 use holon_host::{Limits, Performer};
 
 /// The `Performer` for one deployment's runs.
+#[derive(Debug)]
 pub(crate) struct Outbound {
     /// The `host[:port]`s it may call (lowercase).
     pub(crate) allowed: BTreeSet<String>,
@@ -27,19 +28,6 @@ pub(crate) struct Outbound {
     pub(crate) plain_http: BTreeSet<String>,
     /// Whether private addresses are allowed: an exception too.
     pub(crate) allow_private: bool,
-}
-
-impl Outbound {
-    /// The hosts a unit's capabilities name, and no exceptions.
-    pub(crate) fn for_capabilities(caps: impl Iterator<Item = Capability>) -> Outbound {
-        let allowed = caps
-            .filter_map(|c| match c {
-                Capability::HttpRequest(host) => Some(host.to_ascii_lowercase()),
-                _ => None,
-            })
-            .collect();
-        Outbound { allowed, plain_http: BTreeSet::new(), allow_private: false }
-    }
 }
 
 fn failure(error: &str, message: impl Into<String>) -> Value {

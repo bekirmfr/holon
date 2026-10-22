@@ -56,6 +56,12 @@ pub struct LogEntry {
     /// from these instead of the network. Absent when it made none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rounds: Vec<LoggedRound>,
+    /// The run's id (hex; §4.4), recomputable from this entry with `nonce`. Empty for a request
+    /// that matched no route (no run).
+    pub run_id: String,
+    pub nonce: String,
+    /// The grant (hash, hex) the run was held to.
+    pub grant: String,
 }
 
 /// The requests performed after one round, to answer the next.
@@ -210,6 +216,9 @@ mod tests {
             error: None,
             timeline: vec![],
             rounds: vec![],
+            run_id: String::new(),
+            nonce: String::new(),
+            grant: String::new(),
         }
     }
 

@@ -1,0 +1,457 @@
+//! Manifests and permissions: the flow asks, the host grants (§4.2.1 of docs/PLATFORM_LAYOUT.md).
+//!
+//! - A **manifest** is what a deployment needs: the capabilities derived from its graph (exact,
+//!   they can't be understated) plus the requirements its author declares (limits above the host
+//!   defaults, exceptions to the outbound rules). It is content-addressed: its hash changes exactly
+//!   when what the flow needs changes.
+//! - The **policy** is the host operator's (`holon.toml`): each limit's default and ceiling, what is
+//!   granted without asking, and which exceptions may ever be granted.
+//! - A **grant** is what the host gave one deployment, persisted with it. Deploy is a request: what
+//!   policy allows is granted, what needs approval must be acknowledged, what policy forbids is
+//!   refused. A redeploy asks only for what the previous grant didn't cover.
+//! - A **permit** is a grant applied to the policy in force: the limits, outbound hosts and
+//!   exceptions every run of the deployment is held to. Effects outside it are refused at perform
+//!   time, whatever the graph says.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
+
+use holon_core::{hash_value, Capability, Hash, Value};
+use holon_host::Limits;
+use serde::{Deserialize, Serialize};
+
+use crate::outbound::Outbound;
+use crate::to_hex;
+
+/// The limits a deployment may ask for, by name, and the unit each is counted in. Durations are
+/// milliseconds; sizes are bytes.
+pub(crate) const LIMIT_NAMES: [&str; 10] = [
+    "connect_timeout_ms",
+    "request_timeout_ms",
+    "run_budget_ms",
+    "clock_run_budget_ms",
+    "max_requests",
+    "per_host_concurrency",
+    "max_request_bytes",
+    "max_response_bytes",
+    "max_header_bytes",
+    "max_redirects",
+];
+
+/// The limits as numbers by name: the request-run limits, plus the clock run's budget.
+fn limits_to_numbers(request: &Limits, clock_budget: Duration) -> BTreeMap<String, u64> {
+    let ms = |d: Duration| d.as_millis() as u64;
+    BTreeMap::from([
+        ("connect_timeout_ms".into(), ms(request.connect_timeout)),
+        ("request_timeout_ms".into(), ms(request.request_timeout)),
+        ("run_budget_ms".into(), ms(request.run_budget)),
+        ("clock_run_budget_ms".into(), ms(clock_budget)),
+        ("max_requests".into(), request.max_requests as u64),
+        ("per_host_concurrency".into(), request.per_host_concurrency as u64),
+        ("max_request_bytes".into(), request.max_request_bytes as u64),
+        ("max_response_bytes".into(), request.max_response_bytes as u64),
+        ("max_header_bytes".into(), request.max_header_bytes as u64),
+        ("max_redirects".into(), request.max_redirects as u64),
+    ])
+}
+
+/// `numbers` applied over `base`, for a request run, or (`clock`) a clock run.
+fn numbers_to_limits(base: &Limits, numbers: &BTreeMap<String, u64>, clock: bool) -> Limits {
+    let mut l = base.clone();
+    for (name, &n) in numbers {
+        match name.as_str() {
+            "connect_timeout_ms" => l.connect_timeout = Duration::from_millis(n),
+            "request_timeout_ms" => l.request_timeout = Duration::from_millis(n),
+            "run_budget_ms" if !clock => l.run_budget = Duration::from_millis(n),
+            "clock_run_budget_ms" if clock => l.run_budget = Duration::from_millis(n),
+            "max_requests" => l.max_requests = n as usize,
+            "per_host_concurrency" => l.per_host_concurrency = n as usize,
+            "max_request_bytes" => l.max_request_bytes = n as usize,
+            "max_response_bytes" => l.max_response_bytes = n as usize,
+            "max_header_bytes" => l.max_header_bytes = n as usize,
+            "max_redirects" => l.max_redirects = n as u32,
+            _ => {}
+        }
+    }
+    l
+}
+
+/// What an author declares a flow needs beyond what its graph shows.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct Requirements {
+    /// Limits it needs set to something other than the host default, by name (`LIMIT_NAMES`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) limits: BTreeMap<String, u64>,
+    /// Hosts it calls over plain HTTP: an exception to "HTTPS only".
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) plain_http: BTreeSet<String>,
+    /// Whether it calls private addresses: an exception to "no private destinations".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) private_addresses: bool,
+}
+
+/// What a deployment needs: its derived capabilities and its declared requirements.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Manifest {
+    /// Each capability as consent names it (`StateRead("todos")`), sorted.
+    pub(crate) capabilities: Vec<String>,
+    pub(crate) requirements: Requirements,
+}
+
+impl Manifest {
+    pub(crate) fn new(caps: impl Iterator<Item = Capability>, requirements: Requirements) -> Manifest {
+        let mut capabilities: Vec<String> = caps.map(|c| format!("{c:?}")).collect();
+        capabilities.sort();
+        Manifest { capabilities, requirements }
+    }
+
+    /// Everything in it that can be granted, as consent names it: each capability, each limit
+    /// asked for (`Limit(request_timeout_ms=60000)`), each exception (`PlainHttp("a.com")`,
+    /// `PrivateAddresses`).
+    pub(crate) fn items(&self) -> BTreeSet<String> {
+        let mut items: BTreeSet<String> = self.capabilities.iter().cloned().collect();
+        for (name, n) in &self.requirements.limits {
+            items.insert(format!("Limit({name}={n})"));
+        }
+        for host in &self.requirements.plain_http {
+            items.insert(format!("PlainHttp({host:?})"));
+        }
+        if self.requirements.private_addresses {
+            items.insert("PrivateAddresses".into());
+        }
+        items
+    }
+
+    /// The manifest's content hash: equal manifests, equal hashes.
+    pub(crate) fn hash(&self) -> Hash {
+        let items = Value::List(self.items().into_iter().map(Value::Text).collect());
+        hash_value(&items).expect("a manifest is small text")
+    }
+}
+
+/// The host operator's policy. Read from `holon.toml` at startup; built-in defaults without one.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Policy {
+    /// The limits a request run gets without asking.
+    pub(crate) request: Limits,
+    /// The run budget a clock run gets without asking (its other limits are `request`'s).
+    pub(crate) clock_run_budget: Duration,
+    /// What no grant can exceed.
+    pub(crate) ceilings: BTreeMap<String, u64>,
+    /// Items granted without asking: exact (`HttpRequest("hooks.slack.com")`) or a whole kind
+    /// (`StateRead(*)`).
+    pub(crate) auto: Vec<String>,
+    /// Whether a deployment may ever be granted plain HTTP, or private addresses.
+    pub(crate) allow_plain_http: bool,
+    pub(crate) allow_private_addresses: bool,
+}
+
+impl Default for Policy {
+    fn default() -> Policy {
+        Policy {
+            request: Limits::request_run(),
+            clock_run_budget: Limits::clock_run().run_budget,
+            ceilings: limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget),
+            auto: Vec::new(),
+            allow_plain_http: false,
+            allow_private_addresses: false,
+        }
+    }
+}
+
+/// `holon.toml`'s shape. Every section and key is optional.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct PolicyFile {
+    #[serde(default)]
+    limits: BTreeMap<String, u64>,
+    #[serde(default)]
+    ceilings: BTreeMap<String, u64>,
+    #[serde(default)]
+    grants: GrantsFile,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct GrantsFile {
+    #[serde(default)]
+    auto: Vec<String>,
+    #[serde(default)]
+    allow_plain_http: bool,
+    #[serde(default)]
+    allow_private_addresses: bool,
+}
+
+impl Policy {
+    /// The policy in `path`, or the defaults when there is no such file. A file that exists but
+    /// doesn't parse, names an unknown limit, or sets a default above its ceiling is an error:
+    /// the server refuses to start rather than run under a policy nobody wrote.
+    pub(crate) fn load(path: &str) -> Result<Policy, String> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::default()),
+            Err(e) => return Err(format!("could not read {path:?}: {e}")),
+        };
+        Policy::parse(&text).map_err(|e| format!("{path:?}: {e}"))
+    }
+
+    pub(crate) fn parse(text: &str) -> Result<Policy, String> {
+        let file: PolicyFile = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut policy = Policy::default();
+        for name in file.limits.keys().chain(file.ceilings.keys()) {
+            if !LIMIT_NAMES.contains(&name.as_str()) {
+                return Err(format!("unknown limit {name:?} (known: {})", LIMIT_NAMES.join(", ")));
+            }
+        }
+        policy.ceilings.extend(file.ceilings);
+        let mut defaults = limits_to_numbers(&policy.request, policy.clock_run_budget);
+        defaults.extend(file.limits);
+        for (name, n) in &defaults {
+            if n > &policy.ceilings[name] {
+                return Err(format!("the default {name} = {n} is above its ceiling {}", policy.ceilings[name]));
+            }
+        }
+        policy.request = numbers_to_limits(&policy.request, &defaults, false);
+        policy.clock_run_budget = Duration::from_millis(defaults["clock_run_budget_ms"]);
+        policy.auto = file.grants.auto;
+        policy.allow_plain_http = file.grants.allow_plain_http;
+        policy.allow_private_addresses = file.grants.allow_private_addresses;
+        Ok(policy)
+    }
+
+    /// The defaults, by name.
+    pub(crate) fn defaults(&self) -> BTreeMap<String, u64> {
+        limits_to_numbers(&self.request, self.clock_run_budget)
+    }
+
+    /// Whether `item` is granted without asking.
+    fn is_auto(&self, item: &str) -> bool {
+        self.auto.iter().any(|pattern| match pattern.strip_suffix("(*)") {
+            Some(kind) => item.starts_with(&format!("{kind}(")),
+            None => pattern == item,
+        })
+    }
+
+    /// Why policy can't grant `manifest` at all, if it can't: a limit above its ceiling, an
+    /// unknown limit, or an exception policy never grants.
+    pub(crate) fn refuses(&self, manifest: &Manifest) -> Option<String> {
+        for (name, n) in &manifest.requirements.limits {
+            match self.ceilings.get(name) {
+                None => return Some(format!("unknown limit {name:?} (known: {})", LIMIT_NAMES.join(", "))),
+                Some(ceiling) if n > ceiling => {
+                    return Some(format!("{name} = {n} is above this host's ceiling of {ceiling}"));
+                }
+                _ => {}
+            }
+        }
+        if !manifest.requirements.plain_http.is_empty() && !self.allow_plain_http {
+            return Some("this host never grants plain HTTP (holon.toml: grants.allow_plain_http)".into());
+        }
+        if manifest.requirements.private_addresses && !self.allow_private_addresses {
+            return Some("this host never grants private addresses (holon.toml: grants.allow_private_addresses)".into());
+        }
+        None
+    }
+
+    /// The items of `manifest` someone must approve: everything but what policy grants without
+    /// asking, what `previous` already granted, and limits at or below the default (lowering a
+    /// limit needs nobody's permission).
+    pub(crate) fn needs_approval(&self, manifest: &Manifest, previous: Option<&Grant>) -> BTreeSet<String> {
+        let defaults = self.defaults();
+        let lowered: BTreeSet<String> = manifest
+            .requirements
+            .limits
+            .iter()
+            .filter(|(name, n)| defaults.get(*name).is_some_and(|d| *n <= d))
+            .map(|(name, n)| format!("Limit({name}={n})"))
+            .collect();
+        manifest
+            .items()
+            .into_iter()
+            .filter(|item| !self.is_auto(item) && !lowered.contains(item))
+            .filter(|item| previous.is_none_or(|g| !g.items.contains(item)))
+            .collect()
+    }
+}
+
+/// What the host granted one deployment. Persisted with it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct Grant {
+    /// The hash (hex) of the manifest it was granted for.
+    pub(crate) manifest: String,
+    /// Every item granted: the manifest's, whether approved or granted by policy.
+    pub(crate) items: BTreeSet<String>,
+    pub(crate) requirements: Requirements,
+    pub(crate) granted_at: u64,
+    /// How: `"deploy"` (acknowledged), or `"migrated"` (from a file before grants, whose
+    /// capabilities were acknowledged at an earlier deploy).
+    pub(crate) by: String,
+}
+
+impl Grant {
+    pub(crate) fn for_manifest(manifest: &Manifest, now: u64, by: &str) -> Grant {
+        Grant {
+            manifest: to_hex(&manifest.hash()),
+            items: manifest.items(),
+            requirements: manifest.requirements.clone(),
+            granted_at: now,
+            by: by.into(),
+        }
+    }
+
+    /// What `manifest` needs that this grant doesn't give.
+    pub(crate) fn missing(&self, manifest: &Manifest) -> Vec<String> {
+        manifest.items().into_iter().filter(|i| !self.items.contains(i)).collect()
+    }
+
+    /// The grant's content hash, recorded in every flow-log entry it governed.
+    pub(crate) fn hash(&self) -> Hash {
+        let items = Value::List(self.items.iter().cloned().map(Value::Text).collect());
+        let record = Value::Record(BTreeMap::from([
+            ("manifest".to_string(), Value::Text(self.manifest.clone())),
+            ("items".to_string(), items),
+        ]));
+        hash_value(&record).expect("a grant is small text")
+    }
+}
+
+/// A grant applied to the policy in force: what every run of the deployment is held to.
+#[derive(Debug)]
+pub(crate) struct Permit {
+    /// The deployment's unit hash: a run id names it.
+    pub(crate) deployment: Hash,
+    pub(crate) items: BTreeSet<String>,
+    pub(crate) request_limits: Limits,
+    pub(crate) clock_limits: Limits,
+    pub(crate) outbound: Outbound,
+    /// The grant's hash (hex), for the flow log.
+    pub(crate) grant: String,
+}
+
+impl Permit {
+    pub(crate) fn new(deployment: Hash, grant: &Grant, policy: &Policy) -> Permit {
+        // A ceiling lowered since the grant wins: the operator's word is the last one.
+        let clamped: BTreeMap<String, u64> = grant
+            .requirements
+            .limits
+            .iter()
+            .map(|(name, n)| (name.clone(), policy.ceilings.get(name).map_or(*n, |c| (*n).min(*c))))
+            .collect();
+        let request_limits = numbers_to_limits(&policy.request, &clamped, false);
+        let clock_base = Limits { run_budget: policy.clock_run_budget, ..policy.request.clone() };
+        let clock_limits = numbers_to_limits(&clock_base, &clamped, true);
+        let allowed = grant
+            .items
+            .iter()
+            .filter_map(|i| i.strip_prefix("HttpRequest(\"")?.strip_suffix("\")").map(str::to_string))
+            .collect();
+        let plain_http = if policy.allow_plain_http { grant.requirements.plain_http.clone() } else { BTreeSet::new() };
+        let outbound = Outbound {
+            allowed,
+            plain_http,
+            allow_private: grant.requirements.private_addresses && policy.allow_private_addresses,
+        };
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, outbound, grant: to_hex(&grant.hash()) }
+    }
+
+    /// Whether the grant covers this capability.
+    pub(crate) fn allows(&self, cap: &Capability) -> bool {
+        self.items.contains(&format!("{cap:?}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(caps: &[Capability], requirements: Requirements) -> Manifest {
+        Manifest::new(caps.iter().cloned(), requirements)
+    }
+
+    #[test]
+    fn a_policy_file_sets_defaults_ceilings_and_auto_grants_and_refuses_nonsense() {
+        let p = Policy::parse(
+            r#"
+            [limits]
+            request_timeout_ms = 20000
+            [ceilings]
+            max_requests = 200
+            [grants]
+            auto = ["StateRead(*)", "HttpRequest(\"hooks.slack.com\")"]
+            allow_plain_http = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(p.request.request_timeout, Duration::from_millis(20000));
+        assert_eq!(p.ceilings["max_requests"], 200);
+        assert_eq!(p.request.max_requests, 50, "untouched defaults stay");
+        assert!(p.allow_plain_http && !p.allow_private_addresses);
+        assert_eq!(Policy::parse("").unwrap(), Policy::default());
+        assert!(Policy::parse("[limits]\nmax_request = 3").unwrap_err().contains("unknown limit"));
+        assert!(Policy::parse("[limits]\nmax_requests = 5000").unwrap_err().contains("above its ceiling"));
+        assert!(Policy::parse("[grant]\nauto = []").is_err(), "a misspelt section is an error, not ignored");
+    }
+
+    #[test]
+    fn deploy_asks_only_for_what_policy_and_the_previous_grant_dont_cover() {
+        let policy = Policy::parse("[grants]\nauto = [\"StateRead(*)\"]").unwrap();
+        let caps = [
+            Capability::NetworkIngress,
+            Capability::StateRead("todos".into()),
+            Capability::HttpRequest("api.example.com".into()),
+        ];
+        let raised = Requirements { limits: BTreeMap::from([("request_timeout_ms".into(), 60_000)]), ..Default::default() };
+        let m = manifest(&caps, raised);
+        let ask: Vec<String> = policy.needs_approval(&m, None).into_iter().collect();
+        assert_eq!(ask, vec!["HttpRequest(\"api.example.com\")", "Limit(request_timeout_ms=60000)", "NetworkIngress"]);
+
+        // A redeploy that adds one host asks for that host alone.
+        let granted = Grant::for_manifest(&m, 0, "deploy");
+        let more = manifest(&[caps.as_slice(), &[Capability::HttpRequest("b.example.com".into())]].concat(), m.requirements.clone());
+        assert_eq!(policy.needs_approval(&more, Some(&granted)).into_iter().collect::<Vec<_>>(), vec!["HttpRequest(\"b.example.com\")"]);
+        assert_eq!(granted.missing(&more), vec!["HttpRequest(\"b.example.com\")"]);
+
+        // Lowering a limit needs nobody; above the ceiling, or an exception policy forbids, is refused.
+        let lower = Requirements { limits: BTreeMap::from([("max_requests".into(), 5)]), ..Default::default() };
+        assert!(policy.needs_approval(&manifest(&[], lower), None).is_empty());
+        let huge = Requirements { limits: BTreeMap::from([("max_requests".into(), 5000)]), ..Default::default() };
+        assert!(policy.refuses(&manifest(&[], huge)).unwrap().contains("ceiling of 1000"));
+        let private = Requirements { private_addresses: true, ..Default::default() };
+        assert!(policy.refuses(&manifest(&[], private)).unwrap().contains("private addresses"));
+    }
+
+    #[test]
+    fn a_permit_applies_the_grant_within_the_policy_in_force() {
+        let caps = [Capability::HttpRequest("api.example.com".into()), Capability::StateWrite("k".into())];
+        let req = Requirements {
+            limits: BTreeMap::from([("request_timeout_ms".into(), 90_000), ("clock_run_budget_ms".into(), 120_000)]),
+            plain_http: ["api.example.com".to_string()].into(),
+            private_addresses: true,
+        };
+        let grant = Grant::for_manifest(&manifest(&caps, req), 0, "deploy");
+        let open = Policy { allow_plain_http: true, allow_private_addresses: true, ..Policy::default() };
+        let p = Permit::new([1; 32], &grant, &open);
+        assert_eq!(p.request_limits.request_timeout, Duration::from_secs(90));
+        assert_eq!(p.request_limits.run_budget, Duration::from_secs(25), "the request run keeps its own budget");
+        assert_eq!(p.clock_limits.run_budget, Duration::from_secs(120));
+        assert_eq!(p.outbound.allowed, ["api.example.com".to_string()].into());
+        assert!(p.outbound.allow_private && p.outbound.plain_http.contains("api.example.com"));
+        assert!(p.allows(&Capability::StateWrite("k".into())) && !p.allows(&Capability::StateWrite("other".into())));
+
+        // The operator closed the exceptions and lowered a ceiling since: the permit follows.
+        let mut strict = Policy::default();
+        strict.ceilings.insert("request_timeout_ms".into(), 45_000);
+        let p = Permit::new([1; 32], &grant, &strict);
+        assert_eq!(p.request_limits.request_timeout, Duration::from_secs(45));
+        assert!(!p.outbound.allow_private && p.outbound.plain_http.is_empty());
+    }
+
+    #[test]
+    fn a_manifests_hash_follows_what_it_needs() {
+        let a = manifest(&[Capability::NetworkIngress], Requirements::default());
+        let b = manifest(&[Capability::NetworkIngress], Requirements::default());
+        assert_eq!(a.hash(), b.hash());
+        let c = manifest(&[Capability::NetworkIngress], Requirements { private_addresses: true, ..Default::default() });
+        assert_ne!(a.hash(), c.hash());
+    }
+}

@@ -73,6 +73,12 @@ pub(crate) struct FiredRun {
     pub(crate) rounds: Vec<Round>,
     /// Why it failed (a run budget), if it did: then nothing was performed.
     pub(crate) error: Option<String>,
+    /// The run's id (hex): its deployment and the Merkle root of what it started from.
+    pub(crate) run_id: String,
+    /// The host nonce (hex) in that input, so the id can be recomputed from the log entry.
+    pub(crate) nonce: String,
+    /// The grant (hash, hex) it was held to.
+    pub(crate) grant: String,
 }
 
 pub(crate) fn fire_with_state(
@@ -81,15 +87,20 @@ pub(crate) fn fire_with_state(
     resolver: &impl Resolver,
     state: Option<&Mutex<State>>,
     extra_sourced: &[(Capability, Value)],
-    limits: &Limits,
+    permit: &Permit,
+    clock: bool,
 ) -> FiredRun {
     let mut guard = state.map(|m| m.lock().unwrap());
     let state_before = guard.as_deref().map(State::values).unwrap_or_default();
+    let nonce = new_nonce();
+    let run_id = run_id_of(permit.deployment, inputs, guard.as_deref(), extra_sourced, &nonce);
 
+    // Only the state keys the deployment was granted are read.
     let mut sourced: Vec<(Capability, Value)> = match guard.as_deref() {
         Some(storage) => storage
             .iter()
             .map(|(key, value)| (Capability::StateRead(key.clone()), value.clone()))
+            .filter(|(cap, _)| permit.allows(cap))
             .collect(),
         None => Vec::new(),
     };
@@ -97,10 +108,18 @@ pub(crate) fn fire_with_state(
 
     let mut host = RecordingHost { performed: Vec::new() };
     let mut timer = recorder::Timer::new();
-    // Outbound requests may go only to the hosts the unit names (acknowledged at deploy).
-    let performer = Outbound::for_capabilities(capabilities(root_unit, resolver).iter());
-    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &performer, limits, &mut timer);
+    // Outbound requests go only where the grant allows, within its limits.
+    let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
+    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &permit.outbound, limits, &mut timer);
     let outputs = outcome.outputs;
+    // An effect the grant doesn't cover is refused, whatever the graph says.
+    host.performed.retain(|(cap, _)| {
+        let allowed = permit.allows(cap);
+        if !allowed {
+            eprintln!("holon-server: refused {cap:?}: not granted to this deployment");
+        }
+        allowed
+    });
 
     if let Some(storage) = guard.as_deref_mut() {
         for (cap, payload) in &host.performed {
@@ -121,7 +140,48 @@ pub(crate) fn fire_with_state(
         timeline: timer.timeline,
         rounds: outcome.rounds,
         error: outcome.error.map(|e| e.message()),
+        run_id: to_hex(&run_id),
+        nonce: hex_bytes(&nonce),
+        grant: permit.grant.clone(),
     }
+}
+
+/// 128 bits from the operating system's secure generator.
+fn new_nonce() -> [u8; 16] {
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).expect("the OS has a secure random generator");
+    nonce
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A run's id (§4.4): its deployment, and the Merkle root of what it started from: the host
+/// nonce, each input, the state (by its root), and each sourced value, each by its hash.
+pub(crate) fn run_id_of(
+    deployment: Hash,
+    inputs: &[Option<Value>],
+    state: Option<&State>,
+    sourced: &[(Capability, Value)],
+    nonce: &[u8; 16],
+) -> Hash {
+    let h = |v: &Value| hash_value(v).unwrap_or([0xff; 32]);
+    let mut entries: BTreeMap<String, Hash> = BTreeMap::new();
+    entries.insert("nonce".into(), h(&Value::Text(hex_bytes(nonce))));
+    for (i, input) in inputs.iter().enumerate() {
+        if let Some(v) = input {
+            entries.insert(format!("input:{i}"), h(v));
+        }
+    }
+    if let Some(state) = state {
+        entries.insert("state".into(), state.root());
+    }
+    for (cap, v) in sourced {
+        entries.insert(format!("sourced:{cap:?}"), h(v));
+    }
+    let root = state_root(entries.iter().map(|(k, v)| (k.as_str(), v))).unwrap_or([0xff; 32]);
+    run_id(&deployment, &root)
 }
 
 /// `POST /fire?root=<hex>` — settle a published unit **once**, on request. Not "deploy": there
@@ -210,6 +270,9 @@ pub(crate) fn run_entry(
         error: run.error.clone(),
         timeline: run.timeline.clone(),
         rounds: run.rounds.iter().map(recorder::LoggedRound::from_host).collect(),
+        run_id: run.run_id.clone(),
+        nonce: run.nonce.clone(),
+        grant: run.grant.clone(),
     }
 }
 
@@ -223,6 +286,9 @@ impl FiredRun {
             timeline: vec![],
             rounds: vec![],
             error: None,
+            run_id: String::new(),
+            nonce: String::new(),
+            grant: String::new(),
         }
     }
 }

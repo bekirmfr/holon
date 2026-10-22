@@ -27,6 +27,7 @@ fn test_state() -> AppState {
         flows_path: ":memory:".to_string(),
         port: TEST_PORT,
         listeners: None,
+        policy: Arc::new(Policy::default()),
     }
 }
 
@@ -735,6 +736,202 @@ fn a_deployed_request_is_performed_between_rounds_and_logged() {
     drop(listener);
 }
 
+// ── permissions: the manifest asks, the host grants ─────────────────────────────────
+
+fn deploy_json(state: &AppState, slug: &str, unit: Hash, extra: serde_json::Value) -> Response {
+    let mut body = serde_json::json!({ "slug": slug, "unit": to_hex(&unit) });
+    for (k, v) in extra.as_object().unwrap() {
+        body[k] = v.clone();
+    }
+    route(state, &req("POST", "/deploy", serde_json::to_vec(&body).unwrap()))
+}
+
+/// What policy grants without asking needs no acknowledgment; a redeploy asks only for what the
+/// previous grant didn't cover; and what policy never grants is refused, naming why.
+#[test]
+fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
+    let mut state = test_state();
+    state.policy = Arc::new(Policy::parse("[grants]\nauto = [\"StateWrite(*)\"]").unwrap());
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    // StateWrite is granted by policy; NetworkIngress isn't.
+    let refused = deploy_json(&state, "w", writer, serde_json::json!({}));
+    assert_eq!(refused.status_code, 400);
+    let message = body_json(refused)["error"].as_str().unwrap().to_string();
+    assert!(message.contains("NetworkIngress") && !message.contains("StateWrite"), "{message}");
+    assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ["NetworkIngress"] })).status_code, 200);
+    // Redeploying the same thing asks for nothing; raising a limit asks for that alone.
+    assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({})).status_code, 200);
+    let raise = serde_json::json!({ "requirements": { "limits": { "request_timeout_ms": 60000 } } });
+    let asked = deploy_json(&state, "w", writer, raise.clone());
+    assert!(body_json(asked)["error"].as_str().unwrap().contains("Limit(request_timeout_ms=60000)"));
+    let mut approved = raise.clone();
+    approved["acknowledge"] = serde_json::json!(["Limit(request_timeout_ms=60000)"]);
+    assert_eq!(deploy_json(&state, "w", writer, approved).status_code, 200);
+    let grant = body_json(route(&state, &req("GET", "/deployments/w/grant", vec![])));
+    assert!(grant["grant"]["items"].as_array().unwrap().contains(&serde_json::json!("Limit(request_timeout_ms=60000)")));
+    // Above the ceiling, or an exception this policy never grants: refused outright.
+    let huge = deploy_json(&state, "w", writer, serde_json::json!({ "requirements": { "limits": { "max_requests": 5000 } } }));
+    assert!(body_json(huge)["error"].as_str().unwrap().contains("ceiling of 1000"));
+    let private = deploy_json(&state, "w", writer, serde_json::json!({ "requirements": { "private_addresses": true } }));
+    assert!(body_json(private)["error"].as_str().unwrap().contains("never grants private addresses"));
+    // The policy and the deployment's manifest are readable.
+    let policy = body_json(route(&state, &req("GET", "/permissions", vec![])));
+    assert_eq!(policy["defaults"]["max_requests"], 50);
+    let manifest = body_json(route(&state, &req("GET", "/deployments/w/manifest", vec![])));
+    assert_eq!(manifest["not_granted"], serde_json::json!([]));
+}
+
+/// With the exceptions granted (a host whose policy allows them, a deployment that asks), an
+/// outbound request reaches a server on this machine over plain HTTP and its answer flows on.
+#[test]
+fn granted_exceptions_let_a_request_reach_a_local_server() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let mut stream = stream.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
+        }
+    });
+    let mut state = test_state();
+    state.policy = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let request = Unit {
+        params: vec![Param::frozen("method", "GET"), Param::frozen("host", &host)],
+        ..holon_core::interface_of("http_request").unwrap()
+    };
+    let field = Unit {
+        params: vec![Param::frozen("name", "body")],
+        ..holon_core::interface_of("field").unwrap()
+    };
+    let flow = Unit {
+        body: UnitBody::Composite {
+            children: vec![stage(&state, &test_ingress()), stage(&state, &request), stage(&state, &field), stage(&state, &test_sink())],
+            edges: vec![
+                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
+                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 },
+                Edge { from_child: 2, from_port: 0, to_child: 3, to_port: 0 },
+                Edge { from_child: 3, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+            ],
+        },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+    };
+    let flow_hash = stage(&state, &flow);
+    let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", format!("HttpRequest({host:?})"), format!("PlainHttp({host:?})"), "PrivateAddresses"]);
+    let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
+    let deployed = deploy_json(&state, "local", flow_hash, serde_json::json!({ "acknowledge": ack, "requirements": requirements }));
+    assert_eq!(deployed.status_code, 200);
+    let fired = body_json(route(&state, &req("POST", "/trigger/local", b"/hi".to_vec())));
+    assert_eq!(fired["performed"][0]["payload"]["value"], "hello", "the answer's body reached the egress");
+}
+
+/// The grant is the boundary at run time: an effect it doesn't cover isn't performed, whatever
+/// the graph says. (A grant can only lose an item by being changed under a running deployment;
+/// this sets that up directly.)
+#[test]
+fn an_effect_outside_the_grant_is_refused_at_perform_time() {
+    let state = test_state();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
+    {
+        let mut table = state.deployments.lock().unwrap();
+        let dep = table.get_mut("w").unwrap();
+        let mut narrowed = dep.grant.clone();
+        narrowed.items.remove("StateWrite(\"k\")");
+        dep.permit = Arc::new(Permit::new(dep.unit, &narrowed, &state.policy));
+    }
+    let fired = body_json(route(&state, &req("POST", "/trigger/w", b"value".to_vec())));
+    assert_eq!(fired["performed"], serde_json::json!([]), "the write was refused");
+    let current = body_json(route(&state, &req("GET", "/deployments/w/state", vec![])));
+    assert!(current["state"].get("k").is_none(), "and nothing was stored: {current}");
+}
+
+/// At load, a grant is checked against what the deployment needs now: one that no longer covers
+/// it is paused, flagged, and can't run until it is deployed again (which asks for approval).
+/// A record from before grants is granted what it was acknowledged for.
+#[test]
+fn load_rechecks_each_grant_and_migrates_older_records() {
+    let mut state = test_state();
+    let path = unique_temp_path("grants");
+    state.deployments_path = path.clone();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "w", writer, ack.clone()).status_code, 200);
+
+    // As if granted less than it needs: drop an item from the stored grant.
+    let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    file[0]["grant"]["items"] = serde_json::json!(["NetworkIngress"]);
+    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
+    let w = &reloaded["w"];
+    assert_eq!(w.life.status, Status::Paused);
+    assert!(w.attention.as_deref().unwrap().contains("StateWrite(\"k\")"), "{:?}", w.attention);
+    *state.deployments.lock().unwrap() = reloaded;
+    let listed = body_json(route(&state, &req("GET", "/deployments", vec![])));
+    assert!(listed["deployments"][0]["attention"].is_string());
+    assert_eq!(route(&state, &req("POST", "/deployments/w/run", vec![])).status_code, 409);
+    // Deploying again asks for the missing item, and then it runs.
+    assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ["NetworkIngress"] })).status_code, 400);
+    assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
+    assert_eq!(route(&state, &req("POST", "/trigger/w", b"ok".to_vec())).status_code, 200);
+
+    // A record without a grant: granted its derived capabilities, by migration.
+    let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    file[0].as_object_mut().unwrap().remove("grant");
+    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+    let migrated = load_deployments(&path, &state.store, &state.policy).unwrap();
+    assert_eq!(migrated["w"].grant.by, "migrated");
+    assert!(migrated["w"].attention.is_none() && migrated["w"].grant.items.contains("StateWrite(\"k\")"));
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Every logged run carries its id, the nonce in it, and the grant it was held to; the id can be
+/// recomputed from the entry alone, and two runs of the same input still differ.
+#[test]
+fn a_run_id_is_recomputable_from_its_log_entry() {
+    let state = test_state();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
+    route(&state, &req("POST", "/trigger/w", b"same".to_vec()));
+    route(&state, &req("POST", "/trigger/w", b"same".to_vec()));
+    let log = body_json(route(&state, &req("GET", "/deployments/w/log", vec![])));
+    let entries = log["entries"].as_array().unwrap();
+    assert_ne!(entries[0]["run_id"], entries[1]["run_id"], "same input, different nonce");
+    let grant = body_json(route(&state, &req("GET", "/deployments/w/grant", vec![])));
+    assert_eq!(entries[1]["grant"], grant["hash"]);
+
+    let e = &entries[1];
+    let sv = |v: &serde_json::Value| serde_json::from_value::<SValue>(v.clone()).unwrap().into_core();
+    let state_before = State::from_values(
+        e["state_before"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), sv(v))).collect(),
+    )
+    .unwrap();
+    let sourced: Vec<(Capability, Value)> = e["sourced"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            let cap = match p[0].as_str().unwrap() {
+                "Clock" => Capability::Clock,
+                "Random" => Capability::Random,
+                _ => Capability::NetworkIngress,
+            };
+            (cap, sv(&p[1]))
+        })
+        .collect();
+    let hex = e["nonce"].as_str().unwrap();
+    let nonce: [u8; 16] = (0..16).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<_>>().try_into().unwrap();
+    assert_eq!(hex.len(), 32, "128 bits");
+    let recomputed = run_id_of(writer, &[], Some(&state_before), &sourced, &nonce);
+    assert_eq!(e["run_id"], to_hex(&recomputed));
+}
+
 // ── persistence ──────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -759,7 +956,7 @@ fn deployments_persist_across_a_simulated_restart() {
 
     // "First run": nothing to load yet, deploy, which persists write-through.
     {
-        let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store).unwrap()));
+        let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store, &Policy::default()).unwrap()));
         assert_eq!(deployments.lock().unwrap().len(), 0);
 
         let state = AppState {
@@ -772,6 +969,7 @@ fn deployments_persist_across_a_simulated_restart() {
             flows_path: ":memory:".to_string(),
             port: TEST_PORT,
             listeners: None,
+            policy: Arc::new(Policy::default()),
         };
         let body = serde_json::to_vec(&serde_json::json!({
             "slug": "echo",
@@ -784,7 +982,7 @@ fn deployments_persist_across_a_simulated_restart() {
 
     // "Restart": a fresh load from the same path/store reconstructs the deployment, with
     // triggers re-derived (not read back from disk), and it actually works.
-    let reloaded = load_deployments(&deployments_path, &store).unwrap();
+    let reloaded = load_deployments(&deployments_path, &store, &Policy::default()).unwrap();
     assert_eq!(reloaded.len(), 1);
     let dep = reloaded.get("echo").unwrap();
     assert_eq!(dep.unit, flow_hash);
@@ -800,6 +998,7 @@ fn deployments_persist_across_a_simulated_restart() {
         flows_path: ":memory:".to_string(),
         port: TEST_PORT,
         listeners: None,
+        policy: Arc::new(Policy::default()),
     };
     let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
     assert_eq!(triggered.status_code, 200);
@@ -948,7 +1147,7 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     let missing = format!("{{\"slug\":\"gone\",\"unit\":\"{}\",\"trigger_count\":3,\"error_count\":0}}", "ab".repeat(32));
     for contents in [format!("[{missing}]"), r#"[{"slug":"bad","unit":"not-hex","trigger_count":0,"error_count":0}]"#.to_string()] {
         std::fs::write(&path, &contents).unwrap();
-        let e = load_deployments(&path, &state.store).err().expect("must refuse, not skip");
+        let e = load_deployments(&path, &state.store, &state.policy).err().expect("must refuse, not skip");
         assert!(e.contains("deployment"), "{e}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), contents, "file left as it was");
     }
@@ -970,7 +1169,7 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     let stateless = stage_ingress_plus_driver(&state, test_random());
     deploy(stateless, serde_json::json!(["NetworkIngress", "Random"]));
 
-    let reloaded = load_deployments(&path, &state.store).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
     let held = reloaded["writer"].state.as_ref().expect("state must survive the restart").lock().unwrap().clone();
     assert_eq!(held.get("k"), Some(&Value::Text("kept".into())));
     let _ = std::fs::remove_file(&path);
@@ -1007,7 +1206,7 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     assert!(file[0].get("state").is_none(), "no inline values: {}", file[0]);
     let hash = hash_value(&Value::Text("kept".into())).unwrap();
     assert_eq!(file[0]["state_refs"]["k"], to_hex(&hash));
-    let reloaded = load_deployments(&path, &state.store).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
     assert_eq!(to_hex(&reloaded["writer"].state.as_ref().unwrap().lock().unwrap().root()), root);
 
     // Stop (session 1 keeps "kept"), start fresh and write something else (session 2), then
@@ -1050,7 +1249,7 @@ fn inline_state_from_older_files_moves_into_the_store() {
     }]);
     std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
-    let loaded = load_deployments(&path, &state.store).unwrap();
+    let loaded = load_deployments(&path, &state.store, &state.policy).unwrap();
     assert_eq!(loaded["writer"].state.as_ref().unwrap().lock().unwrap().get("k"), Some(&Value::Text("live".into())));
     let first = loaded["writer"].life.snapshot(1).expect("the inline snapshot became references");
     assert_eq!(state.store.get_value(&first["k"]).unwrap(), Some(Value::Text("first".into())));
@@ -1060,13 +1259,13 @@ fn inline_state_from_older_files_moves_into_the_store() {
     persist_deployments(&path, &state.deployments, &state.store);
     let file = std::fs::read_to_string(&path).unwrap();
     assert!(!file.contains("\"live\"") && !file.contains("\"first\""), "no inline values left: {file}");
-    let again = load_deployments(&path, &state.store).unwrap();
+    let again = load_deployments(&path, &state.store, &state.policy).unwrap();
     assert_eq!(again["writer"].life.snapshot(1), Some(first));
 
     // A reference to a value the store doesn't have: refuse, and leave the file alone.
     let dangling = file.replace(&to_hex(&hash_value(&Value::Text("live".into())).unwrap()), &"cd".repeat(32));
     std::fs::write(&path, &dangling).unwrap();
-    let e = load_deployments(&path, &state.store).err().expect("must refuse");
+    let e = load_deployments(&path, &state.store, &state.policy).err().expect("must refuse");
     assert!(e.contains("can't be loaded"), "{e}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), dangling);
     let _ = std::fs::remove_file(&path);
@@ -1081,14 +1280,14 @@ fn corrupt_persistence_file_is_an_error_not_an_empty_table() {
     for (label, contents) in [("truncated", &b"[{\"slug\": \"wri"[..]), ("foreign", &b"{\"not\": \"a list\"}"[..])] {
         let path = unique_temp_path(&format!("corrupt-{label}"));
         std::fs::write(&path, contents).unwrap();
-        assert!(load_deployments(&path, &state.store).is_err(), "{label} deployments file");
+        assert!(load_deployments(&path, &state.store, &state.policy).is_err(), "{label} deployments file");
         assert!(load_flows(&path).is_err(), "{label} flows file");
         assert_eq!(std::fs::read(&path).unwrap(), contents, "the bad file must be left as it was");
         let _ = std::fs::remove_file(&path);
     }
     // A missing file is still a normal first run, not an error.
     let missing = unique_temp_path("missing");
-    assert!(load_deployments(&missing, &state.store).unwrap().is_empty());
+    assert!(load_deployments(&missing, &state.store, &Policy::default()).unwrap().is_empty());
     assert!(load_flows(&missing).unwrap().is_empty());
 }
 
@@ -1449,7 +1648,7 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
     assert_eq!(deploy_server(&state, "bad", bad).status_code, 400);
 
     // A restart reloads it as a server, with its items.
-    let reloaded = load_deployments(&path, &state.store).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
     assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
     assert_eq!(reloaded["todo-api"].triggers, vec!["Http :18080"], "labelled as when it was deployed");
     let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap().get("todos").unwrap().clone();
@@ -1658,7 +1857,7 @@ fn a_deployment_runs_pauses_stops_and_keeps_every_session() {
 
     // A restart keeps the status and every session.
     act("stop", "");
-    let reloaded = load_deployments(&path, &state.store).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
     assert_eq!(reloaded["todo"].life.status, Status::Stopped);
     assert_eq!(reloaded["todo"].life.sessions.len(), 3);
     assert_eq!(route(&state, &req("DELETE", "/deployments/todo", vec![])).status_code, 200);
@@ -1732,7 +1931,7 @@ fn a_fire_in_progress_does_not_stall_the_table() {
         assert_eq!(deploying.join().unwrap(), 200);
     });
 
-    let reloaded = load_deployments(&path, &state.store).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy).unwrap();
     assert_eq!(reloaded.keys().collect::<Vec<_>>(), vec!["a", "b"]);
     let _ = std::fs::remove_file(&path);
 }
@@ -1925,7 +2124,7 @@ fn state_persists_across_a_simulated_restart() {
 
     // "First run": deploy and trigger once — writes "before-restart".
     {
-        let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store).unwrap()));
+        let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store, &Policy::default()).unwrap()));
         let state = AppState {
             store: store.clone(),
             registry: Mutex::new(Registry::new(store.clone())),
@@ -1936,6 +2135,7 @@ fn state_persists_across_a_simulated_restart() {
             flows_path: ":memory:".to_string(),
             port: TEST_PORT,
             listeners: None,
+            policy: Arc::new(Policy::default()),
         };
         let deploy_body = serde_json::to_vec(&serde_json::json!({
             "slug": "writer",
@@ -1950,7 +2150,7 @@ fn state_persists_across_a_simulated_restart() {
 
     // "Restart": a fresh load from the same path/store — the state survives, and the
     // deployment can still be triggered again afterward.
-    let reloaded = load_deployments(&deployments_path, &store).unwrap();
+    let reloaded = load_deployments(&deployments_path, &store, &Policy::default()).unwrap();
     let dep = reloaded.get("writer").unwrap();
     let restored_state = dep.state.as_ref().unwrap().lock().unwrap();
     assert_eq!(restored_state.get("counter"), Some(&Value::Text("before-restart".to_string())));
@@ -1966,6 +2166,7 @@ fn state_persists_across_a_simulated_restart() {
         flows_path: ":memory:".to_string(),
         port: TEST_PORT,
         listeners: None,
+        policy: Arc::new(Policy::default()),
     };
     let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
     assert_eq!(triggered2.status_code, 200);
