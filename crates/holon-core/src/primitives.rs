@@ -414,7 +414,42 @@ fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
 
 /// The primitives that construct an Effect from a payload input (see [`sink_effect`]).
 pub(crate) fn is_sink(name: &str) -> bool {
-    matches!(name, "egress" | "store_write")
+    matches!(name, "egress" | "store_write" | "http_request")
+}
+
+/// The methods `http_request` sends.
+const HTTP_METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+
+/// The request an `http_request` node makes, from its inputs (`path`, `headers`, `body`, each
+/// possibly absent) and its frozen `method` and `host`: `{method, url, headers, body}`, the URL
+/// always `https://<host><path>`. `None` when there is nothing valid to send: no path, a path
+/// not starting with `/`, a bad method or host, headers that aren't a record of texts, a body
+/// with no text or JSON form, or an Effect anywhere in it. Absent headers are `{}`; an absent
+/// body is empty; a text body goes as is, anything else as JSON.
+pub(crate) fn http_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let [Some(Value::Text(path)), headers, body] = inputs else { return None };
+    let method = param(params, "method")?;
+    let host = crate::kind::http_host(params)?;
+    if !path.starts_with('/') || path.chars().any(|c| c.is_whitespace() || c.is_control()) || !HTTP_METHODS.contains(&method) {
+        return None;
+    }
+    let headers = match headers {
+        None => BTreeMap::new(),
+        Some(Value::Record(h)) if h.values().all(|v| matches!(v, Value::Text(_))) => h.clone(),
+        Some(_) => return None,
+    };
+    let body = match body {
+        None => String::new(),
+        Some(v) if contains_effect(v) => return None,
+        Some(Value::Text(t)) => t.clone(),
+        Some(v) => crate::json::stringify(v)?,
+    };
+    Some(Value::Record(BTreeMap::from([
+        ("method".to_string(), Value::Text(method.to_string())),
+        ("url".to_string(), Value::Text(format!("https://{host}{path}"))),
+        ("headers".to_string(), Value::Record(headers)),
+        ("body".to_string(), Value::Text(body)),
+    ])))
 }
 
 /// Whether an Effect occurs anywhere in `v`.
@@ -862,6 +897,40 @@ mod tests {
             Some(Value::Effect { sink: "egress".into(), payload: Box::new(txt("hello")) })
         );
         assert_eq!(compute("egress", &[], &[]), None); // no payload ⇒ nothing to construct
+    }
+    #[test]
+    fn http_request_builds_its_request_from_params_and_inputs() {
+        let params = [p("method", "POST"), p("host", "Hooks.Slack.com")];
+        let headers = Value::Record([("content-type".to_string(), txt("application/json"))].into());
+        let body = Value::Record([("text".to_string(), txt("hi"))].into());
+        let req = http_request(&[Some(txt("/services/x?y=1")), Some(headers.clone()), Some(body)], &params).unwrap();
+        let Value::Record(r) = req else { panic!() };
+        assert_eq!(r["url"], txt("https://hooks.slack.com/services/x?y=1"), "always https, host lowercased");
+        assert_eq!(r["method"], txt("POST"));
+        assert_eq!(r["headers"], headers);
+        assert_eq!(r["body"], txt("{\"text\":\"hi\"}"), "a non-text body goes as JSON");
+        // Defaults: no headers is {}, no body is empty; a text body is sent as is.
+        let get = [p("method", "GET"), p("host", "api.example.com:8443")];
+        let Value::Record(r) = http_request(&[Some(txt("/")), None, Some(txt("raw"))], &get).unwrap() else { panic!() };
+        assert_eq!((r["url"].clone(), r["headers"].clone(), r["body"].clone()), (txt("https://api.example.com:8443/"), Value::Record(BTreeMap::new()), txt("raw")));
+        // Nothing valid to send: no request at all.
+        for (inputs, params) in [
+            (vec![None, None, None], get.to_vec()),
+            (vec![Some(txt("no-slash")), None, None], get.to_vec()),
+            (vec![Some(txt("/a b")), None, None], get.to_vec()),
+            (vec![Some(txt("/")), Some(Value::Record([("n".to_string(), num(1.0))].into())), None], get.to_vec()),
+            (vec![Some(txt("/")), None, Some(Value::List(vec![compute("egress", &[&txt("x")], &[]).unwrap()]))], get.to_vec()),
+            (vec![Some(txt("/")), None, None], vec![p("method", "TRACE"), p("host", "a.com")]),
+            (vec![Some(txt("/")), None, None], vec![p("method", "GET"), p("host", "https://a.com")]),
+            (vec![Some(txt("/")), None, None], vec![p("method", "GET"), p("host", "a.com/x")]),
+            (vec![Some(txt("/")), None, None], vec![p("method", "GET"), p("host", "user@a.com")]),
+            (vec![Some(txt("/")), None, None], vec![p("method", "GET"), p("host", "a.com:0")]),
+            (vec![Some(txt("/")), None, None], vec![p("method", "GET"), p("host", "")]),
+        ] {
+            assert_eq!(http_request(&inputs, &params), None, "{inputs:?} {params:?}");
+        }
+        // As a plain primitive (no host to answer), it computes nothing.
+        assert_eq!(compute("http_request", &[&txt("/")], &get), None);
     }
     #[test]
     fn a_sink_refuses_a_payload_holding_an_effect() {

@@ -116,6 +116,9 @@ pub enum Capability {
     StateWrite(String),
     /// Sends outbound (mail, HTTP write).
     NetworkEgress,
+    /// Makes an HTTP request to the named host (`host` or `host:port`) and gets its answer:
+    /// `http_request`. Per host, so consent names where a flow may call, not just "the network".
+    HttpRequest(String),
     /// Writes / deletes files.
     FileWrite,
     /// Starts a process / job.
@@ -145,7 +148,7 @@ impl Capability {
         match self {
             Clock | NetworkIngress | FileRead | SecretAccess | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) => Kind::State,
-            NetworkEgress | FileWrite | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | FileWrite | Spawn => Kind::Sink,
         }
     }
 
@@ -247,6 +250,10 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         "clock" => vec![Clock],
         "random" => vec![Random],
         "egress" => vec![NetworkEgress],
+        // An outbound HTTP request: performed by the host between rounds, its response sourced
+        // back into the next one (the run observer's `answer`). The host is a frozen param, so
+        // the capability names it exactly.
+        "http_request" => vec![HttpRequest(http_host(params)?)],
         // Request/response (P2.5.1): `ingress` is the driver (a request arrives), `egress` carries
         // the reply out. §13 merges the old `email`/`respond` into this one `egress` sink — both
         // were NetworkEgress, and the host dispatches on the *capability*, not the sink name, so the
@@ -273,6 +280,28 @@ fn state_key(params: &[Param]) -> Option<String> {
     } else {
         Some(key.to_string())
     }
+}
+
+/// The required `"host"` frozen param of `http_request`: a hostname, optionally with `:port`.
+/// `None` (fail closed) when missing, open, empty, or anything but a plain host: no scheme, path,
+/// credentials or spaces, so the capability can only ever name a host.
+pub(crate) fn http_host(params: &[Param]) -> Option<String> {
+    let host = params.iter().find(|p| p.name() == "host")?.value()?;
+    let (name, port) = match host.rsplit_once(':') {
+        Some((name, port)) => (name, Some(port)),
+        None => (host, None),
+    };
+    let name_ok = !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        });
+    let port_ok = port.is_none_or(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok_and(|n| n > 0));
+    (name_ok && port_ok).then(|| host.to_ascii_lowercase())
 }
 
 /// The coarse [`Kind`] of a **primitive leaf**, *projected* from its capability
@@ -382,6 +411,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         StateRead(SATURATED_STATE_KEY.to_string()),
         StateWrite(SATURATED_STATE_KEY.to_string()),
         NetworkEgress,
+        HttpRequest(SATURATED_STATE_KEY.to_string()),
         FileWrite,
         Spawn,
     ] {
@@ -704,7 +734,7 @@ mod tests {
         use Capability::*;
         for cap in [
             Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead("var1".to_string()),
-            StateWrite("var1".to_string()), NetworkEgress, FileWrite, Spawn,
+            StateWrite("var1".to_string()), NetworkEgress, HttpRequest("api.example.com".to_string()), FileWrite, Spawn,
         ] {
             assert_ne!(cap.kind(), Kind::Pure, "{cap:?} must project to an effect");
         }
@@ -809,7 +839,21 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 10); // every capability — fail closed
+        assert_eq!(caps.len(), 11); // every capability — fail closed
+        assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
+    }
+
+    #[test]
+    fn http_request_names_its_host_and_nothing_else() {
+        let req = |host: &str| Unit { params: vec![Param::frozen("method", "GET"), Param::frozen("host", host)], ..prim("http_request") };
+        let caps = capabilities_of("http_request", &req("Hooks.Slack.com").params).unwrap();
+        assert_eq!(caps.iter().collect::<Vec<_>>(), vec![Capability::HttpRequest("hooks.slack.com".into())]);
+        assert_eq!(kind_of("http_request", &req("a.com").params), Some(Kind::Sink));
+        assert!(capabilities_of("http_request", &req("localhost:8080").params).is_some());
+        for bad in ["", "https://a.com", "a.com/x", "user@a.com", "a .com", "-a.com", "a..com", "a.com:", "a.com:99999"] {
+            assert!(capabilities_of("http_request", &req(bad).params).is_none(), "{bad:?}");
+        }
+        assert!(capabilities_of("http_request", &[]).is_none(), "no host, no capability");
     }
 
     #[test]

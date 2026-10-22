@@ -391,6 +391,10 @@ mod tests {
         assert_eq!(validate(&nested, &r), Err(vec![mismatch(Type::Effect)]));
         // The same for a state write, and for effects inside a list.
         assert_eq!(validate(&composite(vec![egress, store_write], vec![edge(0, 0, 1, 0)]), &r), Err(vec![mismatch(Type::Effect)]));
+        // An outbound request's inputs too: its body is a payload.
+        let request = r.insert(crate::interface_of("http_request").unwrap()).unwrap();
+        let into_body = composite(vec![egress, request], vec![edge(0, 0, 1, 2)]);
+        assert_eq!(validate(&into_body, &r), Err(vec![mismatch(Type::Effect)]));
         let listed = composite(vec![effects, egress], vec![edge(0, 0, 1, 0)]);
         assert_eq!(validate(&listed, &r), Err(vec![mismatch(Type::List(Box::new(Type::Effect)))]));
         // Data into a sink is fine; an Effect out to the composite boundary is how effects leave.

@@ -37,6 +37,8 @@ pub const GENESIS: &[&str] = &[
     "json_parse", "json_stringify",
     // pure — universal, any-typed (5)
     "to_text", "is_truthy", "guard", "default", "equals",
+    // request/response — performed by the host, answered in the next round (1)
+    "http_request",
     // drivers — sourced, no compute (3)
     "clock", "random", "ingress",
     // state cell (2)
@@ -202,6 +204,13 @@ pub fn interface_of(name: &str) -> Option<Unit> {
 
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
+        // `method` and `host` are frozen (the host is the capability); the path, headers and
+        // body arrive on wires. The response is `{status, headers, body}`, filled in by the host.
+        "http_request" => prim(
+            vec![port("path", Text), port("headers", Type::Record), port("body", Any)],
+            vec![Param::frozen("method", "GET"), Param::frozen("host", "example.com")],
+            Type::Record,
+        ),
 
         _ => return None,
     })
@@ -227,13 +236,13 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_54_leaves() {
+    fn genesis_has_55_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
         // deliberately for M1 (docs/PLATFORM_LAYOUT.md), json_parse + json_stringify, and the
-        // keyed record kit (lookup, insert, remove), find, and extend.
-        assert_eq!(GENESIS.len(), 54);
+        // keyed record kit (lookup, insert, remove), find, extend, and http_request.
+        assert_eq!(GENESIS.len(), 55);
     }
 
     #[test]

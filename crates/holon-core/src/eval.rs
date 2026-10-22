@@ -46,13 +46,21 @@ pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> 
     eval_observed(unit, inputs, resolver, &mut NoObserver)
 }
 
-/// Told when each composite child starts and finishes evaluating, by its path of child indices
-/// from the root (`[2]`, then `[2, 0]` inside it, …). Core never reads a clock or does IO: an
-/// observer is how the host times each step (the flow log's timeline) without that impurity
-/// entering here. `map`/`fold` bodies are not observed, only composite children.
+/// The host's window into a run. Told when each composite child starts and finishes evaluating,
+/// by its path of child indices from the root (`[2]`, then `[2, 0]` inside it, …), and asked for
+/// the answer to each `http_request` whose request is ready. Core never reads a clock or does IO:
+/// an observer is how the host times each step (the flow log's timeline) and answers requests
+/// (the rounds of §4.1) without that impurity entering here. `map`/`fold` bodies are not
+/// observed, so a request inside one is never answered.
 pub trait Observer {
     fn enter(&mut self, _path: &[u32]) {}
     fn leave(&mut self, _path: &[u32]) {}
+    /// The response to `request` (`{method, url, headers, body}`), made by the `http_request` at
+    /// `path`, if the host has it. `None` (the default) leaves the node's response absent: in a
+    /// round, that is "not yet", and the host performs the request before the next one.
+    fn answer(&mut self, _path: &[u32], _request: &Value) -> Option<Value> {
+        None
+    }
 }
 
 /// Observes nothing: what plain [`eval`] uses.
@@ -83,6 +91,10 @@ fn eval_at(
         // `fold` is the one iteration primitive (the universal list donor): also higher-order,
         // so it lives here too. It threads an accumulator, which `map` does not.
         UnitBody::Primitive { name } if name == "fold" => smallvec![eval_fold(inputs, &unit.params, resolver)],
+        // An outbound request: built here, answered (or not yet) by the host through the observer.
+        UnitBody::Primitive { name } if name == "http_request" => {
+            smallvec![primitives::http_request(inputs, &unit.params).and_then(|r| observer.answer(path, &r))]
+        }
         UnitBody::Primitive { name } => {
             // Gather present values in port order **by reference** — `compute` borrows them,
             // so an O(1) reader (head/length/is_empty) copies only what it returns, not the
@@ -433,6 +445,43 @@ mod tests {
         assert_eq!(observed, eval(&outer, &inputs, &r), "observing changes nothing");
         assert_eq!(observed.into_vec(), vec![Some(num(28.0))]);
         assert_eq!(seen.0, vec!["+[0]", "+[0, 0]", "-[0, 0]", "-[0]", "+[1]", "-[1]"]);
+    }
+
+    /// `path → http_request → field(status)`: the observer is asked for the request's answer by
+    /// the node's path; its answer flows downstream. Plain `eval` has no one to answer, so the
+    /// response, and everything after it, is absent.
+    #[test]
+    fn an_http_request_is_answered_by_the_observer_or_stays_absent() {
+        use std::collections::BTreeMap;
+        struct Answers(Vec<(Vec<u32>, Value)>);
+        impl Observer for Answers {
+            fn answer(&mut self, path: &[u32], request: &Value) -> Option<Value> {
+                self.0.push((path.to_vec(), request.clone()));
+                Some(Value::Record(BTreeMap::from([("status".to_string(), num(201.0))])))
+            }
+        }
+        let mut r = MapResolver::new();
+        let request = Unit {
+            params: vec![Param::frozen("method", "POST"), Param::frozen("host", "api.example.com")],
+            ..prim("http_request", 3, Type::Record)
+        };
+        let field = Unit { params: vec![Param::frozen("name", "status")], ..prim("field", 1, Type::Any) };
+        let (hreq, hfield) = (r.insert(request).unwrap(), r.insert(field).unwrap());
+        let flow = composite(
+            vec![Port { name: "path".into(), ty: Type::Text }],
+            Type::Any,
+            vec![hreq, hfield],
+            vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, 1, 0), edge(1, 0, BOUNDARY, 0)],
+        );
+        let inputs = [Some(Value::Text("/items".into()))];
+        let mut answers = Answers(Vec::new());
+        assert_eq!(eval_observed(&flow, &inputs, &r, &mut answers).into_vec(), vec![Some(num(201.0))]);
+        assert_eq!(answers.0.len(), 1);
+        let (path, req) = &answers.0[0];
+        assert_eq!(path, &vec![0]);
+        let Value::Record(req) = req else { panic!("{req:?}") };
+        assert_eq!(req["url"], Value::Text("https://api.example.com/items".into()));
+        assert_eq!(eval(&flow, &inputs, &r).into_vec(), vec![None], "no one to answer: absent");
     }
 
     #[test]

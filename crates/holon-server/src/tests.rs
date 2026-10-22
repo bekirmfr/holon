@@ -649,6 +649,39 @@ fn deploy_refuses_without_full_capability_acknowledgment() {
     assert_eq!(route(&state, &req("POST", "/deploy", full_ack)).status_code, 200);
 }
 
+/// An `http_request` puts its host in the flow's manifest: deploy needs that host acknowledged,
+/// by name, and "the network" in general isn't enough.
+#[test]
+fn deploy_needs_each_requested_host_acknowledged_by_name() {
+    let state = test_state();
+    let ingress = test_ingress();
+    let request = Unit {
+        params: vec![Param::frozen("method", "GET"), Param::frozen("host", "api.example.com")],
+        ..holon_core::interface_of("http_request").unwrap()
+    };
+    let flow = Unit {
+        body: UnitBody::Composite {
+            children: vec![stage(&state, &ingress), stage(&state, &request)],
+            edges: vec![
+                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // ingress → path
+                Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+            ],
+        },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "response".into(), ty: Type::Record }],
+    };
+    let flow_hash = stage(&state, &flow);
+    let deploy = |ack: serde_json::Value| {
+        let body = serde_json::json!({ "slug": "caller", "unit": to_hex(&flow_hash), "acknowledge": ack });
+        route(&state, &req("POST", "/deploy", serde_json::to_vec(&body).unwrap()))
+    };
+    let refused = deploy(serde_json::json!(["NetworkIngress", "NetworkEgress"]));
+    assert_eq!(refused.status_code, 400);
+    assert!(body_json(refused)["error"].as_str().unwrap().contains("HttpRequest(\"api.example.com\")"));
+    assert_eq!(deploy(serde_json::json!(["NetworkIngress", "HttpRequest(\"api.example.com\")"])).status_code, 200);
+}
+
 // ── persistence ──────────────────────────────────────────────────────────────────────
 
 #[test]

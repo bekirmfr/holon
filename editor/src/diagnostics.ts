@@ -101,6 +101,7 @@ export function encapErrorNodeIndices(err: WEncapError, wedges: WEdge[]): number
 export function capabilityAcknowledgeName(c: WCapability): string {
   if (typeof c === "string") return c;
   if ("StateRead" in c) return `StateRead("${c.StateRead}")`;
+  if ("HttpRequest" in c) return `HttpRequest("${c.HttpRequest}")`;
   return `StateWrite("${c.StateWrite}")`;
 }
 

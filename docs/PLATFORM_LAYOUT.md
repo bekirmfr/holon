@@ -142,10 +142,13 @@ bounded:  by the run's limits (§4.2): its wall-clock budget and its outbound-re
           rounds); past either, the run fails and nothing is performed
 ```
 
-- **`http_request`** (core, a sink-like node): inputs `method`, `url`, `headers`, `body`; output
-  `response`, a record `{status, headers, body}`. In round 0 it constructs its request and its
-  `response` is absent; the host fills it in for the next round, the way `store_read` is filled in
-  today. On the canvas it reads as a node that simply has a response.
+- **`http_request`** (core; built ✅): frozen params `method` and `host`, inputs `path`, `headers`,
+  `body`; output `response`, a record `{status, headers, body}`. Core builds the request
+  `{method, url, headers, body}` (always `https://<host><path>`; a text body as is, anything else
+  as JSON; an Effect anywhere refused) and asks the run's observer for its answer, by the node's
+  path. With no answer yet, `response` is absent; the host performs the request and answers it in
+  the next round, the way `store_read` is filled in. On the canvas it reads as a node that simply
+  has a response. A request inside a `map`/`fold` body is never answered (bodies aren't observed).
 - **Absent means "not yet" for one round, and "no value" at the end.** Nodes downstream of an
   unanswered request are absent, so a `default`/`missing` may fire early; that round's output is
   discarded anyway. Only the final round's answer counts.
@@ -166,10 +169,11 @@ the node, not after it. Two kinds:
 **Rules** (always on; a flow can ask for an exception in its manifest, and only the host can grant
 it, §4.2.1):
 
-- **Hosts are in the manifest.** Each `http_request` whose URL has a literal host
-  (`https://hooks.slack.com/...`) puts `NetworkEgress("hooks.slack.com")` in the flow's manifest,
-  not just "the network". A URL built at run time needs its possible hosts declared as a
-  requirement; a host the deployment wasn't granted is refused at perform time.
+- **Hosts are in the manifest.** ✅ An `http_request`'s host is a frozen param, so each one puts
+  `HttpRequest("hooks.slack.com")` in the flow's manifest, exactly, not just "the network"; deploy
+  needs it acknowledged by name. A host chosen at run time (a later `host = *`, with the host in
+  the path input) would need its possible hosts declared as a requirement; a host the deployment
+  wasn't granted is refused at perform time.
 - **No private destinations.** Loopback, link-local, private, CGNAT and metadata ranges (127/8,
   10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, ::1, fc00::/7, fe80::/10) are refused after
   DNS resolution, against the address actually connected to, and again on every redirect. This is
@@ -207,7 +211,7 @@ exactly when what the flow needs changes):
 
 | Part | Where it comes from | Contents |
 |---|---|---|
-| **Capabilities and effects** | **derived** from the graph by core (`capabilities()`, as consent works today), so they can't be understated | `NetworkIngress(port)`, `NetworkEgress(host)` per literal host, `StateRead(key)` / `StateWrite(key)`, `SecretRead(name)`, `Clock`, `Random`; which sinks the flow can reach |
+| **Capabilities and effects** | **derived** from the graph by core (`capabilities()`, as consent works today), so they can't be understated | `NetworkIngress(port)`, `HttpRequest(host)` per request host, `StateRead(key)` / `StateWrite(key)`, `SecretRead(name)`, `Clock`, `Random`; which sinks the flow can reach |
 | **Requirements** | **declared** by the author: frozen node params (in the unit's hash) and the flow's deploy settings | limits it needs above the host defaults (e.g. a 60 s request timeout), hosts for URLs built at run time, rule exceptions (plain HTTP to a host, a private address), durable-run needs (parked runs, expiry) |
 
 **The host** keeps three things, and is the only place they change:
@@ -347,7 +351,7 @@ One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable 
 |---|---|---|
 | 1 ✅ | Core: public canonical `encode_value` / `hash_value` (±0, NaN pinned) | the encoding is fixed by tests; memo uses it |
 | 2 ✅ | Host: Merkle state (value hashes on write, state root), persisted by reference | state root stable across restarts; a snapshot shares unchanged values |
-| 3 | Core: `http_request` node, its capability `NetworkEgress(host)` and validation | a flow with it validates and its derived hosts show at deploy |
+| 3 ✅ | Core: `http_request` node, its capability `HttpRequest(host)` and validation | a flow with it validates and its derived hosts show at deploy |
 | 4 | Host: the round loop, the `Performer` with `ureq`, the §4.2 rules, and limits resolved node → deployment → host default, clamped to the ceiling | a run calls a local test server, uses the answer, and each limit stops it as specified |
 | 5 | Host and server: manifests (derived capabilities with hosts, declared requirements), policy in `holon.toml` and `GET /permissions`, grants per deployment, enforcement at perform time, the re-check at load; run ids and the nonce; `rounds` and the grant in effect in the flow log | a deploy asks only for what policy doesn't already allow; an ungranted host or a limit above a ceiling is refused; revoking a host pauses the deployment; each log entry has a verifiable run id |
 | 6 | Editor: the node and its params, requirements in deploy settings, the consent screen showing asked against granted (bounded by `GET /permissions`), a deployment's grant with revoke controls, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round |

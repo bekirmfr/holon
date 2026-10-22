@@ -165,6 +165,7 @@ export type WCapability =
   | { StateRead: string }
   | { StateWrite: string }
   | "NetworkEgress"
+  | { HttpRequest: string }
   | "FileWrite"
   | "Spawn";
 

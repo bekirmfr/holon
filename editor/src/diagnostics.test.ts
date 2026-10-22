@@ -234,6 +234,7 @@ describe("capabilityAcknowledgeName", () => {
     // human-friendly approximation of it.
     expect(capabilityAcknowledgeName({ StateRead: "counter" })).toBe('StateRead("counter")');
     expect(capabilityAcknowledgeName({ StateWrite: "counter" })).toBe('StateWrite("counter")');
+    expect(capabilityAcknowledgeName({ HttpRequest: "hooks.slack.com" })).toBe('HttpRequest("hooks.slack.com")');
   });
 
   it("keeps different keys distinct, not collapsed to the bare capability name", () => {
