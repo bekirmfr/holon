@@ -120,6 +120,12 @@ pub enum Capability {
     StateRead(String),
     /// Writes a value retained across firings, at the named key.
     StateWrite(String),
+    /// Reads items of the named collection: `collection_get`, `collection_list`. Answered by the
+    /// host from the collection as the run found it.
+    CollectionRead(String),
+    /// Puts or deletes items of the named collection: `collection_put`, `collection_delete`,
+    /// committed when the run finishes.
+    CollectionWrite(String),
     /// Sends outbound (mail, HTTP write).
     NetworkEgress,
     /// Makes an HTTP request to the named host (`host` or `host:port`) and gets its answer:
@@ -153,7 +159,7 @@ impl Capability {
         use Capability::*;
         match self {
             Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
-            StateRead(_) | StateWrite(_) => Kind::State,
+            StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | FileWrite | Spawn => Kind::Sink,
         }
     }
@@ -167,7 +173,10 @@ impl Capability {
     /// always meant. Takes `&self`, same reason as [`kind`](Capability::kind).
     pub fn is_sourced(&self) -> bool {
         use Capability::*;
-        matches!(self, Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_))
+        matches!(
+            self,
+            Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_)
+        )
     }
 }
 
@@ -254,6 +263,11 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // classify at all.
         "store_read" => vec![StateRead(state_key(params)?)],
         "store_write" => vec![StateWrite(state_key(params)?)],
+        // A collection: keyed items, read by key or in order (answered by the host from the
+        // collection as the run found it), put and deleted when the run finishes. The collection
+        // is a frozen param, so the capability names it exactly.
+        "collection_get" | "collection_list" => vec![CollectionRead(ident(params, "collection")?)],
+        "collection_put" | "collection_delete" => vec![CollectionWrite(ident(params, "collection")?)],
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
@@ -441,6 +455,8 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         Random,
         StateRead(SATURATED_STATE_KEY.to_string()),
         StateWrite(SATURATED_STATE_KEY.to_string()),
+        CollectionRead(SATURATED_STATE_KEY.to_string()),
+        CollectionWrite(SATURATED_STATE_KEY.to_string()),
         NetworkEgress,
         HttpRequest(SATURATED_STATE_KEY.to_string()),
         FileWrite,
@@ -533,6 +549,22 @@ mod tests {
 
     /// Every leaf `compute` implements, plus `map`, classifies `Pure`. (Listed
     /// explicitly so a drift between this list and the table is a test failure.)
+    #[test]
+    fn collections_are_read_and_written_by_name() {
+        let named = |n: &str| [Param::frozen("collection", n)];
+        for (leaf, cap) in [
+            ("collection_get", Capability::CollectionRead("notes".into())),
+            ("collection_list", Capability::CollectionRead("notes".into())),
+            ("collection_put", Capability::CollectionWrite("notes".into())),
+            ("collection_delete", Capability::CollectionWrite("notes".into())),
+        ] {
+            assert_eq!(capabilities_of(leaf, &named("notes")).unwrap().iter().collect::<Vec<_>>(), vec![cap.clone()], "{leaf}");
+            assert_eq!(cap.kind(), Kind::State);
+            assert!(capabilities_of(leaf, &named("not a name")).is_none(), "{leaf} fails closed");
+        }
+        assert!(Capability::CollectionRead("x".into()).is_sourced() && !Capability::CollectionWrite("x".into()).is_sourced());
+    }
+
     #[test]
     fn pure_leaves_are_pure() {
         const PURE: &[&str] = &[
@@ -870,8 +902,9 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 13); // every capability — fail closed
+        assert_eq!(caps.len(), 15); // every capability — fail closed
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
+        assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
     }
 
     #[test]

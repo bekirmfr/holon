@@ -166,6 +166,8 @@ export type WCapability =
   | "Random"
   | { StateRead: string }
   | { StateWrite: string }
+  | { CollectionRead: string }
+  | { CollectionWrite: string }
   | "NetworkEgress"
   | { HttpRequest: string }
   | "FileWrite"

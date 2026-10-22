@@ -47,6 +47,8 @@ pub const GENESIS: &[&str] = &[
     "await", "resume_token",
     // state cell (2)
     "store_read", "store_write",
+    // collections: keyed items, read by key or in order, put and deleted (4)
+    "collection_get", "collection_list", "collection_put", "collection_delete",
     // sink — performed (1)
     "egress",
 ];
@@ -227,6 +229,18 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "store_read" => prim(vec![], vec![Param::frozen("key", "value")], Any),
         "store_write" => prim(vec![port("value", Any)], vec![Param::frozen("key", "value")], Effect),
 
+        // ── collections ── `collection` (frozen) names which one; the default ("items") keeps a
+        // dropped node valid. A listing's prefix and after are optional inputs; it answers a
+        // record of up to `limit` items in key order.
+        "collection_get" => prim(vec![port("key", Text)], vec![Param::frozen("collection", "items")], Any),
+        "collection_list" => prim(
+            vec![port("prefix", Text), port("after", Text)],
+            vec![Param::frozen("collection", "items"), Param::frozen("limit", "100")],
+            Type::Record,
+        ),
+        "collection_put" => prim(vec![port("key", Text), port("value", Any)], vec![Param::frozen("collection", "items")], Effect),
+        "collection_delete" => prim(vec![port("key", Text)], vec![Param::frozen("collection", "items")], Effect),
+
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
         // `method` and `host` are frozen (the host is the capability); the path, headers and
@@ -261,15 +275,15 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_64_leaves() {
+    fn genesis_has_68_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
         // deliberately for M1 (docs/PLATFORM_LAYOUT.md), json_parse + json_stringify, and the
         // keyed record kit (lookup, insert, remove), find, extend, http_request, secret, and the
         // durable-run pair (await, resume_token), the signature kit (sha256, hmac_sha256,
-        // hex, base64, secure_equals), and split.
-        assert_eq!(GENESIS.len(), 64);
+        // hex, base64, secure_equals), split, and the collection kit (get, list, put, delete).
+        assert_eq!(GENESIS.len(), 68);
     }
 
     #[test]

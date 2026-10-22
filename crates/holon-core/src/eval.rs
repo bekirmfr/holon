@@ -106,6 +106,13 @@ fn eval_at(
         UnitBody::Primitive { name } if name == "await" => {
             smallvec![primitives::await_request(&unit.params).and_then(|r| observer.answer(path, &r))]
         }
+        // A collection read: the host answers it from the collection as the run found it.
+        UnitBody::Primitive { name } if name == "collection_get" => {
+            smallvec![primitives::collection_get_request(inputs, &unit.params).and_then(|r| observer.answer(path, &r))]
+        }
+        UnitBody::Primitive { name } if name == "collection_list" => {
+            smallvec![primitives::collection_list_request(inputs, &unit.params).and_then(|r| observer.answer(path, &r))]
+        }
         UnitBody::Primitive { name } if name == "resume_token" => {
             smallvec![primitives::resume_token_request(&unit.params).and_then(|r| observer.answer(path, &r))]
         }

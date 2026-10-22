@@ -153,6 +153,12 @@ pub trait Waits {
     fn event(&self, name: &str) -> Option<Value>;
     /// The token that resumes waiting point `name`: the same every time this run asks.
     fn token(&mut self, name: &str) -> String;
+    /// The answer to a collection read (`{collection, get}` or `{collection, list}`), from the
+    /// collection as the run found it; absent for a missing item, or with no collections (the
+    /// default). A host keeps what it answered, to check the run against at commit and replay.
+    fn read(&mut self, _request: &Value) -> Option<Value> {
+        None
+    }
 }
 
 /// No events and no tokens (an empty token): a run that can't be resumed.
@@ -313,6 +319,9 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
         }
         if let Some(name) = text_field(request, "resume_token") {
             return Some(Value::Text(self.waits.token(name)));
+        }
+        if text_field(request, "collection").is_some() {
+            return self.waits.read(request);
         }
         let key = (path.to_vec(), request_key(request));
         if let Some(answer) = self.answers.get(&key) {

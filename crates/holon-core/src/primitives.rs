@@ -437,6 +437,24 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             sink_effect(&format!("store_write:{key}"), inputs)
         }
 
+        // A collection's writes: `{key, value}` to put, the key to delete, each an effect the
+        // host commits when the run finishes. The collection rides in the sink name, as a state
+        // write's key does. A value holding an effect is not data, and constructs nothing.
+        "collection_put" => {
+            let name = crate::kind::ident(params, "collection")?;
+            let [Value::Text(key), v] = inputs else { return None };
+            if contains_effect(v) {
+                return None;
+            }
+            let item = Value::Record(BTreeMap::from([("key".to_string(), Value::Text(key.clone())), ("value".to_string(), (*v).clone())]));
+            Some(Value::Effect { sink: format!("collection_put:{name}"), payload: Box::new(item) })
+        }
+        "collection_delete" => {
+            let name = crate::kind::ident(params, "collection")?;
+            let [Value::Text(key)] = inputs else { return None };
+            Some(Value::Effect { sink: format!("collection_delete:{name}"), payload: Box::new(Value::Text(key.clone())) })
+        }
+
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
 }
@@ -461,7 +479,46 @@ fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
 
 /// The primitives that construct an Effect from a payload input (see [`sink_effect`]).
 pub(crate) fn is_sink(name: &str) -> bool {
-    matches!(name, "egress" | "store_write" | "http_request")
+    matches!(name, "egress" | "store_write" | "http_request" | "collection_put")
+}
+
+/// The most items one `collection_list` returns.
+pub const MAX_LIST_LIMIT: u64 = 1000;
+
+/// What a `collection_get` asks the host: `{collection: <name>, get: <key>}`.
+pub(crate) fn collection_get_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let name = crate::kind::ident(params, "collection")?;
+    let [Some(Value::Text(key))] = inputs else { return None };
+    Some(Value::Record(BTreeMap::from([
+        ("collection".to_string(), Value::Text(name)),
+        ("get".to_string(), Value::Text(key.clone())),
+    ])))
+}
+
+/// What a `collection_list` asks the host: `{collection: <name>, list: {prefix, after?, limit}}`,
+/// for up to `limit` items (1 to [`MAX_LIST_LIMIT`]) in key order whose keys start with `prefix`
+/// (none: every key) and come after `after` (none: from the first). Both inputs are optional.
+pub(crate) fn collection_list_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let name = crate::kind::ident(params, "collection")?;
+    let limit: u64 = param(params, "limit")?.parse().ok().filter(|n| (1..=MAX_LIST_LIMIT).contains(n))?;
+    let [prefix, after] = inputs else { return None };
+    let text = |v: &Option<Value>| match v {
+        None => Some(None),
+        Some(Value::Text(t)) => Some(Some(t.clone())),
+        Some(_) => None,
+    };
+    let (prefix, after) = (text(prefix)?, text(after)?);
+    let mut list = BTreeMap::from([
+        ("prefix".to_string(), Value::Text(prefix.unwrap_or_default())),
+        ("limit".to_string(), Value::Number(limit as f64)),
+    ]);
+    if let Some(after) = after {
+        list.insert("after".to_string(), Value::Text(after));
+    }
+    Some(Value::Record(BTreeMap::from([
+        ("collection".to_string(), Value::Text(name)),
+        ("list".to_string(), Value::Record(list)),
+    ])))
 }
 
 /// The longest a run may wait at one point: 90 days, in seconds.
@@ -488,7 +545,7 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// `http_request` (headers, body). Inside a composite, such a port that *is* wired holds the
 /// node back while its value is absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
-    name == "http_request"
+    matches!(name, "http_request" | "collection_list")
 }
 
 /// The methods `http_request` sends.
@@ -701,6 +758,36 @@ mod tests {
         assert_eq!(compute("insert", &[&r, &num(1.0), &num(1.0)], &[]), None);
         assert_eq!(compute("remove", &[&num(1.0), &txt("x")], &[]), None);
         assert_eq!(compute("lookup", &[&r], &[]), None);
+    }
+
+    #[test]
+    fn collection_reads_ask_the_host_and_writes_construct_effects() {
+        let items = [p("collection", "notes")];
+        // Reads are requests for the host, by key, or a page in order.
+        let get = collection_get_request(&[Some(txt("n1"))], &items).unwrap();
+        assert_eq!(get, Value::Record(BTreeMap::from([("collection".into(), txt("notes")), ("get".into(), txt("n1"))])));
+        assert_eq!(collection_get_request(&[None], &items), None);
+        assert_eq!(collection_get_request(&[Some(num(1.0))], &items), None, "keys are text");
+        let page = [p("collection", "notes"), p("limit", "20")];
+        let list = collection_list_request(&[None, Some(txt("n1"))], &page).unwrap();
+        let Value::Record(r) = &list else { panic!() };
+        let Value::Record(l) = &r["list"] else { panic!() };
+        assert_eq!((l["prefix"].clone(), l["after"].clone(), l["limit"].clone()), (txt(""), txt("n1"), num(20.0)));
+        assert!(collection_list_request(&[None, None], &[p("collection", "notes"), p("limit", "0")]).is_none());
+        assert!(collection_list_request(&[None, None], &[p("collection", "notes"), p("limit", "1001")]).is_none());
+        assert!(collection_list_request(&[None, None], &[p("collection", "a b"), p("limit", "5")]).is_none(), "a name is an identifier");
+
+        // Writes are effects, the collection in the sink name.
+        let put = compute("collection_put", &[&txt("n1"), &txt("buy milk")], &items).unwrap();
+        let item = Value::Record(BTreeMap::from([("key".into(), txt("n1")), ("value".into(), txt("buy milk"))]));
+        assert_eq!(put, Value::Effect { sink: "collection_put:notes".into(), payload: Box::new(item) });
+        assert_eq!(
+            compute("collection_delete", &[&txt("n1")], &items),
+            Some(Value::Effect { sink: "collection_delete:notes".into(), payload: Box::new(txt("n1")) })
+        );
+        let effect = Value::Effect { sink: "egress".into(), payload: Box::new(txt("x")) };
+        assert_eq!(compute("collection_put", &[&txt("k"), &effect], &items), None, "an effect is not data");
+        assert_eq!(compute("collection_put", &[&num(1.0), &txt("v")], &items), None);
     }
 
     #[test]

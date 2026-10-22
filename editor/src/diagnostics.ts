@@ -104,6 +104,8 @@ export function capabilityAcknowledgeName(c: WCapability): string {
   if ("HttpRequest" in c) return `HttpRequest("${c.HttpRequest}")`;
   if ("SecretRead" in c) return `SecretRead("${c.SecretRead}")`;
   if ("Await" in c) return `Await("${c.Await}")`;
+  if ("CollectionRead" in c) return `CollectionRead("${c.CollectionRead}")`;
+  if ("CollectionWrite" in c) return `CollectionWrite("${c.CollectionWrite}")`;
   return `StateWrite("${c.StateWrite}")`;
 }
 
@@ -214,6 +216,8 @@ export function describeItem(item: string): string {
     ["HttpRequest", (a) => `call https://${a}`],
     ["StateRead", (a) => `read its state "${a}"`],
     ["StateWrite", (a) => `write its state "${a}"`],
+    ["CollectionRead", (a) => `read items of its collection "${a}"`],
+    ["CollectionWrite", (a) => `put and delete items of its collection "${a}"`],
     ["PlainHttp", (a) => `call ${a} over plain HTTP (not encrypted)`],
     ["SecretRead", (a) => `read the secret "${a}"`],
     ["Await", (a) => `wait for an event "${a}" and continue later`],
