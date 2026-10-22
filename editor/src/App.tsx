@@ -70,7 +70,7 @@ import {
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
-import { isWEncapError, capabilityAcknowledgeName, describeItem, manifestItems, manifestTrigger, valueChip } from "./diagnostics";
+import { isWEncapError, capabilityAcknowledgeName, describeItem, manifestItems, manifestTrigger, readsFromOutside, valueChip } from "./diagnostics";
 import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
@@ -662,19 +662,24 @@ function Canvas({
   // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
   const deployedEntry = flowName ? deployments.find((d) => d.slug === flowName) : undefined;
   const outOfDate = deployedEntry && derived.serverHash ? deployedEntry.unit !== derived.serverHash : null;
-  // The secrets the canvas reads, by name (its `secret` nodes): what ⚙ lets you set.
+  // The secrets the flow reads, by name: what ⚙ lets you set. From its derived manifest, so a
+  // secret inside a placed holon counts; plus its own `secret` nodes, for while it doesn't derive.
   const secretNames = useMemo(
     () =>
       [
-        ...new Set(
-          nodes.flatMap((n) =>
+        ...new Set([
+          ...flowCapabilities.flatMap((c) => {
+            const m = /^SecretRead\("(.*)"\)$/.exec(c);
+            return m ? [m[1]] : [];
+          }),
+          ...nodes.flatMap((n) =>
             n.data.name === "secret" && n.data.body.kind === "Primitive"
               ? n.data.params.flatMap((p) => (p.name === "name" && p.kind === "Frozen" ? [p.value] : []))
               : [],
           ),
-        ),
+        ]),
       ].sort(),
-    [nodes],
+    [nodes, flowCapabilities],
   );
 
   const onDeployFlow = useCallback(async () => {
@@ -892,6 +897,16 @@ function Canvas({
       nodeOutputs(selectedRun, viewTrace),
       // Stepped through in the order the run evaluated its nodes.
       executionOrder(nodeTimings(selectedRun, viewTrace)),
+      // A holon reading from outside within itself replays from what the run recorded.
+      (node) => {
+        const body = (node as PrimitiveNodeType).data.body;
+        if (body.kind !== "Composite") return false;
+        try {
+          return readsFromOutside((ev.capabilities(body.hash) as WCapability[]).map(capabilityAcknowledgeName));
+        } catch {
+          return true;
+        }
+      },
     );
     const diagnosis = diagnose(ns, es, selectedRun, run);
     let verdict: boolean | null = null;
@@ -905,7 +920,7 @@ function Canvas({
     return { ...run, verdict, diagnosis };
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewing, selectedRun, canvasKey, evalNode, viewTrace]);
+  }, [viewing, selectedRun, canvasKey, evalNode, viewTrace, ev]);
 
   // Show a node on the canvas and in the side pane: what "show where it failed" does.
   const showNode = useCallback(

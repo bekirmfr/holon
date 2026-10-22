@@ -3,7 +3,9 @@
 // the sourced values (clock, random, ingress). Evaluation is deterministic, so feeding those back
 // in and evaluating each node in dependency order reproduces exactly what every node computed.
 // Except where a secret or a token went in: the log never holds those (a placeholder stands in),
-// so a node fed one is shown with what the run recorded it produced, not recomputed.
+// so a node fed one is shown with what the run recorded it produced, not recomputed. The same
+// for a holon (a placed composite) that reads from outside inside it, a clock, a secret, state,
+// the network: the replay has none of those to give it, so it shows what the run recorded.
 //
 // Pure: evaluation itself is passed in (`evalNode`), so this is testable without the wasm
 // package. Only TYPES come from ./holon.
@@ -86,14 +88,16 @@ export function stateAtStep(
   const upTo = step === null ? run.order.length - 1 : step;
   const after = { ...before };
   const changed = new Set<string>();
+  // A write is a `store_write` effect any node put out: a store_write's own, or one coming out of
+  // a holon that writes inside it.
   run.order.slice(0, upTo + 1).forEach((id) => {
-    const n = nodes.find((x) => x.id === id);
-    if (!n || n.data.name !== "store_write" || n.data.body.kind !== "Primitive") return;
-    const out = run.traces.get(id)?.outputs[0];
-    if (out?.type !== "Effect") return;
-    const key = out.value.sink.slice(out.value.sink.indexOf(":") + 1);
-    after[key] = out.value.payload;
-    if (JSON.stringify(before[key] ?? null) !== JSON.stringify(out.value.payload)) changed.add(key);
+    if (!nodes.some((x) => x.id === id)) return;
+    for (const out of run.traces.get(id)?.outputs ?? []) {
+      if (out?.type !== "Effect" || !out.value.sink.startsWith("store_write:")) continue;
+      const key = out.value.sink.slice(out.value.sink.indexOf(":") + 1);
+      after[key] = out.value.payload;
+      if (JSON.stringify(before[key] ?? null) !== JSON.stringify(out.value.payload)) changed.add(key);
+    }
   });
   return { after, changed: [...changed].sort() };
 }
@@ -169,10 +173,11 @@ export function collectionsAtStep(
     }
   }
   const upTo = step === null ? (run?.order.length ?? 0) - 1 : step;
-  for (const id of run?.order.slice(0, upTo + 1) ?? []) {
-    const n = nodes.find((x) => x.id === id);
-    if (!n || n.data.body.kind !== "Primitive" || !n.data.name.startsWith("collection_")) continue;
-    const out = run!.traces.get(id)?.outputs[0];
+  // Puts and deletes are the effects any node put out: a collection node's own, or a holon's.
+  const effects = (run?.order.slice(0, upTo + 1) ?? [])
+    .filter((id) => nodes.some((x) => x.id === id))
+    .flatMap((id) => run!.traces.get(id)?.outputs ?? []);
+  for (const out of effects) {
     if (out?.type !== "Effect") continue;
     const [sink, name] = [out.value.sink.split(":")[0], out.value.sink.slice(out.value.sink.indexOf(":") + 1)];
     if (sink === "collection_put") {
@@ -346,6 +351,9 @@ export function replay(
   produced: Map<string, (WValue | null)[]> = new Map(),
   /** The order the run evaluated its nodes in (`executionOrder`), followed where it applies. */
   executed: string[] = [],
+  /** Whether a node reads from outside within itself (a holon holding a clock, a secret, state,
+   *  a request…): shown with what the run recorded it produced, as it can't be recomputed. */
+  readsOutside: (node: ReplayNode) => boolean = () => false,
 ): Replay {
   const ids = new Set(runGroup(nodes, edges, entry));
   const group = nodes.filter((n) => ids.has(n.id));
@@ -422,8 +430,9 @@ export function replay(
       outputs = evaluate(node, fed);
       traces.set(id, { inputs: fed, outputs });
       continue;
-    } else if (inputs.some(hasPlaceholder)) {
-      // Fed a secret or token the log doesn't hold: what the run recorded, if it did.
+    } else if (inputs.some(hasPlaceholder) || readsOutside(node)) {
+      // Fed a secret or token the log doesn't hold, or reading from outside within itself: what
+      // the run recorded, if it did.
       const recorded = produced.get(id);
       if (recorded) {
         traces.set(id, { inputs, outputs: recorded, recorded: true });

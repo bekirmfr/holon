@@ -202,6 +202,13 @@ export function summarizeState(state: Record<string, WValue> | null): string {
   };
   return keys.map((k) => `${k}: ${one(state[k])}`).join(", ");
 }
+/** Whether a unit with these capabilities (by consent name) reads from outside the run's inputs:
+ *  the clock, randomness, a secret, state, a collection, the network, a waiting point. Such a
+ *  unit can't be recomputed offline from its inputs alone. Effects it only performs don't count. */
+export function readsFromOutside(capabilities: string[]): boolean {
+  return capabilities.some((c) => /^(Clock|Random|NetworkIngress|SecretRead|StateRead|CollectionRead|HttpRequest|Await)\b/.test(c));
+}
+
 /** What starts a flow's runs (permissions.rs's `Manifest::trigger`): `NetworkIngress` for a flow
  *  with routes, else `Clock`. Never optional. */
 export function manifestTrigger(capabilities: string[]): string | null {

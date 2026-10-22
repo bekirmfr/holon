@@ -200,6 +200,31 @@ describe("secrets in a replay", () => {
     expect(guessed.get("v")).toMatchObject({ placeholder: true });
   });
 
+  it("count the writes a holon puts out as the run's own", () => {
+    const effect = (sink: string, payload: WValue): WValue => ({ type: "Effect", value: { sink, payload } }) as WValue;
+    const nodes = [n("h", "remember", [], ["saved", "put"], [], "Composite")];
+    const ran = [effect("store_write:last", { type: "Text", value: "hi" }), effect("collection_put:seen", { type: "Record", value: [["key", { type: "Text", value: "hi" }], ["value", num(3)]] })];
+    const run = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode, new Map(), new Map([["h", ran]]), [], () => true);
+    expect(stateAtStep({}, run, nodes, null)).toEqual({ after: { last: { type: "Text", value: "hi" } }, changed: ["last"] });
+    const [seen] = collectionsAtStep({ state_before: {} }, run, nodes, null);
+    expect(seen.items).toEqual([{ key: "hi", after: num(3), read: false }]);
+  });
+
+  it("replay a holon that reads from outside from what the run recorded", () => {
+    // A placed composite holding a clock and a secret: recomputed offline it would produce nothing.
+    const nodes = [n("h", "remember", ["text"], ["sig"], [], "Composite"), n("c", "count", ["l"], ["out"])];
+    const edges = [wire("h", "sig", "c", "l")];
+    const entry = { kind: "tick", route: null, request: null, sourced: [], state_before: {} };
+    const ran = list(num(7));
+    const outside = (node: ReplayNode) => node.id === "h";
+    const { traces } = replay(nodes, edges, entry, evalNode, new Map(), new Map([["h", [ran]]]), [], outside);
+    expect(traces.get("h")).toMatchObject({ outputs: [ran], recorded: true });
+    expect(traces.get("c")?.outputs).toEqual([num(1)]);
+    // A holon that only computes is recomputed as before.
+    const pure = replay(nodes, edges, entry, evalNode, new Map(), new Map([["h", [ran]]])).traces;
+    expect(pure.get("h")?.recorded).toBeUndefined();
+  });
+
   it("find the run's recorded outputs by canvas node, from its final round", () => {
     const trace = { "*": ["a", "b"] };
     const timeline = [

@@ -761,7 +761,8 @@ function CollectionBox({ slug, c }: { slug: string; c: CollectionAtStep }) {
         {changedItems > 0 ? ` · ${changedItems} item${changedItems === 1 ? "" : "s"} changed` : ""}
       </div>
       {c.items.map((i) => {
-        const before = i.before !== undefined ? i.before : fetched[i.key];
+        // An empty collection before the run (no root) had nothing: no need to ask.
+        const before = i.before !== undefined ? i.before : c.root ? fetched[i.key] : null;
         const moved = itemChanged(i);
         const was = before === undefined ? "…" : before === null ? "(none)" : show(before);
         return (
