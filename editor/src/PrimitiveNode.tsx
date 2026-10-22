@@ -20,6 +20,7 @@ const PARAM_CHOICES: Record<string, Record<string, readonly string[]>> = {
 };
 import { templateInterface, type TemplateName } from "./templates";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
+import { InfoIcon, useNodeDocs } from "./NodeDocs";
 
 /** What a placed primitive node carries. Mirrors the catalog interface; `position`/`id` (view-only) live on the React Flow node, not here.
  *  `variadic`/`minInputs` are P4.1's variadic-arity editing: whether this leaf's port count may
@@ -216,6 +217,7 @@ const portButtonStyle: CSSProperties = {
 
 function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
   const { name, inputs, outputs, params, variadic, minInputs, error, body, hiddenInputs, readOnly, trace } = data;
+  const describe = useNodeDocs();
   const shown = trace && (trace.state === "active" || trace.state === "done") && trace.showValues !== false;
   const [pinned, setPinned] = useState<string[]>([]);
   const togglePin = (port: string) => setPinned((p) => (p.includes(port) ? p.filter((x) => x !== port) : [...p, port]));
@@ -315,7 +317,10 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
         ...(trace?.state === "outside" ? { opacity: 0.3 } : {}),
       }}
     >
-      <div className="hl-node__title">{name}</div>
+      <div className="hl-node__title">
+        <span>{name}</span>
+        <InfoIcon text={describe(data)} />
+      </div>
       {trace?.issue && (
         <div
           data-overlay

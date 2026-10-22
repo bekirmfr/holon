@@ -13,6 +13,7 @@ import init, {
   Evaluator,
   build_preimage,
   primitive_catalog,
+  primitive_docs,
   variadic_primitives,
   compatible as wasm_compatible,
 } from "../wasm/holon_wasm.js";
@@ -203,6 +204,16 @@ export function buildPreimage(unit: WUnit): Uint8Array {
  */
 export function primitiveCatalog(): WUnit[] {
   return primitive_catalog() as WUnit[];
+}
+
+/**
+ * What each genesis primitive does, by name, straight from core (`describe`): the text the editor
+ * shows on a node and in the palette, never a TS copy. Call after {@link ensureReady}.
+ */
+export function primitiveDocs(): Map<string, string> {
+  // The bridge hands a Rust map over as a JS Map.
+  const docs = primitive_docs() as Map<string, string> | Record<string, string>;
+  return docs instanceof Map ? new Map(docs) : new Map(Object.entries(docs));
 }
 
 /**

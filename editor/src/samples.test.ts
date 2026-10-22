@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { initSync, Evaluator, primitive_catalog, variadic_primitives } from "../wasm/holon_wasm.js";
+import { initSync, Evaluator, primitive_catalog, primitive_docs, variadic_primitives } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit, type WValue } from "./holon";
 import { fromHex } from "./flowDoc";
 import { deriveServer, flowAsNode, flowUnitHash } from "./canvasOps";
@@ -15,6 +15,8 @@ import { capabilityAcknowledgeName, manifestItems, manifestTrigger, permissionKi
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { SAMPLES, buildSample } from "./samples";
+import { TEMPLATES, TEMPLATE_DOCS } from "./templates";
+import { nodeDescriber } from "./NodeDocs";
 
 let catalog: Map<string, WUnit>;
 let variadic: Set<string>;
@@ -171,6 +173,20 @@ describe("sample flows", () => {
     expect(refused.ok ? "" : refused.message).toContain("has routes");
     const empty = flowAsNode("e", { nodes: [], edges: [] }, new Evaluator(), catalog, "x", { x: 0, y: 0 });
     expect(empty.ok ? "" : empty.message).toContain("empty");
+  });
+
+  it("say what every node does: core's primitives, the templates, a holon from what it is", () => {
+    const raw = primitive_docs() as Map<string, string>;
+    const docs = raw instanceof Map ? raw : new Map(Object.entries(raw as Record<string, string>));
+    for (const name of catalog.keys()) expect(docs.get(name), name).toBeTruthy();
+    for (const t of TEMPLATES) expect(TEMPLATE_DOCS[t].length, t).toBeGreaterThan(40);
+    const describe = nodeDescriber(docs, () => 5);
+    const port = (name: string) => ({ name, ty: "Text" as const });
+    expect(describe({ name: "split", body: { kind: "Primitive" }, inputs: [], outputs: [] })).toBe(docs.get("split"));
+    expect(describe({ name: "respond", body: { kind: "Template" }, inputs: [], outputs: [] })).toBe(TEMPLATE_DOCS.respond);
+    const holon = describe({ name: "slugify", body: { kind: "Composite", hash: "h" }, inputs: [port("text")], outputs: [port("slug")] });
+    expect(holon).toContain("of 5 nodes");
+    expect(holon).toContain("Takes text; gives slug");
   });
 
   it("ask for what each one shows", () => {

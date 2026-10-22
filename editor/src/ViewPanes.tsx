@@ -11,6 +11,7 @@ import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
 import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, type Issue, type NodeExchange, type NodeTrace } from "./replay";
 import { FAIL } from "./PrimitiveNode";
+import { useNodeDocs } from "./NodeDocs";
 
 const KEEP = 500;
 const POLL_MS = 1500;
@@ -827,12 +828,15 @@ function ComponentTab({
   trace: NodeTrace | undefined;
   timing: { start_us: number; end_us: number } | undefined;
 }) {
+  const describe = useNodeDocs();
   if (!node) return <div>click a node on the canvas, or step through the run</div>;
   const { data } = node;
+  const doc = describe(data as Parameters<typeof describe>[0]);
   const kind = data.body.kind === "Template" ? "template" : data.body.kind === "Composite" ? "composite" : "primitive";
   return (
     <>
       <div style={{ color: ink, fontSize: 12 }}>{nodeLabel(node)}</div>
+      {doc && <div style={{ color: "#9fb4d4", whiteSpace: "normal", lineHeight: 1.45 }}>{doc}</div>}
       <div style={{ color: dim }}>
         {kind}
         {timing ? ` · ran ${us(timing.start_us)} → ${us(timing.end_us)} (${us(timing.end_us - timing.start_us)})` : ""}
@@ -845,7 +849,7 @@ function ComponentTab({
         </div>
       )}
       {trace?.recorded && (
-        <div style={{ color: dim }}>outputs as the run recorded them: an input is a secret or token, which replay never has</div>
+        <div style={{ color: dim }}>outputs as the run recorded them: an input is a secret or token, or it reads from outside within itself, which replay never has</div>
       )}
       {trace?.placeholder && (
         <div style={{ color: "#e0c36f" }}>

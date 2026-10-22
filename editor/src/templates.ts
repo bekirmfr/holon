@@ -35,6 +35,16 @@ export function isTemplate(name: string): name is TemplateName {
   return (TEMPLATES as readonly string[]).includes(name);
 }
 
+/** What each template does, for the person placing it (core describes the primitives). */
+export const TEMPLATE_DOCS: Record<TemplateName, string> = {
+  request:
+    "A route: answers requests with the method and path set on the node (path params like :id). Gives the whole request, and its params, query, headers, raw body, and body parsed as JSON. With a respond it wires to, one route of the flow's server.",
+  respond:
+    "Answers the route's request: body as the response, with the status set on the node (a record or list is sent as JSON). When body didn't arrive, it answers the missing status instead (404 unless set) with an error.",
+  stripe_verify:
+    "Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time, the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it.",
+};
+
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
 const param = (params: WParam[], name: string) => {
   const p = params.find((x) => x.name === name);

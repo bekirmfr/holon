@@ -6,6 +6,8 @@
 
 import type { WUnit } from "./holon";
 import { outputColor } from "./theme";
+import { InfoIcon } from "./NodeDocs";
+import { TEMPLATE_DOCS, type TemplateName } from "./templates";
 
 /** The MIME key the palette writes and the canvas reads on a drag-and-drop. */
 export const DND_MIME = "application/holon-primitive";
@@ -17,7 +19,18 @@ function nameOf(u: WUnit): string {
   return u.body.kind === "Primitive" ? u.body.name : "?";
 }
 
-export function Palette({ catalog, templates, flows }: { catalog: WUnit[]; templates: readonly string[]; flows: string[] }) {
+export function Palette({
+  catalog,
+  templates,
+  flows,
+  docs,
+}: {
+  catalog: WUnit[];
+  templates: readonly string[];
+  flows: string[];
+  /** What each primitive does, from core. */
+  docs: Map<string, string>;
+}) {
   return (
     <aside className="hl-palette">
       <div className="hl-palette__head" title="saved flows, each placed as one node: the flow as saved now">
@@ -38,6 +51,7 @@ export function Palette({ catalog, templates, flows }: { catalog: WUnit[]; templ
           >
             <span className="hl-palette__swatch" style={{ background: "transparent", border: "1px solid #6fd3e0" }} aria-hidden />
             <span className="hl-palette__name">{name}</span>
+            <InfoIcon text={`A saved flow, placed as one node (a holon): the flow as saved now. Its unwired inputs and outputs become the node's ports.`} />
           </div>
         ))}
       </div>
@@ -56,6 +70,7 @@ export function Palette({ catalog, templates, flows }: { catalog: WUnit[]; templ
           >
             <span className="hl-palette__swatch" style={{ background: outputColor("Record") }} aria-hidden />
             <span className="hl-palette__name">{name}</span>
+            <InfoIcon text={TEMPLATE_DOCS[name as TemplateName] ?? null} />
           </div>
         ))}
       </div>
@@ -79,6 +94,7 @@ export function Palette({ catalog, templates, flows }: { catalog: WUnit[]; templ
                 aria-hidden
               />
               <span className="hl-palette__name">{name}</span>
+              <InfoIcon text={docs.get(name) ?? null} />
             </div>
           );
         })}

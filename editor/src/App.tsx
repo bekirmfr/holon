@@ -25,6 +25,7 @@ import "@xyflow/react/dist/style.css";
 import {
   ensureReady,
   primitiveCatalog,
+  primitiveDocs,
   variadicPrimitives,
   compatible,
   buildPreimage,
@@ -90,6 +91,7 @@ import { newHistory, snapshotOf, useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { SAMPLES, buildSample, type Sample } from "./samples";
 import { blankTab, nextAfterClose, tabKind, type Mode, type TabState } from "./tabs";
+import { NodeDocs, nodeDescriber } from "./NodeDocs";
 
 // What a save records, for unsaved-change tracking: the canvas plus the server draft.
 const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) =>
@@ -106,12 +108,14 @@ function Canvas({
   page,
   setPage,
   pendingNew,
+  docs,
 }: {
   catalog: WUnit[];
   variadic: Set<string>;
   page: AppPage;
   setPage: (p: AppPage) => void;
   pendingNew: { name: string; nonce: number } | null;
+  docs: Map<string, string>;
 }) {
   const dialog = useDialog();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
@@ -446,6 +450,21 @@ function Canvas({
       return true;
     },
     [tabOf, switchTab, activeId, captureTab, dialog, showTab, tabFromDocument],
+  );
+
+  // What a node does (NodeDocs.tsx): core's text for a primitive, the template's, or a holon's
+  // said from what it is, with how many nodes it holds.
+  const describeNode = useMemo(
+    () =>
+      nodeDescriber(docs, (hash) => {
+        try {
+          const u = ev.get_unit(hash) as WUnit;
+          return u.body.kind === "Composite" ? u.body.children.length : null;
+        } catch {
+          return null;
+        }
+      }),
+    [docs, ev],
   );
 
   const byName = useMemo(() => {
@@ -1173,11 +1192,11 @@ function Canvas({
   });
 
   return (
-    <>
+    <NodeDocs.Provider value={describeNode}>
     {/* Edit mode places nodes from the palette; view mode is read only, so it has none. */}
     {!viewing && page === "canvas" && (
       // A flow isn't offered inside itself.
-      <Palette catalog={catalog} templates={TEMPLATES} flows={savedFlows.filter((f) => f !== flowName)} />
+      <Palette catalog={catalog} templates={TEMPLATES} flows={savedFlows.filter((f) => f !== flowName)} docs={docs} />
     )}
     <div className="hl-main">
     <FlowTabs tabs={tabList} active={activeId} onSelect={switchTab} onClose={closeTab} />
@@ -1360,13 +1379,15 @@ function Canvas({
       )}
     </div>
     </div>
-    </>
+    </NodeDocs.Provider>
   );
 }
 
 function Editor() {
   const dialog = useDialog();
   const [catalog, setCatalog] = useState<WUnit[] | null>(null);
+  // What each primitive does, from core: on each node, the palette and the component tab.
+  const [docs, setDocs] = useState<Map<string, string>>(new Map());
   const [variadic, setVariadic] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>("");
   const [page, setPage] = useState<AppPage>("canvas");
@@ -1377,6 +1398,7 @@ function Editor() {
   useEffect(() => {
     (async () => {
       await ensureReady();
+      setDocs(primitiveDocs());
       setCatalog(primitiveCatalog());
       setVariadic(variadicPrimitives());
     })().catch((e: unknown) => setError(String(e)));
@@ -1442,6 +1464,7 @@ function Editor() {
                 page={page}
                 setPage={setPage}
                 pendingNew={pendingNew}
+                docs={docs}
               />
             )}
           </ReactFlowProvider>
