@@ -74,6 +74,8 @@ pub(crate) struct FiredRun {
     pub(crate) error: Option<String>,
     /// The run's id (hex): its deployment and the Merkle root of what it started from.
     pub(crate) run_id: String,
+    /// The deployment version it ran on: the deployment's unit then (hex).
+    pub(crate) unit: String,
     /// The host nonce (hex) in that input, so the id can be recomputed from the log entry.
     pub(crate) nonce: String,
     /// The grant (hash, hex) it was held to.
@@ -272,6 +274,7 @@ fn run_attempt(
         rounds: outcome.rounds,
         error: outcome.error.map(|e| e.message()),
         run_id: to_hex(&run_id),
+        unit: to_hex(&permit.deployment),
         nonce: hex_bytes(nonce),
         grant: permit.grant.clone(),
         waiting: outcome.waiting,
@@ -408,6 +411,7 @@ pub(crate) fn run_entry(
         timeline: run.timeline.clone(),
         rounds: run.rounds.iter().map(recorder::LoggedRound::from_host).collect(),
         run_id: run.run_id.clone(),
+        unit: run.unit.clone(),
         nonce: run.nonce.clone(),
         grant: run.grant.clone(),
         parked: vec![],
@@ -436,6 +440,7 @@ impl FiredRun {
             rounds: vec![],
             error: None,
             run_id: String::new(),
+            unit: String::new(),
             nonce: String::new(),
             grant: String::new(),
             waiting: vec![],

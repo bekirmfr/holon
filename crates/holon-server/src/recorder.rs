@@ -59,6 +59,11 @@ pub struct LogEntry {
     /// The run's id (hex; §4.4), recomputable from this entry with `nonce`. Empty for a request
     /// that matched no route (no run).
     pub run_id: String,
+    /// The deployment version it ran on (the deployment's unit then, hex; for a resumed part, the
+    /// version its run started on). View mode shows that version's canvas
+    /// (`GET …/document?unit=`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
     pub nonce: String,
     /// The grant (hash, hex) the run was held to.
     pub grant: String,
@@ -248,6 +253,7 @@ mod tests {
 
     fn entry() -> LogEntry {
         LogEntry {
+            unit: String::new(),
             seq: 0,
             session: 1,
             at_ms: 0,

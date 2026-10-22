@@ -1304,6 +1304,12 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     assert_eq!(runs().len(), 1, "waiting runs are kept across a redeploy");
     assert_eq!(call("GET", &format!("/paid/{token2}")).0, 200);
     assert_eq!(written(), Some(Value::Text("GET".into())), "v1's behaviour, not v2's");
+    // And it is logged as v1's, whose canvas shows it, while v2's own runs are v2's.
+    let entries = body_json(route(&state, &req("GET", "/deployments/shop/log", vec![])))["entries"].as_array().unwrap().clone();
+    assert_eq!(entries.last().unwrap()["kind"], "resume");
+    assert_eq!(entries.last().unwrap()["unit"], to_hex(&v1));
+    let paying = &entries[entries.len() - 2];
+    assert_eq!((paying["kind"].as_str(), paying["unit"].as_str()), (Some("request"), Some(to_hex(&v2).as_str())));
 
     // A run parked before tokens were derived kept the random one it was handed: still accepted.
     call("POST", "/orders");
@@ -2474,6 +2480,7 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     assert_eq!(entries.len(), 3);
     let second = &entries[1];
     assert_eq!((second["kind"].as_str(), second["route"].as_str(), second["status"].as_u64()), (Some("request"), Some("POST /todos"), Some(200)));
+    assert_eq!(second["unit"], to_hex(&api), "the version: the server's unit, not its route's endpoint");
     assert_eq!(second["session"], 1);
     assert_eq!(second["response_body"], r#"{"title":"b"}"#);
     assert_eq!(second["state_before"]["todos"]["value"].as_array().unwrap().len(), 1, "it read the record with one item");
@@ -3018,4 +3025,43 @@ fn oversized_body_is_refused() {
     assert_ne!(r.status_code, 413, "a body exactly at the cap is read (and then fails to parse)");
     let over = vec![b' '; MAX_BODY_BYTES as usize + 1];
     assert_eq!(route(&state, &req("POST", "/flows", over)).status_code, 413);
+}
+
+/// A run is logged with the unit it ran, and a redeploy keeps the canvas of the version it
+/// replaces: a run logged on an earlier version is shown on its own canvas, not the newest.
+#[test]
+fn each_run_names_its_version_and_each_version_keeps_its_canvas() {
+    let state = test_state();
+    let v1 = stage_stateful_writer(&state, test_ingress(), "a");
+    let v2 = stage_stateful_writer(&state, test_ingress(), "b");
+    let deploy = |unit: Hash, key: &str, rev: u32| {
+        let ack = serde_json::json!(["NetworkIngress", format!("StateWrite(\"{key}\")")]);
+        deploy_json(&state, "v", unit, serde_json::json!({ "acknowledge": ack, "document": { "rev": rev } })).status_code
+    };
+    let fire = || route(&state, &req("POST", "/trigger/v", b"hello".to_vec())).status_code;
+    assert_eq!(deploy(v1, "a", 1), 200);
+    assert_eq!(fire(), 200);
+    assert_eq!(deploy(v2, "b", 2), 200);
+    assert_eq!(fire(), 200);
+
+    let log = body_json(route(&state, &req("GET", "/deployments/v/log", vec![])));
+    let units: Vec<&str> = log["entries"].as_array().unwrap().iter().map(|e| e["unit"].as_str().unwrap()).collect();
+    assert_eq!(units, [to_hex(&v1), to_hex(&v2)], "each run names the version it ran");
+
+    let doc = |query: &str| route(&state, &req("GET", &format!("/deployments/v/document{query}"), vec![]));
+    assert_eq!(body_json(doc(""))["rev"], 2);
+    assert_eq!(body_json(doc(&format!("?unit={}", to_hex(&v1))))["rev"], 1, "the earlier version's canvas");
+    assert_eq!(body_json(doc(&format!("?unit={}", to_hex(&v2))))["rev"], 2);
+    let gone = doc("?unit=00ff");
+    assert_eq!(gone.status_code, 404);
+    assert!(String::from_utf8(body_bytes(gone)).unwrap().contains("no longer keeps"));
+
+    // Kept: the last KEPT_VERSIONS, newest last, a version deployed again not kept twice.
+    let mut versions = Vec::new();
+    for n in 0..12 {
+        crate::deploy::keep_version(&mut versions, format!("u{n}"), serde_json::json!(n));
+    }
+    crate::deploy::keep_version(&mut versions, "u5".into(), serde_json::json!("again"));
+    let kept: Vec<&str> = versions.iter().map(|v| v.unit.as_str()).collect();
+    assert_eq!(kept, ["u2", "u3", "u4", "u6", "u7", "u8", "u9", "u10", "u11", "u5"]);
 }

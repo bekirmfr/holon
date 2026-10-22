@@ -162,10 +162,16 @@ pub(crate) fn handle_post_deploy(
             }
             None => Lifecycle::deployed(now_secs),
         };
-        let (log, old_document) = match deployments.get_mut(&body.slug) {
-            Some(old) => (std::mem::take(&mut old.log), old.document.take()),
-            None => (Log::default(), None),
+        let (log, old_document, mut versions, old_unit) = match deployments.get_mut(&body.slug) {
+            Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions), Some(old.unit)),
+            None => (Log::default(), None, Vec::new(), None),
         };
+        // The version it replaces keeps its canvas, so the runs it logged still show on it.
+        if let (Some(unit), Some(doc)) = (old_unit, &old_document)
+            && unit != unit_hash
+        {
+            keep_version(&mut versions, to_hex(&unit), doc.clone());
+        }
         let document = body.document.clone().or(old_document);
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
         // Runs waiting keep waiting, each on the unit it started on.
@@ -196,6 +202,7 @@ pub(crate) fn handle_post_deploy(
                 life,
                 log,
                 document,
+                versions,
             },
         );
     }
@@ -606,14 +613,34 @@ pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, 
     }
 }
 
-/// `GET /deployments/<slug>/document` — the flow document it was deployed from, for view mode.
-pub(crate) fn handle_get_document(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
-    match deployments.lock().unwrap().get(slug) {
-        Some(dep) => match &dep.document {
-            Some(doc) => Response::json(doc),
-            None => err(404, format!("{slug:?} was deployed without its canvas; deploy it again from the editor")),
-        },
-        None => err(404, format!("no deployment {slug:?}")),
+/// How many earlier versions' documents a deployment keeps.
+pub(crate) const KEPT_VERSIONS: usize = 10;
+
+/// Keep `document` as version `unit`'s, newest last, the last [`KEPT_VERSIONS`] only. A version
+/// deployed again moves to the end rather than being kept twice.
+pub(crate) fn keep_version(versions: &mut Vec<KeptDocument>, unit: String, document: serde_json::Value) {
+    versions.retain(|v| v.unit != unit);
+    versions.push(KeptDocument { unit, document });
+    if versions.len() > KEPT_VERSIONS {
+        versions.drain(..versions.len() - KEPT_VERSIONS);
+    }
+}
+
+/// `GET /deployments/<slug>/document` — the flow document it was deployed from, for view mode;
+/// with `?unit=<hex>`, the document of that version (the current one, or one kept), for a run
+/// logged on it.
+pub(crate) fn handle_get_document(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
+    let deployments = deployments.lock().unwrap();
+    let Some(dep) = deployments.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
+    let wanted = request.get_param("unit").filter(|u| *u != to_hex(&dep.unit));
+    let doc = match &wanted {
+        None => dep.document.as_ref(),
+        Some(unit) => dep.versions.iter().find(|v| &v.unit == unit).map(|v| &v.document),
+    };
+    match (doc, wanted) {
+        (Some(doc), _) => Response::json(doc),
+        (None, None) => err(404, format!("{slug:?} was deployed without its canvas; deploy it again from the editor")),
+        (None, Some(unit)) => err(404, format!("{slug:?} no longer keeps the canvas of version {}", &unit[..unit.len().min(12)])),
     }
 }
 

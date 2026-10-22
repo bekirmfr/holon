@@ -231,6 +231,10 @@ pub(crate) struct ParkedRun {
     pub(crate) events: BTreeMap<String, SValue>,
     pub(crate) waiting: Vec<StoredWaiting>,
     pub(crate) parked_at: u64,
+    /// The deployment version (its unit, hex) the run started on: each part it runs later is
+    /// logged as of that version, whose canvas shows it. Absent for runs parked before.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) version: String,
 }
 
 /// The capability a logged sourced value is for.
@@ -309,6 +313,7 @@ impl ParkedRun {
             events: waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
             waiting: waiting.iter().map(|w| StoredWaiting { name: w.name.clone(), expires_at: now + w.expires }).collect(),
             parked_at: now,
+            version: String::new(),
         })
     }
 
@@ -403,7 +408,7 @@ pub(crate) fn park_if_waiting(
     if run.waiting.is_empty() || run.error.is_some() {
         return Ok(Vec::new());
     }
-    let record = ParkedRun::new(
+    let mut record = ParkedRun::new(
         &run.run_id,
         unit,
         kind,
@@ -418,6 +423,7 @@ pub(crate) fn park_if_waiting(
         epoch_now(),
         store,
     )?;
+    record.version = run.unit.clone();
     let mut record = record;
     let mut table = deployments.lock().unwrap();
     let dep = table.get_mut(slug).ok_or("the deployment is gone")?;
@@ -465,6 +471,9 @@ pub(crate) fn resume_parked(
     let run = fire_with_state(root, &inputs, &resolver, store, state.as_deref(), &sourced, &permit, false, &secrets, &mut waits, Some(resumed));
 
     let mut entry = run_entry("resume", started, &sourced, &run);
+    if !record.version.is_empty() {
+        entry.unit = record.version.clone();
+    }
     entry.route = record.route.clone();
     entry.request = inputs.first().cloned().flatten().map(|r| SValue::from_core(&r));
     entry.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();

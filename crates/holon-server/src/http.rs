@@ -220,7 +220,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/document") {
             if method == "GET" {
-                return handle_get_document(&state.deployments, slug);
+                return handle_get_document(&state.deployments, slug, request);
             }
         } else if let Some((slug, which)) = rest.rsplit_once('/')
             && matches!(which, "manifest" | "grant")

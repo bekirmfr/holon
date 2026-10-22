@@ -367,6 +367,10 @@ struct Deployment {
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
     /// view mode shows exactly what runs even after the flow is edited. Persisted.
     document: Option<serde_json::Value>,
+    /// The documents of the versions deployed before this one, oldest first, by unit (hex):
+    /// a run logged on an earlier version is shown on its own canvas. The last
+    /// [`deploy::KEPT_VERSIONS`] are kept. Persisted.
+    versions: Vec<wire::KeptDocument>,
 }
 
 fn main() {

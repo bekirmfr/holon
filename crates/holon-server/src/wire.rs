@@ -213,6 +213,9 @@ pub(crate) struct DeploymentRecord {
     pub(crate) sessions: Vec<Session>,
     #[serde(default)]
     pub(crate) document: Option<serde_json::Value>,
+    /// The documents of earlier versions, by unit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) versions: Vec<KeptDocument>,
     /// What the host granted it. Absent in files written before grants: such a deployment's
     /// capabilities were acknowledged when it was deployed, and it is granted them at load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -296,4 +299,12 @@ pub(crate) struct DeploymentsBody {
 
 pub(crate) fn to_hex(h: &Hash) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// An earlier version's flow document, kept so its runs show on their own canvas.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct KeptDocument {
+    /// The version's unit (hex), as its log entries name it.
+    pub(crate) unit: String,
+    pub(crate) document: serde_json::Value,
 }

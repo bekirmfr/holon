@@ -46,6 +46,7 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                 status: Some(dep.life.status),
                 sessions: dep.life.sessions.clone(),
                 document: dep.document.clone(),
+                versions: dep.versions.clone(),
                 grant: Some(dep.grant.clone()),
                 parked: dep.parked.values().cloned().collect(),
             };
@@ -219,6 +220,7 @@ pub(crate) fn load_deployments(
                 parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
                 log: Log::default(),
                 document: record.document,
+                versions: record.versions,
                 trigger_count: record.trigger_count,
                 error_count: record.error_count,
                 deployed_at,
