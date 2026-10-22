@@ -134,15 +134,15 @@ export const SAMPLES: Sample[] = [
     name: "notes-api",
     title: "Notes API",
     description: "Create, read, list and delete notes kept in the deployment's state, keyed by id.",
-    shows: ["state (store_read, store_write)", "lookup", "insert", "remove", "JSON bodies", "404 and 204"],
+    shows: ["state (store_read, store_write)", "lookup", "insert", "remove", "JSON bodies", "404 and 204", "tracing a failed run"],
     port: "8102",
     tryIt:
-      'curl -X PUT -H "Content-Type: application/json" -d \'{"text":"buy milk"}\' http://127.0.0.1:8102/notes/1, then GET /notes, GET /notes/1, DELETE /notes/1',
+      'curl -X PUT -H "Content-Type: application/json" -d \'{"text":"buy milk"}\' http://127.0.0.1:8102/notes/1, then GET /notes, GET /notes/1, DELETE /notes/1. GET /notes/9 fails (404): open the run in view mode to see where, and why',
     build(b) {
       // Each route reads the notes on its own: routes are separate groups on the canvas.
       const notes = (x: number, y: number) => {
         const read = b.node("store_read", { key: "notes" }, [x, y]);
-        const all = b.node("default", { value: "{}", type: "Json" }, [x + 180, y]);
+        const all = b.node("default", { value: "{}", type: "Json" }, [x + 240, y]);
         b.wire(read, "out", all, "value");
         return all;
       };
@@ -154,17 +154,17 @@ export const SAMPLES: Sample[] = [
 
       // GET /notes: every note.
       const list = b.node("request", { method: "GET", path: "/notes" }, [40, 40]);
-      const listRes = b.node("respond", { status: "200", missing: "404" }, [760, 40]);
+      const listRes = b.node("respond", { status: "200", missing: "404" }, [860, 40]);
       b.wire(list, "request", listRes, "request");
-      b.wire(notes(400, 120), "out", listRes, "body");
+      b.wire(notes(480, 120), "out", listRes, "body");
 
       // PUT /notes/:id: store the body under the id, answer with it.
       const put = b.node("request", { method: "PUT", path: "/notes/:id" }, [40, 320]);
-      const putId = id(put, 400, 300);
-      const added = b.node("insert", {}, [760, 380]);
-      const save = b.node("store_write", { key: "notes" }, [1000, 380]);
-      const putRes = b.node("respond", { status: "200", missing: "400" }, [1000, 280]);
-      b.wire(notes(400, 420), "out", added, "record");
+      const putId = id(put, 480, 300);
+      const added = b.node("insert", {}, [860, 380]);
+      const save = b.node("store_write", { key: "notes" }, [1120, 380]);
+      const putRes = b.node("respond", { status: "200", missing: "400" }, [1120, 280]);
+      b.wire(notes(480, 420), "out", added, "record");
       b.wire(putId, "out", added, "key");
       b.wire(put, "json", added, "value");
       b.wire(added, "out", save, "value");
@@ -173,20 +173,20 @@ export const SAMPLES: Sample[] = [
 
       // GET /notes/:id: one note, or 404.
       const get = b.node("request", { method: "GET", path: "/notes/:id" }, [40, 620]);
-      const found = b.node("lookup", {}, [760, 660]);
-      const getRes = b.node("respond", { status: "200", missing: "404" }, [1000, 620]);
-      b.wire(notes(400, 700), "out", found, "record");
-      b.wire(id(get, 400, 600), "out", found, "key");
+      const found = b.node("lookup", {}, [860, 660]);
+      const getRes = b.node("respond", { status: "200", missing: "404" }, [1120, 620]);
+      b.wire(notes(480, 700), "out", found, "record");
+      b.wire(id(get, 480, 600), "out", found, "key");
       b.wire(get, "request", getRes, "request");
       b.wire(found, "out", getRes, "body");
 
       // DELETE /notes/:id: drop it, answer 204.
       const del = b.node("request", { method: "DELETE", path: "/notes/:id" }, [40, 920]);
-      const removed = b.node("remove", {}, [760, 960]);
-      const drop = b.node("store_write", { key: "notes" }, [1000, 1000]);
-      const delRes = b.node("respond", { status: "204" }, [1000, 900]);
-      b.wire(notes(400, 1000), "out", removed, "record");
-      b.wire(id(del, 400, 900), "out", removed, "key");
+      const removed = b.node("remove", {}, [860, 960]);
+      const drop = b.node("store_write", { key: "notes" }, [1120, 1000]);
+      const delRes = b.node("respond", { status: "204" }, [1120, 900]);
+      b.wire(notes(480, 1000), "out", removed, "record");
+      b.wire(id(del, 480, 900), "out", removed, "key");
       b.wire(removed, "out", drop, "value");
       b.wire(del, "request", delRes, "request");
     },

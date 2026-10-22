@@ -37,6 +37,8 @@ export type NodeTrace = {
   outputs: (WValue | null)[];
   recorded?: boolean;
   placeholder?: boolean;
+  /** Its part in a failed run, once diagnosed (`diagnose`). */
+  issue?: Issue;
 };
 
 /** Whether `v` carries a secret's or token's placeholder anywhere (the log's redaction). */
@@ -179,6 +181,11 @@ export function nodeTimings(
   return out;
 }
 
+/** The canvas nodes in the order the run evaluated them (its final round's start times). */
+export function executionOrder(timings: Map<string, { start_us: number; end_us: number }>): string[] {
+  return [...timings.entries()].sort(([, a], [, b]) => a.start_us - b.start_us).map(([id]) => id);
+}
+
 /** What each node produced in the run's final round, by canvas node, where the log has it. */
 export function nodeOutputs(
   entry: { kind: string; route: string | null; timeline?: NodeTiming[] },
@@ -227,15 +234,29 @@ export function replay(
   responses: Map<string, WValue> = new Map(),
   /** What each node produced in the run (`nodeOutputs`): used for a node fed a placeholder. */
   produced: Map<string, (WValue | null)[]> = new Map(),
+  /** The order the run evaluated its nodes in (`executionOrder`), followed where it applies. */
+  executed: string[] = [],
 ): Replay {
   const ids = new Set(runGroup(nodes, edges, entry));
   const group = nodes.filter((n) => ids.has(n.id));
   const wires = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
 
-  // Dependency order (Kahn), ties broken by canvas order, so a replay is itself deterministic.
+  // Dependency order (Kahn). Among the nodes ready to run, the one the run itself evaluated first
+  // goes first, then canvas order: so a replay steps through the nodes as the run did (core
+  // evaluates in a dependency order too), and is deterministic without timings.
+  const rank = (id: string) => {
+    const i = executed.indexOf(id);
+    return [i < 0 ? Infinity : i, group.findIndex((n) => n.id === id)];
+  };
+  const before = (a: string, b: string) => {
+    const [ra, ca] = rank(a);
+    const [rb, cb] = rank(b);
+    return ra !== rb ? ra - rb : ca - cb;
+  };
   const indegree = new Map(group.map((n) => [n.id, 0]));
   for (const e of wires) indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
   const ready = group.filter((n) => indegree.get(n.id) === 0).map((n) => n.id);
+  ready.sort(before);
   const order: string[] = [];
   while (ready.length > 0) {
     const id = ready.shift()!;
@@ -245,13 +266,15 @@ export function replay(
       indegree.set(e.target, left);
       if (left === 0) {
         ready.push(e.target);
-        ready.sort((a, b) => group.findIndex((n) => n.id === a) - group.findIndex((n) => n.id === b));
+        ready.sort(before);
       }
     }
   }
 
   const sourced = new Map(entry.sourced);
   const traces = new Map<string, NodeTrace>();
+  // An absent output can cross the wasm boundary as undefined: absent is null here, always.
+  const evaluate = (node: ReplayNode, inputs: (WValue | null)[]) => evalNode(node, inputs).map((o) => o ?? null);
   for (const id of order) {
     const node = group.find((n) => n.id === id)!;
     const inputs = node.data.inputs.map((port) => {
@@ -285,7 +308,7 @@ export function replay(
       outputs = [responses.get(id) ?? null];
     } else if (name === "request" && node.data.body.kind === "Template") {
       const fed = [entry.request];
-      outputs = evalNode(node, fed);
+      outputs = evaluate(node, fed);
       traces.set(id, { inputs: fed, outputs });
       continue;
     } else if (inputs.some(hasPlaceholder)) {
@@ -294,13 +317,167 @@ export function replay(
       if (recorded) {
         traces.set(id, { inputs, outputs: recorded, recorded: true });
       } else {
-        traces.set(id, { inputs, outputs: evalNode(node, inputs), placeholder: true });
+        traces.set(id, { inputs, outputs: evaluate(node, inputs), placeholder: true });
       }
       continue;
     } else {
-      outputs = evalNode(node, inputs);
+      outputs = evaluate(node, inputs);
     }
     traces.set(id, { inputs, outputs });
   }
   return { order, traces };
+}
+
+// ── Why a run failed ──────────────────────────────────────────────────────────────────────────
+// A value that never arrives is how a flow fails: a node gets everything it was wired and still
+// produces nothing (a field the record doesn't have, a signature that doesn't verify), and every
+// node after it is starved of that value, down to the answer (a `respond` falling back to its
+// `missing` status) or the effect that never happens. The diagnosis finds that node, the origin,
+// says why in its own terms, and marks the path the absence took.
+
+/** A wire, as one key: which output feeds which input. */
+export const wireKey = (w: ReplayEdge) => `${w.source}:${w.sourceHandle ?? ""}→${w.target}:${w.targetHandle ?? ""}`;
+
+/** A node's part in a failed run. `origin`: it got all its inputs and produced nothing (or its
+ *  outbound call failed): where the failure starts. `starved`: an input never arrived, so it
+ *  didn't run, or fell back (a `respond`'s `missing` status). */
+export type Issue = { role: "origin" | "starved"; reason: string };
+
+export type Diagnosis = {
+  /** What went wrong, in a line: the answer, or the run's error. */
+  summary: string;
+  /** The origins, in evaluation order. */
+  origins: string[];
+  issues: Map<string, Issue>;
+  /** The wires the failure travelled along (`wireKey`), from each origin downstream. */
+  path: Set<string>;
+};
+
+const keysOf = (v: WValue | null) => (v?.type === "Record" ? v.value.map(([k]) => k) : null);
+const textOf = (v: WValue | null) => (v?.type === "Text" ? v.value : null);
+const fieldOf = (v: WValue | null, key: string) => (v?.type === "Record" ? (v.value.find(([k]) => k === key)?.[1] ?? null) : null);
+const listOf = (keys: string[]) => (keys.length === 0 ? "nothing" : keys.slice(0, 8).join(", ") + (keys.length > 8 ? ", …" : ""));
+
+/** Why `node` produced nothing from the inputs it got, as precisely as its kind allows. */
+function whyNothing(node: ReplayNode, trace: NodeTrace): string {
+  const p = (name: string) => frozen(node.data.params, name);
+  const [a, b] = trace.inputs;
+  switch (node.data.name) {
+    case "field": {
+      const keys = keysOf(a);
+      return keys ? `no field "${p("name")}" (it has ${listOf(keys)})` : "its input isn't a record";
+    }
+    case "lookup": {
+      const keys = keysOf(a);
+      return keys ? `no key "${textOf(b) ?? "?"}" (it has ${listOf(keys)})` : "its input isn't a record";
+    }
+    case "find":
+      return `no item whose "${p("name")}" matches`;
+    case "get":
+      return "no item at that index";
+    case "head":
+    case "tail":
+      return "the list is empty";
+    case "guard":
+      return "its condition was false";
+    case "json_parse":
+      return "its text isn't valid JSON";
+    case "divide":
+      return "division by zero";
+    case "stripe_verify":
+      return trace.outputs[1]?.type === "Boolean"
+        ? "the signature or its timestamp didn't verify"
+        : "no stripe-signature header, or one it can't read";
+    case "respond":
+      return "nothing to answer with";
+    case "request":
+      return "the request's body isn't valid JSON";
+    default:
+      return "it got its inputs but produced nothing (a value of the wrong kind, or one it can't use)";
+  }
+}
+
+/** Why an outbound call's answer counts as a failure, if it does. */
+function whyFailed(response: WValue | null): string | null {
+  const status = fieldOf(response, "status");
+  if (status?.type !== "Number") return null;
+  if (status.value === 0) {
+    const error = textOf(fieldOf(response, "error")) ?? "failed";
+    const message = textOf(fieldOf(response, "message"));
+    return `the request failed: ${error}${message ? ` (${message})` : ""}`;
+  }
+  return status.value >= 400 ? `the other side answered ${status.value}` : null;
+}
+
+/**
+ * Why `entry` failed, traced over its replay: `null` when it didn't (no error, a status under
+ * 400). Every node that got all its wired inputs and still left a wired output empty, or whose
+ * outbound call failed, is an origin; every node missing a wired input is starved; the path runs
+ * from each origin along the wires that carried nothing (and the origin's own wires out).
+ */
+export function diagnose(
+  nodes: ReplayNode[],
+  edges: ReplayEdge[],
+  entry: { status: number | null; error: string | null },
+  run: Replay,
+): Diagnosis | null {
+  const failed = entry.error !== null || (entry.status !== null && entry.status >= 400);
+  if (!failed) return null;
+  const inRun = new Set(run.order);
+  const wires = edges.filter((w) => inRun.has(w.source) && inRun.has(w.target));
+  const node = (id: string) => nodes.find((n) => n.id === id)!;
+  const carried = (w: ReplayEdge) => {
+    const from = node(w.source);
+    const at = from.data.outputs.findIndex((p) => p.name === w.sourceHandle);
+    return run.traces.get(w.source)?.outputs[at] ?? null;
+  };
+
+  const issues = new Map<string, Issue>();
+  const origins: string[] = [];
+  for (const id of run.order) {
+    const n = node(id);
+    const trace = run.traces.get(id);
+    if (!trace) continue;
+    const fedBy = wires.filter((w) => w.target === id);
+    const missing = fedBy.filter((w) => carried(w) === null);
+    if (missing.length > 0) {
+      const from = missing.map((w) => `${w.targetHandle} (from ${node(w.source).data.name})`).join(", ");
+      const fellBack = trace.outputs.some((o) => o !== null);
+      issues.set(id, { role: "starved", reason: `${fellBack ? "fell back: " : "didn't run: "}${from} never arrived` });
+      continue;
+    }
+    if (n.data.name === "http_request" && n.data.body.kind === "Primitive") {
+      const why = whyFailed(trace.outputs[0] ?? null);
+      if (why) {
+        issues.set(id, { role: "origin", reason: why });
+        origins.push(id);
+        continue;
+      }
+    }
+    const feeds = wires.filter((w) => w.source === id);
+    if (feeds.some((w) => carried(w) === null)) {
+      issues.set(id, { role: "origin", reason: whyNothing(n, trace) });
+      origins.push(id);
+    }
+  }
+
+  // The path: from each origin, its own wires out, then every wire that carried nothing.
+  const path = new Set<string>();
+  const reached = new Set(origins);
+  const queue = [...origins];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const w of wires.filter((x) => x.source === id)) {
+      if (!origins.includes(id) && carried(w) !== null) continue;
+      path.add(wireKey(w));
+      if (!reached.has(w.target)) {
+        reached.add(w.target);
+        queue.push(w.target);
+      }
+    }
+  }
+  // Starved nodes the absence never reached from an origin (fed by an unwired, absent input) keep
+  // their mark but stay off the path.
+  const summary = entry.error ? `the run failed: ${entry.error}` : `answered ${entry.status}`;
+  return { summary, origins, issues, path };
 }

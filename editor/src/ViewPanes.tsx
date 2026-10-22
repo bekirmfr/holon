@@ -9,7 +9,8 @@ import { getLog, type LogEntry } from "./server";
 import { formatValue } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
-import type { NodeExchange, NodeTrace } from "./replay";
+import type { Diagnosis, Issue, NodeExchange, NodeTrace } from "./replay";
+import { FAIL } from "./PrimitiveNode";
 
 const KEEP = 500;
 const POLL_MS = 1500;
@@ -183,6 +184,8 @@ export function BottomPane({
   exchanges,
   verdict,
   onPickNode,
+  diagnosis,
+  onShowNode,
 }: {
   slug: string;
   selected: LogEntry | null;
@@ -200,6 +203,10 @@ export function BottomPane({
   /** Whether replaying the selected run reproduced what was recorded; null when not checkable. */
   verdict: boolean | null;
   onPickNode: (id: string) => void;
+  /** Why the selected run failed, when it did (replay.ts's diagnose). */
+  diagnosis: Diagnosis | null;
+  /** Bring a node into view and inspect it. */
+  onShowNode: (id: string) => void;
 }) {
   const { entries, error } = useFlowLog(slug);
   const [tab, setTab] = useState<"log" | "timeline">("log");
@@ -248,6 +255,7 @@ export function BottomPane({
         </div>
       </Tabs>
       {error && <div style={{ color: bad, padding: "4px 8px" }}>{error}</div>}
+      {diagnosis && <FailureBanner diagnosis={diagnosis} nodes={nodes} onShowNode={onShowNode} />}
       {tab === "log" ? (
         <LogTab entries={entries} selected={selected} pick={pick} />
       ) : (
@@ -260,8 +268,44 @@ export function BottomPane({
           step={step}
           onStep={onStep}
           onPickNode={onPickNode}
+          issues={diagnosis?.issues ?? new Map()}
         />
       )}
+    </div>
+  );
+}
+
+/** What went wrong in the selected run, and where it started, with a way there. */
+function FailureBanner({ diagnosis, nodes, onShowNode }: { diagnosis: Diagnosis; nodes: ViewNode[]; onShowNode: (id: string) => void }) {
+  const label = (id: string) => {
+    const n = nodes.find((x) => x.id === id);
+    return n ? nodeLabel(n) : id;
+  };
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+        margin: "2px 0 4px",
+        padding: "4px 8px",
+        borderLeft: `3px solid ${FAIL}`,
+        background: `${FAIL}14`,
+        color: ink,
+      }}
+    >
+      <span style={{ color: FAIL }}>✗ {diagnosis.summary}</span>
+      {diagnosis.origins.length === 0 && <span style={{ color: dim }}>no node on the canvas stopped the run</span>}
+      {diagnosis.origins.map((id) => (
+        <span key={id} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+          <span>
+            failed at <b>{label(id)}</b>: {diagnosis.issues.get(id)?.reason}
+          </span>
+          <button style={{ ...small, color: FAIL, borderColor: FAIL }} onClick={() => onShowNode(id)} title="show it on the canvas">
+            show
+          </button>
+        </span>
+      ))}
     </div>
   );
 }
@@ -375,8 +419,10 @@ function TimelineTab({
   step,
   onStep,
   onPickNode,
+  issues,
 }: {
   run: LogEntry | null;
+  /** The nodes in the order the run evaluated them: the steps. */
   order: string[];
   nodes: ViewNode[];
   timings: Map<string, { start_us: number; end_us: number }>;
@@ -384,7 +430,10 @@ function TimelineTab({
   step: number | null;
   onStep: (s: number | null) => void;
   onPickNode: (id: string) => void;
+  /** Each node's part in a failed run. */
+  issues: Map<string, Issue>;
 }) {
+  const [sort, setSort] = useState<"executed" | "slowest">("executed");
   if (!run) return <div style={scroll}>select a run</div>;
   if (order.length === 0) return <div style={scroll}>this run touched no node on the canvas</div>;
   const timed = timings.size > 0;
@@ -393,8 +442,32 @@ function TimelineTab({
     ? Math.max(...[...timings.values()].map((t) => t.end_us), ...exchanges.map((x) => x.end_us), 1)
     : order.length;
   const ticks = timed ? [0, span / 2, span] : [];
+  // Rows keep their step number (their place in the run) however they are listed.
+  const took = (id: string) => {
+    const t = timings.get(id);
+    return t ? t.end_us - t.start_us : -1;
+  };
+  const rows = order.map((id, i) => ({ id, i }));
+  if (sort === "slowest") rows.sort((a, b) => took(b.id) - took(a.id));
   return (
     <div style={scroll}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", color: dim, marginBottom: 4 }}>
+        list
+        {(
+          [
+            ["executed", "in the order they ran"],
+            ["slowest", "slowest first"],
+          ] as const
+        ).map(([key, text]) => (
+          <button
+            key={key}
+            style={{ ...small, color: sort === key ? "#0e1a2f" : "#9fb4d4", background: sort === key ? "#6fd3e0" : "transparent" }}
+            onClick={() => setSort(key)}
+          >
+            {text}
+          </button>
+        ))}
+      </div>
       <div style={{ display: "flex", gap: 8, color: dim, marginBottom: 4 }}>
         <span style={{ width: 22 }} />
         <span style={{ width: 170 }}>node</span>
@@ -418,8 +491,9 @@ function TimelineTab({
         </div>
         <span style={{ width: 60, textAlign: "right" }}>took</span>
       </div>
-      {order.map((id, i) => {
+      {rows.map(({ id, i }) => {
         const n = nodes.find((x) => x.id === id);
+        const issue = issues.get(id);
         const t = timings.get(id);
         const [from, to] = t ? [t.start_us, t.end_us] : timed ? [0, 0] : [i, i + 1];
         const active = step === i;
@@ -442,19 +516,22 @@ function TimelineTab({
               borderRadius: 3,
             }}
           >
-            <span style={{ width: 22, textAlign: "right", color: dim }}>{i + 1}</span>
+            <span style={{ width: 22, textAlign: "right", color: issue?.role === "origin" ? FAIL : dim }}>
+              {issue?.role === "origin" ? "✗" : i + 1}
+            </span>
             <span
               style={{
                 width: 170,
-                color: done || active ? ink : dim,
+                color: issue?.role === "origin" ? FAIL : issue ? "#d9a596" : done || active ? ink : dim,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
               }}
-              title={n ? nodeLabel(n) : id}
+              title={(n ? nodeLabel(n) : id) + (issue ? ` · ${issue.reason}` : "")}
             >
               {n ? nodeLabel(n) : id}
               {writes && <span style={{ color: "#e0c36f" }}> ✎</span>}
+              {issue?.role === "starved" && <span> · didn't get its input</span>}
             </span>
             <div style={{ flex: 1, position: "relative", height: 10, background: "#0e1a2f", borderRadius: 2 }}>
               {(t || !timed) && (
@@ -466,7 +543,15 @@ function TimelineTab({
                     top: 0,
                     bottom: 0,
                     borderRadius: 2,
-                    background: active ? "#6fd3e0" : writes ? "#e0c36f" : done ? "#3f7fa8" : "#24384f",
+                    background: issue?.role === "origin"
+                      ? FAIL
+                      : active
+                        ? "#6fd3e0"
+                        : writes
+                          ? "#e0c36f"
+                          : done
+                            ? "#3f7fa8"
+                            : "#24384f",
                   }}
                 />
               )}
@@ -633,6 +718,12 @@ function ComponentTab({
         {timing ? ` · ran ${us(timing.start_us)} → ${us(timing.end_us)} (${us(timing.end_us - timing.start_us)})` : ""}
         {!trace ? " · not part of this run" : ""}
       </div>
+      {trace?.issue && (
+        <div style={{ color: trace.issue.role === "origin" ? FAIL : "#d9a596" }}>
+          {trace.issue.role === "origin" ? "✗ failed here: " : "↯ "}
+          {trace.issue.reason}
+        </div>
+      )}
       {trace?.recorded && (
         <div style={{ color: dim }}>outputs as the run recorded them: an input is a secret or token, which replay never has</div>
       )}

@@ -46,13 +46,24 @@ import {
 } from "./server";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME } from "./Palette";
-import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
+import { FAIL, PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
 import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import { History } from "./history";
 import { DialogProvider, useDialog } from "./Dialog";
 import { BottomPane, SidePane } from "./ViewPanes";
-import { nodeExchanges, nodeOutputs, nodeTimings, recordedResponses, replay, stateAtStep, type ReplayNode } from "./replay";
+import {
+  diagnose,
+  executionOrder,
+  nodeExchanges,
+  nodeOutputs,
+  nodeTimings,
+  recordedResponses,
+  replay,
+  stateAtStep,
+  wireKey,
+  type ReplayNode,
+} from "./replay";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
@@ -98,7 +109,7 @@ function Canvas({
   const dialog = useDialog();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const { screenToFlowPosition, getNode, getEdges, getViewport, setViewport } =
+  const { screenToFlowPosition, getNode, getEdges, getViewport, setViewport, fitView } =
     useReactFlow<PrimitiveNodeType>();
   const idRef = useRef(0);
   // The one in-browser workspace every placed composite lives in (see Projection below).
@@ -677,7 +688,10 @@ function Canvas({
       evalNode,
       recordedResponses(nodeExchanges(selectedRun, viewTrace)),
       nodeOutputs(selectedRun, viewTrace),
+      // Stepped through in the order the run evaluated its nodes.
+      executionOrder(nodeTimings(selectedRun, viewTrace)),
     );
+    const diagnosis = diagnose(ns, es, selectedRun, run);
     let verdict: boolean | null = null;
     const respond = run.order.find((id) => {
       const n = ns.find((x) => x.id === id);
@@ -686,10 +700,25 @@ function Canvas({
     if (selectedRun.kind === "request" && respond && selectedRun.outputs.length > 0) {
       verdict = JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(selectedRun.outputs[0]);
     }
-    return { ...run, verdict };
+    return { ...run, verdict, diagnosis };
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewing, selectedRun, canvasKey, evalNode, viewTrace]);
+
+  // Show a node on the canvas and in the side pane: what "show where it failed" does.
+  const showNode = useCallback(
+    (id: string) => {
+      setInspectNode(id);
+      fitView({ nodes: [{ id }], duration: 300, maxZoom: 1.1, padding: 0.6 });
+    },
+    [fitView],
+  );
+
+  // A failed run opens on where it failed.
+  const origin = replayed?.diagnosis?.origins[0];
+  useEffect(() => {
+    if (origin) setInspectNode(origin);
+  }, [origin, selectedRun?.seq]);
 
   const onSelectRun = useCallback((e: LogEntry | null) => {
     setSelectedRun(e);
@@ -815,7 +844,8 @@ function Canvas({
         const i = order.indexOf(n.id);
         const state: "active" | "done" | "pending" | "outside" =
           i < 0 ? "outside" : step === null || i < step ? "done" : i === step ? "active" : "pending";
-        const trace = replayed ? { outputs: replayed.traces.get(n.id)?.outputs ?? [], state } : undefined;
+        const issue = replayed?.diagnosis?.issues.get(n.id);
+        const trace = replayed ? { outputs: replayed.traces.get(n.id)?.outputs ?? [], state, issue } : undefined;
         return { ...n, data: { ...n.data, readOnly: true, trace } };
       });
     }
@@ -823,6 +853,23 @@ function Canvas({
       ? nodes
       : nodes.map((n) => (errorNodeIds.has(n.id) ? { ...n, data: { ...n.data, error: true } } : n));
   }, [nodes, errorNodeIds, viewing, replayed, step]);
+
+  // In view mode, the wires show the run: the way a failure took in its colour, and a wire that
+  // carried nothing faded.
+  const decoratedEdges = useMemo(() => {
+    if (!viewing || !replayed) return edges;
+    const ran = new Set(replayed.order);
+    return edges.map((e) => {
+      if (!ran.has(e.source) || !ran.has(e.target)) return e;
+      const from = nodes.find((n) => n.id === e.source);
+      const at = from ? from.data.outputs.findIndex((p) => p.name === e.sourceHandle) : -1;
+      const value = replayed.traces.get(e.source)?.outputs[at] ?? null;
+      if (replayed.diagnosis?.path.has(wireKey(e))) {
+        return { ...e, animated: true, style: { ...e.style, stroke: FAIL, strokeWidth: 2.6 } };
+      }
+      return value === null ? { ...e, style: { ...e.style, opacity: 0.35, strokeDasharray: "4 4" } } : e;
+    });
+  }, [edges, nodes, viewing, replayed]);
 
   // How many placed nodes are currently selected — React Flow's own selection state
   // (shift-click / drag-box), already live for delete, now also gating the "group" button
@@ -840,7 +887,7 @@ function Canvas({
           nodes={decoratedNodes}
           onNodeClick={onNodeClick}
           onNodesChange={onNodesChange}
-          edges={edges}
+          edges={decoratedEdges}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           isValidConnection={isValidConnection}
@@ -937,7 +984,11 @@ function Canvas({
             stateAfter={flowState.after}
             changed={flowState.changed}
             node={nodes.find((n) => n.id === inspectNode) ?? null}
-            trace={inspectNode ? replayed?.traces.get(inspectNode) : undefined}
+            trace={
+              inspectNode && replayed?.traces.get(inspectNode)
+                ? { ...replayed.traces.get(inspectNode)!, issue: replayed.diagnosis?.issues.get(inspectNode) }
+                : undefined
+            }
             timing={inspectNode ? timings.get(inspectNode) : undefined}
           />
           <BottomPane
@@ -952,6 +1003,8 @@ function Canvas({
             exchanges={exchanges}
             verdict={replayed?.verdict ?? null}
             onPickNode={setInspectNode}
+            diagnosis={replayed?.diagnosis ?? null}
+            onShowNode={showNode}
           />
         </>
       )}

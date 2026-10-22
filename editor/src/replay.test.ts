@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nodeExchanges, nodeOutputs, nodeTimings, recordedResponses, replay, runGroup, stateAtStep, type ReplayInput, type ReplayNode } from "./replay";
+import { diagnose, executionOrder, nodeExchanges, nodeOutputs, nodeTimings, recordedResponses, replay, runGroup, stateAtStep, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
@@ -210,6 +210,81 @@ describe("secrets in a replay", () => {
     const got = nodeOutputs({ kind: "tick", route: null, timeline }, trace);
     expect(got.get("a")).toEqual([num(2)]);
     expect(got.has("b")).toBe(false);
+  });
+});
+
+describe("execution order", () => {
+  it("steps through the nodes as the run evaluated them, where that's known", () => {
+    const nodes = [n("a", "x", [], ["out"]), n("b", "x", [], ["out"]), n("c", "x", ["in"], ["out"])];
+    const edges = [wire("a", "out", "c", "in")];
+    const tick = { kind: "tick", route: null, request: null, sourced: [], state_before: {} };
+    expect(replay(nodes, edges, tick, evalNode).order).toEqual(["a", "b", "c"]);
+    const timings = new Map([["b", { start_us: 1, end_us: 2 }], ["a", { start_us: 3, end_us: 4 }], ["c", { start_us: 5, end_us: 6 }]]);
+    expect(executionOrder(timings)).toEqual(["b", "a", "c"]);
+    expect(replay(nodes, edges, tick, evalNode, new Map(), new Map(), executionOrder(timings)).order).toEqual(["b", "a", "c"]);
+    // An order that breaks a dependency can't be followed past it: c still waits for a.
+    expect(replay(nodes, edges, tick, evalNode, new Map(), new Map(), ["c", "b", "a"]).order).toEqual(["b", "a", "c"]);
+  });
+});
+
+describe("why a run failed", () => {
+  const txt = (value: string): WValue => ({ type: "Text", value });
+  const rec = (...fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
+  // A store read → field "kind" → respond, which answers 400 when its body never arrives.
+  const nodes = [
+    n("read", "store_read", [], ["out"], [frozen("key", "event")]),
+    n("kind", "field", ["record"], ["out"], [frozen("name", "kind")]),
+    n("res", "respond", ["body"], ["response"], [frozen("status", "200"), frozen("missing", "400")], "Template"),
+  ];
+  const edges = [wire("read", "out", "kind", "record"), wire("kind", "out", "res", "body")];
+  const evaluate = (node: ReplayNode, inputs: (WValue | null)[]): (WValue | null)[] => {
+    if (node.data.name === "field") {
+      const [r] = inputs;
+      const name = node.data.params.find((p) => p.name === "name");
+      const want = name?.kind === "Frozen" ? name.value : "";
+      return [r?.type === "Record" ? (r.value.find(([k]) => k === want)?.[1] ?? null) : null];
+    }
+    if (node.data.name === "respond") return [inputs[0] ?? rec(["status", num(400)])];
+    return evalNode(node, inputs);
+  };
+  const run = (event: WValue) =>
+    replay(nodes, edges, { kind: "tick", route: null, request: null, sourced: [], state_before: { event } }, evaluate);
+
+  it("finds the node that got its inputs and produced nothing, says why, and marks the way to the answer", () => {
+    const d = diagnose(nodes, edges, { status: 400, error: null }, run(rec(["id", txt("evt_1")], ["type", txt("paid")])))!;
+    expect(d.summary).toBe("answered 400");
+    expect(d.origins).toEqual(["kind"]);
+    expect(d.issues.get("kind")).toEqual({ role: "origin", reason: 'no field "kind" (it has id, type)' });
+    expect(d.issues.get("res")).toEqual({ role: "starved", reason: "fell back: body (from field) never arrived" });
+    expect(d.issues.has("read")).toBe(false);
+    expect([...d.path]).toEqual([wireKey(edges[1])]);
+  });
+
+  it("says a starved node didn't run, even when the evaluator hands back undefined for absent", () => {
+    // The wasm bridge returns an absent output as undefined; that must still read as absent.
+    const chain = [...nodes.slice(0, 2), n("next", "field", ["record"], ["out"], [frozen("name", "x")])];
+    const wires = [edges[0], wire("kind", "out", "next", "record")];
+    const undefinedForAbsent = (node: ReplayNode, inputs: (WValue | null)[]) =>
+      evaluate(node, inputs).map((o) => (o === null ? (undefined as unknown as null) : o));
+    const r = replay(chain, wires, { kind: "tick", route: null, request: null, sourced: [], state_before: { event: rec(["id", txt("e")]) } }, undefinedForAbsent);
+    expect(r.traces.get("next")?.outputs).toEqual([null]);
+    expect(diagnose(chain, wires, { status: 400, error: null }, r)!.issues.get("next")).toEqual({
+      role: "starved",
+      reason: "didn't run: record (from field) never arrived",
+    });
+  });
+
+  it("has nothing to say about a run that didn't fail", () => {
+    expect(diagnose(nodes, edges, { status: 200, error: null }, run(rec(["kind", txt("paid")])))).toBeNull();
+  });
+
+  it("names a failed outbound call as the origin", () => {
+    const call = [n("h", "http_request", [], ["out"], [frozen("method", "GET"), frozen("host", "api.example.com")]), n("f", "field", ["record"], ["out"], [frozen("name", "body")])];
+    const blocked = rec(["status", num(0)], ["error", txt("blocked_host")], ["message", txt("api.example.com wasn't granted")]);
+    const r = replay(call, [wire("h", "out", "f", "record")], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evaluate, new Map([["h", blocked]]));
+    const d = diagnose(call, [wire("h", "out", "f", "record")], { status: null, error: "a test" }, r)!;
+    expect(d.summary).toBe("the run failed: a test");
+    expect(d.issues.get("h")).toEqual({ role: "origin", reason: "the request failed: blocked_host (api.example.com wasn't granted)" });
   });
 });
 

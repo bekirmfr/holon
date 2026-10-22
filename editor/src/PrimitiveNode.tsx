@@ -56,7 +56,12 @@ export type PrimitiveData = {
   readOnly?: boolean;
   /** View mode: what this node computed in the replayed run, and where the step-through is.
    *  Rendering only, like `error`: set on a copy of the node, never on the canvas state. */
-  trace?: { outputs: (WValue | null)[]; state: "active" | "done" | "pending" | "outside" };
+  trace?: {
+    outputs: (WValue | null)[];
+    state: "active" | "done" | "pending" | "outside";
+    /** Its part in a failed run (replay.ts's diagnose): where the failure started, or starved. */
+    issue?: { role: "origin" | "starved"; reason: string };
+  };
 };
 
 /** A value short enough for a badge under a port. */
@@ -87,6 +92,9 @@ export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
  *  `default`'s input alongside its output is what keeps the output honest rather than a
  *  guess: once `value`'s own declared type matches, `compatible()` refuses a wrong-typed
  *  source at connect time, the same way it already refused a wrong-typed destination. */
+/** The colour of a run's failure: its origin node, and the wires the failure took. */
+export const FAIL = "#ff6b5e";
+
 type ConstType = "Number" | "Boolean" | "Text" | "Json";
 const CONST_TYPES: readonly ConstType[] = ["Number", "Boolean", "Text", "Json"];
 // The wire type a literal produces. A Json literal can be any shape (`[]`, `{...}`), so its port
@@ -220,12 +228,30 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
       className="hl-node"
       style={{
         ...(error ? { borderColor: TYPE_COLOR.Effect, boxShadow: `0 0 0 1px ${TYPE_COLOR.Effect}` } : {}),
+        ...(trace?.issue?.role === "starved" ? { borderColor: "#b9735f", borderStyle: "dashed" } : {}),
+        ...(trace?.issue?.role === "origin" ? { borderColor: FAIL, boxShadow: `0 0 0 2px ${FAIL}, 0 0 18px ${FAIL}66` } : {}),
         ...(trace?.state === "active" ? { borderColor: "#6fd3e0", boxShadow: "0 0 0 2px #6fd3e0" } : {}),
         ...(trace?.state === "pending" ? { opacity: 0.55 } : {}),
         ...(trace?.state === "outside" ? { opacity: 0.3 } : {}),
       }}
     >
       <div className="hl-node__title">{name}</div>
+      {trace?.issue && (
+        <div
+          title={trace.issue.reason}
+          style={{
+            fontSize: 10,
+            lineHeight: 1.3,
+            padding: "2px 8px",
+            maxWidth: 260,
+            color: trace.issue.role === "origin" ? "#ffd3cc" : "#d9a596",
+            background: trace.issue.role === "origin" ? `${FAIL}33` : "transparent",
+          }}
+        >
+          {trace.issue.role === "origin" ? "✗ failed here: " : "↯ "}
+          {trace.issue.reason}
+        </div>
+      )}
 
       {params.length > 0 && (
         <div className="hl-node__params">
