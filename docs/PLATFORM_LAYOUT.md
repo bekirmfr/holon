@@ -1,6 +1,7 @@
 # Platform layout: one engine, many front doors
 
-**Status:** proposal (2026-10-21). Nothing here is built yet.
+**Status:** living plan (since 2026-10-21). What has landed is tracked in §7; §4 is the design for
+what comes next.
 **Goal:** split the codebase into a shared **platform** and thin **packs**, so each front door
 (`holon-hooks` first, then `holon-agents`, `holon-rules`, …) is a pack plus onboarding on top of the
 same engine. Webhooks are the first consumer. Nothing built for them should block the other doors.
@@ -110,30 +111,156 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 
 ---
 
-## 4. The two new runtime mechanisms
+## 4. Effects that answer, and runs that last (design, 2026-10-22)
 
-### Effect loop (dependent effects within one request)
-Today a request is **one round**: sourced values are fixed before eval and effects are performed
-after it settles (`fire_sourced`, `holon-host/src/lib.rs:116`). Webhooks need "verify → fetch →
-decide → post". The loop:
+**Status:** design for review; nothing in this section is built yet, except the recorder it extends
+(the flow log, `holon-server/src/recorder.rs`).
+
+**The principle all of it rests on:** an evaluation stays a pure, total function. A flow never
+blocks, never suspends, never runs open-ended. Waiting, suspending and resuming belong to the host,
+and happen *between* evaluations. A run that is "in progress" is just data: what it started from and
+what it has learned since. Continuing it means evaluating the same flow again with more of that data.
+This is what keeps replay, the timeline and per-step state exact, and it is Temporal's model
+(deterministic re-execution against a recorded history), which Holon gets almost for free.
+
+### 4.1 Rounds: an outbound request inside one run
+Today a run is one evaluation: sourced values are fixed before eval and effects are performed after
+it settles (`fire_sourced_observed`). Webhooks need "verify → fetch → decide → post". A run becomes a
+sequence of **rounds**:
 
 ```
-round 0: sourced = {ingress: request}            → eval → output
-         output is Response?        → done
-         output is Effect + `next`? → perform effect, record (effect, result)
-round n: sourced = {ingress: request, prior results by correlation token} → eval → …
-         bounded by a max-rounds limit (totality per request, not just per eval)
+round 0:  sourced = {request, state, clock, random, run nonce}       → eval
+          the http_request nodes whose request is ready have no response yet: their requests
+          are collected (deduplicated by node and request value) and performed by the host,
+          concurrently within the round
+round n:  sourced += {responses from rounds < n, by node}            → eval again from the start
+done:     a round with no unanswered request
+          → its output is the response, its effects are performed; earlier rounds' outputs and
+            effects are discarded (they were computed with responses missing)
+bounded:  at most MAX_ROUNDS (8) and a wall-clock budget per run; past either, the run fails
+          and nothing is performed
 ```
 
-- Elm-shaped, as the design always intended: the core *decides*, the host *performs*. The existing
-  correlation-token design (`P2.5.1`) carries "which effect is this result for".
-- **Replay falls out of it:** a recorded request is just the list of each round's sourced values.
-  Feed them back into the same `eval` (natively or in wasm) and you get a bit-identical run, with no
-  network involved.
+- **`http_request`** (core, a sink-like node): inputs `method`, `url`, `headers`, `body`; output
+  `response`, a record `{status, headers, body}`. In round 0 it constructs its request and its
+  `response` is absent; the host fills it in for the next round, the way `store_read` is filled in
+  today. On the canvas it reads as a node that simply has a response.
+- **Absent means "not yet" for one round, and "no value" at the end.** Nodes downstream of an
+  unanswered request are absent, so a `default`/`missing` may fire early; that round's output is
+  discarded anyway. Only the final round's answer counts.
+- **Only final-round effects are performed.** A state write computed while a response was missing
+  never happens. Outbound requests are the one effect performed between rounds, because the next
+  round needs their answer.
+- **Cost:** upstream nodes re-run each round. Evaluation is cheap and pure, and per-round results
+  of pure nodes can be cached by content hash. Independent requests share a round; dependent ones
+  take one round each.
+- **Recording:** the flow-log entry gains `rounds: [{requests, responses, timeline}]`. Replay feeds
+  the recorded responses back instead of calling the network, so a recorded run replays
+  bit-identically offline, and the editor steps through it round by round.
 
-### Recorder
-One record per request: `{deployment hash, request, rounds: [sourced, effects], response, timings}`.
-Stored per deployment with a bounded retention. The editor's `replay/` reads it over the control plane.
+### 4.2 Outbound safety
+An outbound request is the first thing a flow does to the outside world, so the limits come with
+the node, not after it:
+
+| Rule | Default |
+|---|---|
+| **Allowed hosts are part of consent.** Deploy derives each `http_request`'s host where it is a literal (`https://hooks.slack.com/...`), and the person acknowledges `NetworkEgress("hooks.slack.com")`, not just "the network". A URL built at run time needs an explicit allowlist entry; a host not on it is refused at perform time. | deny |
+| **No private destinations.** Loopback, link-local, private and metadata ranges (127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, ::1, fc00::/7) are refused after DNS resolution, and on every redirect, unless the deployment opts in. This blocks SSRF into the machine and its network. | deny |
+| HTTPS only, unless opted out per host. | on |
+| Timeouts: connect 5 s, whole request 30 s; the run's wall-clock budget bounds the sum. | 5 s / 30 s |
+| Response size cap; bigger bodies fail the request (the run sees a `{status: 0, error}` response). | 8 MiB |
+| Redirects followed, at most 5, each re-checked against the rules above. | 5 |
+| Requests per run. | 32 |
+
+- **Client:** `ureq` (synchronous, rustls), which fits the current thread-per-request server; it
+  moves with the data plane if that moves to `hyper` (§7b).
+- **Secrets** (separate step): a per-deployment secret store on the server, written over the
+  control plane, never returned by it. A flow references a secret by name (a `secret` source node,
+  capability `SecretRead("stripe_key")`, acknowledged at deploy). Values are redacted from the flow
+  log, from replay and from the editor; a replay substitutes a placeholder.
+
+### 4.3 Durable runs: continuing a run later
+Rounds cover waiting inside one request: the caller is on the line, the wait is seconds. Many
+integrations wait longer: a payment confirmed by a webhook minutes later, an approval clicked
+tomorrow, an export polled until ready. The first run has to end, and a later event has to continue
+it. That needs an identity for the run and a way to resume it.
+
+- **Park.** A flow ends a round waiting on an `await` node (a source, like `http_request`'s
+  response) that no request will answer. The host stores a **run record**:
+  `{run id, deployment hash, input record, rounds so far, the awaiting node, expiry}`, and answers
+  the current request with whatever the flow chose to say meanwhile (e.g. `202 Accepted`).
+- **Resume.** An event arrives on a route declared as resuming (`declare=endpoint`,
+  `resume=<await node name>`), carrying a resume token (§4.4). The host loads the run record and
+  evaluates the run's flow again from its recorded history, with the event delivered to the awaiting
+  node. The run finishes, or parks again on another `await`.
+- **Pinned version.** A run continues on the deployment hash it started on. Units are
+  content-addressed, so the old version stays resolvable for as long as runs need it, even across
+  redeploys; new runs start on the new version.
+- **Expiry.** Every parked run has a deadline. Expiring is itself an event delivered to the
+  awaiting node (`{expired: true}`), so the flow decides what timing out means.
+- **Visible.** The flow log groups one run's entries under its run id; the timeline shows the gap.
+  The editor lists parked runs per deployment, with their expiry.
+- **Today, by hand:** the same pattern works now with state: the first route `insert`s its context
+  under an id, the callback route `lookup`s it. Durable runs automate that and make it safe
+  (minted ids, pinned versions, expiry, visibility).
+
+### 4.4 Run ids and resume tokens
+Two different things, kept apart:
+
+- **Run id: what names a run.** `run_id = H(deployment hash ‖ input root)`, where the input root
+  is the Merkle root (§4.5) of everything the run started from: the request, the state it read, and
+  its sourced values, including a **host nonce** of 128 bits from the operating system's secure
+  generator. Because the input record is exactly what the flow log stores and replay consumes, the
+  id, the log entry and the replay input are one thing, and the host can verify a run record
+  against its id. The nonce makes two runs from the same flow and state distinct. A flow reads its
+  id from a `run_id` source node; the id appears in logs and in the editor and grants nothing.
+- **Resume token: what lets an outsider continue it.** A separate 128-bit random value, minted by
+  the host when a flow asks for one (a `resume_token` node, naming the `await` it resumes), mapped
+  to `(run id, await node, expiry)`. It goes into callback URLs, Stripe metadata, approval links.
+  A run can hand out several (approve, reject), each can expire or be revoked, and a token is only
+  accepted by the resuming routes of the deployment that issued it. Tokens are never derivable
+  from the run id.
+- **Why not one id for both:** the hashed part of a run id is computable by anyone who knows the
+  flow and its state, so it cannot be the secret; and a single id could not be revoked, scoped to
+  one waiting point, or handed out more than once.
+
+### 4.5 Merkle state and content-addressed large values
+A run id hashes the run's whole input, so hashing has to stay cheap however large the state gets.
+The answer is to hash hashes, the way units already work.
+
+- **Canonical value encoding, public.** Core already has a collision-free canonical `Value`
+  encoder, private to the parked memo (`memo.rs`). It moves next to the unit encoder as
+  `encode_value` / `hash_value`, with one decision pinned and tested first: `-0` and `0` encode
+  alike (as the memo does) and `to_text` follows, closing the drift the 2026-10-21 review noted;
+  `NaN` has one encoding.
+- **State as a Merkle map.** Each key's value is hashed **once, when it is written**, and the hash
+  kept beside it. The state root is `H(sorted (key, value hash) pairs)`. A run that writes one key
+  re-hashes one value and a short list. Reads cost nothing.
+- **Large values by reference.** A value over a threshold (64 KiB encoded), and any uploaded file,
+  is stored in the content store under its hash, like a unit; state, the flow log and run records
+  hold the hash. Hashing it later is free, identical content is stored once, and logs stay small.
+- **Request bodies** are hashed as they are read.
+- **What else it buys:**
+  - **Session snapshots share structure.** A snapshot is its list of `(key, value hash)`; unchanged
+    values are shared between snapshots and sessions instead of copied.
+  - **Diffs are cheap.** Equal hashes mean equal values, so the Flow state pane shows exactly what
+    a run changed without comparing values.
+  - **Replay checks its inputs.** A replay can confirm it feeds exactly the recorded state by its
+    root.
+
+### 4.6 Build order for this section
+One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable runs follow.
+
+| Step | What | Done when |
+|---|---|---|
+| 1 | Core: public canonical `encode_value` / `hash_value` (±0, NaN pinned) | the encoding is fixed by tests; memo uses it |
+| 2 | Host: Merkle state (value hashes on write, state root) and large values by reference | state root stable across restarts; a snapshot shares unchanged values |
+| 3 | Core: `http_request` node, its capability `NetworkEgress(host)` and validation | a flow with it validates and its derived hosts show at deploy |
+| 4 | Host: the round loop, the `Performer` with `ureq` and every §4.2 limit | a run calls a local test server, uses the answer, and is bounded |
+| 5 | Server: consent with hosts, run ids and the nonce, `rounds` in the flow log | a deployment lists its hosts; each log entry has a verifiable run id |
+| 6 | Editor: the node, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round |
+| 7 | Secrets: store, `secret` node, redaction | a token never appears in a log, a replay or the editor |
+| 8 | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on |
 
 ---
 
@@ -195,14 +322,14 @@ packs/hooks/
 |---|---|---|---|---|---|---|
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met**; splitting `App.tsx` remains |
 | **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b): runs today on the control plane's `rouille`, move pending | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
-| **M2 effects + replay** | `http_request`, hashes/HMAC, Effects refused by `Any`-typed sink payloads ✅ | effect loop, `Performer`, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half not started** |
+| **M2 effects + replay** | `http_request`, hashes/HMAC, Effects refused by `Any`-typed sink payloads ✅ | effect loop, `Performer`, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half designed in §4 (build order §4.6), not started** |
 | **M3 door 1** | — | consent at load | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
 
 **Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is splitting
 `App.tsx`, the data plane's move to `hyper`, and `instantiate` following `fn` params. M2's replay half
 landed early (the recorder came with view mode); sinks now refuse Effects; next is
-`http_request` and the effect loop.
+`http_request` and the effect loop, as designed in §4, followed by durable runs.
 
 ### 7a. Review findings, triaged against this direction
 The 2026-10-21 project review is sorted by what matters for a **single-user backend builder with a
