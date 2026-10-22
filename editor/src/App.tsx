@@ -460,9 +460,9 @@ function Canvas({
       if (open !== null && !(await dialog.confirm(`"${sample.name}" is open in a tab. Replace it with the sample? Its unsaved changes are lost.`, "Replace"))) {
         return;
       }
-      showTab(open, tabFromDocument(sample.name, buildSample(sample, byName, variadic), false));
+      showTab(open, tabFromDocument(sample.name, buildSample(sample, byName, variadic, ev), false));
     },
-    [tabOf, dialog, showTab, tabFromDocument, byName, variadic],
+    [tabOf, dialog, showTab, tabFromDocument, byName, variadic, ev],
   );
 
   const onDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {

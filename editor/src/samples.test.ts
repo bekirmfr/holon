@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator, primitive_catalog, variadic_primitives } from "../wasm/holon_wasm.js";
-import { type WUnit } from "./holon";
+import { buildPreimage, type WUnit, type WValue } from "./holon";
+import { fromHex } from "./flowDoc";
 import { deriveServer, flowUnitHash } from "./canvasOps";
 import { capabilityAcknowledgeName, manifestItems, manifestTrigger, permissionKind } from "./diagnostics";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
@@ -28,10 +29,12 @@ beforeAll(() => {
 /** What deploying `sample` asks for, by consent name, or why it can't deploy. */
 function derive(name: string): { caps: string[]; endpoints: number } {
   const sample = SAMPLES.find((s) => s.name === name)!;
-  const doc = buildSample(sample, catalog, variadic);
+  const doc = buildSample(sample, catalog, variadic, new Evaluator());
   const nodes = doc.nodes as PrimitiveNodeType[];
   const edges = doc.edges as Edge[];
+  // Derived in a fresh workspace, from what the document carries: as opening it does.
   const ev = new Evaluator();
+  for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
   // The unit deploying it would deploy (and the flows page derives a saved flow's manifest from).
   const hash = flowUnitHash(nodes, edges, ev, catalog, sample.port ?? "8080");
   const endpoints = sample.port ? deriveServer(nodes, edges, ev, catalog, sample.port).endpoints.length : 0;
@@ -49,7 +52,7 @@ describe("sample flows", () => {
 
   for (const s of SAMPLES) {
     it(`${s.name} builds, derives, and asks for exactly what it uses`, () => {
-      const doc = buildSample(s, catalog, variadic);
+      const doc = buildSample(s, catalog, variadic, new Evaluator());
       const requests = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.name === "request" && n.data.body.kind === "Template");
       const { caps, endpoints } = derive(s.name);
       expect(endpoints).toBe(requests.length);
@@ -86,6 +89,25 @@ describe("sample flows", () => {
     expect(permissionKind("NetworkIngress", ["NetworkIngress"], trigger).kind, "a trigger even if marked").toBe("required");
   });
 
+  it("place a whole flow as a node: one unit, wherever it's placed, that works", () => {
+    const ev = new Evaluator();
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const placed = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.body.kind === "Composite");
+    expect(placed.map((n) => n.data.name)).toEqual(["slugify", "slugify"]);
+    const hashes = new Set(placed.map((n) => (n.data.body.kind === "Composite" ? n.data.body.hash : "")));
+    expect(hashes.size, "the same unit twice").toBe(1);
+    expect(placed[0].data.inputs.map((p) => p.name)).toEqual(["text"]);
+    expect(placed[0].data.outputs.map((p) => p.name)).toEqual(["slug"]);
+    const [hash] = hashes;
+    const unit = ev.get_unit(hash) as WUnit;
+    const out = ev.eval(buildPreimage(unit), [{ type: "Text", value: "Hello Holon World" }]) as (WValue | null)[];
+    expect(out).toEqual([{ type: "Text", value: "hello-holon-world" }]);
+    expect(doc.units?.length, "its closure travels with the document").toBeGreaterThan(0);
+    expect(() =>
+      buildSample({ ...SAMPLES[0], build: (b) => void b.holon("h", (i) => void i.node("lowercase"), { inputs: ["a", "b"], outputs: ["c"] }) }, catalog, variadic, new Evaluator()),
+    ).toThrow('holon "h" has inputs');
+  });
+
   it("ask for what each one shows", () => {
     expect(derive("hello-api").caps).toEqual(["NetworkIngress"]);
     expect(derive("notes-api").caps).toEqual(['CollectionRead("notes")', 'CollectionWrite("notes")', "NetworkIngress"]);
@@ -105,8 +127,8 @@ describe("sample flows", () => {
 
   it("refuse a misspelt leaf, param or port, naming the sample", () => {
     const broken = { ...SAMPLES[0], build: (b: Parameters<(typeof SAMPLES)[0]["build"]>[0]) => b.wire(b.node("field"), "nope", b.node("concat"), "a") };
-    expect(() => buildSample(broken, catalog, variadic)).toThrow('sample "hello-api": field has no output "nope"');
-    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("fieldd") }, catalog, variadic)).toThrow('no leaf "fieldd"');
-    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("field", { nam: "x" }) }, catalog, variadic)).toThrow('has no param "nam"');
+    expect(() => buildSample(broken, catalog, variadic, new Evaluator())).toThrow('sample "hello-api": field has no output "nope"');
+    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("fieldd") }, catalog, variadic, new Evaluator())).toThrow('no leaf "fieldd"');
+    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("field", { nam: "x" }) }, catalog, variadic, new Evaluator())).toThrow('has no param "nam"');
   });
 });
