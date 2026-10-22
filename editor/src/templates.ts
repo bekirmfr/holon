@@ -13,12 +13,22 @@
 //   listing. Status 204 has no body input. When the body input is absent (a lookup that found
 //   nothing), it answers its `missing` status instead (404 by default) with `{"error": …}`. A
 //   respond node without `missing` (placed before it existed) answers nothing, sent as a 500.
+// - `stripe_verify` (param: tolerance, seconds) checks a Stripe webhook's signature, as Stripe's
+//   own libraries do: the `stripe-signature` header (`t=<unix time>,v1=<hex HMAC>,…`) taken apart
+//   into a record (split on "," then each piece on "=", folded into a record), the HMAC-SHA256
+//   of `<t>.<raw body>` under the endpoint's signing secret compared with `v1` in constant time,
+//   and `t` no older than `tolerance` (300 s, Stripe's default) as of `now`. Inputs: the request,
+//   the secret (a `secret` node), and `now` (a `clock` node: the template stays pure, so a replay
+//   checks against the time the run saw). Outputs: `event`, the body parsed as JSON, only when
+//   verified (absent otherwise, so a `respond` with `missing` 400 refuses it); and `verified`
+//   (absent when the header is missing or malformed). With several `v1` (a secret being rolled),
+//   the last is the one checked.
 
 import type { WEdge, WParam, WPort, WUnit } from "./holon";
 
 const BOUNDARY = 4294967295;
 
-export const TEMPLATES = ["request", "respond"] as const;
+export const TEMPLATES = ["request", "respond", "stripe_verify"] as const;
 export type TemplateName = (typeof TEMPLATES)[number];
 
 export function isTemplate(name: string): name is TemplateName {
@@ -49,6 +59,20 @@ export function templateInterface(
   if (name === "request") {
     return { inputs: [{ name: "request", ty: "Record" }], outputs: REQUEST_OUTPUTS, hiddenInputs: true };
   }
+  if (name === "stripe_verify") {
+    return {
+      inputs: [
+        { name: "request", ty: "Record" },
+        { name: "secret", ty: "Text" },
+        { name: "now", ty: "Number" },
+      ],
+      outputs: [
+        { name: "event", ty: "Any" },
+        { name: "verified", ty: "Boolean" },
+      ],
+      hiddenInputs: false,
+    };
+  }
   const noBody = param(params, "status") === "204";
   const request: WPort = { name: "request", ty: "Record" };
   return {
@@ -60,6 +84,7 @@ export function templateInterface(
 
 /** The params a freshly dropped template node starts with. */
 export function templateDefaults(name: TemplateName): WParam[] {
+  if (name === "stripe_verify") return [frozen("tolerance", "300")];
   return name === "request"
     ? [frozen("method", "GET"), frozen("path", "/"), frozen("resume", "")]
     : [frozen("status", "200"), frozen("missing", "404")];
@@ -76,10 +101,10 @@ export function buildTemplate(
   catalog: Map<string, WUnit>,
   insert: (u: WUnit) => string,
 ): WUnit | string {
-  const leaf = (prim: string, p: WParam[] = []): string => {
+  const leaf = (prim: string, p: WParam[] = [], ins?: WPort[]): string => {
     const u = catalog.get(prim);
     if (!u) throw new Error(`"${prim}" is not in the catalog`);
-    return insert({ ...u, params: p });
+    return insert({ ...u, params: p, ...(ins ? { inputs: ins } : {}) });
   };
   const e = (fc: number, fp: number, tc: number, tp: number): WEdge => ({
     from_child: fc,
@@ -109,6 +134,98 @@ export function buildTemplate(
       e(2, 0, BOUNDARY, 3),
       e(3, 0, BOUNDARY, 4),
       e(4, 0, BOUNDARY, 5),
+    ];
+    return { body: { kind: "Composite", children, edges }, params: [], inputs, outputs };
+  }
+
+  if (name === "stripe_verify") {
+    const tolerance = param(params, "tolerance") ?? "";
+    if (!/^\d{1,6}$/.test(tolerance) || Number(tolerance) < 1) {
+      return `tolerance "${tolerance}" is not a number of seconds (1–999999)`;
+    }
+    const text = (v: string) => leaf("const", [frozen("value", v), frozen("type", "Text")]);
+    const number = (v: string) => leaf("const", [frozen("value", v), frozen("type", "Number")]);
+    // (record, "k=v") → record with k set to v: what the header's pieces fold into.
+    const pair = insert({
+      body: {
+        kind: "Composite",
+        children: [leaf("split"), text("="), leaf("get"), leaf("get"), number("0"), number("1"), leaf("insert")],
+        edges: [
+          e(BOUNDARY, 1, 0, 0),
+          e(1, 0, 0, 1),
+          e(0, 0, 2, 0),
+          e(4, 0, 2, 1),
+          e(0, 0, 3, 0),
+          e(5, 0, 3, 1),
+          e(BOUNDARY, 0, 6, 0),
+          e(2, 0, 6, 1),
+          e(3, 0, 6, 2),
+          e(6, 0, BOUNDARY, 0),
+        ],
+      },
+      params: [],
+      inputs: [
+        { name: "acc", ty: "Record" },
+        { name: "item", ty: "Text" },
+      ],
+      outputs: [{ name: "acc", ty: "Record" }],
+    });
+    const three: WPort[] = [
+      { name: "a", ty: "Text" },
+      { name: "b", ty: "Text" },
+      { name: "c", ty: "Text" },
+    ];
+    const children = [
+      leaf("field", [frozen("name", "headers")]), // 0
+      leaf("field", [frozen("name", "stripe-signature")]), // 1
+      text(","), // 2
+      leaf("split"), // 3: the header's pieces
+      leaf("record"), // 4
+      leaf("fold", [frozen("fn", pair)]), // 5: … as a record
+      leaf("field", [frozen("name", "t")]), // 6
+      leaf("field", [frozen("name", "v1")]), // 7
+      leaf("field", [frozen("name", "body")]), // 8: the raw body, exactly as sent
+      text("."), // 9
+      leaf("concat", [], three), // 10: t.body, what Stripe signed
+      leaf("hmac_sha256", [frozen("encoding", "hex")]), // 11
+      leaf("secure_equals"), // 12: the signature matches
+      leaf("json_parse"), // 13: t as a number
+      leaf("subtract"), // 14: its age
+      number(tolerance), // 15
+      leaf("compare", [frozen("op", "<=")]), // 16: recent enough
+      leaf("and"), // 17: verified
+      leaf("json_parse"), // 18: the event
+      leaf("guard"), // 19: … only when verified
+    ];
+    const edges = [
+      e(BOUNDARY, 0, 0, 0),
+      e(0, 0, 1, 0),
+      e(1, 0, 3, 0),
+      e(2, 0, 3, 1),
+      e(4, 0, 5, 0),
+      e(3, 0, 5, 1),
+      e(5, 0, 6, 0),
+      e(5, 0, 7, 0),
+      e(BOUNDARY, 0, 8, 0),
+      e(6, 0, 10, 0),
+      e(9, 0, 10, 1),
+      e(8, 0, 10, 2),
+      e(BOUNDARY, 1, 11, 0),
+      e(10, 0, 11, 1),
+      e(11, 0, 12, 0),
+      e(7, 0, 12, 1),
+      e(6, 0, 13, 0),
+      e(BOUNDARY, 2, 14, 0),
+      e(13, 0, 14, 1),
+      e(14, 0, 16, 0),
+      e(15, 0, 16, 1),
+      e(12, 0, 17, 0),
+      e(16, 0, 17, 1),
+      e(8, 0, 18, 0),
+      e(17, 0, 19, 0),
+      e(18, 0, 19, 1),
+      e(19, 0, BOUNDARY, 0),
+      e(17, 0, BOUNDARY, 1),
     ];
     return { body: { kind: "Composite", children, edges }, params: [], inputs, outputs };
   }
