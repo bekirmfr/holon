@@ -39,6 +39,7 @@ import {
   previewDeploy,
   changeDeployment,
   getDeployedDocument,
+  getFlow,
   type LogEntry,
   saveFlow,
   type FlowDocument,
@@ -49,7 +50,6 @@ import { Palette, DND_MIME } from "./Palette";
 import { FAIL, PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
 import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
-import { History } from "./history";
 import { DialogProvider, useDialog } from "./Dialog";
 import { BottomPane, SidePane } from "./ViewPanes";
 import {
@@ -82,15 +82,19 @@ import {
   traceOfUnit,
   type Projection,
 } from "./canvasOps";
-import { FlowToolbar, ProjectionPanel } from "./CanvasPanels";
+import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { DeployedPage, FlowsPage, type AppPage } from "./Pages";
-import { newHistory, snapshotOf, useCanvasHistory, type Snapshot } from "./useCanvasHistory";
+import { newHistory, snapshotOf, useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { SAMPLES, buildSample, type Sample } from "./samples";
+import { blankTab, nextAfterClose, tabKind, type Mode, type TabState } from "./tabs";
 
 // What a save records, for unsaved-change tracking: the canvas plus the server draft.
 const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) =>
   documentKey(ns, es) + JSON.stringify(settings);
+
+// A new, empty flow's tab: nothing to save until something is placed.
+const freshTab = (name: string | null) => ({ ...blankTab(name), savedKey: savedKeyOf([], [], DEFAULT_SETTINGS) });
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
@@ -100,14 +104,12 @@ function Canvas({
   page,
   setPage,
   pendingNew,
-  onDirtyChange,
 }: {
   catalog: WUnit[];
   variadic: Set<string>;
   page: AppPage;
   setPage: (p: AppPage) => void;
   pendingNew: { name: string; nonce: number } | null;
-  onDirtyChange: (dirty: boolean) => void;
 }) {
   const dialog = useDialog();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
@@ -158,6 +160,8 @@ function Canvas({
   // and presentation stays out of identity by design.
   const [flowName, setFlowName] = useState<string | null>(null);
   const [saveMsg, setSaveMsg] = useState("");
+  // Whether it exists as a saved flow (opened from one, or saved since): its tab says so.
+  const [savedOnServer, setSavedOnServer] = useState(false);
 
   // Unsaved changes: the canvas differs from what was last saved, opened, or started fresh.
   // New and Open ask before replacing it, and closing the tab asks too.
@@ -165,7 +169,7 @@ function Canvas({
   const [settings, setSettings] = useState<FlowSettings>(DEFAULT_SETTINGS);
   const [savedKey, setSavedKey] = useState(() => savedKeyOf([], [], DEFAULT_SETTINGS));
   // View mode: a deployed flow's canvas, read-only, with its live flow log (onView). The flow
-  // being edited is set aside meanwhile and comes back on exit, unsaved changes included.
+  // being edited is set aside meanwhile and comes back in edit mode, unsaved changes included.
   const [viewing, setViewing] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<LogEntry | null>(null);
   const [step, setStep] = useState<number | null>(null);
@@ -176,13 +180,10 @@ function Canvas({
   // and the wire under the pointer, which shows the value it carried.
   const [showValues, setShowValues] = useState(true);
   const [hoveredWire, setHoveredWire] = useState<string | null>(null);
-  const beforeView = useRef<{
-    nodes: PrimitiveNodeType[];
-    edges: Edge[];
-    viewport: { x: number; y: number; zoom: number };
-    history: History<Snapshot>;
-    dirty: boolean;
-  } | null>(null);
+  const beforeView = useRef<TabState["beforeView"]>(null);
+  // The deployed document shown in view mode: what edit mode starts from when there is no saved
+  // flow of that name.
+  const viewDoc = useRef<FlowDocument | null>(null);
   const { history, restoring, histVersion, bump, undo, redo } = useCanvasHistory(
     nodes,
     edges,
@@ -198,32 +199,194 @@ function Canvas({
     () => (viewing ? (beforeView.current?.dirty ?? false) : savedKeyOf(nodes, edges, settings) !== savedKey),
     [nodes, edges, settings, savedKey, viewing],
   );
-  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+
+  // ── Tabs: one per open flow (tabs.ts) ─────────────────────────────────────────────────────
+  // The canvas shows the active tab; the others are kept whole in `stash` and put back when
+  // picked. A flow is open in one tab at most: opening it again goes to its tab.
+  const [tabIds, setTabIds] = useState<number[]>([0]);
+  const [activeId, setActiveId] = useState(0);
+  const stash = useRef(new Map<number, TabState>());
+  const nextTabId = useRef(1);
+
+  const captureTab = useCallback(
+    (): TabState => ({
+      name: flowName,
+      saved: savedOnServer,
+      nodes: live.current.nodes,
+      edges: live.current.edges,
+      viewport: getViewport(),
+      history: history.current,
+      settings,
+      savedKey,
+      idCounter: idRef.current,
+      saveMsg,
+      viewing,
+      beforeView: beforeView.current,
+      viewDoc: viewDoc.current,
+      viewTrace,
+      selectedRun,
+      step,
+      inspectNode,
+      dirty,
+    }),
+    [flowName, savedOnServer, getViewport, history, settings, savedKey, saveMsg, viewing, viewTrace, selectedRun, step, inspectNode, dirty],
+  );
+
+  const applyTab = useCallback(
+    (t: TabState) => {
+      restoring.current = true;
+      setNodes(t.nodes);
+      setEdges(t.edges);
+      setViewport(t.viewport);
+      history.current = t.history;
+      setFlowName(t.name);
+      setSavedOnServer(t.saved);
+      setSettings(t.settings);
+      setSavedKey(t.savedKey);
+      idRef.current = t.idCounter;
+      setSaveMsg(t.saveMsg);
+      setViewing(t.viewing);
+      beforeView.current = t.beforeView;
+      viewDoc.current = t.viewDoc;
+      setViewTrace(t.viewTrace);
+      setSelectedRun(t.selectedRun);
+      setStep(t.step);
+      setInspectNode(t.inspectNode);
+      resetProjectionView();
+      bump();
+    },
+    [restoring, history, setNodes, setEdges, setViewport, resetProjectionView, bump],
+  );
+
+  /** Show `t` in tab `id`, or in a new tab (null) unless the active one is an empty, untouched,
+   *  unnamed draft, which it takes over. The active tab is kept if it is another. */
+  const showTab = useCallback(
+    (id: number | null, t: TabState) => {
+      const takeOver = id === null && flowName === null && !viewing && live.current.nodes.length === 0 && !dirty;
+      const target = id ?? (takeOver ? activeId : nextTabId.current++);
+      if (target !== activeId) stash.current.set(activeId, captureTab());
+      stash.current.delete(target);
+      setTabIds((ids) => (ids.includes(target) ? ids : [...ids, target]));
+      applyTab(t);
+      setActiveId(target);
+      setPage("canvas");
+    },
+    [flowName, viewing, dirty, activeId, captureTab, applyTab, setPage],
+  );
+
+  const switchTab = useCallback(
+    (id: number) => {
+      const t = stash.current.get(id);
+      if (id === activeId || !t) return setPage("canvas");
+      showTab(id, t);
+    },
+    [activeId, showTab, setPage],
+  );
+
+  /** The tab `name` is open in, if any. */
+  const tabOf = useCallback(
+    (name: string): number | null => {
+      if (flowName === name) return activeId;
+      for (const [id, t] of stash.current) if (t.name === name) return id;
+      return null;
+    },
+    [flowName, activeId],
+  );
+
+  const closeTab = useCallback(
+    async (id: number) => {
+      const t = id === activeId ? captureTab() : stash.current.get(id);
+      if (!t) return;
+      if (t.dirty && !(await dialog.confirm(`Close "${t.name ?? "untitled"}" and discard its unsaved changes?`, "Discard"))) return;
+      if (id !== activeId) {
+        stash.current.delete(id);
+        setTabIds((ids) => ids.filter((x) => x !== id));
+        return;
+      }
+      const next = nextAfterClose(tabIds, id);
+      if (next === null) {
+        // The last tab closes into a fresh draft.
+        applyTab(freshTab(null));
+        return;
+      }
+      const nt = stash.current.get(next) ?? freshTab(null);
+      stash.current.delete(next);
+      setTabIds((ids) => ids.filter((x) => x !== id));
+      applyTab(nt);
+      setActiveId(next);
+    },
+    [activeId, captureTab, dialog, tabIds, applyTab],
+  );
+
+  // Leaving the page asks first while any tab has unsaved changes.
+  const anyDirty = dirty || [...stash.current.values()].some((t) => t.dirty);
   useEffect(() => {
-    if (!dirty) return;
+    if (!anyDirty) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  }, [anyDirty]);
 
-  // "New" from the menu: a clean canvas under the prompted name. `nonce` makes a second New
-  // with the same name still fire.
+  // A flow document as a tab: its composites put back into the workspace first, its node-id
+  // counter past every id it holds. `saved`: it is the saved flow of that name (else a draft,
+  // unsaved until saved).
+  const tabFromDocument = useCallback(
+    (name: string | null, doc: FlowDocument, saved: boolean): TabState => {
+      const ns = doc.nodes as PrimitiveNodeType[];
+      const es = doc.edges as Edge[];
+      // A preimage is re-hashed on insert, so a tampered entry can only add a unit nobody
+      // points at, never stand in for one.
+      let msg = "";
+      try {
+        for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
+      } catch (e) {
+        msg = `some saved units could not be restored: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      const missing = ns.filter((n) => {
+        if (n.data.body.kind !== "Composite") return false;
+        try {
+          ev.get_unit(n.data.body.hash);
+          return false;
+        } catch {
+          return true;
+        }
+      });
+      if (missing.length > 0) {
+        msg = `${missing.length} grouped node(s) can't be resolved (saved before composites were stored) — rebuild them, then save`;
+      }
+      const server: FlowSettings = {
+        port: doc.server?.port ?? DEFAULT_SETTINGS.port,
+        interval: doc.server?.interval ?? DEFAULT_SETTINGS.interval,
+        ...(doc.server?.requirements ? { requirements: doc.server.requirements } : {}),
+      };
+      // A loaded flow's node ids carry the counters they were minted with: the next id must
+      // start past all of them, or a drop would mint a colliding one.
+      let max = -1;
+      for (const n of ns) for (const m of n.id.matchAll(/\d+/g)) max = Math.max(max, Number(m[0]));
+      return {
+        ...blankTab(name),
+        saved,
+        nodes: ns,
+        edges: es,
+        viewport: doc.viewport,
+        history: newHistory(snapshotOf(ns, es)),
+        settings: server,
+        savedKey: saved ? savedKeyOf(ns, es, server) : "",
+        idCounter: max + 1,
+        saveMsg: msg,
+      };
+    },
+    [ev],
+  );
+
+  // "New" from the menu: a clean canvas under the prompted name, in a tab of its own. `nonce`
+  // makes a second New with the same name still fire.
   useEffect(() => {
     if (!pendingNew) return;
-    setViewing(null);
-    beforeView.current = null;
-    restoring.current = true;
-    setNodes([]);
-    setEdges([]);
-    setViewport({ x: 0, y: 0, zoom: 1 });
-    setFlowName(pendingNew.name);
-    history.current.reset({ nodes: [], edges: [] });
-    setSettings(DEFAULT_SETTINGS);
-    setSavedKey(savedKeyOf([], [], DEFAULT_SETTINGS));
-    setSaveMsg("");
-    resetProjectionView();
-    bump();
-  }, [pendingNew, setNodes, setEdges, setViewport, resetProjectionView]);
+    showTab(null, freshTab(pendingNew.name));
+    // Only a new request opens a tab, not the callbacks changing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingNew]);
 
   const onSave = useCallback(async () => {
     let name = flowName;
@@ -255,78 +418,30 @@ function Canvas({
     saveFlow(name, doc)
       .then((entry) => {
         setSavedKey(key);
+        setSavedOnServer(true);
         setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
       })
       .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
   }, [flowName, nodes, edges, getViewport, ev, settings, dialog]);
 
+  // Open a saved flow: in its tab when it is open already (`reload`: replace that tab's canvas
+  // with the saved copy, asking first if it has unsaved changes), else in a new tab.
   const onOpenFlow = useCallback(
-    async (rec: FlowRecord) => {
-      // Opening the flow being edited only reloads it when asked to ("reload saved"), and still
-      // asks first; FlowsPage resumes it instead (openChoice).
-      const discard =
-        rec.name === flowName
-          ? `Discard your unsaved changes to "${rec.name}" and reload the saved copy?`
-          : `Discard unsaved changes to "${flowName ?? "untitled"}" and open "${rec.name}"?`;
-      if (dirty && !(await dialog.confirm(discard, rec.name === flowName ? "Reload saved" : "Discard"))) {
+    async (rec: FlowRecord, reload = false) => {
+      const open = tabOf(rec.name);
+      if (open !== null && !reload) {
+        switchTab(open);
+        return true;
+      }
+      const current = open === null ? null : open === activeId ? captureTab() : stash.current.get(open);
+      if (current?.dirty && !(await dialog.confirm(`Discard your unsaved changes to "${rec.name}" and reload the saved copy?`, "Reload saved"))) {
         return false;
       }
-      setViewing(null);
-      beforeView.current = null;
-      const ns = rec.document.nodes as PrimitiveNodeType[];
-      const es = rec.document.edges as Edge[];
-      // Put the flow's composites back into the workspace before anything can reference them.
-      // A preimage is re-hashed on insert, so a tampered entry can only add a unit nobody
-      // points at, never stand in for one.
-      let openMsg = "";
-      try {
-        for (const hex of rec.document.units ?? []) ev.insert(fromHex(hex));
-      } catch (e) {
-        openMsg = `some saved units could not be restored: ${e instanceof Error ? e.message : String(e)}`;
-      }
-      const missing = ns.filter((n) => {
-        if (n.data.body.kind !== "Composite") return false;
-        try {
-          ev.get_unit(n.data.body.hash);
-          return false;
-        } catch {
-          return true;
-        }
-      });
-      if (missing.length > 0) {
-        openMsg = `${missing.length} grouped node(s) can't be resolved (saved before composites were stored) — rebuild them, then save`;
-      }
-      restoring.current = true;
-      setNodes(ns);
-      setEdges(es);
-      setViewport(rec.document.viewport);
-      setFlowName(rec.name);
-      history.current.reset(snapshotOf(ns, es));
-      const server: FlowSettings = {
-        port: rec.document.server?.port ?? DEFAULT_SETTINGS.port,
-        interval: rec.document.server?.interval ?? DEFAULT_SETTINGS.interval,
-        ...(rec.document.server?.requirements ? { requirements: rec.document.server.requirements } : {}),
-      };
-      setSettings(server);
-      setSavedKey(savedKeyOf(ns, es, server));
-      // A loaded flow's node ids carry the counters they were minted with — the fresh idRef
-      // must start PAST all of them, or the next drop would mint a colliding id.
-      let max = -1;
-      for (const n of ns) {
-        for (const m of n.id.matchAll(/\d+/g)) {
-          max = Math.max(max, Number(m[0]));
-        }
-      }
-      idRef.current = max + 1;
-      setSaveMsg(openMsg);
-      resetProjectionView();
-      bump();
-      setPage("canvas");
+      showTab(open, tabFromDocument(rec.name, rec.document, true));
       return true;
     },
-    [setNodes, setEdges, setViewport, setPage, snapshotOf, ev, resetProjectionView, dirty, flowName, dialog],
+    [tabOf, switchTab, activeId, captureTab, dialog, showTab, tabFromDocument],
   );
-
 
   const byName = useMemo(() => {
     const m = new Map<string, WUnit>();
@@ -337,13 +452,17 @@ function Canvas({
     return m;
   }, [catalog]);
 
-  // A sample (samples.ts) opens as an unsaved copy under its own name: saving it keeps it.
+  // A sample (samples.ts) opens as an unsaved copy under its own name, in a tab of its own:
+  // saving it keeps it. A tab of that name already open is replaced only when confirmed.
   const onOpenSample = useCallback(
     async (sample: Sample) => {
-      const document = buildSample(sample, byName, variadic);
-      if (await onOpenFlow({ name: sample.name, document, saved_at_epoch_seconds: 0 })) setSavedKey("");
+      const open = tabOf(sample.name);
+      if (open !== null && !(await dialog.confirm(`"${sample.name}" is open in a tab. Replace it with the sample? Its unsaved changes are lost.`, "Replace"))) {
+        return;
+      }
+      showTab(open, tabFromDocument(sample.name, buildSample(sample, byName, variadic), false));
     },
-    [onOpenFlow, byName, variadic],
+    [tabOf, dialog, showTab, tabFromDocument, byName, variadic],
   );
 
   const onDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
@@ -634,6 +753,8 @@ function Canvas({
   );
 
   // ── View mode ──────────────────────────────────────────────────────────────────────────
+  // A deployment, read only, with its runs: in its flow's tab (that tab's edit copy set aside
+  // until edit mode), or a tab of its own.
   const onView = useCallback(
     async (slug: string) => {
       let doc: FlowDocument;
@@ -643,15 +764,6 @@ function Canvas({
         setDeployError(e instanceof Error ? e.message : String(e));
         return;
       }
-      if (!viewing) {
-        beforeView.current = {
-          nodes: live.current.nodes,
-          edges: live.current.edges,
-          viewport: getViewport(),
-          history: history.current,
-          dirty,
-        };
-      }
       for (const hex of doc.units ?? []) {
         try {
           ev.insert(fromHex(hex));
@@ -659,45 +771,73 @@ function Canvas({
           // a unit that won't decode just stays unresolvable, like on Open
         }
       }
-      history.current = newHistory(snapshotOf([], []));
-      restoring.current = true;
-      setNodes(doc.nodes as PrimitiveNodeType[]);
-      setEdges(doc.edges as Edge[]);
-      setViewport(doc.viewport);
-      setViewing(slug);
-      setViewTrace(doc.trace);
+      const open = tabOf(slug);
+      const base = open === null ? blankTab(slug) : open === activeId ? captureTab() : (stash.current.get(open) ?? blankTab(slug));
+      const editCopy = base.viewing
+        ? base.beforeView
+        : open === null
+          ? null
+          : { nodes: base.nodes, edges: base.edges, viewport: base.viewport, history: base.history, dirty: base.dirty };
+      showTab(open, {
+        ...base,
+        beforeView: editCopy,
+        nodes: doc.nodes as PrimitiveNodeType[],
+        edges: doc.edges as Edge[],
+        viewport: doc.viewport,
+        history: newHistory(snapshotOf([], [])),
+        viewing: slug,
+        viewDoc: doc,
+        viewTrace: doc.trace,
+        selectedRun: null,
+        step: null,
+        inspectNode: null,
+      });
+    },
+    [ev, tabOf, activeId, captureTab, showTab],
+  );
+
+  // Edit mode: the flow as edited, put back as it was left; for a tab opened to view, the saved
+  // flow of that name, else a draft of what is deployed.
+  const onEditMode = useCallback(async () => {
+    const before = beforeView.current;
+    if (!viewing) return;
+    if (before) {
+      beforeView.current = null;
+      viewDoc.current = null;
+      setViewing(null);
+      setViewTrace(undefined);
       setInspectNode(null);
       setSelectedRun(null);
       setStep(null);
-      resetProjectionView();
-      setPage("canvas");
-    },
-    [viewing, getViewport, dirty, ev, snapshotOf, setNodes, setEdges, setViewport, resetProjectionView, setPage],
-  );
-
-  const onExitView = useCallback(() => {
-    const before = beforeView.current;
-    beforeView.current = null;
-    setViewing(null);
-    setViewTrace(undefined);
-    setInspectNode(null);
-    setSelectedRun(null);
-    setStep(null);
-    if (before) {
       history.current = before.history;
       restoring.current = true;
       setNodes(before.nodes);
       setEdges(before.edges);
       setViewport(before.viewport);
+      bump();
+      return;
     }
-  }, [setNodes, setEdges, setViewport]);
+    const name = flowName;
+    const doc = viewDoc.current;
+    let t: TabState | null = null;
+    if (name) {
+      try {
+        t = tabFromDocument(name, (await getFlow(name)).document, true);
+      } catch {
+        // not saved: start from what is deployed
+      }
+    }
+    if (!t && doc) t = tabFromDocument(name, doc, false);
+    if (t) showTab(activeId, t);
+  }, [viewing, flowName, history, restoring, setNodes, setEdges, setViewport, bump, tabFromDocument, showTab, activeId]);
 
-  // "open" on the flow already being edited: back to the canvas, unsaved changes and all (out of
-  // a deployed flow's view, if one is shown over it).
-  const onResumeFlow = useCallback(() => {
-    if (viewing) onExitView();
-    setPage("canvas");
-  }, [viewing, onExitView, setPage]);
+  const onMode = useCallback(
+    (m: Mode) => {
+      if (m === "edit") onEditMode();
+      else if (flowName) onView(flowName);
+    },
+    [onEditMode, onView, flowName],
+  );
 
   // One node of a replay: its unit, evaluated on the inputs its wires brought.
   const evalNode = useCallback(
@@ -934,7 +1074,24 @@ function Canvas({
   // PrimitiveNode.tsx doesn't otherwise have for whole-node operations.
   const canExpand = selectedCount === 1 && nodes.some((n) => n.selected && n.data.body.kind === "Composite");
 
+  // The tab strip: each open flow, what it is, and its mode.
+  const tabList = tabIds.map((id) => {
+    const t = id === activeId ? { name: flowName, saved: savedOnServer, dirty, viewing } : (stash.current.get(id) ?? blankTab(null));
+    return {
+      id,
+      name: t.name,
+      kind: tabKind(t, (name) => deployments.some((d) => d.slug === name)),
+      dirty: t.dirty,
+      mode: (t.viewing ? "view" : "edit") as Mode,
+    };
+  });
+
   return (
+    <>
+    {/* Edit mode places nodes from the palette; view mode is read only, so it has none. */}
+    {!viewing && page === "canvas" && <Palette catalog={catalog} templates={TEMPLATES} />}
+    <div className="hl-main">
+    <FlowTabs tabs={tabList} active={activeId} onSelect={switchTab} onClose={closeTab} />
     <div className={viewing ? "hl-canvas hl-canvas--viewing" : "hl-canvas"} onDrop={onDrop} onDragOver={onDragOver}>
       <div className="hl-canvas__flow">
         <ReactFlow<PrimitiveNodeType>
@@ -967,8 +1124,9 @@ function Canvas({
           <Panel position="top-left">
             <FlowToolbar
               histVersion={histVersion}
-              viewing={viewing}
-              onExitView={onExitView}
+              mode={viewing ? "view" : "edit"}
+              canView={deployedEntry !== undefined}
+              onMode={onMode}
               showValues={showValues}
               onToggleValues={() => setShowValues((v) => !v)}
               flowName={flowName}
@@ -1086,9 +1244,9 @@ function Canvas({
         >
           {page === "flows" && (
             <FlowsPage
-              current={{ name: flowName, dirty }}
+              openTabs={tabList}
               onOpen={onOpenFlow}
-              onResume={onResumeFlow}
+              onSwitch={switchTab}
               samples={SAMPLES}
               onOpenSample={onOpenSample}
               manifestOf={manifestOfDocument}
@@ -1111,6 +1269,8 @@ function Canvas({
         </div>
       )}
     </div>
+    </div>
+    </>
   );
 }
 
@@ -1120,15 +1280,9 @@ function Editor() {
   const [variadic, setVariadic] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>("");
   const [page, setPage] = useState<AppPage>("canvas");
-  // "New" carries the prompted name down to the canvas; `nonce` makes a second New with the
-  // same name still take effect (the object identity changes even when the name doesn't).
+  // "New" carries the prompted name down to the canvas, which opens it in a tab of its own;
+  // `nonce` makes a second New with the same name still take effect.
   const [pendingNew, setPendingNew] = useState<{ name: string; nonce: number } | null>(null);
-  // Whether the canvas has unsaved changes, reported up by Canvas so New can ask first. A ref:
-  // only read when New is clicked, so it never needs to re-render the header.
-  const canvasDirty = useRef(false);
-  const onDirtyChange = useCallback((d: boolean) => {
-    canvasDirty.current = d;
-  }, []);
 
   useEffect(() => {
     (async () => {
@@ -1139,9 +1293,6 @@ function Editor() {
   }, []);
 
   const onNew = async () => {
-    if (canvasDirty.current && !(await dialog.confirm("Discard unsaved changes and start a new flow?", "Discard"))) {
-      return;
-    }
     const name = await dialog.prompt("Flow name (letters, digits, - and _ only):");
     if (!name) return;
     setPendingNew((p) => ({ name, nonce: (p?.nonce ?? 0) + 1 }));
@@ -1193,7 +1344,6 @@ function Editor() {
         <pre className="hl-error">{error}</pre>
       ) : (
         <div className="hl-body">
-          {catalog && <Palette catalog={catalog} templates={TEMPLATES} />}
           <ReactFlowProvider>
             {catalog && (
               <Canvas
@@ -1202,7 +1352,6 @@ function Editor() {
                 page={page}
                 setPage={setPage}
                 pendingNew={pendingNew}
-                onDirtyChange={onDirtyChange}
               />
             )}
           </ReactFlowProvider>

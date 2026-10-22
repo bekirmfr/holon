@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { deleteFlow, getFlow, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
 import { ManifestSection, type ManifestView } from "./Manifest";
-import { openChoice } from "./flowDoc";
+import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
 import { DeploymentCard } from "./DeploymentCard";
 import type { Sample } from "./samples";
@@ -16,22 +16,24 @@ export type AppPage = "canvas" | "flows" | "deployed";
 
 /** The saved-flows page: list, open, delete. Publishing to the marketplace is deferred — the
  *  button is real but disabled, honestly labeled, rather than wired to something half-built.
- *  "open" on the flow being edited goes back to its unsaved changes; only "reload saved" (shown
- *  for that flow) loads the saved copy over them. */
+ *  "open" on a flow open in a tab goes to that tab, unsaved changes and all; only "reload saved"
+ *  (shown when that tab has changes) loads the saved copy over them. */
 export function FlowsPage({
-  current,
+  openTabs,
   onOpen,
-  onResume,
+  onSwitch,
   samples,
   onOpenSample,
   manifestOf,
 }: {
-  current: { name: string | null; dirty: boolean };
+  /** The open tabs: a flow open in one is gone back to, not opened again. */
+  openTabs: { id: number; name: string | null; dirty: boolean }[];
   /** A saved document's manifest items, derived as deploying it would (App: core's capabilities
    *  plus its deploy settings' requirements). Throws why it can't be derived. */
   manifestOf: (doc: FlowDocument) => ManifestView;
-  onOpen: (rec: FlowRecord) => void;
-  onResume: () => void;
+  /** Open a saved flow in a new tab, or (`reload`) over its open tab. */
+  onOpen: (rec: FlowRecord, reload?: boolean) => void;
+  onSwitch: (tab: number) => void;
   /** Sample flows (samples.ts), one per capability: opening one starts an unsaved copy. */
   samples: Sample[];
   onOpenSample: (sample: Sample) => void;
@@ -52,13 +54,15 @@ export function FlowsPage({
     refresh();
   }, [refresh]);
 
+  const tabOf = (name: string) => openTabs.find((t) => t.name === name);
   const open = (name: string) => {
-    if (openChoice(name, current) === "resume") return onResume();
-    reload(name);
+    const tab = tabOf(name);
+    if (openChoice(name, openTabs) === "switch" && tab) return onSwitch(tab.id);
+    load(name, false);
   };
-  const reload = (name: string) => {
+  const load = (name: string, reload: boolean) => {
     getFlow(name)
-      .then(onOpen)
+      .then((rec) => onOpen(rec, reload))
       .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
   };
   const remove = async (name: string) => {
@@ -97,13 +101,13 @@ export function FlowsPage({
             <span style={{ color: "#9fb4d4", fontSize: 11 }}>
               saved {new Date(f.saved_at_epoch_seconds * 1000).toLocaleString()}
             </span>
-            {openChoice(f.name, current) === "resume" ? (
+            {tabOf(f.name)?.dirty ? (
               <>
                 <span style={{ color: "#e0c36f", fontSize: 11 }}>unsaved changes</span>
-                <button style={smallBtn} onClick={() => open(f.name)} title="back to the canvas, changes kept">
+                <button style={smallBtn} onClick={() => open(f.name)} title="go to its tab, changes kept">
                   open
                 </button>
-                <button style={smallBtn} onClick={() => reload(f.name)} title="discard your changes and load the saved copy">
+                <button style={smallBtn} onClick={() => load(f.name, true)} title="discard your changes and load the saved copy">
                   reload saved
                 </button>
               </>

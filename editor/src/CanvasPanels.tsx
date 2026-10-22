@@ -1,10 +1,12 @@
-// The canvas's two button panels: the flow toolbar (top left) and the projection panel (top right).
+// The canvas's tab strip (one tab per open flow), and its two button panels: the flow toolbar
+// (top left) and the projection panel (top right).
 
 import type { CSSProperties, ReactNode } from "react";
 import type { WValue } from "./holon";
 import { boundaryLabels, formatValue } from "./diagnostics";
 import { BoundaryField } from "./BoundaryField";
 import type { Projection } from "./canvasOps";
+import type { Mode } from "./tabs";
 
 const primaryBtn: CSSProperties = {
   font: "inherit",
@@ -29,12 +31,92 @@ const historyBtn = (enabled: boolean): CSSProperties => ({
   opacity: enabled ? 1 : 0.4,
 });
 
-/** Top left: the deployed flow being viewed and the way out, or the flow being edited with
- *  save, undo/redo and the deploy bar (passed in as `deployBar`). `error` shows in both. */
+const KIND_COLOR = { deployed: "#9ad29f", saved: "#9fb4d4", draft: "#e0c36f" } as const;
+
+/** Above the canvas: a tab per open flow, with what it is (draft, saved, deployed), its mode,
+ *  unsaved changes, and a close button. */
+export function FlowTabs({
+  tabs,
+  active,
+  onSelect,
+  onClose,
+}: {
+  tabs: { id: number; name: string | null; kind: "deployed" | "saved" | "draft"; dirty: boolean; mode: Mode }[];
+  active: number;
+  onSelect: (id: number) => void;
+  onClose: (id: number) => void;
+}) {
+  return (
+    <div className="hl-tabs" role="tablist">
+      {tabs.map((t) => (
+        <div
+          key={t.id}
+          role="tab"
+          aria-selected={t.id === active}
+          className={t.id === active ? "hl-tab hl-tab--active" : "hl-tab"}
+          onClick={() => onSelect(t.id)}
+          onAuxClick={(e) => e.button === 1 && onClose(t.id)}
+          title={`${t.name ?? "untitled"}: ${t.kind}, ${t.mode} mode${t.dirty ? ", unsaved changes" : ""}`}
+        >
+          <span className="hl-tab__name">{t.name ?? "untitled"}</span>
+          {t.dirty && <span className="hl-tab__dirty">•</span>}
+          <span className="hl-tab__kind" style={{ color: KIND_COLOR[t.kind] }}>
+            {t.kind}
+          </span>
+          {t.mode === "view" && <span className="hl-tab__mode">view</span>}
+          <button
+            className="hl-tab__close"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose(t.id);
+            }}
+            title="close this tab"
+          >
+            ×
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Edit or view: the same flow as edited (palette, save, deploy) or as deployed (read only,
+ *  with its runs). View needs a deployment. */
+function ModeSwitch({ mode, canView, onMode }: { mode: Mode; canView: boolean; onMode: (m: Mode) => void }) {
+  const seg = (m: Mode, enabled: boolean, title: string) => (
+    <button
+      onClick={() => enabled && m !== mode && onMode(m)}
+      disabled={!enabled}
+      title={title}
+      style={{
+        font: "inherit",
+        fontSize: 11,
+        padding: "3px 10px",
+        border: "none",
+        color: m === mode ? "#0e1a2f" : "#9fb4d4",
+        background: m === mode ? "#6fd3e0" : "transparent",
+        cursor: enabled && m !== mode ? "pointer" : "default",
+        opacity: enabled ? 1 : 0.4,
+      }}
+    >
+      {m}
+    </button>
+  );
+  return (
+    <span style={{ display: "inline-flex", border: "1px solid #1b2a45", borderRadius: 3, overflow: "hidden" }}>
+      {seg("edit", true, "the flow as edited: place, wire, save and deploy")}
+      {seg("view", canView, canView ? "the flow as deployed, read only, with its runs" : "deploy it to view its runs")}
+    </span>
+  );
+}
+
+/** Top left: the flow's name and mode, then in edit mode save, undo/redo and the deploy bar
+ *  (passed in as `deployBar`), in view mode the values toggle. `error` shows in both. */
 export function FlowToolbar({
   histVersion,
-  viewing,
-  onExitView,
+  mode,
+  canView,
+  onMode,
   showValues,
   onToggleValues,
   flowName,
@@ -49,8 +131,10 @@ export function FlowToolbar({
   error,
 }: {
   histVersion: number;
-  viewing: string | null;
-  onExitView: () => void;
+  mode: Mode;
+  /** Whether it has a deployment to view. */
+  canView: boolean;
+  onMode: (m: Mode) => void;
   /** View mode: whether nodes show their outputs' values as chips. */
   showValues: boolean;
   onToggleValues: () => void;
@@ -69,15 +153,14 @@ export function FlowToolbar({
     // histVersion is what makes the undo/redo disabled state live — history itself is a ref
     // (pushing must not re-render the canvas mid-drag), so this re-renders off the counter.
     <div data-hist={histVersion} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-      {viewing ? (
+      <span style={{ color: mode === "view" ? "#e6eefb" : "#9fb4d4", fontSize: 12, letterSpacing: "0.04em" }}>
+        {flowName ?? "untitled"}
+        {dirty && <span title="unsaved changes"> •</span>}
+      </span>
+      <ModeSwitch mode={mode} canView={canView} onMode={onMode} />
+      {mode === "view" ? (
         <>
-          <span style={{ color: "#e6eefb", fontSize: 12, letterSpacing: "0.04em" }}>
-            viewing <span style={{ color: "#6fd3e0" }}>{viewing}</span>
-          </span>
           <span style={{ color: "#7e8ea8", fontSize: 11 }}>deployed · read only</span>
-          <button onClick={onExitView} style={primaryBtn}>
-            exit view
-          </button>
           <button
             onClick={onToggleValues}
             style={historyBtn(true)}
@@ -88,10 +171,6 @@ export function FlowToolbar({
         </>
       ) : (
         <>
-          <span style={{ color: "#9fb4d4", fontSize: 12, letterSpacing: "0.04em" }}>
-            {flowName ?? "untitled"}
-            {dirty && <span title="unsaved changes"> •</span>}
-          </span>
           <button onClick={onSave} style={primaryBtn}>
             save
           </button>

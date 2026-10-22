@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { closureOf, documentKey, fromHex, openChoice, structuralKey, toHex } from "./flowDoc";
+import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import type { WUnit } from "./holon";
 
 const prim = (name: string, params: WUnit["params"] = []): WUnit => ({
@@ -92,15 +92,5 @@ describe("hex", () => {
   it("rejects malformed input", () => {
     expect(() => fromHex("abc")).toThrow();
     expect(() => fromHex("zz")).toThrow();
-  });
-});
-
-describe("openChoice", () => {
-  it("goes back to the open flow's unsaved changes rather than discarding them", () => {
-    expect(openChoice("todo", { name: "todo", dirty: true })).toBe("resume");
-    expect(openChoice("other", { name: "todo", dirty: true })).toBe("confirm");
-    expect(openChoice("todo", { name: null, dirty: true })).toBe("confirm");
-    expect(openChoice("todo", { name: "todo", dirty: false })).toBe("load");
-    expect(openChoice("other", { name: "todo", dirty: false })).toBe("load");
   });
 });
