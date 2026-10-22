@@ -236,10 +236,10 @@ fn run_attempt(
     sourced.extend_from_slice(extra_sourced);
     // The secrets it was granted. Not part of the run's input record (nor its id): a log never
     // holds them, and a replay stands a placeholder in.
-    for (name, value) in secrets.lock().unwrap().iter() {
+    for (name, value) in secrets.lock().unwrap().current.iter() {
         let cap = Capability::SecretRead(name.clone());
         if permit.allows(&cap) {
-            sourced.push((cap, Value::Text(value.clone())));
+            sourced.push((cap, Value::Text(value.to_string())));
         }
     }
 

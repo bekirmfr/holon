@@ -1152,10 +1152,12 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     // Set it (refusing a too-short one); listing gives names only.
     let set = |v: &str| route(&state, &req("POST", "/deployments/s/secrets/api_key", serde_json::to_vec(&serde_json::json!({ "value": v })).unwrap())).status_code;
     assert_eq!(set("short"), 400);
-    assert_eq!(set(value), 204);
-    let listed = route(&state, &req("GET", "/deployments/s/secrets", vec![]));
-    let listed = String::from_utf8(body_bytes(listed)).unwrap();
-    assert_eq!(listed, r#"{"names":["api_key"]}"#);
+    assert_eq!(set(value), 200);
+    let listed: serde_json::Value = serde_json::from_slice(&body_bytes(route(&state, &req("GET", "/deployments/s/secrets", vec![])))).unwrap();
+    assert_eq!(listed["names"], serde_json::json!(["api_key"]));
+    assert_eq!(listed["secrets"][0]["version"], 1);
+    assert_eq!(listed["secrets"][0]["source"], "local");
+    assert!(!listed.to_string().contains(value), "never the value: {listed}");
 
     let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", "SecretRead(\"api_key\")", "StateWrite(\"k\")"]);
     assert_eq!(deploy_json(&state, "s", flow_hash, serde_json::json!({ "acknowledge": ack })).status_code, 200);

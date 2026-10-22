@@ -91,6 +91,8 @@ pub(crate) fn load_host_key(path: &str) -> Result<(), String> {
     } else {
         match std::fs::read_to_string(path) {
             Ok(text) => {
+                // One written before keys were restricted on every OS is restricted now.
+                let _ = crate::sealing::restrict_to_owner(std::path::Path::new(path));
                 let hex = text.trim();
                 let bytes: Option<Vec<u8>> = (0..hex.len())
                     .step_by(2)
@@ -103,9 +105,8 @@ pub(crate) fn load_host_key(path: &str) -> Result<(), String> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let key = random_key();
                 let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
-                holon_host::write_atomically(std::path::Path::new(path), format!("{hex}\n").as_bytes())
+                crate::sealing::write_private(std::path::Path::new(path), format!("{hex}\n").as_bytes())
                     .map_err(|e| format!("could not write {path:?}: {e}"))?;
-                crate::secrets::restrict_to_owner(path);
                 key
             }
             Err(e) => return Err(format!("could not read {path:?}: {e}")),

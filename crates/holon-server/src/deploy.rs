@@ -280,15 +280,16 @@ pub(crate) fn handle_post_deploy_preview(
     }))
 }
 
-/// `GET /deployments/<slug>/secrets` — the names of its secrets, never their values.
-/// `POST /deployments/<slug>/secrets/<name>` (`{"value": "..."}`) sets one; `DELETE` removes it.
+/// `GET /deployments/<slug>/secrets` — its secrets' names, versions and sources, never values.
+/// `POST /deployments/<slug>/secrets/<name>` (`{"value": "..."}`) sets one, as a new version;
+/// `DELETE` removes it, every version.
 /// A slug may have secrets before it is first deployed.
 pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&str>, method: &str, request: &Request) -> Response {
     if !is_valid_slug(slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
     }
     match (method, name) {
-        ("GET", None) => Response::json(&serde_json::json!({ "names": secrets.names(slug) })),
+        ("GET", None) => Response::json(&serde_json::json!({ "names": secrets.names(slug), "secrets": secrets.list(slug) })),
         ("POST", Some(name)) => {
             let bytes = match read_body(request) {
                 Ok(b) => b,
@@ -303,7 +304,7 @@ pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&st
                 Err(e) => return err(400, format!("expected {{\"value\": \"...\"}}: {e}")),
             };
             match secrets.set(slug, name, &body.value) {
-                Ok(()) => Response::empty_204(),
+                Ok(version) => Response::json(&serde_json::json!({ "version": version })),
                 Err(e) => err(400, e),
             }
         }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aes-gcm = "0.10"
 blake3 = "1"
 getrandom = "0.3"
 # The transport's whole job is to move bytes to code that already exists and is already tested —
@@ -27,3 +28,14 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 toml = "0.8"
 ureq = "2"
+zeroize = "1"
+
+# The secrets store's master key lives in the OS key store (secrets.rs): Credential Manager on
+# Windows, the Keychain on macOS. Elsewhere it comes from a key file or an environment variable.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target."cfg(windows)".dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+# An owner-only ACL on the secrets file and its key file.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Memory"] }

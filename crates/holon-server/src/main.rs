@@ -156,6 +156,7 @@ mod permissions;
 mod persist;
 mod recorder;
 mod scheduler;
+mod sealing;
 mod secrets;
 #[cfg(test)]
 mod tests;
@@ -403,6 +404,7 @@ fn main() {
     let mut flows_arg = ".holon-flows.json".to_string();
     let mut policy_arg = "holon.toml".to_string();
     let mut secrets_arg = ".holon-secrets.json".to_string();
+    let mut secrets_key_arg: Option<String> = None;
     let mut host_key_arg = ".holon-host-key".to_string();
     let mut data_limits = dataplane::DataLimits::default();
     while let Some(a) = args.next() {
@@ -424,6 +426,16 @@ fn main() {
             if let Some(v) = args.next() {
                 secrets_arg = v;
             }
+        } else if a == "--secrets-key" {
+            // Where the secrets file's master key is kept: `os` (the OS key store, the default
+            // where there is one), `env:VAR` or `file:PATH` (sealing.rs).
+            if let Some(v) = args.next() {
+                secrets_key_arg = Some(v);
+            }
+        } else if a == "--new-secrets-key" {
+            // A fresh master key, for `--secrets-key env:VAR`: keep it safe, and set the variable.
+            println!("{}", sealing::to_hex(sealing::new_key().as_slice()));
+            return;
         } else if a == "--policy" {
             if let Some(v) = args.next() {
                 policy_arg = v;
@@ -587,7 +599,8 @@ fn main() {
         std::process::exit(1);
     };
     let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
-    let secrets = Arc::new(SecretStore::load(&secrets_arg).unwrap_or_else(|e| refuse_to_start(e)));
+    let secrets_key = sealing::KeySource::parse(secrets_key_arg.as_deref(), &secrets_arg).unwrap_or_else(|e| refuse_to_start(e));
+    let secrets = Arc::new(SecretStore::open(&secrets_arg, &secrets_key).unwrap_or_else(|e| refuse_to_start(e)));
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));
     let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     for (slug, dep) in initial_deployments.iter_mut() {
