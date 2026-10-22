@@ -5,7 +5,19 @@
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { deleteSecret, getPermissions, listSecrets, setSecret, type DeploymentEntry, type HostPolicy, type Requirements } from "./server";
+import {
+  deleteSecret,
+  getPermissions,
+  getSecretHistory,
+  listSecrets,
+  rollbackSecret,
+  setSecret,
+  type DeploymentEntry,
+  type HostPolicy,
+  type Requirements,
+  type SecretHistory,
+  type SecretInfo,
+} from "./server";
 
 /** A flow's deploy settings, saved with it. `port` is for a flow with routes (a server),
  *  `interval` (seconds) for a flow that reads the clock. Either may be unused. `requirements`:
@@ -93,29 +105,12 @@ export function DeployBar({
   useEffect(() => {
     if (open && !policy) getPermissions().then(setPolicy).catch(() => {});
   }, [open, policy]);
-  // Which secrets are set (names only: the server never sends a value back).
-  const [setNames, setSetNames] = useState<string[]>([]);
-  const [typed, setTyped] = useState<Record<string, string>>({});
-  const [secretMsg, setSecretMsg] = useState("");
-  useEffect(() => {
-    if (open && slug) listSecrets(slug).then(setSetNames).catch(() => setSetNames([]));
-  }, [open, slug]);
-  const saveSecret = (name: string) => {
-    if (!slug) return;
-    setSecret(slug, name, typed[name] ?? "")
-      .then(() => {
-        setTyped({ ...typed, [name]: "" });
-        setSecretMsg(`${name} set`);
-        return listSecrets(slug).then(setSetNames);
-      })
-      .catch((e: unknown) => setSecretMsg(e instanceof Error ? e.message : String(e)));
+  // The secrets set: versions and sources, never values (the server never sends one back).
+  const [secrets, setSecrets] = useState<SecretInfo[]>([]);
+  const reloadSecrets = () => {
+    if (slug) listSecrets(slug).then(setSecrets).catch(() => setSecrets([]));
   };
-  const removeSecret = (name: string) => {
-    if (!slug) return;
-    deleteSecret(slug, name)
-      .then(() => listSecrets(slug).then(setSetNames))
-      .catch((e: unknown) => setSecretMsg(e instanceof Error ? e.message : String(e)));
-  };
+  useEffect(reloadSecrets, [open, slug]);
   const req = settings.requirements;
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
@@ -264,36 +259,160 @@ export function DeployBar({
                 </span>
               )}
               {secretNames.map((name) => (
-                <label key={name} style={{ display: "contents" }}>
-                  <span>
-                    {name} <span style={{ color: setNames.includes(name) ? "#9ad29f" : "#e0916f" }}>{setNames.includes(name) ? "set" : "not set"}</span>
-                  </span>
-                  <span style={{ display: "inline-flex", gap: 4 }}>
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={typed[name] ?? ""}
-                      placeholder={setNames.includes(name) ? "replace…" : "value"}
-                      disabled={!slug}
-                      onChange={(e) => setTyped({ ...typed, [name]: e.target.value })}
-                      style={{ ...input, width: 100 }}
-                    />
-                    <button style={base} disabled={!slug || !(typed[name] ?? "")} onClick={() => saveSecret(name)}>
-                      set
-                    </button>
-                    {setNames.includes(name) && (
-                      <button style={base} onClick={() => removeSecret(name)} title="remove this secret">
-                        ×
-                      </button>
-                    )}
-                  </span>
-                </label>
+                <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} onChanged={reloadSecrets} />
               ))}
-              {secretMsg && <span style={{ gridColumn: "1 / -1", color: "#9fb4d4" }}>{secretMsg}</span>}
             </div>
           </div>,
           document.body,
         )}
     </span>
+  );
+}
+
+/** Where a secret's value comes from, as the row picks it. */
+type Kind = "value" | "env" | "vault";
+const KINDS: { kind: Kind; label: string; placeholder: (name: string, isSet: boolean) => string; title: string }[] = [
+  { kind: "value", label: "value", placeholder: (_, isSet) => (isSet ? "replace…" : "value"), title: "sealed by the server under its master key" },
+  {
+    kind: "env",
+    label: "env",
+    placeholder: (name) => `HOLON_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`,
+    title: "an environment variable of the server's, or its --dotenv file; only HOLON_SECRET_… names",
+  },
+  { kind: "vault", label: "vault", placeholder: () => "secret/path#field", title: "a HashiCorp Vault KV v2 field, read with the server's VAULT_ADDR / VAULT_TOKEN" },
+];
+
+const when = (epoch: number) => new Date(epoch * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+const sourceLabel = (source: string) => (source === "local" ? "sealed here" : source);
+
+/**
+ * One secret in the deploy settings: its current version and where it comes from (or why it
+ * has no value), a way to set a new version (a value, an env variable, a Vault field), and its
+ * history, from which an older version can be rolled back to.
+ */
+function SecretRow({ slug, name, info, onChanged }: { slug: string | null; name: string; info?: SecretInfo; onChanged: () => void }) {
+  const kindOf = (source?: string): Kind => (source?.startsWith("env:") ? "env" : source?.startsWith("vault:") ? "vault" : "value");
+  const [kind, setKind] = useState<Kind>(kindOf(info?.source));
+  const [text, setText] = useState("");
+  const [msg, setMsg] = useState("");
+  const [history, setHistory] = useState<SecretHistory | null>(null);
+  // The row follows where the secret comes from once that's known (the list loads after it).
+  useEffect(() => {
+    if (info) setKind(kindOf(info.source));
+  }, [info?.source]);
+  const fail = (e: unknown) => setMsg(e instanceof Error ? e.message : String(e));
+  const loadHistory = () => slug && getSecretHistory(slug, name).then(setHistory).catch(fail);
+  const changed = (what: string) => {
+    setMsg(what);
+    onChanged();
+    if (history) loadHistory();
+  };
+  const save = () => {
+    const typed = text.trim();
+    if (!slug || !typed) return;
+    const set = kind === "value" ? { value: text } : { from: `${kind}:${typed}` };
+    setSecret(slug, name, set)
+      .then((v) => {
+        setText("");
+        changed(`version ${v} set`);
+      })
+      .catch(fail);
+  };
+  const remove = () =>
+    slug &&
+    deleteSecret(slug, name)
+      .then(() => changed("removed"))
+      .catch(fail);
+  const rollback = (to: number) =>
+    slug &&
+    rollbackSecret(slug, name, to)
+      .then((v) => changed(`version ${to} is current again, as version ${v}`))
+      .catch(fail);
+  const k = KINDS.find((x) => x.kind === kind)!;
+  const status = info ? (info.problem ? "#e0916f" : "#9ad29f") : "#e0916f";
+  return (
+    <>
+      <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+        <span>{name}</span>
+        <span style={{ color: status, fontSize: 10 }} title={info?.problem ?? (info ? `set ${when(info.set_at)}` : undefined)}>
+          {info ? `v${info.version} · ${sourceLabel(info.source)}${info.problem ? " · can't be read" : ""}` : "not set"}
+        </span>
+      </span>
+      <span style={{ display: "inline-flex", gap: 4 }}>
+        <select
+          value={kind}
+          onChange={(e) => {
+            const next = e.target.value as Kind;
+            setKind(next);
+            // An env variable's name is suggested from the secret's; a value is never carried over.
+            setText(next === "env" ? KINDS[1].placeholder(name, false) : "");
+          }}
+          disabled={!slug}
+          title={k.title}
+          style={{ ...base, padding: "3px 4px" }}
+        >
+          {KINDS.map((x) => (
+            <option key={x.kind} value={x.kind}>
+              {x.label}
+            </option>
+          ))}
+        </select>
+        <input
+          type={kind === "value" ? "password" : "text"}
+          autoComplete="off"
+          value={text}
+          placeholder={k.placeholder(name, !!info)}
+          disabled={!slug}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && save()}
+          title={k.title}
+          style={{ ...input, width: 150 }}
+        />
+        <button style={base} disabled={!slug || !text.trim()} onClick={save}>
+          set
+        </button>
+        {info && (
+          <button style={base} onClick={() => (history ? setHistory(null) : loadHistory())} title="versions and changes; roll back to an older version">
+            {history ? "▾" : "▸"}
+          </button>
+        )}
+        {info && (
+          <button style={base} onClick={remove} title="remove this secret, every version">
+            ×
+          </button>
+        )}
+      </span>
+      {msg && <span style={{ gridColumn: "1 / -1", color: "#9fb4d4", whiteSpace: "normal", maxWidth: 420 }}>{msg}</span>}
+      {history && (
+        <span style={{ gridColumn: "1 / -1", display: "grid", gap: 3, padding: "4px 8px", borderLeft: "2px solid #1b2a45", marginLeft: 4 }}>
+          {history.versions.map((v) => (
+            <span key={v.version} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ color: v.current ? "#9ad29f" : "#9fb4d4", minWidth: 24 }}>v{v.version}</span>
+              <span style={{ flex: 1 }}>{sourceLabel(v.source)}</span>
+              <span style={{ color: "#7e8ea8" }}>{when(v.set_at)}</span>
+              {v.current ? (
+                <span style={{ color: "#9ad29f", width: 58, textAlign: "right" }}>current</span>
+              ) : (
+                <button style={{ ...base, width: 58 }} onClick={() => rollback(v.version)} title={`make version ${v.version} current again`}>
+                  roll back
+                </button>
+              )}
+            </span>
+          ))}
+          {history.events.length > 0 && <span style={{ color: "#e6eefb", marginTop: 4 }}>changes</span>}
+          {history.events
+            .slice()
+            .reverse()
+            .map((e, i) => (
+              <span key={i} style={{ color: "#7e8ea8", whiteSpace: "normal", maxWidth: 420 }}>
+                {when(e.at)} · {e.action}
+                {e.version ? ` v${e.version}` : ""}
+                {e.source ? ` · ${sourceLabel(e.source)}` : ""}
+                {e.detail ? ` · ${e.detail}` : ""}
+              </span>
+            ))}
+        </span>
+      )}
+    </>
   );
 }

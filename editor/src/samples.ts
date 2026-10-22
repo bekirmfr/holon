@@ -26,8 +26,9 @@ export type Sample = {
   /** Deploy settings: a server's port, or a clock flow's interval in seconds. */
   port?: string;
   interval?: string;
-  /** Secrets to set under ⚙ before it works, and what each is. */
-  secrets?: { name: string; what: string }[];
+  /** Secrets to set under ⚙ before it works, what each is, and where to keep it when not a
+   *  value sealed by the server (`env:HOLON_SECRET_…`, `vault:…`). */
+  secrets?: { name: string; what: string; from?: string }[];
   /** How to try it once deployed. */
   tryIt: string;
   build(b: SampleBuilder): void;
@@ -228,6 +229,49 @@ export const SAMPLES: Sample[] = [
       b.wire(post, "out", status, "record");
       b.wire(req, "request", res, "request");
       b.wire(status, "out", res, "body");
+    },
+  },
+  {
+    name: "guarded-api",
+    title: "Token-guarded API",
+    description:
+      "Answer only callers holding the API token, with a receipt signed by a key from the server's environment: secrets sealed by the server or kept elsewhere, versioned, rolled back.",
+    shows: ["secrets", "secret sources", "secret versions", "secure_equals", "guard", "hmac_sha256"],
+    port: "8109",
+    secrets: [
+      { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back under ⚙ → ▸" },
+      { name: "receipt_key", what: "the key receipts are signed with", from: "env:HOLON_SECRET_RECEIPT_KEY" },
+    ],
+    tryIt:
+      "curl -H \"Authorization: Bearer <api_token>\" http://127.0.0.1:8109/me answers a receipt; without it, or after the token is rotated, 401",
+    build(b) {
+      const req = b.node("request", { method: "GET", path: "/me" }, [40, 40]);
+      const auth = b.node("field", { name: "authorization" }, [320, 40]);
+      const bearer = b.node("const", { value: "Bearer ", type: "Text" }, [40, 300]);
+      const token = b.node("secret", { name: "api_token" }, [40, 400]);
+      const expected = b.node("concat", {}, [320, 320]);
+      const match = b.node("secure_equals", {}, [580, 160]);
+      const path = b.node("field", { name: "path" }, [320, 480]);
+      const key = b.node("secret", { name: "receipt_key" }, [320, 600]);
+      const receipt = b.node("hmac_sha256", { encoding: "hex" }, [580, 520]);
+      const empty = b.node("record", {}, [580, 360]);
+      const body = b.node("with_field", { name: "receipt" }, [840, 400]);
+      const allowed = b.node("guard", {}, [1080, 220]);
+      const res = b.node("respond", { status: "200", missing: "401" }, [1320, 40]);
+      b.wire(req, "headers", auth, "record");
+      b.wire(bearer, "out", expected, "a");
+      b.wire(token, "out", expected, "b");
+      b.wire(auth, "out", match, "a");
+      b.wire(expected, "out", match, "b");
+      b.wire(req, "request", path, "record");
+      b.wire(key, "out", receipt, "key");
+      b.wire(path, "out", receipt, "message");
+      b.wire(empty, "out", body, "record");
+      b.wire(receipt, "out", body, "value");
+      b.wire(match, "out", allowed, "cond");
+      b.wire(body, "out", allowed, "value");
+      b.wire(req, "request", res, "request");
+      b.wire(allowed, "out", res, "body");
     },
   },
   {

@@ -154,7 +154,7 @@ export function FlowsPage({
             <div style={{ color: "#cfe3ff", fontSize: 11, margin: "2px 0" }}>{s.description}</div>
             <div style={{ color: "#7e8ea8", fontSize: 10 }}>
               shows {s.shows.join(" · ")}
-              {s.secrets && s.secrets.length > 0 && <> · needs secrets {s.secrets.map((x) => x.name).join(", ")} (set under ⚙)</>}
+              {s.secrets && s.secrets.length > 0 && <> · needs secrets {s.secrets.map((x) => (x.from ? `${x.name} (${x.from})` : x.name)).join(", ")} (set under ⚙)</>}
             </div>
             <div style={{ color: "#7e8ea8", fontSize: 10 }} title="once deployed">
               try: {s.tryIt}

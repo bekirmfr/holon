@@ -134,20 +134,47 @@ export type DeployPreview = {
   missing_secrets: string[];
 };
 
-/** `GET /deployments/<slug>/secrets` — the names set, never the values. */
-export async function listSecrets(slug: string): Promise<string[]> {
+/** A secret as the server lists it: never its value. `source`: `local` (sealed by the server),
+ *  `env:HOLON_SECRET_…` or `vault:<mount>/<path>#<field>`. `problem`: why it has no value now. */
+export type SecretInfo = { name: string; version: number; source: string; set_at: number; problem?: string };
+
+/** `GET /deployments/<slug>/secrets` — the secrets set, never their values. */
+export async function listSecrets(slug: string): Promise<SecretInfo[]> {
   const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/secrets`);
-  return (await asJson<{ names: string[] }>(res)).names;
+  return (await asJson<{ secrets: SecretInfo[] }>(res)).secrets;
 }
 
-/** Set a secret. The value goes to the server and is never sent back. */
-export async function setSecret(slug: string, name: string, value: string): Promise<void> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`, {
+const secretUrl = (slug: string, name: string) => `${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`;
+
+/** Set a secret, as a new version: a value (sent to the server, sealed there, never sent back),
+ *  or where it is kept (`from`: `env:…`, `vault:…`). Answers the new version. */
+export async function setSecret(slug: string, name: string, set: { value: string } | { from: string }): Promise<number> {
+  const res = await fetch(secretUrl(slug, name), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value }),
+    body: JSON.stringify(set),
   });
-  if (!res.ok) await asJson(res);
+  return (await asJson<{ version: number }>(res)).version;
+}
+
+/** A secret's kept versions (newest first) and its audit events (oldest first). */
+export type SecretHistory = {
+  versions: { version: number; source: string; set_at: number; current: boolean }[];
+  events: { at: number; name: string; action: string; version?: number; source?: string; detail?: string }[];
+};
+
+export async function getSecretHistory(slug: string, name: string): Promise<SecretHistory> {
+  return asJson<SecretHistory>(await fetch(secretUrl(slug, name)));
+}
+
+/** Make `version` current again, as a new version; answers it. */
+export async function rollbackSecret(slug: string, name: string, version: number): Promise<number> {
+  const res = await fetch(`${secretUrl(slug, name)}/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version }),
+  });
+  return (await asJson<{ version: number }>(res)).version;
 }
 
 export async function deleteSecret(slug: string, name: string): Promise<void> {
