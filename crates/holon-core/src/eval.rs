@@ -55,6 +55,10 @@ pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> 
 pub trait Observer {
     fn enter(&mut self, _path: &[u32]) {}
     fn leave(&mut self, _path: &[u32]) {}
+    /// What the node at `path` produced, called just before its `leave`. A host may keep it (the
+    /// flow log does), so a replay can show what a node it can't recompute, one fed a secret it
+    /// never logs, actually produced.
+    fn produced(&mut self, _path: &[u32], _outputs: &[Option<Value>]) {}
     /// The response to `request` (`{method, url, headers, body}`), made by the `http_request` at
     /// `path`, if the host has it. `None` (the default) leaves the node's response absent: in a
     /// round, that is "not yet", and the host performs the request before the next one.
@@ -213,6 +217,7 @@ fn eval_composite(
         path.push(ci as u32);
         observer.enter(path);
         scratch[ci] = if held { smallvec![None; child.outputs.len()] } else { eval_at(child, &gathered, resolver, observer, path) };
+        observer.produced(path, &scratch[ci]);
         observer.leave(path);
         path.pop();
     }
@@ -444,6 +449,9 @@ mod tests {
             fn leave(&mut self, path: &[u32]) {
                 self.0.push(format!("-{path:?}"));
             }
+            fn produced(&mut self, path: &[u32], outputs: &[Option<Value>]) {
+                self.0.push(format!("={path:?}{outputs:?}"));
+            }
         }
         let mut r = MapResolver::new();
         let inner = add2(&mut r); // a composite holding one add
@@ -460,7 +468,19 @@ mod tests {
         let observed = eval_observed(&outer, &inputs, &r, &mut seen);
         assert_eq!(observed, eval(&outer, &inputs, &r), "observing changes nothing");
         assert_eq!(observed.into_vec(), vec![Some(num(28.0))]);
-        assert_eq!(seen.0, vec!["+[0]", "+[0, 0]", "-[0, 0]", "-[0]", "+[1]", "-[1]"]);
+        let n = |x: f64| format!("[Some(Number({x:?}))]");
+        let expected = [
+            "+[0]".to_string(),
+            "+[0, 0]".into(),
+            format!("=[0, 0]{}", n(7.0)),
+            "-[0, 0]".into(),
+            format!("=[0]{}", n(7.0)),
+            "-[0]".into(),
+            "+[1]".into(),
+            format!("=[1]{}", n(28.0)),
+            "-[1]".into(),
+        ];
+        assert_eq!(seen.0, expected, "each node's outputs, just before it is left");
     }
 
     /// `path → http_request → field(status)`: the observer is asked for the request's answer by

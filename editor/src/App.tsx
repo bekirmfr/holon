@@ -53,7 +53,7 @@ import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc
 import { History } from "./history";
 import { DialogProvider, useDialog } from "./Dialog";
 import { BottomPane, SidePane } from "./ViewPanes";
-import { nodeExchanges, nodeTimings, recordedResponses, replay, stateAtStep, type ReplayNode } from "./replay";
+import { nodeExchanges, nodeOutputs, nodeTimings, recordedResponses, replay, stateAtStep, type ReplayNode } from "./replay";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
@@ -713,7 +713,14 @@ function Canvas({
     if (!viewing || !selectedRun) return null;
     const { nodes: ns, edges: es } = live.current;
     // Outbound requests are answered from the run's record, never the network.
-    const run = replay(ns, es, selectedRun, evalNode, recordedResponses(nodeExchanges(selectedRun, viewTrace)));
+    const run = replay(
+      ns,
+      es,
+      selectedRun,
+      evalNode,
+      recordedResponses(nodeExchanges(selectedRun, viewTrace)),
+      nodeOutputs(selectedRun, viewTrace),
+    );
     let verdict: boolean | null = null;
     const respond = run.order.find((id) => {
       const n = ns.find((x) => x.id === id);

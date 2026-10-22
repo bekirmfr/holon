@@ -105,8 +105,8 @@ impl LoggedRound {
     }
 }
 
-/// One composite child's evaluation: its path of child indices from the run's root unit, and
-/// when it started and finished, in microseconds since the run began.
+/// One composite child's evaluation: its path of child indices from the run's root unit, when it
+/// started and finished (microseconds since the run began), and what it produced.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct NodeTiming {
     pub path: Vec<u32>,
@@ -114,6 +114,11 @@ pub struct NodeTiming {
     pub end_us: f64,
     /// Which round of the run (0 for a run without outbound requests).
     pub round: u32,
+    /// Its outputs, as the run produced them: what a replay shows for a node it can't recompute
+    /// (one fed a secret, which is never logged). Redacted like the rest of the entry; left out
+    /// when any of them is larger than [`Timer::MAX_RECORDED_BYTES`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<Vec<Option<SValue>>>,
 }
 
 /// Times each composite child of a run as core evaluates it (core's `Observer`), down to
@@ -124,14 +129,19 @@ pub struct Timer {
     start: std::time::Instant,
     open: Vec<f64>,
     round: u32,
+    /// The outputs of the node about to be left (core reports them just before `leave`).
+    produced: Option<Vec<Option<SValue>>>,
     pub timeline: Vec<NodeTiming>,
 }
 
 impl Timer {
     pub const DEPTH: usize = 2;
+    /// The largest output kept per node, as JSON: enough for records, messages and signatures;
+    /// a large body is in the request or response already.
+    pub const MAX_RECORDED_BYTES: usize = 16 * 1024;
 
     pub fn new() -> Timer {
-        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, timeline: Vec::new() }
+        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new() }
     }
 
     fn now_us(&self) -> f64 {
@@ -146,11 +156,19 @@ impl holon_core::Observer for Timer {
             self.open.push(t);
         }
     }
+    fn produced(&mut self, path: &[u32], outputs: &[Option<holon_core::Value>]) {
+        if path.len() <= Self::DEPTH {
+            let outputs: Vec<Option<SValue>> = outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect();
+            let size = serde_json::to_vec(&outputs).map_or(usize::MAX, |b| b.len());
+            self.produced = (size <= Self::MAX_RECORDED_BYTES).then_some(outputs);
+        }
+    }
     fn leave(&mut self, path: &[u32]) {
         if path.len() <= Self::DEPTH {
             let start_us = self.open.pop().unwrap_or(0.0);
             let end_us = self.now_us();
-            self.timeline.push(NodeTiming { path: path.to_vec(), start_us, end_us, round: self.round });
+            let outputs = self.produced.take();
+            self.timeline.push(NodeTiming { path: path.to_vec(), start_us, end_us, round: self.round, outputs });
         }
     }
     fn round(&mut self, n: usize) {

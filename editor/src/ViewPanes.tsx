@@ -633,6 +633,14 @@ function ComponentTab({
         {timing ? ` · ran ${us(timing.start_us)} → ${us(timing.end_us)} (${us(timing.end_us - timing.start_us)})` : ""}
         {!trace ? " · not part of this run" : ""}
       </div>
+      {trace?.recorded && (
+        <div style={{ color: dim }}>outputs as the run recorded them: an input is a secret or token, which replay never has</div>
+      )}
+      {trace?.placeholder && (
+        <div style={{ color: "#e0c36f" }}>
+          recomputed from a secret's or token's placeholder (the log has no record): may differ from the run
+        </div>
+      )}
       {data.params.length > 0 && (
         <Section title="params">
           {data.params.map((p) => (

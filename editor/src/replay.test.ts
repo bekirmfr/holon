@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nodeExchanges, nodeTimings, recordedResponses, replay, runGroup, stateAtStep, type ReplayInput, type ReplayNode } from "./replay";
+import { nodeExchanges, nodeOutputs, nodeTimings, recordedResponses, replay, runGroup, stateAtStep, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
@@ -181,6 +181,35 @@ describe("secrets in a replay", () => {
     const nodes = [n("s", "secret", [], ["out"], [frozen("name", "api_key")])];
     const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode);
     expect(traces.get("s")?.outputs).toEqual([{ type: "Text", value: "‹secret:api_key›" }]);
+  });
+
+  it("feed a node the run's own recorded outputs, so what follows replays true", () => {
+    // secret → verify (computes with it) → count: a signature check, then what depends on it.
+    // Recomputed from the placeholder, verify would be wrong; the log says what it produced.
+    const nodes = [n("s", "secret", [], ["out"], [frozen("name", "key")]), n("v", "verify", ["key"], ["ok"]), n("c", "count", ["l"], ["out"])];
+    const edges = [wire("s", "out", "v", "key"), wire("v", "ok", "c", "l")];
+    const entry = { kind: "tick", route: null, request: null, sourced: [], state_before: {} };
+    const ran = list(num(1), num(2));
+    const { traces } = replay(nodes, edges, entry, evalNode, new Map(), new Map([["v", [ran]]]));
+    expect(traces.get("v")).toMatchObject({ outputs: [ran], recorded: true });
+    expect(traces.get("c")?.outputs).toEqual([num(2)]);
+    expect(traces.get("c")?.recorded).toBeUndefined();
+
+    // Without a record (an older log): recomputed, and flagged as such.
+    const guessed = replay(nodes, edges, entry, evalNode).traces;
+    expect(guessed.get("v")).toMatchObject({ placeholder: true });
+  });
+
+  it("find the run's recorded outputs by canvas node, from its final round", () => {
+    const trace = { "*": ["a", "b"] };
+    const timeline = [
+      { path: [0], start_us: 0, end_us: 1, round: 0, outputs: [num(1)] },
+      { path: [0], start_us: 5, end_us: 6, round: 1, outputs: [num(2)] },
+      { path: [1], start_us: 6, end_us: 7, round: 1 },
+    ];
+    const got = nodeOutputs({ kind: "tick", route: null, timeline }, trace);
+    expect(got.get("a")).toEqual([num(2)]);
+    expect(got.has("b")).toBe(false);
   });
 });
 

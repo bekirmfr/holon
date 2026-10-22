@@ -293,6 +293,9 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
     fn leave(&mut self, path: &[u32]) {
         self.inner.leave(path);
     }
+    fn produced(&mut self, path: &[u32], outputs: &[Option<Value>]) {
+        self.inner.produced(path, outputs);
+    }
     fn answer(&mut self, path: &[u32], request: &Value) -> Option<Value> {
         if let Some(name) = text_field(request, "await") {
             let event = self.waits.event(name);

@@ -1164,6 +1164,13 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     assert!(matched.contains(r#""value":true"#), "the run read the secret: {matched}");
     assert!(fire("something else").contains(r#""value":false"#));
 
+    // The log keeps what each node produced, so a replay can show a node it can't recompute:
+    // `equals` said true, and the secret node's own output is its placeholder.
+    let log = body_json(route(&state, &req("GET", "/deployments/s/log", vec![])));
+    let produced: Vec<serde_json::Value> = log["entries"][0]["timeline"].as_array().unwrap().iter().filter_map(|t| t.get("outputs").cloned()).collect();
+    assert!(produced.contains(&serde_json::json!([{ "type": "Boolean", "value": true }])), "{produced:?}");
+    assert!(produced.contains(&serde_json::json!([{ "type": "Text", "value": "‹secret:api_key›" }])), "{produced:?}");
+
     // Nowhere in what the control plane says about it.
     for url in ["/deployments/s/log", "/deployments/s/state", "/deployments/s/sessions", "/deployments/s/secrets", "/deployments/s/grant"] {
         let text = String::from_utf8(body_bytes(route(&state, &req("GET", url, vec![])))).unwrap();
