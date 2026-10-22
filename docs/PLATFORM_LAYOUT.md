@@ -103,7 +103,7 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 ### editor/src
 | Today | Target |
 |---|---|
-| `App.tsx` (~1700 lines) | `canvas/` (nodes, wiring, group/expand), `flows/` (save/open, history hook), `deploy/` (projection, consent screen) |
+| `App.tsx` (~2200 lines) | ✅ split by concern: `canvasOps.ts` (project, group, expand), `canvasUnits.ts`, `CanvasPanels.tsx`, `BoundaryField.tsx`, `Pages.tsx` (flows, deployed), `useCanvasHistory.ts`, `useDeployments.ts`; `App.tsx` (~1100 lines) keeps the canvas's state, save/open, deploy and view mode |
 | (new) | `test-request/`: build a request record, eval the endpoint locally via wasm, show the response |
 | (new) | `replay/`: request log list → open one in the canvas with recorded sourced values → step and inspect |
 | (new) | `doors/`: one config per door (title, palette sections, templates, first-run flow). The door is selected by route or subdomain. |
@@ -438,14 +438,14 @@ packs/hooks/
 
 | Milestone | Core | Host | Server | Editor | Packs | Done when |
 |---|---|---|---|---|---|---|
-| **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met**; splitting `App.tsx` remains |
+| **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` ✅ | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met** |
 | **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b): runs today on the control plane's `rouille`, move pending | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
 | **M2 effects + replay** | `http_request` ✅, hashes/HMAC ✅ (`sha256`, `hmac_sha256`, `hex`, `base64`, `secure_equals`), Effects refused by `Any`-typed sink payloads ✅ | effect loop ✅, `Performer` ✅, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets ✅, durable runs ✅ | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half built (§4: rounds, permissions, secrets, durable runs); signature primitives built; the live Stripe → Slack run remains** |
 | **M3 door 1** | — | (consent at load moved to M2, §4.2.1) | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
 
-**Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is splitting
-`App.tsx`, the data plane's move to `hyper`, and `instantiate` following `fn` params. M2's replay half
+**Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is the data
+plane's move to `hyper`, and `instantiate` following `fn` params. M2's replay half
 landed early (the recorder came with view mode); its effects half, and durable runs, are built (§4):
 outbound requests in rounds, host permissions, secrets, and runs that wait and resume. The signature
 primitives are in core too (`sha256`, `hmac_sha256`, `hex`, `base64`, and `secure_equals`, a
