@@ -335,13 +335,19 @@ Two different things, kept apart:
   id, the log entry and the replay input are one thing, and the host can verify a run record
   against its id. The nonce makes two runs from the same flow and state distinct. A flow reads its
   id from a `run_id` source node; the id appears in logs and in the editor and grants nothing.
-- **Resume token: what lets an outsider continue it.** A separate 128-bit random value (above
-  OWASP's 64-bit minimum for session identifiers), minted by
-  the host when a flow asks for one (a `resume_token` node, naming the `await` it resumes), mapped
-  to `(run id, await node, expiry)`. It goes into callback URLs, Stripe metadata, approval links.
+- **Resume token: what lets an outsider continue it.** A separate 128-bit value (above
+  OWASP's 64-bit minimum for session identifiers), handed out by
+  the host when a flow asks for one (a `resume_token` node, naming the `await` it resumes), for
+  `(run id, await node)`. It goes into callback URLs, Stripe metadata, approval links.
   A run can hand out several (approve, reject), each can expire or be revoked, and a token is only
   accepted by the resuming routes of the deployment that issued it. Tokens are never derivable
-  from the run id.
+  from the run id. ✅ A token is a MAC, not a stored random value: the first 128 bits of BLAKE3
+  keyed with a 32-byte **host key** (`--host-key`, its own owner-only file, made at first start)
+  over the run id and the waiting point. The same run and point always give the same token, so a
+  resumed run hands it out again with nothing stored, and a run record, a log or a copy of the
+  deployments file holds nothing that would continue a run. A presented token is compared in
+  constant time. Runs parked before this kept their random tokens, which are still accepted.
+  Losing or replacing the host key invalidates every outstanding token.
 - **Why not one id for both:** the hashed part of a run id is computable by anyone who knows the
   flow and its state, so it cannot be the secret; and a single id could not be revoked, scoped to
   one waiting point, or handed out more than once.
@@ -388,7 +394,7 @@ One commit each, tests with each. M2 is §4.1 to §4.2 plus the editor; durable 
 | 5 ✅ | Host and server (`holon-server/src/permissions.rs`): manifests (derived capabilities with hosts, declared requirements), policy in `holon.toml` (`--policy`) and `GET /permissions`, grants per deployment (`GET /deployments/<slug>/manifest`, `.../grant`), enforcement at perform time, the re-check at load (older records migrate); run ids and the nonce; `rounds` and the grant in effect in the flow log | a deploy asks only for what policy doesn't already allow; an ungranted host or a limit above a ceiling is refused; each log entry has a verifiable run id. Since then: changing or revoking a grant without a redeploy, and reloading the policy (§4.2.1 lifecycle point 4, `holon-server/src/grants.rs`) ✅. **Left for later:** large values by reference in the log (§4.5) |
 | 6 ✅ | Editor: the node and its params, requirements in deploy settings (bounded by `GET /permissions`), the consent screen showing asked against granted (`POST /deploy/preview`), attention on deployments, rounds in the log and timeline, replay from recorded responses | a recorded run replays offline, round by round. Checked live: a deployed route called `https://example.com`, answered with its page, and view mode replayed the run offline with "✓ replay reproduces the run". Revoke controls ✅ since: the deployment card's permissions (revoke, grant back, keep running) |
 | 7 ✅ | Secrets: store, `secret` node, redaction, set from the editor's ⚙ | a token never appears in a log, a replay or the editor. Checked live: set from ⚙, read by a run, found nowhere but the secrets file, and gone with its deployment |
-| 8 ✅ | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on. Checked live: an order waited, was paid by a link (even across a server restart), and wrote its state once; the token appeared in no log or reply. Expiry and the waiting cap as host-granted limits ✅ since. **Left for later:** a host-held key deriving tokens so a run record needn't store them |
+| 8 ✅ | Durable runs: `await`, park/resume, resume tokens, pinned versions, expiry | an approval link clicked later finishes the run on the version it started on. Checked live: an order waited, was paid by a link (even across a server restart), and wrote its state once; the token appeared in no log or reply. Since: expiry and the waiting cap as host-granted limits ✅, and tokens derived under a host-held key, so a run record stores none ✅ |
 
 ---
 

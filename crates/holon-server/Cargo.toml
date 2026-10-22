@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+blake3 = "1"
 getrandom = "0.3"
 # The transport's whole job is to move bytes to code that already exists and is already tested —
 # no logic lives here that isn't already in holon-core/holon-host. See

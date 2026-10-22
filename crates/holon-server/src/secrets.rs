@@ -123,13 +123,13 @@ impl SecretStore {
 }
 
 #[cfg(unix)]
-fn restrict_to_owner(path: &str) {
+pub(crate) fn restrict_to_owner(path: &str) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
 }
 
 #[cfg(not(unix))]
-fn restrict_to_owner(_path: &str) {}
+pub(crate) fn restrict_to_owner(_path: &str) {}
 
 /// The name of a secret in `vault` whose value occurs in `v`, if any: a state write carrying one
 /// is refused, so a secret never reaches the state store, its snapshots or the disk.

@@ -4,8 +4,10 @@
 //! - **Park.** A run still waiting at an `await` when it settles performs nothing; its caller gets
 //!   whatever it answered meanwhile (a 202, say), and the host keeps a [`ParkedRun`]: the unit it
 //!   ran (pinned: units are content-addressed, so a redeploy doesn't change it), its inputs, the
-//!   state it read (by reference), its sourced values and nonce, the requests it made, its tokens
-//!   and the events delivered so far.
+//!   state it read (by reference), its sourced values and nonce, the requests it made, and the
+//!   events delivered so far. Not its tokens: a token is derived from the run id and the waiting
+//!   point under the host's key ([`token_for`]), so it is the same every time it is asked for, and
+//!   nothing in a run record or a log would let anyone continue the run.
 //! - **Resume.** A request on a route declared `resume = <name>`, carrying a run's token (path
 //!   param or query `token`), delivers itself to that run's `await` of that name: the route's own
 //!   handler answers the caller, and the run is evaluated again from its record with the event.
@@ -69,10 +71,75 @@ pub(crate) fn refuses_waits(unit: &Unit, resolver: &impl Resolver, permit: &Perm
     ))
 }
 
+/// The host's key for resume tokens: 32 bytes from the OS's secure generator, kept in a file of
+/// its own (`--host-key`) so outstanding tokens survive a restart. Without one (the tests, an
+/// in-memory run) it is made fresh for this process.
+static HOST_KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+
+fn random_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    getrandom::fill(&mut key).expect("the OS has a secure random generator");
+    key
+}
+
+/// Read the host key at `path`, or make one and write it there (owner-only where the OS allows);
+/// `":memory:"` keeps a fresh one in memory. Called once, at startup. A file that exists but isn't
+/// a key is an error: replacing it would invalidate every token handed out.
+pub(crate) fn load_host_key(path: &str) -> Result<(), String> {
+    let key = if path == ":memory:" {
+        random_key()
+    } else {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let hex = text.trim();
+                let bytes: Option<Vec<u8>> = (0..hex.len())
+                    .step_by(2)
+                    .map(|i| hex.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok()))
+                    .collect();
+                bytes
+                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                    .ok_or(format!("{path:?} is not a host key (64 hex digits)"))?
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let key = random_key();
+                let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+                holon_host::write_atomically(std::path::Path::new(path), format!("{hex}\n").as_bytes())
+                    .map_err(|e| format!("could not write {path:?}: {e}"))?;
+                crate::secrets::restrict_to_owner(path);
+                key
+            }
+            Err(e) => return Err(format!("could not read {path:?}: {e}")),
+        }
+    };
+    HOST_KEY.set(key).map_err(|_| "the host key was already loaded".to_string())
+}
+
+/// The resume token for waiting point `name` of run `run_id` (hex): the first 128 bits of a
+/// keyed BLAKE3 MAC under the host key, as `rt_<32 hex>`. The same for the same run and point, as
+/// often as it is asked for; underivable without the key, from the run id or anything else a run
+/// record or a log holds (§4.4).
+pub(crate) fn token_for(run_id: &str, name: &str) -> String {
+    let mut data = b"holon resume token v1\0".to_vec();
+    data.extend_from_slice(run_id.as_bytes());
+    data.push(0);
+    data.extend_from_slice(name.as_bytes());
+    let mac = blake3::keyed_hash(HOST_KEY.get_or_init(random_key), &data);
+    format!("rt_{}", mac.as_bytes()[..16].iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
+/// Whether `a` and `b` are equal, comparing every byte: how a presented token is checked, so the
+/// time it takes says nothing about how much of a guess was right.
+fn same_token(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
 /// A run's waiting points and tokens: what [`holon_host::run_rounds`] asks for.
 #[derive(Default, Debug)]
 pub(crate) struct RunWaits {
-    /// Waiting point → its token (minted when the run first asks).
+    /// The run's id (hex), set when the run starts: its tokens are derived from it.
+    pub(crate) run_id: Option<String>,
+    /// Waiting point → the token the run was handed (so its log entry can be redacted; for a run
+    /// parked before tokens were derived, the stored one). In memory only.
     pub(crate) tokens: BTreeMap<String, String>,
     /// Waiting point → the event delivered to it.
     pub(crate) events: BTreeMap<String, Value>,
@@ -83,15 +150,10 @@ impl Waits for RunWaits {
         self.events.get(name).cloned()
     }
     fn token(&mut self, name: &str) -> String {
-        self.tokens.entry(name.to_string()).or_insert_with(new_token).clone()
+        let run_id = self.run_id.as_deref().expect("a run's id is set before it runs");
+        let derived = token_for(run_id, name);
+        self.tokens.entry(name.to_string()).or_insert(derived).clone()
     }
-}
-
-/// 128 bits from the OS's secure generator: a bearer credential for one waiting point.
-fn new_token() -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("the OS has a secure random generator");
-    format!("rt_{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
 /// What a resumed run starts from instead of now: the state it first read, its nonce, and the
@@ -146,7 +208,10 @@ pub(crate) struct ParkedRun {
     pub(crate) nonce: String,
     /// The requests it made, round by round, over all its parts so far.
     pub(crate) rounds: Vec<Vec<StoredExchange>>,
-    /// Waiting point → token. Kept so a resumed run hands out the same tokens; never listed.
+    /// Waiting point → token, for a run parked before tokens were derived (they were minted at
+    /// random then): still accepted, and handed out again on resume. Empty, and not written, for
+    /// every run since.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) tokens: BTreeMap<String, String>,
     /// Waiting point → the event delivered to it.
     pub(crate) events: BTreeMap<String, SValue>,
@@ -226,7 +291,7 @@ impl ParkedRun {
             state_refs,
             nonce: nonce.to_string(),
             rounds: store_rounds(rounds),
-            tokens: waits.tokens.clone(),
+            tokens: BTreeMap::new(),
             events: waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
             waiting: waiting.iter().map(|w| StoredWaiting { name: w.name.clone(), expires_at: now + w.expires }).collect(),
             parked_at: now,
@@ -235,8 +300,10 @@ impl ParkedRun {
 
     /// The waiting point `token` resumes, if it is one of this run's and it still waits there.
     pub(crate) fn waiting_point_of(&self, token: &str) -> Option<&str> {
-        let (name, _) = self.tokens.iter().find(|(_, t)| t.as_str() == token)?;
-        self.waiting.iter().any(|w| &w.name == name).then_some(name.as_str())
+        self.waiting.iter().map(|w| w.name.as_str()).find(|name| {
+            let stored = self.tokens.get(*name).is_some_and(|t| same_token(t, token));
+            stored || same_token(&token_for(&self.run_id, name), token)
+        })
     }
 
     /// Everything to run it again: its inputs, sourced values, waits (with `event` delivered at
@@ -256,7 +323,7 @@ impl ParkedRun {
             .collect();
         let mut events: BTreeMap<String, Value> = self.events.iter().map(|(k, v)| (k.clone(), v.clone().into_core())).collect();
         events.insert(name.to_string(), event);
-        let waits = RunWaits { tokens: self.tokens.clone(), events };
+        let waits = RunWaits { run_id: Some(self.run_id.clone()), tokens: self.tokens.clone(), events };
         let refs = self
             .state_refs
             .clone()
@@ -402,7 +469,6 @@ pub(crate) fn resume_parked(
                 let now = epoch_now();
                 kept.rounds.extend(store_rounds(&run.rounds));
                 kept.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
-                kept.tokens = waits.tokens.clone();
                 kept.waiting = run
                     .waiting
                     .iter()
@@ -460,12 +526,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_runs_tokens_are_stable_and_unguessable() {
-        let mut w = RunWaits::default();
+    fn a_runs_tokens_are_derived_stable_and_its_own() {
+        let waits = |id: &str| RunWaits { run_id: Some(id.into()), ..Default::default() };
+        let mut w = waits("aa");
         let a = w.token("paid");
         assert_eq!(w.token("paid"), a, "the same waiting point, the same token");
+        assert_eq!(waits("aa").token("paid"), a, "asked for again (a resumed run): the same token");
         assert_ne!(w.token("approved"), a);
         assert!(a.starts_with("rt_") && a.len() == 3 + 32, "{a}");
-        assert_ne!(RunWaits::default().token("paid"), a, "another run, another token");
+        assert_ne!(waits("ab").token("paid"), a, "another run, another token");
+        assert!(same_token(&a, &token_for("aa", "paid")) && !same_token(&a, &token_for("aa", "paid2")));
     }
 }

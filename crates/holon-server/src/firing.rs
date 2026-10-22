@@ -108,6 +108,8 @@ pub(crate) fn fire_with_state(
     };
     let state_before = start.as_ref().map(State::values).unwrap_or_default();
     let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, &nonce);
+    // Its resume tokens are derived from its id (durable.rs).
+    waits.run_id = Some(to_hex(&run_id));
 
     // Only the state keys the deployment was granted are read.
     let mut sourced: Vec<(Capability, Value)> = match start.as_ref() {

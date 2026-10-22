@@ -1243,8 +1243,10 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let log = String::from_utf8(body_bytes(route(&state, &req("GET", "/deployments/shop/log", vec![])))).unwrap();
     assert!(!listed.contains(&token) && !log.contains(&token), "a token is never listed or logged");
     assert!(log.contains("‹token:paid›"));
-    // It survives a restart.
+    // It survives a restart, and its record holds no token: it is derived again when needed.
     assert_eq!(load_deployments(&path, &state.store, &state.policy()).unwrap()["shop"].parked.len(), 1);
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains(&token) && !on_disk.contains("\"tokens\""), "a run record holds no token");
 
     // A wrong token: refused before the route's handler runs.
     assert_eq!(call("GET", "/paid/rt_nope").0, 404);
@@ -1268,6 +1270,13 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     assert_eq!(runs().len(), 1, "waiting runs are kept across a redeploy");
     assert_eq!(call("GET", &format!("/paid/{token2}")).0, 200);
     assert_eq!(written(), Some(Value::Text("GET".into())), "v1's behaviour, not v2's");
+
+    // A run parked before tokens were derived kept the random one it was handed: still accepted.
+    call("POST", "/orders");
+    let legacy = "rt_0123456789abcdef0123456789abcdef".to_string();
+    state.deployments.lock().unwrap().get_mut("shop").unwrap().parked.values_mut().next().unwrap().tokens.insert("paid".into(), legacy.clone());
+    assert_eq!(call("GET", &format!("/paid/{legacy}")).0, 200);
+    assert!(runs().is_empty());
 
     // Expiry: nobody pays; past its deadline it gets {expired: true} and finishes (its write
     // reads a field the event doesn't have, so nothing is written).

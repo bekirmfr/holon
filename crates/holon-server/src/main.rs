@@ -397,8 +397,13 @@ fn main() {
     let mut flows_arg = ".holon-flows.json".to_string();
     let mut policy_arg = "holon.toml".to_string();
     let mut secrets_arg = ".holon-secrets.json".to_string();
+    let mut host_key_arg = ".holon-host-key".to_string();
     while let Some(a) = args.next() {
-        if a == "--secrets" {
+        if a == "--host-key" {
+            if let Some(v) = args.next() {
+                host_key_arg = v;
+            }
+        } else if a == "--secrets" {
             if let Some(v) = args.next() {
                 secrets_arg = v;
             }
@@ -566,6 +571,7 @@ fn main() {
     };
     let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let secrets = Arc::new(SecretStore::load(&secrets_arg).unwrap_or_else(|e| refuse_to_start(e)));
+    durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));
     let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     for (slug, dep) in initial_deployments.iter_mut() {
         dep.secrets = secrets.vault(slug);
