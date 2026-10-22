@@ -1,0 +1,137 @@
+//! The clock: fires each clock-driven deployment on its interval.
+
+use crate::*;
+
+/// The tick-firing logic for one scheduler pass, callable directly with a controlled `now` —
+/// pulled out of `spawn_clock_scheduler`'s sleep loop specifically so it's testable without real
+/// sleeping (the same "extract the testable logic out of the untestable wrapper" move the
+/// editor's own `diagnostics.ts` extraction already used, for the identical reason). Every
+/// deployment **due** at `now` fires **concurrently** with every other deployment due at the
+/// same moment — see `fire_one_clock_tick` and the module doc for why, and for the honest limit
+/// of this approach (unbounded per-tick fan-out, not a worker pool).
+pub(crate) fn run_due_clock_ticks(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    now: SystemTime,
+) {
+    let due: Vec<(String, Hash, Option<Arc<Mutex<BTreeMap<String, Value>>>>, u64)> = {
+        let deployments = deployments.lock().unwrap();
+        deployments
+            .iter()
+            .filter_map(|(slug, dep)| match (dep.interval_seconds, dep.next_due) {
+                (Some(interval), Some(next_due)) if now >= next_due && dep.life.status == Status::Running => {
+                    Some((slug.clone(), dep.unit, dep.state.clone(), interval))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    // `thread::scope` (stable since Rust 1.63): spawned threads may borrow `store`/
+    // `deployments` directly — no `Arc` clone needed per thread — and every thread is
+    // guaranteed joined before `scope()` returns, so this function is still synchronous from
+    // its caller's point of view (the existing tests, written before this change, still hold:
+    // by the time `run_due_clock_ticks` returns, every due tick from this call has completed).
+    // What changes is internal: two deployments due in the same tick no longer block each
+    // other — a slow flow only delays itself, not its neighbors.
+    //
+    // Deliberately NOT a bounded worker pool: a genuinely large number of simultaneously-due
+    // deployments spawns that many OS threads at once, unbounded. Fine, and simpler, at the
+    // scale this is actually for — a handful of local flows on one machine. Named honestly as
+    // a real, open limitation rather than solved here: if per-tick fan-out ever gets large
+    // enough to matter, the fix is a bounded worker pool (or a semaphore capping concurrent
+    // fires), not more threads. Left open on purpose.
+    thread::scope(|scope| {
+        for (slug, unit_hash, state, interval) in due {
+            scope.spawn(move || {
+                fire_one_clock_tick(store, deployments, deployments_path, slug, unit_hash, state, interval, now)
+            });
+        }
+    });
+}
+
+/// One deployment's single tick — settle it via `fire_sourced` with the real wall-clock time
+/// injected, log the result, append it to that deployment's bounded history. Runs on its own
+/// scoped thread when called from `run_due_clock_ticks`'s per-tick fan-out (see there), but has
+/// no threading concerns of its own: it only ever touches `store` (internally locked,
+/// `Sync`-safe) and this one deployment's own map entry (via the shared `deployments` lock,
+/// held only briefly at the end to write the result back).
+pub(crate) fn fire_one_clock_tick(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    slug: String,
+    unit_hash: Hash,
+    state: Option<Arc<Mutex<BTreeMap<String, Value>>>>,
+    interval: u64,
+    now: SystemTime,
+) {
+    let resolver = match materialize_closure(store, unit_hash) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("clock tick [{slug}]: store error while materializing closure: {e:?}");
+            record_trigger(deployments, &slug, true);
+            return;
+        }
+    };
+    let Some(root_unit) = resolver.resolve(&unit_hash) else {
+        eprintln!("clock tick [{slug}]: deployed unit no longer resolves in the store");
+        record_trigger(deployments, &slug, true);
+        return;
+    };
+
+    let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let extra_sourced = [
+        (Capability::Clock, Value::Number(epoch_seconds as f64)),
+        (Capability::Random, Value::Number(rand::random::<f64>())),
+    ];
+    let is_state = state.is_some();
+    let started = started_now();
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
+    log_run(deployments, &slug, run_entry("tick", started, &extra_sourced, &run));
+    let FiredRun { outputs, performed, .. } = run;
+
+    println!(
+        "clock tick [{slug}] at {epoch_seconds}: outputs={outputs:?}, {} effect(s) performed",
+        performed.len()
+    );
+
+    let tick = TickEntry {
+        at_epoch_seconds: epoch_seconds,
+        outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
+        performed: performed
+            .into_iter()
+            .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
+            .collect(),
+    };
+
+    {
+        let mut deployments = deployments.lock().unwrap();
+        if let Some(dep) = deployments.get_mut(&slug) {
+            dep.next_due = Some(now + Duration::from_secs(interval));
+            dep.trigger_count += 1;
+            dep.life.record(false);
+            dep.history.push(tick);
+            if dep.history.len() > 20 {
+                dep.history.remove(0);
+            }
+        }
+    }
+    if is_state {
+        persist_deployments(deployments_path, deployments);
+    }
+}
+
+
+/// The clock scheduler — the one genuinely new runtime shape in this whole project: a thread
+/// that acts on its own, on a timer, with nobody asking. Spawned once at startup with its own
+/// `Arc` handle onto `deployments` (no async runtime needed for this workload; a plain sleep
+/// loop is enough). Every second, hands off to `run_due_clock_ticks`, which fires whatever's
+/// due — concurrently within that one pass, see there for why and for the honest limit.
+pub(crate) fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: String) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(1));
+        run_due_clock_ticks(&store, &deployments, &deployments_path, SystemTime::now());
+    });
+}
