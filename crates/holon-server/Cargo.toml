@@ -11,7 +11,12 @@ getrandom = "0.3"
 # docs/L4s/P4.5-P4.6-transport-scoping-L4.md.
 holon-core = { path = "../holon-core" }
 holon-host = { path = "../holon-host" }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 rand = "0.10.2"
+# The control plane's HTTP. (The data plane, public-facing, is hyper on tokio instead:
+# src/dataplane.rs, docs/PLATFORM_LAYOUT.md §7b.)
 # rouille (sync, thread-per-request, built on tiny_http) chosen deliberately over an async
 # framework (axum/warp) — this server's whole workload is six low-volume request/response
 # endpoints a person triggers by clicking a button in the editor, never a stream or a load
@@ -19,5 +24,6 @@ rand = "0.10.2"
 rouille = "3.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 toml = "0.8"
 ureq = "2"

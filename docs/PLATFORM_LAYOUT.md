@@ -266,8 +266,8 @@ flow log's retention (hardcoded 500 entries, `recorder::CAPACITY`) become host d
 ceilings, which a deployment may ask to raise. The control plane's own cap stays fixed: it serves
 only the editor.
 
-- **Client:** `ureq` (synchronous, rustls), which fits the current thread-per-request server; it
-  moves with the data plane if that moves to `hyper` (§7b).
+- **Client:** `ureq` (synchronous, rustls). Runs are synchronous, and on the `hyper` data plane
+  (§7b) they run on its blocking pool, so a synchronous client still fits.
 - **Secrets** ✅ (`holon-server/src/secrets.rs`): a per-deployment secret store on the server
   (`--secrets`, its own file, owner-only where the OS allows), written over the control plane
   (`POST`/`DELETE /deployments/<slug>/secrets/<name>`), never returned by it (`GET` lists names).
@@ -455,13 +455,13 @@ packs/hooks/
 | Milestone | Core | Host | Server | Editor | Packs | Done when |
 |---|---|---|---|---|---|---|
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` ✅ | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met** |
-| **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b): runs today on the control plane's `rouille`, move pending | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
+| **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params | — | `data/` listener on a maintained HTTP stack (§7b) ✅: `hyper` on `tokio`, with timeouts, a body cap and a connection cap | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
 | **M2 effects + replay** | `http_request` ✅, hashes/HMAC ✅ (`sha256`, `hmac_sha256`, `hex`, `base64`, `secure_equals`), Effects refused by `Any`-typed sink payloads ✅ | effect loop ✅, `Performer` ✅, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets ✅, durable runs ✅ | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run, timeline, flow state per step, component inspector) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Replay half done; effects half built (§4: rounds, permissions, secrets, durable runs); signature primitives built; the live Stripe → Slack run remains** |
 | **M3 door 1** | — | (consent at load moved to M2, §4.2.1) | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
 | later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
 
-**Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is the data
-plane's move to `hyper`, and `instantiate` following `fn` params. M2's replay half
+**Status (2026-10-22).** M0 and M1 meet their "done when"; what is left of them is
+`instantiate` following `fn` params. M2's replay half
 landed early (the recorder came with view mode); its effects half, and durable runs, are built (§4):
 outbound requests in rounds, host permissions, secrets, and runs that wait and resume. The signature
 primitives are in core too (`sha256`, `hmac_sha256`, `hex`, `base64`, and `secure_equals`, a
@@ -532,6 +532,23 @@ dependency chain (`buf_redux`, `multipart`) already raises future-incompatibilit
 the data plane from a maintained stack (`hyper`, or `axum` on top of it) with timeouts, body limits
 and connection limits from the start. This deliberately reverses the earlier "no async runtime
 needed" decision, because the workload changed.
+
+✅ Done (`holon-server/src/dataplane.rs`): each server deployment's listener is `hyper` 1.x (HTTP/1)
+on one shared multi-threaded `tokio` runtime. Routing stays our own (`data.rs` knows HTTP only as
+strings and bytes), so `axum` would add nothing. Every connection and request is held to:
+
+| Limit | Value | Why |
+|---|---|---|
+| Header read timeout (also an idle kept-alive connection's wait) | 10 s | Closes slow-header (slowloris) connections; well above any real client. |
+| Body read timeout | 30 s | Matches the outbound request timeout; a slow body gets `408`. |
+| Request body | 10 MiB | As §4.2.1 sets for inbound (matching the outbound limit); over it is `413`, before reading when `Content-Length` says so. |
+| Connections per listener | 1,024 | Past it, connections wait in the OS accept queue instead of each taking a thread. |
+
+A run is synchronous, so the handler runs on the runtime's blocking pool, bounded by its run
+budget. Listeners bind `127.0.0.1` unless the operator opens another address (`--data-host 0.0.0.0`).
+Left for later: these limits as host policy and per-deployment grants (they are host-wide constants
+today), HTTP/2, and TLS (terminate it in front, e.g. a reverse proxy, until then). The control plane
+keeps `rouille`, so its future-incompatibility warnings remain until it moves too.
 
 ---
 

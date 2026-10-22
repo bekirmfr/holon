@@ -139,6 +139,7 @@
 //! auth *for*.
 
 mod data;
+mod dataplane;
 mod deploy;
 mod durable;
 mod firing;
@@ -266,6 +267,9 @@ struct AppState {
     /// deployments table by `sync_listeners`. `None` turns listening off (the tests, which call
     /// `serve_data` directly instead of opening sockets).
     listeners: Option<Mutex<Listeners>>,
+    /// What the data plane holds every connection and request to, and the address it binds
+    /// (dataplane.rs).
+    data_limits: dataplane::DataLimits,
     /// The host operator's policy (`--policy`, default `holon.toml`): limits, ceilings, what
     /// is granted without asking. Read at startup, and again on `POST /permissions/reload`.
     policy: std::sync::RwLock<Arc<Policy>>,
@@ -284,7 +288,7 @@ impl AppState {
 }
 
 /// slug → (port, stop signal) of each running data-plane listener.
-type Listeners = BTreeMap<String, (u16, std::sync::mpsc::Sender<()>)>;
+type Listeners = BTreeMap<String, (u16, dataplane::Stop)>;
 
 /// One deployment's keyed state, shared between its fires and persistence (see `Deployment::state`).
 type DeploymentState = Arc<Mutex<State>>;
@@ -398,8 +402,19 @@ fn main() {
     let mut policy_arg = "holon.toml".to_string();
     let mut secrets_arg = ".holon-secrets.json".to_string();
     let mut host_key_arg = ".holon-host-key".to_string();
+    let mut data_limits = dataplane::DataLimits::default();
     while let Some(a) = args.next() {
-        if a == "--host-key" {
+        if a == "--data-host" {
+            // The address data-plane listeners bind (default 127.0.0.1): `0.0.0.0` opens every
+            // deployed server to the network.
+            match args.next().map(|v| v.parse()) {
+                Some(Ok(host)) => data_limits.host = host,
+                _ => {
+                    eprintln!("--data-host needs an IP address (e.g. 127.0.0.1 or 0.0.0.0)");
+                    std::process::exit(2);
+                }
+            }
+        } else if a == "--host-key" {
             if let Some(v) = args.next() {
                 host_key_arg = v;
             }
@@ -593,6 +608,7 @@ fn main() {
         flows_path: flows_arg,
         port,
         listeners: Some(Mutex::new(BTreeMap::new())),
+        data_limits,
         policy: std::sync::RwLock::new(policy),
         policy_path: policy_arg,
         secrets,

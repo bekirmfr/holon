@@ -1,6 +1,8 @@
-//! The data plane: one listener per deployed server unit, answering on its own port, and the
-//! editor's "send live", which reaches the same handler over the control plane.
+//! The data plane: answering a request to a deployed server unit, whether it came to the server's
+//! own port (dataplane.rs) or from the editor's "send live" over the control plane; and keeping
+//! one listener running per server deployment.
 
+use crate::data::{DataRequest, DataResponse};
 use crate::*;
 
 /// Answer one data-plane request for the server deployment `slug`: route it, settle the matched
@@ -12,50 +14,45 @@ pub(crate) fn serve_data(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &str,
     slug: &str,
-    request: &Request,
-) -> Response {
+    request: &DataRequest,
+) -> DataResponse {
     let found = deployments
         .lock()
         .unwrap()
         .get(slug)
         .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit), Arc::clone(&d.secrets)));
     let Some((unit_hash, state, Some(server), status, permit, secrets)) = found else {
-        return err(503, format!("{slug:?} is not deployed as a server"));
+        return DataResponse::json_error(503, &format!("{slug:?} is not deployed as a server"));
     };
     if status != Status::Running {
-        return err(503, format!("{slug:?} is {}", status_word(status)));
+        return DataResponse::json_error(503, &format!("{slug:?} is {}", status_word(status)));
     }
-    let body = match read_body(request) {
-        Ok(b) => b,
-        Err(r) => return r,
-    };
     let resolver = match materialize_closure(store, unit_hash) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return DataResponse::json_error(500, &format!("store error while materializing closure: {e:?}")),
     };
-    let headers: Vec<(String, String)> = request.headers().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let (method, raw_url, headers, body) = (request.method.as_str(), request.url.as_str(), &request.headers, &request.body);
     let epoch_seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let sourced = [
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let http = data::HttpRequest { method: request.method(), url: request.raw_url(), headers: &headers, body: &body };
+    let http = data::HttpRequest { method, url: raw_url, headers, body };
 
     // A resume route needs a run waiting for its token, or it answers nothing at all.
-    let raw_url = request.raw_url();
     let (path, query) = raw_url.split_once('?').unwrap_or((raw_url, ""));
     let mut resume: Option<(String, String, Value, String)> = None;
-    if let Some((route, params)) = holon_core::match_route(&server, request.method(), path)
+    if let Some((route, params)) = holon_core::match_route(&server, method, path)
         && let Some(name) = &route.resume
     {
         let from_query = query.split('&').find_map(|kv| kv.strip_prefix("token=")).map(data::percent_decode);
         let token = params.get("token").map(|t| data::percent_decode(t)).or(from_query).unwrap_or_default();
         let Some(run_id) = durable::find_by_token(deployments, slug, name, &token) else {
-            return err(404, "no run is waiting here for that token (it was used, or has expired)");
+            return DataResponse::json_error(404, "no run is waiting here for that token (it was used, or has expired)");
         };
         let params = params.into_iter().map(|(k, v)| (k, data::percent_decode(&v))).collect();
-        let event = data::request_record(request.method(), path, params, query, &headers, &String::from_utf8_lossy(&body));
+        let event = data::request_record(method, path, params, query, headers, &String::from_utf8_lossy(body));
         resume = Some((run_id, name.clone(), event, token));
     }
 
@@ -85,8 +82,8 @@ pub(crate) fn serve_data(
     // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.
     let mut entry = ran.unwrap_or_else(|| run_entry("request", started, &sourced, &FiredRun::nothing()));
     entry.duration_ms = started.1.elapsed().as_secs_f64() * 1000.0;
-    entry.method = Some(request.method().to_string());
-    entry.url = Some(request.raw_url().to_string());
+    entry.method = Some(method.to_string());
+    entry.url = Some(raw_url.to_string());
     entry.status = Some(answer.status);
     entry.response_body = Some(recorder::body_text(&answer.body));
     match parked {
@@ -109,29 +106,7 @@ pub(crate) fn serve_data(
     {
         eprintln!("holon-server: resuming run {run_id} in {slug:?}: {e}");
     }
-    Response {
-        status_code: answer.status,
-        headers: answer.headers.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
-        data: rouille::ResponseBody::from_data(answer.body),
-        upgrade: None,
-    }
-}
-
-/// Start the data-plane listener for `slug` on `127.0.0.1:port`, returning its stop signal.
-/// Loopback only for now: before a data plane faces the internet it moves to a maintained async
-/// stack with timeouts and connection limits (docs/PLATFORM_LAYOUT.md §7b).
-pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<std::sync::mpsc::Sender<()>, String> {
-    let store = state.store.clone();
-    let deployments = Arc::clone(&state.deployments);
-    let path = state.deployments_path.clone();
-    let owner = slug.to_string();
-    let server = rouille::Server::new(("127.0.0.1", port), move |request| {
-        serve_data(&store, &deployments, &path, &owner, request)
-    })
-    .map_err(|e| e.to_string())?;
-    let (_thread, stop) = server.stoppable();
-    println!("holon-server: {slug:?} answering on http://127.0.0.1:{port}");
-    Ok(stop)
+    answer
 }
 
 /// Bring the running listeners in line with the deployments table: stop any whose deployment is
@@ -151,7 +126,7 @@ pub(crate) fn sync_listeners(state: &AppState) {
     running.retain(|slug, (port, stop)| {
         let keep = wanted.get(slug) == Some(port);
         if !keep {
-            let _ = stop.send(());
+            let _ = stop.send(true);
         }
         keep
     });
@@ -159,7 +134,7 @@ pub(crate) fn sync_listeners(state: &AppState) {
         if running.contains_key(&slug) {
             continue;
         }
-        match start_listener(state, &slug, port) {
+        match dataplane::start_listener(state, &slug, port) {
             Ok(stop) => {
                 running.insert(slug, (port, stop));
             }
@@ -211,14 +186,9 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
         Some(d) if d.server.is_none() => return err(400, format!("{slug:?} is not an HTTP server deployment")),
         Some(d) => Redactor::of(&d.secrets),
     };
-    let inner = Request::fake_http(send.method, send.url, send.headers, send.body.into_bytes());
+    let inner = DataRequest { method: send.method, url: send.url, headers: send.headers, body: send.body.into_bytes() };
     let answer = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &inner);
     let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), redactor.text(v))).collect();
-    let status = answer.status_code;
-    let (mut reader, _) = answer.data.into_reader_and_size();
-    let mut body = Vec::new();
-    if reader.read_to_end(&mut body).is_err() {
-        return err(500, "could not read the server's response");
-    }
-    Response::json(&SentResponseBody { status, headers, body: redactor.text(&String::from_utf8_lossy(&body)) })
+    let body = redactor.text(&String::from_utf8_lossy(&answer.body));
+    Response::json(&SentResponseBody { status: answer.status, headers, body })
 }

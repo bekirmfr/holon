@@ -41,6 +41,16 @@ impl DataResponse {
     }
 }
 
+/// One HTTP request as a transport hands it over, owned: what `serve_data` answers. `url` is the
+/// path plus any query string; header names as sent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
 /// One HTTP request, as plain strings and bytes. `url` is the path plus any query string.
 pub struct HttpRequest<'a> {
     pub method: &'a str,

@@ -27,6 +27,7 @@ fn test_state() -> AppState {
         flows_path: ":memory:".to_string(),
         port: TEST_PORT,
         listeners: None,
+        data_limits: dataplane::DataLimits::default(),
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
@@ -49,6 +50,11 @@ fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
         headers.push(("Content-Type".to_string(), ty.to_string()));
     }
     Request::fake_http(method, url, headers, body)
+}
+
+/// A data-plane request with no headers.
+fn fake_data(method: &str, url: &str, body: Vec<u8>) -> data::DataRequest {
+    data::DataRequest { method: method.into(), url: url.into(), headers: vec![], body }
 }
 
 fn body_bytes(response: Response) -> Vec<u8> {
@@ -1226,8 +1232,8 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let v1 = server(orders("method"));
     assert_eq!(deploy_json(&state, "shop", v1, ack.clone()).status_code, 200);
     let call = |method: &str, url: &str| {
-        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "shop", &Request::fake_http(method, url, vec![], vec![]));
-        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "shop", &fake_data(method, url, vec![]));
+        (r.status, String::from_utf8(r.body).unwrap())
     };
     let written = || state.deployments.lock().unwrap()["shop"].state.as_ref().unwrap().lock().unwrap().get("paid").cloned();
     let runs = || body_json(route(&state, &req("GET", "/deployments/shop/runs", vec![])))["runs"].as_array().unwrap().clone();
@@ -1347,7 +1353,7 @@ fn waiting_is_held_to_the_granted_limits() {
     // hour, not sixty days), the second is refused.
     let lowered = serde_json::json!({ "lower": { "max_waiting_runs": 1, "max_await_seconds": 3600 }, "keep_running": true });
     assert_eq!(body_json(change_grant(&state, "shop", lowered))["status"], "running");
-    let call = || serve_data(&state.store, &state.deployments, &state.deployments_path, "shop", &Request::fake_http("POST", "/orders", vec![], vec![])).status_code;
+    let call = || serve_data(&state.store, &state.deployments, &state.deployments_path, "shop", &fake_data("POST", "/orders", vec![])).status;
     let before = epoch_now();
     assert_eq!(call(), 200);
     let deadline = state.deployments.lock().unwrap()["shop"].parked.values().next().unwrap().waiting[0].expires_at;
@@ -1393,6 +1399,7 @@ fn deployments_persist_across_a_simulated_restart() {
             flows_path: ":memory:".to_string(),
             port: TEST_PORT,
             listeners: None,
+            data_limits: dataplane::DataLimits::default(),
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
@@ -1424,6 +1431,7 @@ fn deployments_persist_across_a_simulated_restart() {
         flows_path: ":memory:".to_string(),
         port: TEST_PORT,
         listeners: None,
+        data_limits: dataplane::DataLimits::default(),
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
@@ -2018,6 +2026,62 @@ fn todo_server(state: &AppState, port: &str) -> Hash {
     )
 }
 
+/// A port nothing listens on just now.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+/// One raw HTTP/1.1 exchange on `port`: everything the server sends back until it closes.
+fn raw_http(port: u16, request: &[u8]) -> String {
+    use std::io::Write;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.write_all(request).unwrap();
+    let mut out = Vec::new();
+    let _ = stream.read_to_end(&mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The data plane on a server deployment's own port, through a real socket: it answers, refuses
+/// a body over its limit before reading it, closes a connection whose headers don't arrive in
+/// time, and lets go of the port once the deployment stops.
+#[test]
+fn a_server_deployment_answers_on_its_own_port_within_limits() {
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    state.data_limits.header_timeout = Duration::from_millis(300);
+    state.data_limits.max_body_bytes = 1024;
+    let port = free_port();
+    let api = todo_server(&state, &port.to_string());
+    assert_eq!(deploy_server(&state, "todo", api).status_code, 200);
+    sync_listeners(&state);
+
+    let body = r#"{"title":"buy milk"}"#;
+    let posted = raw_http(port, format!("POST /todos HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+    assert!(posted.starts_with("HTTP/1.1 200"), "{posted}");
+    let listed = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert!(listed.starts_with("HTTP/1.1 200") && listed.contains("buy milk"), "{listed}");
+    assert!(raw_http(port, b"GET /nope HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 404"));
+
+    // Over the body limit: refused on its Content-Length, nothing read.
+    let large = raw_http(port, b"POST /todos HTTP/1.1\r\nHost: x\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n");
+    assert!(large.starts_with("HTTP/1.1 413"), "{large}");
+
+    // Headers that never finish: the connection is closed, not held.
+    let started = std::time::Instant::now();
+    let slow = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: x\r\n");
+    assert!(started.elapsed() < Duration::from_secs(5), "closed after the header timeout: {slow:?}");
+    assert!(!slow.contains("200"), "{slow}");
+
+    // Stopped: the port is released.
+    assert_eq!(route(&state, &req("POST", "/deployments/todo/stop", vec![])).status_code, 200);
+    let released = (0..50).any(|_| {
+        std::thread::sleep(Duration::from_millis(50));
+        std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    });
+    assert!(released, "the port is free again");
+}
+
 fn deploy_server(state: &AppState, slug: &str, unit: Hash) -> Response {
     let body = serde_json::to_vec(&serde_json::json!({
         "slug": slug,
@@ -2042,8 +2106,8 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
 
     let call = |method: &str, url: &str, body: &str| {
         let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "todo-api",
-            &Request::fake_http(method, url, vec![], body.as_bytes().to_vec()));
-        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+            &fake_data(method, url, body.as_bytes().to_vec()));
+        (r.status, String::from_utf8(r.body).unwrap())
     };
     assert_eq!(call("GET", "/todos", ""), (200, "{}".to_string()));
     assert_eq!(call("POST", "/todos", r#"{"title":"buy milk"}"#), (200, r#"{"title":"buy milk"}"#.to_string()));
@@ -2128,8 +2192,8 @@ fn a_bulk_route_extends_the_stored_list_with_an_array() {
     assert_eq!(deploy_server(&state, "bulk", api).status_code, 200);
     let call = |method: &str, url: &str, body: &str| {
         let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "bulk",
-            &Request::fake_http(method, url, vec![], body.as_bytes().to_vec()));
-        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+            &fake_data(method, url, body.as_bytes().to_vec()));
+        (r.status, String::from_utf8(r.body).unwrap())
     };
     assert_eq!(call("POST", "/todos/bulk", r#"[{"title":"buy milk"},{"done":false,"title":"walk"}]"#).0, 200);
     assert_eq!(call("POST", "/todos/bulk", r#"[{"title":"later"}]"#).0, 200);
@@ -2158,8 +2222,8 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
     let call = |method: &str, url: &str, body: &str| {
         serve_data(&state.store, &state.deployments, &state.deployments_path, "todo",
-            &Request::fake_http(method, url, vec![], body.as_bytes().to_vec()))
-        .status_code
+            &fake_data(method, url, body.as_bytes().to_vec()))
+        .status
     };
     assert_eq!(call("POST", "/todos", r#"{"title":"a"}"#), 200);
     assert_eq!(call("POST", "/todos", r#"{"title":"b"}"#), 200);
@@ -2240,8 +2304,8 @@ fn a_deployment_runs_pauses_stops_and_keeps_every_session() {
     assert_eq!(deploy_server(&state, "todo", api).status_code, 200);
     let call = |method: &str, body: &str| {
         let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "todo",
-            &Request::fake_http(method, "/todos", vec![], body.as_bytes().to_vec()));
-        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+            &fake_data(method, "/todos", body.as_bytes().to_vec()));
+        (r.status, String::from_utf8(r.body).unwrap())
     };
     let act = |action: &str, body: &str| {
         let r = route(&state, &req("POST", &format!("/deployments/todo/{action}"), body.as_bytes().to_vec()));
@@ -2563,6 +2627,7 @@ fn state_persists_across_a_simulated_restart() {
             flows_path: ":memory:".to_string(),
             port: TEST_PORT,
             listeners: None,
+            data_limits: dataplane::DataLimits::default(),
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
@@ -2596,6 +2661,7 @@ fn state_persists_across_a_simulated_restart() {
         flows_path: ":memory:".to_string(),
         port: TEST_PORT,
         listeners: None,
+        data_limits: dataplane::DataLimits::default(),
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
