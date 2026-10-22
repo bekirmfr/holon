@@ -437,6 +437,15 @@ pub fn variadic_primitives() -> Vec<String> {
     holon_core::VARIADIC.iter().map(|s| s.to_string()).collect()
 }
 
+/// What each genesis primitive does, by name (core's `describe`): the editor shows it on each
+/// node and in the palette, read from core like the catalog, never a TS copy that could drift.
+#[wasm_bindgen]
+pub fn primitive_docs() -> Result<JsValue, JsError> {
+    let docs: std::collections::BTreeMap<&str, &str> =
+        holon_core::GENESIS.iter().filter_map(|n| holon_core::describe(n).map(|d| (*n, d))).collect();
+    serde_wasm_bindgen::to_value(&docs).map_err(|e| JsError::new(&format!("docs: {e}")))
+}
+
 /// Core's genesis interfaces mirrored to `WUnit` via the *same* `from_core` `load_unit` uses — no
 /// second core→JS converter. Shared by the bridge fn and its tests.
 fn catalog_wunits() -> Vec<WUnit> {
