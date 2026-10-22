@@ -24,7 +24,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod rounds;
 mod state;
+pub use rounds::{run_rounds, Exchange, Limits, Performer, Recorded, Round, RunError, RunOutcome};
 pub use state::{LoadError, State};
 
 use holon_core::{

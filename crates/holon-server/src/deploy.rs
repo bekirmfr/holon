@@ -365,7 +365,7 @@ pub(crate) fn handle_post_trigger(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &Limits::request_run());
 
     record_trigger(deployments, slug, false);
     log_run(deployments, slug, run_entry("trigger", started, &extra_sourced, &run));

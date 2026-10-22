@@ -69,6 +69,10 @@ pub(crate) struct FiredRun {
     pub(crate) performed: Vec<(Capability, Value)>,
     pub(crate) state_before: BTreeMap<String, Value>,
     pub(crate) timeline: Vec<recorder::NodeTiming>,
+    /// The outbound requests it made, round by round.
+    pub(crate) rounds: Vec<Round>,
+    /// Why it failed (a run budget), if it did: then nothing was performed.
+    pub(crate) error: Option<String>,
 }
 
 pub(crate) fn fire_with_state(
@@ -77,6 +81,7 @@ pub(crate) fn fire_with_state(
     resolver: &impl Resolver,
     state: Option<&Mutex<State>>,
     extra_sourced: &[(Capability, Value)],
+    limits: &Limits,
 ) -> FiredRun {
     let mut guard = state.map(|m| m.lock().unwrap());
     let state_before = guard.as_deref().map(State::values).unwrap_or_default();
@@ -92,7 +97,10 @@ pub(crate) fn fire_with_state(
 
     let mut host = RecordingHost { performed: Vec::new() };
     let mut timer = recorder::Timer::new();
-    let outputs = fire_sourced_observed(root_unit, inputs, &sourced, resolver, &mut host, &mut timer);
+    // Outbound requests may go only to the hosts the unit names (acknowledged at deploy).
+    let performer = Outbound::for_capabilities(capabilities(root_unit, resolver).iter());
+    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &performer, limits, &mut timer);
+    let outputs = outcome.outputs;
 
     if let Some(storage) = guard.as_deref_mut() {
         for (cap, payload) in &host.performed {
@@ -106,7 +114,14 @@ pub(crate) fn fire_with_state(
         }
     }
 
-    FiredRun { outputs, performed: host.performed, state_before, timeline: timer.timeline }
+    FiredRun {
+        outputs,
+        performed: host.performed,
+        state_before,
+        timeline: timer.timeline,
+        rounds: outcome.rounds,
+        error: outcome.error.map(|e| e.message()),
+    }
 }
 
 /// `POST /fire?root=<hex>` — settle a published unit **once**, on request. Not "deploy": there
@@ -192,15 +207,23 @@ pub(crate) fn run_entry(
             .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
             .collect(),
         response_body: None,
-        error: None,
+        error: run.error.clone(),
         timeline: run.timeline.clone(),
+        rounds: run.rounds.iter().map(recorder::LoggedRound::from_host).collect(),
     }
 }
 
 impl FiredRun {
     /// No run at all: an unrouted request.
     pub(crate) fn nothing() -> FiredRun {
-        FiredRun { outputs: vec![], performed: vec![], state_before: BTreeMap::new(), timeline: vec![] }
+        FiredRun {
+            outputs: vec![],
+            performed: vec![],
+            state_before: BTreeMap::new(),
+            timeline: vec![],
+            rounds: vec![],
+            error: None,
+        }
     }
 }
 

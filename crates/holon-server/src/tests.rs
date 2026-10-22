@@ -682,6 +682,59 @@ fn deploy_needs_each_requested_host_acknowledged_by_name() {
     assert_eq!(deploy(serde_json::json!(["NetworkIngress", "HttpRequest(\"api.example.com\")"])).status_code, 200);
 }
 
+/// A deployed flow's `http_request` goes through the round loop and the outbound rules: here the
+/// host is this machine (127.0.0.1), which no deployment may reach without an explicit grant, so
+/// the request is refused at perform time. The refusal is the node's response, flows on to the
+/// egress, and the flow log records the round: the request, the response, and its node.
+#[test]
+fn a_deployed_request_is_performed_between_rounds_and_logged() {
+    let state = test_state();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    let request = Unit {
+        params: vec![Param::frozen("method", "GET"), Param::frozen("host", &host)],
+        ..holon_core::interface_of("http_request").unwrap()
+    };
+    let flow = Unit {
+        body: UnitBody::Composite {
+            children: vec![stage(&state, &test_ingress()), stage(&state, &request), stage(&state, &test_sink())],
+            edges: vec![
+                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // ingress → path
+                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 }, // response → egress
+                Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+            ],
+        },
+        params: vec![],
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+    };
+    let flow_hash = stage(&state, &flow);
+    let body = serde_json::json!({
+        "slug": "caller", "unit": to_hex(&flow_hash),
+        "acknowledge": ["NetworkIngress", "NetworkEgress", format!("HttpRequest({host:?})")],
+    });
+    assert_eq!(route(&state, &req("POST", "/deploy", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let fired = route(&state, &req("POST", "/trigger/caller", b"/status".to_vec()));
+    assert_eq!(fired.status_code, 200);
+
+    let log = body_json(route(&state, &req("GET", "/deployments/caller/log", vec![])));
+    let entry = &log["entries"][0];
+    let exchange = &entry["rounds"][0]["exchanges"][0];
+    // The node's path is its index in the unit as stored: children in canonical (hash) order.
+    let stored = state.store.get(&flow_hash).unwrap().unwrap();
+    let UnitBody::Composite { children, .. } = &stored.body else { panic!() };
+    let index = children.iter().position(|h| *h == hash_unit(&request).unwrap()).unwrap();
+    assert_eq!(exchange["path"], serde_json::json!([index]), "the request node, by path");
+    let url = |v: &serde_json::Value| v["value"].as_array().unwrap().iter().find(|kv| kv[0] == "url").unwrap()[1]["value"].clone();
+    assert_eq!(url(&exchange["request"]), format!("https://{host}/status"));
+    let error = exchange["response"]["value"].as_array().unwrap().iter().find(|kv| kv[0] == "error").unwrap()[1]["value"].clone();
+    assert_eq!(error, "blocked_address", "this machine is a private address");
+    assert_eq!(entry["performed"][0]["capability"], "NetworkEgress", "the refusal flowed on to the egress");
+    assert!(entry["error"].is_null(), "a refused request doesn't fail the run");
+    assert!(entry["timeline"].as_array().unwrap().iter().any(|t| t["round"] == 1), "timings from both rounds");
+    drop(listener);
+}
+
 // ── persistence ──────────────────────────────────────────────────────────────────────
 
 #[test]

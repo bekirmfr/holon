@@ -146,6 +146,7 @@ mod flows;
 mod http;
 mod lifecycle;
 mod listeners;
+mod outbound;
 mod persist;
 mod recorder;
 mod scheduler;
@@ -167,8 +168,8 @@ use holon_core::{
     Value, BOUNDARY,
 };
 use holon_host::{
-    fire, fire_sourced_observed, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
-    PublishError, Registry, SharedCache, State, Store, StoreError,
+    fire, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
+    run_rounds, Limits, PublishError, Registry, Round, SharedCache, State, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
 use recorder::{Log, LogEntry};
@@ -183,6 +184,7 @@ use fixtures::*;
 use flows::*;
 use http::*;
 use listeners::*;
+use outbound::Outbound;
 use persist::*;
 use scheduler::*;
 use units::*;

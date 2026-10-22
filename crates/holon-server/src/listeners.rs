@@ -43,7 +43,7 @@ pub(crate) fn serve_data(
         &resolver,
         &http,
         |endpoint, route, req, sourced| {
-            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced);
+            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, state.as_deref(), sourced, &Limits::request_run());
             let mut entry = run_entry("request", started, sourced, &run);
             entry.route = Some(route.to_string());
             entry.request = Some(SValue::from_core(&req));

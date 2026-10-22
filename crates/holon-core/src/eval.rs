@@ -61,6 +61,9 @@ pub trait Observer {
     fn answer(&mut self, _path: &[u32], _request: &Value) -> Option<Value> {
         None
     }
+    /// Round `n` is about to be evaluated. Core never calls this; the host's round loop does,
+    /// so an observer can tell one round's steps from the next.
+    fn round(&mut self, _n: usize) {}
 }
 
 /// Observes nothing: what plain [`eval`] uses.

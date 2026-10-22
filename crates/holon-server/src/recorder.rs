@@ -52,6 +52,45 @@ pub struct LogEntry {
     /// When each step ran, relative to the run's start (see [`Timer`]).
     #[serde(default)]
     pub timeline: Vec<NodeTiming>,
+    /// The outbound requests the run made, round by round (`http_request`, §4.1): replay answers
+    /// from these instead of the network. Absent when it made none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rounds: Vec<LoggedRound>,
+}
+
+/// The requests performed after one round, to answer the next.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LoggedRound {
+    pub exchanges: Vec<LoggedExchange>,
+}
+
+/// One outbound request: the node that made it (its path in the run's root unit), the request,
+/// the response, and when, in microseconds since the run began.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct LoggedExchange {
+    pub path: Vec<u32>,
+    pub request: SValue,
+    pub response: SValue,
+    pub start_us: f64,
+    pub end_us: f64,
+}
+
+impl LoggedRound {
+    pub fn from_host(round: &holon_host::Round) -> LoggedRound {
+        LoggedRound {
+            exchanges: round
+                .exchanges
+                .iter()
+                .map(|x| LoggedExchange {
+                    path: x.path.clone(),
+                    request: SValue::from_core(&x.request),
+                    response: SValue::from_core(&x.response),
+                    start_us: x.start_us,
+                    end_us: x.end_us,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// One composite child's evaluation: its path of child indices from the run's root unit, and
@@ -61,6 +100,8 @@ pub struct NodeTiming {
     pub path: Vec<u32>,
     pub start_us: f64,
     pub end_us: f64,
+    /// Which round of the run (0 for a run without outbound requests).
+    pub round: u32,
 }
 
 /// Times each composite child of a run as core evaluates it (core's `Observer`), down to
@@ -70,6 +111,7 @@ pub struct NodeTiming {
 pub struct Timer {
     start: std::time::Instant,
     open: Vec<f64>,
+    round: u32,
     pub timeline: Vec<NodeTiming>,
 }
 
@@ -77,7 +119,7 @@ impl Timer {
     pub const DEPTH: usize = 2;
 
     pub fn new() -> Timer {
-        Timer { start: std::time::Instant::now(), open: Vec::new(), timeline: Vec::new() }
+        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, timeline: Vec::new() }
     }
 
     fn now_us(&self) -> f64 {
@@ -96,8 +138,11 @@ impl holon_core::Observer for Timer {
         if path.len() <= Self::DEPTH {
             let start_us = self.open.pop().unwrap_or(0.0);
             let end_us = self.now_us();
-            self.timeline.push(NodeTiming { path: path.to_vec(), start_us, end_us });
+            self.timeline.push(NodeTiming { path: path.to_vec(), start_us, end_us, round: self.round });
         }
+    }
+    fn round(&mut self, n: usize) {
+        self.round = n as u32;
     }
 }
 
@@ -164,6 +209,7 @@ mod tests {
             response_body: None,
             error: None,
             timeline: vec![],
+            rounds: vec![],
         }
     }
 

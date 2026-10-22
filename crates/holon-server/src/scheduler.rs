@@ -88,7 +88,7 @@ pub(crate) fn fire_one_clock_tick(
     ];
     let is_state = state.is_some();
     let started = started_now();
-    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced);
+    let run = fire_with_state(root_unit, &[], &resolver, state.as_deref(), &extra_sourced, &Limits::clock_run());
     log_run(deployments, &slug, run_entry("tick", started, &extra_sourced, &run));
     let FiredRun { outputs, performed, .. } = run;
 
