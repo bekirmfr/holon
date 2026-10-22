@@ -5,11 +5,11 @@
 // outputs it had in that run (replayed, replay.ts).
 
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { getLog, type LogEntry } from "./server";
+import { getCollectionItems, getLog, type LogEntry } from "./server";
 import { formatValue } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
-import type { Diagnosis, Issue, NodeExchange, NodeTrace } from "./replay";
+import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, type Issue, type NodeExchange, type NodeTrace } from "./replay";
 import { FAIL } from "./PrimitiveNode";
 
 const KEEP = 500;
@@ -613,21 +613,26 @@ function TimelineTab({
 }
 
 export function SidePane({
+  slug,
   run,
   step,
   order,
   stateAfter,
   changed,
+  collections,
   node,
   trace,
   timing,
 }: {
+  slug: string;
   run: LogEntry | null;
   step: number | null;
   order: string[];
   /** The state with the writes up to `step` applied, and the keys they changed. */
   stateAfter: Record<string, WValue>;
   changed: string[];
+  /** The collections the run touched, as of `step` (replay.ts's collectionsAtStep). */
+  collections: CollectionAtStep[];
   /** The node the component tab shows, with what it computed in this run. */
   node: ViewNode | null;
   trace: NodeTrace | undefined;
@@ -646,7 +651,7 @@ export function SidePane({
       />
       <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
         {tab === "state" ? (
-          <StateTab run={run} step={step} order={order} after={stateAfter} changed={changed} />
+          <StateTab slug={slug} run={run} step={step} order={order} after={stateAfter} changed={changed} collections={collections} />
         ) : (
           <ComponentTab node={node} trace={trace} timing={timing} />
         )}
@@ -665,28 +670,38 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function StateTab({
+  slug,
   run,
   step,
   order,
   after,
   changed,
+  collections,
 }: {
+  slug: string;
   run: LogEntry | null;
   step: number | null;
   order: string[];
   after: Record<string, WValue>;
   changed: string[];
+  collections: CollectionAtStep[];
 }) {
   if (!run) return <div>select a run</div>;
   const before = run.state_before;
-  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+  // A collection's root is a state cell; it shows as its collection, below, not as a hash.
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !isCollectionCell(k)).sort();
+  const items = collections.reduce((n, c) => n + c.items.filter(itemChanged).length, 0);
+  const counted = [
+    changed.length > 0 ? `${changed.length} key${changed.length === 1 ? "" : "s"}` : "",
+    items > 0 ? `${items} item${items === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
   return (
     <>
       <div style={{ color: dim }}>
         {step === null ? `after the whole run (${order.length} nodes)` : `after node ${step + 1} of ${order.length}`}
-        {changed.length > 0 ? ` · ${changed.length} key${changed.length === 1 ? "" : "s"} changed` : " · no change"}
+        {counted.length > 0 ? ` · ${counted.join(" and ")} changed` : " · no change"}
       </div>
-      {keys.length === 0 && <div>no state: nothing read or written</div>}
+      {keys.length === 0 && collections.length === 0 && <div>no state: nothing read or written</div>}
       {keys.map((k) => {
         const moved = changed.includes(k);
         return (
@@ -703,8 +718,98 @@ function StateTab({
           </div>
         );
       })}
+      {collections.map((c) => (
+        <CollectionBox key={c.name} slug={slug} c={c} />
+      ))}
       <div style={{ color: dim }}>writes are committed when the run finishes: the next run reads “after”.</div>
     </>
+  );
+}
+
+/**
+ * A collection as the run saw and changed it: each item it read or wrote, before → after (a
+ * before the log doesn't hold, for an item it wrote without reading, is fetched as of the root the
+ * run started from), the listings it made, and every item as the run found it, a page at a time.
+ */
+function CollectionBox({ slug, c }: { slug: string; c: CollectionAtStep }) {
+  const [fetched, setFetched] = useState<Record<string, WValue | null>>({});
+  const [all, setAll] = useState<{ items: [string, WValue][]; next: string | null } | null>(null);
+  const [error, setError] = useState("");
+  const unread = c.items.filter((i) => i.before === undefined).map((i) => i.key);
+  const unreadKey = unread.join("\u0000");
+  useEffect(() => {
+    if (!c.root) return;
+    for (const key of unreadKey ? unreadKey.split("\u0000") : []) {
+      getCollectionItems(slug, c.name, { root: c.root, key })
+        .then((r) => setFetched((f) => ({ ...f, [key]: r.items[0]?.[1] ?? null })))
+        .catch(() => setFetched((f) => ({ ...f, [key]: null })));
+    }
+  }, [slug, c.name, c.root, unreadKey]);
+  useEffect(() => setAll(null), [c.root]);
+  const page = (after: string | null) => {
+    setError("");
+    getCollectionItems(slug, c.name, { root: c.root, after, limit: 20 })
+      .then((r) => setAll((a) => ({ items: [...(after ? (a?.items ?? []) : []), ...r.items], next: r.next ?? null })))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  };
+  const changedItems = c.items.filter(itemChanged).length;
+  return (
+    <div style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: changedItems > 0 ? changedBg : "transparent" }}>
+      <div style={{ color: changedItems > 0 ? "#e0c36f" : ink, marginBottom: 2 }} title={c.root ? `root ${c.root}` : "no items before this run"}>
+        {c.name}
+        <span style={{ color: dim }}> · collection</span>
+        {changedItems > 0 ? ` · ${changedItems} item${changedItems === 1 ? "" : "s"} changed` : ""}
+      </div>
+      {c.items.map((i) => {
+        const before = i.before !== undefined ? i.before : fetched[i.key];
+        const moved = itemChanged(i);
+        const was = before === undefined ? "…" : before === null ? "(none)" : show(before);
+        return (
+          <Field
+            key={i.key}
+            name={i.key}
+            value={i.after === undefined ? `${was} · read` : `${was} → ${i.after === null ? "(deleted)" : show(i.after)}`}
+            color={moved ? "#e0c36f" : undefined}
+          />
+        );
+      })}
+      {c.listed.map((l, n) => (
+        <div key={`l${n}`} style={{ color: dim }}>
+          listed {l.count} item{l.count === 1 ? "" : "s"}
+          {l.prefix ? ` starting "${l.prefix}"` : ""}
+          {l.after ? ` after "${l.after}"` : ""}
+        </div>
+      ))}
+      {c.items.length === 0 && c.listed.length === 0 && <div style={{ color: dim }}>not read or written by this run</div>}
+      {c.root && (
+        <div style={{ marginTop: 4 }}>
+          {all === null ? (
+            <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => page(null)} title="every item, as this run found the collection">
+              show all ▸
+            </span>
+          ) : (
+            <>
+              <div style={{ color: dim }}>as the run found it:</div>
+              {all.items.map(([k, v]) => (
+                <Field key={k} name={k} value={show(v)} />
+              ))}
+              {all.items.length === 0 && <div style={{ color: dim }}>empty</div>}
+              <span style={{ display: "flex", gap: 10 }}>
+                {all.next && (
+                  <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => page(all.next)}>
+                    more ▸
+                  </span>
+                )}
+                <span style={{ cursor: "pointer", color: dim }} onClick={() => setAll(null)}>
+                  hide
+                </span>
+              </span>
+            </>
+          )}
+          {error && <div style={{ color: bad }}>{error}</div>}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -53,6 +53,7 @@ import { History } from "./history";
 import { DialogProvider, useDialog } from "./Dialog";
 import { BottomPane, SidePane } from "./ViewPanes";
 import {
+  collectionsAtStep,
   diagnose,
   executionOrder,
   nodeExchanges,
@@ -759,6 +760,11 @@ function Canvas({
         : { after: {}, changed: [] as string[] },
     [selectedRun, replayed, step],
   );
+  // The collections the run touched, as items, as of the step shown.
+  const collectionsNow = useMemo(
+    () => (selectedRun ? collectionsAtStep(selectedRun, replayed, live.current.nodes, step) : []),
+    [selectedRun, replayed, step],
+  );
 
   const onProject = useCallback(() => {
     const result = projectCanvas(nodes, edges, ev, byName, canvasKey);
@@ -1000,6 +1006,8 @@ function Canvas({
       {viewing && (
         <>
           <SidePane
+            slug={viewing}
+            collections={collectionsNow}
             run={selectedRun}
             step={step}
             order={replayed?.order ?? []}

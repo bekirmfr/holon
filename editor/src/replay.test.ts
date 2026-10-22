@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diagnose, executionOrder, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, stateAtStep, wireKey, type ReplayInput, type ReplayNode } from "./replay";
+import { collectionsAtStep, diagnose, executionOrder, isCollectionCell, itemChanged, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, stateAtStep, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
@@ -231,6 +231,47 @@ describe("collection reads in a replay", () => {
     const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode, reads);
     expect(traces.get("g")?.outputs).toEqual([note]);
     expect(traces.get("l")?.outputs).toEqual([null]);
+  });
+});
+
+describe("collections as a run saw and changed them", () => {
+  const txt = (value: string): WValue => ({ type: "Text", value });
+  const rec = (...fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
+  const root = "8ec0".padEnd(64, "0");
+  const entry = {
+    state_before: { "#collection:likes": txt(root), count: num(1) },
+    reads: [
+      { request: rec(["collection", txt("likes")], ["get", txt("1")]), answer: num(49) },
+      { request: rec(["collection", txt("likes")], ["list", rec(["limit", num(100)], ["prefix", txt("")])]), answer: rec(["1", num(49)], ["2", num(2)]) },
+    ],
+  };
+  const put = (key: string, value: WValue): WValue => ({ type: "Effect", value: { sink: "collection_put:likes", payload: rec(["key", txt(key)], ["value", value]) } });
+  const nodes = [n("p", "collection_put", ["key", "value"], ["out"], [frozen("collection", "likes")]), n("d", "collection_delete", ["key"], ["out"], [frozen("collection", "likes")])];
+  const run = {
+    order: ["p", "d"],
+    traces: new Map([
+      ["p", { inputs: [], outputs: [put("1", num(50))] }],
+      ["d", { inputs: [], outputs: [{ type: "Effect", value: { sink: "collection_delete:likes", payload: txt("7") } } as WValue] }],
+    ]),
+  };
+
+  it("shows the items it read, what it wrote over them, and its listings, by collection", () => {
+    const [likes] = collectionsAtStep(entry, run, nodes, null);
+    expect(likes.name).toBe("likes");
+    expect(likes.root).toBe(root);
+    expect(likes.items).toEqual([
+      { key: "1", before: num(49), after: num(50), read: true },
+      { key: "7", after: null, read: false },
+    ]);
+    expect(likes.listed).toEqual([{ prefix: "", after: null, count: 2 }]);
+    expect(likes.items.filter(itemChanged).map((i) => i.key)).toEqual(["1", "7"]);
+    expect(isCollectionCell("#collection:likes") && !isCollectionCell("count")).toBe(true);
+  });
+
+  it("follows the step-through: before the put, nothing is written yet", () => {
+    const [likes] = collectionsAtStep(entry, { ...run, order: ["p", "d"] }, nodes, -1);
+    expect(likes.items).toEqual([{ key: "1", before: num(49), read: true }]);
+    expect(likes.items.some(itemChanged)).toBe(false);
   });
 });
 

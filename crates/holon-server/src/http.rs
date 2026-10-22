@@ -196,6 +196,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         if let Some((slug, name)) = rest.split_once("/secrets/") {
             return handle_secrets(&state.secrets, slug, Some(name), method, request);
         }
+        if let Some((slug, name)) = rest.split_once("/collections/")
+            && method == "GET"
+        {
+            return collections::handle_get_collection(state, slug, name, request);
+        }
         if let Some(slug) = rest.strip_suffix("/runs")
             && method == "GET"
         {

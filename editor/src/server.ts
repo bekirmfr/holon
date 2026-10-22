@@ -211,6 +211,24 @@ export type WaitingRun = {
   delivered: string[];
 };
 
+/** `GET /deployments/<slug>/collections/<name>`: one item (`key`) or a page of items in key order
+ *  (`prefix`, `after`, `limit`), as of `root` (one the deployment's log shows) or live. `next`:
+ *  the key to continue after, when there may be more. */
+export async function getCollectionItems(
+  slug: string,
+  name: string,
+  query: { root?: string | null; key?: string; prefix?: string; after?: string | null; limit?: number },
+): Promise<{ root: string; items: [string, WValue][]; next?: string | null }> {
+  const q = new URLSearchParams();
+  if (query.root) q.set("root", query.root);
+  if (query.key !== undefined) q.set("key", query.key);
+  if (query.prefix) q.set("prefix", query.prefix);
+  if (query.after) q.set("after", query.after);
+  if (query.limit) q.set("limit", String(query.limit));
+  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/collections/${encodeURIComponent(name)}?${q}`);
+  return asJson(res);
+}
+
 export async function listWaitingRuns(slug: string): Promise<WaitingRun[]> {
   const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/runs`);
   return (await asJson<{ runs: WaitingRun[] }>(res)).runs;

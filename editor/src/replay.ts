@@ -98,6 +98,100 @@ export function stateAtStep(
   return { after, changed: [...changed].sort() };
 }
 
+/** One item of a collection a run touched. `before`: what it held when the run started, as the
+ *  run read it (`null`: no such item); `undefined` when the run didn't read it, so the log
+ *  doesn't say. `after`: what the steps so far wrote (`null`: deleted); `undefined` when
+ *  unwritten. */
+export type ItemChange = { key: string; before?: WValue | null; after?: WValue | null; read: boolean };
+
+/** A collection as a run saw and changed it: its root when the run started (a state cell under
+ *  `#collection:<name>`, the hash of its content), the items it read or wrote, and its listings. */
+export type CollectionAtStep = {
+  name: string;
+  root: string | null;
+  items: ItemChange[];
+  listed: { prefix: string; after: string | null; count: number }[];
+};
+
+const COLLECTION_CELL = "#collection:";
+
+/** Whether state key `k` is a collection's root (shown as its collection, not as a cell). */
+export const isCollectionCell = (k: string) => k.startsWith(COLLECTION_CELL);
+
+/**
+ * The collections a run touched, as of `step` (all of it for `null`): the items it read, with
+ * what each held, and the puts and deletes evaluated so far. Built from the log (its reads, its
+ * state before) and the replay (each `collection_put`/`collection_delete` node's effect), the
+ * way `stateAtStep` builds a state cell's change from `store_write`.
+ */
+export function collectionsAtStep(
+  entry: { state_before: Record<string, WValue>; reads?: { request: WValue; answer: WValue | null }[] },
+  run: Replay | null,
+  nodes: ReplayNode[],
+  step: number | null,
+): CollectionAtStep[] {
+  const byName = new Map<string, CollectionAtStep>();
+  const of = (name: string) => {
+    let c = byName.get(name);
+    if (!c) {
+      const cell = entry.state_before[COLLECTION_CELL + name];
+      c = { name, root: cell?.type === "Text" ? cell.value : null, items: [], listed: [] };
+      byName.set(name, c);
+    }
+    return c;
+  };
+  const item = (c: CollectionAtStep, key: string) => {
+    let i = c.items.find((x) => x.key === key);
+    if (!i) {
+      i = { key, read: false };
+      c.items.push(i);
+    }
+    return i;
+  };
+  const field = (v: WValue | null | undefined, k: string) => (v?.type === "Record" ? (v.value.find(([x]) => x === k)?.[1] ?? null) : null);
+  const text = (v: WValue | null) => (v?.type === "Text" ? v.value : null);
+
+  for (const k of Object.keys(entry.state_before)) if (isCollectionCell(k)) of(k.slice(COLLECTION_CELL.length));
+  for (const r of entry.reads ?? []) {
+    const name = text(field(r.request, "collection"));
+    if (!name) continue;
+    const key = text(field(r.request, "get"));
+    if (key !== null) {
+      const i = item(of(name), key);
+      i.before = r.answer;
+      i.read = true;
+      continue;
+    }
+    const list = field(r.request, "list");
+    if (list) {
+      const count = r.answer?.type === "Record" ? r.answer.value.length : 0;
+      of(name).listed.push({ prefix: text(field(list, "prefix")) ?? "", after: text(field(list, "after")), count });
+    }
+  }
+  const upTo = step === null ? (run?.order.length ?? 0) - 1 : step;
+  for (const id of run?.order.slice(0, upTo + 1) ?? []) {
+    const n = nodes.find((x) => x.id === id);
+    if (!n || n.data.body.kind !== "Primitive" || !n.data.name.startsWith("collection_")) continue;
+    const out = run!.traces.get(id)?.outputs[0];
+    if (out?.type !== "Effect") continue;
+    const [sink, name] = [out.value.sink.split(":")[0], out.value.sink.slice(out.value.sink.indexOf(":") + 1)];
+    if (sink === "collection_put") {
+      const key = text(field(out.value.payload, "key"));
+      if (key !== null) item(of(name), key).after = field(out.value.payload, "value");
+    } else if (sink === "collection_delete") {
+      const key = text(out.value.payload);
+      if (key !== null) item(of(name), key).after = null;
+    }
+  }
+  for (const c of byName.values()) c.items.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : 1));
+}
+
+/** Whether a run changed an item: it wrote it, and (when the log says what was there) wrote
+ *  something else. A write over an item it never read counts: the log can't tell otherwise. */
+export const itemChanged = (i: ItemChange) =>
+  i.after !== undefined && (i.before === undefined || JSON.stringify(i.after) !== JSON.stringify(i.before));
+
 /** When one node ran, in microseconds from the run's start, and in which round of the run
  *  (holon-server's NodeTiming; `round` absent from servers before rounds). */
 export type NodeTiming = {

@@ -2122,6 +2122,20 @@ fn a_collection_keeps_items_by_key_across_runs_and_restarts() {
     let last = log["entries"].as_array().unwrap().last().unwrap().clone();
     assert_eq!(last["reads"][0]["request"]["value"][1][0], "list", "{last}");
 
+    // The editor reads a collection's items, live or as a logged run found it.
+    let items = |q: &str| route(&state, &req("GET", &format!("/deployments/shelf/collections/items{q}"), vec![]));
+    let keys = |v: &serde_json::Value| v["items"].as_array().unwrap().iter().map(|kv| kv[0].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(keys(&body_json(items(""))), ["1", "3"]);
+    let first = body_json(items("?limit=1"));
+    assert_eq!((keys(&first), first["next"].as_str()), (vec!["1".to_string()], Some("1")));
+    assert_eq!(body_json(items("?key=3"))["items"][0][1]["value"][0][1]["value"], 3.0);
+    // Before the delete, item 2 was there: a run's state before has that root.
+    let entries = log["entries"].as_array().unwrap();
+    let before_delete = entries.iter().find(|x| x["route"] == "DELETE /items/:id").unwrap()["state_before"]["#collection:items"]["value"].as_str().unwrap().to_string();
+    assert_eq!(keys(&body_json(items(&format!("?root={before_delete}")))), ["1", "2", "3"]);
+    assert_eq!(items(&format!("?root={}", "ab".repeat(32))).status_code, 404, "a root the log never showed");
+    assert_eq!(route(&state, &req("GET", "/deployments/shelf/collections/nothing", vec![])).status_code, 404);
+
     // Persisted: reloaded from disk, the items are there.
     *state.deployments.lock().unwrap() = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(call(&state, "GET", "/items/3", ""), (200, r#"{"n":3}"#.to_string()));

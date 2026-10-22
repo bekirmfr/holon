@@ -119,3 +119,56 @@ pub(crate) fn apply(state: &mut State, store: &mut SharedStore, name: &str, payl
     .map_err(|e| format!("{e:?}"))?;
     state.insert(cell, Value::Text(to_hex(&next))).map_err(|e| format!("{e:?}"))
 }
+
+/// `GET /deployments/<slug>/collections/<name>`: a collection's items, for the editor's Flow state
+/// pane. `?key=` gets one item; otherwise a page in key order (`prefix`, `after`, `limit`: 50 by
+/// default, at most 1000) with `next`, the key to continue after when there may be more. `?root=`
+/// reads the collection as it was at that root (as a logged run found it), and is accepted only
+/// when it is the live root or one this deployment's log shows: a view of its own history, not a
+/// way to read anything stored. Values are redacted like the rest of the control plane.
+pub(crate) fn handle_get_collection(state: &AppState, slug: &str, name: &str, request: &Request) -> Response {
+    let cell = cell_key(name);
+    let asked = request.get_param("root");
+    let (root, redactor) = {
+        let table = state.deployments.lock().unwrap();
+        let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
+        let live = dep.state.as_ref().and_then(|s| match s.lock().unwrap().get(&cell) {
+            Some(Value::Text(hex)) => parse_hash(hex),
+            _ => None,
+        });
+        let root = match &asked {
+            None => match live {
+                Some(r) => r,
+                None => return err(404, format!("{slug:?} has no collection {name:?} yet")),
+            },
+            Some(hex) => {
+                let Some(r) = parse_hash(hex) else { return err(400, "root is not a 64-char hex hash") };
+                if live != Some(r) && !dep.log.shows(&cell, hex) {
+                    return err(404, format!("{name:?} was never at that root in {slug:?}'s log"));
+                }
+                r
+            }
+        };
+        (root, Redactor::of(&dep.secrets))
+    };
+    let item = |(k, v): (String, Value)| serde_json::json!([k, SValue::from_core(&v)]);
+    let mut reply = if let Some(key) = request.get_param("key") {
+        match collection::get(&state.store, &root, &key) {
+            Ok(v) => serde_json::json!({ "root": to_hex(&root), "items": v.map(|v| item((key, v))).into_iter().collect::<Vec<_>>() }),
+            Err(e) => return err(500, format!("{e:?}")),
+        }
+    } else {
+        let limit = request.get_param("limit").and_then(|l| l.parse().ok()).unwrap_or(50usize).clamp(1, 1000);
+        let prefix = request.get_param("prefix").unwrap_or_default();
+        let after = request.get_param("after");
+        match collection::list(&state.store, &root, &prefix, after.as_deref(), limit) {
+            Ok(items) => {
+                let next = (items.len() == limit).then(|| items.last().map(|(k, _)| k.clone())).flatten();
+                serde_json::json!({ "root": to_hex(&root), "items": items.into_iter().map(item).collect::<Vec<_>>(), "next": next })
+            }
+            Err(e) => return err(500, format!("{e:?}")),
+        }
+    };
+    redactor.json(&mut reply);
+    Response::json(&reply)
+}

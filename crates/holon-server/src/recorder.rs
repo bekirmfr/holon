@@ -223,6 +223,13 @@ impl Log {
     pub fn next_seq(&self) -> u64 {
         self.next_seq
     }
+
+    /// Whether some entry's state before held `text` in cell `key`: a collection root this
+    /// deployment's log has seen.
+    pub fn shows(&self, key: &str, text: &str) -> bool {
+        let want = SValue::from_core(&holon_core::Value::Text(text.to_string()));
+        self.entries.iter().any(|e| e.state_before.get(key) == Some(&want))
+    }
 }
 
 /// A response body as log text: lossy UTF-8, cut at 64 KiB.
