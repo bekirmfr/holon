@@ -33,3 +33,28 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: jetli/wasm-pack-action@v0.4.0
       - run: wasm-pack test --node crates/holon-wasm
+
+  # 4. The editor, against the wasm package built here (it's generated, never committed):
+  #    type-checked, and its tests run. Those include every sample flow building from the live
+  #    catalog and deriving through the real core (CLAUDE.md), so a sample that stops building,
+  #    or a primitive with no description, fails here.
+  editor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editor/package-lock.json
+      - run: npm ci
+        working-directory: editor
+      - run: npx tsc --noEmit -p .
+        working-directory: editor
+      - run: npx vitest run
+        working-directory: editor
