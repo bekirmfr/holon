@@ -34,7 +34,7 @@ import {
   manifestItems,
   manifestTrigger,
 } from "./holon";
-import { changeDeployment, getDeployedDocument, getFlow, type FlowDocument, type FlowRecord } from "./server";
+import { changeDeployment, getFlow, type FlowDocument, type FlowRecord } from "./server";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
@@ -59,7 +59,7 @@ import {
 import { expandComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { DeployedPage, FlowsPage, type AppPage } from "./Pages";
-import { newHistory, snapshotOf, useCanvasHistory } from "./useCanvasHistory";
+import { useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { SAMPLES, buildSample, type Sample } from "./samples";
 import { blankTab, freshTab, metaSetter, savedKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
@@ -70,6 +70,7 @@ import { useCompositeOverlay } from "./useCompositeOverlay";
 import { useSavedFlows } from "./useSavedFlows";
 import { useDeployFlow } from "./useDeployFlow";
 import { useTabs } from "./useTabs";
+import { useModeSwitch } from "./useModeSwitch";
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
@@ -432,48 +433,17 @@ function Canvas({
   });
 
 
-  // ── View mode ──────────────────────────────────────────────────────────────────────────
-  // A deployment, read only, with its runs: in its flow's tab (that tab's edit copy set aside
-  // until edit mode), or a tab of its own.
-  const onView = useCallback(
-    async (slug: string) => {
-      let doc: FlowDocument;
-      try {
-        doc = await getDeployedDocument(slug);
-      } catch (e) {
-        setDeployError(e instanceof Error ? e.message : String(e));
-        return;
-      }
-      // A unit that won't decode just stays unresolvable, like on Open.
-      restoreDocument(doc, ev);
-      const open = tabOf(slug);
-      const base = open === null ? blankTab(slug) : open === activeId ? captureTab() : (stash.current.get(open) ?? blankTab(slug));
-      const editCopy = base.meta.viewing
-        ? base.beforeView
-        : open === null
-          ? null
-          : { nodes: base.nodes, edges: base.edges, viewport: base.viewport, history: base.history, dirty: base.dirty };
-      showTab(open, {
-        ...base,
-        beforeView: editCopy,
-        nodes: doc.nodes as PrimitiveNodeType[],
-        edges: doc.edges as Edge[],
-        viewport: doc.viewport,
-        history: newHistory(snapshotOf([], [])),
-        viewDoc: doc,
-        meta: {
-          ...base.meta,
-          viewing: slug,
-          viewUnit: deployments.find((d) => d.slug === slug)?.unit ?? null,
-          viewTrace: doc.trace,
-          selectedRun: null,
-          step: null,
-          inspectNode: null,
-        },
-      });
-    },
-    [ev, tabOf, activeId, captureTab, showTab, deployments],
-  );
+  // ── Modes: view a deployment, edit the flow (useModeSwitch.ts) ───────────────────────────
+  const { onView, onMode } = useModeSwitch({
+    flow,
+    ev,
+    deployments,
+    tabs: { activeId, stash, captureTab, showTab, tabOf },
+    tabFromDocument,
+    canvas: { beforeView, viewDoc, history, restoring, setNodes, setEdges, setViewport, bump },
+    setters: { setViewing, setViewTrace, setInspectNode, setSelectedRun, setStep },
+    setError: setDeployError,
+  });
 
   // View mode: the run replayed on its version's canvas, stepping, flow state, and the panes
   // (useViewMode.tsx).
@@ -497,50 +467,6 @@ function Canvas({
     deployments,
     fitView,
   });
-
-  // Edit mode: the flow as edited, put back as it was left; for a tab opened to view, the saved
-  // flow of that name, else a draft of what is deployed.
-  const onEditMode = useCallback(async () => {
-    const before = beforeView.current;
-    if (!viewing) return;
-    if (before) {
-      beforeView.current = null;
-      viewDoc.current = null;
-      setViewing(null);
-      setViewTrace(undefined);
-      setInspectNode(null);
-      setSelectedRun(null);
-      setStep(null);
-      history.current = before.history;
-      restoring.current = true;
-      setNodes(before.nodes);
-      setEdges(before.edges);
-      setViewport(before.viewport);
-      bump();
-      return;
-    }
-    const name = flowName;
-    // What is deployed now, not an earlier version a run may be shown on.
-    const doc = viewing ? await getDeployedDocument(viewing).catch(() => viewDoc.current) : viewDoc.current;
-    let t: TabState | null = null;
-    if (name) {
-      try {
-        t = tabFromDocument(name, (await getFlow(name)).document, true);
-      } catch {
-        // not saved: start from what is deployed
-      }
-    }
-    if (!t && doc) t = tabFromDocument(name, doc, false);
-    if (t) showTab(activeId, t);
-  }, [viewing, flowName, history, restoring, setNodes, setEdges, setViewport, bump, tabFromDocument, showTab, activeId]);
-
-  const onMode = useCallback(
-    (m: Mode) => {
-      if (m === "edit") onEditMode();
-      else if (flowName) onView(flowName);
-    },
-    [onEditMode, onView, flowName],
-  );
 
   const onProject = useCallback(() => {
     const result = projectCanvas(nodes, edges, ev, byName, canvasKey);
