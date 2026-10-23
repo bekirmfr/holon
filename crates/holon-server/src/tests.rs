@@ -31,6 +31,7 @@ fn test_state() -> AppState {
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
+        access: access::Access::default(),
     }
 }
 
@@ -1437,6 +1438,7 @@ fn deployments_persist_across_a_simulated_restart() {
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
+        access: access::Access::default(),
         };
         let body = serde_json::to_vec(&serde_json::json!({
             "slug": "echo",
@@ -1469,6 +1471,7 @@ fn deployments_persist_across_a_simulated_restart() {
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
+        access: access::Access::default(),
     };
     let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
     assert_eq!(triggered.status_code, 200);
@@ -2877,6 +2880,7 @@ fn state_persists_across_a_simulated_restart() {
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
+        access: access::Access::default(),
         };
         let deploy_body = serde_json::to_vec(&serde_json::json!({
             "slug": "writer",
@@ -2911,6 +2915,7 @@ fn state_persists_across_a_simulated_restart() {
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
+        access: access::Access::default(),
     };
     let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
     assert_eq!(triggered2.status_code, 200);
@@ -2929,7 +2934,7 @@ fn cors_allows_localhost_origin_and_omits_the_header_for_others() {
 
     let allowed =
         Request::fake_http("GET", "/health", vec![host_header(), ("Origin".to_string(), "http://localhost:5173".to_string())], vec![]);
-    let r1 = with_cors(&allowed, route(&state, &allowed));
+    let r1 = with_cors(&state.access, &allowed, route(&state, &allowed));
     assert!(r1
         .headers
         .iter()
@@ -2937,7 +2942,7 @@ fn cors_allows_localhost_origin_and_omits_the_header_for_others() {
 
     let disallowed =
         Request::fake_http("GET", "/health", vec![host_header(), ("Origin".to_string(), "http://evil.example".to_string())], vec![]);
-    let r2 = with_cors(&disallowed, route(&state, &disallowed));
+    let r2 = with_cors(&state.access, &disallowed, route(&state, &disallowed));
     assert!(!r2.headers.iter().any(|(k, _)| k.as_ref() == "Access-Control-Allow-Origin"));
 }
 
@@ -2959,7 +2964,7 @@ fn cors_allows_every_method_this_api_actually_uses() {
         vec![host_header(), ("Origin".to_string(), "http://localhost:5173".to_string())],
         vec![],
     );
-    let res = with_cors(&req, route(&state, &req));
+    let res = with_cors(&state.access, &req, route(&state, &req));
     let methods = res
         .headers
         .iter()
@@ -3091,4 +3096,30 @@ fn a_flow_log_survives_a_restart_and_goes_with_its_deployment() {
     assert_eq!(route(&state, &req("DELETE", "/deployments/kept", vec![])).status_code, 200);
     assert!(!file.exists(), "deleted with its deployment");
     let _ = std::fs::remove_file(&path);
+}
+
+/// With tokens configured, the control plane answers only with them: every endpoint needs the
+/// admin token, and writing a secret needs the secrets token, which opens nothing else.
+#[test]
+fn tokens_gate_the_control_plane_and_secrets_are_their_own() {
+    let mut state = test_state();
+    let (admin, secrets) = ("admin-token-0123456789abcdef", "secrets-token-0123456789abcdef");
+    state.access = access::Access::new(Some(admin.into()), Some(secrets.into()), vec![], vec![]).unwrap();
+    let with = |method: &str, url: &str, body: Vec<u8>, token: Option<&str>| {
+        let mut r = req(method, url, body);
+        let mut headers = r.headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        if let Some(t) = token {
+            headers.push(("Authorization".into(), format!("Bearer {t}")));
+        }
+        r = Request::fake_http(method, url, headers, r.data().map(|mut d| { let mut v = Vec::new(); std::io::Read::read_to_end(&mut d, &mut v).unwrap(); v }).unwrap_or_default());
+        route(&state, &r).status_code
+    };
+    assert_eq!(with("GET", "/deployments", vec![], None), 401);
+    assert_eq!(with("GET", "/deployments", vec![], Some(admin)), 200);
+    assert_eq!(with("GET", "/health", vec![], None), 200);
+    let set = br#"{"value":"long-enough-value"}"#.to_vec();
+    assert_eq!(with("POST", "/deployments/s/secrets/k", set.clone(), Some(admin)), 401, "the admin token isn't enough");
+    assert_eq!(with("POST", "/deployments/s/secrets/k", set, Some(secrets)), 200);
+    assert_eq!(with("GET", "/deployments/s/secrets", vec![], Some(admin)), 200, "names are an admin read");
+    assert_eq!(with("GET", "/deployments", vec![], Some(secrets)), 401);
 }

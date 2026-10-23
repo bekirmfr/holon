@@ -313,10 +313,17 @@ only the editor.
     a secret no longer has is still redacted and still refused in state, so a client still
     sending a rotated-out token doesn't put it in the log. Every change, and a source that stops
     or starts reading, is appended to `<secrets>.audit.jsonl` (owner-only), never with a value.
-  - **Left for later:** authentication on the control plane before it is reachable beyond
-    localhost (today it binds loopback and checks Host and Origin), with writing secrets as its
-    own permission; wiping values from memory beyond the store's own copies; more managers (AWS,
-    GCP, Azure, 1Password) behind the same reference form.
+  - **Access to the control plane** ✅ (`holon-server/src/access.rs`): open on loopback by
+    default (it binds 127.0.0.1 and checks Host and Origin). With an admin token
+    (`HOLON_ADMIN_TOKEN` or `--admin-token-file`) every request needs it as a bearer token,
+    compared in constant time; listening beyond loopback refuses to start without one, and
+    answers only the hosts and editor origins named with `--allow-host` / `--allow-origin`. With
+    a secrets token (`HOLON_SECRETS_TOKEN` or `--secrets-token-file`), writing a secret (set,
+    roll back, remove) needs it and the admin token alone isn't enough: writing secrets is its
+    own permission. The editor sends the tokens given under "access", kept in that browser.
+  - **Left for later:** wiping values from memory beyond the store's own copies; more managers
+    (AWS, GCP, Azure, 1Password) behind the same reference form; per-person accounts rather
+    than shared tokens.
 
 ### 4.3 Durable runs: continuing a run later
 Rounds cover waiting inside one request: the caller is on the line, the wait is seconds. Many

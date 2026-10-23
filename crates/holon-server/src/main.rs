@@ -139,6 +139,7 @@
 //! what I got back," which is the only question a stranger-facing boundary would have needed
 //! auth *for*.
 
+mod access;
 mod collections;
 mod data;
 mod dataplane;
@@ -264,6 +265,8 @@ struct AppState {
     /// Where `flows` is persisted (write-through, same discipline as `deployments_path`), or
     /// `":memory:"` to opt out.
     flows_path: String,
+    /// Who may use the control plane: tokens, and hosts and origins beyond loopback (access.rs).
+    access: access::Access,
     /// The port this server listens on — the one a request's `Host` must name
     /// (`reject_untrusted`).
     port: u16,
@@ -362,7 +365,8 @@ struct Deployment {
     /// Its runs waiting for an event, by run id (durable.rs). Persisted; kept across redeploys,
     /// each pinned to the unit it started on.
     parked: BTreeMap<String, ParkedRun>,
-    /// Every run, with what it read and produced (recorder.rs). In memory only.
+    /// Every run, with what it read and produced (recorder.rs): the newest in memory, kept beside
+    /// the deployments file so a restart reads them back.
     log: Log,
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
     /// view mode shows exactly what runs even after the flow is edited. Persisted.
@@ -411,6 +415,10 @@ fn main() {
     let mut secrets_arg = ".holon-secrets.json".to_string();
     let mut secrets_key_arg: Option<String> = None;
     let mut dotenv_arg: Option<String> = None;
+    let mut admin_token_file: Option<String> = None;
+    let mut secrets_token_file: Option<String> = None;
+    let mut allow_hosts: Vec<String> = Vec::new();
+    let mut allow_origins: Vec<String> = Vec::new();
     let mut host_key_arg = ".holon-host-key".to_string();
     let mut data_limits = dataplane::DataLimits::default();
     while let Some(a) = args.next() {
@@ -437,6 +445,16 @@ fn main() {
             // where there is one), `env:VAR` or `file:PATH` (sealing.rs).
             if let Some(v) = args.next() {
                 secrets_key_arg = Some(v);
+            }
+        } else if a == "--admin-token-file" || a == "--secrets-token-file" || a == "--allow-host" || a == "--allow-origin" {
+            // Who may use the control plane (access.rs). A token's file holds just the token.
+            if let Some(v) = args.next() {
+                match a.as_str() {
+                    "--admin-token-file" => admin_token_file = Some(v),
+                    "--secrets-token-file" => secrets_token_file = Some(v),
+                    "--allow-host" => allow_hosts.push(v),
+                    _ => allow_origins.push(v),
+                }
             }
         } else if a == "--dotenv" {
             // A dotenv file `env:HOLON_SECRET_…` sources also read (secret_sources.rs): for
@@ -633,10 +651,24 @@ fn main() {
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
-    let port = addr
+    let bound = addr
         .parse::<std::net::SocketAddr>()
-        .unwrap_or_else(|e| panic!("HOLON_SERVER_ADDR {addr:?} is not host:port: {e}"))
-        .port();
+        .unwrap_or_else(|e| panic!("HOLON_SERVER_ADDR {addr:?} is not host:port: {e}"));
+    let port = bound.port();
+    let access = (|| {
+        let admin = access::token_from("HOLON_ADMIN_TOKEN", admin_token_file.as_deref())?;
+        let secrets = access::token_from("HOLON_SECRETS_TOKEN", secrets_token_file.as_deref())?;
+        access::Access::new(admin, secrets, allow_hosts, allow_origins)
+    })()
+    .unwrap_or_else(|e| {
+        eprintln!("holon-server: {e}");
+        std::process::exit(1)
+    });
+    // Reachable beyond this machine only behind a token.
+    if !bound.ip().is_loopback() && !access.has_admin_token() {
+        eprintln!("holon-server: {addr} is reachable beyond this machine: set HOLON_ADMIN_TOKEN (or --admin-token-file) first");
+        std::process::exit(1);
+    }
     let state = AppState {
         store,
         registry,
@@ -651,9 +683,11 @@ fn main() {
         policy: std::sync::RwLock::new(policy),
         policy_path: policy_arg,
         secrets,
+        access,
     };
     sync_listeners(&state);
 
-    println!("holon-server: listening on http://{addr} (localhost-only, no auth — see the L4)");
-    rouille::start_server(addr, move |request| with_cors(request, route(&state, request)));
+    let gate = if state.access.has_admin_token() { "admin token required" } else { "localhost-only, no token" };
+    println!("holon-server: listening on http://{addr} ({gate}; see access.rs)");
+    rouille::start_server(addr, move |request| with_cors(&state.access, request, route(&state, request)));
 }

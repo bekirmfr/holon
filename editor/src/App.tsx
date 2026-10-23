@@ -92,6 +92,7 @@ import { useDeployments } from "./useDeployments";
 import { SAMPLES, buildSample, type Sample } from "./samples";
 import { blankTab, nextAfterClose, tabKind, type Mode, type TabState } from "./tabs";
 import { NodeDocs, nodeDescriber } from "./NodeDocs";
+import { AccessButton } from "./AccessButton";
 
 // What a save records, for unsaved-change tracking: the canvas plus the server draft.
 const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) =>
@@ -1446,6 +1447,7 @@ function Editor() {
           <button style={menuBtn(false, false)} disabled title="deferred — the flow marketplace lands later">
             marketplace
           </button>
+          <AccessButton style={menuBtn(false)} />
         </nav>
         <span className="hl-header__count">
           {catalog ? `${catalog.length} genesis atoms` : "loading core…"}

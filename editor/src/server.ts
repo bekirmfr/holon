@@ -5,14 +5,52 @@
 // real other side" discipline holon.ts already holds for the wasm bridge, now applied to this
 // OTHER boundary the editor has.
 //
-// holon-server is localhost-only, no auth (content-addressing already secures correctness — see
-// its own transport-scoping L4). Every function here assumes it's running at this fixed origin.
+// holon-server is on this machine by default (VITE_HOLON_SERVER names another), open there
+// unless it was started with tokens (crates/holon-server/src/access.rs): then every request
+// carries one, from what this browser was given under "access" (`api` below).
 
 import type { WValue } from "./holon";
 import type { EndpointDraft } from "./endpoint";
 import type { NodeTiming } from "./replay";
 
-const BASE = "http://127.0.0.1:7420";
+const BASE: string = import.meta.env.VITE_HOLON_SERVER ?? "http://127.0.0.1:7420";
+
+/** The tokens this browser sends the server: admin (every request) and secrets (writing a
+ *  secret, when the server keeps that apart). Kept in this browser only. */
+export type AccessTokens = { admin: string; secrets: string };
+const TOKENS_KEY = "holon.access";
+
+export function getAccessTokens(): AccessTokens {
+  try {
+    const t = JSON.parse(localStorage.getItem(TOKENS_KEY) ?? "{}") as Partial<AccessTokens>;
+    return { admin: t.admin ?? "", secrets: t.secrets ?? "" };
+  } catch {
+    return { admin: "", secrets: "" };
+  }
+}
+
+export function setAccessTokens(tokens: AccessTokens): void {
+  try {
+    if (!tokens.admin && !tokens.secrets) localStorage.removeItem(TOKENS_KEY);
+    else localStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+  } catch {
+    // storage unavailable (a private window): the tokens last for this page only
+  }
+}
+
+/** The token a request carries: the secrets token to set, roll back or remove a secret when
+ *  there is one, the admin token otherwise; none when neither is set. */
+export function tokenFor(url: string, method: string, tokens: AccessTokens): string {
+  const secretWrite = /\/deployments\/[^/]+\/secrets\/[^/?]+/.test(url) && (method === "POST" || method === "DELETE");
+  return (secretWrite && tokens.secrets) || tokens.admin;
+}
+
+/** `fetch` against the server, carrying its token when one is set. */
+async function api(url: string, init: RequestInit = {}): Promise<Response> {
+  const token = tokenFor(url, (init.method ?? "GET").toUpperCase(), getAccessTokens());
+  if (!token) return fetch(url, init);
+  return fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } });
+}
 
 /** holon-server's own error shape: `{"error": "..."}`, returned alongside a non-2xx status. */
 type ServerErrorBody = { error: string };
@@ -41,6 +79,8 @@ async function asJson<T>(res: Response): Promise<T> {
       // No JSON body (an empty 404, or something unexpected) — the status text above is the
       // honest fallback, not a second, unrelated parse error.
     }
+    // The server wants a token this browser hasn't been given: say where to give it.
+    if (res.status === 401) message += " (set it under access, in the header)";
     throw new ServerError(res.status, message);
   }
   return res.json() as Promise<T>;
@@ -63,7 +103,7 @@ async function asJson<T>(res: Response): Promise<T> {
 export async function stageUnit(preimage: Uint8Array): Promise<string> {
   const buffer = new ArrayBuffer(preimage.byteLength);
   new Uint8Array(buffer).set(preimage);
-  const res = await fetch(`${BASE}/unit`, {
+  const res = await api(`${BASE}/unit`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
     body: buffer,
@@ -97,7 +137,7 @@ export async function deployUnit(
   /** What it needs beyond its graph (limits, exceptions): part of its manifest. */
   requirements?: Requirements,
 ): Promise<DeployResult> {
-  const res = await fetch(`${BASE}/deploy`, {
+  const res = await api(`${BASE}/deploy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -143,7 +183,7 @@ export type SecretInfo = { name: string; version: number; source: string; set_at
 
 /** `GET /deployments/<slug>/secrets` — the secrets set, never their values. */
 export async function listSecrets(slug: string): Promise<SecretInfo[]> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/secrets`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/secrets`);
   return (await asJson<{ secrets: SecretInfo[] }>(res)).secrets;
 }
 
@@ -152,7 +192,7 @@ const secretUrl = (slug: string, name: string) => `${BASE}/deployments/${encodeU
 /** Set a secret, as a new version: a value (sent to the server, sealed there, never sent back),
  *  or where it is kept (`from`: `env:…`, `vault:…`). Answers the new version. */
 export async function setSecret(slug: string, name: string, set: { value: string } | { from: string }): Promise<number> {
-  const res = await fetch(secretUrl(slug, name), {
+  const res = await api(secretUrl(slug, name), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(set),
@@ -167,12 +207,12 @@ export type SecretHistory = {
 };
 
 export async function getSecretHistory(slug: string, name: string): Promise<SecretHistory> {
-  return asJson<SecretHistory>(await fetch(secretUrl(slug, name)));
+  return asJson<SecretHistory>(await api(secretUrl(slug, name)));
 }
 
 /** Make `version` current again, as a new version; answers it. */
 export async function rollbackSecret(slug: string, name: string, version: number): Promise<number> {
-  const res = await fetch(`${secretUrl(slug, name)}/rollback`, {
+  const res = await api(`${secretUrl(slug, name)}/rollback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ version }),
@@ -181,12 +221,12 @@ export async function rollbackSecret(slug: string, name: string, version: number
 }
 
 export async function deleteSecret(slug: string, name: string): Promise<void> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
   if (!res.ok) await asJson(res);
 }
 
 export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements): Promise<DeployPreview> {
-  const res = await fetch(`${BASE}/deploy/preview`, {
+  const res = await api(`${BASE}/deploy/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ slug, unit: unitHash, ...(requirements !== undefined ? { requirements } : {}) }),
@@ -204,7 +244,7 @@ export type HostPolicy = {
 };
 
 export async function getPermissions(): Promise<HostPolicy> {
-  return asJson<HostPolicy>(await fetch(`${BASE}/permissions`));
+  return asJson<HostPolicy>(await api(`${BASE}/permissions`));
 }
 
 /** One entry from `GET /deployments` (or `DELETE /deployments/<slug>`'s response) — mirrors
@@ -255,12 +295,12 @@ export async function getCollectionItems(
   if (query.prefix) q.set("prefix", query.prefix);
   if (query.after) q.set("after", query.after);
   if (query.limit) q.set("limit", String(query.limit));
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/collections/${encodeURIComponent(name)}?${q}`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/collections/${encodeURIComponent(name)}?${q}`);
   return asJson(res);
 }
 
 export async function listWaitingRuns(slug: string): Promise<WaitingRun[]> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/runs`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/runs`);
   return (await asJson<{ runs: WaitingRun[] }>(res)).runs;
 }
 
@@ -299,11 +339,11 @@ export type ManifestReply = {
 };
 
 export async function getManifest(slug: string): Promise<ManifestReply> {
-  return asJson<ManifestReply>(await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/manifest`));
+  return asJson<ManifestReply>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/manifest`));
 }
 
 export async function getGrant(slug: string): Promise<GrantView> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/grant`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/grant`);
   return asJson<GrantView>(res);
 }
 
@@ -313,7 +353,7 @@ export async function changeGrant(
   slug: string,
   change: { revoke?: string[]; grant?: string[]; lower?: Record<string, number>; keep_running?: boolean },
 ): Promise<GrantView> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/grant`, {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/grant`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(change),
@@ -346,7 +386,7 @@ export async function changeDeployment(
   action: "run" | "pause" | "stop",
   from?: "latest" | "fresh" | number,
 ): Promise<DeploymentEntry> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/${action}`, {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/${action}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(from === undefined ? {} : { from }),
@@ -405,7 +445,7 @@ export type LoggedRound = {
  *  the seq the next entry will get. */
 export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number }> {
   const q = after === undefined ? "" : `?after=${after}`;
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
   return asJson(res);
 }
 
@@ -415,19 +455,19 @@ export async function getLog(slug: string, after?: number): Promise<{ entries: L
  *  one, or an earlier one it keeps), for a run logged on it. */
 export async function getDeployedDocument(slug: string, unit?: string): Promise<FlowDocument> {
   const q = unit ? `?unit=${encodeURIComponent(unit)}` : "";
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/document${q}`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/document${q}`);
   return asJson<FlowDocument>(res);
 }
 
 /** `GET /deployments/<slug>/sessions` — every run session, oldest first. */
 export async function getSessions(slug: string): Promise<{ status: DeploymentStatus; sessions: SessionEntry[] }> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/sessions`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/sessions`);
   return asJson(res);
 }
 
 /** `GET /deployments` — every currently deployed flow. */
 export async function listDeployments(): Promise<DeploymentEntry[]> {
-  const res = await fetch(`${BASE}/deployments`);
+  const res = await api(`${BASE}/deployments`);
   const { deployments } = await asJson<{ deployments: DeploymentEntry[] }>(res);
   return deployments;
 }
@@ -436,7 +476,7 @@ export async function listDeployments(): Promise<DeploymentEntry[]> {
  *  ever acts on what's currently in the table, and an ingress-triggered slug starts 404ing on
  *  `/trigger` immediately afterward. */
 export async function deleteDeployment(slug: string): Promise<DeploymentEntry> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}`, { method: "DELETE" });
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}`, { method: "DELETE" });
   return asJson<DeploymentEntry>(res);
 }
 
@@ -461,7 +501,7 @@ export type TriggerResult = {
 export async function triggerDeployment(slug: string, body: string): Promise<TriggerResult> {
   // A string body would default to text/plain, which the server refuses (a CORS-safelisted type
   // any site could send without preflight); the ingress text goes as raw bytes instead.
-  const res = await fetch(`${BASE}/trigger/${encodeURIComponent(slug)}`, {
+  const res = await api(`${BASE}/trigger/${encodeURIComponent(slug)}`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
     body,
@@ -478,7 +518,7 @@ export type HttpResponse = { status: number; headers: [string, string][]; body: 
  *  fired and counted exactly as a request on the port would be. Throws {@link ServerError} (404)
  *  for an unknown slug, (400) for a deployment that isn't a server. */
 export async function sendRequest(slug: string, request: HttpRequest): Promise<HttpResponse> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/request`, {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/request`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
@@ -490,7 +530,7 @@ export async function sendRequest(slug: string, request: HttpRequest): Promise<H
  *  {@link ServerError} — 400 if the slug exists but was never stateful, 404 if it doesn't
  *  exist at all; two different failures, two different statuses, not one glossed-over "empty". */
 export async function getDeploymentState(slug: string): Promise<Record<string, WValue>> {
-  const res = await fetch(`${BASE}/deployments/${encodeURIComponent(slug)}/state`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/state`);
   const { state } = await asJson<{ slug: string; state: Record<string, WValue> }>(res);
   return state;
 }
@@ -531,7 +571,7 @@ export type FlowRecord = FlowListEntry & { document: FlowDocument };
  *  the previous version: a flow is a mutable workspace file, and "save" means exactly what it
  *  means in any editor. Throws {@link ServerError} (400) for an invalid name. */
 export async function saveFlow(name: string, document: FlowDocument): Promise<FlowListEntry> {
-  const res = await fetch(`${BASE}/flows`, {
+  const res = await api(`${BASE}/flows`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, document }),
@@ -541,18 +581,18 @@ export async function saveFlow(name: string, document: FlowDocument): Promise<Fl
 
 /** `GET /flows` — every saved flow's name and freshness. */
 export async function listFlows(): Promise<FlowListEntry[]> {
-  const res = await fetch(`${BASE}/flows`);
+  const res = await api(`${BASE}/flows`);
   return asJson<FlowListEntry[]>(res);
 }
 
 /** `GET /flows/<name>` — one full saved flow, document included. Throws (404) if unknown. */
 export async function getFlow(name: string): Promise<FlowRecord> {
-  const res = await fetch(`${BASE}/flows/${encodeURIComponent(name)}`);
+  const res = await api(`${BASE}/flows/${encodeURIComponent(name)}`);
   return asJson<FlowRecord>(res);
 }
 
 /** `DELETE /flows/<name>` — remove a saved flow. Throws (404) if it was never there. */
 export async function deleteFlow(name: string): Promise<void> {
-  const res = await fetch(`${BASE}/flows/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const res = await api(`${BASE}/flows/${encodeURIComponent(name)}`, { method: "DELETE" });
   await asJson<{ deleted: string }>(res);
 }

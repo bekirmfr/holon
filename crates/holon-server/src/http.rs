@@ -2,6 +2,7 @@
 //! CORS, and `route`, which dispatches every request to its handler.
 
 use crate::*;
+use crate::access::Access;
 
 pub(crate) fn err(status: u16, message: impl Into<String>) -> Response {
     Response::json(&ErrorBody { error: message.into() }).with_status_code(status)
@@ -38,16 +39,15 @@ pub(crate) const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 ///   server never grants. Defense in depth behind the Origin check.
 ///
 /// Clients without a browser (curl, tests) send no Origin and pass by setting the two headers.
-pub(crate) fn reject_untrusted(request: &Request, port: u16) -> Option<Response> {
+/// Then the token, when one is configured (access.rs). A host or origin named with
+/// `--allow-host` / `--allow-origin` passes too: a server reached beyond loopback, behind a token.
+pub(crate) fn reject_untrusted(request: &Request, port: u16, access: &Access) -> Option<Response> {
     let host = request.header("Host").unwrap_or("");
-    let host_ok = ["localhost", "127.0.0.1", "[::1]"]
-        .iter()
-        .any(|name| host == format!("{name}:{port}") || (port == 80 && host == *name));
-    if !host_ok {
+    if !access.allows_host(host, port) {
         return Some(err(403, format!("Host {host:?} is not this server on loopback")));
     }
     if let Some(origin) = request.header("Origin")
-        && !is_allowed_origin(origin)
+        && !access.allows_origin(origin)
     {
         return Some(err(403, format!("Origin {origin:?} is not allowed")));
     }
@@ -57,20 +57,20 @@ pub(crate) fn reject_untrusted(request: &Request, port: u16) -> Option<Response>
             return Some(err(415, "POST bodies must be sent as application/json or application/octet-stream"));
         }
     }
-    None
+    access.check(request, crate::access::is_secret_write(request))
 }
 
 /// Add CORS headers to every response, in one place — so a new endpoint can never forget them
 /// (the class of bug the `pub use` re-export list and the `WEncapError` variant drift are both
 /// named for elsewhere in this project: a thing that must be repeated per call site eventually
 /// isn't repeated somewhere).
-pub(crate) fn with_cors(request: &Request, mut response: Response) -> Response {
+pub(crate) fn with_cors(access: &Access, request: &Request, mut response: Response) -> Response {
     if let Some(origin) = request.header("Origin") {
-        if is_allowed_origin(origin) {
+        if access.allows_origin(origin) {
             response = response
                 .with_additional_header("Access-Control-Allow-Origin", origin.to_string())
                 .with_additional_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-                .with_additional_header("Access-Control-Allow-Headers", "Content-Type")
+                .with_additional_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
                 .with_additional_header("Vary", "Origin");
         }
     }
@@ -100,7 +100,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     let url = request.url();
     let method = request.method();
 
-    if let Some(rejection) = reject_untrusted(request, state.port) {
+    if let Some(rejection) = reject_untrusted(request, state.port, &state.access) {
         return rejection;
     }
 
