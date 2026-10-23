@@ -153,9 +153,9 @@ pub struct NodeTiming {
 }
 
 /// Times each composite child of a run as core evaluates it (core's `Observer`), down to
-/// [`Timer::DEPTH`] levels: for a request, the endpoint's handler and the handler's nodes (the
-/// canvas nodes); for a whole-flow unit, its nodes. Deeper levels (a template's insides) are left
-/// out to keep entries small.
+/// [`Timer::DEPTH`] levels: for a request, the endpoint's handler, the handler's nodes (the canvas
+/// nodes), and one level inside each: a holon's own nodes (a placed composite), shown in view
+/// mode's component tab, and a template's. Deeper levels are left out to keep entries small.
 pub struct Timer {
     start: std::time::Instant,
     open: Vec<f64>,
@@ -166,7 +166,7 @@ pub struct Timer {
 }
 
 impl Timer {
-    pub const DEPTH: usize = 2;
+    pub const DEPTH: usize = 3;
     /// The largest output kept per node, as JSON: enough for records, messages and signatures;
     /// a large body is in the request or response already.
     pub const MAX_RECORDED_BYTES: usize = 16 * 1024;
@@ -383,16 +383,16 @@ mod tests {
     fn the_timer_records_each_step_up_to_its_depth_in_order_of_finishing() {
         use holon_core::Observer;
         let mut t = Timer::new();
-        for path in [&[0u32][..], &[0, 0], &[0, 0, 0]] {
+        for path in [&[0u32][..], &[0, 0], &[0, 0, 1], &[0, 0, 1, 0]] {
             t.enter(path);
         }
-        for path in [&[0u32, 0, 0][..], &[0, 0], &[0]] {
+        for path in [&[0u32, 0, 1, 0][..], &[0, 0, 1], &[0, 0], &[0]] {
             t.leave(path);
         }
         let paths: Vec<Vec<u32>> = t.timeline.iter().map(|n| n.path.clone()).collect();
-        assert_eq!(paths, vec![vec![0, 0], vec![0]], "depth 3 left out; inner steps finish first");
+        assert_eq!(paths, vec![vec![0, 0, 1], vec![0, 0], vec![0]], "depth 4 left out; inner steps finish first");
         assert!(t.timeline.iter().all(|n| n.end_us >= n.start_us));
-        assert!(t.timeline[1].start_us <= t.timeline[0].start_us, "the outer step started first");
+        assert!(t.timeline[2].start_us <= t.timeline[0].start_us, "the outer step started first");
     }
 
     #[test]

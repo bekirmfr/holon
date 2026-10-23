@@ -34,6 +34,11 @@ export function holonText(inputs: string[], outputs: string[], inner: number | n
 export const NodeDocs = createContext<DescribeNode>(() => null);
 export const useNodeDocs = () => useContext(NodeDocs);
 
+/** What a node can ask the canvas to do for it: place a holon's newest version over it. */
+export type NodeActionsValue = { updateHolon: (id: string) => void };
+export const NodeActions = createContext<NodeActionsValue>({ updateHolon: () => {} });
+export const useNodeActions = () => useContext(NodeActions);
+
 /** An ⓘ that shows `text` while hovered: drawn on the page itself, so a node or a scrolling
  *  list never clips it. */
 export function InfoIcon({ text }: { text: string | null }) {

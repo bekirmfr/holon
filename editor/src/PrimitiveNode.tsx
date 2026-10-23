@@ -5,7 +5,7 @@
 // single hardcoded "out") — stable references the wiring inch turns into Edges by index.
 
 import { memo, useState, type CSSProperties } from "react";
-import { Handle, NodeToolbar, Position, useReactFlow, type NodeProps, type Node } from "@xyflow/react";
+import { Handle, NodeToolbar, Position, useReactFlow, useUpdateNodeInternals, type NodeProps, type Node } from "@xyflow/react";
 import { compatible, type WParam, type WPort, type WType, type WValue } from "./holon";
 import { formatValue, valueChip } from "./diagnostics";
 import { METHODS } from "./endpoint";
@@ -20,7 +20,8 @@ const PARAM_CHOICES: Record<string, Record<string, readonly string[]>> = {
 };
 import { templateInterface, type TemplateName } from "./templates";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
-import { InfoIcon, useNodeDocs } from "./NodeDocs";
+import { InfoIcon, useNodeActions, useNodeDocs } from "./NodeDocs";
+import { useOptionalDialog } from "./Dialog";
 
 /** What a placed primitive node carries. Mirrors the catalog interface; `position`/`id` (view-only) live on the React Flow node, not here.
  *  `variadic`/`minInputs` are P4.1's variadic-arity editing: whether this leaf's port count may
@@ -55,6 +56,10 @@ export type PrimitiveData = {
   hiddenInputs?: boolean;
   /** View mode: params can't be edited and ports can't be added. Rendering only. */
   readOnly?: boolean;
+  /** A holon placed from a saved flow: which, and as saved when. Saved with the flow. */
+  source?: { flow: string; savedAt: number };
+  /** That flow has been saved since: an update is offered. Rendering only, set by App. */
+  updateAvailable?: boolean;
   /** View mode: what this node computed in the replayed run, and where the step-through is.
    *  Rendering only, like `error`: set on a copy of the node, never on the canvas state. */
   trace?: {
@@ -218,6 +223,36 @@ const portButtonStyle: CSSProperties = {
 function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
   const { name, inputs, outputs, params, variadic, minInputs, error, body, hiddenInputs, readOnly, trace } = data;
   const describe = useNodeDocs();
+  const actions = useNodeActions();
+  const dialog = useOptionalDialog();
+  const updateNodeInternals = useUpdateNodeInternals();
+  // A holon's ports are named by where they came from inside it; its author can rename them. A
+  // port's name is not part of the unit (its hash), only of the node: the wires follow it.
+  const renamable = body.kind === "Composite" && !readOnly && dialog !== null;
+  const renamePort = async (side: "inputs" | "outputs", old: string) => {
+    if (!dialog) return;
+    const name = await dialog.prompt(`Rename the ${side === "inputs" ? "input" : "output"} "${old}":`, old);
+    if (!name || name === old) return;
+    const ports = side === "inputs" ? inputs : outputs;
+    if (ports.some((p) => p.name === name)) {
+      await dialog.confirm(`"${name}" is already one of this node's ${side}.`, "OK");
+      return;
+    }
+    updateNodeData(id, { [side]: ports.map((p) => (p.name === old ? { ...p, name } : p)) });
+    setEdges((eds) =>
+      eds.map((e) =>
+        side === "inputs"
+          ? e.target === id && e.targetHandle === old
+            ? { ...e, targetHandle: name }
+            : e
+          : e.source === id && e.sourceHandle === old
+            ? { ...e, sourceHandle: name }
+            : e,
+      ),
+    );
+    updateNodeInternals(id);
+  };
+  const renameTitle = renamable ? " · double-click to rename" : "";
   const shown = trace && (trace.state === "active" || trace.state === "done") && trace.showValues !== false;
   const [pinned, setPinned] = useState<string[]>([]);
   const togglePin = (port: string) => setPinned((p) => (p.includes(port) ? p.filter((x) => x !== port) : [...p, port]));
@@ -319,6 +354,16 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
     >
       <div className="hl-node__title">
         <span>{name}</span>
+        {data.updateAvailable && data.source && !readOnly && (
+          <button
+            className="nodrag"
+            onClick={() => actions.updateHolon(id)}
+            title={`"${data.source.flow}" has been saved since this was placed: place its newest version here (wires to ports it still has are kept)`}
+            style={{ ...portButtonStyle, color: "#e0c36f", padding: "0 6px" }}
+          >
+            ↻ update
+          </button>
+        )}
         <InfoIcon text={describe(data)} />
       </div>
       {trace?.issue && (
@@ -443,9 +488,10 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
                 style={{ background: typeColor(port.ty) }}
               />
               <span
-                className="hl-port__label"
-                style={{ color: typeColor(port.ty) }}
-                title={typeLabel(port.ty)}
+                className={renamable ? "hl-port__label nodrag" : "hl-port__label"}
+                style={{ color: typeColor(port.ty), cursor: renamable ? "text" : undefined }}
+                title={typeLabel(port.ty) + renameTitle}
+                onDoubleClick={renamable ? () => renamePort("inputs", port.name) : undefined}
               >
                 {port.name}
               </span>
@@ -481,11 +527,12 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
               {/* A single output is named by its type; several (a grouped composite, the request
                   template) need their names to be told apart, with the type on hover. */}
               <span
-                className="hl-port__label"
-                style={{ color: outputColor(port.ty) }}
-                title={typeLabel(port.ty)}
+                className={renamable ? "hl-port__label nodrag" : "hl-port__label"}
+                style={{ color: outputColor(port.ty), cursor: renamable ? "text" : undefined }}
+                title={typeLabel(port.ty) + renameTitle}
+                onDoubleClick={renamable ? () => renamePort("outputs", port.name) : undefined}
               >
-                {outputs.length > 1 ? port.name : typeLabel(port.ty)}
+                {outputs.length > 1 || body.kind === "Composite" ? port.name : typeLabel(port.ty)}
               </span>
               {shown && (() => {
                 const v = trace.outputs[outputs.indexOf(port)] ?? null;

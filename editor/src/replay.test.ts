@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { collectionsAtStep, diagnose, executionOrder, isCollectionCell, itemChanged, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, stateAtStep, wireKey, type ReplayInput, type ReplayNode } from "./replay";
+import { collectionsAtStep, diagnose, executionOrder, innerSteps, isCollectionCell, itemChanged, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, stateAtStep, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
@@ -173,6 +173,30 @@ describe("outbound requests in a recorded run", () => {
       ],
     };
     expect(nodeTimings(entry, trace).get("h2")).toEqual({ start_us: 50, end_us: 52 });
+  });
+});
+
+describe("inside a holon", () => {
+  it("finds the steps one level inside a canvas node, from the final round, in the order they started", () => {
+    const trace = { "POST /x": ["req", "h", "res"] };
+    const timeline = [
+      { path: [0, 1, 1], start_us: 5, end_us: 6, round: 0, outputs: [num(9)] },
+      { path: [0, 1, 1], start_us: 15, end_us: 16, round: 1, outputs: [num(2)] },
+      { path: [0, 1, 0], start_us: 10, end_us: 12, round: 1, outputs: [num(1)] },
+      { path: [0, 1], start_us: 9, end_us: 20, round: 1, outputs: [num(3)] },
+      { path: [0, 2, 0], start_us: 21, end_us: 22, round: 1 },
+    ];
+    const entry = { kind: "request", route: "POST /x", timeline };
+    expect(innerSteps(entry, trace, "h")).toEqual([
+      { child: 0, outputs: [num(1)], start_us: 10, end_us: 12 },
+      { child: 1, outputs: [num(2)], start_us: 15, end_us: 16 },
+    ]);
+    expect(innerSteps(entry, trace, "res")).toEqual([{ child: 0, outputs: null, start_us: 21, end_us: 22 }]);
+    expect(innerSteps(entry, trace, "missing")).toEqual([]);
+    // A whole-flow unit's nodes sit one level higher.
+    expect(innerSteps({ kind: "tick", route: null, timeline: [{ path: [1, 0], start_us: 0, end_us: 1, outputs: [num(4)] }] }, { "*": ["a", "h"] }, "h")).toEqual([
+      { child: 0, outputs: [num(4)], start_us: 0, end_us: 1 },
+    ]);
   });
 });
 

@@ -461,6 +461,8 @@ export function flowAsNode(
   byName: Map<string, WUnit>,
   id: string,
   position: { x: number; y: number },
+  /** When the flow was saved: the node remembers it, so an update can be offered later. */
+  savedAt?: number,
 ): { ok: true; node: PrimitiveNodeType } | { ok: false; message: string } {
   const ns = doc.nodes as PrimitiveNodeType[];
   const es = doc.edges as Edge[];
@@ -475,5 +477,6 @@ export function flowAsNode(
   }
   const grouped = groupSelection(ns, es, ev, byName, () => 0);
   if (!grouped.ok) return { ok: false, message: `"${name}" can't be placed as a node: ${grouped.message}` };
-  return { ok: true, node: { ...grouped.node, id, position, data: { ...grouped.node.data, name } } };
+  const source = savedAt === undefined ? {} : { source: { flow: name, savedAt } };
+  return { ok: true, node: { ...grouped.node, id, position, data: { ...grouped.node.data, name, ...source } } };
 }

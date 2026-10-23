@@ -76,7 +76,7 @@ import { newHistory, snapshotOf, useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { SAMPLES, buildSample, type Sample } from "./samples";
 import { blankMeta, blankTab, metaSetter, nextAfterClose, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
-import { NodeDocs, nodeDescriber } from "./NodeDocs";
+import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccessButton } from "./AccessButton";
 import { useViewMode, ViewModePanes } from "./useViewMode";
 
@@ -463,7 +463,7 @@ function Canvas({
         const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
         getFlow(flow)
           .then((rec) => {
-            const placed = flowAsNode(flow, rec.document, ev, byName, `${flow}-${idRef.current++}`, position);
+            const placed = flowAsNode(flow, rec.document, ev, byName, `${flow}-${idRef.current++}`, position, rec.saved_at_epoch_seconds);
             if (placed.ok) {
               setDeployError("");
               setNodes((ns) => ns.concat(placed.node));
@@ -522,14 +522,41 @@ function Canvas({
     [byName, screenToFlowPosition, setNodes, viewing, ev],
   );
 
-  // The saved flows the palette offers as nodes: read when the canvas shows and after a save.
-  const [savedFlows, setSavedFlows] = useState<string[]>([]);
+  // The saved flows the palette offers as nodes, and when each was saved (a holon placed from an
+  // older save offers an update): read when the canvas shows and after a save.
+  const [savedFlowTimes, setSavedFlowTimes] = useState<Map<string, number>>(new Map());
   useEffect(() => {
     if (page !== "canvas") return;
     listFlows()
-      .then((fs) => setSavedFlows(fs.map((f) => f.name)))
-      .catch(() => setSavedFlows([]));
+      .then((fs) => setSavedFlowTimes(new Map(fs.map((f) => [f.name, f.saved_at_epoch_seconds]))))
+      .catch(() => setSavedFlowTimes(new Map()));
   }, [page, savedKey]);
+  const savedFlows = useMemo(() => [...savedFlowTimes.keys()], [savedFlowTimes]);
+
+  // Place the newest saved version of a holon over the one placed from an older save: same place,
+  // and its wires kept to the ports the new version still has.
+  const updateHolon = useCallback(
+    (id: string) => {
+      const old = live.current.nodes.find((n) => n.id === id);
+      const from = old?.data.source;
+      if (!old || !from) return;
+      getFlow(from.flow)
+        .then((rec) => {
+          const placed = flowAsNode(from.flow, rec.document, ev, byName, id, old.position, rec.saved_at_epoch_seconds);
+          if (!placed.ok) return setDeployError(placed.message);
+          const ins = new Set(placed.node.data.inputs.map((p) => p.name));
+          const outs = new Set(placed.node.data.outputs.map((p) => p.name));
+          const kept = (e: Edge) => (e.target !== id || ins.has(e.targetHandle ?? "")) && (e.source !== id || outs.has(e.sourceHandle ?? ""));
+          const dropped = live.current.edges.filter((e) => !kept(e)).length;
+          setNodes((ns) => ns.map((n) => (n.id === id ? { ...placed.node, selected: n.selected } : n)));
+          setEdges((es) => es.filter(kept));
+          setSaveMsg(`updated "${from.flow}" to its save of ${new Date(rec.saved_at_epoch_seconds * 1000).toLocaleString()}${dropped ? `; ${dropped} wire(s) to ports it no longer has removed` : ""}`);
+        })
+        .catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e)));
+    },
+    [ev, byName, setNodes, setEdges, setSaveMsg],
+  );
+  const nodeActions = useMemo(() => ({ updateHolon }), [updateHolon]);
 
   // A group of canvas nodes as core children and wires, and the canvas node behind each child of
   // a frozen unit (canvasOps.ts).
@@ -963,10 +990,18 @@ function Canvas({
   // In view mode the run decorates them instead (useViewMode).
   const decoratedNodes = useMemo(() => {
     if (viewing) return view.viewNodes;
-    return errorNodeIds.size === 0
-      ? nodes
-      : nodes.map((n) => (errorNodeIds.has(n.id) ? { ...n, data: { ...n.data, error: true } } : n));
-  }, [nodes, errorNodeIds, viewing, view.viewNodes]);
+    // A holon placed from a saved flow that has been saved since offers its update.
+    const outdated = (n: PrimitiveNodeType) => {
+      const src = n.data.source;
+      const latest = src ? savedFlowTimes.get(src.flow) : undefined;
+      return src !== undefined && latest !== undefined && latest > src.savedAt;
+    };
+    if (errorNodeIds.size === 0 && !nodes.some(outdated)) return nodes;
+    return nodes.map((n) => {
+      const flags = { ...(errorNodeIds.has(n.id) ? { error: true } : {}), ...(outdated(n) ? { updateAvailable: true } : {}) };
+      return Object.keys(flags).length > 0 ? { ...n, data: { ...n.data, ...flags } } : n;
+    });
+  }, [nodes, errorNodeIds, viewing, view.viewNodes, savedFlowTimes]);
 
   const decoratedEdges = viewing ? view.viewEdges : edges;
 
@@ -993,6 +1028,7 @@ function Canvas({
 
   return (
     <NodeDocs.Provider value={describeNode}>
+    <NodeActions.Provider value={nodeActions}>
     {/* Edit mode places nodes from the palette; view mode is read only, so it has none. */}
     {!viewing && page === "canvas" && (
       // A flow isn't offered inside itself.
@@ -1144,6 +1180,7 @@ function Canvas({
       )}
     </div>
     </div>
+    </NodeActions.Provider>
     </NodeDocs.Provider>
   );
 }

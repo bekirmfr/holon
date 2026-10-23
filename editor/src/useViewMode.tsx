@@ -16,6 +16,7 @@ import {
   collectionsAtStep,
   diagnose,
   executionOrder,
+  innerSteps,
   nodeExchanges,
   nodeOutputs,
   nodeTimings,
@@ -27,7 +28,7 @@ import {
   type ReplayNode,
 } from "./replay";
 import { getDeployedDocument, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
-import { BottomPane, SidePane } from "./ViewPanes";
+import { BottomPane, SidePane, type InsideStep } from "./ViewPanes";
 import type { FlowMeta } from "./tabs";
 
 type Setter<T> = (value: T | ((prev: T) => T)) => void;
@@ -216,6 +217,31 @@ export function useViewMode(input: ViewModeInput) {
     [selectedRun, replayed, step],
   );
 
+  // A selected holon's own nodes, as the run went: each named by what it is (a primitive and its
+  // settings, or a group), with what it produced.
+  const inside = useMemo((): InsideStep[] | null => {
+    const node = nodes.find((n) => n.id === flow.inspectNode);
+    if (!selectedRun || !node || node.data.body.kind !== "Composite") return null;
+    let children: string[];
+    try {
+      const unit = ev.get_unit(node.data.body.hash) as WUnit;
+      children = unit.body.kind === "Composite" ? unit.body.children : [];
+    } catch {
+      return null;
+    }
+    const label = (hash: string | undefined) => {
+      try {
+        const u = ev.get_unit(hash ?? "") as WUnit;
+        if (u.body.kind !== "Primitive") return "group";
+        const settings = (u.params ?? []).flatMap((p) => (p.kind === "Frozen" && p.name !== "type" ? [JSON.stringify(p.value)] : []));
+        return settings.length > 0 ? `${u.body.name} ${settings.join(" ")}` : u.body.name;
+      } catch {
+        return "?";
+      }
+    };
+    return innerSteps(selectedRun, viewTrace, node.id).map((st) => ({ label: label(children[st.child]), outputs: st.outputs, us: st.end_us - st.start_us }));
+  }, [nodes, flow.inspectNode, selectedRun, viewTrace, ev]);
+
   // The nodes as the run shows them: read only, each with what it produced and where in the run
   // it is (done, active, pending, or outside the run), and its issue if the run failed there.
   const viewNodes = useMemo(() => {
@@ -265,6 +291,7 @@ export function useViewMode(input: ViewModeInput) {
     exchanges,
     flowState,
     collections,
+    inside,
     viewNodes,
     viewEdges,
     showValues,
@@ -303,6 +330,7 @@ export function ViewModePanes({ view, flow, nodes }: { view: ViewMode; flow: Flo
             : undefined
         }
         timing={inspectNode ? view.timings.get(inspectNode) : undefined}
+        inside={view.inside}
       />
       <BottomPane
         slug={viewing}

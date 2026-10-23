@@ -224,6 +224,31 @@ function nodeAtPath(
   };
 }
 
+/** One step inside a canvas node (a holon's own node, or a template's) as a run recorded it. */
+export type InnerStep = { child: number; outputs: (WValue | null)[] | null; start_us: number; end_us: number };
+
+/**
+ * What the nodes inside canvas node `nodeId` did in a run, one level down (the log keeps that
+ * level: holon-server's Timer::DEPTH), from its final round, in the order they started. `child` is
+ * the index into the node's own unit's children. Empty when the log doesn't go that deep (runs
+ * logged before it did) or the trace can't place the node.
+ */
+export function innerSteps(
+  entry: { kind: string; route: string | null; timeline?: NodeTiming[] },
+  trace: Record<string, string[]> | undefined,
+  nodeId: string,
+): InnerStep[] {
+  const map = trace?.[entry.kind === "request" ? (entry.route ?? "") : "*"];
+  const k = map ? map.indexOf(nodeId) : -1;
+  if (k < 0) return [];
+  const prefix = entry.kind === "request" ? [0, k] : [k];
+  const last = Math.max(0, ...(entry.timeline ?? []).map((t) => t.round ?? 0));
+  return (entry.timeline ?? [])
+    .filter((t) => (t.round ?? 0) === last && t.path.length === prefix.length + 1 && prefix.every((p, i) => t.path[i] === p))
+    .sort((a, b) => a.start_us - b.start_us)
+    .map((t) => ({ child: t.path[prefix.length], outputs: t.outputs ? t.outputs.map((o) => o ?? null) : null, start_us: t.start_us, end_us: t.end_us }));
+}
+
 /** One outbound request a run made, by the canvas node that made it. */
 export type NodeExchange = {
   id: string;

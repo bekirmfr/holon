@@ -629,6 +629,7 @@ export function SidePane({
   node,
   trace,
   timing,
+  inside,
 }: {
   slug: string;
   run: LogEntry | null;
@@ -643,6 +644,8 @@ export function SidePane({
   node: ViewNode | null;
   trace: NodeTrace | undefined;
   timing: { start_us: number; end_us: number } | undefined;
+  /** For a holon: its own nodes, as the run went (null for any other node). */
+  inside: InsideStep[] | null;
 }) {
   const [tab, setTab] = useState<"state" | "component">("state");
   return (
@@ -659,7 +662,7 @@ export function SidePane({
         {tab === "state" ? (
           <StateTab slug={slug} run={run} step={step} order={order} after={stateAfter} changed={changed} collections={collections} />
         ) : (
-          <ComponentTab node={node} trace={trace} timing={timing} />
+          <ComponentTab node={node} trace={trace} timing={timing} inside={inside} />
         )}
       </div>
     </div>
@@ -820,14 +823,19 @@ function CollectionBox({ slug, c }: { slug: string; c: CollectionAtStep }) {
   );
 }
 
+/** One node inside a holon, as a run went: what it is, what it produced, how long it took. */
+export type InsideStep = { label: string; outputs: (WValue | null)[] | null; us: number };
+
 function ComponentTab({
   node,
   trace,
   timing,
+  inside,
 }: {
   node: ViewNode | null;
   trace: NodeTrace | undefined;
   timing: { start_us: number; end_us: number } | undefined;
+  inside: InsideStep[] | null;
 }) {
   const describe = useNodeDocs();
   if (!node) return <div>click a node on the canvas, or step through the run</div>;
@@ -861,6 +869,18 @@ function ComponentTab({
         <Section title="params">
           {data.params.map((p) => (
             <Field key={p.name} name={p.name} value={p.kind === "Frozen" ? p.value : `open → ${p.bind}`} />
+          ))}
+        </Section>
+      )}
+      {inside && (
+        <Section title="inside, as the run went">
+          {inside.length === 0 && <div style={{ color: dim }}>this run's log doesn't go inside (logged before it did)</div>}
+          {inside.map((st, i) => (
+            <Field
+              key={i}
+              name={st.label}
+              value={st.outputs === null ? "(not kept)" : st.outputs.map((o) => (o === null ? "—" : formatValue(o))).join(" · ") + `  ${us(st.us)}`}
+            />
           ))}
         </Section>
       )}

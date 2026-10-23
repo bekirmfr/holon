@@ -24,6 +24,11 @@ export function useDialog(): Dialogs {
   return d;
 }
 
+/** The dialogs, when a provider is above (a node rendered on its own has none). */
+export function useOptionalDialog(): Dialogs | null {
+  return useContext(DialogContext);
+}
+
 export function DialogProvider({ children }: { children: ReactNode }) {
   const [ask, setAsk] = useState<Ask | null>(null);
   const [text, setText] = useState("");
