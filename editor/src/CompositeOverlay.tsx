@@ -33,7 +33,13 @@ import {
 } from "@xyflow/react";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
 import { NodeActions, useNodeActions } from "./NodeDocs";
-import { boundaryRenames, replaceComposite, settleBoundary, type BoundaryData, type BoundaryPort } from "./canvasOps";
+import {
+  boundaryRenames,
+  replaceComposite,
+  settleBoundary,
+  type BoundaryData,
+  type BoundaryPort,
+} from "./composites";
 import { compatible, type WPort } from "./holon";
 import { outputColor, typeColor, typeLabel } from "./theme";
 import { DND_MIME, FLOW_PREFIX } from "./Palette";

@@ -29,7 +29,8 @@ export function useCanvasHistory(
   edges: Edge[],
   setNodes: (ns: PrimitiveNodeType[]) => void,
   setEdges: (es: Edge[]) => void,
-  disabled: boolean,
+  /** Whether undo and redo stand aside now (view mode, a composite open over the canvas). */
+  disabled: () => boolean,
 ) {
   const history = useRef(newHistory({ nodes: [], edges: [] }));
   const restoring = useRef(false);
@@ -60,14 +61,14 @@ export function useCanvasHistory(
   );
 
   const undo = useCallback(() => {
-    if (disabled) return;
+    if (disabled()) return;
     const prev = history.current.undo(snapshotOf(live.current.nodes, live.current.edges));
     if (prev) applySnapshot(prev);
     bump();
   }, [applySnapshot, bump, disabled]);
 
   const redo = useCallback(() => {
-    if (disabled) return;
+    if (disabled()) return;
     const next = history.current.redo(snapshotOf(live.current.nodes, live.current.edges));
     if (next) applySnapshot(next);
     bump();

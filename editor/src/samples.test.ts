@@ -10,20 +10,18 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator, primitive_catalog, primitive_docs, variadic_primitives } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit, type WValue } from "./holon";
 import { fromHex } from "./flowDoc";
+import { deriveServer, flowAsNode, flowUnitHash } from "./canvasOps";
 import {
   BOUNDARY_IN,
   BOUNDARY_OUT,
   boundaryRenames,
-  deriveServer,
-  flowAsNode,
-  flowUnitHash,
   freezeInner,
   innerCanvas,
   replaceComposite,
   settleBoundary,
   type BoundaryData,
   type BoundaryPort,
-} from "./canvasOps";
+} from "./composites";
 import { foldLevels } from "./CompositeOverlay";
 import { documentUnits, nameOf, restoreDocument } from "./docUnits";
 import { manifestItems, manifestTrigger, permissionKind } from "./holon";

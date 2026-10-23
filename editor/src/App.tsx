@@ -65,18 +65,15 @@ import {
   deriveServer,
   excludeProjectedOutput,
   flowAsNode,
-  freezeInner,
-  innerCanvas,
   nodeFromPalette,
-  replaceComposite,
   flowUnitHash,
-  expandComposite,
   groupOf,
   groupSelection,
   projectCanvas,
   traceOfUnit,
   type Projection,
 } from "./canvasOps";
+import { expandComposite, replaceComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { DeployedPage, FlowsPage, type AppPage } from "./Pages";
 import { newHistory, snapshotOf, useCanvasHistory } from "./useCanvasHistory";
@@ -86,9 +83,7 @@ import { blankMeta, blankTab, metaSetter, nextAfterClose, tabKind, type FlowMeta
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccessButton } from "./AccessButton";
 import { useViewMode, ViewModePanes } from "./useViewMode";
-import { CompositeOverlay, type FrozenOk, type OverlayFrame, type OverlayOps, type Renames } from "./CompositeOverlay";
-import type { Node as FlowNode } from "@xyflow/react";
-import { innerSteps } from "./replay";
+import { useCompositeOverlay } from "./useCompositeOverlay";
 
 // What a save records, for unsaved-change tracking: the canvas plus the server draft.
 const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) =>
@@ -182,15 +177,15 @@ function Canvas({
   // The deployed document shown in view mode: what edit mode starts from when there is no saved
   // flow of that name.
   const viewDoc = useRef<FlowDocument | null>(null);
-  // A composite opened over the canvas (CompositeOverlay.tsx; see expandNode below). While it is
-  // open, undo and redo are its own.
-  const [overlay, setOverlay] = useState<{ frames: OverlayFrame[]; from: { left: number; top: number; width: number; height: number } } | null>(null);
+  // Whether a composite is open over the canvas (useCompositeOverlay, below): its undo, not the
+  // flow's, then answers.
+  const overlayOpen = useRef(false);
   const { history, restoring, histVersion, bump, undo, redo } = useCanvasHistory(
     nodes,
     edges,
     setNodes,
     setEdges,
-    viewing !== null || overlay !== null,
+    () => viewing !== null || overlayOpen.current,
   );
   // The canvas as of this render, for callbacks that read it without depending on it.
   const live = useRef({ nodes, edges });
@@ -952,68 +947,25 @@ function Canvas({
     }
   }, [ev, byName, variadic, setNodes, setEdges, nameOf]);
 
-  // Look inside a composite: its inner flow on a canvas of its own, over this one, grown from
-  // where the node sits (CompositeOverlay.tsx). In view mode, with a run selected, its nodes show
-  // what they produced in the run (the log keeps one level inside each node).
-  // Its nodes are read only in view mode, and changed like the flow's in edit mode.
-  const editableInside = useCallback((ns: FlowNode[]) => (viewing ? ns : ns.map((n) => (n.type === "primitive" ? { ...n, data: { ...n.data, readOnly: false } } : n))), [viewing]);
-  const inside = useCallback(
-    (target: PrimitiveNodeType, around: FlowNode[], wires: Edge[]): OverlayFrame | string => {
-      const opened = innerCanvas(target, around.filter((n) => n.type === "primitive") as PrimitiveNodeType[], wires, ev, byName, variadic, nameOf);
-      return opened.ok ? { title: target.data.name, nodeId: target.id, nodes: editableInside(opened.nodes), edges: opened.edges, dirty: false } : opened.message;
-    },
-    [ev, byName, variadic, nameOf, editableInside],
-  );
-  // What the overlay's levels need to change: freeze a level, place a palette entry, ungroup.
-  const overlayOps = useMemo<OverlayOps>(
-    () => ({
-      inside,
-      freeze: (canvas) => freezeInner(canvas, ev, byName),
-      paletteNode: (name, position) => nodeFromPalette(name, byName, variadic, `${name}-${idRef.current++}`, position),
-      ungroupIn: (canvas, id) => {
-        const target = canvas.nodes.find((n) => n.id === id) as PrimitiveNodeType | undefined;
-        if (!target || target.data.body.kind !== "Composite") return "not a composite";
-        const result = expandComposite(target, canvas.edges, ev, byName, variadic, () => idRef.current++, nameOf);
-        return result.ok ? { nodes: [...canvas.nodes.filter((n) => n.id !== id), ...result.nodes], edges: result.edges } : result.message;
-      },
-    }),
-    [inside, ev, byName, variadic, nameOf],
-  );
-  // Apply: the composite in the flow replaced by its new version; wires follow renamed ports,
-  // and wires to ports it no longer has are removed, saying so. Undo takes it back.
-  const applyComposite = useCallback(
-    (id: string, frozen: FrozenOk, renames: Renames) => {
-      const done = replaceComposite(live.current.nodes, live.current.edges, id, frozen, renames);
-      setNodes(done.nodes);
-      setEdges(done.edges);
-      const name = live.current.nodes.find((n) => n.id === id)?.data.name ?? "composite";
-      setSaveMsg(`"${name}" is a new version${done.dropped.length ? `; ${done.dropped.length} wire(s) to ports it no longer has removed` : ""}`);
-    },
-    [setNodes, setEdges, setSaveMsg],
-  );
-  const expandNode = useCallback(
-    (id: string) => {
-      const target = live.current.nodes.find((n) => n.id === id);
-      if (!target) return;
-      const opened = innerCanvas(target, live.current.nodes, live.current.edges, ev, byName, variadic, nameOf);
-      if (!opened.ok) return setProjError(opened.message);
-      let frameNodes = opened.nodes;
-      if (viewing && flow.selectedRun) {
-        const steps = innerSteps(flow.selectedRun, flow.viewTrace, id);
-        frameNodes = frameNodes.map((n) => {
-          const step = steps.find((st) => opened.childIds[st.child] === n.id);
-          return step ? { ...n, data: { ...n.data, trace: { outputs: step.outputs ?? [], state: "done", showValues: true } } } : n;
-        });
-      }
-      const box = document.querySelector(".hl-canvas__flow")?.getBoundingClientRect();
-      const at = document.querySelector(`.hl-canvas__flow .react-flow__node[data-id="${CSS.escape(id)}"]`)?.getBoundingClientRect();
-      const from = box && at ? { left: at.left - box.left, top: at.top - box.top, width: at.width, height: at.height } : { left: 0, top: 0, width: 200, height: 100 };
-      setOverlay({ frames: [{ title: target.data.name, nodeId: id, nodes: editableInside(frameNodes), edges: opened.edges, dirty: false }], from });
-    },
-    [ev, byName, variadic, viewing, flow.selectedRun, flow.viewTrace, nameOf, editableInside],
-  );
-  // Another tab, or the other mode, closes it.
-  useEffect(() => setOverlay(null), [activeId, viewing]);
+  // Look inside a composite: its inner flow on a canvas of its own, over this one
+  // (useCompositeOverlay.tsx). While it is open, undo and redo are its own.
+  const nextId = useCallback(() => idRef.current++, []);
+  const compositeOverlay = useCompositeOverlay({
+    live,
+    ev,
+    byName,
+    variadic,
+    nextId,
+    viewing: viewing !== null,
+    run: { selectedRun: flow.selectedRun, viewTrace: flow.viewTrace },
+    closeOn: activeId,
+    setNodes,
+    setEdges,
+    onMessage: setSaveMsg,
+    onError: setProjError,
+  });
+  const expandNode = compositeOverlay.expand;
+  overlayOpen.current = compositeOverlay.open;
   const nodeActions = useMemo(() => ({ updateHolon, expandComposite: expandNode, ungroup }), [updateHolon, expandNode, ungroup]);
 
   const onExpand = useCallback(() => {
@@ -1206,18 +1158,7 @@ function Canvas({
         {nodes.length === 0 && page === "canvas" && (
           <div className="hl-canvas__empty">drag a primitive here to place it</div>
         )}
-        {overlay && (
-          <CompositeOverlay
-            root={flowName ?? "untitled"}
-            frames={overlay.frames}
-            from={overlay.from}
-            editable={!viewing}
-            ops={overlayOps}
-            onFrames={(update) => setOverlay((o) => (o ? { ...o, frames: update(o.frames) } : o))}
-            onApply={applyComposite}
-            onClose={() => setOverlay(null)}
-          />
-        )}
+        {compositeOverlay.render(flowName ?? "untitled")}
       </div>
       <ViewModePanes view={view} flow={flow} nodes={nodes} />
       {/* The Flows / Deployed pages are overlays ON TOP of the always-mounted canvas — React
