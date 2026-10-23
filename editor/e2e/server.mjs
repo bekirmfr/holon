@@ -18,7 +18,9 @@ for (const old of readdirSync(tmpdir()).filter((d) => d.startsWith("holon-e2e-")
   rmSync(join(tmpdir(), old), { recursive: true, force: true });
 }
 const dir = mkdtempSync(join(tmpdir(), "holon-e2e-"));
-const binary = join(root, "target", "debug", process.platform === "win32" ? "holon-server.exe" : "holon-server");
+// CARGO_TARGET_DIR, when set, is where cargo put it (e.g. to build beside a dev server holding
+// target/debug's binary open).
+const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon-server.exe" : "holon-server");
 const server = spawn(
   binary,
   [

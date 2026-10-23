@@ -31,6 +31,20 @@ async function deploy(page: Page): Promise<number | null> {
   return port;
 }
 
+/** Drop the palette entry `entry` (a primitive's name, or `flow:<name>` for a saved flow) on the
+ *  canvas, as dragging it from the palette does: with the palette's own drag data, so it can't
+ *  pick up a neighbouring row. */
+async function dropFromPalette(page: Page, entry: string) {
+  const flow = page.locator(".hl-canvas__flow > .react-flow");
+  const box = (await flow.boundingBox())!;
+  const dataTransfer = await page.evaluateHandle((name) => {
+    const d = new DataTransfer();
+    d.setData("application/holon-primitive", name);
+    return d;
+  }, entry);
+  await flow.dispatchEvent("drop", { dataTransfer, clientX: box.x + 300, clientY: box.y + 200 });
+}
+
 /** View mode on the active tab, with the newest run selected (the log follows it live). */
 async function viewNewestRun(page: Page) {
   await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
@@ -169,20 +183,20 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
     await page.locator('[aria-modal="true"] input').fill(name);
     await page.keyboard.press("Enter");
     await expect(page.locator(".hl-tab--active")).toContainText(name);
-    await page.locator(".hl-palette__item", { hasText: new RegExp(`^${entry}`) }).first().dragTo(flow, { targetPosition: { x: 300, y: 200 } });
+    await dropFromPalette(page, entry);
     await expect(flow.locator(".react-flow__node")).toHaveCount(1);
     await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
     await expect(page.locator(".hl-canvas")).toContainText("saved");
   };
   await saveWith("shout", "uppercase");
-  await saveWith("loud-user", "shout");
+  await saveWith("loud-user", "flow:shout");
   await page.getByRole("button", { name: "flows", exact: true }).click();
   await expect(page.getByText("placed in loud-user", { exact: true })).toBeVisible();
   // A save of "shout" that takes its input away asks first, naming who places it.
   await page.locator(".hl-tab", { hasText: "shout" }).click();
   await flow.locator(".react-flow__node").click();
   await page.keyboard.press("Delete");
-  await page.locator(".hl-palette__item", { hasText: /^concat/ }).first().dragTo(flow, { targetPosition: { x: 300, y: 200 } });
+  await dropFromPalette(page, "concat");
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   const ask = page.locator('[aria-modal="true"]');
   await expect(ask).toContainText('"shout" is placed as a node in loud-user');
