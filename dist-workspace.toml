@@ -1,0 +1,30 @@
+[workspace]
+members = ["cargo:."]
+
+# Releases (cargo-dist, `dist`): pushing a version tag (v0.1.0) builds holon-server for each
+# platform, with the editor built in, and publishes a GitHub Release with the archives, their
+# checksums and the install scripts. `dist plan` shows what a release would hold; `dist build`
+# builds it here. The workflow, .github/workflows/release.yml, is generated: change this file,
+# then run `dist generate`.
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell"]
+# Target platforms to build apps for (Rust target-triple syntax). Linux arm64 needs GitHub's
+# arm runners, free only for public repositories: add aarch64-unknown-linux-gnu when public.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Where the install scripts put holon-server: a folder of its own, on the PATH.
+install-path = "~/.holon/bin"
+# Where to host releases
+hosting = "github"
+# Whether to install an updater program
+install-updater = false
+# Before building: the core for the editor (wasm-pack), then the editor, which the server
+# builds in (its `embed-editor` feature, set in its Cargo.toml).
+github-build-setup = "../build-setup.yml"
+# Build provenance (GitHub artifact attestations): needs a public repository (or GitHub
+# Enterprise Cloud). Turn on when public.
+github-attestations = false

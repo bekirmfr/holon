@@ -1,0 +1,17 @@
+# Steps cargo-dist runs before each release build (dist-workspace.toml's github-build-setup):
+# the editor, built so holon-server can build it in (its embed-editor feature, editor.rs).
+- name: Install wasm-pack
+  uses: jetli/wasm-pack-action@v0.4.0
+- name: Build the core for the editor
+  shell: bash
+  run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm
+- name: Install Node
+  uses: actions/setup-node@v4
+  with:
+    node-version: 22
+    cache: npm
+    cache-dependency-path: editor/package-lock.json
+- name: Build the editor
+  shell: bash
+  working-directory: editor
+  run: npm ci && npm run build

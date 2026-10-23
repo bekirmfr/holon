@@ -2,6 +2,9 @@
 name = "holon-server"
 version = "0.1.0"
 edition = "2024"
+description = "Holon: build services by wiring small, pure parts together; deploy them with exactly the permissions they need, and see every run"
+repository = "https://github.com/bekirmfr/holon"
+homepage = "https://github.com/bekirmfr/holon"
 
 [dependencies]
 aes-gcm = "0.10"
@@ -47,3 +50,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 # The built editor (editor/dist, from `npm run build` in editor/) compiled into the binary and
 # served at `/` (editor.rs): one file to install. Off by default, so a build needs no editor.
 embed-editor = ["dep:include_dir"]
+
+# Releases (cargo-dist, dist-workspace.toml) build the editor in: one file to install.
+[package.metadata.dist]
+features = ["embed-editor"]
