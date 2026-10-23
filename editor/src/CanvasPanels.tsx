@@ -40,14 +40,42 @@ export function FlowTabs({
   active,
   onSelect,
   onClose,
+  pages,
 }: {
   tabs: { id: number; name: string | null; kind: "deployed" | "saved" | "draft"; dirty: boolean; mode: Mode }[];
+  /** The active flow tab, or -1 while a page tab (home, welcome) is shown. */
   active: number;
   onSelect: (id: number) => void;
   onClose: (id: number) => void;
+  /** The tabs before the flows: home (pinned), and the welcome while it's open. */
+  pages: { key: string; label: string; active: boolean; onSelect: () => void; onClose?: () => void }[];
 }) {
   return (
     <div className="hl-tabs" role="tablist">
+      {pages.map((p) => (
+        <div
+          key={p.key}
+          role="tab"
+          aria-selected={p.active}
+          className={p.active ? "hl-tab hl-tab--active" : "hl-tab"}
+          onClick={p.onSelect}
+          title={p.label}
+        >
+          <span className="hl-tab__name">{p.label}</span>
+          {p.onClose && (
+            <button
+              className="hl-tab__close"
+              onClick={(e) => {
+                e.stopPropagation();
+                p.onClose!();
+              }}
+              title={`close the ${p.label}`}
+            >
+              ×
+            </button>
+          )}
+        </div>
+      ))}
       {tabs.map((t) => (
         <div
           key={t.id}

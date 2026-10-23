@@ -63,7 +63,7 @@ fn is_open(method: &str, url: &str) -> bool {
 
 /// What anyone signed in may do to their own account, viewers too.
 fn is_own(method: &str, url: &str) -> bool {
-    (method == "POST" && matches!(url, "/auth/sign-out" | "/auth/password")) || (method == "GET" && url == "/auth/me")
+    (method == "POST" && matches!(url, "/auth/sign-out" | "/auth/password" | "/auth/prefs")) || (method == "GET" && matches!(url, "/auth/me" | "/auth/prefs"))
 }
 
 impl Access {

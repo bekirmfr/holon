@@ -52,7 +52,14 @@ pub(crate) struct Account {
     pub(crate) created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) created_by: Option<String>,
+    /// What the editor keeps for them (its home tab's panes, whether the welcome shows on
+    /// start): opaque here, so it follows them to any browser.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    prefs: serde_json::Value,
 }
+
+/// The most a person's preferences may take, as JSON.
+pub(crate) const MAX_PREFS_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Invite {
@@ -242,7 +249,7 @@ impl Accounts {
             if !book.users.is_empty() {
                 return Err("this server is set up already".to_string());
             }
-            let account = Account { name: name.into(), role: Role::Admin, password: Some(hash), email: None, disabled: false, created_at: epoch_now(), created_by: None };
+            let account = Account { name: name.into(), role: Role::Admin, password: Some(hash), email: None, disabled: false, created_at: epoch_now(), created_by: None, prefs: serde_json::Value::Null };
             book.users.push(account.clone());
             Ok((Self::start_session(book, name), account))
         })?;
@@ -328,6 +335,21 @@ impl Accounts {
         })
     }
 
+    /// What the editor keeps for `name` (null until it keeps something).
+    pub(crate) fn prefs(&self, name: &str) -> serde_json::Value {
+        self.book.lock().unwrap().users.iter().find(|u| u.name == name).map(|u| u.prefs.clone()).unwrap_or_default()
+    }
+
+    pub(crate) fn set_prefs(&self, name: &str, prefs: serde_json::Value) -> Result<(), String> {
+        if serde_json::to_vec(&prefs).map_or(true, |b| b.len() > MAX_PREFS_BYTES) {
+            return Err(format!("preferences are kept up to {} KiB", MAX_PREFS_BYTES / 1024));
+        }
+        self.change(|book| {
+            book.users.iter_mut().find(|u| u.name == name).ok_or("only an account has preferences")?.prefs = prefs;
+            Ok(())
+        })
+    }
+
     // ── what an admin does ─────────────────────────────────────────────────────────────────
 
     pub(crate) fn users(&self) -> Vec<Account> {
@@ -348,7 +370,7 @@ impl Accounts {
                 return Err(format!("there is an account {name:?} already"));
             }
             let email = email.map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
-            book.users.push(Account { name: name.into(), role, password: None, email, disabled: false, created_at: epoch_now(), created_by: Some(by.into()) });
+            book.users.push(Account { name: name.into(), role, password: None, email, disabled: false, created_at: epoch_now(), created_by: Some(by.into()), prefs: serde_json::Value::Null });
             let token = new_token("hi_");
             book.invites.push(Invite { hash: hash_of(&token), name: name.into(), expires_at: epoch_now() + INVITE_SECONDS });
             Ok(token)
@@ -602,6 +624,17 @@ mod tests {
         assert!(a.tokens().iter().all(|t| t.hash.is_empty()), "never listed with its hash");
         a.revoke_token(&listed.id).unwrap();
         assert_eq!(a.who(&secret), None);
+    }
+
+    #[test]
+    fn each_account_keeps_its_own_preferences() {
+        let (a, _) = set_up();
+        assert_eq!(a.prefs("ada"), serde_json::Value::Null);
+        a.set_prefs("ada", serde_json::json!({ "welcome": false })).unwrap();
+        assert_eq!(a.prefs("ada")["welcome"], false);
+        let big = "x".repeat(MAX_PREFS_BYTES);
+        assert!(a.set_prefs("ada", serde_json::json!({ "note": big })).is_err());
+        assert!(a.set_prefs("token:ci", serde_json::json!({})).is_err());
     }
 
     #[test]

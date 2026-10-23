@@ -4,7 +4,8 @@
 //! provider is offered), `POST /auth/setup` (the first admin, with the setup code),
 //! `POST /auth/sign-in`, `GET /auth/invite?token=` (whose link it is) and `POST /auth/invite`
 //! (set a password with it), `GET /auth/config` (where to sign in through the provider).
-//! Signed in: `GET /auth/me`, `POST /auth/password`, `POST /auth/sign-out`.
+//! Signed in: `GET /auth/me`, `POST /auth/password`, `POST /auth/sign-out`, and
+//! `GET`/`POST /auth/prefs` (what the editor keeps for them: its home tab, the welcome).
 //! Admins: `/admin/users` (list, invite), `/admin/users/<name>` (role, disabled, email; delete),
 //! `/admin/users/<name>/reset`, `/admin/tokens` (list, create), `/admin/tokens/<id>` (revoke),
 //! `/admin/oidc` (read, set, turn off). What an admin does goes in the activity log.
@@ -111,6 +112,13 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
             }
             return respond(body::<Change>(request).and_then(|c| {
                 accounts.change_password(by, &c.current, &c.new).map_err(fail)?;
+                Ok(Response::empty_204())
+            }));
+        }
+        ("GET", "/auth/prefs") => Response::json(&accounts.prefs(by)),
+        ("POST", "/auth/prefs") => {
+            return respond(body::<serde_json::Value>(request).and_then(|p| {
+                accounts.set_prefs(by, p).map_err(fail)?;
                 Ok(Response::empty_204())
             }));
         }

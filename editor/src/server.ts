@@ -89,6 +89,12 @@ export async function signOutHere(): Promise<void> {
   signOut();
 }
 
+/** What the editor keeps for whoever is signed in (home.ts's Prefs, as the server holds it). */
+export const getPrefs = async () => asJson<unknown>(await api(`${BASE}/auth/prefs`));
+export async function setPrefs(prefs: unknown): Promise<void> {
+  await asJson<void>(await post(`${BASE}/auth/prefs`, prefs));
+}
+
 // ── the admin panel ──────────────────────────────────────────────────────────────────────
 export type AccountEntry = { name: string; role: Role; email: string | null; disabled: boolean; created_at: number; created_by: string | null; invited: boolean };
 export type TokenEntry = { id: string; label: string; role: Role; created_at: number; created_by: string };

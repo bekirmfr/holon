@@ -34,7 +34,7 @@ import {
   manifestItems,
   manifestTrigger,
 } from "./holon";
-import { changeDeployment, getFlow, type FlowDocument, type FlowRecord } from "./server";
+import { changeDeployment, getFlow, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
@@ -66,6 +66,9 @@ import { blankTab, freshTab, metaSetter, savedKeyOf, tabFromDocument as tabFromD
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccountMenu, AuthGate, type Me } from "./AuthGate";
 import { AdminPage } from "./AdminPage";
+import { HomePage } from "./HomePage";
+import { WelcomePage } from "./WelcomePage";
+import { defaultHome, readPrefs, type Prefs } from "./home";
 import { useViewMode, ViewModePanes } from "./useViewMode";
 import { useCompositeOverlay } from "./useCompositeOverlay";
 import { useSavedFlows } from "./useSavedFlows";
@@ -85,11 +88,20 @@ function Canvas({
   pendingNew,
   docs,
   me,
+  start,
 }: {
   catalog: WUnit[];
   variadic: Set<string>;
   /** Who is signed in (AuthGate.tsx). */
   me: Me;
+  /** The home and welcome tabs, and what they keep with the account (home.ts). */
+  start: {
+    prefs: Prefs;
+    onPrefs: (p: Prefs) => void;
+    welcomeOpen: boolean;
+    setWelcomeOpen: (open: boolean) => void;
+    onNew: () => void;
+  };
   page: AppPage;
   setPage: (p: AppPage) => void;
   pendingNew: { name: string; nonce: number } | null;
@@ -660,7 +672,29 @@ function Canvas({
       />
     )}
     <div className="hl-main">
-    <FlowTabs tabs={tabList} active={activeId} onSelect={switchTab} onClose={closeTab} />
+    <FlowTabs
+      tabs={tabList}
+      active={page === "home" || page === "welcome" ? -1 : activeId}
+      onSelect={switchTab}
+      onClose={closeTab}
+      pages={[
+        { key: "home", label: "home", active: page === "home", onSelect: () => setPage("home") },
+        ...(start.welcomeOpen
+          ? [
+              {
+                key: "welcome",
+                label: "welcome",
+                active: page === "welcome",
+                onSelect: () => setPage("welcome"),
+                onClose: () => {
+                  start.setWelcomeOpen(false);
+                  if (page === "welcome") setPage("home");
+                },
+              },
+            ]
+          : []),
+      ]}
+    />
     <div className={viewing ? "hl-canvas hl-canvas--viewing" : "hl-canvas"} onDrop={onDrop} onDragOver={onDragOver}>
       <div className="hl-canvas__flow">
         <ReactFlow<PrimitiveNodeType>
@@ -797,6 +831,34 @@ function Canvas({
             />
           )}
           {page === "admin" && me.role === "admin" && <AdminPage me={me.name} />}
+          {page === "welcome" && (
+            <WelcomePage
+              name={me.name}
+              showOnStart={start.prefs.welcome !== false}
+              onShowOnStart={(show) => start.onPrefs({ ...start.prefs, welcome: show })}
+              onAction={(a) => (a === "new" ? start.onNew() : setPage(a === "samples" ? "flows" : a))}
+            />
+          )}
+          {page === "home" && (
+            <HomePage
+              panes={start.prefs.home ?? defaultHome()}
+              onPanes={(home) => start.onPrefs({ ...start.prefs, home })}
+              deployments={deployments}
+              samples={SAMPLES}
+              market={{ url: market.url, entries: market.catalog }}
+              actions={{
+                newFlow: start.onNew,
+                openFlow: (name) => getFlow(name).then((rec) => onOpenFlow(rec)).catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e))),
+                openSample: onOpenSample,
+                viewDeployment: onView,
+                goTo: setPage,
+                openWelcome: () => {
+                  start.setWelcomeOpen(true);
+                  setPage("welcome");
+                },
+              }}
+            />
+          )}
           {page === "deployed" && (
             <DeployedPage
               deployments={deployments}
@@ -821,13 +883,33 @@ function Canvas({
 }
 
 function Editor({ me }: { me: Me }) {
+  // What the editor keeps for this person (home.ts): read once, saved as it changes. The welcome
+  // opens on start unless they said not to; otherwise the editor starts at home.
+  const [prefs, setPrefsState] = useState<Prefs>({});
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  useEffect(() => {
+    getPrefs()
+      .then((raw) => {
+        const p = readPrefs(raw);
+        setPrefsState(p);
+        if (p.welcome !== false) {
+          setWelcomeOpen(true);
+          setPage("welcome");
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+  const onPrefs = useCallback((p: Prefs) => {
+    setPrefsState(p);
+    setPrefs(p).catch(() => undefined);
+  }, []);
   const dialog = useDialog();
   const [catalog, setCatalog] = useState<WUnit[] | null>(null);
   // What each primitive does, from core: on each node, the palette and the component tab.
   const [docs, setDocs] = useState<Map<string, string>>(new Map());
   const [variadic, setVariadic] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>("");
-  const [page, setPage] = useState<AppPage>("canvas");
+  const [page, setPage] = useState<AppPage>("home");
   // "New" carries the prompted name down to the canvas, which opens it in a tab of its own;
   // `nonce` makes a second New with the same name still take effect.
   const [pendingNew, setPendingNew] = useState<{ name: string; nonce: number } | null>(null);
@@ -880,7 +962,16 @@ function Editor({ me }: { me: Me }) {
           >
             deployed
           </button>
-          <AccountMenu me={me} style={menuBtn(false)} adminOpen={page === "admin"} onAdmin={() => setPage(page === "admin" ? "canvas" : "admin")} />
+          <AccountMenu
+            me={me}
+            style={menuBtn(false)}
+            adminOpen={page === "admin"}
+            onAdmin={() => setPage(page === "admin" ? "canvas" : "admin")}
+            onWelcome={() => {
+              setWelcomeOpen(true);
+              setPage("welcome");
+            }}
+          />
         </nav>
         <span className="hl-header__count">
           {catalog ? `${catalog.length} genesis atoms` : "loading core…"}
@@ -901,6 +992,7 @@ function Editor({ me }: { me: Me }) {
                 pendingNew={pendingNew}
                 docs={docs}
                 me={me}
+                start={{ prefs, onPrefs, welcomeOpen, setWelcomeOpen, onNew }}
               />
             )}
           </ReactFlowProvider>

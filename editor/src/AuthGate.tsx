@@ -206,8 +206,9 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
   }
 }
 
-/** The header's account menu: who, change password, the admin panel (admins), sign out. */
-export function AccountMenu({ me, style, onAdmin, adminOpen }: { me: Me; style: CSSProperties; onAdmin: () => void; adminOpen: boolean }) {
+/** The header's account menu: who, the welcome and docs, change password, the admin panel
+ *  (admins), sign out. */
+export function AccountMenu({ me, style, onAdmin, adminOpen, onWelcome }: { me: Me; style: CSSProperties; onAdmin: () => void; adminOpen: boolean; onWelcome: () => void }) {
   const dialog = useDialog();
   const [open, setOpen] = useState(false);
   const change = async () => {
@@ -238,6 +239,16 @@ export function AccountMenu({ me, style, onAdmin, adminOpen }: { me: Me; style: 
           <span style={{ color: "#7e8ea8", fontSize: 11, padding: "2px 6px" }}>
             {me.name} · {me.role}
           </span>
+          <button
+            role="menuitem"
+            style={{ ...style, textAlign: "left" }}
+            onClick={() => {
+              setOpen(false);
+              onWelcome();
+            }}
+          >
+            welcome and docs
+          </button>
           <button role="menuitem" style={{ ...style, textAlign: "left" }} onClick={change}>
             change password
           </button>

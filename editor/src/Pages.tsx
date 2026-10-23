@@ -15,7 +15,7 @@ import type { Sample } from "./samples";
  *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
  *  as overlays on top of it. `marketplace` is deliberately absent: deferred, and a menu entry
  *  that can't be picked shouldn't be representable as a page state either. */
-export type AppPage = "canvas" | "flows" | "deployed" | "admin";
+export type AppPage = "canvas" | "flows" | "deployed" | "admin" | "home" | "welcome";
 
 /** The saved-flows page: list, open, delete, and publish to the marketplace this browser uses
  *  (set here: a deployment of the "marketplace" sample, marketplace.ts). "open" on a flow open in a tab goes to that tab, unsaved changes and all; only "reload saved"
@@ -316,17 +316,18 @@ export function DeployedPage({
 
 /** What was done on the server, newest first, and by whom (activity.rs): read again whenever the
  *  deployments change (`version`). */
-export function ActivityList({ version }: { version: string }) {
+/** `bare`: without its own heading (inside a home pane, which has one). */
+export function ActivityList({ version, bare = false }: { version: string; bare?: boolean }) {
   const [entries, setEntries] = useState<ActivityEntry[] | null>(null);
   useEffect(() => {
     getActivity()
       .then(setEntries)
       .catch(() => setEntries(null));
   }, [version]);
-  if (!entries || entries.length === 0) return null;
+  if (!entries || entries.length === 0) return bare ? <span style={{ color: "#7e8ea8", fontSize: 11 }}>nothing yet</span> : null;
   return (
-    <div style={{ marginTop: 20 }}>
-      <div style={{ color: "#cfe3ff", fontSize: 13, letterSpacing: "0.04em", marginBottom: 6 }}>activity</div>
+    <div style={{ marginTop: bare ? 0 : 20 }}>
+      {!bare && <div style={{ color: "#cfe3ff", fontSize: 13, letterSpacing: "0.04em", marginBottom: 6 }}>activity</div>}
       {entries.map((e, i) => (
         <div key={i} style={{ color: "#9fb4d4", fontSize: 11, padding: "2px 0" }}>
           <span style={{ color: "#7e8ea8" }}>{new Date(e.at * 1000).toLocaleString()}</span> · {e.action}{" "}
