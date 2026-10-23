@@ -16,26 +16,18 @@ type Viewport = { x: number; y: number; zoom: number };
 /** The flow as edited, set aside while its deployment is viewed. */
 export type EditCopy = { nodes: PrimitiveNodeType[]; edges: Edge[]; viewport: Viewport; history: History<Snapshot>; dirty: boolean };
 
-/** Everything one tab holds. In view mode `nodes`/`edges` are the deployed flow's, and the flow
- *  as edited waits in `beforeView` (null for a tab opened to view: edit loads it then). */
-export type TabState = {
+/** What a tab holds about its flow besides the canvas: the app keeps it as one state, so a field
+ *  added here is captured and restored with the tab, with nothing else to touch. */
+export type FlowMeta = {
   name: string | null;
   /** Whether it exists as a saved flow (opened from one, or saved since). */
   saved: boolean;
-  nodes: PrimitiveNodeType[];
-  edges: Edge[];
-  viewport: Viewport;
-  history: History<Snapshot>;
   settings: FlowSettings;
   /** What it was last saved or opened as (App's savedKeyOf); "" for one never saved. */
   savedKey: string;
-  /** The next node id's counter: past every id the canvas holds. */
-  idCounter: number;
   saveMsg: string;
   /** The deployment shown, in view mode; null in edit mode. */
   viewing: string | null;
-  beforeView: EditCopy | null;
-  viewDoc: FlowDocument | null;
   /** The version (unit, hex) whose canvas view mode shows: the deployment's current one, or the
    *  earlier one the selected run ran on. */
   viewUnit: string | null;
@@ -43,35 +35,66 @@ export type TabState = {
   selectedRun: LogEntry | null;
   step: number | null;
   inspectNode: string | null;
+};
+
+/** Everything one tab holds: its flow (`meta`), and the canvas plumbing kept outside React state.
+ *  In view mode `nodes`/`edges` are the deployed flow's, and the flow as edited waits in
+ *  `beforeView` (null for a tab opened to view: edit loads it then). */
+export type TabState = {
+  meta: FlowMeta;
+  nodes: PrimitiveNodeType[];
+  edges: Edge[];
+  viewport: Viewport;
+  history: History<Snapshot>;
+  /** The next node id's counter: past every id the canvas holds. */
+  idCounter: number;
+  beforeView: EditCopy | null;
+  viewDoc: FlowDocument | null;
   /** Unsaved changes, as of when it was set aside. */
   dirty: boolean;
 };
 
 export type Mode = "edit" | "view";
 
-/** A fresh, empty flow in edit mode. */
-export function blankTab(name: string | null): TabState {
+/** A fresh flow's meta, in edit mode. */
+export function blankMeta(name: string | null): FlowMeta {
   return {
     name,
     saved: false,
-    nodes: [],
-    edges: [],
-    viewport: { x: 0, y: 0, zoom: 1 },
-    history: newHistory(snapshotOf([], [])),
     settings: DEFAULT_SETTINGS,
     savedKey: "",
-    idCounter: 0,
     saveMsg: "",
     viewing: null,
-    beforeView: null,
-    viewDoc: null,
     viewUnit: null,
     viewTrace: undefined,
     selectedRun: null,
     step: null,
     inspectNode: null,
+  };
+}
+
+/** A fresh, empty flow in edit mode. */
+export function blankTab(name: string | null): TabState {
+  return {
+    meta: blankMeta(name),
+    nodes: [],
+    edges: [],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    history: newHistory(snapshotOf([], [])),
+    idCounter: 0,
+    beforeView: null,
+    viewDoc: null,
     dirty: false,
   };
+}
+
+/** One field of `FlowMeta` as a setter, value or updater, like useState's. */
+export function metaSetter<K extends keyof FlowMeta>(
+  setMeta: (update: (m: FlowMeta) => FlowMeta) => void,
+  key: K,
+): (value: FlowMeta[K] | ((prev: FlowMeta[K]) => FlowMeta[K])) => void {
+  return (value) =>
+    setMeta((m) => ({ ...m, [key]: typeof value === "function" ? (value as (p: FlowMeta[K]) => FlowMeta[K])(m[key]) : value }));
 }
 
 /** What a tab is, as its label says: deployed (a deployment has its name), saved, or a draft

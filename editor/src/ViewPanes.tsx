@@ -214,9 +214,10 @@ export function BottomPane({
 }) {
   const { entries, error } = useFlowLog(slug);
   const [tab, setTab] = useState<"log" | "timeline">("log");
-  const [live, setLive] = useState(true);
+  // Live: always show the newest run. A tab coming back with a run selected keeps it (and its
+  // step) instead: live starts only when nothing is selected.
+  const [live, setLive] = useState(() => selected === null);
 
-  // Live: always show the newest run.
   const newest = entries[entries.length - 1];
   useEffect(() => {
     if (live && newest && newest.seq !== selected?.seq) onSelect(newest);

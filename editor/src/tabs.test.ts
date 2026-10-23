@@ -27,6 +27,6 @@ describe("tabs", () => {
 
   it("start a tab in edit mode, empty", () => {
     const t = blankTab("x");
-    expect([t.viewing, t.nodes.length, t.saved, t.dirty]).toEqual([null, 0, false, false]);
+    expect([t.meta.viewing, t.nodes.length, t.meta.saved, t.dirty]).toEqual([null, 0, false, false]);
   });
 });

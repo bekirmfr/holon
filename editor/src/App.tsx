@@ -35,7 +35,6 @@ import {
   type WEncapSpec,
   manifestItems,
   manifestTrigger,
-  readsFromOutside,
 } from "./holon";
 import {
   deployUnit,
@@ -43,7 +42,6 @@ import {
   changeDeployment,
   getDeployedDocument,
   getFlow,
-  type LogEntry,
   saveFlow,
   listFlows,
   type FlowDocument,
@@ -51,29 +49,14 @@ import {
 } from "./server";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
-import { FAIL, PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
+import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
 import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import { DialogProvider, useDialog } from "./Dialog";
-import { BottomPane, SidePane } from "./ViewPanes";
-import {
-  collectionsAtStep,
-  diagnose,
-  executionOrder,
-  nodeExchanges,
-  nodeOutputs,
-  nodeTimings,
-  recordedReads,
-  recordedResponses,
-  replay,
-  stateAtStep,
-  wireKey,
-  type ReplayNode,
-} from "./replay";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
-import { isWEncapError, describeItem, valueChip } from "./diagnostics";
+import { isWEncapError, describeItem } from "./diagnostics";
 import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
@@ -92,16 +75,18 @@ import { DeployedPage, FlowsPage, type AppPage } from "./Pages";
 import { newHistory, snapshotOf, useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { SAMPLES, buildSample, type Sample } from "./samples";
-import { blankTab, nextAfterClose, tabKind, type Mode, type TabState } from "./tabs";
+import { blankMeta, blankTab, metaSetter, nextAfterClose, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccessButton } from "./AccessButton";
+import { useViewMode, ViewModePanes } from "./useViewMode";
 
 // What a save records, for unsaved-change tracking: the canvas plus the server draft.
 const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) =>
   documentKey(ns, es) + JSON.stringify(settings);
 
 // A new, empty flow's tab: nothing to save until something is placed.
-const freshTab = (name: string | null) => ({ ...blankTab(name), savedKey: savedKeyOf([], [], DEFAULT_SETTINGS) });
+const freshMeta = (name: string | null): FlowMeta => ({ ...blankMeta(name), savedKey: savedKeyOf([], [], DEFAULT_SETTINGS) });
+const freshTab = (name: string | null): TabState => ({ ...blankTab(name), meta: freshMeta(name) });
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
@@ -162,38 +147,31 @@ function Canvas({
     setDeployError("");
   }, []);
 
-  // ── the current flow (P4.8): its name, save, and undo/redo ────────────────────────────
-  // A saved flow is a named workspace document — nodes/edges/viewport exactly as left, stored
-  // opaquely by the server (see server.ts's FlowDocument). Deliberately separate from the
-  // content-addressed unit the same canvas projects to: positions and zoom are presentation,
-  // and presentation stays out of identity by design.
-  const [flowName, setFlowName] = useState<string | null>(null);
-  const [saveMsg, setSaveMsg] = useState("");
-  // Whether it exists as a saved flow (opened from one, or saved since): its tab says so.
-  const [savedOnServer, setSavedOnServer] = useState(false);
-
-  // Unsaved changes: the canvas differs from what was last saved, opened, or started fresh.
-  // New and Open ask before replacing it, and closing the tab asks too.
-  // The flow's deploy settings (DeployBar's ⚙): saved and opened with the flow.
-  const [settings, setSettings] = useState<FlowSettings>(DEFAULT_SETTINGS);
-  const [savedKey, setSavedKey] = useState(() => savedKeyOf([], [], DEFAULT_SETTINGS));
-  // View mode: a deployed flow's canvas, read-only, with its live flow log (onView). The flow
-  // being edited is set aside meanwhile and comes back in edit mode, unsaved changes included.
-  const [viewing, setViewing] = useState<string | null>(null);
-  const [selectedRun, setSelectedRun] = useState<LogEntry | null>(null);
-  const [step, setStep] = useState<number | null>(null);
-  // The deployed flow's map from a run's steps to canvas nodes, and the node the side pane shows.
-  const [viewTrace, setViewTrace] = useState<Record<string, string[]> | undefined>(undefined);
-  const [inspectNode, setInspectNode] = useState<string | null>(null);
-  // View mode: values as chips beside each output (on), or the flow exactly as designed (off);
-  // and the wire under the pointer, which shows the value it carried.
-  const [showValues, setShowValues] = useState(true);
-  const [hoveredWire, setHoveredWire] = useState<string | null>(null);
+  // ── the current flow (P4.8) ─────────────────────────────────────────────────────────────
+  // Everything the active tab holds about its flow besides the canvas (tabs.ts's FlowMeta), as
+  // one state: its name, whether it's saved, its deploy settings (⚙), what it was last saved as
+  // (unsaved changes: the canvas differs from that), and view mode's deployment, version, run,
+  // step and node. Switching tabs captures and restores it whole, so a field added to FlowMeta
+  // needs nothing here. A saved flow is a named workspace document — nodes/edges/viewport
+  // exactly as left, stored opaquely by the server (server.ts's FlowDocument), apart from the
+  // content-addressed unit the same canvas projects to: presentation stays out of identity.
+  const [flow, setFlow] = useState<FlowMeta>(() => freshMeta(null));
+  const { name: flowName, settings, savedKey, saveMsg, viewing } = flow;
+  const setFlowName = useMemo(() => metaSetter(setFlow, "name"), []);
+  const setSavedOnServer = useMemo(() => metaSetter(setFlow, "saved"), []);
+  const setSettings = useMemo(() => metaSetter(setFlow, "settings"), []);
+  const setSavedKey = useMemo(() => metaSetter(setFlow, "savedKey"), []);
+  const setSaveMsg = useMemo(() => metaSetter(setFlow, "saveMsg"), []);
+  const setViewing = useMemo(() => metaSetter(setFlow, "viewing"), []);
+  const setViewUnit = useMemo(() => metaSetter(setFlow, "viewUnit"), []);
+  const setViewTrace = useMemo(() => metaSetter(setFlow, "viewTrace"), []);
+  const setSelectedRun = useMemo(() => metaSetter(setFlow, "selectedRun"), []);
+  const setStep = useMemo(() => metaSetter(setFlow, "step"), []);
+  const setInspectNode = useMemo(() => metaSetter(setFlow, "inspectNode"), []);
   const beforeView = useRef<TabState["beforeView"]>(null);
   // The deployed document shown in view mode: what edit mode starts from when there is no saved
   // flow of that name.
   const viewDoc = useRef<FlowDocument | null>(null);
-  const [viewUnit, setViewUnit] = useState<string | null>(null);
   const { history, restoring, histVersion, bump, undo, redo } = useCanvasHistory(
     nodes,
     edges,
@@ -220,27 +198,17 @@ function Canvas({
 
   const captureTab = useCallback(
     (): TabState => ({
-      name: flowName,
-      saved: savedOnServer,
+      meta: flow,
       nodes: live.current.nodes,
       edges: live.current.edges,
       viewport: getViewport(),
       history: history.current,
-      settings,
-      savedKey,
       idCounter: idRef.current,
-      saveMsg,
-      viewing,
       beforeView: beforeView.current,
       viewDoc: viewDoc.current,
-      viewUnit,
-      viewTrace,
-      selectedRun,
-      step,
-      inspectNode,
       dirty,
     }),
-    [flowName, savedOnServer, getViewport, history, settings, savedKey, saveMsg, viewing, viewUnit, viewTrace, selectedRun, step, inspectNode, dirty],
+    [flow, getViewport, history, dirty],
   );
 
   const applyTab = useCallback(
@@ -250,20 +218,10 @@ function Canvas({
       setEdges(t.edges);
       setViewport(t.viewport);
       history.current = t.history;
-      setFlowName(t.name);
-      setSavedOnServer(t.saved);
-      setSettings(t.settings);
-      setSavedKey(t.savedKey);
       idRef.current = t.idCounter;
-      setSaveMsg(t.saveMsg);
-      setViewing(t.viewing);
       beforeView.current = t.beforeView;
       viewDoc.current = t.viewDoc;
-      setViewUnit(t.viewUnit);
-      setViewTrace(t.viewTrace);
-      setSelectedRun(t.selectedRun);
-      setStep(t.step);
-      setInspectNode(t.inspectNode);
+      setFlow(t.meta);
       resetProjectionView();
       bump();
     },
@@ -299,7 +257,7 @@ function Canvas({
   const tabOf = useCallback(
     (name: string): number | null => {
       if (flowName === name) return activeId;
-      for (const [id, t] of stash.current) if (t.name === name) return id;
+      for (const [id, t] of stash.current) if (t.meta.name === name) return id;
       return null;
     },
     [flowName, activeId],
@@ -309,7 +267,7 @@ function Canvas({
     async (id: number) => {
       const t = id === activeId ? captureTab() : stash.current.get(id);
       if (!t) return;
-      if (t.dirty && !(await dialog.confirm(`Close "${t.name ?? "untitled"}" and discard its unsaved changes?`, "Discard"))) return;
+      if (t.dirty && !(await dialog.confirm(`Close "${t.meta.name ?? "untitled"}" and discard its unsaved changes?`, "Discard"))) return;
       if (id !== activeId) {
         stash.current.delete(id);
         setTabIds((ids) => ids.filter((x) => x !== id));
@@ -377,15 +335,12 @@ function Canvas({
       for (const n of ns) for (const m of n.id.matchAll(/\d+/g)) max = Math.max(max, Number(m[0]));
       return {
         ...blankTab(name),
-        saved,
+        meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server) : "", saveMsg: msg },
         nodes: ns,
         edges: es,
         viewport: doc.viewport,
         history: newHistory(snapshotOf(ns, es)),
-        settings: server,
-        savedKey: saved ? savedKeyOf(ns, es, server) : "",
         idCounter: max + 1,
-        saveMsg: msg,
       };
     },
     [ev],
@@ -829,7 +784,7 @@ function Canvas({
       }
       const open = tabOf(slug);
       const base = open === null ? blankTab(slug) : open === activeId ? captureTab() : (stash.current.get(open) ?? blankTab(slug));
-      const editCopy = base.viewing
+      const editCopy = base.meta.viewing
         ? base.beforeView
         : open === null
           ? null
@@ -841,57 +796,43 @@ function Canvas({
         edges: doc.edges as Edge[],
         viewport: doc.viewport,
         history: newHistory(snapshotOf([], [])),
-        viewing: slug,
         viewDoc: doc,
-        viewUnit: deployments.find((d) => d.slug === slug)?.unit ?? null,
-        viewTrace: doc.trace,
-        selectedRun: null,
-        step: null,
-        inspectNode: null,
+        meta: {
+          ...base.meta,
+          viewing: slug,
+          viewUnit: deployments.find((d) => d.slug === slug)?.unit ?? null,
+          viewTrace: doc.trace,
+          selectedRun: null,
+          step: null,
+          inspectNode: null,
+        },
       });
     },
     [ev, tabOf, activeId, captureTab, showTab, deployments],
   );
 
-  // A run shows on the canvas of the version it ran on: selecting one logged on an earlier
-  // version brings that version's canvas (kept by the deployment), and one on the current
-  // version brings the current one back. Until it's there, or when it isn't kept, the replay
-  // isn't compared with the run: it would be the wrong flow.
-  const [versionNote, setVersionNote] = useState("");
-  const runUnit = viewing ? selectedRun?.unit : undefined;
-  const onOtherVersion = !!runUnit && viewUnit !== null && runUnit !== viewUnit;
-  const currentUnit = viewing ? deployments.find((d) => d.slug === viewing)?.unit : undefined;
-  useEffect(() => {
-    if (!viewing || !runUnit || runUnit === viewUnit) return;
-    let stale = false;
-    getDeployedDocument(viewing, runUnit)
-      .then((doc) => {
-        if (stale) return;
-        for (const hex of doc.units ?? []) {
-          try {
-            ev.insert(fromHex(hex));
-          } catch {
-            // a unit that won't decode stays unresolvable, as on Open
-          }
-        }
-        restoring.current = true;
-        setNodes(doc.nodes as PrimitiveNodeType[]);
-        setEdges(doc.edges as Edge[]);
-        viewDoc.current = doc;
-        setViewTrace(doc.trace);
-        setViewUnit(runUnit);
-        setVersionNote("");
-      })
-      .catch(() => !stale && setVersionNote(`ran on an earlier version (${runUnit.slice(0, 8)}…) whose canvas isn't kept: not compared`));
-    return () => {
-      stale = true;
-    };
-  }, [viewing, runUnit, viewUnit, ev, restoring, setNodes, setEdges]);
-  const shownNote = onOtherVersion
-    ? versionNote || "loading the version it ran on…"
-    : viewUnit && currentUnit && viewUnit !== currentUnit
-      ? `shown on the version it ran on (${viewUnit.slice(0, 8)}…), an earlier deploy`
-      : "";
+  // View mode: the run replayed on its version's canvas, stepping, flow state, and the panes
+  // (useViewMode.tsx).
+  const view = useViewMode({
+    flow,
+    setSelectedRun,
+    setStep,
+    setInspectNode,
+    setViewTrace,
+    setViewUnit,
+    nodes,
+    edges,
+    live,
+    canvasKey,
+    setNodes,
+    setEdges,
+    restoring,
+    viewDoc,
+    ev,
+    byName,
+    deployments,
+    fitView,
+  });
 
   // Edit mode: the flow as edited, put back as it was left; for a tab opened to view, the saved
   // flow of that name, else a draft of what is deployed.
@@ -935,113 +876,6 @@ function Canvas({
       else if (flowName) onView(flowName);
     },
     [onEditMode, onView, flowName],
-  );
-
-  // One node of a replay: its unit, evaluated on the inputs its wires brought.
-  const evalNode = useCallback(
-    (node: ReplayNode, inputs: (WValue | null)[]): (WValue | null)[] => {
-      try {
-        const hash = unitFor(node as PrimitiveNodeType, ev, byName);
-        return ev.eval(buildPreimage(ev.get_unit(hash) as WUnit), inputs) as (WValue | null)[];
-      } catch {
-        return node.data.outputs.map(() => null);
-      }
-    },
-    [ev, byName],
-  );
-
-  // The selected run, replayed on the canvas; and whether that reproduced what the server sent.
-  const replayed = useMemo(() => {
-    if (!viewing || !selectedRun) return null;
-    const { nodes: ns, edges: es } = live.current;
-    // Outbound requests are answered from the run's record, never the network.
-    const run = replay(
-      ns,
-      es,
-      selectedRun,
-      evalNode,
-      new Map([...recordedResponses(nodeExchanges(selectedRun, viewTrace)), ...recordedReads(selectedRun, viewTrace)]),
-      nodeOutputs(selectedRun, viewTrace),
-      // Stepped through in the order the run evaluated its nodes.
-      executionOrder(nodeTimings(selectedRun, viewTrace)),
-      // A holon reading from outside within itself replays from what the run recorded.
-      (node) => {
-        const body = (node as PrimitiveNodeType).data.body;
-        if (body.kind !== "Composite") return false;
-        try {
-          return readsFromOutside(ev.capability_names(body.hash) as string[]);
-        } catch {
-          return true;
-        }
-      },
-    );
-    const diagnosis = diagnose(ns, es, selectedRun, run);
-    let verdict: boolean | null = null;
-    const respond = run.order.find((id) => {
-      const n = ns.find((x) => x.id === id);
-      return n?.data.name === "respond" && n.data.body.kind === "Template";
-    });
-    if (selectedRun.kind === "request" && respond && selectedRun.outputs.length > 0) {
-      verdict = JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(selectedRun.outputs[0]);
-    }
-    return { ...run, verdict, diagnosis };
-    // live.current is read on purpose: canvasKey changes exactly when the structure does.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewing, selectedRun, canvasKey, evalNode, viewTrace, ev]);
-
-  // Show a node on the canvas and in the side pane: what "show where it failed" does.
-  const showNode = useCallback(
-    (id: string) => {
-      setInspectNode(id);
-      fitView({ nodes: [{ id }], duration: 300, maxZoom: 1.1, padding: 0.6 });
-    },
-    [fitView],
-  );
-
-  // A failed run opens on where it failed.
-  const origin = replayed?.diagnosis?.origins[0];
-  useEffect(() => {
-    if (origin) setInspectNode(origin);
-  }, [origin, selectedRun?.seq]);
-
-  const onSelectRun = useCallback((e: LogEntry | null) => {
-    setSelectedRun(e);
-    setStep(null);
-  }, []);
-
-  // Stepping through a run follows the node at that step in the side pane.
-  const onStep = useCallback(
-    (s: number | null) => {
-      setStep(s);
-      const id = s === null ? undefined : replayed?.order[s];
-      if (id) setInspectNode(id);
-    },
-    [replayed],
-  );
-  const onNodeClick = useCallback(
-    (_: unknown, node: PrimitiveNodeType) => {
-      if (viewing) setInspectNode(node.id);
-    },
-    [viewing],
-  );
-
-  // When each node of the selected run ran, and the flow state as of the current step.
-  const timings = useMemo(
-    () => (selectedRun ? nodeTimings(selectedRun, viewTrace) : new Map<string, { start_us: number; end_us: number }>()),
-    [selectedRun, viewTrace],
-  );
-  const exchanges = useMemo(() => (selectedRun ? nodeExchanges(selectedRun, viewTrace) : []), [selectedRun, viewTrace]);
-  const flowState = useMemo(
-    () =>
-      selectedRun && replayed
-        ? stateAtStep(selectedRun.state_before, replayed, live.current.nodes, step)
-        : { after: {}, changed: [] as string[] },
-    [selectedRun, replayed, step],
-  );
-  // The collections the run touched, as items, as of the step shown.
-  const collectionsNow = useMemo(
-    () => (selectedRun ? collectionsAtStep(selectedRun, replayed, live.current.nodes, step) : []),
-    [selectedRun, replayed, step],
   );
 
   const onProject = useCallback(() => {
@@ -1126,52 +960,15 @@ function Canvas({
   // Purely a rendering decoration for React Flow — never touches the underlying `nodes` state
   // that onProject/onDrop read and write, so flagging a node as errored has zero effect on
   // hashing or identity (the same "cosmetic vs. structural" line I5 already draws elsewhere).
+  // In view mode the run decorates them instead (useViewMode).
   const decoratedNodes = useMemo(() => {
-    if (viewing) {
-      const order = replayed?.order ?? [];
-      return nodes.map((n) => {
-        const i = order.indexOf(n.id);
-        const state: "active" | "done" | "pending" | "outside" =
-          i < 0 ? "outside" : step === null || i < step ? "done" : i === step ? "active" : "pending";
-        const issue = replayed?.diagnosis?.issues.get(n.id);
-        const trace = replayed ? { outputs: replayed.traces.get(n.id)?.outputs ?? [], state, issue, showValues } : undefined;
-        return { ...n, data: { ...n.data, readOnly: true, trace } };
-      });
-    }
+    if (viewing) return view.viewNodes;
     return errorNodeIds.size === 0
       ? nodes
       : nodes.map((n) => (errorNodeIds.has(n.id) ? { ...n, data: { ...n.data, error: true } } : n));
-  }, [nodes, errorNodeIds, viewing, replayed, step, showValues]);
+  }, [nodes, errorNodeIds, viewing, view.viewNodes]);
 
-  // In view mode, the wires show the run: the way a failure took in its colour, and a wire that
-  // carried nothing faded.
-  const decoratedEdges = useMemo(() => {
-    if (!viewing || !replayed) return edges;
-    const ran = new Set(replayed.order);
-    return edges.map((e) => {
-      if (!ran.has(e.source) || !ran.has(e.target)) return e;
-      const from = nodes.find((n) => n.id === e.source);
-      const at = from ? from.data.outputs.findIndex((p) => p.name === e.sourceHandle) : -1;
-      const value = replayed.traces.get(e.source)?.outputs[at] ?? null;
-      // The value it carried, on hover: an edge label, drawn over the canvas.
-      const hover =
-        hoveredWire === e.id
-          ? {
-              label: valueChip(value),
-              labelStyle: { fill: value === null ? "#7e8ea8" : "#bfe8c2", fontSize: 11, fontFamily: "var(--mono)" },
-              labelBgStyle: { fill: "#0b1527", stroke: "#6fd3e0" },
-              labelBgPadding: [6, 3] as [number, number],
-              labelBgBorderRadius: 6,
-            }
-          : {};
-      if (replayed.diagnosis?.path.has(wireKey(e))) {
-        return { ...e, ...hover, animated: true, style: { ...e.style, stroke: FAIL, strokeWidth: 2.6 } };
-      }
-      return value === null
-        ? { ...e, ...hover, style: { ...e.style, opacity: hoveredWire === e.id ? 1 : 0.35, strokeDasharray: "4 4" } }
-        : { ...e, ...hover };
-    });
-  }, [edges, nodes, viewing, replayed, hoveredWire]);
+  const decoratedEdges = viewing ? view.viewEdges : edges;
 
   // How many placed nodes are currently selected — React Flow's own selection state
   // (shift-click / drag-box), already live for delete, now also gating the "group" button
@@ -1184,13 +981,13 @@ function Canvas({
 
   // The tab strip: each open flow, what it is, and its mode.
   const tabList = tabIds.map((id) => {
-    const t = id === activeId ? { name: flowName, saved: savedOnServer, dirty, viewing } : (stash.current.get(id) ?? blankTab(null));
+    const t = id === activeId ? { meta: flow, dirty } : (stash.current.get(id) ?? blankTab(null));
     return {
       id,
-      name: t.name,
-      kind: tabKind(t, (name) => deployments.some((d) => d.slug === name)),
+      name: t.meta.name,
+      kind: tabKind(t.meta, (name) => deployments.some((d) => d.slug === name)),
       dirty: t.dirty,
-      mode: (t.viewing ? "view" : "edit") as Mode,
+      mode: (t.meta.viewing ? "view" : "edit") as Mode,
     };
   });
 
@@ -1207,9 +1004,9 @@ function Canvas({
       <div className="hl-canvas__flow">
         <ReactFlow<PrimitiveNodeType>
           nodes={decoratedNodes}
-          onNodeClick={onNodeClick}
-          onEdgeMouseEnter={viewing ? (_, edge) => setHoveredWire(edge.id) : undefined}
-          onEdgeMouseLeave={viewing ? () => setHoveredWire(null) : undefined}
+          onNodeClick={view.onNodeClick}
+          onEdgeMouseEnter={viewing ? (_, edge) => view.setHoveredWire(edge.id) : undefined}
+          onEdgeMouseLeave={viewing ? () => view.setHoveredWire(null) : undefined}
           onNodesChange={onNodesChange}
           edges={decoratedEdges}
           onEdgesChange={onEdgesChange}
@@ -1238,8 +1035,8 @@ function Canvas({
               mode={viewing ? "view" : "edit"}
               canView={deployedEntry !== undefined}
               onMode={onMode}
-              showValues={showValues}
-              onToggleValues={() => setShowValues((v) => !v)}
+              showValues={view.showValues}
+              onToggleValues={view.toggleValues}
               flowName={flowName}
               dirty={dirty}
               onSave={onSave}
@@ -1303,42 +1100,7 @@ function Canvas({
           <div className="hl-canvas__empty">drag a primitive here to place it</div>
         )}
       </div>
-      {viewing && (
-        <>
-          <SidePane
-            slug={viewing}
-            collections={collectionsNow}
-            run={selectedRun}
-            step={step}
-            order={replayed?.order ?? []}
-            stateAfter={flowState.after}
-            changed={flowState.changed}
-            node={nodes.find((n) => n.id === inspectNode) ?? null}
-            trace={
-              inspectNode && replayed?.traces.get(inspectNode)
-                ? { ...replayed.traces.get(inspectNode)!, issue: replayed.diagnosis?.issues.get(inspectNode) }
-                : undefined
-            }
-            timing={inspectNode ? timings.get(inspectNode) : undefined}
-          />
-          <BottomPane
-            slug={viewing}
-            selected={selectedRun}
-            onSelect={onSelectRun}
-            step={step}
-            onStep={onStep}
-            order={replayed?.order ?? []}
-            nodes={nodes}
-            timings={timings}
-            exchanges={exchanges}
-            verdict={onOtherVersion ? null : (replayed?.verdict ?? null)}
-            versionNote={shownNote}
-            onPickNode={setInspectNode}
-            diagnosis={replayed?.diagnosis ?? null}
-            onShowNode={showNode}
-          />
-        </>
-      )}
+      <ViewModePanes view={view} flow={flow} nodes={nodes} />
       {/* The Flows / Deployed pages are overlays ON TOP of the always-mounted canvas — React
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,
           so the canvas is covered, never unmounted. The deployments list used to live in a
