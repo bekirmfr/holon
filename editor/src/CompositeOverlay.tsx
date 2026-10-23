@@ -275,7 +275,18 @@ function Level({
     onFrame((f) => ({ ...f, nodes: applyNodeChanges(kept, f.nodes), dirty: f.dirty || kept.some(changesUnit) }));
   };
   const onEdgesChange = (changes: EdgeChange[]) =>
-    onFrame((f) => ({ ...f, edges: applyEdgeChanges(changes, f.edges), dirty: f.dirty || changes.some(changesUnit) }));
+    onFrame((f) => {
+      const edges = applyEdgeChanges(changes, f.edges);
+      // A port added inside that lost its last wire takes any type again.
+      const wired = (id: string, name: string) => edges.some((e) => (e.source === id && e.sourceHandle === name) || (e.target === id && e.targetHandle === name));
+      const nodes = f.nodes.map((n) => {
+        if (n.type !== "boundary") return n;
+        const data = n.data as BoundaryData;
+        if (!data.ports.some((p) => p.unit === undefined && p.ty !== "Any" && !wired(n.id, p.name))) return n;
+        return { ...n, data: { ...data, ports: data.ports.map((p) => (p.unit === undefined && !wired(n.id, p.name) ? { ...p, ty: "Any" as const } : p)) } };
+      });
+      return { ...f, nodes, edges, dirty: f.dirty || changes.some(changesUnit) };
+    });
   // As on the flow: a wire joins compatible types, and an input takes one wire.
   const portOf = (id: string, handle: string | null | undefined, side: "out" | "in") => {
     const node = getNode(id);
@@ -292,8 +303,21 @@ function Level({
     return compatible(from.ty, to.ty);
   };
   const onConnect = (c: Connection) => {
-    const ty = portOf(c.source, c.sourceHandle, "out")?.ty ?? null;
-    onFrame((f) => ({ ...f, edges: addEdge({ ...c, style: { stroke: outputColor(ty), strokeWidth: 1.6 } }, f.edges), dirty: true }));
+    const from = portOf(c.source, c.sourceHandle, "out");
+    const to = portOf(c.target, c.targetHandle, "in");
+    // A port added to the boundary takes its type from its first wire, so the next wire to it is
+    // checked as it's drawn, not only when applied.
+    const typed = (n: Node, handle: string | null | undefined, ty: WPort["ty"] | undefined) => {
+      if (n.type !== "boundary" || !ty) return n;
+      const data = n.data as BoundaryData;
+      return { ...n, data: { ...data, ports: data.ports.map((p) => (p.name === handle && p.ty === "Any" ? { ...p, ty } : p)) } };
+    };
+    onFrame((f) => ({
+      ...f,
+      nodes: f.nodes.map((n) => (n.id === c.source ? typed(n, c.sourceHandle, to?.ty) : n.id === c.target ? typed(n, c.targetHandle, from?.ty) : n)),
+      edges: addEdge({ ...c, style: { stroke: outputColor(from?.ty ?? null), strokeWidth: 1.6 } }, f.edges),
+      dirty: true,
+    }));
   };
   const onDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();

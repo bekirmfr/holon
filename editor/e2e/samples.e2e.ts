@@ -137,3 +137,25 @@ test("an edited holon applies as a new version of itself, and the flow runs it",
   const answer = await request.post(`http://127.0.0.1:${port}/slugs`, { data: { title: "Edited Inside", author: "Ada" } });
   expect(await answer.json()).toMatchObject({ title: "edited-inside", receipt: "not signed" });
 });
+
+test("a port added inside a holon takes its first wire's type, and the flow's node gains it", async ({ page }) => {
+  await openSample(page, "A flow inside a flow (holon)");
+  const flow = page.locator(".hl-canvas__flow > .react-flow");
+  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  const overlay = page.locator(".hl-overlay");
+  await overlay.getByRole("button", { name: "add an output" }).click();
+  await page.locator('[aria-modal="true"] input').fill("stamp");
+  await page.keyboard.press("Enter");
+  const outputs = overlay.locator(".react-flow__node", { hasText: "outputs" });
+  const stamp = outputs.locator(".hl-port__label", { hasText: "stamp" });
+  await expect(stamp).toHaveAttribute("title", /^any/);
+  // Wired from the clock: it's a number now.
+  const clockOut = overlay.locator(".react-flow__node", { hasText: "clock" }).locator(".react-flow__handle.source");
+  await clockOut.dragTo(outputs.locator('.react-flow__handle[data-handleid="stamp"]'));
+  await expect(stamp).toHaveAttribute("title", /^number/);
+  await overlay.getByRole("button", { name: "apply" }).click();
+  await expect(overlay).toContainText("applied");
+  await overlay.getByRole("button", { name: "close" }).click();
+  await expect(flow.locator(".react-flow__node", { hasText: "publish" })).toContainText("stamp");
+});
