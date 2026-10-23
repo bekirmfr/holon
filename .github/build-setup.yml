@@ -2,9 +2,11 @@
 # the editor, built so holon-server can build it in (its embed-editor feature, editor.rs).
 - name: Install wasm-pack
   uses: jetli/wasm-pack-action@v0.4.0
+# --no-opt: wasm-pack's wasm-opt fails to parse the core on the macOS arm64 runner; unoptimized,
+# the core is ~710 KB instead of ~580 KB, and the same everywhere.
 - name: Build the core for the editor
   shell: bash
-  run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm
+  run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
 - name: Install Node
   uses: actions/setup-node@v4
   with:

@@ -130,7 +130,7 @@ jobs:
       - name: "Install wasm-pack"
         uses: "jetli/wasm-pack-action@v0.4.0"
       - name: "Build the core for the editor"
-        run: "wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm"
+        run: "wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt"
         shell: "bash"
       - name: "Install Node"
         uses: "actions/setup-node@v4"
