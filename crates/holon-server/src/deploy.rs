@@ -47,6 +47,8 @@ pub(crate) fn handle_post_deploy(
     policy: &Policy,
     secrets: &SecretStore,
     request: &Request,
+    // Who deployed it (access.rs), kept with the deployment.
+    by: Option<&str>,
 ) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -199,6 +201,7 @@ pub(crate) fn handle_post_deploy(
                 trigger_count: 0,
                 error_count: 0,
                 deployed_at: SystemTime::now(),
+                deployed_by: by.map(String::from),
                 life,
                 log,
                 document,
@@ -228,6 +231,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         trigger_count: dep.trigger_count,
         error_count: dep.error_count,
         deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+        deployed_by: dep.deployed_by.clone(),
         attention: dep.attention.clone(),
         waiting: dep.parked.len(),
     }

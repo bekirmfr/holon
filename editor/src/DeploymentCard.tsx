@@ -97,7 +97,10 @@ export function DeploymentCard({
         </span>
         <span style={{ color: "#6fd3e0" }}>{entry.slug}</span>
         <span style={{ color: look.color }}>{entry.status}</span>
-        <span style={{ color: "#9fb4d4", flex: 1 }}>{entry.triggers.join(", ")}</span>
+        <span style={{ color: "#9fb4d4", flex: 1 }}>
+          {entry.triggers.join(", ")}
+          {entry.deployed_by && <span style={{ color: "#7e8ea8" }} title="who deployed this version"> · by {entry.deployed_by}</span>}
+        </span>
         {entry.status === "running" && (
           <>
             <button style={small} onClick={() => act("pause")} title="stop answering, keep the port and the session">

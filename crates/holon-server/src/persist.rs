@@ -41,6 +41,7 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                     .duration_since(UNIX_EPOCH)
                     .ok()
                     .map(|d| d.as_secs()),
+                deployed_by: dep.deployed_by.clone(),
                 trigger_count: dep.trigger_count,
                 error_count: dep.error_count,
                 status: Some(dep.life.status),
@@ -193,6 +194,7 @@ pub(crate) fn load_deployments(
                 unit: unit_hash,
                 triggers,
                 interval_seconds: record.interval_seconds,
+                deployed_by: record.deployed_by.clone(),
                 next_due,
                 history: Vec::new(),
                 state,

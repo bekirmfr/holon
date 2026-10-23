@@ -9,6 +9,7 @@ pub(crate) fn handle_post_flows(
     flows: &Mutex<BTreeMap<String, FlowRecord>>,
     flows_path: &str,
     request: &Request,
+    by: Option<&str>,
 ) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -23,13 +24,14 @@ pub(crate) fn handle_post_flows(
     }
     let saved_at_epoch_seconds =
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let record = FlowRecord { name: body.name.clone(), document: body.document, saved_at_epoch_seconds };
+    let saved_by = by.map(String::from);
+    let record = FlowRecord { name: body.name.clone(), document: body.document, saved_at_epoch_seconds, saved_by: saved_by.clone() };
 
     let mut table = flows.lock().unwrap();
     table.insert(body.name.clone(), record);
     persist_flows(flows_path, &table);
 
-    Response::json(&FlowListEntry { name: body.name, saved_at_epoch_seconds })
+    Response::json(&FlowListEntry { name: body.name, saved_at_epoch_seconds, saved_by })
 }
 
 /// `GET /flows` — every saved flow's name + freshness, never the documents themselves.
@@ -37,7 +39,7 @@ pub(crate) fn handle_get_flows(flows: &Mutex<BTreeMap<String, FlowRecord>>) -> R
     let table = flows.lock().unwrap();
     let entries: Vec<FlowListEntry> = table
         .values()
-        .map(|f| FlowListEntry { name: f.name.clone(), saved_at_epoch_seconds: f.saved_at_epoch_seconds })
+        .map(|f| FlowListEntry { name: f.name.clone(), saved_at_epoch_seconds: f.saved_at_epoch_seconds, saved_by: f.saved_by.clone() })
         .collect();
     Response::json(&entries)
 }

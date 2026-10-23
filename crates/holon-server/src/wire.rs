@@ -135,6 +135,9 @@ pub(crate) struct FlowRecord {
     pub(crate) name: String,
     pub(crate) document: serde_json::Value,
     pub(crate) saved_at_epoch_seconds: u64,
+    /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) saved_by: Option<String>,
 }
 
 /// `POST /flows`' request body: upsert by name. The same name saves over the previous
@@ -152,6 +155,9 @@ pub(crate) struct SaveFlowBody {
 pub(crate) struct FlowListEntry {
     pub(crate) name: String,
     pub(crate) saved_at_epoch_seconds: u64,
+    /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) saved_by: Option<String>,
 }
 
 /// `POST /deploy`'s request body. `unit` must already be resolvable in the store (staged via
@@ -202,6 +208,9 @@ pub(crate) struct DeploymentRecord {
     pub(crate) state: Option<BTreeMap<String, SValue>>,
     #[serde(default)]
     pub(crate) deployed_at_epoch_seconds: Option<u64>,
+    /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) deployed_by: Option<String>,
     #[serde(default)]
     pub(crate) trigger_count: u64,
     #[serde(default)]
@@ -256,6 +265,9 @@ pub(crate) struct DeploymentEntry {
     pub(crate) trigger_count: u64,
     pub(crate) error_count: u64,
     pub(crate) deployed_at_epoch_seconds: u64,
+    /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) deployed_by: Option<String>,
     /// Why it can't run until deployed again, if so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) attention: Option<String>,

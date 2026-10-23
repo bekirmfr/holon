@@ -153,14 +153,14 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, request);
+        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, request, by);
         sync_listeners(state);
         return response;
     }
 
     if url == "/flows" {
         if method == "POST" {
-            return handle_post_flows(&state.flows, &state.flows_path, request);
+            return handle_post_flows(&state.flows, &state.flows_path, request, by);
         }
         if method == "GET" {
             return handle_get_flows(&state.flows);

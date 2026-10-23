@@ -260,6 +260,8 @@ export type DeploymentEntry = {
   trigger_count: number;
   error_count: number;
   deployed_at_epoch_seconds: number;
+  /** Who deployed it (a named user, or `admin`), when the server knows. */
+  deployed_by?: string;
   /** The port a server deployment answers on; null for any other deployment. */
   port: number | null;
   status: DeploymentStatus;
@@ -566,7 +568,8 @@ export type FlowDocument = {
 };
 
 /** One entry in `GET /flows` — name + freshness only, never the (possibly large) document. */
-export type FlowListEntry = { name: string; saved_at_epoch_seconds: number };
+/** `saved_by`: who saved it (a named user, or `admin`), when the server knows. */
+export type FlowListEntry = { name: string; saved_at_epoch_seconds: number; saved_by?: string };
 
 /** A full saved flow as `GET /flows/<name>` returns it. */
 export type FlowRecord = FlowListEntry & { document: FlowDocument };

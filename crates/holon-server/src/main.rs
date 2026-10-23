@@ -348,6 +348,8 @@ struct Deployment {
     /// When this deployment was first created. Persisted, so a restart doesn't reset it to
     /// "now" and quietly lie about how long it's actually been running.
     deployed_at: SystemTime,
+    /// Who deployed it, when the server knows (access.rs).
+    deployed_by: Option<String>,
     /// Running, paused or stopped, and every run session so far with its end-of-session state
     /// snapshot (lifecycle.rs). Persisted.
     life: Lifecycle,

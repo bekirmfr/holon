@@ -1775,7 +1775,7 @@ fn persist_writes_whole_files_and_leaves_no_temp_files() {
     for name in ["a", "b"] {
         flows.insert(
             name.to_string(),
-            FlowRecord { name: name.to_string(), saved_at_epoch_seconds: 0, document: serde_json::json!({}) },
+            FlowRecord { name: name.to_string(), saved_at_epoch_seconds: 0, document: serde_json::json!({}), saved_by: None },
         );
         persist_flows(&path, &flows);
     }
@@ -3122,4 +3122,32 @@ fn tokens_gate_the_control_plane_and_secrets_are_their_own() {
     assert_eq!(with("POST", "/deployments/s/secrets/k", set, Some(secrets)), 200);
     assert_eq!(with("GET", "/deployments/s/secrets", vec![], Some(admin)), 200, "names are an admin read");
     assert_eq!(with("GET", "/deployments", vec![], Some(secrets)), 401);
+}
+
+/// With named users, a save and a deploy remember who made them, and the listings say so.
+#[test]
+fn saves_and_deploys_name_who_made_them() {
+    let mut state = test_state();
+    let bob = "bob-own-token-0123456789abcdef";
+    let users: Vec<access::User> =
+        serde_json::from_value(serde_json::json!([{ "name": "bob", "role": "editor", "token_blake3": access::hash_token(bob) }])).unwrap();
+    state.access = access::Access::with_users(None, None, users, vec![], vec![]).unwrap();
+    let as_bob = |method: &str, url: &str, body: Vec<u8>| {
+        let r = req(method, url, body.clone());
+        let mut headers = r.headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.push(("Authorization".into(), format!("Bearer {bob}")));
+        route(&state, &Request::fake_http(method, url, headers, body))
+    };
+    let saved = as_bob("POST", "/flows", br#"{"name":"mine","document":{}}"#.to_vec());
+    assert_eq!(body_json(saved)["saved_by"], "bob");
+    assert_eq!(body_json(as_bob("GET", "/flows", vec![]))[0]["saved_by"], "bob");
+
+    let ingress = test_ingress();
+    as_bob("POST", "/unit", encode_preimage(&ingress).unwrap());
+    as_bob("POST", "/unit", encode_preimage(&test_sink()).unwrap());
+    let flow = test_ingress_flow(hash_unit(&ingress).unwrap(), hash_unit(&test_sink()).unwrap());
+    as_bob("POST", "/unit", encode_preimage(&flow).unwrap());
+    let body = serde_json::json!({ "slug": "echo", "unit": to_hex(&hash_unit(&flow).unwrap()), "acknowledge": ["NetworkIngress", "NetworkEgress"] });
+    assert_eq!(as_bob("POST", "/deploy", serde_json::to_vec(&body).unwrap()).status_code, 200);
+    assert_eq!(body_json(as_bob("GET", "/deployments", vec![]))["deployments"][0]["deployed_by"], "bob");
 }

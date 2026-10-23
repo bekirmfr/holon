@@ -106,6 +106,7 @@ export function FlowsPage({
             <span style={{ color: "#6fd3e0", fontSize: 13, flex: 1 }}>{f.name}</span>
             <span style={{ color: "#9fb4d4", fontSize: 11 }}>
               saved {new Date(f.saved_at_epoch_seconds * 1000).toLocaleString()}
+              {f.saved_by ? ` by ${f.saved_by}` : ""}
             </span>
             {tabOf(f.name)?.dirty ? (
               <>
