@@ -2,7 +2,7 @@
 //! CORS, and `route`, which dispatches every request to its handler.
 
 use crate::*;
-use crate::access::Access;
+use crate::access::{Access, Caller};
 
 pub(crate) fn err(status: u16, message: impl Into<String>) -> Response {
     Response::json(&ErrorBody { error: message.into() }).with_status_code(status)
@@ -41,20 +41,21 @@ pub(crate) const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 /// Clients without a browser (curl, tests) send no Origin and pass by setting the two headers.
 /// Then the token, when one is configured (access.rs). A host or origin named with
 /// `--allow-host` / `--allow-origin` passes too: a server reached beyond loopback, behind a token.
-pub(crate) fn reject_untrusted(request: &Request, port: u16, access: &Access) -> Option<Response> {
+/// Answers who the request comes from (access.rs), when it may go on.
+pub(crate) fn reject_untrusted(request: &Request, port: u16, access: &Access) -> Result<Caller, Response> {
     let host = request.header("Host").unwrap_or("");
     if !access.allows_host(host, port) {
-        return Some(err(403, format!("Host {host:?} is not this server on loopback")));
+        return Err(err(403, format!("Host {host:?} is not this server on loopback")));
     }
     if let Some(origin) = request.header("Origin")
         && !access.allows_origin(origin)
     {
-        return Some(err(403, format!("Origin {origin:?} is not allowed")));
+        return Err(err(403, format!("Origin {origin:?} is not allowed")));
     }
     if request.method() == "POST" {
         let media_type = request.header("Content-Type").unwrap_or("").split(';').next().unwrap_or("").trim();
         if !["application/json", "application/octet-stream"].iter().any(|t| media_type.eq_ignore_ascii_case(t)) {
-            return Some(err(415, "POST bodies must be sent as application/json or application/octet-stream"));
+            return Err(err(415, "POST bodies must be sent as application/json or application/octet-stream"));
         }
     }
     access.check(request, crate::access::is_secret_write(request))
@@ -100,9 +101,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     let url = request.url();
     let method = request.method();
 
-    if let Some(rejection) = reject_untrusted(request, state.port, &state.access) {
-        return rejection;
-    }
+    let caller = match reject_untrusted(request, state.port, &state.access) {
+        Ok(caller) => caller,
+        Err(rejection) => return rejection,
+    };
+    let by = caller.name.as_deref();
 
     // Preflight — answered before touching any endpoint logic.
     if method == "OPTIONS" {
@@ -191,10 +194,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
 
     if let Some(rest) = url.strip_prefix("/deployments/") {
         if let Some(slug) = rest.strip_suffix("/secrets") {
-            return handle_secrets(&state.secrets, slug, None, method, request);
+            return handle_secrets(&state.secrets, slug, None, method, request, by);
         }
         if let Some((slug, name)) = rest.split_once("/secrets/") {
-            return handle_secrets(&state.secrets, slug, Some(name), method, request);
+            return handle_secrets(&state.secrets, slug, Some(name), method, request, by);
         }
         if let Some((slug, name)) = rest.split_once("/collections/")
             && method == "GET"
@@ -250,7 +253,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         } else if method == "DELETE" {
             let response = handle_delete_deployment(&state.store, &state.deployments, &state.deployments_path, rest);
             if response.status_code == 200
-                && let Err(e) = state.secrets.forget(rest)
+                && let Err(e) = state.secrets.forget(rest, by)
             {
                 eprintln!("warning: {rest:?}'s secrets weren't removed: {e}");
             }

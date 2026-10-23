@@ -294,7 +294,8 @@ pub(crate) fn handle_post_deploy_preview(
 /// versions and audit events; `POST …/<name>/rollback` (`{"version": n}`) makes an older version
 /// current again, as a new one.
 /// A slug may have secrets before it is first deployed.
-pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&str>, method: &str, request: &Request) -> Response {
+/// `by`: who asked (access.rs), named in the audit.
+pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&str>, method: &str, request: &Request, by: Option<&str>) -> Response {
     if !is_valid_slug(slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
     }
@@ -319,7 +320,7 @@ pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&st
                 version: u32,
             }
             match serde_json::from_slice::<Rollback>(&bytes) {
-                Ok(body) => match secrets.rollback(slug, name, body.version) {
+                Ok(body) => match secrets.rollback(slug, name, body.version, by) {
                     Ok(version) => Response::json(&serde_json::json!({ "version": version })),
                     Err(e) => err(400, e),
                 },
@@ -337,9 +338,9 @@ pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&st
                 from: Option<String>,
             }
             let set = match serde_json::from_slice(&bytes) {
-                Ok(SetSecret { value: Some(value), from: None }) => secrets.set(slug, name, &value),
+                Ok(SetSecret { value: Some(value), from: None }) => secrets.set(slug, name, &value, by),
                 Ok(SetSecret { value: None, from: Some(from) }) if from == "local" => Err("a local secret is set with a value".to_string()),
-                Ok(SetSecret { value: None, from: Some(from) }) => secrets.set_from(slug, name, &from),
+                Ok(SetSecret { value: None, from: Some(from) }) => secrets.set_from(slug, name, &from, by),
                 Ok(_) => Err("expected {\"value\": \"...\"} or {\"from\": \"env:… | vault:…\"}".to_string()),
                 Err(e) => Err(format!("expected {{\"value\": \"...\"}} or {{\"from\": \"...\"}}: {e}")),
             };
@@ -348,7 +349,7 @@ pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&st
                 Err(e) => err(400, e),
             }
         }
-        ("DELETE", Some(name), None) => match secrets.remove(slug, name) {
+        ("DELETE", Some(name), None) => match secrets.remove(slug, name, by) {
             Ok(true) => Response::empty_204(),
             Ok(false) => err(404, format!("{slug:?} has no secret {name:?}")),
             Err(e) => err(500, e),

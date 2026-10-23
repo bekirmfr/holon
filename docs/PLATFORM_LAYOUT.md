@@ -321,9 +321,16 @@ only the editor.
     a secrets token (`HOLON_SECRETS_TOKEN` or `--secrets-token-file`), writing a secret (set,
     roll back, remove) needs it and the admin token alone isn't enough: writing secrets is its
     own permission. The editor sends the tokens given under "access", kept in that browser.
+  - **Named users** ✅ (`--users-file` or `HOLON_USERS_FILE`): for a server several people
+    share, each gets a token of their own and a role: `viewer` (reads only), `editor` (saves,
+    deploys, pauses, deletes), `admin` (all, writing secrets included even with a secrets token
+    set). The file holds each token's BLAKE3 hash, never the token (`holon-server --hash-token`
+    reads one on stdin). Users gate the server as the admin token does, and the secrets audit
+    names who made each change (`by`), shown in the editor's secret history.
   - **Left for later:** wiping values from memory beyond the store's own copies; more managers
-    (AWS, GCP, Azure, 1Password) behind the same reference form; per-person accounts rather
-    than shared tokens.
+    (AWS, GCP, Azure, 1Password) behind the same reference form; signing in through an
+    identity provider (OIDC) rather than tokens; attributing saves and deploys, not only
+    secrets.
 
 ### 4.3 Durable runs: continuing a run later
 Rounds cover waiting inside one request: the caller is on the line, the wait is seconds. Many

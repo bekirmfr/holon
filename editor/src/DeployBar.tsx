@@ -415,6 +415,7 @@ function SecretRow({ slug, name, info, onChanged }: { slug: string | null; name:
                 {e.version ? ` v${e.version}` : ""}
                 {e.source ? ` · ${sourceLabel(e.source)}` : ""}
                 {e.detail ? ` · ${e.detail}` : ""}
+                {e.by ? ` · by ${e.by}` : ""}
               </span>
             ))}
         </span>

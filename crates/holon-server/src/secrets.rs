@@ -126,6 +126,10 @@ pub(crate) struct SecretEvent {
     pub(crate) source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) detail: Option<String>,
+    /// Who did it: a named user, `admin` or `secrets` (the shared tokens); absent when no one
+    /// is known (an open loopback server, or the host itself).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) by: Option<String>,
 }
 
 /// The audit log: appended to a file, or kept in memory for an in-memory store.
@@ -256,7 +260,7 @@ impl SecretStore {
                 for (name, value) in names {
                     let value = Zeroizing::new(value);
                     let version = store.add_version(&slug, &name, "local", Some(&value), false)?;
-                    store.event(&slug, &name, "sealed", Some(version), Some("local"), None);
+                    store.event(&slug, &name, "sealed", Some(version), Some("local"), None, None);
                 }
             }
             for (slug, entry) in store.slugs.lock().unwrap().iter() {
@@ -327,32 +331,32 @@ impl SecretStore {
     }
 
     /// Set `slug`'s secret `name` to `value`, as a new version; that version's number.
-    pub(crate) fn set(&self, slug: &str, name: &str, value: &str) -> Result<u32, String> {
+    pub(crate) fn set(&self, slug: &str, name: &str, value: &str, by: Option<&str>) -> Result<u32, String> {
         if value.chars().count() < MIN_SECRET_LEN {
             return Err(format!("a secret must be at least {MIN_SECRET_LEN} characters, or it can't be told apart from ordinary text to redact it"));
         }
         let version = self.add_version(slug, name, "local", Some(value), true)?;
         self.persist()?;
-        self.event(slug, name, "set", Some(version), Some("local"), None);
+        self.event(slug, name, "set", Some(version), Some("local"), None, by);
         Ok(version)
     }
 
     /// Point `slug`'s secret `name` at `source` (`env:…`, `vault:…`), as a new version; that
     /// version's number. Refused unless it can be read now, and long enough to redact.
-    pub(crate) fn set_from(&self, slug: &str, name: &str, source: &str) -> Result<u32, String> {
+    pub(crate) fn set_from(&self, slug: &str, name: &str, source: &str, by: Option<&str>) -> Result<u32, String> {
         let value = self.sources.fetch(&Reference::parse(source)?)?;
         if value.chars().count() < MIN_SECRET_LEN {
             return Err(format!("{source} is shorter than {MIN_SECRET_LEN} characters, too short to redact"));
         }
         let version = self.add_version(slug, name, source, None, true)?;
         self.persist()?;
-        self.event(slug, name, "set", Some(version), Some(source), None);
+        self.event(slug, name, "set", Some(version), Some(source), None, by);
         Ok(version)
     }
 
     /// Make version `to` of `slug`'s `name` current again, as a new version (history is kept);
     /// that version's number. Refused unless `to` is kept, isn't current, and still reads.
-    pub(crate) fn rollback(&self, slug: &str, name: &str, to: u32) -> Result<u32, String> {
+    pub(crate) fn rollback(&self, slug: &str, name: &str, to: u32, by: Option<&str>) -> Result<u32, String> {
         let old = {
             let slugs = self.slugs.lock().unwrap();
             let versions = slugs.get(slug).and_then(|s| s.secrets.get(name)).ok_or_else(|| format!("{slug:?} has no secret {name:?}"))?;
@@ -365,7 +369,7 @@ impl SecretStore {
         let sealed = (old.source == "local").then_some(value);
         let version = self.add_version(slug, name, &old.source, sealed.as_deref().map(|v| v.as_str()), true)?;
         self.persist()?;
-        self.event(slug, name, "rolled back", Some(version), Some(&old.source), Some(format!("to version {to}")));
+        self.event(slug, name, "rolled back", Some(version), Some(&old.source), Some(format!("to version {to}")), by);
         Ok(version)
     }
 
@@ -386,7 +390,9 @@ impl SecretStore {
         (!versions.is_empty() || !events.is_empty()).then_some((versions, events))
     }
 
-    fn event(&self, slug: &str, name: &str, action: &str, version: Option<u32>, source: Option<&str>, detail: Option<String>) {
+    /// `by`: who asked for it (access.rs's caller), when someone did.
+    #[allow(clippy::too_many_arguments)]
+    fn event(&self, slug: &str, name: &str, action: &str, version: Option<u32>, source: Option<&str>, detail: Option<String>, by: Option<&str>) {
         self.audit.record(SecretEvent {
             at: epoch_now(),
             slug: slug.into(),
@@ -395,6 +401,7 @@ impl SecretStore {
             version,
             source: source.map(String::from),
             detail,
+            by: by.map(String::from),
         });
     }
 
@@ -440,7 +447,7 @@ impl SecretStore {
     }
 
     /// Remove `slug`'s secret `name`, every version of it; whether there was one.
-    pub(crate) fn remove(&self, slug: &str, name: &str) -> Result<bool, String> {
+    pub(crate) fn remove(&self, slug: &str, name: &str, by: Option<&str>) -> Result<bool, String> {
         let removed = {
             let mut slugs = self.slugs.lock().unwrap();
             let entry = slugs.entry(slug.to_string()).or_default();
@@ -450,18 +457,18 @@ impl SecretStore {
         };
         if removed {
             self.persist()?;
-            self.event(slug, name, "removed", None, None, None);
+            self.event(slug, name, "removed", None, None, None, by);
         }
         Ok(removed)
     }
 
     /// Forget all of `slug`'s secrets: its deployment was deleted.
-    pub(crate) fn forget(&self, slug: &str) -> Result<(), String> {
+    pub(crate) fn forget(&self, slug: &str, by: Option<&str>) -> Result<(), String> {
         let removed = self.slugs.lock().unwrap().remove(slug);
         if let Some(s) = removed {
             *s.vault.lock().unwrap() = Resolved::default();
             self.persist()?;
-            self.event(slug, "*", "forgotten", None, None, Some("its deployment was deleted".into()));
+            self.event(slug, "*", "forgotten", None, None, Some("its deployment was deleted".into()), by);
         }
         Ok(())
     }
@@ -518,11 +525,11 @@ impl SecretStore {
         for (name, problem) in &resolved.problems {
             if !before.problems.contains_key(name) {
                 let source = entry.secrets.get(name).and_then(|v| v.last()).map(|v| v.source.as_str());
-                self.event(slug, name, "unreadable", None, source, Some(problem.clone()));
+                self.event(slug, name, "unreadable", None, source, Some(problem.clone()), None);
             }
         }
         for name in before.problems.keys().filter(|n| !resolved.problems.contains_key(*n) && resolved.current.contains_key(*n)) {
-            self.event(slug, name, "readable again", None, None, None);
+            self.event(slug, name, "readable again", None, None, None, None);
         }
         *entry.vault.lock().unwrap() = resolved;
     }
@@ -691,9 +698,9 @@ mod tests {
     fn a_store_keeps_values_sealed_and_survives_a_restart() {
         let (path, key) = temp("restart");
         let store = SecretStore::open(&path, &key, Sources::none()).unwrap();
-        assert_eq!(store.set("api", "stripe_key", "sk_live_123456").unwrap(), 1);
-        assert!(store.set("api", "bad name", "longenough").is_err());
-        assert!(store.set("api", "short", "12345").unwrap_err().contains("at least 6"));
+        assert_eq!(store.set("api", "stripe_key", "sk_live_123456", None).unwrap(), 1);
+        assert!(store.set("api", "bad name", "longenough", None).is_err());
+        assert!(store.set("api", "short", "12345", None).unwrap_err().contains("at least 6"));
         assert_eq!(store.names("api"), vec!["stripe_key"]);
         let vault = store.vault("api");
         let on_disk = std::fs::read_to_string(&path).unwrap();
@@ -701,10 +708,10 @@ mod tests {
 
         let again = SecretStore::open(&path, &key, Sources::none()).unwrap();
         assert_eq!(*again.vault("api").lock().unwrap().current["stripe_key"], "sk_live_123456");
-        assert!(store.remove("api", "stripe_key").unwrap());
+        assert!(store.remove("api", "stripe_key", None).unwrap());
         assert!(vault.lock().unwrap().current.is_empty(), "a running deployment's vault sees the change");
-        store.set("api", "k", "longenough").unwrap();
-        store.forget("api").unwrap();
+        store.set("api", "k", "longenough", None).unwrap();
+        store.forget("api", None).unwrap();
         assert!(SecretStore::open(&path, &key, Sources::none()).unwrap().names("api").is_empty());
         std::fs::write(&path, "{not json").unwrap();
         assert!(SecretStore::open(&path, &key, Sources::none()).is_err());
@@ -713,7 +720,7 @@ mod tests {
     #[test]
     fn a_missing_or_wrong_key_refuses_instead_of_starting_empty() {
         let (path, key) = temp("wrongkey");
-        SecretStore::open(&path, &key, Sources::none()).unwrap().set("api", "k", "sk_live_123456").unwrap();
+        SecretStore::open(&path, &key, Sources::none()).unwrap().set("api", "k", "sk_live_123456", None).unwrap();
         let KeySource::File(key_file) = &key else { unreachable!() };
         let kept = std::fs::read(key_file).unwrap();
         std::fs::remove_file(key_file).unwrap();
@@ -728,7 +735,7 @@ mod tests {
     fn versions_are_kept_and_old_values_still_redacted() {
         let store = SecretStore::memory();
         for n in 1..=7 {
-            assert_eq!(store.set("api", "k", &format!("value-number-{n}")).unwrap(), n);
+            assert_eq!(store.set("api", "k", &format!("value-number-{n}"), None).unwrap(), n);
         }
         let vault = store.vault("api");
         let v = vault.lock().unwrap();
@@ -754,16 +761,16 @@ mod tests {
     #[test]
     fn a_secret_can_come_from_the_environment_and_is_redacted_like_any_other() {
         let store = SecretStore::memory().with_sources(Sources::of(&[("HOLON_SECRET_API", "env-value-123"), ("HOLON_SECRET_TINY", "abc")]));
-        assert!(store.set_from("api", "k", "env:PATH").unwrap_err().contains(crate::secret_sources::ENV_PREFIX));
-        assert!(store.set_from("api", "k", "env:HOLON_SECRET_MISSING").unwrap_err().contains("isn't set"));
-        assert!(store.set_from("api", "k", "env:HOLON_SECRET_TINY").unwrap_err().contains("too short"));
+        assert!(store.set_from("api", "k", "env:PATH", None).unwrap_err().contains(crate::secret_sources::ENV_PREFIX));
+        assert!(store.set_from("api", "k", "env:HOLON_SECRET_MISSING", None).unwrap_err().contains("isn't set"));
+        assert!(store.set_from("api", "k", "env:HOLON_SECRET_TINY", None).unwrap_err().contains("too short"));
         assert!(store.names("api").is_empty(), "a refused source adds nothing");
-        assert_eq!(store.set_from("api", "k", "env:HOLON_SECRET_API").unwrap(), 1);
+        assert_eq!(store.set_from("api", "k", "env:HOLON_SECRET_API", None).unwrap(), 1);
         let vault = store.vault("api");
         assert_eq!(*vault.lock().unwrap().current["k"], "env-value-123");
         assert_eq!(store.list("api")[0].source, "env:HOLON_SECRET_API");
         // Replaced by a sealed value: the env one is retired, still redacted.
-        store.set("api", "k", "sealed-value-456").unwrap();
+        store.set("api", "k", "sealed-value-456", None).unwrap();
         assert_eq!(Redactor::of(&vault).text("env-value-123 / sealed-value-456"), "‹secret:k› / ‹secret:k›");
     }
 
@@ -779,7 +786,7 @@ mod tests {
         let addr = format!("http://{}", server.server_addr());
         let (_handle, stop) = server.stoppable();
         let store = SecretStore::memory().with_sources(Sources::of(&[("VAULT_ADDR", &addr), ("VAULT_TOKEN", "t")]));
-        store.set_from("pay", "signing", "vault:secret/stripe#signing").unwrap();
+        store.set_from("pay", "signing", "vault:secret/stripe#signing", None).unwrap();
         let vault = store.vault("pay");
         let current = || vault.lock().unwrap().current.get("signing").map(|v| v.to_string());
 
@@ -805,14 +812,14 @@ mod tests {
     fn a_rollback_restores_an_older_version_as_a_new_one_and_everything_is_audited() {
         let (path, key) = temp("rollback");
         let store = SecretStore::open(&path, &key, Sources::of(&[("HOLON_SECRET_K", "from-the-env")])).unwrap();
-        store.set("api", "k", "first-value").unwrap();
-        store.set_from("api", "k", "env:HOLON_SECRET_K").unwrap();
-        store.set("api", "k", "third-value").unwrap();
-        assert!(store.rollback("api", "k", 3).unwrap_err().contains("already current"));
-        assert!(store.rollback("api", "k", 9).unwrap_err().contains("isn't kept"));
-        assert_eq!(store.rollback("api", "k", 1).unwrap(), 4);
+        store.set("api", "k", "first-value", None).unwrap();
+        store.set_from("api", "k", "env:HOLON_SECRET_K", None).unwrap();
+        store.set("api", "k", "third-value", None).unwrap();
+        assert!(store.rollback("api", "k", 3, None).unwrap_err().contains("already current"));
+        assert!(store.rollback("api", "k", 9, None).unwrap_err().contains("isn't kept"));
+        assert_eq!(store.rollback("api", "k", 1, None).unwrap(), 4);
         assert_eq!(*store.vault("api").lock().unwrap().current["k"], "first-value", "re-sealed for its new version");
-        assert_eq!(store.rollback("api", "k", 2).unwrap(), 5);
+        assert_eq!(store.rollback("api", "k", 2, None).unwrap(), 5);
         assert_eq!(store.list("api")[0].source, "env:HOLON_SECRET_K");
 
         let (versions, events) = store.history("api", "k").unwrap();
@@ -823,7 +830,7 @@ mod tests {
         let log = std::fs::read_to_string(Path::new(&path).with_extension("audit.jsonl")).unwrap();
         assert!(!log.contains("first-value") && !log.contains("third-value") && !log.contains("from-the-env"), "never a value: {log}");
 
-        store.remove("api", "k").unwrap();
+        store.remove("api", "k", None).unwrap();
         let (versions, events) = store.history("api", "k").unwrap();
         assert!(versions.is_empty());
         assert_eq!(events.last().unwrap().action, "removed");

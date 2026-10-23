@@ -203,7 +203,8 @@ export async function setSecret(slug: string, name: string, set: { value: string
 /** A secret's kept versions (newest first) and its audit events (oldest first). */
 export type SecretHistory = {
   versions: { version: number; source: string; set_at: number; current: boolean }[];
-  events: { at: number; name: string; action: string; version?: number; source?: string; detail?: string }[];
+  /** `by`: who did it (a named user, or `admin` / `secrets` for the shared tokens), when known. */
+  events: { at: number; name: string; action: string; version?: number; source?: string; detail?: string; by?: string }[];
 };
 
 export async function getSecretHistory(slug: string, name: string): Promise<SecretHistory> {

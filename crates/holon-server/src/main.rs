@@ -416,6 +416,7 @@ fn main() {
     let mut secrets_key_arg: Option<String> = None;
     let mut dotenv_arg: Option<String> = None;
     let mut admin_token_file: Option<String> = None;
+    let mut users_file: Option<String> = None;
     let mut secrets_token_file: Option<String> = None;
     let mut allow_hosts: Vec<String> = Vec::new();
     let mut allow_origins: Vec<String> = Vec::new();
@@ -446,12 +447,23 @@ fn main() {
             if let Some(v) = args.next() {
                 secrets_key_arg = Some(v);
             }
-        } else if a == "--admin-token-file" || a == "--secrets-token-file" || a == "--allow-host" || a == "--allow-origin" {
+        } else if a == "--hash-token" {
+            // A token's hash for a users file (access.rs): the token is read on stdin, so it
+            // stays out of the shell's history.
+            let mut token = String::new();
+            if std::io::stdin().read_line(&mut token).is_err() || token.trim().is_empty() {
+                eprintln!("--hash-token reads a token on stdin");
+                std::process::exit(2);
+            }
+            println!("{}", access::hash_token(&token));
+            return;
+        } else if a == "--admin-token-file" || a == "--secrets-token-file" || a == "--allow-host" || a == "--allow-origin" || a == "--users-file" {
             // Who may use the control plane (access.rs). A token's file holds just the token.
             if let Some(v) = args.next() {
                 match a.as_str() {
                     "--admin-token-file" => admin_token_file = Some(v),
                     "--secrets-token-file" => secrets_token_file = Some(v),
+                    "--users-file" => users_file = Some(v),
                     "--allow-host" => allow_hosts.push(v),
                     _ => allow_origins.push(v),
                 }
@@ -658,15 +670,16 @@ fn main() {
     let access = (|| {
         let admin = access::token_from("HOLON_ADMIN_TOKEN", admin_token_file.as_deref())?;
         let secrets = access::token_from("HOLON_SECRETS_TOKEN", secrets_token_file.as_deref())?;
-        access::Access::new(admin, secrets, allow_hosts, allow_origins)
+        let users = access::users_from(users_file.as_deref())?;
+        access::Access::with_users(admin, secrets, users, allow_hosts, allow_origins)
     })()
     .unwrap_or_else(|e| {
         eprintln!("holon-server: {e}");
         std::process::exit(1)
     });
     // Reachable beyond this machine only behind a token.
-    if !bound.ip().is_loopback() && !access.has_admin_token() {
-        eprintln!("holon-server: {addr} is reachable beyond this machine: set HOLON_ADMIN_TOKEN (or --admin-token-file) first");
+    if !bound.ip().is_loopback() && !access.is_gated() {
+        eprintln!("holon-server: {addr} is reachable beyond this machine: set HOLON_ADMIN_TOKEN (or --admin-token-file), or name users (--users-file), first");
         std::process::exit(1);
     }
     let state = AppState {
@@ -687,7 +700,11 @@ fn main() {
     };
     sync_listeners(&state);
 
-    let gate = if state.access.has_admin_token() { "admin token required" } else { "localhost-only, no token" };
+    let gate = match (state.access.is_gated(), state.access.user_count()) {
+        (false, _) => "localhost-only, no token".to_string(),
+        (true, 0) => "admin token required".to_string(),
+        (true, n) => format!("a token required: {n} named user(s)"),
+    };
     println!("holon-server: listening on http://{addr} ({gate}; see access.rs)");
     rouille::start_server(addr, move |request| with_cors(&state.access, request, route(&state, request)));
 }
