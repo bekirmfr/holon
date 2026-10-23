@@ -423,7 +423,7 @@ mod tests {
             big.push(entry());
         }
         let lines = std::fs::read_to_string(&path).unwrap().lines().count();
-        assert!(lines <= 2 * CAPACITY && lines >= CAPACITY, "{lines}");
+        assert!((CAPACITY..=2 * CAPACITY).contains(&lines), "{lines}");
         let back = Log::open(Some(path.clone()));
         assert_eq!(back.after(None, usize::MAX).len(), CAPACITY);
         assert_eq!(back.next_seq(), big.next_seq());

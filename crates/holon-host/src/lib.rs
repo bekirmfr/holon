@@ -116,7 +116,7 @@ fn perform_effects(value: &Value, host: &mut impl Host) {
             if let Some(caps) = capabilities_of(&name, &params) {
                 for cap in caps.iter() {
                     if !cap.is_sourced() {
-                        host.perform(cap, &**payload);
+                        host.perform(cap, payload);
                     }
                 }
             }
@@ -309,15 +309,14 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
             return Some(part);
         }
         let u = self.real.resolve(hash)?;
-        if let UnitBody::Primitive { name } = &u.body {
-            if let Some(caps) = capabilities_of(name, &u.params) {
+        if let UnitBody::Primitive { name } = &u.body
+            && let Some(caps) = capabilities_of(name, &u.params) {
                 for (cap, constant) in &self.sourced {
                     if caps.contains(cap.clone()) {
                         return Some(constant);
                     }
                 }
             }
-        }
         Some(u)
     }
 }

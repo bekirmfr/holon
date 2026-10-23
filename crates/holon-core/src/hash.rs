@@ -377,7 +377,7 @@ pub fn canonical_child_order(children: &[Hash], edges: &[Edge]) -> Result<Vec<us
     enumerate_orderings(&groups, 0, &mut order, &mut |full: &[usize]| {
         let (kids, es) = apply_child_order(children, edges, full);
         let key = order_key(&kids, &es);
-        if best.as_ref().map_or(true, |(bk, _)| key < *bk) {
+        if best.as_ref().is_none_or(|(bk, _)| key < *bk) {
             best = Some((key, full.to_vec()));
         }
     });

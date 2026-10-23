@@ -2995,7 +2995,9 @@ fn cross_site_and_rebinding_requests_are_refused_before_routing() {
     let state = test_state();
     let host = ("Host", "127.0.0.1:7420");
     let save = br#"{"name": "victim", "document": {}}"#;
-    let attacks: [(&str, Vec<(&str, &str)>, u16); 7] = [
+    // What it is, its headers, and the status it must get.
+    type Attack<'a> = (&'a str, Vec<(&'a str, &'a str)>, u16);
+    let attacks: [Attack; 7] = [
         ("simple text/plain POST from another site", vec![host, ("Origin", "http://evil.example"), ("Content-Type", "text/plain")], 403),
         ("JSON POST from another site", vec![host, ("Origin", "http://evil.example"), ("Content-Type", "application/json")], 403),
         ("sandboxed iframe (Origin: null)", vec![host, ("Origin", "null"), ("Content-Type", "application/json")], 403),

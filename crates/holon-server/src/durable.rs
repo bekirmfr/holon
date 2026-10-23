@@ -424,7 +424,6 @@ pub(crate) fn park_if_waiting(
         store,
     )?;
     record.version = run.unit.clone();
-    let mut record = record;
     let mut table = deployments.lock().unwrap();
     let dep = table.get_mut(slug).ok_or("the deployment is gone")?;
     let limits = &dep.permit.durable;

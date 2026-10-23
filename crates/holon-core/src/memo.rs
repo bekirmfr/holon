@@ -165,9 +165,9 @@ mod tests {
     fn sum_arm_changes_the_key() {
         // The property the cache actually depends on: `some(5)` and a hypothetical "other arm
         // holding 5" must key differently, or two distinct computations could share a cache slot.
-        let payload = Some(Value::Number(5.0));
-        let some_5 = Value::Sum { arm: 0, payload: Box::new(payload.clone().unwrap()) };
-        let other_arm_5 = Value::Sum { arm: 1, payload: Box::new(payload.unwrap()) };
+        let payload = Value::Number(5.0);
+        let some_5 = Value::Sum { arm: 0, payload: Box::new(payload.clone()) };
+        let other_arm_5 = Value::Sum { arm: 1, payload: Box::new(payload) };
         assert_ne!(key(&[Some(some_5)]), key(&[Some(other_arm_5)]));
     }
 

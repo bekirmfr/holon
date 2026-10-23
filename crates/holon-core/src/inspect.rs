@@ -156,7 +156,7 @@ mod tests {
         // name convention exists to prevent.)
         let c = Unit {
             body: UnitBody::Primitive { name: "const".into() },
-            params: vec![Param::frozen("type", "Text"), Param::frozen("value", &"a".repeat(64))],
+            params: vec![Param::frozen("type", "Text"), Param::frozen("value", "a".repeat(64))],
             inputs: vec![],
             outputs: vec![Port { name: "out".into(), ty: Type::Text }],
         };

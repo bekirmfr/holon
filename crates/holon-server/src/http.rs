@@ -66,15 +66,14 @@ pub(crate) fn reject_untrusted(request: &Request, port: u16, access: &Access) ->
 /// named for elsewhere in this project: a thing that must be repeated per call site eventually
 /// isn't repeated somewhere).
 pub(crate) fn with_cors(access: &Access, request: &Request, mut response: Response) -> Response {
-    if let Some(origin) = request.header("Origin") {
-        if access.allows_origin(origin) {
+    if let Some(origin) = request.header("Origin")
+        && access.allows_origin(origin) {
             response = response
                 .with_additional_header("Access-Control-Allow-Origin", origin.to_string())
                 .with_additional_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
                 .with_additional_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
                 .with_additional_header("Vary", "Origin");
         }
-    }
     response
 }
 
@@ -116,11 +115,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return Response::text("ok");
     }
 
-    if let Some(hash_hex) = url.strip_prefix("/unit/") {
-        if method == "GET" {
+    if let Some(hash_hex) = url.strip_prefix("/unit/")
+        && method == "GET" {
             return handle_get_unit(&state.store, hash_hex);
         }
-    }
 
     if method == "POST" && url == "/unit" {
         return handle_post_unit(&state.store, request);
@@ -142,11 +140,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return handle_post_cache_ingest(&state.cache, request);
     }
 
-    if let Some(key_hex) = url.strip_prefix("/cache/") {
-        if method == "GET" {
+    if let Some(key_hex) = url.strip_prefix("/cache/")
+        && method == "GET" {
             return handle_get_cache(&state.cache, &state.store, key_hex);
         }
-    }
 
     if method == "POST" && url == "/fire" {
         return handle_post_fire(&state.store, request);
@@ -262,11 +259,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         }
     }
 
-    if let Some(slug) = url.strip_prefix("/trigger/") {
-        if method == "POST" {
+    if let Some(slug) = url.strip_prefix("/trigger/")
+        && method == "POST" {
             return handle_post_trigger(&state.store, &state.deployments, &state.deployments_path, slug, request);
         }
-    }
 
     Response::empty_404()
 }

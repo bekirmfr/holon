@@ -60,6 +60,7 @@ pub(crate) fn run_due_clock_ticks(
 /// no threading concerns of its own: it only ever touches `store` (internally locked,
 /// `Sync`-safe) and this one deployment's own map entry (via the shared `deployments` lock,
 /// held only briefly at the end to write the result back).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fire_one_clock_tick(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,

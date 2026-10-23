@@ -217,13 +217,13 @@ pub fn default_spec(
         inner_edges.iter().map(|e| (e.to_child, e.to_port)).collect();
 
     let mut promote = Vec::new();
-    for ci in 0..k {
-        for p in 0..resolved[ci].inputs.len() {
+    for (ci, child) in resolved.iter().enumerate().take(k) {
+        for (p, port) in child.inputs.iter().enumerate() {
             if !bound.contains(&(ci as u32, p as u32)) {
                 promote.push(Promote {
                     child: ci as u32,
                     port: p as u32,
-                    name: resolved[ci].inputs[p].name.clone(),
+                    name: port.name.clone(),
                 });
             }
         }
@@ -236,13 +236,13 @@ pub fn default_spec(
         inner_edges.iter().map(|e| (e.from_child, e.from_port)).collect();
 
     let mut expose = Vec::new();
-    for ci in 0..k {
-        for p in 0..resolved[ci].outputs.len() {
+    for (ci, child) in resolved.iter().enumerate().take(k) {
+        for (p, port) in child.outputs.iter().enumerate() {
             if !consumed.contains(&(ci as u32, p as u32)) {
                 expose.push(Expose {
                     child: ci as u32,
                     port: p as u32,
-                    name: resolved[ci].outputs[p].name.clone(),
+                    name: port.name.clone(),
                 });
             }
         }

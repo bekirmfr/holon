@@ -9,7 +9,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - run: cargo test --workspace
+      # Lints as errors: the workspace is clean, and stays so.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # 2. The pure core + bridge must COMPILE to wasm32 (catches a dependency that isn't
   #    wasm-compatible — the most common first surprise).
