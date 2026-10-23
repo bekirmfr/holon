@@ -58,7 +58,7 @@ import {
 } from "./canvasOps";
 import { expandComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
-import { DeployedPage, FlowsPage, type AppPage } from "./Pages";
+import { DeployedPage, FlowsPage, type AppPage, type PageTab } from "./Pages";
 import { useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { SAMPLES, buildSample, type Sample } from "./samples";
@@ -94,12 +94,14 @@ function Canvas({
   variadic: Set<string>;
   /** Who is signed in (AuthGate.tsx). */
   me: Me;
-  /** The home and welcome tabs, and what they keep with the account (home.ts). */
+  /** The page tabs (home, welcome, flows, deployed, admin), and what home and the welcome keep
+   *  with the account (home.ts). */
   start: {
     prefs: Prefs;
     onPrefs: (p: Prefs) => void;
-    welcomeOpen: boolean;
-    setWelcomeOpen: (open: boolean) => void;
+    pages: PageTab[];
+    openPage: (p: PageTab) => void;
+    closePage: (p: PageTab) => void;
     onNew: () => void;
   };
   page: AppPage;
@@ -214,6 +216,8 @@ function Canvas({
     confirm: dialog.confirm,
   });
   const tabFromDocument = useCallback((name: string | null, doc: FlowDocument, saved: boolean) => tabFromDoc(name, doc, saved, ev), [ev]);
+  // What the work area shows: the page asked for, or, with no flow open, home.
+  const shown: AppPage = page === "canvas" && tabIds.length === 0 ? "home" : page;
 
   // "New" from the menu: a clean canvas under the prompted name, in a tab of its own. `nonce`
   // makes a second New with the same name still fire.
@@ -660,8 +664,25 @@ function Canvas({
   return (
     <NodeDocs.Provider value={describeNode}>
     <NodeActions.Provider value={nodeActions}>
-    {/* Edit mode places nodes from the palette; view mode is read only, so it has none. */}
-    {!viewing && page === "canvas" && (
+    <div className="hl-main">
+    {/* Every tab, pages first, then the open flows; each closes. With nothing open (or the last
+        flow closed) the canvas shows home, the default page. */}
+    <FlowTabs
+      tabs={tabList}
+      active={shown === "canvas" ? activeId : -1}
+      onSelect={switchTab}
+      onClose={closeTab}
+      pages={start.pages.map((p) => ({
+        key: p,
+        label: p,
+        active: shown === p,
+        onSelect: () => start.openPage(p),
+        onClose: () => start.closePage(p),
+      }))}
+    />
+    <div className="hl-work">
+    {/* The palette is the flow tab's: edit mode places nodes from it; view mode is read only. */}
+    {!viewing && shown === "canvas" && (
       // A flow isn't offered inside itself.
       <Palette
         catalog={catalog}
@@ -671,30 +692,6 @@ function Canvas({
         docs={docs}
       />
     )}
-    <div className="hl-main">
-    <FlowTabs
-      tabs={tabList}
-      active={page === "home" || page === "welcome" ? -1 : activeId}
-      onSelect={switchTab}
-      onClose={closeTab}
-      pages={[
-        { key: "home", label: "home", active: page === "home", onSelect: () => setPage("home") },
-        ...(start.welcomeOpen
-          ? [
-              {
-                key: "welcome",
-                label: "welcome",
-                active: page === "welcome",
-                onSelect: () => setPage("welcome"),
-                onClose: () => {
-                  start.setWelcomeOpen(false);
-                  if (page === "welcome") setPage("home");
-                },
-              },
-            ]
-          : []),
-      ]}
-    />
     <div className={viewing ? "hl-canvas hl-canvas--viewing" : "hl-canvas"} onDrop={onDrop} onDragOver={onDragOver}>
       <div className="hl-canvas__flow">
         <ReactFlow<PrimitiveNodeType>
@@ -801,7 +798,7 @@ function Canvas({
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,
           so the canvas is covered, never unmounted. The deployments list used to live in a
           bottom-left panel on the canvas itself; it moved here wholesale — one home, not two. */}
-      {page !== "canvas" && (
+      {shown !== "canvas" && (
         <div
           style={{
             position: "absolute",
@@ -812,7 +809,7 @@ function Canvas({
             padding: 24,
           }}
         >
-          {page === "flows" && (
+          {shown === "flows" && (
             <FlowsPage
               openTabs={tabList}
               onOpen={onOpenFlow}
@@ -830,16 +827,16 @@ function Canvas({
               }}
             />
           )}
-          {page === "admin" && me.role === "admin" && <AdminPage me={me.name} />}
-          {page === "welcome" && (
+          {shown === "admin" && me.role === "admin" && <AdminPage me={me.name} />}
+          {shown === "welcome" && (
             <WelcomePage
               name={me.name}
               showOnStart={start.prefs.welcome !== false}
               onShowOnStart={(show) => start.onPrefs({ ...start.prefs, welcome: show })}
-              onAction={(a) => (a === "new" ? start.onNew() : setPage(a === "samples" ? "flows" : a))}
+              onAction={(a) => (a === "new" ? start.onNew() : start.openPage(a === "samples" ? "flows" : a))}
             />
           )}
-          {page === "home" && (
+          {shown === "home" && (
             <HomePage
               panes={start.prefs.home ?? defaultHome()}
               onPanes={(home) => start.onPrefs({ ...start.prefs, home })}
@@ -851,15 +848,12 @@ function Canvas({
                 openFlow: (name) => getFlow(name).then((rec) => onOpenFlow(rec)).catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e))),
                 openSample: onOpenSample,
                 viewDeployment: onView,
-                goTo: setPage,
-                openWelcome: () => {
-                  start.setWelcomeOpen(true);
-                  setPage("welcome");
-                },
+                goTo: start.openPage,
+                openWelcome: () => start.openPage("welcome"),
               }}
             />
           )}
-          {page === "deployed" && (
+          {shown === "deployed" && (
             <DeployedPage
               deployments={deployments}
               error={deployError || listError}
@@ -877,28 +871,49 @@ function Canvas({
       )}
     </div>
     </div>
+    </div>
     </NodeActions.Provider>
     </NodeDocs.Provider>
   );
 }
 
 function Editor({ me }: { me: Me }) {
+  // What the work area shows: a page, or the canvas (the active flow's tab).
+  const [page, setPage] = useState<AppPage>("home");
   // What the editor keeps for this person (home.ts): read once, saved as it changes. The welcome
   // opens on start unless they said not to; otherwise the editor starts at home.
   const [prefs, setPrefsState] = useState<Prefs>({});
-  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  // The pages open in tabs of their own, in the order opened; home to begin with, and the
+  // welcome unless they said not to.
+  const [pages, setPages] = useState<PageTab[]>(["home"]);
   useEffect(() => {
     getPrefs()
       .then((raw) => {
         const p = readPrefs(raw);
         setPrefsState(p);
         if (p.welcome !== false) {
-          setWelcomeOpen(true);
+          setPages((ps) => (ps.includes("welcome") ? ps : [...ps, "welcome"]));
           setPage("welcome");
         }
       })
       .catch(() => undefined);
   }, []);
+  /** Show page `p`, in its tab (opened if it isn't). */
+  const openPage = useCallback((p: PageTab) => {
+    setPages((ps) => (ps.includes(p) ? ps : [...ps, p]));
+    setPage(p);
+  }, []);
+  /** Close page `p`'s tab; if it was showing, the tab beside it shows, else the open flow (or,
+   *  with none, home as the default page). */
+  const closePage = useCallback(
+    (p: PageTab) => {
+      const i = pages.indexOf(p);
+      const left = pages.filter((x) => x !== p);
+      setPages(left);
+      if (page === p) setPage(left[i] ?? left[i - 1] ?? "canvas");
+    },
+    [pages, page],
+  );
   const onPrefs = useCallback((p: Prefs) => {
     setPrefsState(p);
     setPrefs(p).catch(() => undefined);
@@ -909,7 +924,6 @@ function Editor({ me }: { me: Me }) {
   const [docs, setDocs] = useState<Map<string, string>>(new Map());
   const [variadic, setVariadic] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>("");
-  const [page, setPage] = useState<AppPage>("home");
   // "New" carries the prompted name down to the canvas, which opens it in a tab of its own;
   // `nonce` makes a second New with the same name still take effect.
   const [pendingNew, setPendingNew] = useState<{ name: string; nonce: number } | null>(null);
@@ -953,24 +967,18 @@ function Editor({ me }: { me: Me }) {
           <button style={menuBtn(false)} onClick={onNew}>
             new
           </button>
-          <button style={menuBtn(page === "flows")} onClick={() => setPage(page === "flows" ? "canvas" : "flows")}>
+          <button style={menuBtn(page === "flows")} onClick={() => openPage("flows")}>
             flows
           </button>
-          <button
-            style={menuBtn(page === "deployed")}
-            onClick={() => setPage(page === "deployed" ? "canvas" : "deployed")}
-          >
+          <button style={menuBtn(page === "deployed")} onClick={() => openPage("deployed")}>
             deployed
           </button>
           <AccountMenu
             me={me}
             style={menuBtn(false)}
             adminOpen={page === "admin"}
-            onAdmin={() => setPage(page === "admin" ? "canvas" : "admin")}
-            onWelcome={() => {
-              setWelcomeOpen(true);
-              setPage("welcome");
-            }}
+            onAdmin={() => openPage("admin")}
+            onWelcome={() => openPage("welcome")}
           />
         </nav>
         <span className="hl-header__count">
@@ -992,7 +1000,7 @@ function Editor({ me }: { me: Me }) {
                 pendingNew={pendingNew}
                 docs={docs}
                 me={me}
-                start={{ prefs, onPrefs, welcomeOpen, setWelcomeOpen, onNew }}
+                start={{ prefs, onPrefs, pages, openPage, closePage, onNew }}
               />
             )}
           </ReactFlowProvider>

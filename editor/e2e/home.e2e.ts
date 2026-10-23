@@ -36,3 +36,28 @@ test("the welcome opens on start until told not to; home keeps its panes", async
   await expect(tabs.getByRole("tab", { name: "welcome" })).toHaveAttribute("aria-selected", "true");
   await page.getByLabel("show this on start").check();
 });
+
+test("pages open in tabs of their own; every tab closes; with none open, home shows", async ({ page }) => {
+  await page.goto("/");
+  const tabs = page.getByRole("tablist");
+  // No flow tab to begin with: home (and the welcome) only.
+  await expect(tabs.getByRole("tab")).toHaveText([/^home/, /^welcome/]);
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await expect(tabs.getByRole("tab", { name: "admin" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("new person's name")).toBeVisible();
+  await page.getByRole("button", { name: "deployed", exact: true }).click();
+  await expect(tabs.getByRole("tab", { name: "deployed" })).toHaveAttribute("aria-selected", "true");
+  // A flow's tab has the palette; a page's doesn't.
+  await page.getByRole("button", { name: "new", exact: true }).click();
+  await page.locator('[aria-modal="true"] input').fill("tabbed");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".hl-tab--active")).toContainText("tabbed");
+  await expect(page.locator(".hl-work .hl-palette")).toBeVisible();
+  await tabs.getByRole("tab", { name: "admin" }).click();
+  await expect(page.locator(".hl-palette")).toHaveCount(0);
+  // Close them all: home shows, as the default page.
+  while ((await tabs.getByRole("tab").count()) > 0) {
+    await tabs.getByRole("tab").first().getByRole("button").click();
+  }
+  await expect(page.getByRole("region", { name: "recent flows" })).toBeVisible();
+});

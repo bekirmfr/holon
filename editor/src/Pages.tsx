@@ -16,6 +16,8 @@ import type { Sample } from "./samples";
  *  as overlays on top of it. `marketplace` is deliberately absent: deferred, and a menu entry
  *  that can't be picked shouldn't be representable as a page state either. */
 export type AppPage = "canvas" | "flows" | "deployed" | "admin" | "home" | "welcome";
+/** A page shown in a tab of its own: every page but the canvas (whose tabs are the flows'). */
+export type PageTab = Exclude<AppPage, "canvas">;
 
 /** The saved-flows page: list, open, delete, and publish to the marketplace this browser uses
  *  (set here: a deployment of the "marketplace" sample, marketplace.ts). "open" on a flow open in a tab goes to that tab, unsaved changes and all; only "reload saved"

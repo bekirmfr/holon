@@ -86,6 +86,8 @@ body {
 
 /* ── Tabs: one per open flow, above the canvas ───────────────────────────── */
 .hl-main { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
+/* Under the tabs: the palette (a flow tab's, in edit mode) beside the canvas. */
+.hl-work { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
 .hl-tabs {
   display: flex; flex: 0 0 auto; gap: 2px; padding: 4px 8px 0;
   background: var(--panel-2); border-bottom: 1px solid var(--line);

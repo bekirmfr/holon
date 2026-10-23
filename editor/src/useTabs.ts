@@ -53,7 +53,8 @@ export function useTabs({
 }) {
   const flowName = flow.name;
   const viewing = flow.viewing;
-  const [tabIds, setTabIds] = useState<number[]>([0]);
+  // No flow is open to begin with: the canvas keeps an empty slot (0) the first flow opened takes.
+  const [tabIds, setTabIds] = useState<number[]>([]);
   const [activeId, setActiveId] = useState(0);
   const stash = useRef(new Map<number, TabState>());
   const nextTabId = useRef(1);
@@ -137,7 +138,8 @@ export function useTabs({
       }
       const next = nextAfterClose(tabIds, id);
       if (next === null) {
-        // The last tab closes into a fresh draft.
+        // The last flow closes: none is open, the canvas is cleared for the next one.
+        setTabIds([]);
         applyTab(freshTab(null));
         return;
       }
