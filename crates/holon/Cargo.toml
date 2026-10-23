@@ -5,6 +5,8 @@ edition = "2024"
 # Proprietary: all rights reserved (the repository's LICENSE, which releases carry: see
 # dist-workspace.toml). Never published to crates.io.
 publish = false
+# `cargo run -p holon` runs holon itself, not the holon-server alias beside it.
+default-run = "holon"
 description = "Holon: build services by wiring small, pure parts together; deploy them with exactly the permissions they need, and see every run"
 repository = "https://github.com/bekirmfr/holon"
 homepage = "https://github.com/bekirmfr/holon"
