@@ -132,7 +132,8 @@ jobs:
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
       - name: "Install wasm-pack"
-        uses: "jetli/wasm-pack-action@v0.4.0"
+        run: "cargo install wasm-pack --version 0.15.0 --locked"
+        shell: "bash"
       - name: "Build the core for the editor"
         run: "wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt"
         shell: "bash"

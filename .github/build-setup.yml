@@ -1,7 +1,10 @@
 # Steps cargo-dist runs before each release build (dist-workspace.toml's github-build-setup):
 # the editor, built so holon-server can build it in (its embed-editor feature, editor.rs).
+# wasm-pack, built here for this runner (an action's download was an old version on Windows,
+# and an x86 one on the arm64 Linux runner), at a pinned version.
 - name: Install wasm-pack
-  uses: jetli/wasm-pack-action@v0.4.0
+  shell: bash
+  run: cargo install wasm-pack --version 0.15.0 --locked
 # --no-opt: wasm-pack's wasm-opt fails to parse the core on the macOS arm64 runner; unoptimized,
 # the core is ~710 KB instead of ~580 KB, and the same everywhere.
 - name: Build the core for the editor
