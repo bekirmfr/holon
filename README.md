@@ -15,11 +15,17 @@ macOS and Linux:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/latest/download/holon-server-installer.sh | sh
 ```
 
-Windows (PowerShell):
+Windows, in PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/bekirmfr/holon/releases/latest/download/holon-server-installer.ps1 | iex"
+irm https://github.com/bekirmfr/holon/releases/latest/download/holon-server-installer.ps1 | iex
 ```
+
+(Not the `powershell -ExecutionPolicy Bypass -c "irm … | iex"` form some tools suggest: Microsoft
+Defender flags that command line as a trojan pattern and blocks it. If an antivirus stops the
+script anyway, download `holon-server-x86_64-pc-windows-msvc.zip` from the release and put
+`holon-server.exe` somewhere on your PATH; `update` then can't replace it, but everything else
+works.)
 
 `latest` is the newest full release; GitHub skips pre-releases there. For a pre-release (or any
 version), name it: `…/releases/download/v0.1.0-rc.1/holon-server-installer.sh`. The scripts'
