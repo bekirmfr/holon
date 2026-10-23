@@ -15,7 +15,7 @@ import type { Sample } from "./samples";
  *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
  *  as overlays on top of it. `marketplace` is deliberately absent: deferred, and a menu entry
  *  that can't be picked shouldn't be representable as a page state either. */
-export type AppPage = "canvas" | "flows" | "deployed";
+export type AppPage = "canvas" | "flows" | "deployed" | "admin";
 
 /** The saved-flows page: list, open, delete, and publish to the marketplace this browser uses
  *  (set here: a deployment of the "marketplace" sample, marketplace.ts). "open" on a flow open in a tab goes to that tab, unsaved changes and all; only "reload saved"
@@ -316,7 +316,7 @@ export function DeployedPage({
 
 /** What was done on the server, newest first, and by whom (activity.rs): read again whenever the
  *  deployments change (`version`). */
-function ActivityList({ version }: { version: string }) {
+export function ActivityList({ version }: { version: string }) {
   const [entries, setEntries] = useState<ActivityEntry[] | null>(null);
   useEffect(() => {
     getActivity()

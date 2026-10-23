@@ -64,7 +64,8 @@ import { useDeployments } from "./useDeployments";
 import { SAMPLES, buildSample, type Sample } from "./samples";
 import { blankTab, freshTab, metaSetter, savedKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
-import { AccessButton } from "./AccessButton";
+import { AccountMenu, AuthGate, type Me } from "./AuthGate";
+import { AdminPage } from "./AdminPage";
 import { useViewMode, ViewModePanes } from "./useViewMode";
 import { useCompositeOverlay } from "./useCompositeOverlay";
 import { useSavedFlows } from "./useSavedFlows";
@@ -83,9 +84,12 @@ function Canvas({
   setPage,
   pendingNew,
   docs,
+  me,
 }: {
   catalog: WUnit[];
   variadic: Set<string>;
+  /** Who is signed in (AuthGate.tsx). */
+  me: Me;
   page: AppPage;
   setPage: (p: AppPage) => void;
   pendingNew: { name: string; nonce: number } | null;
@@ -792,6 +796,7 @@ function Canvas({
               }}
             />
           )}
+          {page === "admin" && me.role === "admin" && <AdminPage me={me.name} />}
           {page === "deployed" && (
             <DeployedPage
               deployments={deployments}
@@ -815,7 +820,7 @@ function Canvas({
   );
 }
 
-function Editor() {
+function Editor({ me }: { me: Me }) {
   const dialog = useDialog();
   const [catalog, setCatalog] = useState<WUnit[] | null>(null);
   // What each primitive does, from core: on each node, the palette and the component tab.
@@ -875,7 +880,7 @@ function Editor() {
           >
             deployed
           </button>
-          <AccessButton style={menuBtn(false)} />
+          <AccountMenu me={me} style={menuBtn(false)} adminOpen={page === "admin"} onAdmin={() => setPage(page === "admin" ? "canvas" : "admin")} />
         </nav>
         <span className="hl-header__count">
           {catalog ? `${catalog.length} genesis atoms` : "loading core…"}
@@ -895,6 +900,7 @@ function Editor() {
                 setPage={setPage}
                 pendingNew={pendingNew}
                 docs={docs}
+                me={me}
               />
             )}
           </ReactFlowProvider>
@@ -907,7 +913,7 @@ function Editor() {
 export default function App() {
   return (
     <DialogProvider>
-      <Editor />
+      <AuthGate>{(me) => <Editor me={me} />}</AuthGate>
     </DialogProvider>
   );
 }

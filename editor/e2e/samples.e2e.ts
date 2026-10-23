@@ -4,7 +4,8 @@
 // once"), kept from rotting by CI. A sample deploys on its own port plus 1000 (set under ⚙), so a
 // developer's deployments on the samples' ports are left alone.
 
-import { expect, test, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { expect, SERVER, test } from "./fixtures";
 
 /** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. */
 async function openSample(page: Page, title: string) {
@@ -213,12 +214,13 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await expect(page.getByText(`placed in ${user} (an older save)`, { exact: true })).toBeVisible();
 });
 
-test("the marketplace, a Holon flow: publish a saved flow to it, place it from the palette", async ({ page, request }) => {
+test("the marketplace, a Holon flow: publish a saved flow to it, place it from the palette", async ({ page, request, adminToken }) => {
   await openSample(page, "Marketplace (built with Holon)");
   const port = await deploy(page);
   const market = `http://127.0.0.1:${port}`;
   const key = "e2e-publish-key-0123456789";
-  expect((await request.post("http://127.0.0.1:7520/deployments/marketplace/secrets/publish_key", { data: { value: key } })).ok()).toBe(true);
+  const asAdmin = { Authorization: `Bearer ${adminToken}` };
+  expect((await request.post(`${SERVER}/deployments/marketplace/secrets/publish_key`, { data: { value: key }, headers: asAdmin })).ok()).toBe(true);
   // Without the key, nothing is published.
   expect((await request.post(`${market}/listings`, { data: { name: "x", root: "y" } })).status()).toBe(401);
 

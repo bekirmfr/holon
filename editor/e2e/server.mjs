@@ -3,18 +3,20 @@
 // developer's own server or state, and everything it wrote goes when it stops. Built first and
 // run as its own binary (not through `cargo run`), so stopping it stops the server itself.
 //
-// `node e2e/server.mjs --signin` starts the one that signs in instead: on 7521, through the
-// stand-in identity provider (mock-oidc.mjs, waited for), with ada@example.com an admin and
-// cy@example.com a viewer.
+// Its setup code is fixed (HOLON_SETUP_CODE), and once it answers it is set up with the tests'
+// admin (fixtures.ts). `node e2e/server.mjs --fresh` starts another on 7521 left as installed,
+// not set up: the accounts tests (accounts.e2e.ts) set it up through the editor, and sign in
+// through the stand-in identity provider (mock-oidc.mjs) once its admin panel says to.
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const signin = process.argv.includes("--signin");
-const port = signin ? 7521 : 7520;
+const fresh = process.argv.includes("--fresh");
+const port = fresh ? 7521 : 7520;
+export const SETUP_CODE = "E2E0-SETUP";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 execFileSync("cargo", ["build", "-p", "holon-server"], { cwd: root, stdio: "inherit" });
 
@@ -24,22 +26,6 @@ for (const old of readdirSync(tmpdir()).filter((d) => d.startsWith(`holon-e2e-${
   rmSync(join(tmpdir(), old), { recursive: true, force: true });
 }
 const dir = mkdtempSync(join(tmpdir(), `holon-e2e-${port}-`));
-const signinArgs = [];
-if (signin) {
-  const issuer = "http://127.0.0.1:7530";
-  for (let i = 0; i < 120; i++) {
-    if (await fetch(`${issuer}/.well-known/openid-configuration`).then((r) => r.ok).catch(() => false)) break;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  writeFileSync(
-    join(dir, "users.json"),
-    JSON.stringify([
-      { name: "ada", role: "admin", email: "ada@example.com" },
-      { name: "cy", role: "viewer", email: "cy@example.com" },
-    ]),
-  );
-  signinArgs.push("--oidc-issuer", issuer, "--oidc-client-id", "holon-e2e", "--users-file", join(dir, "users.json"));
-}
 // CARGO_TARGET_DIR, when set, is where cargo put it (e.g. to build beside a dev server holding
 // target/debug's binary open).
 const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon-server.exe" : "holon-server");
@@ -52,9 +38,9 @@ const server = spawn(
     "--secrets", join(dir, "secrets.json"),
     "--secrets-key", `file:${join(dir, "secrets.key")}`,
     "--host-key", join(dir, "host.key"),
-    ...signinArgs,
+    "--accounts", join(dir, "accounts.json"),
   ],
-  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SERVER_ADDR: `127.0.0.1:${port}` } },
+  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SERVER_ADDR: `127.0.0.1:${port}`, HOLON_SETUP_CODE: SETUP_CODE } },
 );
 
 const cleanUp = () => rmSync(dir, { recursive: true, force: true });
@@ -68,3 +54,18 @@ server.on("exit", (code) => {
   cleanUp();
   process.exit(code ?? 0);
 });
+
+// The main one: set up with the tests' admin as soon as it answers.
+if (!fresh) {
+  const base = `http://127.0.0.1:${port}`;
+  for (let i = 0; i < 600; i++) {
+    if (await fetch(`${base}/auth/state`).then((r) => r.ok).catch(() => false)) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  const res = await fetch(`${base}/auth/setup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: SETUP_CODE, name: "e2e", password: "e2e-password-0123" }),
+  });
+  if (!res.ok) console.error(`e2e server: setting up its admin failed: ${await res.text()}`);
+}

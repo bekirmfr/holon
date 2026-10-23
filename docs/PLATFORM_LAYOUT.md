@@ -313,31 +313,28 @@ only the editor.
     a secret no longer has is still redacted and still refused in state, so a client still
     sending a rotated-out token doesn't put it in the log. Every change, and a source that stops
     or starts reading, is appended to `<secrets>.audit.jsonl` (owner-only), never with a value.
-  - **Access to the control plane** ✅ (`holon-server/src/access.rs`): open on loopback by
-    default (it binds 127.0.0.1 and checks Host and Origin). With an admin token
-    (`HOLON_ADMIN_TOKEN` or `--admin-token-file`) every request needs it as a bearer token,
-    compared in constant time; listening beyond loopback refuses to start without one, and
-    answers only the hosts and editor origins named with `--allow-host` / `--allow-origin`. With
-    a secrets token (`HOLON_SECRETS_TOKEN` or `--secrets-token-file`), writing a secret (set,
-    roll back, remove) needs it and the admin token alone isn't enough: writing secrets is its
-    own permission. The editor sends the tokens given under "access", kept in that browser.
-  - **Named users** ✅ (`--users-file` or `HOLON_USERS_FILE`): for a server several people
-    share, each gets a token of their own and a role: `viewer` (reads only), `editor` (saves,
-    deploys, pauses, deletes), `admin` (all, writing secrets included even with a secrets token
-    set). The file holds each token's BLAKE3 hash, never the token (`holon-server --hash-token`
-    reads one on stdin). Users gate the server as the admin token does. Who did what is kept:
-    the secrets audit names who made each change (`by`), a saved flow who saved it
-    (`saved_by`), a deployment who deployed it (`deployed_by`), each shown in the editor; and
-    every save, deploy, run, pause, stop, grant and delete goes in the activity log
-    (`<deployments>.activity.jsonl`, `GET /activity`, the deployed page's "activity"), which
-    outlives what it names.
-  - **Signing in** ✅ (`--oidc-issuer`, `--oidc-client-id`; oidc.rs): with an OpenID Connect
-    provider, the editor signs in (authorization code flow with PKCE, a public client) and
-    sends the ID token as its bearer. The server checks it against the provider's published
-    keys (RS/ES only), its issuer, audience and expiry, then names who it is (email, when the
-    provider verified it, or subject) in the users file, which still decides the role; someone
-    the provider vouches for but the file doesn't name is refused. `GET /auth/config` says
-    where to sign in. The end-to-end tests sign in through a stand-in provider.
+  - **Accounts and access** ✅ (`holon-server/src/accounts.rs`, `access.rs`, `auth.rs`; the
+    editor's `AuthGate.tsx`, `AdminPage.tsx`): everyone signs in. A new server answers nothing
+    but its setup until its first admin is created with the one-time code it prints at startup
+    (or `HOLON_SETUP_CODE`), so nobody else on the network can claim it first. Accounts
+    (`--accounts`, owner-only) have a role: `viewer` (reads), `editor` (also saves, deploys,
+    runs, deletes), `admin` (also writes secrets and the admin panel); passwords are argon2id
+    hashes, sessions last 7 days, and a few wrong passwords lock a name for a minute. The admin
+    panel adds people by name and role and gives a one-time link (7 days) for them to set their
+    own password; it changes roles, disables (their sessions end), resets (a new link), removes,
+    and refuses any change that would leave no admin. API tokens for scripts and CI are made
+    there with a role, shown once, revoked any time. Only hashes of tokens are kept. The server
+    answers as loopback, and as the hosts and editor origins named with `--allow-host` /
+    `--allow-origin`. Who did what is kept: the secrets audit (`by`), each saved flow
+    (`saved_by`) and deployment (`deployed_by`), and the activity log
+    (`<deployments>.activity.jsonl`, `GET /activity`, shown on the deployed page and the admin
+    panel), which outlives what it names.
+  - **Signing in through an identity provider** ✅ (optional, set in the admin panel; oidc.rs):
+    the editor signs in with the provider (authorization code flow with PKCE, a public client)
+    and sends the ID token as its bearer. The server checks it against the provider's published
+    keys (RS/ES only), its issuer, audience and expiry, then finds the account with that
+    (verified) email, which decides the role; someone without an account is refused. The
+    end-to-end tests sign in through a stand-in provider.
   - **Left for later:** wiping values from memory beyond the store's own copies; more managers
     (AWS, GCP, Azure, 1Password) behind the same reference form; refresh tokens (a sign-in
     lasts as long as the provider's ID token).

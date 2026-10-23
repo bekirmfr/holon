@@ -1,9 +1,10 @@
 // End-to-end tests (e2e/*.e2e.ts): the real editor, in a browser, against a real holon-server.
 // Both are started here, apart from a developer's own: the server on 7520 with throwaway state
 // (e2e/server.mjs), the editor on 5273 pointed at it. Samples deploy on ports the tests set
-// under ⚙, so they don't clash with deployments already running. Signing in has its own: a
-// stand-in identity provider on 7530 (e2e/mock-oidc.mjs), a server on 7521 that signs in
-// through it, and an editor on 5274 pointed at that. `npx playwright test`.
+// under ⚙, so they don't clash with deployments already running; it is set up with an admin the
+// tests sign in as (e2e/fixtures.ts). Accounts have their own: a server on 7521 left as
+// installed, an editor on 5274 pointed at it, and a stand-in identity provider on 7530
+// (e2e/mock-oidc.mjs). `npx playwright test`.
 
 import { defineConfig } from "@playwright/test";
 
@@ -34,7 +35,7 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
-      command: "node e2e/server.mjs --signin",
+      command: "node e2e/server.mjs --fresh",
       url: "http://127.0.0.1:7521/health",
       timeout: 900_000,
       reuseExistingServer: false,

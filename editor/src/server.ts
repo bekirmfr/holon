@@ -10,7 +10,7 @@
 // carries one, from what this browser was given under "access" (`api` below).
 
 import { browsersOf } from "./DeployBar";
-import { signedIn, type AuthConfig } from "./signin";
+import { signedIn, signOut, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
 import type { WValue } from "./holon";
 import type { EndpointDraft } from "./endpoint";
@@ -18,42 +18,99 @@ import type { NodeTiming } from "./replay";
 
 const BASE: string = import.meta.env.VITE_HOLON_SERVER ?? "http://127.0.0.1:7420";
 
-/** The tokens this browser sends the server: admin (every request) and secrets (writing a
- *  secret, when the server keeps that apart). Kept in this browser only. */
-export type AccessTokens = { admin: string; secrets: string };
-const TOKENS_KEY = "holon.access";
+/** A role on the server: what an account or token may do (access.rs). */
+export type Role = "viewer" | "editor" | "admin";
+/** Who this browser is signed in as: the session token the server gave, and who it is. */
+export type Session = { token: string; name: string; role: Role };
+const SESSION_KEY = "holon.session";
+let memorySession: Session | null = null;
 
-export function getAccessTokens(): AccessTokens {
+export function getSession(): Session | null {
   try {
-    const t = JSON.parse(localStorage.getItem(TOKENS_KEY) ?? "{}") as Partial<AccessTokens>;
-    return { admin: t.admin ?? "", secrets: t.secrets ?? "" };
+    return (JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as Session | null) ?? memorySession;
   } catch {
-    return { admin: "", secrets: "" };
+    return memorySession;
   }
 }
 
-export function setAccessTokens(tokens: AccessTokens): void {
+/** Keep (or, with null, forget) this browser's session; who listens is told. */
+export function setSession(session: Session | null): void {
+  memorySession = session;
   try {
-    if (!tokens.admin && !tokens.secrets) localStorage.removeItem(TOKENS_KEY);
-    else localStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+    if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    else localStorage.removeItem(SESSION_KEY);
   } catch {
-    // storage unavailable (a private window): the tokens last for this page only
+    // storage unavailable: signed in for this page only
   }
+  window.dispatchEvent(new Event("holon:session"));
 }
 
-/** The token a request carries: the secrets token to set, roll back or remove a secret when
- *  there is one, the admin token otherwise; none when neither is set. */
-export function tokenFor(url: string, method: string, tokens: AccessTokens): string {
-  const secretWrite = /\/deployments\/[^/]+\/secrets\/[^/?]+/.test(url) && (method === "POST" || method === "DELETE");
-  return (secretWrite && tokens.secrets) || tokens.admin;
-}
-
-/** `fetch` against the server, carrying its token when one is set: the ID token of whoever is
- *  signed in (signin.ts), else the tokens given under "access". */
+/** `fetch` against the server, carrying who is signed in: the session's token, else the ID
+ *  token of a sign-in through the server's identity provider (signin.ts). A 401 means the
+ *  sign-in has ended: it is forgotten, and the editor asks to sign in again. */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = signedIn()?.idToken ?? tokenFor(url, (init.method ?? "GET").toUpperCase(), getAccessTokens());
-  if (!token) return fetch(url, init);
-  return fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } });
+  const token = getSession()?.token ?? signedIn()?.idToken;
+  const res = await fetch(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init);
+  if (res.status === 401 && token) {
+    setSession(null);
+    signOut();
+  }
+  return res;
+}
+
+const post = (url: string, body?: unknown) =>
+  api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+
+/** `GET /auth/state`: whether the server waits for its first admin, and where to sign in
+ *  through a provider, when it has one. */
+export async function getAuthState(): Promise<{ setup: boolean; oidc: AuthConfig | null }> {
+  return asJson(await fetch(`${BASE}/auth/state`));
+}
+
+type SignedInAs = { token: string; name: string; role: Role };
+const keep = async (res: Response) => {
+  const s = await asJson<SignedInAs>(res);
+  setSession(s);
+  return s;
+};
+/** The first admin, with the code the server printed; signed in. */
+export const setUp = (code: string, name: string, password: string) => post(`${BASE}/auth/setup`, { code, name, password }).then(keep);
+export const signInWith = (name: string, password: string) => post(`${BASE}/auth/sign-in`, { name, password }).then(keep);
+/** Whose invite link `token` is. */
+export const inviteFor = async (token: string) => asJson<{ name: string }>(await fetch(`${BASE}/auth/invite?token=${encodeURIComponent(token)}`));
+export const acceptInvite = (token: string, password: string) => post(`${BASE}/auth/invite`, { token, password }).then(keep);
+export const whoAmI = async () => asJson<{ name: string; role: Role; email?: string }>(await api(`${BASE}/auth/me`));
+export async function changePassword(current: string, next: string): Promise<void> {
+  await asJson<void>(await post(`${BASE}/auth/password`, { current, new: next }));
+}
+export async function signOutHere(): Promise<void> {
+  await post(`${BASE}/auth/sign-out`).catch(() => null);
+  setSession(null);
+  signOut();
+}
+
+// ── the admin panel ──────────────────────────────────────────────────────────────────────
+export type AccountEntry = { name: string; role: Role; email: string | null; disabled: boolean; created_at: number; created_by: string | null; invited: boolean };
+export type TokenEntry = { id: string; label: string; role: Role; created_at: number; created_by: string };
+export type OidcSettings = { issuer: string; client_id: string };
+export const listAccounts = async () => asJson<AccountEntry[]>(await api(`${BASE}/admin/users`));
+/** A new account; the one-time link for them to set their password. */
+export const inviteAccount = async (name: string, role: Role, email: string) =>
+  asJson<{ name: string; invite: string }>(await post(`${BASE}/admin/users`, { name, role, email: email || null }));
+export const changeAccount = async (name: string, change: { role?: Role; disabled?: boolean; email?: string }) =>
+  asJson<AccountEntry>(await post(`${BASE}/admin/users/${encodeURIComponent(name)}`, change));
+export const resetAccount = async (name: string) => asJson<{ name: string; invite: string }>(await post(`${BASE}/admin/users/${encodeURIComponent(name)}/reset`));
+export async function removeAccount(name: string): Promise<void> {
+  await asJson<void>(await api(`${BASE}/admin/users/${encodeURIComponent(name)}`, { method: "DELETE" }));
+}
+export const listTokens = async () => asJson<TokenEntry[]>(await api(`${BASE}/admin/tokens`));
+export const createToken = async (label: string, role: Role) => asJson<{ token: string; entry: TokenEntry }>(await post(`${BASE}/admin/tokens`, { label, role }));
+export async function revokeToken(id: string): Promise<void> {
+  await asJson<void>(await api(`${BASE}/admin/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }));
+}
+export const getOidcSettings = async () => (await asJson<{ settings: OidcSettings | null }>(await api(`${BASE}/admin/oidc`))).settings;
+export async function setOidcSettings(settings: OidcSettings | null): Promise<void> {
+  await asJson<void>(await post(`${BASE}/admin/oidc`, { settings }));
 }
 
 /** holon-server's own error shape: `{"error": "..."}`, returned alongside a non-2xx status. */
@@ -83,10 +140,10 @@ async function asJson<T>(res: Response): Promise<T> {
       // No JSON body (an empty 404, or something unexpected) — the status text above is the
       // honest fallback, not a second, unrelated parse error.
     }
-    // The server wants a token this browser hasn't been given: say where to give it.
-    if (res.status === 401) message += " (set it under access, in the header)";
     throw new ServerError(res.status, message);
   }
+  // 204: nothing to read.
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
