@@ -3203,3 +3203,12 @@ fn saves_and_deploys_list_the_holons_they_place() {
     let deployed = body_json(route(&state, &req("GET", "/deployments", vec![])));
     assert_eq!(deployed["deployments"][0]["uses"], serde_json::json!([{ "flow": "slugify", "saved_at": 7 }]));
 }
+
+/// Two saves of a flow in the same second still get different stamps, the later one later.
+#[test]
+fn every_save_of_a_flow_is_stamped_later_than_the_last() {
+    let state = test_state();
+    let save = || body_json(route(&state, &req("POST", "/flows", br#"{"name":"quick","document":{}}"#.to_vec())))["saved_at_epoch_seconds"].as_u64().unwrap();
+    let (first, second, third) = (save(), save(), save());
+    assert!(first < second && second < third, "{first} {second} {third}");
+}

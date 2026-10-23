@@ -26,8 +26,11 @@ pub(crate) fn handle_post_flows(
     if let Err(e) = check_uses(body.uses.as_deref()) {
         return err(400, e);
     }
-    let saved_at_epoch_seconds =
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    // Each save of a flow is stamped later than the one before, even within the same second: the
+    // stamp is how a flow placed from it tells an older save from the newest (holonUsage.ts).
+    let previous = flows.lock().unwrap().get(&body.name).map(|f| f.saved_at_epoch_seconds);
+    let saved_at_epoch_seconds = previous.map_or(now, |p| now.max(p + 1));
     let saved_by = by.map(String::from);
     let uses = body.uses;
     let record = FlowRecord { name: body.name.clone(), document: body.document, saved_at_epoch_seconds, saved_by: saved_by.clone(), uses: uses.clone() };
