@@ -2,8 +2,8 @@
 name = "holon-server"
 version = "0.1.0-rc.1"
 edition = "2024"
-# Proprietary: all rights reserved (LICENSE). Never published to crates.io.
-license-file = "../../LICENSE"
+# Proprietary: all rights reserved (the repository's LICENSE, which releases carry: see
+# dist-workspace.toml). Never published to crates.io.
 publish = false
 description = "Holon: build services by wiring small, pure parts together; deploy them with exactly the permissions they need, and see every run"
 repository = "https://github.com/bekirmfr/holon"
