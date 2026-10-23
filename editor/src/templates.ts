@@ -21,8 +21,9 @@
 //   the secret (a `secret` node), and `now` (a `clock` node: the template stays pure, so a replay
 //   checks against the time the run saw). Outputs: `event`, the body parsed as JSON, only when
 //   verified (absent otherwise, so a `respond` with `missing` 400 refuses it); and `verified`
-//   (absent when the header is missing or malformed). With several `v1` (a secret being rolled),
-//   the last is the one checked.
+//   (absent when the header is missing or malformed). With several `v1` (Stripe signs with both
+//   while a secret is being rolled), any one matching passes: each piece is compared with
+//   `v1=<expected>` in constant time, folded into whether any matched.
 
 import type { WEdge, WParam, WPort, WUnit } from "./holon";
 
@@ -42,7 +43,7 @@ export const TEMPLATE_DOCS: Record<TemplateName, string> = {
   respond:
     "Answers the route's request: body as the response, with the status set on the node (a record or list is sent as JSON). When body didn't arrive, it answers the missing status instead (404 unless set) with an error.",
   stripe_verify:
-    "Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time, the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it.",
+    "Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time with each v1 signature (any one matching passes, as while a secret is rolled), the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it.",
 };
 
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
@@ -180,6 +181,37 @@ export function buildTemplate(
       ],
       outputs: [{ name: "acc", ty: "Record" }],
     });
+    // ({want, ok}, piece) → ok once any piece equals want (`v1=<expected>`), each compared in
+    // constant time: what the header's pieces fold into for the signature check.
+    const anyMatch = insert({
+      body: {
+        kind: "Composite",
+        children: [
+          leaf("field", [frozen("name", "want")]), // 0
+          leaf("secure_equals"), // 1
+          leaf("field", [frozen("name", "ok")]), // 2
+          leaf("or"), // 3
+          leaf("with_field", [frozen("name", "ok")]), // 4
+        ],
+        edges: [
+          e(BOUNDARY, 0, 0, 0),
+          e(BOUNDARY, 1, 1, 0),
+          e(0, 0, 1, 1),
+          e(BOUNDARY, 0, 2, 0),
+          e(2, 0, 3, 0),
+          e(1, 0, 3, 1),
+          e(BOUNDARY, 0, 4, 0),
+          e(3, 0, 4, 1),
+          e(4, 0, BOUNDARY, 0),
+        ],
+      },
+      params: [],
+      inputs: [
+        { name: "acc", ty: "Record" },
+        { name: "item", ty: "Text" },
+      ],
+      outputs: [{ name: "acc", ty: "Record" }],
+    });
     const three: WPort[] = [
       { name: "a", ty: "Text" },
       { name: "b", ty: "Text" },
@@ -193,12 +225,12 @@ export function buildTemplate(
       leaf("record"), // 4
       leaf("fold", [frozen("fn", pair)]), // 5: … as a record
       leaf("field", [frozen("name", "t")]), // 6
-      leaf("field", [frozen("name", "v1")]), // 7
+      text("v1="), // 7
       leaf("field", [frozen("name", "body")]), // 8: the raw body, exactly as sent
       text("."), // 9
       leaf("concat", [], three), // 10: t.body, what Stripe signed
       leaf("hmac_sha256", [frozen("encoding", "hex")]), // 11
-      leaf("secure_equals"), // 12: the signature matches
+      leaf("field", [frozen("name", "ok")]), // 12: a v1 signature matches
       leaf("json_parse"), // 13: t as a number
       leaf("subtract"), // 14: its age
       number(tolerance), // 15
@@ -206,6 +238,12 @@ export function buildTemplate(
       leaf("and"), // 17: verified
       leaf("json_parse"), // 18: the event
       leaf("guard"), // 19: … only when verified
+      leaf("concat"), // 20: v1=<expected>
+      leaf("record"), // 21
+      leaf("with_field", [frozen("name", "want")]), // 22
+      leaf("const", [frozen("value", "false"), frozen("type", "Boolean")]), // 23
+      leaf("with_field", [frozen("name", "ok")]), // 24: {want, ok: false}
+      leaf("fold", [frozen("fn", anyMatch)]), // 25: … over every piece of the header
     ];
     const edges = [
       e(BOUNDARY, 0, 0, 0),
@@ -222,8 +260,15 @@ export function buildTemplate(
       e(8, 0, 10, 2),
       e(BOUNDARY, 1, 11, 0),
       e(10, 0, 11, 1),
-      e(11, 0, 12, 0),
-      e(7, 0, 12, 1),
+      e(7, 0, 20, 0),
+      e(11, 0, 20, 1),
+      e(21, 0, 22, 0),
+      e(20, 0, 22, 1),
+      e(22, 0, 24, 0),
+      e(23, 0, 24, 1),
+      e(24, 0, 25, 0),
+      e(3, 0, 25, 1),
+      e(25, 0, 12, 0),
       e(6, 0, 13, 0),
       e(BOUNDARY, 2, 14, 0),
       e(13, 0, 14, 1),

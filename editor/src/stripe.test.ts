@@ -76,9 +76,16 @@ describe("stripe_verify", () => {
     expect(run(request(body, { "stripe-signature": header }), SECRET, t + 300)[1]).toEqual({ type: "Boolean", value: true });
   });
 
-  it("checks the last v1 when there are several (a secret being rolled)", () => {
-    const rolled = `t=${t},v1=${sign("whsec_old_secret", t, body)},v1=${sign(SECRET, t, body)}`;
-    expect(run(request(body, { "stripe-signature": rolled }))[1]).toEqual({ type: "Boolean", value: true });
+  it("passes when any v1 matches, wherever it is (Stripe signs with both while a secret is rolled)", () => {
+    const old = sign("whsec_old_secret", t, body);
+    const current = sign(SECRET, t, body);
+    for (const h of [`t=${t},v1=${old},v1=${current}`, `t=${t},v1=${current},v1=${old}`, `t=${t},v0=x,v1=${current}`]) {
+      expect(run(request(body, { "stripe-signature": h }))[1], h).toEqual({ type: "Boolean", value: true });
+    }
+    // None matching, or the right signature under another scheme's name, doesn't pass.
+    for (const h of [`t=${t},v1=${old},v1=${sign("whsec_x", t, body)}`, `t=${t},v0=${current}`]) {
+      expect(run(request(body, { "stripe-signature": h })), h).toEqual([null, { type: "Boolean", value: false }]);
+    }
   });
 
   it("has nothing to say about a request without the header, or a malformed one", () => {
