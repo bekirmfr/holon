@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { holonIndex, type HolonUse } from "./holonUsage";
+import { setMarketplaceUrl, type Listing } from "./marketplace";
 import { getActivity, type ActivityEntry } from "./server";
 import { deleteFlow, getFlow, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
 import { ManifestSection, type ManifestView } from "./Manifest";
@@ -16,9 +17,8 @@ import type { Sample } from "./samples";
  *  that can't be picked shouldn't be representable as a page state either. */
 export type AppPage = "canvas" | "flows" | "deployed";
 
-/** The saved-flows page: list, open, delete. Publishing to the marketplace is deferred — the
- *  button is real but disabled, honestly labeled, rather than wired to something half-built.
- *  "open" on a flow open in a tab goes to that tab, unsaved changes and all; only "reload saved"
+/** The saved-flows page: list, open, delete, and publish to the marketplace this browser uses
+ *  (set here: a deployment of the "marketplace" sample, marketplace.ts). "open" on a flow open in a tab goes to that tab, unsaved changes and all; only "reload saved"
  *  (shown when that tab has changes) loads the saved copy over them. */
 export function FlowsPage({
   openTabs,
@@ -27,7 +27,19 @@ export function FlowsPage({
   samples,
   onOpenSample,
   manifestOf,
+  marketplace,
 }: {
+  /** The marketplace this browser uses ("" for none), told when it changes, and publishing a
+   *  saved flow to it (answers what happened). */
+  marketplace: {
+    url: string;
+    onChange: () => void;
+    onPublish: (name: string) => Promise<string>;
+    /** Its listings, every version, and yanking one (answers what happened). */
+    listings: Listing[];
+    adoption: (root: string, name: string) => number;
+    onYank: (id: string) => Promise<string>;
+  };
   /** The open tabs: a flow open in one is gone back to, not opened again. */
   openTabs: { id: number; name: string | null; dirty: boolean }[];
   /** A saved document's manifest items, derived as deploying it would (App: core's capabilities
@@ -124,9 +136,10 @@ export function FlowsPage({
               </button>
             )}
             <button
-              style={{ ...smallBtn, opacity: 0.4, cursor: "default" }}
-              disabled
-              title="marketplace is deferred — publishing lands with it"
+              style={{ ...smallBtn, ...(marketplace.url ? {} : { opacity: 0.4, cursor: "default" }) }}
+              disabled={!marketplace.url}
+              title={marketplace.url ? `publish it to ${marketplace.url}, as it is saved now` : "set a marketplace first (below)"}
+              onClick={() => marketplace.onPublish(f.name).then((m) => m && setMsg(m))}
             >
               publish
             </button>
@@ -140,6 +153,47 @@ export function FlowsPage({
             version={String(f.saved_at_epoch_seconds)}
             load={() => getFlow(f.name).then((rec) => manifestOf(rec.document))}
           />
+        </div>
+      ))}
+
+      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", margin: "24px 0 4px" }}>marketplace</div>
+      <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
+        <span>
+          {marketplace.url ? (
+            <>
+              publishing to and placing from <span style={{ color: "#cfe3ff" }}>{marketplace.url}</span>
+            </>
+          ) : (
+            "none set: deploy the Marketplace sample (or use someone's), then set its address"
+          )}
+        </span>
+        <button
+          style={smallBtn}
+          onClick={async () => {
+            const url = await dialog.prompt("The marketplace's address (a Marketplace deployment, e.g. http://127.0.0.1:8120); empty for none:", marketplace.url);
+            if (url === null) return;
+            setMarketplaceUrl(url);
+            marketplace.onChange();
+          }}
+        >
+          {marketplace.url ? "change" : "set"}
+        </button>
+      </div>
+      {marketplace.listings.map((l) => (
+        <div key={l.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "#9fb4d4", padding: "2px 0" }}>
+          <span style={{ color: "#6fd3e0" }}>{l.name}</span>
+          <span style={{ color: "#7e8ea8" }} title={l.root}>
+            {l.root.slice(0, 8)} · by {l.publisher} · {new Date(l.published_at * 1000).toLocaleString()}
+            {marketplace.adoption(l.root, l.name) > 0 && ` · placed in ${marketplace.adoption(l.root, l.name)} other(s)`}
+          </span>
+          <span style={{ flex: 1 }} />
+          {l.yanked ? (
+            <span style={{ color: "#e0916f" }}>yanked</span>
+          ) : (
+            <button style={smallBtn} onClick={() => marketplace.onYank(l.id).then((m) => m && setMsg(m))} title="flag this version as yanked (it stays listed, never edited)">
+              yank
+            </button>
+          )}
         </div>
       ))}
 

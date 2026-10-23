@@ -390,6 +390,7 @@ describe("sample flows", () => {
     expect(derive("fetch-json").caps).toEqual(['HttpRequest("httpbin.org")', "NetworkIngress"]);
     expect(derive("sign-payload").caps).toEqual(["NetworkIngress", 'SecretRead("signing_key")']);
     expect(derive("likes").caps).toEqual(['CollectionRead("likes")', 'CollectionWrite("likes")', "NetworkIngress"]);
+    expect(derive("marketplace").caps).toEqual(["Clock", 'CollectionRead("listings")', 'CollectionWrite("listings")', "NetworkIngress", 'SecretRead("publish_key")']);
   });
 
   it("refuse a misspelt leaf, param or port, naming the sample", () => {

@@ -212,3 +212,61 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await page.getByRole("button", { name: "flows", exact: true }).click();
   await expect(page.getByText(`placed in ${user} (an older save)`, { exact: true })).toBeVisible();
 });
+
+test("the marketplace, a Holon flow: publish a saved flow to it, place it from the palette", async ({ page, request }) => {
+  await openSample(page, "Marketplace (built with Holon)");
+  const port = await deploy(page);
+  const market = `http://127.0.0.1:${port}`;
+  const key = "e2e-publish-key-0123456789";
+  expect((await request.post("http://127.0.0.1:7520/deployments/marketplace/secrets/publish_key", { data: { value: key } })).ok()).toBe(true);
+  // Without the key, nothing is published.
+  expect((await request.post(`${market}/listings`, { data: { name: "x", root: "y" } })).status()).toBe(401);
+
+  const run = Date.now().toString(36);
+  const shout = `shout-mk-${run}`;
+  const flow = page.locator(".hl-canvas__flow > .react-flow");
+  const ask = page.locator('[aria-modal="true"]');
+  const answer = async (text: string) => {
+    await ask.locator("input").fill(text);
+    await page.keyboard.press("Enter");
+  };
+  await page.getByRole("button", { name: "new", exact: true }).click();
+  await answer(shout);
+  await expect(page.locator(".hl-tab--active")).toContainText(shout);
+  await dropFromPalette(page, "uppercase");
+  await expect(flow.locator(".react-flow__node")).toHaveCount(1);
+  await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
+  await expect(page.locator(".hl-canvas")).toContainText("saved");
+
+  // Set the marketplace, and publish from the flows page.
+  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await page.getByRole("button", { name: /^(set|change)$/ }).click();
+  await answer(market);
+  await expect(page.getByText(`publishing to and placing from ${market}`)).toBeVisible();
+  await page.getByText(shout, { exact: true }).locator("xpath=..").getByRole("button", { name: "publish" }).click();
+  await answer("shouts its text");
+  await answer("e2e");
+  await answer(key);
+  await expect(page.getByText(`published "${shout}"`)).toBeVisible();
+  const listings = (await (await request.get(`${market}/listings`)).json()) as Record<string, { id: string; name: string }>;
+  const listed = Object.values(listings).find((l) => l.name === shout)!;
+
+  // In another flow, from the palette's marketplace: seen what it may do, placed.
+  await page.getByRole("button", { name: "new", exact: true }).click();
+  await answer(`uses-mk-${run}`);
+  await expect(page.locator(".hl-palette")).toContainText(shout);
+  await dropFromPalette(page, `market:${listed.id}`);
+  await expect(ask).toContainText("It only computes");
+  await ask.getByRole("button", { name: "Place" }).click();
+  await expect(flow.locator(".react-flow__node", { hasText: shout })).toHaveCount(1);
+
+  // Yanked from the flows page: flagged, never edited, and the palette says so.
+  await page.getByRole("button", { name: "flows", exact: true }).click();
+  const row = page.locator("div", { has: page.getByText(shout, { exact: true }) }).filter({ hasText: "by e2e" }).last();
+  await row.getByRole("button", { name: "yank" }).click();
+  await ask.getByRole("button", { name: "Yank" }).click();
+  await expect(row).toContainText("yanked");
+  const after = (await (await request.get(`${market}/listings/${encodeURIComponent(listed.id)}`)).json()) as { yanked?: boolean; units: string[] };
+  expect(after.yanked).toBe(true);
+  expect(after.units.length).toBeGreaterThan(0);
+});

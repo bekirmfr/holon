@@ -342,6 +342,20 @@ only the editor.
     (AWS, GCP, Azure, 1Password) behind the same reference form; refresh tokens (a sign-in
     lasts as long as the provider's ID token).
 
+  - **Web pages from other sites** ✅ (⚙ "web pages from"; listeners.rs): a deployment says
+    which origins may call its routes (`*`, or `https://…`), none by default. For those the data
+    plane answers the browser's preflight and adds `Access-Control-Allow-Origin`; the deploy
+    dialog says so first. The Marketplace sample answers any.
+  - **The marketplace** ✅ (the "marketplace" sample; editor marketplace.ts): a Holon flow
+    keeping listings in a collection: `POST /listings` (with its publish key) publishes a holon
+    (name, description, ports, manifest, and its units as hex preimages, kept under
+    `name@root`), `GET /listings` and `/listings/:id` read them (open, to any page),
+    `POST /listings/:id/yank` flags a version, never editing it. The editor sets which
+    marketplace it uses (flows page), publishes saved flows there, and lists its holons in the
+    palette, each with its adoption (how many other listings place it) and yanked flag. Placing
+    one shows its manifest first, then inserts its units, each re-hashed, and refuses it unless
+    its root is among them: a marketplace can describe a holon, never swap one.
+
 ### 4.3 Durable runs: continuing a run later
 Rounds cover waiting inside one request: the caller is on the line, the wait is seconds. Many
 integrations wait longer: a payment confirmed by a webhook minutes later, an approval clicked

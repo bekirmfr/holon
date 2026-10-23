@@ -71,6 +71,8 @@ import { useSavedFlows } from "./useSavedFlows";
 import { useDeployFlow } from "./useDeployFlow";
 import { useTabs } from "./useTabs";
 import { useModeSwitch } from "./useModeSwitch";
+import { useMarketplace } from "./useMarketplace";
+import { MARKET_PREFIX } from "./marketplace";
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
@@ -269,6 +271,8 @@ function Canvas({
     setSaveMsg,
     setError: setDeployError,
   });
+  // The marketplace: its listings in the palette, publishing from the flows page (useMarketplace.ts).
+  const market = useMarketplace({ refreshOn: page === "canvas" || page === "flows" ? page : null, ev, byName, dialog });
 
     // A flow other saved flows place as a node: they keep the version they placed, but say what
     // this save takes away from them should they update.
@@ -295,6 +299,18 @@ function Canvas({
       e.preventDefault();
       const name = e.dataTransfer.getData(DND_MIME);
       if (viewing) return;
+      // A holon from the marketplace, once its manifest is seen (useMarketplace.ts).
+      if (name.startsWith(MARKET_PREFIX)) {
+        const id = name.slice(MARKET_PREFIX.length);
+        const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+        market.place(id, `market-${idRef.current++}`, position).then((placed) => {
+          if (placed === null) return;
+          if (typeof placed === "string") return setDeployError(placed);
+          setDeployError("");
+          setNodes((ns) => ns.concat(placed));
+        });
+        return;
+      }
       // A saved flow, placed as one node (canvasOps.flowAsNode).
       if (name.startsWith(FLOW_PREFIX)) {
         const flow = name.slice(FLOW_PREFIX.length);
@@ -313,7 +329,7 @@ function Canvas({
       const node = nodeFromPalette(name, byName, variadic, `${name}-${idRef.current++}`, screenToFlowPosition({ x: e.clientX, y: e.clientY }));
       if (node) setNodes((ns) => ns.concat(node));
     },
-    [byName, variadic, screenToFlowPosition, setNodes, viewing, ev],
+    [byName, variadic, screenToFlowPosition, setNodes, viewing, ev, market],
   );
 
   // A saved flow's manifest (the flows page), derived from its document as deploying it would:
@@ -631,7 +647,13 @@ function Canvas({
     {/* Edit mode places nodes from the palette; view mode is read only, so it has none. */}
     {!viewing && page === "canvas" && (
       // A flow isn't offered inside itself.
-      <Palette catalog={catalog} templates={TEMPLATES} flows={savedFlows.filter((f) => f !== flowName)} docs={docs} />
+      <Palette
+        catalog={catalog}
+        templates={TEMPLATES}
+        flows={savedFlows.filter((f) => f !== flowName)}
+        market={{ url: market.url, error: market.error, entries: market.catalog }}
+        docs={docs}
+      />
     )}
     <div className="hl-main">
     <FlowTabs tabs={tabList} active={activeId} onSelect={switchTab} onClose={closeTab} />
@@ -760,6 +782,14 @@ function Canvas({
               samples={SAMPLES}
               onOpenSample={onOpenSample}
               manifestOf={manifestOfDocument}
+              marketplace={{
+                url: market.url,
+                onChange: market.refresh,
+                onPublish: market.publish,
+                listings: market.listings,
+                adoption: (root, name) => new Set(market.listings.filter((l) => l.name !== name && l.contains.includes(root)).map((l) => l.name)).size,
+                onYank: market.yank,
+              }}
             />
           )}
           {page === "deployed" && (
@@ -844,9 +874,6 @@ function Editor() {
             onClick={() => setPage(page === "deployed" ? "canvas" : "deployed")}
           >
             deployed
-          </button>
-          <button style={menuBtn(false, false)} disabled title="deferred — the flow marketplace lands later">
-            marketplace
           </button>
           <AccessButton style={menuBtn(false)} />
         </nav>

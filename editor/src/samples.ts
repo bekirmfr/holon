@@ -42,6 +42,8 @@ export type Sample = {
   secrets?: { name: string; what: string; from?: string }[];
   /** Permissions it can run without (deploy settings' `optional`); the rest are required. */
   optional?: string[];
+  /** Web pages from other sites it answers (deploy settings' `browsers`: `*`, or origins). */
+  browsers?: string;
   /** How to try it once deployed. */
   tryIt: string;
   build(b: SampleBuilder): void;
@@ -152,6 +154,7 @@ export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadi
       port: sample.port ?? "",
       interval: sample.interval ?? "",
       ...(sample.optional ? { requirements: { optional: sample.optional } } : {}),
+      ...(sample.browsers ? { browsers: sample.browsers } : {}),
     },
   };
 }
@@ -574,6 +577,110 @@ export const SAMPLES: Sample[] = [
       const allRes = b.node("respond", { status: "200", missing: "404" }, [1240, 680]);
       b.wire(all, "request", allRes, "request");
       b.wire(counts, "out", allRes, "body");
+    },
+  },
+  {
+    name: "marketplace",
+    title: "Marketplace (built with Holon)",
+    description:
+      "A marketplace for holons, itself a Holon flow: publishing a listing (a holon's name, description, ports, manifest and its units, by hash) takes the publish key; browsing and reading one are open to any web page; a bad version is yanked, never edited. The editor publishes saved flows to it and places what it lists, checking every unit against its hash.",
+    shows: ["marketplace", "web pages from other sites (CORS)", "collections", "secrets", "secure_equals", "guard", "with_field"],
+    port: "8120",
+    browsers: "*",
+    secrets: [{ name: "publish_key", what: "the key publishers send (Authorization: Bearer <key>) to publish or yank" }],
+    tryIt:
+      "set it as the editor's marketplace (flows page), publish a saved flow without routes from the flows page, and place it from the palette's marketplace; GET http://127.0.0.1:8120/listings lists them",
+    build(b) {
+      // The publish key, as callers send it: "Bearer <key>", compared in constant time.
+      const authorized = (req: string, x: number, y: number) => {
+        const auth = b.node("field", { name: "authorization" }, [x, y]);
+        const bearer = b.node("const", { value: "Bearer ", type: "Text" }, [x, y + 120]);
+        const key = b.node("secret", { name: "publish_key" }, [x, y + 220]);
+        const expected = b.node("concat", {}, [x + 260, y + 160]);
+        const match = b.node("secure_equals", {}, [x + 520, y + 60]);
+        b.wire(req, "headers", auth, "record");
+        b.wire(bearer, "out", expected, "a");
+        b.wire(key, "out", expected, "b");
+        b.wire(auth, "out", match, "a");
+        b.wire(expected, "out", match, "b");
+        return match;
+      };
+
+      // GET /listings: every listing, in key order (a page at a time, from ?after=).
+      const list = b.node("request", { method: "GET", path: "/listings" }, [40, 40]);
+      const after = b.node("field", { name: "after" }, [320, 60]);
+      const from = b.node("default", { value: "", type: "Text" }, [560, 60]);
+      const page = b.node("collection_list", { collection: "listings", limit: "200" }, [800, 60]);
+      const listed = b.node("respond", { status: "200", missing: "404" }, [1060, 40]);
+      b.wire(list, "query", after, "record");
+      b.wire(after, "out", from, "value");
+      b.wire(from, "out", page, "after");
+      b.wire(list, "request", listed, "request");
+      b.wire(page, "out", listed, "body");
+
+      // GET /listings/:id: one listing, by its id (name@root), or 404.
+      const one = b.node("request", { method: "GET", path: "/listings/:id" }, [40, 300]);
+      const oneId = b.node("field", { name: "id" }, [320, 320]);
+      const found = b.node("collection_get", { collection: "listings" }, [560, 320]);
+      const shown = b.node("respond", { status: "200", missing: "404" }, [1060, 300]);
+      b.wire(one, "params", oneId, "record");
+      b.wire(oneId, "out", found, "key");
+      b.wire(one, "request", shown, "request");
+      b.wire(found, "out", shown, "body");
+
+      // POST /listings: publish, with the key. Kept under name@root, with when it was published;
+      // no key (or no name and root) and nothing is kept: 401.
+      const pub = b.node("request", { method: "POST", path: "/listings" }, [40, 560]);
+      const pubOk = authorized(pub, 320, 560);
+      const name = b.node("field", { name: "name" }, [320, 900]);
+      const root = b.node("field", { name: "root" }, [320, 1000]);
+      const at = b.node("const", { value: "@", type: "Text" }, [320, 1100]);
+      const nameAt = b.node("concat", {}, [580, 940]);
+      const id = b.node("concat", {}, [840, 980]);
+      const clock = b.node("clock", {}, [580, 1100]);
+      const stamped = b.node("with_field", { name: "published_at" }, [840, 1100]);
+      const withId = b.node("with_field", { name: "id" }, [1100, 1040]);
+      const allowed = b.node("guard", {}, [1360, 800]);
+      const keep = b.node("collection_put", { collection: "listings" }, [1620, 900]);
+      const published = b.node("respond", { status: "200", missing: "401" }, [1620, 560]);
+      b.wire(pub, "json", name, "record");
+      b.wire(pub, "json", root, "record");
+      b.wire(name, "out", nameAt, "a");
+      b.wire(at, "out", nameAt, "b");
+      b.wire(nameAt, "out", id, "a");
+      b.wire(root, "out", id, "b");
+      b.wire(pub, "json", stamped, "record");
+      b.wire(clock, "out", stamped, "value");
+      b.wire(stamped, "out", withId, "record");
+      b.wire(id, "out", withId, "value");
+      b.wire(pubOk, "out", allowed, "cond");
+      b.wire(withId, "out", allowed, "value");
+      b.wire(id, "out", keep, "key");
+      b.wire(allowed, "out", keep, "value");
+      b.wire(pub, "request", published, "request");
+      b.wire(allowed, "out", published, "body");
+
+      // POST /listings/:id/yank: with the key, flag a version as yanked (kept, never edited: a
+      // flow placed from it keeps its hash, and is told).
+      const yank = b.node("request", { method: "POST", path: "/listings/:id/yank" }, [40, 1300]);
+      const yankOk = authorized(yank, 320, 1300);
+      const yankId = b.node("field", { name: "id" }, [320, 1640]);
+      const was = b.node("collection_get", { collection: "listings" }, [580, 1640]);
+      const yes = b.node("const", { value: "true", type: "Boolean" }, [580, 1760]);
+      const flagged = b.node("with_field", { name: "yanked" }, [840, 1680]);
+      const mayYank = b.node("guard", {}, [1100, 1500]);
+      const rewrite = b.node("collection_put", { collection: "listings" }, [1360, 1600]);
+      const yanked = b.node("respond", { status: "200", missing: "401" }, [1360, 1300]);
+      b.wire(yank, "params", yankId, "record");
+      b.wire(yankId, "out", was, "key");
+      b.wire(was, "out", flagged, "record");
+      b.wire(yes, "out", flagged, "value");
+      b.wire(yankOk, "out", mayYank, "cond");
+      b.wire(flagged, "out", mayYank, "value");
+      b.wire(yankId, "out", rewrite, "key");
+      b.wire(mayYank, "out", rewrite, "value");
+      b.wire(yank, "request", yanked, "request");
+      b.wire(mayYank, "out", yanked, "body");
     },
   },
 ];
