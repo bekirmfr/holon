@@ -32,6 +32,21 @@ v0.1.0-rc.2 on):
 gh attestation verify holon-server-x86_64-unknown-linux-gnu.tar.xz --repo bekirmfr/holon
 ```
 
+Once installed:
+
+```sh
+holon-server version            # this build's version
+holon-server update --check     # is there a newer release?
+holon-server update             # install it over this one (--to 0.1.0 for a given version)
+holon-server uninstall          # remove the program, its PATH entry and install receipt
+```
+
+A pre-release build follows pre-releases; a full release, only full releases (`--pre` to include
+them). `update` works on copies the install scripts put in place (they leave a receipt saying
+where); a copy unpacked by hand is replaced by hand. `uninstall` keeps the server's data;
+`uninstall --purge` removes the data folder too (`--data DIR`, else `HOLON_DATA`, else
+`~/.holon/data`) and its secrets key. It asks first; `--yes` skips that.
+
 ## Running
 
 ```sh

@@ -165,6 +165,7 @@ mod scheduler;
 mod sealing;
 mod secret_sources;
 mod secrets;
+mod selfmanage;
 #[cfg(test)]
 mod tests;
 mod units;
@@ -393,6 +394,10 @@ struct Deployment {
 }
 
 fn main() {
+    // `version`, `update`, `uninstall`: about this installation, not the server (selfmanage.rs).
+    if let Some(code) = selfmanage::dispatch(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        std::process::exit(code);
+    }
     let addr = std::env::var("HOLON_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:7420".to_string());
 
     // `--store <dir>` for an on-disk FileStore; `--store :memory:` for an in-process MemStore

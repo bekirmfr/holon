@@ -153,6 +153,20 @@ impl KeySource {
         }
         Ok(key)
     }
+
+    /// Drop the key (`uninstall --purge`). `Ok(false)`: there was none here, or it is an
+    /// environment variable, which only the operator can unset.
+    pub(crate) fn forget(&self) -> Result<bool, String> {
+        match self {
+            KeySource::Os { account } => os_store::delete(account),
+            KeySource::Env(_) => Ok(false),
+            KeySource::File(path) => match std::fs::remove_file(path) {
+                Ok(()) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(format!("could not remove the key file {path:?}: {e}")),
+            },
+        }
+    }
 }
 
 impl std::fmt::Display for KeySource {
@@ -184,6 +198,14 @@ mod os_store {
     pub(super) fn write(account: &str, hex: &str) -> Result<(), String> {
         entry(account)?.set_password(hex).map_err(|e| format!("could not keep the key in the OS key store: {e}"))
     }
+
+    pub(super) fn delete(account: &str) -> Result<bool, String> {
+        match entry(account)?.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(e) => Err(format!("could not remove the key from the OS key store: {e}")),
+        }
+    }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -198,6 +220,10 @@ mod os_store {
 
     pub(super) fn write(_account: &str, _hex: &str) -> Result<(), String> {
         Err(NONE.into())
+    }
+
+    pub(super) fn delete(_account: &str) -> Result<bool, String> {
+        Ok(false)
     }
 }
 
