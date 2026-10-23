@@ -21,10 +21,20 @@ Windows (PowerShell):
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/bekirmfr/holon/releases/latest/download/holon-server-installer.ps1 | iex"
 ```
 
-While the repository is private, its release files need a GitHub token: set
-`HOLON_SERVER_GITHUB_TOKEN` (a token that can read the repository) and fetch the script itself
-with `gh release download --repo bekirmfr/holon --pattern 'holon-server-installer.*'`. Other
-settings: `HOLON_SERVER_INSTALL_DIR` (where), `HOLON_SERVER_NO_MODIFY_PATH=1` (leave PATH alone).
+While the repository is private, the install scripts can't download its releases (GitHub
+serves private release files only through its API, even with a token). Install by hand with the
+GitHub CLI, signed in with access to the repository: download your platform's archive and its
+checksum, check it, and unpack `holon-server` onto your PATH:
+
+```sh
+gh release download --repo bekirmfr/holon --pattern 'holon-server-x86_64-unknown-linux-gnu.tar.xz*'
+sha256sum -c holon-server-x86_64-unknown-linux-gnu.tar.xz.sha256
+tar -xJf holon-server-x86_64-unknown-linux-gnu.tar.xz
+```
+
+(The archives: `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-pc-windows-msvc.zip`.) The scripts' settings: `HOLON_SERVER_INSTALL_DIR` (where),
+`HOLON_SERVER_NO_MODIFY_PATH=1` (leave PATH alone).
 
 ## Running
 
