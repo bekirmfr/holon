@@ -594,6 +594,12 @@ export async function getFlow(name: string): Promise<FlowRecord> {
   return asJson<FlowRecord>(res);
 }
 
+/** Every saved flow, documents included (to see which flows place which as holons). */
+export async function getAllFlows(): Promise<FlowRecord[]> {
+  const list = await listFlows();
+  return Promise.all(list.map((f) => getFlow(f.name)));
+}
+
 /** `DELETE /flows/<name>` — remove a saved flow. Throws (404) if it was never there. */
 export async function deleteFlow(name: string): Promise<void> {
   const res = await api(`${BASE}/flows/${encodeURIComponent(name)}`, { method: "DELETE" });

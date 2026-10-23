@@ -41,6 +41,7 @@ import {
   previewDeploy,
   changeDeployment,
   getDeployedDocument,
+  getAllFlows,
   getFlow,
   saveFlow,
   listFlows,
@@ -53,6 +54,7 @@ import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
 import { documentKey, structuralKey } from "./flowDoc";
 import { documentUnits, nameOf, rememberName, restoreDocument } from "./docUnits";
+import { holonUses, interfaceLoss } from "./holonUsage";
 import { DialogProvider, useDialog } from "./Dialog";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
@@ -362,6 +364,19 @@ function Canvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingNew]);
 
+  // The saved flows the palette offers as nodes, and when each was saved (a holon placed from an
+  // older save offers an update): read when the canvas shows and after a save.
+  const [savedFlowTimes, setSavedFlowTimes] = useState<Map<string, number>>(new Map());
+  useEffect(() => {
+    if (page !== "canvas") return;
+    listFlows()
+      .then((fs) => setSavedFlowTimes(new Map(fs.map((f) => [f.name, f.saved_at_epoch_seconds]))))
+      .catch(() => setSavedFlowTimes(new Map()));
+  }, [page, savedKey]);
+
+  // Whether to go on saving `name` as `doc` when other saved flows place it (set below, once the
+  // catalog is in scope).
+  const placedElsewhereOk = useRef<(name: string, doc: FlowDocument) => Promise<boolean>>(async () => true);
   const onSave = useCallback(async () => {
     let name = flowName;
     if (!name) {
@@ -383,6 +398,7 @@ function Canvas({
       ...carried,
       server: settings,
     };
+    if (!(await placedElsewhereOk.current(name, doc))) return;
     const key = savedKeyOf(nodes, edges, settings);
     saveFlow(name, doc)
       .then((entry) => {
@@ -436,6 +452,33 @@ function Canvas({
     return m;
   }, [catalog]);
 
+    // A flow other saved flows place as a node: they keep the version they placed, but say what
+    // this save takes away from them should they update.
+  // A flow other saved flows place as a node: they keep the version they placed, but a save that
+  // changes its ports says so first, since updating them would remove wires.
+  placedElsewhereOk.current = async (name, doc) => {
+    if (savedFlowTimes.has(name)) {
+      try {
+        const all = await getAllFlows();
+        const users = holonUses(all).get(name) ?? [];
+        const previous = all.find((r) => r.name === name);
+        const before = previous && flowAsNode(name, previous.document, ev, byName, "before", { x: 0, y: 0 });
+        const after = flowAsNode(name, doc, ev, byName, "after", { x: 0, y: 0 });
+        const loss = before?.ok && after.ok ? interfaceLoss(before.node.data, after.node.data) : [];
+        if (users.length > 0 && loss.length > 0) {
+          const ok = await dialog.confirm(
+            `"${name}" is placed as a node in ${users.map((u) => u.user).join(", ")}. This save changes its ports: ${loss.join("; ")}. They keep the version they placed; updating them would remove wires to those ports. Save anyway?`,
+            "Save",
+          );
+          if (!ok) return false;
+        }
+      } catch {
+        // can't tell who uses it: save regardless, as before
+      }
+    }
+    return true;
+  };
+
   // A sample (samples.ts) opens as an unsaved copy under its own name, in a tab of its own:
   // saving it keeps it. A tab of that name already open is replaced only when confirmed.
   const onOpenSample = useCallback(
@@ -480,15 +523,6 @@ function Canvas({
     [byName, variadic, screenToFlowPosition, setNodes, viewing, ev],
   );
 
-  // The saved flows the palette offers as nodes, and when each was saved (a holon placed from an
-  // older save offers an update): read when the canvas shows and after a save.
-  const [savedFlowTimes, setSavedFlowTimes] = useState<Map<string, number>>(new Map());
-  useEffect(() => {
-    if (page !== "canvas") return;
-    listFlows()
-      .then((fs) => setSavedFlowTimes(new Map(fs.map((f) => [f.name, f.saved_at_epoch_seconds]))))
-      .catch(() => setSavedFlowTimes(new Map()));
-  }, [page, savedKey]);
   const savedFlows = useMemo(() => [...savedFlowTimes.keys()], [savedFlowTimes]);
 
   // Place the newest saved version of a holon over the one placed from an older save: same place,
@@ -499,20 +533,28 @@ function Canvas({
       const from = old?.data.source;
       if (!old || !from) return;
       getFlow(from.flow)
-        .then((rec) => {
+        .then(async (rec) => {
           const placed = flowAsNode(from.flow, rec.document, ev, byName, id, old.position, rec.saved_at_epoch_seconds);
           if (!placed.ok) return setDeployError(placed.message);
-          const ins = new Set(placed.node.data.inputs.map((p) => p.name));
-          const outs = new Set(placed.node.data.outputs.map((p) => p.name));
-          const kept = (e: Edge) => (e.target !== id || ins.has(e.targetHandle ?? "")) && (e.source !== id || outs.has(e.sourceHandle ?? ""));
-          const dropped = live.current.edges.filter((e) => !kept(e)).length;
+          const body = placed.node.data.body;
+          if (body.kind !== "Composite") return;
+          // Wires to ports it no longer has (or now of a type they don't fit) would go: ask first.
+          const { edges: kept, dropped } = replaceComposite(live.current.nodes, live.current.edges, id, { hash: body.hash, ...placed.node.data }, { inputs: new Map(), outputs: new Map() });
+          if (dropped.length > 0) {
+            const loss = interfaceLoss(old.data, placed.node.data);
+            const ok = await dialog.confirm(
+              `The newest "${from.flow}" changes ports wired here: ${loss.join("; ")}. Updating removes ${dropped.length} wire(s). Update anyway?`,
+              "Update",
+            );
+            if (!ok) return;
+          }
           setNodes((ns) => ns.map((n) => (n.id === id ? { ...placed.node, selected: n.selected } : n)));
-          setEdges((es) => es.filter(kept));
-          setSaveMsg(`updated "${from.flow}" to its save of ${new Date(rec.saved_at_epoch_seconds * 1000).toLocaleString()}${dropped ? `; ${dropped} wire(s) to ports it no longer has removed` : ""}`);
+          setEdges(kept);
+          setSaveMsg(`updated "${from.flow}" to its save of ${new Date(rec.saved_at_epoch_seconds * 1000).toLocaleString()}${dropped.length ? `; ${dropped.length} wire(s) to ports it no longer has removed` : ""}`);
         })
         .catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e)));
     },
-    [ev, byName, setNodes, setEdges, setSaveMsg],
+    [ev, byName, setNodes, setEdges, setSaveMsg, dialog],
   );
 
 
