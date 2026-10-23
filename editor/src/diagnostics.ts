@@ -8,7 +8,7 @@
 // and even a single real-value import would force holon.ts's whole module — including the wasm
 // import — to evaluate. Matches core's own u32::MAX; structurally fixed, not at risk of drifting.
 
-import type { WPort, WEdge, WEncapError, WValidationError, WCapability, WValue } from "./holon";
+import type { WPort, WEdge, WEncapError, WValidationError, WValue } from "./holon";
 
 const BOUNDARY = 4294967295;
 
@@ -89,24 +89,6 @@ export function encapErrorNodeIndices(err: WEncapError, wedges: WEdge[]): number
   }
   const exhaustive: never = err;
   return exhaustive;
-}
-
-// The exact string a WCapability would cross as in holon-server's own `acknowledge` field —
-// `{c:?}` (Rust Debug) on the real Capability, e.g. "Clock" or `StateRead("counter")`. One
-// decider for this formatting: every caller that needs an acknowledge string (the deploy UI,
-// InspectPanel's capability readout) goes through this, rather than each hand-building the
-// same string differently. Lives here, not holon.ts, for the same reason every other function
-// in this file does: holon.ts has a top-level VALUE import of the wasm package, so even one
-// pure function living there would drag that in for anything that imports it — tests included.
-export function capabilityAcknowledgeName(c: WCapability): string {
-  if (typeof c === "string") return c;
-  if ("StateRead" in c) return `StateRead("${c.StateRead}")`;
-  if ("HttpRequest" in c) return `HttpRequest("${c.HttpRequest}")`;
-  if ("SecretRead" in c) return `SecretRead("${c.SecretRead}")`;
-  if ("Await" in c) return `Await("${c.Await}")`;
-  if ("CollectionRead" in c) return `CollectionRead("${c.CollectionRead}")`;
-  if ("CollectionWrite" in c) return `CollectionWrite("${c.CollectionWrite}")`;
-  return `StateWrite("${c.StateWrite}")`;
 }
 
 // Render an evaluated value for the readout. This is core's *pure* evaluator, so a sink shows
@@ -201,42 +183,6 @@ export function summarizeState(state: Record<string, WValue> | null): string {
     return s.length > 24 ? `${s.slice(0, 23)}…` : s;
   };
   return keys.map((k) => `${k}: ${one(state[k])}`).join(", ");
-}
-/** Whether a unit with these capabilities (by consent name) reads from outside the run's inputs:
- *  the clock, randomness, a secret, state, a collection, the network, a waiting point. Such a
- *  unit can't be recomputed offline from its inputs alone. Effects it only performs don't count. */
-export function readsFromOutside(capabilities: string[]): boolean {
-  return capabilities.some((c) => /^(Clock|Random|NetworkIngress|SecretRead|StateRead|CollectionRead|HttpRequest|Await)\b/.test(c));
-}
-
-/** What starts a flow's runs (permissions.rs's `Manifest::trigger`): `NetworkIngress` for a flow
- *  with routes, else `Clock`. Never optional. */
-export function manifestTrigger(capabilities: string[]): string | null {
-  return capabilities.includes("NetworkIngress") ? "NetworkIngress" : capabilities.includes("Clock") ? "Clock" : null;
-}
-
-/** Whether a manifest item is required (its absence pauses the flow) or optional (the flow runs
- *  without it, those calls refused), and why: permissions.rs's rule. */
-export function permissionKind(item: string, optional: string[] | undefined, trigger: string | null | undefined): { kind: "required" | "optional"; why: string } {
-  if (item === trigger) return { kind: "required", why: "it starts the flow's runs: without it the flow pauses" };
-  if (optional?.includes(item)) return { kind: "optional", why: "the flow runs without it: those calls are refused" };
-  return { kind: "required", why: "the flow needs it to work: without it the flow pauses" };
-}
-
-/**
- * A manifest's items (permissions.rs's `Manifest::items`): the capabilities derived from the
- * graph, then what the deploy settings ask beyond the host's defaults, sorted as the server sorts
- * them (a `BTreeSet`), so a saved flow lists what deploying it would ask for.
- */
-export function manifestItems(
-  capabilities: string[],
-  requirements?: { limits?: Record<string, number>; plain_http?: string[]; private_addresses?: boolean },
-): string[] {
-  const items = new Set(capabilities);
-  for (const [name, n] of Object.entries(requirements?.limits ?? {})) items.add(`Limit(${name}=${n})`);
-  for (const host of requirements?.plain_http ?? []) items.add(`PlainHttp(${JSON.stringify(host)})`);
-  if (requirements?.private_addresses) items.add("PrivateAddresses");
-  return [...items].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 /**

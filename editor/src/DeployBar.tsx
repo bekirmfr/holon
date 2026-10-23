@@ -5,7 +5,8 @@
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { describeItem, manifestTrigger } from "./diagnostics";
+import { describeItem } from "./diagnostics";
+import { manifestTrigger } from "./holon";
 import {
   deleteSecret,
   getPermissions,

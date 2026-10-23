@@ -12,6 +12,10 @@
 import init, {
   Evaluator,
   build_preimage,
+  manifest_items,
+  manifest_trigger,
+  permission_kind,
+  reads_from_outside,
   primitive_catalog,
   primitive_docs,
   variadic_primitives,
@@ -233,4 +237,38 @@ export function variadicPrimitives(): Set<string> {
  */
 export function compatible(src: WType, dst: WType): boolean {
   return wasm_compatible(src, dst) as boolean;
+}
+// ── The manifest and permission rules, from core (holon-core's manifest.rs): the same ones
+// holon-server grants and enforces by, never a TypeScript copy. Call after ensureReady. A
+// unit's capabilities by consent name come from `Evaluator.capability_names(hash)`.
+
+/** A manifest's items: the capabilities (consent names), then what the deploy settings ask
+ *  beyond the host's defaults, sorted as the server sorts them. */
+export function manifestItems(
+  capabilities: string[],
+  requirements?: { limits?: Record<string, number>; plain_http?: string[]; private_addresses?: boolean },
+): string[] {
+  return manifest_items(capabilities, requirements ?? null);
+}
+
+/** What starts a flow's runs: `NetworkIngress` for one with routes, else `Clock`. Never optional. */
+export function manifestTrigger(capabilities: string[]): string | null {
+  return manifest_trigger(capabilities) ?? null;
+}
+
+/** Whether a unit with these capabilities reads from outside a run's inputs (the clock, a
+ *  secret, state, the network…): a replay can't recompute it, and shows what the run recorded. */
+export function readsFromOutside(capabilities: string[]): boolean {
+  return reads_from_outside(capabilities);
+}
+
+/** Whether a manifest item is required or optional (core's rule), and what that means. */
+export function permissionKind(
+  item: string,
+  optional: string[] | undefined,
+  trigger: string | null | undefined,
+): { kind: "required" | "optional"; why: string } {
+  const kind = permission_kind(item, optional ?? [], trigger ?? null) as "required" | "optional";
+  if (kind === "optional") return { kind, why: "the flow runs without it: those calls are refused" };
+  return { kind, why: item === trigger ? "it starts the flow's runs: without it the flow pauses" : "the flow needs it to work: without it the flow pauses" };
 }

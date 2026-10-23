@@ -13,7 +13,6 @@ import {
   isWEncapError,
   validationErrorNodeIndices,
   encapErrorNodeIndices,
-  capabilityAcknowledgeName,
   describeItem,
   formatValue,
   formatOutputs,
@@ -36,7 +35,7 @@ describe("summarizeState", () => {
     expect(summarizeState(null)).toBe("no saved state");
   });
 });
-import type { WPort, WEdge, WEncapError, WValidationError, WCapability, WValue } from "./holon";
+import type { WPort, WEdge, WEncapError, WValidationError, WValue } from "./holon";
 
 // Inlined rather than imported: importing a real VALUE (not a type) from holon.ts would evaluate
 // its whole module at runtime, including its own import of the actual wasm package
@@ -212,37 +211,6 @@ describe("encapErrorNodeIndices", () => {
       message: "x",
     };
     expect(encapErrorNodeIndices(err, wedges)).toEqual([1, 2]);
-  });
-});
-
-describe("capabilityAcknowledgeName", () => {
-  it("returns a bare capability's own name unchanged", () => {
-    const cases: WCapability[] = [
-      "Clock",
-      "NetworkIngress",
-      "FileRead",
-      "SecretAccess",
-      "Random",
-      "NetworkEgress",
-      "FileWrite",
-      "Spawn",
-    ];
-    for (const c of cases) expect(capabilityAcknowledgeName(c)).toBe(c);
-  });
-
-  it("formats a keyed StateRead/StateWrite exactly as holon-server's own {c:?} does", () => {
-    // Must match Rust's derived Debug on a tuple variant EXACTLY — this is the literal string
-    // holon-server's /deploy endpoint checks the "acknowledge" list against, not a
-    // human-friendly approximation of it.
-    expect(capabilityAcknowledgeName({ StateRead: "counter" })).toBe('StateRead("counter")');
-    expect(capabilityAcknowledgeName({ StateWrite: "counter" })).toBe('StateWrite("counter")');
-    expect(capabilityAcknowledgeName({ HttpRequest: "hooks.slack.com" })).toBe('HttpRequest("hooks.slack.com")');
-  });
-
-  it("keeps different keys distinct, not collapsed to the bare capability name", () => {
-    const a = capabilityAcknowledgeName({ StateRead: "var1" });
-    const b = capabilityAcknowledgeName({ StateRead: "var2" });
-    expect(a).not.toBe(b);
   });
 });
 

@@ -446,6 +446,51 @@ pub fn primitive_docs() -> Result<JsValue, JsError> {
     serde_wasm_bindgen::to_value(&docs).map_err(|e| JsError::new(&format!("docs: {e}")))
 }
 
+/// What a flow's deploy settings ask beyond the host's defaults, as the editor keeps them.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct AskedFor {
+    limits: std::collections::BTreeMap<String, u64>,
+    plain_http: std::collections::BTreeSet<String>,
+    private_addresses: bool,
+}
+
+/// A manifest's items (core's `manifest_items`, the rule the server grants by): `capabilities`
+/// (consent names), then what `requirements` (`{limits, plain_http, private_addresses}`) ask.
+#[wasm_bindgen]
+pub fn manifest_items(capabilities: Vec<String>, requirements: JsValue) -> Result<Vec<String>, JsError> {
+    let asked: AskedFor = if requirements.is_undefined() || requirements.is_null() {
+        AskedFor::default()
+    } else {
+        serde_wasm_bindgen::from_value(requirements).map_err(|e| JsError::new(&format!("requirements: {e}")))?
+    };
+    Ok(holon_core::manifest_items(&capabilities, &asked.limits, &asked.plain_http, asked.private_addresses).into_iter().collect())
+}
+
+/// What starts the runs of a unit with these capabilities (core's `trigger`).
+#[wasm_bindgen]
+pub fn manifest_trigger(capabilities: Vec<String>) -> Option<String> {
+    holon_core::trigger(&capabilities).map(String::from)
+}
+
+/// `"required"` or `"optional"` (core's `permission_kind`): optional only when marked so, never
+/// the trigger.
+#[wasm_bindgen]
+pub fn permission_kind(item: &str, optional: Vec<String>, trigger: Option<String>) -> String {
+    let optional: std::collections::BTreeSet<String> = optional.into_iter().collect();
+    match holon_core::permission_kind(item, &optional, trigger.as_deref()) {
+        holon_core::PermissionKind::Required => "required".into(),
+        holon_core::PermissionKind::Optional => "optional".into(),
+    }
+}
+
+/// Whether a unit with these capabilities reads from outside a run's inputs (core's
+/// `reads_from_outside`): then a replay shows what the run recorded it produced.
+#[wasm_bindgen]
+pub fn reads_from_outside(capabilities: Vec<String>) -> bool {
+    holon_core::reads_from_outside(&capabilities)
+}
+
 /// Core's genesis interfaces mirrored to `WUnit` via the *same* `from_core` `load_unit` uses — no
 /// second core→JS converter. Shared by the bridge fn and its tests.
 fn catalog_wunits() -> Vec<WUnit> {
@@ -721,6 +766,14 @@ impl Evaluator {
             .map(WCapability::from_core)
             .collect();
         serde_wasm_bindgen::to_value(&caps).map_err(|e| JsError::new(&format!("capabilities: {e}")))
+    }
+
+    /// A unit's capabilities by the names consent uses (`StateRead("todos")`, core's
+    /// `consent_name`): what a deploy acknowledges and a manifest lists, with no TypeScript
+    /// rendering of its own.
+    pub fn capability_names(&self, hash: &str) -> Result<Vec<String>, JsError> {
+        let unit = self.resolve_hash(hash)?;
+        Ok(holon_core::capabilities(unit, &self.resolver).iter().map(|c| holon_core::consent_name(&c)).collect())
     }
 
     /// The coarse kind-set of a unit's whole closure, by hash — core's `effects_of`, the fixed

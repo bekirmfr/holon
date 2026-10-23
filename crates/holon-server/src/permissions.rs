@@ -145,26 +145,18 @@ pub(crate) struct Manifest {
 
 impl Manifest {
     pub(crate) fn new(caps: impl Iterator<Item = Capability>, requirements: Requirements) -> Manifest {
-        let mut capabilities: Vec<String> = caps.map(|c| format!("{c:?}")).collect();
+        let mut capabilities: Vec<String> = caps.map(|c| holon_core::consent_name(&c)).collect();
         capabilities.sort();
         Manifest { capabilities, requirements }
     }
 
-    /// Everything in it that can be granted, as consent names it: each capability, each limit
-    /// asked for (`Limit(request_timeout_ms=60000)`), each exception (`PlainHttp("a.com")`,
+    /// Everything in it that can be granted, as consent names it (core's `manifest_items`, the
+    /// rule the editor shows with too): each capability, each limit asked for
+    /// (`Limit(request_timeout_ms=60000)`), each exception (`PlainHttp("a.com")`,
     /// `PrivateAddresses`).
     pub(crate) fn items(&self) -> BTreeSet<String> {
-        let mut items: BTreeSet<String> = self.capabilities.iter().cloned().collect();
-        for (name, n) in &self.requirements.limits {
-            items.insert(format!("Limit({name}={n})"));
-        }
-        for host in &self.requirements.plain_http {
-            items.insert(format!("PlainHttp({host:?})"));
-        }
-        if self.requirements.private_addresses {
-            items.insert("PrivateAddresses".into());
-        }
-        items
+        let r = &self.requirements;
+        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses)
     }
 
     /// The manifest's content hash: equal manifests, equal hashes. Which items are optional is
@@ -179,22 +171,15 @@ impl Manifest {
         hash_value(&record).expect("a manifest is small text")
     }
 
-    /// What starts its runs, which it can't do without: `NetworkIngress` for a flow with routes,
-    /// else `Clock` for one the clock fires.
+    /// What starts its runs, which it can't do without (core's `trigger`).
     pub(crate) fn trigger(&self) -> Option<&'static str> {
-        let has = |c: &str| self.capabilities.iter().any(|x| x == c);
-        if has("NetworkIngress") {
-            Some("NetworkIngress")
-        } else if has("Clock") {
-            Some("Clock")
-        } else {
-            None
-        }
+        holon_core::trigger(&self.capabilities)
     }
 
-    /// Whether it can run without `item`: the author marked it optional.
+    /// Whether it can run without `item` (core's `permission_kind`): the author marked it
+    /// optional, and it isn't the trigger.
     pub(crate) fn is_optional(&self, item: &str) -> bool {
-        self.requirements.optional.contains(item)
+        holon_core::permission_kind(item, &self.requirements.optional, self.trigger()) == holon_core::PermissionKind::Optional
     }
 
     /// Why its optional items don't hold, if they don't: one it doesn't need, or its trigger.

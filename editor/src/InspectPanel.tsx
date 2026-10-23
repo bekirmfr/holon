@@ -10,21 +10,21 @@
 // no separate "per-level" bridge mode, just repeated use of three calls that already exist.
 
 import { useMemo, useState } from "react";
-import { Evaluator, type WCapability, type WKind, type WUnit } from "./holon";
-import { capabilityAcknowledgeName } from "./diagnostics";
+import { Evaluator, type WKind, type WUnit } from "./holon";
 
 type InspectNode = {
   hash: string;
   name: string;
   isComposite: boolean;
-  capabilities: WCapability[];
+  /** By consent name, from core. */
+  capabilities: string[];
   kind: WKind[];
   children: InspectNode[];
 };
 
 function buildInspectTree(hash: string, ev: Evaluator): InspectNode {
   const unit = ev.get_unit(hash) as WUnit;
-  const capabilities = ev.capabilities(hash) as WCapability[];
+  const capabilities = ev.capability_names(hash) as string[];
   const kind = ev.effects_of(hash) as WKind[];
   if (unit.body.kind === "Primitive") {
     return { hash, name: unit.body.name, isComposite: false, capabilities, kind, children: [] };
@@ -77,7 +77,7 @@ function InspectRow({ node, depth }: { node: InspectNode; depth: number }) {
         <span style={{ color: kindColor, fontSize: 11 }}>{kindLabel}</span>
         {node.capabilities.length > 0 && (
           <span style={{ color: "#9fb4d4", fontSize: 10 }} title="capabilities">
-            {node.capabilities.map(capabilityAcknowledgeName).join(", ")}
+            {node.capabilities.join(", ")}
           </span>
         )}
       </div>

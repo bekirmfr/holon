@@ -123,7 +123,7 @@ export type DeployResult = {
 };
 
 /** `POST /deploy` — register `slug -> unit`. `acknowledge` must name every capability the
- *  unit's closure actually derives (via `capabilityAcknowledgeName` from `./holon`, computed by
+ *  unit's closure actually derives (via `Evaluator.capability_names`, computed by
  *  the caller from `Evaluator.capabilities()`) — the server re-derives the real set independently
  *  and checks it, never trusts this list as the truth. `intervalSeconds` only matters — and is
  *  only required, server-side — when the derived capabilities include `Clock`. */

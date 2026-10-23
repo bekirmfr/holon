@@ -11,7 +11,7 @@ import { initSync, Evaluator, primitive_catalog, primitive_docs, variadic_primit
 import { buildPreimage, type WUnit, type WValue } from "./holon";
 import { fromHex } from "./flowDoc";
 import { deriveServer, flowAsNode, flowUnitHash } from "./canvasOps";
-import { capabilityAcknowledgeName, manifestItems, manifestTrigger, permissionKind } from "./diagnostics";
+import { manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { SAMPLES, buildSample } from "./samples";
@@ -40,7 +40,7 @@ function derive(name: string): { caps: string[]; endpoints: number } {
   // The unit deploying it would deploy (and the flows page derives a saved flow's manifest from).
   const hash = flowUnitHash(nodes, edges, ev, catalog, sample.port ?? "8080");
   const endpoints = sample.port ? deriveServer(nodes, edges, ev, catalog, sample.port).endpoints.length : 0;
-  const caps = (ev.capabilities(hash) as Parameters<typeof capabilityAcknowledgeName>[0][]).map(capabilityAcknowledgeName).sort();
+  const caps = (ev.capability_names(hash) as string[]).sort();
   return { caps, endpoints };
 }
 

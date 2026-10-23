@@ -33,7 +33,9 @@ import {
   type WUnit,
   type WValue,
   type WEncapSpec,
-  type WCapability,
+  manifestItems,
+  manifestTrigger,
+  readsFromOutside,
 } from "./holon";
 import {
   deployUnit,
@@ -71,7 +73,7 @@ import {
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
 import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
-import { isWEncapError, capabilityAcknowledgeName, describeItem, manifestItems, manifestTrigger, readsFromOutside, valueChip } from "./diagnostics";
+import { isWEncapError, describeItem, valueChip } from "./diagnostics";
 import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
@@ -585,7 +587,7 @@ function Canvas({
     (doc: FlowDocument) => {
       for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
       const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, byName, doc.server?.port ?? DEFAULT_SETTINGS.port);
-      const caps = (ev.capabilities(hash) as WCapability[]).map(capabilityAcknowledgeName);
+      const caps = (ev.capability_names(hash) as string[]);
       return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
     },
     [ev, byName],
@@ -606,7 +608,7 @@ function Canvas({
     try {
       const { nodes: ns, edges: es } = live.current;
       const hash = flowUnitHash(ns, es, ev, byName, settings.port);
-      return ((ev.capabilities(hash) as WCapability[]).map(capabilityAcknowledgeName)).sort();
+      return ((ev.capability_names(hash) as string[])).sort();
     } catch {
       return [];
     }
@@ -735,7 +737,7 @@ function Canvas({
       setDeployError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
       return;
     }
-    const caps = (ev.capabilities(hash) as WCapability[]).map(capabilityAcknowledgeName);
+    const caps = (ev.capability_names(hash) as string[]);
     let interval: number | undefined;
     if (!isServer && caps.includes("Clock")) {
       interval = Number(settings.interval);
@@ -967,7 +969,7 @@ function Canvas({
         const body = (node as PrimitiveNodeType).data.body;
         if (body.kind !== "Composite") return false;
         try {
-          return readsFromOutside((ev.capabilities(body.hash) as WCapability[]).map(capabilityAcknowledgeName));
+          return readsFromOutside(ev.capability_names(body.hash) as string[]);
         } catch {
           return true;
         }
