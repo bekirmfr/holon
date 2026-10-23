@@ -24,7 +24,17 @@ import {
 /** A flow's deploy settings, saved with it. `port` is for a flow with routes (a server),
  *  `interval` (seconds) for a flow that reads the clock. Either may be unused. `requirements`:
  *  limits away from the host's defaults, and exceptions, which the host must grant. */
-export type FlowSettings = { port: string; interval: string; requirements?: Requirements };
+export type FlowSettings = {
+  port: string;
+  interval: string;
+  requirements?: Requirements;
+  /** The web pages from other sites a flow with routes answers (CORS): `*`, or origins separated
+   *  by spaces or commas; blank for none (a browser then refuses them). */
+  browsers?: string;
+};
+
+/** A flow's `browsers` setting as the list the server takes. */
+export const browsersOf = (settings: { browsers?: string }): string[] => (settings.browsers ?? "").split(/[\s,]+/).filter(Boolean);
 
 /** The limits a flow can ask for, with what a person reads for each (permissions.rs's names). */
 const LIMITS: [string, string][] = [
@@ -213,6 +223,13 @@ export function DeployBar({
               </span>
               <span title="the port a flow with routes (request nodes) answers on">port</span>
               <input value={settings.port} onChange={(e) => setSettings({ ...settings, port: e.target.value })} style={input} />
+              <span title="web pages on other sites that may call its routes (CORS): * for any, or origins like https://example.com">web pages from</span>
+              <input
+                value={settings.browsers ?? ""}
+                placeholder="none (* or https://site)"
+                onChange={(e) => setSettings({ ...settings, browsers: e.target.value })}
+                style={input}
+              />
               <span title="how often a flow that reads the clock fires, in seconds">interval (s)</span>
               <input
                 value={settings.interval}

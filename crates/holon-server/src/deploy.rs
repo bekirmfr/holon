@@ -66,6 +66,9 @@ pub(crate) fn handle_post_deploy(
     if let Err(e) = crate::flows::check_uses(body.uses.as_deref()) {
         return err(400, e);
     }
+    if let Some(bad) = body.browsers.iter().find(|o| !crate::listeners::is_origin_or_any(o)) {
+        return err(400, format!("browsers: {bad:?} isn't an origin (https://example.com) or *"));
+    }
     let Some(unit_hash) = parse_hash(&body.unit) else {
         return err(400, "unit is not a 64-char hex hash");
     };
@@ -208,6 +211,7 @@ pub(crate) fn handle_post_deploy(
                 deployed_at: SystemTime::now(),
                 deployed_by: by.map(String::from),
                 uses: body.uses.clone(),
+                browsers: body.browsers.clone(),
                 life,
                 log,
                 document,
@@ -240,6 +244,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         deployed_by: dep.deployed_by.clone(),
         uses: dep.uses.clone(),
+        browsers: dep.browsers.clone(),
         attention: dep.attention.clone(),
         waiting: dep.parked.len(),
     }

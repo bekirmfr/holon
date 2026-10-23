@@ -12,7 +12,7 @@ import { describeItem, isWEncapError } from "./diagnostics";
 import { buildPreimage, type Evaluator, type WEncapSpec, type WUnit } from "./holon";
 import { stageClosure } from "./canvasUnits";
 import { changeDeployment, deployUnit, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
-import type { FlowSettings } from "./DeployBar";
+import { browsersOf, type FlowSettings } from "./DeployBar";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 
 type Dialogs = { confirm: (message: string, action?: string) => Promise<boolean>; prompt: (message: string, initial?: string) => Promise<string | null> };
@@ -137,6 +137,8 @@ export function useDeployFlow({
       if (preview.missing_secrets.length > 0) {
         lines.push("", `Not set yet: ${preview.missing_secrets.join(", ")} (set under ⚙ → secrets; until then those nodes stay empty)`);
       }
+      const pages = browsersOf(settings);
+      if (isServer && pages.length > 0) lines.push("", `Web pages from ${pages.includes("*") ? "any site" : pages.join(", ")} may call its routes.`);
       if (existing) lines.push("", "Its state and sessions are kept.");
       const action = ask.length > 0 ? "Approve and deploy" : existing ? "Update" : "Deploy";
       if (!(await dialog.confirm(lines.join("\n"), action))) return;

@@ -203,6 +203,10 @@ pub(crate) struct DeployRequestBody {
     pub(crate) requirements: Requirements,
     #[serde(default)]
     pub(crate) uses: Option<Vec<HolonUse>>,
+    /// The web pages it answers from other sites (CORS): `*` for any, else origins
+    /// (`https://example.com`); none by default, as a browser then refuses them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) browsers: Vec<String>,
 }
 
 /// The on-disk, persisted shape of one deployment. `triggers` is still not persisted — it's
@@ -250,6 +254,10 @@ pub(crate) struct DeploymentRecord {
     /// Its runs waiting for an event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) parked: Vec<ParkedRun>,
+    /// The web pages it answers from other sites (CORS): `*` for any, else origins
+    /// (`https://example.com`); none by default, as a browser then refuses them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) browsers: Vec<String>,
     /// The saved flows its version places as nodes (`FlowRecord::uses`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) uses: Option<Vec<HolonUse>>,
@@ -292,6 +300,10 @@ pub(crate) struct DeploymentEntry {
     /// The saved flows its version places as nodes (`FlowRecord::uses`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) uses: Option<Vec<HolonUse>>,
+    /// The web pages it answers from other sites (CORS): `*` for any, else origins
+    /// (`https://example.com`); none by default, as a browser then refuses them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) browsers: Vec<String>,
     /// Why it can't run until deployed again, if so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) attention: Option<String>,

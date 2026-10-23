@@ -3212,3 +3212,30 @@ fn every_save_of_a_flow_is_stamped_later_than_the_last() {
     let (first, second, third) = (save(), save(), save());
     assert!(first < second && second < third, "{first} {second} {third}");
 }
+
+/// A deployment answers web pages from other sites only when it says so: their preflight, and
+/// the header that lets the page read the answer; a site it doesn't name gets neither.
+#[test]
+fn a_deployment_answers_the_web_pages_it_names() {
+    let state = test_state();
+    let unit = todo_server(&state, "18131");
+    let deploy = |browsers: serde_json::Value| {
+        let body = serde_json::json!({ "slug": "todos", "unit": to_hex(&unit), "acknowledge": ["NetworkIngress", "StateRead(\"todos\")", "StateWrite(\"todos\")"], "browsers": browsers });
+        route(&state, &req("POST", "/deploy", serde_json::to_vec(&body).unwrap()))
+    };
+    assert_eq!(deploy(serde_json::json!(["not an origin"])).status_code, 400);
+    assert!(deploy(serde_json::json!(["https://app.example"])).is_success());
+    let from = |origin: &str, method: &str| {
+        let request = data::DataRequest { method: method.into(), url: "/todos".into(), headers: vec![("Origin".into(), origin.into())], body: vec![] };
+        serve_data(&state.store, &state.deployments, &state.deployments_path, "todos", &request)
+    };
+    let allow = |r: &data::DataResponse| r.headers.iter().find(|(k, _)| k == "access-control-allow-origin").map(|(_, v)| v.clone());
+    let pre = from("https://app.example", "OPTIONS");
+    assert_eq!((pre.status, allow(&pre).as_deref()), (204, Some("https://app.example")));
+    assert_eq!(allow(&from("https://app.example", "GET")).as_deref(), Some("https://app.example"));
+    assert_eq!(allow(&from("https://elsewhere.example", "GET")), None);
+    assert_ne!(from("https://elsewhere.example", "OPTIONS").status, 204);
+    // Any site, once it says `*`.
+    assert!(deploy(serde_json::json!(["*"])).is_success());
+    assert_eq!(allow(&from("https://elsewhere.example", "GET")).as_deref(), Some("https://elsewhere.example"));
+}

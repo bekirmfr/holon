@@ -356,6 +356,8 @@ struct Deployment {
     deployed_by: Option<String>,
     /// The saved flows its version places as nodes (wire.rs's `HolonUse`), when the editor said.
     uses: Option<Vec<HolonUse>>,
+    /// The web pages it answers from other sites (wire.rs's `browsers`; listeners.rs).
+    browsers: Vec<String>,
     /// Running, paused or stopped, and every run session so far with its end-of-session state
     /// snapshot (lifecycle.rs). Persisted.
     life: Lifecycle,

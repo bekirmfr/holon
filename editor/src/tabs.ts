@@ -153,6 +153,7 @@ export function tabFromDocument(name: string | null, doc: FlowDocument, saved: b
     port: doc.server?.port ?? DEFAULT_SETTINGS.port,
     interval: doc.server?.interval ?? DEFAULT_SETTINGS.interval,
     ...(doc.server?.requirements ? { requirements: doc.server.requirements } : {}),
+    ...(doc.server?.browsers ? { browsers: doc.server.browsers } : {}),
   };
   // A loaded flow's node ids carry the counters they were minted with: the next id must
   // start past all of them, or a drop would mint a colliding one.

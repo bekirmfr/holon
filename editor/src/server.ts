@@ -9,6 +9,7 @@
 // unless it was started with tokens (crates/holon-server/src/access.rs): then every request
 // carries one, from what this browser was given under "access" (`api` below).
 
+import { browsersOf } from "./DeployBar";
 import { signedIn, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
 import type { WValue } from "./holon";
@@ -152,6 +153,8 @@ export async function deployUnit(
       ...(requirements !== undefined ? { requirements } : {}),
       // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
       ...(document !== undefined ? { uses: usesIn(document) } : {}),
+      // The web pages from other sites it answers (⚙), when it says any.
+      ...(document?.server ? { browsers: browsersOf(document.server) } : {}),
     }),
   });
   return asJson<DeployResult>(res);
@@ -582,7 +585,7 @@ export type FlowDocument = {
   /** The flow's deploy settings (DeployBar): the port for a flow with routes, the interval for a
    *  clock flow. Absent in older flows; `endpoints`, from flows saved before routes were
    *  derived, is ignored. */
-  server?: { port: string; interval?: string; endpoints?: EndpointDraft[]; requirements?: Requirements };
+  server?: { port: string; interval?: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string };
   /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow
    *  deployed whole), so the log's timings land on the canvas (replay.ts's `nodeTimings`). */
   trace?: Record<string, string[]>;

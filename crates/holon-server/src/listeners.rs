@@ -9,7 +9,52 @@ use crate::*;
 /// endpoint with its request record and the deployment's state, and send its response (see
 /// `data.rs`). The deployment is looked up per request, so a redeploy on the same port takes
 /// effect for the very next request without restarting the listener.
+/// Answer one data-plane request to `slug`, as a browser may read it: a page from another site
+/// is answered (CORS) only when the deployment says it answers pages from there (`browsers`),
+/// its preflight then answered here, before the flow.
 pub(crate) fn serve_data(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    slug: &str,
+    request: &DataRequest,
+) -> DataResponse {
+    let browsers = deployments.lock().unwrap().get(slug).map(|d| d.browsers.clone()).unwrap_or_default();
+    let origin = request.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("origin")).map(|(_, v)| v.clone());
+    let allowed = origin.filter(|o| browsers.iter().any(|b| b == "*" || b == o));
+    if request.method == "OPTIONS"
+        && let Some(origin) = &allowed
+    {
+        return DataResponse {
+            status: 204,
+            headers: vec![
+                ("access-control-allow-origin".into(), origin.clone()),
+                ("access-control-allow-methods".into(), "GET, POST, PUT, PATCH, DELETE".into()),
+                ("access-control-allow-headers".into(), "Content-Type, Authorization".into()),
+                ("access-control-max-age".into(), "600".into()),
+                ("vary".into(), "Origin".into()),
+            ],
+            body: vec![],
+        };
+    }
+    let mut answer = serve_flow(store, deployments, deployments_path, slug, request);
+    if let Some(origin) = allowed {
+        answer.headers.push(("access-control-allow-origin".into(), origin));
+        answer.headers.push(("vary".into(), "Origin".into()));
+    }
+    answer
+}
+
+/// Whether `o` is `*` or an origin as a browser sends one: `http(s)://host[:port]`, no path.
+pub(crate) fn is_origin_or_any(o: &str) -> bool {
+    o == "*"
+        || o.strip_prefix("https://").or_else(|| o.strip_prefix("http://")).is_some_and(|rest| {
+            !rest.is_empty() && !rest.contains('/') && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b))
+        })
+}
+
+/// The flow's own answer to a data-plane request.
+fn serve_flow(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &str,
