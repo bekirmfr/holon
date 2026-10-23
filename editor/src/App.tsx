@@ -28,70 +28,48 @@ import {
   primitiveDocs,
   variadicPrimitives,
   compatible,
-  buildPreimage,
   Evaluator,
   type WUnit,
   type WValue,
-  type WEncapSpec,
   manifestItems,
   manifestTrigger,
 } from "./holon";
-import {
-  deployUnit,
-  previewDeploy,
-  changeDeployment,
-  getDeployedDocument,
-  getAllFlows,
-  getFlow,
-  saveFlow,
-  listFlows,
-  type FlowDocument,
-  type FlowRecord,
-} from "./server";
+import { changeDeployment, getDeployedDocument, getFlow, type FlowDocument, type FlowRecord } from "./server";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
-import { documentKey, structuralKey } from "./flowDoc";
-import { documentUnits, nameOf, rememberName, restoreDocument } from "./docUnits";
-import { holonUses, interfaceLoss } from "./holonUsage";
+import { structuralKey } from "./flowDoc";
+import { nameOf, rememberName, restoreDocument } from "./docUnits";
 import { DialogProvider, useDialog } from "./Dialog";
 import { ServerPanel } from "./ServerPanel";
-import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
+import { DeployBar, DEFAULT_SETTINGS } from "./DeployBar";
 import { TEMPLATES } from "./templates";
-import { isWEncapError, describeItem } from "./diagnostics";
-import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
+import { primitiveName, unitFor } from "./canvasUnits";
 import {
   deriveServer,
   excludeProjectedOutput,
   flowAsNode,
   nodeFromPalette,
   flowUnitHash,
-  groupOf,
   groupSelection,
   projectCanvas,
-  traceOfUnit,
   type Projection,
 } from "./canvasOps";
-import { expandComposite, replaceComposite } from "./composites";
+import { expandComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { DeployedPage, FlowsPage, type AppPage } from "./Pages";
 import { newHistory, snapshotOf, useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { SAMPLES, buildSample, type Sample } from "./samples";
-import { blankMeta, blankTab, metaSetter, nextAfterClose, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
+import { blankTab, freshTab, metaSetter, savedKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccessButton } from "./AccessButton";
 import { useViewMode, ViewModePanes } from "./useViewMode";
 import { useCompositeOverlay } from "./useCompositeOverlay";
-
-// What a save records, for unsaved-change tracking: the canvas plus the server draft.
-const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) =>
-  documentKey(ns, es) + JSON.stringify(settings);
-
-// A new, empty flow's tab: nothing to save until something is placed.
-const freshMeta = (name: string | null): FlowMeta => ({ ...blankMeta(name), savedKey: savedKeyOf([], [], DEFAULT_SETTINGS) });
-const freshTab = (name: string | null): TabState => ({ ...blankTab(name), meta: freshMeta(name) });
+import { useSavedFlows } from "./useSavedFlows";
+import { useDeployFlow } from "./useDeployFlow";
+import { useTabs } from "./useTabs";
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
@@ -160,7 +138,7 @@ function Canvas({
   // needs nothing here. A saved flow is a named workspace document — nodes/edges/viewport
   // exactly as left, stored opaquely by the server (server.ts's FlowDocument), apart from the
   // content-addressed unit the same canvas projects to: presentation stays out of identity.
-  const [flow, setFlow] = useState<FlowMeta>(() => freshMeta(null));
+  const [flow, setFlow] = useState<FlowMeta>(() => freshTab(null).meta);
   const { name: flowName, settings, savedKey, saveMsg, viewing } = flow;
   const setFlowName = useMemo(() => metaSetter(setFlow, "name"), []);
   const setSavedOnServer = useMemo(() => metaSetter(setFlow, "saved"), []);
@@ -196,159 +174,27 @@ function Canvas({
     [nodes, edges, settings, savedKey, viewing],
   );
 
-  // ── Tabs: one per open flow (tabs.ts) ─────────────────────────────────────────────────────
-  // The canvas shows the active tab; the others are kept whole in `stash` and put back when
-  // picked. A flow is open in one tab at most: opening it again goes to its tab.
-  const [tabIds, setTabIds] = useState<number[]>([0]);
-  const [activeId, setActiveId] = useState(0);
-  const stash = useRef(new Map<number, TabState>());
-  const nextTabId = useRef(1);
-
-  const captureTab = useCallback(
-    (): TabState => ({
-      meta: flow,
-      nodes: live.current.nodes,
-      edges: live.current.edges,
-      viewport: getViewport(),
-      history: history.current,
-      idCounter: idRef.current,
-      beforeView: beforeView.current,
-      viewDoc: viewDoc.current,
-      dirty,
-    }),
-    [flow, getViewport, history, dirty],
-  );
-
-  const applyTab = useCallback(
-    (t: TabState) => {
-      restoring.current = true;
-      setNodes(t.nodes);
-      setEdges(t.edges);
-      setViewport(t.viewport);
-      history.current = t.history;
-      idRef.current = t.idCounter;
-      beforeView.current = t.beforeView;
-      viewDoc.current = t.viewDoc;
-      setFlow(t.meta);
-      resetProjectionView();
-      bump();
-    },
-    [restoring, history, setNodes, setEdges, setViewport, resetProjectionView, bump],
-  );
-
-  /** Show `t` in tab `id`, or in a new tab (null) unless the active one is an empty, untouched,
-   *  unnamed draft, which it takes over. The active tab is kept if it is another. */
-  const showTab = useCallback(
-    (id: number | null, t: TabState) => {
-      const takeOver = id === null && flowName === null && !viewing && live.current.nodes.length === 0 && !dirty;
-      const target = id ?? (takeOver ? activeId : nextTabId.current++);
-      if (target !== activeId) stash.current.set(activeId, captureTab());
-      stash.current.delete(target);
-      setTabIds((ids) => (ids.includes(target) ? ids : [...ids, target]));
-      applyTab(t);
-      setActiveId(target);
-      setPage("canvas");
-    },
-    [flowName, viewing, dirty, activeId, captureTab, applyTab, setPage],
-  );
-
-  const switchTab = useCallback(
-    (id: number) => {
-      const t = stash.current.get(id);
-      if (id === activeId || !t) return setPage("canvas");
-      showTab(id, t);
-    },
-    [activeId, showTab, setPage],
-  );
-
-  /** The tab `name` is open in, if any. */
-  const tabOf = useCallback(
-    (name: string): number | null => {
-      if (flowName === name) return activeId;
-      for (const [id, t] of stash.current) if (t.meta.name === name) return id;
-      return null;
-    },
-    [flowName, activeId],
-  );
-
-  const closeTab = useCallback(
-    async (id: number) => {
-      const t = id === activeId ? captureTab() : stash.current.get(id);
-      if (!t) return;
-      if (t.dirty && !(await dialog.confirm(`Close "${t.meta.name ?? "untitled"}" and discard its unsaved changes?`, "Discard"))) return;
-      if (id !== activeId) {
-        stash.current.delete(id);
-        setTabIds((ids) => ids.filter((x) => x !== id));
-        return;
-      }
-      const next = nextAfterClose(tabIds, id);
-      if (next === null) {
-        // The last tab closes into a fresh draft.
-        applyTab(freshTab(null));
-        return;
-      }
-      const nt = stash.current.get(next) ?? freshTab(null);
-      stash.current.delete(next);
-      setTabIds((ids) => ids.filter((x) => x !== id));
-      applyTab(nt);
-      setActiveId(next);
-    },
-    [activeId, captureTab, dialog, tabIds, applyTab],
-  );
-
-  // Leaving the page asks first while any tab has unsaved changes.
-  const anyDirty = dirty || [...stash.current.values()].some((t) => t.dirty);
-  useEffect(() => {
-    if (!anyDirty) return;
-    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [anyDirty]);
-
-  // A flow document as a tab: its composites put back into the workspace first, its node-id
-  // counter past every id it holds. `saved`: it is the saved flow of that name (else a draft,
-  // unsaved until saved).
-  const tabFromDocument = useCallback(
-    (name: string | null, doc: FlowDocument, saved: boolean): TabState => {
-      const ns = doc.nodes as PrimitiveNodeType[];
-      const es = doc.edges as Edge[];
-      // A preimage is re-hashed on insert, so a tampered entry can only add a unit nobody
-      // points at, never stand in for one.
-      const failed = restoreDocument(doc, ev);
-      let msg = failed ? `some saved units could not be restored: ${failed}` : "";
-      const missing = ns.filter((n) => {
-        if (n.data.body.kind !== "Composite") return false;
-        try {
-          ev.get_unit(n.data.body.hash);
-          return false;
-        } catch {
-          return true;
-        }
-      });
-      if (missing.length > 0) {
-        msg = `${missing.length} grouped node(s) can't be resolved (saved before composites were stored) — rebuild them, then save`;
-      }
-      const server: FlowSettings = {
-        port: doc.server?.port ?? DEFAULT_SETTINGS.port,
-        interval: doc.server?.interval ?? DEFAULT_SETTINGS.interval,
-        ...(doc.server?.requirements ? { requirements: doc.server.requirements } : {}),
-      };
-      // A loaded flow's node ids carry the counters they were minted with: the next id must
-      // start past all of them, or a drop would mint a colliding one.
-      let max = -1;
-      for (const n of ns) for (const m of n.id.matchAll(/\d+/g)) max = Math.max(max, Number(m[0]));
-      return {
-        ...blankTab(name),
-        meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server) : "", saveMsg: msg },
-        nodes: ns,
-        edges: es,
-        viewport: doc.viewport,
-        history: newHistory(snapshotOf(ns, es)),
-        idCounter: max + 1,
-      };
-    },
-    [ev],
-  );
+  // ── Tabs: one per open flow (useTabs.ts) ──────────────────────────────────────────────────
+  const { tabIds, activeId, stash, captureTab, showTab, switchTab, tabOf, closeTab } = useTabs({
+    flow,
+    setFlow,
+    live,
+    dirty,
+    getViewport,
+    setViewport,
+    history,
+    restoring,
+    bump,
+    idRef,
+    beforeView,
+    viewDoc,
+    setNodes,
+    setEdges,
+    resetProjectionView,
+    showCanvas: () => setPage("canvas"),
+    confirm: dialog.confirm,
+  });
+  const tabFromDocument = useCallback((name: string | null, doc: FlowDocument, saved: boolean) => tabFromDoc(name, doc, saved, ev), [ev]);
 
   // "New" from the menu: a clean canvas under the prompted name, in a tab of its own. `nonce`
   // makes a second New with the same name still fire.
@@ -358,51 +204,6 @@ function Canvas({
     // Only a new request opens a tab, not the callbacks changing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingNew]);
-
-  // The saved flows the palette offers as nodes, and when each was saved (a holon placed from an
-  // older save offers an update): read when the canvas shows and after a save.
-  const [savedFlowTimes, setSavedFlowTimes] = useState<Map<string, number>>(new Map());
-  useEffect(() => {
-    if (page !== "canvas") return;
-    listFlows()
-      .then((fs) => setSavedFlowTimes(new Map(fs.map((f) => [f.name, f.saved_at_epoch_seconds]))))
-      .catch(() => setSavedFlowTimes(new Map()));
-  }, [page, savedKey]);
-
-  // Whether to go on saving `name` as `doc` when other saved flows place it (set below, once the
-  // catalog is in scope).
-  const placedElsewhereOk = useRef<(name: string, doc: FlowDocument) => Promise<boolean>>(async () => true);
-  const onSave = useCallback(async () => {
-    let name = flowName;
-    if (!name) {
-      name = await dialog.prompt("Flow name (letters, digits, - and _ only):");
-      if (!name) return;
-      setFlowName(name);
-    }
-    let carried: ReturnType<typeof documentUnits>;
-    try {
-      carried = documentUnits(nodes.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])), ev);
-    } catch (e) {
-      setSaveMsg(`not saved: ${e instanceof Error ? e.message : String(e)}`);
-      return;
-    }
-    const doc: FlowDocument = {
-      nodes: nodes as unknown[],
-      edges: edges as unknown[],
-      viewport: getViewport(),
-      ...carried,
-      server: settings,
-    };
-    if (!(await placedElsewhereOk.current(name, doc))) return;
-    const key = savedKeyOf(nodes, edges, settings);
-    saveFlow(name, doc)
-      .then((entry) => {
-        setSavedKey(key);
-        setSavedOnServer(true);
-        setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
-      })
-      .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
-  }, [flowName, nodes, edges, getViewport, ev, settings, dialog]);
 
   // Open a saved flow: in its tab when it is open already (`reload`: replace that tab's canvas
   // with the saved copy, asking first if it has unsaved changes), else in a new tab.
@@ -447,33 +248,29 @@ function Canvas({
     return m;
   }, [catalog]);
 
+  // Saving it, the saved flows around it, and updating a holon placed from one (useSavedFlows.ts).
+  const { savedFlowTimes, savedFlows, onSave, updateHolon } = useSavedFlows({
+    refreshOn: page === "canvas" ? savedKey : null,
+    flowName,
+    setFlowName,
+    nodes,
+    edges,
+    live,
+    settings,
+    getViewport,
+    ev,
+    byName,
+    dialog,
+    setNodes,
+    setEdges,
+    setSavedKey,
+    setSavedOnServer,
+    setSaveMsg,
+    setError: setDeployError,
+  });
+
     // A flow other saved flows place as a node: they keep the version they placed, but say what
     // this save takes away from them should they update.
-  // A flow other saved flows place as a node: they keep the version they placed, but a save that
-  // changes its ports says so first, since updating them would remove wires.
-  placedElsewhereOk.current = async (name, doc) => {
-    if (savedFlowTimes.has(name)) {
-      try {
-        const all = await getAllFlows();
-        const users = holonUses(all).get(name) ?? [];
-        const previous = all.find((r) => r.name === name);
-        const before = previous && flowAsNode(name, previous.document, ev, byName, "before", { x: 0, y: 0 });
-        const after = flowAsNode(name, doc, ev, byName, "after", { x: 0, y: 0 });
-        const loss = before?.ok && after.ok ? interfaceLoss(before.node.data, after.node.data) : [];
-        if (users.length > 0 && loss.length > 0) {
-          const ok = await dialog.confirm(
-            `"${name}" is placed as a node in ${users.map((u) => u.user).join(", ")}. This save changes its ports: ${loss.join("; ")}. They keep the version they placed; updating them would remove wires to those ports. Save anyway?`,
-            "Save",
-          );
-          if (!ok) return false;
-        }
-      } catch {
-        // can't tell who uses it: save regardless, as before
-      }
-    }
-    return true;
-  };
-
   // A sample (samples.ts) opens as an unsaved copy under its own name, in a tab of its own:
   // saving it keeps it. A tab of that name already open is replaced only when confirmed.
   const onOpenSample = useCallback(
@@ -517,46 +314,6 @@ function Canvas({
     },
     [byName, variadic, screenToFlowPosition, setNodes, viewing, ev],
   );
-
-  const savedFlows = useMemo(() => [...savedFlowTimes.keys()], [savedFlowTimes]);
-
-  // Place the newest saved version of a holon over the one placed from an older save: same place,
-  // and its wires kept to the ports the new version still has.
-  const updateHolon = useCallback(
-    (id: string) => {
-      const old = live.current.nodes.find((n) => n.id === id);
-      const from = old?.data.source;
-      if (!old || !from) return;
-      getFlow(from.flow)
-        .then(async (rec) => {
-          const placed = flowAsNode(from.flow, rec.document, ev, byName, id, old.position, rec.saved_at_epoch_seconds);
-          if (!placed.ok) return setDeployError(placed.message);
-          const body = placed.node.data.body;
-          if (body.kind !== "Composite") return;
-          // Wires to ports it no longer has (or now of a type they don't fit) would go: ask first.
-          const { edges: kept, dropped } = replaceComposite(live.current.nodes, live.current.edges, id, { hash: body.hash, ...placed.node.data }, { inputs: new Map(), outputs: new Map() });
-          if (dropped.length > 0) {
-            const loss = interfaceLoss(old.data, placed.node.data);
-            const ok = await dialog.confirm(
-              `The newest "${from.flow}" changes ports wired here: ${loss.join("; ")}. Updating removes ${dropped.length} wire(s). Update anyway?`,
-              "Update",
-            );
-            if (!ok) return;
-          }
-          setNodes((ns) => ns.map((n) => (n.id === id ? { ...placed.node, selected: n.selected } : n)));
-          setEdges(kept);
-          setSaveMsg(`updated "${from.flow}" to its save of ${new Date(rec.saved_at_epoch_seconds * 1000).toLocaleString()}${dropped.length ? `; ${dropped.length} wire(s) to ports it no longer has removed` : ""}`);
-        })
-        .catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e)));
-    },
-    [ev, byName, setNodes, setEdges, setSaveMsg, dialog],
-  );
-
-
-  // A group of canvas nodes as core children and wires, and the canvas node behind each child of
-  // a frozen unit (canvasOps.ts).
-  const groupUnits = useCallback((group: PrimitiveNodeType[], es: Edge[]) => groupOf(group, es, ev, byName), [ev, byName]);
-  const traceOf = useCallback((unit: WUnit, group: PrimitiveNodeType[]) => traceOfUnit(unit, group, ev), [ev]);
 
   // A saved flow's manifest (the flows page), derived from its document as deploying it would:
   // its unit's capabilities from core, plus what its deploy settings ask beyond the defaults.
@@ -656,131 +413,24 @@ function Canvas({
   // in-browser wasm workspace. Deploying talks to holon-server, over plain HTTP, localhost-only.
   const deploymentTable = useDeployments(page, setDeployError);
   const { deployments, listError, refresh: refreshDeployments } = deploymentTable;
-  const [deployBusy, setDeployBusy] = useState(false);
+  // Deploying it, and running, pausing or stopping it (useDeployFlow.ts).
+  const { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow, onFlowAction } = useDeployFlow({
+    flowName,
+    setFlowName,
+    nodes,
+    live,
+    derived,
+    flowCapabilities,
+    settings,
+    getViewport,
+    ev,
+    byName,
+    dialog,
+    deployments,
+    refreshDeployments,
+    setError: setDeployError,
+  });
 
-  // ── Deploy: one action for the whole flow, named after it (DeployBar in the header) ──────
-  // A flow with routes deploys as its derived server; any other flow as the whole canvas
-  // projected into one unit (a clock or ingress flow). Before anything is sent, the person sees
-  // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
-  const deployedEntry = flowName ? deployments.find((d) => d.slug === flowName) : undefined;
-  const outOfDate = deployedEntry && derived.serverHash ? deployedEntry.unit !== derived.serverHash : null;
-  // The secrets the flow reads, by name: what ⚙ lets you set. From its derived manifest, so a
-  // secret inside a placed holon counts; plus its own `secret` nodes, for while it doesn't derive.
-  const secretNames = useMemo(
-    () =>
-      [
-        ...new Set([
-          ...flowCapabilities.flatMap((c) => {
-            const m = /^SecretRead\("(.*)"\)$/.exec(c);
-            return m ? [m[1]] : [];
-          }),
-          ...nodes.flatMap((n) =>
-            n.data.name === "secret" && n.data.body.kind === "Primitive"
-              ? n.data.params.flatMap((p) => (p.name === "name" && p.kind === "Frozen" ? [p.value] : []))
-              : [],
-          ),
-        ]),
-      ].sort(),
-    [nodes, flowCapabilities],
-  );
-
-  const onDeployFlow = useCallback(async () => {
-    setDeployError("");
-    let name = flowName;
-    if (!name) {
-      name = await dialog.prompt("Name this flow first (letters, digits, - and _ only). Its deployment takes the name:");
-      if (!name) return;
-      setFlowName(name);
-    }
-    let hash: string;
-    let isServer = false;
-    let trace = derived.trace;
-    try {
-      if (derived.errors.length > 0) throw new Error(derived.errors.join("; "));
-      if (derived.endpoints.length > 0) {
-        if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it under ⚙)`);
-        hash = derived.serverHash;
-        isServer = true;
-      } else {
-        const { nodes: ns, edges: es } = live.current;
-        if (ns.length === 0) throw new Error("nothing to deploy: the canvas is empty");
-        const { children, wedges } = groupUnits(ns, es);
-        const spec = ev.propose_encapsulation(children, wedges) as WEncapSpec;
-        const whole = ev.freeze_encapsulation(children, wedges, spec) as WUnit;
-        hash = ev.insert(buildPreimage(whole));
-        trace = { "*": traceOf(whole, ns) };
-      }
-    } catch (err) {
-      setDeployError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
-      return;
-    }
-    const caps = (ev.capability_names(hash) as string[]);
-    let interval: number | undefined;
-    if (!isServer && caps.includes("Clock")) {
-      interval = Number(settings.interval);
-      if (!Number.isInteger(interval) || interval < 1) {
-        setDeployError("this flow reads the clock: set how often it fires under ⚙ (whole seconds, at least 1)");
-        return;
-      }
-    }
-    // The host decides what needs approval (its policy, and what this deployment was already
-    // granted): ask it, then show asked against granted, and acknowledge exactly what it asks.
-    const existing = deployments.some((d) => d.slug === name);
-    const requirements = settings.requirements;
-    let ask: string[];
-    try {
-      await stageClosure(ev, hash, new Set());
-      const preview = await previewDeploy(name, hash, requirements);
-      if (preview.refused) {
-        setDeployError(`this host can't grant that: ${preview.refused}`);
-        return;
-      }
-      ask = preview.needs_approval;
-      // Each item says whether the flow can run without it (deploy settings' optional ones).
-      const optional = requirements?.optional ?? [];
-      const said = (i: string) => `• ${describeItem(i)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
-      const lines = [`${existing ? "Update" : "Deploy"} "${name}"?`];
-      if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map(said));
-      if (preview.already_granted.length > 0) {
-        lines.push("", "Already granted:", ...preview.already_granted.map(said));
-      }
-      if (preview.missing_secrets.length > 0) {
-        lines.push(
-          "",
-          `Not set yet: ${preview.missing_secrets.join(", ")} (set under ⚙ → secrets; until then those nodes stay empty)`,
-        );
-      }
-      if (existing) lines.push("", "Its state and sessions are kept.");
-      const action = ask.length > 0 ? "Approve and deploy" : existing ? "Update" : "Deploy";
-      if (!(await dialog.confirm(lines.join("\n"), action))) return;
-    } catch (err) {
-      setDeployError(err instanceof Error ? err.message : String(err));
-      return;
-    }
-    setDeployBusy(true);
-    try {
-      const { nodes: ns, edges: es } = live.current;
-      const carried = documentUnits(ns.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])), ev);
-      const document: FlowDocument = { nodes: ns, edges: es, viewport: getViewport(), ...carried, server: settings, trace };
-      await deployUnit(name, hash, ask, interval, document, requirements);
-      refreshDeployments();
-    } catch (err) {
-      setDeployError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDeployBusy(false);
-    }
-  }, [flowName, dialog, derived, settings, groupUnits, traceOf, ev, deployments, refreshDeployments, getViewport]);
-
-  const onFlowAction = useCallback(
-    (action: "run" | "pause" | "stop") => {
-      if (!flowName) return;
-      setDeployError("");
-      changeDeployment(flowName, action)
-        .then(() => refreshDeployments())
-        .catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e)));
-    },
-    [flowName, refreshDeployments],
-  );
 
   // ── View mode ──────────────────────────────────────────────────────────────────────────
   // A deployment, read only, with its runs: in its flow's tab (that tab's edit copy set aside

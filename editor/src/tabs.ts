@@ -8,6 +8,9 @@ import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { FlowDocument, LogEntry } from "./server";
 import type { FlowSettings } from "./DeployBar";
 import { DEFAULT_SETTINGS } from "./DeployBar";
+import { documentKey } from "./flowDoc";
+import { restoreDocument } from "./docUnits";
+import type { Evaluator } from "./holon";
 import type { History } from "./history";
 import { newHistory, snapshotOf, type Snapshot } from "./useCanvasHistory";
 
@@ -55,6 +58,9 @@ export type TabState = {
 };
 
 export type Mode = "edit" | "view";
+
+/** What a save records, for unsaved-change tracking: the canvas plus the server draft. */
+export const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) => documentKey(ns, es) + JSON.stringify(settings);
 
 /** A fresh flow's meta, in edit mode. */
 export function blankMeta(name: string | null): FlowMeta {
@@ -120,3 +126,48 @@ export function nextAfterClose(ids: number[], closing: number): number | null {
   if (rest.length === 0) return null;
   return rest[Math.max(0, at - 1)];
 }
+
+/** A flow document as a tab: its composites put back into the workspace first, its node-id
+ *  counter past every id it holds. `saved`: it is the saved flow of that name (else a draft,
+ *  unsaved until saved). */
+export function tabFromDocument(name: string | null, doc: FlowDocument, saved: boolean, ev: Evaluator): TabState {
+  const ns = doc.nodes as PrimitiveNodeType[];
+  const es = doc.edges as Edge[];
+  // A preimage is re-hashed on insert, so a tampered entry can only add a unit nobody
+  // points at, never stand in for one.
+  const failed = restoreDocument(doc, ev);
+  let msg = failed ? `some saved units could not be restored: ${failed}` : "";
+  const missing = ns.filter((n) => {
+    if (n.data.body.kind !== "Composite") return false;
+    try {
+      ev.get_unit(n.data.body.hash);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  if (missing.length > 0) {
+    msg = `${missing.length} grouped node(s) can't be resolved (saved before composites were stored) — rebuild them, then save`;
+  }
+  const server: FlowSettings = {
+    port: doc.server?.port ?? DEFAULT_SETTINGS.port,
+    interval: doc.server?.interval ?? DEFAULT_SETTINGS.interval,
+    ...(doc.server?.requirements ? { requirements: doc.server.requirements } : {}),
+  };
+  // A loaded flow's node ids carry the counters they were minted with: the next id must
+  // start past all of them, or a drop would mint a colliding one.
+  let max = -1;
+  for (const n of ns) for (const m of n.id.matchAll(/\d+/g)) max = Math.max(max, Number(m[0]));
+  return {
+    ...blankTab(name),
+    meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server) : "", saveMsg: msg },
+    nodes: ns,
+    edges: es,
+    viewport: doc.viewport,
+    history: newHistory(snapshotOf(ns, es)),
+    idCounter: max + 1,
+  };
+}
+
+/** A new, empty flow's tab: nothing to save until something is placed. */
+export const freshTab = (name: string | null): TabState => ({ ...blankTab(name), meta: { ...blankMeta(name), savedKey: savedKeyOf([], [], DEFAULT_SETTINGS) } });
