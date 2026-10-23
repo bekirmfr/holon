@@ -49,20 +49,23 @@ import {
 } from "./server";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
-import { PrimitiveNode, type PrimitiveData, type PrimitiveNodeType } from "./PrimitiveNode";
+import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
 import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
 import { DialogProvider, useDialog } from "./Dialog";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
-import { isTemplate, templateDefaults, templateInterface, TEMPLATES } from "./templates";
+import { TEMPLATES } from "./templates";
 import { isWEncapError, describeItem } from "./diagnostics";
 import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
   excludeProjectedOutput,
   flowAsNode,
+  freezeInner,
   innerCanvas,
+  nodeFromPalette,
+  replaceComposite,
   flowUnitHash,
   expandComposite,
   groupOf,
@@ -80,7 +83,7 @@ import { blankMeta, blankTab, metaSetter, nextAfterClose, tabKind, type FlowMeta
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccessButton } from "./AccessButton";
 import { useViewMode, ViewModePanes } from "./useViewMode";
-import { CompositeOverlay, type OverlayFrame } from "./CompositeOverlay";
+import { CompositeOverlay, type FrozenOk, type OverlayFrame, type OverlayOps, type Renames } from "./CompositeOverlay";
 import type { Node as FlowNode } from "@xyflow/react";
 import { innerSteps } from "./replay";
 
@@ -476,54 +479,10 @@ function Canvas({
           .catch((err: unknown) => setDeployError(err instanceof Error ? err.message : String(err)));
         return;
       }
-      if (isTemplate(name)) {
-        const params = templateDefaults(name);
-        const iface = templateInterface(name, params);
-        const node: PrimitiveNodeType = {
-          id: `${name}-${idRef.current++}`,
-          type: "primitive",
-          position: screenToFlowPosition({ x: e.clientX, y: e.clientY }),
-          data: {
-            name,
-            body: { kind: "Template" },
-            inputs: iface.inputs,
-            outputs: iface.outputs,
-            params,
-            variadic: false,
-            minInputs: 0,
-            hiddenInputs: iface.hiddenInputs,
-          },
-        };
-        setNodes((ns) => ns.concat(node));
-        return;
-      }
-      const u = name ? byName.get(name) : undefined;
-      if (!u || !name) return;
-
-      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      const inputs = u.inputs ?? [];
-      const data: PrimitiveData = {
-        name,
-        body: { kind: "Primitive" },
-        inputs,
-        outputs: u.outputs ?? [],
-        params: u.params ?? [],
-        // The catalog's own declared arity is the floor a variadic node may shrink back to —
-        // never below what core actually declared, derived here rather than hardcoded, so a
-        // future catalog change to one of these leaves' default arity can't silently drift from
-        // what the "−" button enforces.
-        variadic: variadic.has(name),
-        minInputs: inputs.length,
-      };
-      const node: PrimitiveNodeType = {
-        id: `${name}-${idRef.current++}`,
-        type: "primitive",
-        position,
-        data,
-      };
-      setNodes((ns) => ns.concat(node));
+      const node = nodeFromPalette(name, byName, variadic, `${name}-${idRef.current++}`, screenToFlowPosition({ x: e.clientX, y: e.clientY }));
+      if (node) setNodes((ns) => ns.concat(node));
     },
-    [byName, screenToFlowPosition, setNodes, viewing, ev],
+    [byName, variadic, screenToFlowPosition, setNodes, viewing, ev],
   );
 
   // The saved flows the palette offers as nodes, and when each was saved (a holon placed from an
@@ -971,12 +930,41 @@ function Canvas({
   // where the node sits (CompositeOverlay.tsx). In view mode, with a run selected, its nodes show
   // what they produced in the run (the log keeps one level inside each node).
   const [overlay, setOverlay] = useState<{ frames: OverlayFrame[]; from: { left: number; top: number; width: number; height: number } } | null>(null);
+  // Its nodes are read only in view mode, and changed like the flow's in edit mode.
+  const editableInside = useCallback((ns: FlowNode[]) => (viewing ? ns : ns.map((n) => (n.type === "primitive" ? { ...n, data: { ...n.data, readOnly: false } } : n))), [viewing]);
   const inside = useCallback(
     (target: PrimitiveNodeType, around: FlowNode[], wires: Edge[]): OverlayFrame | string => {
       const opened = innerCanvas(target, around.filter((n) => n.type === "primitive") as PrimitiveNodeType[], wires, ev, byName, variadic, nameOf);
-      return opened.ok ? { title: target.data.name, nodes: opened.nodes, edges: opened.edges } : opened.message;
+      return opened.ok ? { title: target.data.name, nodeId: target.id, nodes: editableInside(opened.nodes), edges: opened.edges, dirty: false } : opened.message;
     },
-    [ev, byName, variadic, nameOf],
+    [ev, byName, variadic, nameOf, editableInside],
+  );
+  // What the overlay's levels need to change: freeze a level, place a palette entry, ungroup.
+  const overlayOps = useMemo<OverlayOps>(
+    () => ({
+      inside,
+      freeze: (canvas) => freezeInner(canvas, ev, byName),
+      paletteNode: (name, position) => nodeFromPalette(name, byName, variadic, `${name}-${idRef.current++}`, position),
+      ungroupIn: (canvas, id) => {
+        const target = canvas.nodes.find((n) => n.id === id) as PrimitiveNodeType | undefined;
+        if (!target || target.data.body.kind !== "Composite") return "not a composite";
+        const result = expandComposite(target, canvas.edges, ev, byName, variadic, () => idRef.current++, nameOf);
+        return result.ok ? { nodes: [...canvas.nodes.filter((n) => n.id !== id), ...result.nodes], edges: result.edges } : result.message;
+      },
+    }),
+    [inside, ev, byName, variadic, nameOf],
+  );
+  // Apply: the composite in the flow replaced by its new version; wires follow renamed ports,
+  // and wires to ports it no longer has are removed, saying so. Undo takes it back.
+  const applyComposite = useCallback(
+    (id: string, frozen: FrozenOk, renames: Renames) => {
+      const done = replaceComposite(live.current.nodes, live.current.edges, id, frozen, renames);
+      setNodes(done.nodes);
+      setEdges(done.edges);
+      const name = live.current.nodes.find((n) => n.id === id)?.data.name ?? "composite";
+      setSaveMsg(`"${name}" is a new version${done.dropped.length ? `; ${done.dropped.length} wire(s) to ports it no longer has removed` : ""}`);
+    },
+    [setNodes, setEdges, setSaveMsg],
   );
   const expandNode = useCallback(
     (id: string) => {
@@ -995,9 +983,9 @@ function Canvas({
       const box = document.querySelector(".hl-canvas__flow")?.getBoundingClientRect();
       const at = document.querySelector(`.hl-canvas__flow .react-flow__node[data-id="${CSS.escape(id)}"]`)?.getBoundingClientRect();
       const from = box && at ? { left: at.left - box.left, top: at.top - box.top, width: at.width, height: at.height } : { left: 0, top: 0, width: 200, height: 100 };
-      setOverlay({ frames: [{ title: target.data.name, nodes: frameNodes, edges: opened.edges }], from });
+      setOverlay({ frames: [{ title: target.data.name, nodeId: id, nodes: editableInside(frameNodes), edges: opened.edges, dirty: false }], from });
     },
-    [ev, byName, variadic, viewing, flow.selectedRun, flow.viewTrace, nameOf],
+    [ev, byName, variadic, viewing, flow.selectedRun, flow.viewTrace, nameOf, editableInside],
   );
   // Another tab, or the other mode, closes it.
   useEffect(() => setOverlay(null), [activeId, viewing]);
@@ -1198,8 +1186,10 @@ function Canvas({
             root={flowName ?? "untitled"}
             frames={overlay.frames}
             from={overlay.from}
-            inside={inside}
-            onFrames={(frames) => setOverlay((o) => (o ? { ...o, frames } : o))}
+            editable={!viewing}
+            ops={overlayOps}
+            onFrames={(update) => setOverlay((o) => (o ? { ...o, frames: update(o.frames) } : o))}
+            onApply={applyComposite}
             onClose={() => setOverlay(null)}
           />
         )}

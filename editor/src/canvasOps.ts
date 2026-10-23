@@ -4,9 +4,10 @@
 // setting React state to the caller.
 
 import { addEdge, type Edge, type Node } from "@xyflow/react";
-import { BOUNDARY, buildPreimage, Evaluator, type WEdge, type WEncapSpec, type WPort, type WUnit, type WValue } from "./holon";
+import { BOUNDARY, buildPreimage, compatible, Evaluator, type WEdge, type WEncapSpec, type WPort, type WUnit, type WValue } from "./holon";
 import type { PrimitiveData, PrimitiveNodeType } from "./PrimitiveNode";
 import { boundaryLabels, encapErrorNodeIndices, isWEncapError } from "./diagnostics";
+import { isTemplate, templateDefaults, templateInterface } from "./templates";
 import { outputColor } from "./theme";
 import { unitFor } from "./canvasUnits";
 import { defaultBoundaryValue } from "./BoundaryField";
@@ -390,7 +391,18 @@ function childNodes(childHashes: string[], ev: Evaluator, byName: Map<string, WU
 
 /** One port of a composite's boundary as its inner canvas shows it, with what it is wired to
  *  outside the composite, in the flow around it. */
-export type BoundaryPort = { name: string; ty: WPort["ty"]; outside: string[] };
+export type BoundaryPort = {
+  /** As the node shows it (renamable, not identity). */
+  name: string;
+  ty: WPort["ty"];
+  outside: string[];
+  /** The unit's own name for this port (part of its identity): kept when frozen again, so an
+   *  unchanged composite freezes back to the very same unit. Absent for a port added inside. */
+  unit?: string;
+  /** Its name on the node when the canvas was opened, so the flow's wires to it follow a rename.
+   *  Absent for a port added inside. */
+  was?: string;
+};
 export type BoundaryData = { side: "in" | "out"; ports: BoundaryPort[] };
 export const BOUNDARY_IN = "boundary-in";
 export const BOUNDARY_OUT = "boundary-out";
@@ -444,13 +456,17 @@ export function innerCanvas(
       const ports = side === "out" ? node.data.outputs : node.data.inputs;
       return ports.length > 1 && handle ? `${node.data.name}.${handle}` : node.data.name;
     };
-    const ins: BoundaryPort[] = target.data.inputs.map((p) => ({
+    const ins: BoundaryPort[] = target.data.inputs.map((p, i) => ({
       name: p.name,
+      was: p.name,
+      unit: unit.inputs?.[i]?.name,
       ty: p.ty,
       outside: edges.filter((e) => e.target === target.id && e.targetHandle === p.name).map((e) => label(e.source, e.sourceHandle, "out")),
     }));
-    const outs: BoundaryPort[] = target.data.outputs.map((p) => ({
+    const outs: BoundaryPort[] = target.data.outputs.map((p, i) => ({
       name: p.name,
+      was: p.name,
+      unit: unit.outputs?.[i]?.name,
       ty: p.ty,
       outside: edges.filter((e) => e.source === target.id && e.sourceHandle === p.name).map((e) => label(e.target, e.targetHandle, "in")),
     }));
@@ -592,4 +608,194 @@ export function flowAsNode(
   if (!grouped.ok) return { ok: false, message: `"${name}" can't be placed as a node: ${grouped.message}` };
   const source = savedAt === undefined ? {} : { source: { flow: name, savedAt } };
   return { ok: true, node: { ...grouped.node, id, position, data: { ...grouped.node.data, name, ...source } } };
+}
+
+/**
+ * A node for a palette entry dropped at `position`: a template (templates.ts) or a genesis
+ * primitive from the catalog, default-configured as the palette offers it. Null for a name that
+ * is neither. (A saved flow is placed by `flowAsNode`.)
+ */
+export function nodeFromPalette(
+  name: string,
+  byName: Map<string, WUnit>,
+  variadic: Set<string>,
+  id: string,
+  position: { x: number; y: number },
+): PrimitiveNodeType | null {
+  if (isTemplate(name)) {
+    const params = templateDefaults(name);
+    const iface = templateInterface(name, params);
+    return {
+      id,
+      type: "primitive",
+      position,
+      data: {
+        name,
+        body: { kind: "Template" },
+        inputs: iface.inputs,
+        outputs: iface.outputs,
+        params,
+        variadic: false,
+        minInputs: 0,
+        hiddenInputs: iface.hiddenInputs,
+      },
+    };
+  }
+  const u = byName.get(name);
+  if (!u) return null;
+  const inputs = u.inputs ?? [];
+  return {
+    id,
+    type: "primitive",
+    position,
+    data: {
+      name,
+      body: { kind: "Primitive" },
+      inputs,
+      outputs: u.outputs ?? [],
+      params: u.params ?? [],
+      // The catalog's own declared arity is the floor a variadic node may shrink back to.
+      variadic: variadic.has(name),
+      minInputs: inputs.length,
+    },
+  };
+}
+
+/**
+ * An inner canvas (as `innerCanvas` opened it, then edited) frozen back into a composite: its
+ * nodes the children, its wires the inner edges, and its boundary exactly as drawn, each input
+ * of the inputs node promoting the one inner port it feeds and each output of the outputs node
+ * exposing the inner output that feeds it, in their order and under their names (order and
+ * names are part of the unit's identity, and the flow around it is wired by name). An input
+ * wired to nothing, or to more than one port, and an output fed by nothing, are refused, saying
+ * which; so is anything core's freeze refuses. A port keeps the unit's own name (`unit`), so an
+ * unchanged canvas freezes back to the very same unit, and renaming a port only renames it on
+ * the node. Answers the unit's hash and the node's ports (the boundary's names).
+ */
+export function freezeInner(
+  canvas: { nodes: Node[]; edges: Edge[] },
+  ev: Evaluator,
+  byName: Map<string, WUnit>,
+): { ok: true; hash: string; inputs: WPort[]; outputs: WPort[] } | { ok: false; message: string; nodeIds: string[] } {
+  const boundaryOf = (id: string) => canvas.nodes.find((n) => n.id === id)?.data as BoundaryData | undefined;
+  const ins = boundaryOf(BOUNDARY_IN)?.ports ?? [];
+  const outs = boundaryOf(BOUNDARY_OUT)?.ports ?? [];
+  const inner = canvas.nodes.filter((n) => n.id !== BOUNDARY_IN && n.id !== BOUNDARY_OUT) as PrimitiveNodeType[];
+  if (inner.length === 0) return { ok: false, message: "nothing inside: a composite holds at least one node", nodeIds: [] };
+  const index = new Map(inner.map((n, i) => [n.id, i]));
+  const innerEdges = canvas.edges.filter((e) => index.has(e.source) && index.has(e.target));
+  const promote: { child: number; port: number; name: string }[] = [];
+  for (const p of ins) {
+    const fed = canvas.edges.filter((e) => e.source === BOUNDARY_IN && e.sourceHandle === p.name);
+    if (fed.length === 0) return { ok: false, message: `the input "${p.name}" isn't wired to anything inside: wire it, or remove it`, nodeIds: [] };
+    if (fed.length > 1) {
+      return {
+        ok: false,
+        message: `the input "${p.name}" feeds ${fed.length} ports: an input feeds one, so pass it through a node (a default, say) to share it`,
+        nodeIds: fed.map((e) => e.target),
+      };
+    }
+    const node = inner[index.get(fed[0].target)!];
+    promote.push({ child: index.get(node.id)!, port: node.data.inputs.findIndex((q) => q.name === fed[0].targetHandle), name: p.unit ?? p.name });
+  }
+  const expose: { child: number; port: number; name: string }[] = [];
+  for (const p of outs) {
+    const from = canvas.edges.find((e) => e.target === BOUNDARY_OUT && e.targetHandle === p.name);
+    if (!from) return { ok: false, message: `the output "${p.name}" isn't fed by anything inside: wire it, or remove it`, nodeIds: [] };
+    const node = inner[index.get(from.source)!];
+    expose.push({ child: index.get(node.id)!, port: node.data.outputs.findIndex((q) => q.name === from.sourceHandle), name: p.unit ?? p.name });
+  }
+  try {
+    const { children, wedges } = groupOf(inner, innerEdges, ev, byName);
+    const unit = ev.freeze_encapsulation(children, wedges, { promote, expose }) as WUnit;
+    const hash = ev.insert(buildPreimage(unit));
+    // The node keeps showing the boundary's names; the unit keeps its own.
+    return {
+      ok: true,
+      hash,
+      inputs: (unit.inputs ?? []).map((q, i) => ({ ...q, name: ins[i]?.name ?? q.name })),
+      outputs: (unit.outputs ?? []).map((q, i) => ({ ...q, name: outs[i]?.name ?? q.name })),
+    };
+  } catch (err) {
+    return { ok: false, message: isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err), nodeIds: [] };
+  }
+}
+
+/** An inner canvas's boundary ports renamed since it was opened: old name → new, per side. */
+export function boundaryRenames(canvas: { nodes: Node[] }): { inputs: Map<string, string>; outputs: Map<string, string> } {
+  const side = (id: string) =>
+    new Map(
+      ((canvas.nodes.find((n) => n.id === id)?.data as BoundaryData | undefined)?.ports ?? [])
+        .filter((p) => p.was !== undefined && p.was !== p.name)
+        .map((p) => [p.was!, p.name] as [string, string]),
+    );
+  return { inputs: side(BOUNDARY_IN), outputs: side(BOUNDARY_OUT) };
+}
+
+/** An inner canvas once frozen into its composite: each boundary port now is what the composite
+ *  has (its unit name, its name on the node), so a later freeze starts from there. */
+export function settleBoundary<T extends { nodes: Node[] }>(canvas: T, frozen: { inputs: WPort[]; outputs: WPort[] }): T {
+  return {
+    ...canvas,
+    nodes: canvas.nodes.map((n) => {
+      if (n.id !== BOUNDARY_IN && n.id !== BOUNDARY_OUT) return n;
+      const data = n.data as BoundaryData;
+      const ports = n.id === BOUNDARY_IN ? frozen.inputs : frozen.outputs;
+      return { ...n, data: { ...data, ports: data.ports.map((p, i) => ({ ...p, ty: ports[i]?.ty ?? p.ty, unit: p.unit ?? p.name, was: p.name })) } };
+    }),
+  };
+}
+
+/**
+ * The composite node `id` replaced by a new version of itself (a frozen inner canvas): the same
+ * node, place and name, its new unit and ports. Wires to a renamed port follow it; wires to a
+ * port it no longer has, or now of a type they don't fit, are dropped (and answered, to say so).
+ */
+export function replaceComposite<N extends Node>(
+  nodes: N[],
+  edges: Edge[],
+  id: string,
+  frozen: { hash: string; inputs: WPort[]; outputs: WPort[] },
+  renames: { inputs: Map<string, string>; outputs: Map<string, string> },
+): { nodes: N[]; edges: Edge[]; dropped: Edge[] } {
+  const ins = new Map(frozen.inputs.map((p) => [p.name, p]));
+  const outs = new Map(frozen.outputs.map((p) => [p.name, p]));
+  const portTy = (nodeId: string, handle: string | null | undefined, side: "inputs" | "outputs") => {
+    const n = nodes.find((x) => x.id === nodeId);
+    const ports = (n?.data as { inputs?: WPort[]; outputs?: WPort[] } | undefined)?.[side];
+    return ports?.find((p) => p.name === handle)?.ty;
+  };
+  const kept: Edge[] = [];
+  const dropped: Edge[] = [];
+  for (const e of edges) {
+    let next = e;
+    if (e.target === id) {
+      const handle = renames.inputs.get(e.targetHandle ?? "") ?? e.targetHandle ?? "";
+      const port = ins.get(handle);
+      const from = portTy(e.source, e.sourceHandle, "outputs");
+      if (!port || (from !== undefined && !compatible(from, port.ty))) {
+        dropped.push(e);
+        continue;
+      }
+      next = { ...next, targetHandle: handle };
+    }
+    if (e.source === id) {
+      const handle = renames.outputs.get(e.sourceHandle ?? "") ?? e.sourceHandle ?? "";
+      const port = outs.get(handle);
+      const to = portTy(e.target, e.targetHandle, "inputs");
+      if (!port || (to !== undefined && !compatible(port.ty, to))) {
+        dropped.push(e);
+        continue;
+      }
+      next = { ...next, sourceHandle: handle };
+    }
+    kept.push(next);
+  }
+  return {
+    nodes: nodes.map((n) =>
+      n.id === id ? { ...n, data: { ...n.data, body: { kind: "Composite", hash: frozen.hash }, inputs: frozen.inputs, outputs: frozen.outputs } } : n,
+    ),
+    edges: kept,
+    dropped,
+  };
 }

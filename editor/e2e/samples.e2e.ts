@@ -109,3 +109,24 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
   await expect(flow.locator(".react-flow__node", { hasText: "publish" })).toHaveCount(0);
   await expect(flow.locator(".react-flow__node", { hasText: "collection_put" })).toHaveCount(1);
 });
+
+test("an edited holon applies as a new version of itself, and the flow runs it", async ({ page, request }) => {
+  await openSample(page, "A flow inside a flow (holon)");
+  const flow = page.locator(".hl-canvas__flow > .react-flow");
+  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  const overlay = page.locator(".hl-overlay");
+  // The fallback receipt, changed inside.
+  const receipt = overlay.locator('input[value="unsigned"]');
+  await receipt.fill("not signed");
+  await page.keyboard.press("Tab");
+  await expect(overlay.locator(".hl-overlay__crumbs")).toContainText("publish •");
+  await overlay.getByRole("button", { name: "apply" }).click();
+  await expect(overlay).toContainText("applied");
+  await overlay.getByRole("button", { name: "close" }).click();
+  await expect(overlay).toHaveCount(0);
+  await expect(page.locator(".hl-canvas")).toContainText("is a new version");
+  const port = await deploy(page);
+  const answer = await request.post(`http://127.0.0.1:${port}/slugs`, { data: { title: "Edited Inside", author: "Ada" } });
+  expect(await answer.json()).toMatchObject({ title: "edited-inside", receipt: "not signed" });
+});

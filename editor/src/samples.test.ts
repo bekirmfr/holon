@@ -10,7 +10,21 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator, primitive_catalog, primitive_docs, variadic_primitives } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit, type WValue } from "./holon";
 import { fromHex } from "./flowDoc";
-import { BOUNDARY_IN, BOUNDARY_OUT, deriveServer, flowAsNode, flowUnitHash, innerCanvas, type BoundaryData } from "./canvasOps";
+import {
+  BOUNDARY_IN,
+  BOUNDARY_OUT,
+  boundaryRenames,
+  deriveServer,
+  flowAsNode,
+  flowUnitHash,
+  freezeInner,
+  innerCanvas,
+  replaceComposite,
+  settleBoundary,
+  type BoundaryData,
+  type BoundaryPort,
+} from "./canvasOps";
+import { foldLevels } from "./CompositeOverlay";
 import { manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
@@ -222,6 +236,114 @@ describe("sample flows", () => {
     expect(spots.size).toBe(opened.nodes.length);
     // A primitive isn't a composite.
     expect(innerCanvas(nodes.find((n) => n.data.name === "record")!, nodes, edges, ev, catalog, variadic).ok).toBe(false);
+  });
+
+  it("freeze an inner canvas back into a composite: unchanged, the same unit; edited, a new one", () => {
+    const ev = new Evaluator();
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const nodes = doc.nodes as PrimitiveNodeType[];
+    const publish = nodes.find((n) => n.data.name === "publish")!;
+    const opened = innerCanvas(publish, nodes, doc.edges as Edge[], ev, catalog, variadic);
+    if (!opened.ok) throw new Error(opened.message);
+    const canvas = { nodes: opened.nodes, edges: opened.edges };
+    const same = freezeInner(canvas, ev, catalog);
+    if (!same.ok) throw new Error(same.message);
+    expect(same.hash, "nothing changed: the very same unit").toBe(publish.data.body.kind === "Composite" ? publish.data.body.hash : "");
+    expect(same.inputs.map((p) => p.name)).toEqual(["slug", "author"]);
+
+    // Renaming a boundary port renames it on the node only: the unit is the same.
+    const renamed = {
+      nodes: canvas.nodes.map((n) => (n.id === BOUNDARY_IN ? { ...n, data: { ...(n.data as BoundaryData), ports: (n.data as BoundaryData).ports.map((p) => (p.name === "slug" ? { ...p, name: "key" } : p)) } } : n)),
+      edges: canvas.edges.map((e) => (e.source === BOUNDARY_IN && e.sourceHandle === "slug" ? { ...e, sourceHandle: "key" } : e)),
+    };
+    const same2 = freezeInner(renamed, ev, catalog);
+    if (!same2.ok) throw new Error(same2.message);
+    expect(same2.hash).toBe(same.hash);
+    expect(same2.inputs.map((p) => p.name)).toEqual(["key", "author"]);
+    // Changing what's inside is another unit: the receipt's fallback, say.
+    const edited = {
+      ...canvas,
+      nodes: canvas.nodes.map((n) => {
+        const d = n.data as PrimitiveNodeType["data"];
+        if (d.name !== "default" || !d.params?.some((p) => p.kind === "Frozen" && p.value === "unsigned")) return n;
+        return { ...n, data: { ...d, params: d.params.map((p) => (p.name === "value" ? { ...p, value: "not signed" } : p)) } };
+      }),
+    };
+    const other = freezeInner(edited, ev, catalog);
+    if (!other.ok) throw new Error(other.message);
+    expect(other.hash).not.toBe(same.hash);
+    const out = ev.eval(buildPreimage(ev.get_unit(other.hash) as WUnit), [{ type: "Text", value: "x" }, { type: "Text", value: "y" }]) as (WValue | null)[];
+    expect(out[2]).toEqual({ type: "Text", value: "not signed" });
+
+    // An input feeds one port; an output needs a source.
+    const authorEdge = canvas.edges.find((e) => e.source === BOUNDARY_IN && e.sourceHandle === "author")!;
+    const fanned = { ...canvas, edges: [...canvas.edges, { ...authorEdge, id: "again", target: canvas.edges.find((e) => e.source === BOUNDARY_IN && e.sourceHandle === "slug")!.target }] };
+    const twice = freezeInner(fanned, ev, catalog);
+    expect(twice.ok ? "" : twice.message).toContain("feeds 2 ports");
+    const unfed = { ...canvas, edges: canvas.edges.filter((e) => !(e.target === BOUNDARY_OUT && e.targetHandle === "receipt")) };
+    const lost = freezeInner(unfed, ev, catalog);
+    expect(lost.ok ? "" : lost.message).toContain(`output "receipt" isn't fed`);
+  });
+
+  it("apply an edited inner canvas: the flow's node becomes the new version, its wires following renamed ports", () => {
+    const ev = new Evaluator();
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const nodes = doc.nodes as PrimitiveNodeType[];
+    const edges = doc.edges as Edge[];
+    const publish = nodes.find((n) => n.data.name === "publish")!;
+    const opened = innerCanvas(publish, nodes, edges, ev, catalog, variadic);
+    if (!opened.ok) throw new Error(opened.message);
+    // Rename the input "slug" to "key", and drop the output "receipt".
+    const port = (side: string, f: (ps: BoundaryPort[]) => BoundaryPort[]) => (n: (typeof opened.nodes)[number]) =>
+      n.id === side ? { ...n, data: { ...(n.data as BoundaryData), ports: f((n.data as BoundaryData).ports) } } : n;
+    const canvas = {
+      nodes: opened.nodes.map(port(BOUNDARY_IN, (ps) => ps.map((p) => (p.name === "slug" ? { ...p, name: "key" } : p)))).map(port(BOUNDARY_OUT, (ps) => ps.filter((p) => p.name !== "receipt"))),
+      edges: opened.edges
+        .map((e) => (e.source === BOUNDARY_IN && e.sourceHandle === "slug" ? { ...e, sourceHandle: "key" } : e))
+        .filter((e) => !(e.target === BOUNDARY_OUT && e.targetHandle === "receipt")),
+    };
+    const renames = boundaryRenames(canvas);
+    expect([...renames.inputs]).toEqual([["slug", "key"]]);
+    const frozen = freezeInner(canvas, ev, catalog);
+    if (!frozen.ok) throw new Error(frozen.message);
+    const done = replaceComposite(nodes, edges, publish.id, frozen, renames);
+    const after = done.nodes.find((n) => n.id === publish.id)!;
+    expect(after.data.body.kind === "Composite" && after.data.body.hash).toBe(frozen.hash);
+    expect(after.data.inputs.map((p) => p.name)).toEqual(["key", "author"]);
+    expect(done.edges.filter((e) => e.target === publish.id).map((e) => e.targetHandle).sort()).toEqual(["author", "key"]);
+    // The wire from "receipt" is gone, and said so.
+    expect(done.dropped.map((e) => e.sourceHandle)).toEqual(["receipt"]);
+    // Settled: freezing it again unchanged is the same unit, with nothing renamed.
+    const settled = settleBoundary(canvas, frozen);
+    expect(boundaryRenames(settled).inputs.size).toBe(0);
+    const again = freezeInner(settled, ev, catalog);
+    expect(again.ok && again.hash).toBe(frozen.hash);
+  });
+
+  it("fold a changed level into the one above, deepest first", () => {
+    const ev = new Evaluator();
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const nodes = doc.nodes as PrimitiveNodeType[];
+    const publish = nodes.find((n) => n.data.name === "publish")!;
+    const opened = innerCanvas(publish, nodes, doc.edges as Edge[], ev, catalog, variadic);
+    if (!opened.ok) throw new Error(opened.message);
+    const top = { title: "publish", nodeId: publish.id, nodes: opened.nodes, edges: opened.edges, dirty: false };
+    // A level below it: an inner canvas of its own (here, publish again under a made-up node id),
+    // its fallback receipt changed.
+    const inner = { ...top, nodeId: "deeper", dirty: true, nodes: top.nodes.map((n) => {
+      const d = n.data as PrimitiveNodeType["data"];
+      if (d.name !== "default" || !d.params?.some((p) => p.kind === "Frozen" && p.value === "unsigned")) return n;
+      return { ...n, data: { ...d, params: d.params.map((p) => (p.name === "value" ? { ...p, value: "not signed" } : p)) } };
+    }) };
+    const host = { ...top, nodes: [...top.nodes, { ...publish, id: "deeper" }] };
+    const folded = foldLevels([host, inner], 0, (c) => freezeInner(c, ev, catalog));
+    if (typeof folded === "string") throw new Error(folded);
+    const placed = folded[0].nodes.find((n) => n.id === "deeper") as PrimitiveNodeType;
+    expect(folded[0].dirty).toBe(true);
+    expect(placed.data.body.kind === "Composite" && placed.data.body.hash).not.toBe(publish.data.body.kind === "Composite" && publish.data.body.hash);
+    // A level that can't be frozen says which and why.
+    const broken = { ...inner, edges: inner.edges.filter((e) => e.target !== BOUNDARY_OUT) };
+    expect(foldLevels([host, broken], 0, (c) => freezeInner(c, ev, catalog))).toContain(`publish: the output "put" isn't fed`);
   });
 
   it("ask for what each one shows", () => {
