@@ -121,6 +121,13 @@ test("an edited holon applies as a new version of itself, and the flow runs it",
   await receipt.fill("not signed");
   await page.keyboard.press("Tab");
   await expect(overlay.locator(".hl-overlay__crumbs")).toContainText("publish •");
+  // Undo inside is the level's own: the change goes, and comes back.
+  await overlay.locator(".react-flow__pane").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+z");
+  await expect(overlay.locator(".hl-overlay__crumbs")).not.toContainText("•");
+  await expect(overlay.locator('input[value="unsigned"]')).toHaveCount(1);
+  await overlay.getByRole("button", { name: "redo" }).click();
+  await expect(overlay.locator(".hl-overlay__crumbs")).toContainText("publish •");
   await overlay.getByRole("button", { name: "apply" }).click();
   await expect(overlay).toContainText("applied");
   await overlay.getByRole("button", { name: "close" }).click();

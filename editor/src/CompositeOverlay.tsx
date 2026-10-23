@@ -10,7 +10,7 @@
 // the flow (undo takes it back). Going back a level folds that level's changes into the one
 // above; closing with changes not applied asks first. In view mode it is read only.
 
-import { createContext, useContext, useEffect, useState, type CSSProperties, type DragEvent } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type CSSProperties, type DragEvent } from "react";
 import {
   addEdge,
   applyEdgeChanges,
@@ -38,6 +38,7 @@ import { compatible, type WPort } from "./holon";
 import { outputColor, typeColor, typeLabel } from "./theme";
 import { DND_MIME, FLOW_PREFIX } from "./Palette";
 import { useOptionalDialog } from "./Dialog";
+import { History } from "./history";
 
 /** One level opened: the composite's name, its node in the level above (or in the flow, for the
  *  first), its inner canvas as it stands, and whether that was changed. */
@@ -60,6 +61,82 @@ export type OverlayOps = {
   /** A composite on a level replaced by its nodes there (or why it can't be). */
   ungroupIn: (canvas: { nodes: Node[]; edges: Edge[] }, id: string) => { nodes: Node[]; edges: Edge[] } | string;
 };
+
+/** A level as undo keeps it: selection and drag flags left out, as on the flow, and the sizes
+ *  React Flow measures (a level opens unmeasured; measuring it is no edit). */
+type LevelSnapshot = { nodes: Node[]; edges: Edge[]; dirty: boolean };
+const levelSnapshot = (f: OverlayFrame): LevelSnapshot => ({
+  nodes: f.nodes.map(({ measured: _m, width: _w, height: _h, ...n }) => ({ ...n, selected: false, dragging: false })),
+  edges: f.edges.map((e) => ({ ...e, selected: false })),
+  dirty: f.dirty,
+});
+const sameLevel = (a: LevelSnapshot, b: LevelSnapshot) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Undo and redo for the open level, as the flow has (useCanvasHistory): a snapshot committed
+ * 400 ms after edits settle, Ctrl/Cmd+Z, Shift+Z and Y outside text fields. Each level keeps its
+ * own history while it's open; going back a level drops the deeper ones' (their changes are
+ * folded into the level above, one step of its history).
+ */
+function useLevelHistory(frames: OverlayFrame[], onFrames: (update: (fs: OverlayFrame[]) => OverlayFrame[]) => void, enabled: boolean) {
+  const top = frames.length - 1;
+  const level = frames[top];
+  const histories = useRef(new Map<number, History<LevelSnapshot>>());
+  const restoring = useRef(false);
+  const [, setVersion] = useState(0);
+  const historyOf = (k: number) => {
+    let h = histories.current.get(k);
+    if (!h) histories.current.set(k, (h = new History(levelSnapshot(frames[k]), sameLevel)));
+    return h;
+  };
+  // Levels closed: their histories go with them.
+  for (const k of [...histories.current.keys()]) if (k > top) histories.current.delete(k);
+  useEffect(() => {
+    const h = historyOf(top);
+    if (restoring.current) {
+      restoring.current = false;
+      h.committed = levelSnapshot(level);
+      return;
+    }
+    const t = setTimeout(() => h.commit(levelSnapshot(level)) && setVersion((v) => v + 1), 400);
+    return () => clearTimeout(t);
+    // historyOf reads the ref; the level's content and depth are what matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [level.nodes, level.edges, level.dirty, top]);
+  const step = useCallback(
+    (back: boolean) => {
+      if (!enabled) return;
+      const h = historyOf(top);
+      const s = back ? h.undo(levelSnapshot(level)) : h.redo(levelSnapshot(level));
+      if (s) {
+        restoring.current = true;
+        onFrames((fs) => fs.map((f, i) => (i === top ? { ...f, ...s } : f)));
+      }
+      setVersion((v) => v + 1);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [enabled, top, level, onFrames],
+  );
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === "z") {
+        e.preventDefault();
+        step(!e.shiftKey);
+      } else if (k === "y") {
+        e.preventDefault();
+        step(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [step]);
+  const h = historyOf(top);
+  return { undo: () => step(true), redo: () => step(false), canUndo: enabled && h.past.length > 0, canRedo: enabled && h.future.length > 0 };
+}
 
 /** Whether the levels can be changed (edit mode), for the boundary nodes. */
 const Editable = createContext(false);
@@ -329,6 +406,7 @@ export function CompositeOverlay({
     return () => cancelAnimationFrame(t);
   }, []);
   const dirty = frames.some((f) => f.dirty);
+  const history = useLevelHistory(frames, onFrames, editable);
 
   const close = async () => {
     if (dirty && dialog && !(await dialog.confirm(`Discard the changes inside "${frames[0].title}"? They weren't applied to the flow.`, "Discard"))) return;
@@ -399,6 +477,16 @@ export function CompositeOverlay({
           <span style={{ color: "var(--ink-dim)", fontSize: 11 }}>{editable ? "change it like the flow, then apply" : "inside, read only"}</span>
           {msg && <span style={{ color: msg.startsWith("applied") ? "#9ad29f" : "#e0916f", fontSize: 11 }}>{msg}</span>}
           <span style={{ marginLeft: "auto", display: "inline-flex", gap: 6 }}>
+            {editable && (
+              <>
+                <button style={{ ...button, opacity: history.canUndo ? 1 : 0.4 }} onClick={history.undo} disabled={!history.canUndo} title="undo (Ctrl+Z)" aria-label="undo">
+                  ⟲
+                </button>
+                <button style={{ ...button, opacity: history.canRedo ? 1 : 0.4 }} onClick={history.redo} disabled={!history.canRedo} title="redo (Ctrl+Shift+Z)" aria-label="redo">
+                  ⟳
+                </button>
+              </>
+            )}
             {editable && (
               <button
                 style={{ ...button, ...(dirty ? { color: "#0e1a2f", background: "#6fd3e0", border: "none" } : { opacity: 0.4, cursor: "default" }) }}

@@ -180,12 +180,15 @@ function Canvas({
   // The deployed document shown in view mode: what edit mode starts from when there is no saved
   // flow of that name.
   const viewDoc = useRef<FlowDocument | null>(null);
+  // A composite opened over the canvas (CompositeOverlay.tsx; see expandNode below). While it is
+  // open, undo and redo are its own.
+  const [overlay, setOverlay] = useState<{ frames: OverlayFrame[]; from: { left: number; top: number; width: number; height: number } } | null>(null);
   const { history, restoring, histVersion, bump, undo, redo } = useCanvasHistory(
     nodes,
     edges,
     setNodes,
     setEdges,
-    viewing !== null,
+    viewing !== null || overlay !== null,
   );
   // The canvas as of this render, for callbacks that read it without depending on it.
   const live = useRef({ nodes, edges });
@@ -910,7 +913,6 @@ function Canvas({
   // Look inside a composite: its inner flow on a canvas of its own, over this one, grown from
   // where the node sits (CompositeOverlay.tsx). In view mode, with a run selected, its nodes show
   // what they produced in the run (the log keeps one level inside each node).
-  const [overlay, setOverlay] = useState<{ frames: OverlayFrame[]; from: { left: number; top: number; width: number; height: number } } | null>(null);
   // Its nodes are read only in view mode, and changed like the flow's in edit mode.
   const editableInside = useCallback((ns: FlowNode[]) => (viewing ? ns : ns.map((n) => (n.type === "primitive" ? { ...n, data: { ...n.data, readOnly: false } } : n))), [viewing]);
   const inside = useCallback(
