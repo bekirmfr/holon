@@ -1,6 +1,7 @@
 // The `holon` command line: flows as text files (src/holonText.ts), checked and shown on any
-// machine, a screen or not, through the same core and the same code as the editor. Run with
-// `npm run holon -- <command>` from editor/.
+// machine, a screen or not, through the same core and the same code as the editor. Installed
+// as `holon` (from editor/: `npm run build:cli`, then `npm install -g .`); in the repository,
+// `npm run holon -- <command>` runs it from source.
 //
 //   holon new <file> [--sample <name>]   write a starter flow (or a sample) to <file>
 //   holon check <file>                   compile it: its routes, what it may do, or each mistake
@@ -21,8 +22,14 @@ import { describeItem } from "../src/diagnostics";
 import { compileHolon, HolonTextError, printHolon } from "../src/holonText";
 import { SAMPLES, buildSample } from "../src/samples";
 
+// The core: beside this file once built (dist-cli/), else the editor's own build (wasm/).
 const here = dirname(fileURLToPath(import.meta.url));
-initSync({ module: readFileSync(join(here, "..", "wasm", "holon_wasm_bg.wasm")) });
+const core = [join(here, "holon_wasm_bg.wasm"), join(here, "..", "wasm", "holon_wasm_bg.wasm")].find((p) => existsSync(p));
+if (!core) {
+  console.error("holon: the core (holon_wasm_bg.wasm) isn't beside it: build it with `npm run build:cli`");
+  process.exit(1);
+}
+initSync({ module: readFileSync(core) });
 const catalog = new Map((primitive_catalog() as WUnit[]).map((u) => [u.body.kind === "Primitive" ? u.body.name : "", u]));
 const variadic = new Set(variadic_primitives() as string[]);
 

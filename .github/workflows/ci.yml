@@ -62,6 +62,9 @@ jobs:
         working-directory: editor
       - run: npx vitest run
         working-directory: editor
+      # The `holon` command line, built as installed: it checks a flow on its own.
+      - run: npm run build:cli && node dist-cli/holon.mjs new "$RUNNER_TEMP/slugs.holon" --sample slugs && node dist-cli/holon.mjs check "$RUNNER_TEMP/slugs.holon"
+        working-directory: editor
 
   # 5. End to end: the editor in a real browser against a real holon-server, both started by
   #    Playwright (editor/playwright.config.ts) with throwaway state. Every sample opens and
