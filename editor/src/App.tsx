@@ -973,17 +973,13 @@ function Editor({ me }: { me: Me }) {
           <button style={menuBtn(page === "deployed")} onClick={() => openPage("deployed")}>
             deployed
           </button>
-          <AccountMenu
-            me={me}
-            style={menuBtn(false)}
-            adminOpen={page === "admin"}
-            onAdmin={() => openPage("admin")}
-            onWelcome={() => openPage("welcome")}
-          />
+          {me.role === "admin" && (
+            <button style={menuBtn(page === "admin")} onClick={() => openPage("admin")}>
+              admin
+            </button>
+          )}
         </nav>
-        <span className="hl-header__count">
-          {catalog ? `${catalog.length} genesis atoms` : "loading core…"}
-        </span>
+        <AccountMenu me={me} style={menuBtn(false)} onWelcome={() => openPage("welcome")} />
       </header>
 
       {error ? (

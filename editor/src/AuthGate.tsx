@@ -206,9 +206,20 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
   }
 }
 
-/** The header's account menu: who, the welcome and docs, change password, the admin panel
- *  (admins), sign out. */
-export function AccountMenu({ me, style, onAdmin, adminOpen, onWelcome }: { me: Me; style: CSSProperties; onAdmin: () => void; adminOpen: boolean; onWelcome: () => void }) {
+/** A person, as a small icon: a head and shoulders in a circle. */
+function UserIcon() {
+  return (
+    <svg className="hl-user__icon" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
+      <circle cx="10" cy="10" r="10" fill="currentColor" opacity="0.18" />
+      <circle cx="10" cy="7.6" r="3.2" fill="currentColor" />
+      <path d="M3.9 16.4a6.4 6.4 0 0 1 12.2 0A9.9 9.9 0 0 1 10 20a9.9 9.9 0 0 1-6.1-3.6z" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** The header's account pill, at its right: who is signed in; its menu opens the welcome and
+ *  docs, changes the password, signs out. */
+export function AccountMenu({ me, style, onWelcome }: { me: Me; style: CSSProperties; onWelcome: () => void }) {
   const dialog = useDialog();
   const [open, setOpen] = useState(false);
   const change = async () => {
@@ -225,14 +236,12 @@ export function AccountMenu({ me, style, onAdmin, adminOpen, onWelcome }: { me: 
     }
   };
   return (
-    <span style={{ position: "relative", display: "inline-flex", gap: 6 }}>
-      {me.role === "admin" && (
-        <button style={{ ...style, ...(adminOpen ? { color: "#0e1a2f", background: "#6fd3e0" } : {}) }} onClick={onAdmin}>
-          admin
-        </button>
-      )}
-      <button style={style} onClick={() => setOpen(!open)} aria-haspopup="menu" title={`signed in as ${me.name}, ${me.role}`}>
-        {me.name} ▾
+    <span style={{ position: "relative", display: "inline-flex", marginLeft: "auto" }}>
+      <button className="hl-user" onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open} aria-label={`account: ${me.name}`} title={`signed in as ${me.name}, ${me.role}`}>
+        <UserIcon />
+        <span className="hl-user__name">{me.name}</span>
+        <span className="hl-user__role">{me.role}</span>
+        <span aria-hidden="true">▾</span>
       </button>
       {open && (
         <div role="menu" style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 50, background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 4, padding: 6, display: "grid", gap: 4, minWidth: 180 }}>

@@ -43,7 +43,16 @@ body {
 .hl-header__brand { font-weight: 600; letter-spacing: 0.04em; color: var(--ink); }
 .hl-header__sep { color: var(--ink-dim); }
 .hl-header__mode { color: var(--ink-dim); }
-.hl-header__count { margin-left: auto; color: var(--accent); font-size: 12px; }
+/* The account pill, at the header's right: an icon, the name, the role. */
+.hl-user {
+  display: inline-flex; align-items: center; gap: 7px;
+  font: inherit; font-size: 12px; color: #cfe3ff;
+  padding: 2px 10px 2px 3px; border: 1px solid #1b2a45; border-radius: 999px;
+  background: #0e1a2f; cursor: pointer;
+}
+.hl-user:hover { border-color: #2a3f63; }
+.hl-user__icon { color: var(--accent); flex: none; }
+.hl-user__role { color: var(--ink-dim); font-size: 11px; }
 
 .hl-body { display: flex; flex: 1 1 auto; min-height: 0; }
 .hl-error { color: #ff6f6f; padding: 16px; white-space: pre-wrap; }

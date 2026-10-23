@@ -31,7 +31,7 @@ test("the welcome opens on start until told not to; home keeps its panes", async
   await expect(page.getByRole("region", { name: "samples" })).toHaveCount(0);
 
   // The welcome is always one click away, under the account menu.
-  await page.getByRole("button", { name: "e2e ▾" }).click();
+  await page.getByRole("button", { name: "account: e2e" }).click();
   await page.getByRole("menuitem", { name: "welcome and docs" }).click();
   await expect(tabs.getByRole("tab", { name: "welcome" })).toHaveAttribute("aria-selected", "true");
   await page.getByLabel("show this on start").check();

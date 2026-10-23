@@ -36,7 +36,7 @@ test("installing: the server answers nothing until its admin is set up with the 
   await expect(setup.getByRole("alert")).toContainText("isn't the setup code");
   await fill(page, "setup code", "E2E0-SETUP");
   await setup.getByRole("button", { name: "set up" }).click();
-  await expect(page.getByRole("button", { name: "ada ▾" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "account: ada" })).toBeVisible();
   // Now everyone signs in.
   expect((await request.get(`${SERVER}/flows`)).status()).toBe(401);
 
@@ -58,7 +58,7 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   await fill(cy, "password (at least 10 characters)", PASSWORD);
   await fill(cy, "the password again", PASSWORD);
   await join.getByRole("button", { name: "join" }).click();
-  await expect(cy.getByRole("button", { name: "cy ▾" })).toBeVisible();
+  await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
   await expect(cy.getByRole("button", { name: "admin", exact: true })).toHaveCount(0);
   await cy.getByRole("button", { name: "new", exact: true }).click();
   await cy.locator('[aria-modal="true"] input').fill("cys-flow");
@@ -101,7 +101,7 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   await fill(cy, "name", "cy");
   await fill(cy, "password", PASSWORD);
   await cy.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
-  await expect(cy.getByRole("button", { name: "cy ▾" })).toBeVisible();
+  await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
   const cyRow = ada.locator("div", { has: ada.getByLabel("cy's role") }).last();
   await cyRow.getByRole("button", { name: "disable" }).click();
   await expect(cyRow).toContainText("· disabled");
@@ -131,7 +131,7 @@ test("signing in through the identity provider an admin set, matched by email", 
   await cy.goto(EDITOR);
   await cy.getByRole("button", { name: "sign in through 127.0.0.1:7530" }).click();
   await cy.getByRole("link", { name: "sign in as cy@example.com" }).click();
-  await expect(cy.getByRole("button", { name: "cy ▾" })).toBeVisible();
+  await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
 
   // Someone the provider vouches for, without an account here, is refused.
   const eve = await someoneElse(browser);
