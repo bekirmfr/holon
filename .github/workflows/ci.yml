@@ -58,3 +58,32 @@ jobs:
         working-directory: editor
       - run: npx vitest run
         working-directory: editor
+
+  # 5. End to end: the editor in a real browser against a real holon-server, both started by
+  #    Playwright (editor/playwright.config.ts) with throwaway state. Every sample opens and
+  #    deploys through the consent screen; requests replay exactly in view mode.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editor/package-lock.json
+      - run: npm ci
+        working-directory: editor
+      - run: npx playwright install --with-deps chromium
+        working-directory: editor
+      - run: npx playwright test
+        working-directory: editor
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: editor/test-results
