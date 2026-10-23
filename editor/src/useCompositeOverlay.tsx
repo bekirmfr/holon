@@ -68,7 +68,7 @@ export function useCompositeOverlay({
   const ops = useMemo<OverlayOps>(
     () => ({
       inside,
-      freeze: (canvas) => freezeInner(canvas, ev, byName),
+      freeze: (canvas) => freezeInner(canvas, ev),
       paletteNode: (name, position) => nodeFromPalette(name, byName, variadic, `${name}-${nextId()}`, position),
       ungroupIn: (canvas, id) => {
         const target = canvas.nodes.find((n) => n.id === id) as PrimitiveNodeType | undefined;

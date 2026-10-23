@@ -53,14 +53,13 @@ export type ViewModeInput = {
   /** The deployed document shown. */
   viewDoc: MutableRefObject<FlowDocument | null>;
   ev: Evaluator;
-  byName: Map<string, WUnit>;
   deployments: DeploymentEntry[];
   fitView: (options: { nodes: { id: string }[]; duration: number; maxZoom: number; padding: number }) => unknown;
 };
 
 export function useViewMode(input: ViewModeInput) {
   const { flow, setSelectedRun, setStep, setInspectNode, setViewTrace, setViewUnit } = input;
-  const { nodes, edges, live, canvasKey, setNodes, setEdges, restoring, viewDoc, ev, byName, deployments, fitView } = input;
+  const { nodes, edges, live, canvasKey, setNodes, setEdges, restoring, viewDoc, ev, deployments, fitView } = input;
   const { viewing, viewUnit, viewTrace, selectedRun, step } = flow;
 
   // Values as chips beside each output (on), or the flow exactly as designed (off); and the wire
@@ -108,13 +107,13 @@ export function useViewMode(input: ViewModeInput) {
   const evalNode = useCallback(
     (node: ReplayNode, inputs: (WValue | null)[]): (WValue | null)[] => {
       try {
-        const hash = unitFor(node as PrimitiveNodeType, ev, byName);
+        const hash = unitFor(node as PrimitiveNodeType, ev);
         return ev.eval(buildPreimage(ev.get_unit(hash) as WUnit), inputs) as (WValue | null)[];
       } catch {
         return node.data.outputs.map(() => null);
       }
     },
-    [ev, byName],
+    [ev],
   );
 
   // The selected run, replayed on the canvas; and whether that reproduced what the server sent.

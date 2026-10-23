@@ -137,7 +137,7 @@ export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadi
       const inner: PrimitiveNodeType[] = [];
       const innerEdges: FlowDocument["edges"] = [];
       build(builder(inner, innerEdges, `${name}.`));
-      const grouped = groupSelection(inner, innerEdges as Parameters<typeof groupSelection>[1], ev, catalog, () => counter.next++);
+      const grouped = groupSelection(inner, innerEdges as Parameters<typeof groupSelection>[1], ev, () => counter.next++);
       if (!grouped.ok) return fail(`holon "${name}" doesn't group: ${grouped.message}`);
       const { inputs, outputs, body } = grouped.node.data;
       const named = (got: WPort[], want: string[], side: string) =>
@@ -169,7 +169,7 @@ export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadi
         ...wiring.in.map(([port, node, input]) => ({ id: `in-${port}`, source: BOUNDARY_IN, sourceHandle: port, target: node, targetHandle: input })),
         ...wiring.out.map(([node, output, port]) => ({ id: `out-${port}`, source: node, sourceHandle: output, target: BOUNDARY_OUT, targetHandle: port })),
       ];
-      const frozen = freezeInner({ nodes: [boundary("in", ports.inputs), ...inner, boundary("out", ports.outputs)], edges: [...(innerEdges as Edge[]), ...wires] }, ev, catalog);
+      const frozen = freezeInner({ nodes: [boundary("in", ports.inputs), ...inner, boundary("out", ports.outputs)], edges: [...(innerEdges as Edge[]), ...wires] }, ev);
       if (!frozen.ok) return fail(`holon "${name}": ${frozen.message}`);
       holons.push(frozen.hash);
       names[frozen.hash] = name;

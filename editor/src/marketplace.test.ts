@@ -40,7 +40,7 @@ const published = (l: Omit<Listing, "id" | "published_at">, at: number): Listing
 describe("the marketplace, client side", () => {
   it("publishes a saved flow as its units, and places it again where they weren't", () => {
     const ev = new Evaluator();
-    const listing = listingOf("shout", shoutFlow(ev), ev, catalog, { description: "shouts", publisher: "ada" });
+    const listing = listingOf("shout", shoutFlow(ev), ev, { description: "shouts", publisher: "ada" });
     if (typeof listing === "string") throw new Error(listing);
     expect(listing.contains).toContain(listing.root);
     expect(listing.manifest).toEqual([]);
@@ -57,7 +57,7 @@ describe("the marketplace, client side", () => {
 
   it("refuses a listing whose units aren't what its root names", () => {
     const ev = new Evaluator();
-    const listing = listingOf("shout", shoutFlow(ev), ev, catalog, { description: "shouts", publisher: "ada" });
+    const listing = listingOf("shout", shoutFlow(ev), ev, { description: "shouts", publisher: "ada" });
     if (typeof listing === "string") throw new Error(listing);
     // The root's own unit left out: what's left hashes to something else.
     const swapped = { ...published(listing, 1), units: listing.units.slice(0, -1) };

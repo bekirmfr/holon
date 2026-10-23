@@ -22,7 +22,7 @@ import type { Edge } from "@xyflow/react";
 import { buildSample, type Holon, type SampleBuilder } from "./samples";
 import { innerCanvas, BOUNDARY_IN, BOUNDARY_OUT } from "./composites";
 import { BOUNDARY } from "./holon";
-import { isTemplate, templateDefaults, type TemplateName } from "./templates";
+import { isTemplate, templateDefaults } from "./templates";
 import { nameOf, restoreDocument } from "./docUnits";
 import type { Evaluator, WUnit } from "./holon";
 import type { FlowDocument } from "./server";
@@ -431,7 +431,7 @@ export function printHolon(
       taken.add(nname);
       names.set(n.id, nname);
       // Params that differ from the leaf's or template's own; a literal's type and value always.
-      const defaults = d.body.kind === "Template" ? templateDefaults(d.name as TemplateName) : d.body.kind === "Primitive" ? (catalog.get(d.name)?.params ?? []) : [];
+      const defaults = d.body.kind === "Template" ? templateDefaults(d.name) : d.body.kind === "Primitive" ? (catalog.get(d.name)?.params ?? []) : [];
       const params = d.params.filter((p) => {
         if (p.kind !== "Frozen") return false;
         if (d.name === "const" || d.name === "default") return true;

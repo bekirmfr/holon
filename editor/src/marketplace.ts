@@ -87,10 +87,9 @@ export function listingOf(
   name: string,
   doc: { nodes: unknown[]; edges: unknown[]; units?: string[]; names?: Record<string, string> },
   ev: Evaluator,
-  byName: Map<string, WUnit>,
   about: { description: string; publisher: string },
 ): Omit<Listing, "id" | "published_at"> | string {
-  const placed = flowAsNode(name, doc, ev, byName, "listing", { x: 0, y: 0 });
+  const placed = flowAsNode(name, doc, ev, "listing", { x: 0, y: 0 });
   if (!placed.ok) return placed.message;
   const body = placed.node.data.body;
   if (body.kind !== "Composite") return `"${name}" isn't a composite`;

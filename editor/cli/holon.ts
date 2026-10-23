@@ -85,12 +85,12 @@ const edgesOf = (doc: { edges: unknown[] }) => doc.edges as Edge[];
 /** What the flow derives to: its server's routes (or none), its unit, what it may do. */
 function derive(ev: Evaluator, doc: ReturnType<typeof compile>["doc"]) {
   const port = doc.server?.port ?? "";
-  const server = deriveServer(nodesOf(doc), edgesOf(doc), ev, catalog, port);
+  const server = deriveServer(nodesOf(doc), edgesOf(doc), ev, port);
   let hash = "";
   let caps: string[] = [];
   let error = "";
   try {
-    hash = flowUnitHash(nodesOf(doc), edgesOf(doc), ev, catalog, port);
+    hash = flowUnitHash(nodesOf(doc), edgesOf(doc), ev, port);
     caps = (ev.capability_names(hash) as string[]).sort();
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);

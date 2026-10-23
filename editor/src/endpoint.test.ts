@@ -1,18 +1,24 @@
-import { describe, it, expect } from "vitest";
+// The data plane's request and response shapes, and routing, as the editor's test panel runs
+// them. Route paths are parsed by core (the wasm package, loaded from disk). An endpoint's and a
+// server's units are holon-author's, tested there (routes.rs).
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { beforeAll, describe, it, expect } from "vitest";
+import { initSync } from "../wasm/holon_wasm.js";
 import {
-  endpointUnit,
   matchRoute,
   parseHeaders,
   parsePath,
   requestRecord,
   responseOf,
-  serverUnit,
   toJson,
 } from "./endpoint";
-import type { WPort, WValue } from "./holon";
+import type { WValue } from "./holon";
 
-const BOUNDARY = 4294967295;
-const port = (name: string, ty: WPort["ty"]): WPort => ({ name, ty });
+beforeAll(() => {
+  initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
+});
 
 describe("parsePath", () => {
   it("accepts what core accepts and rejects the rest", () => {
@@ -35,59 +41,6 @@ describe("parsePath", () => {
     expect(r?.type === "Record" && r.value.find(([k]) => k === "params")?.[1]).toEqual({
       type: "Record",
       value: [["title", { type: "Text", value: "buy milk" }]],
-    });
-  });
-});
-
-describe("endpointUnit", () => {
-  it("puts the response first and the effects after it, and wires the request in", () => {
-    const u = endpointUnit(
-      "h",
-      [port("record", "Record")],
-      [port("write", "Effect"), port("item", "Any"), port("log", "Effect")],
-      "POST",
-      "/todos",
-    );
-    if (typeof u === "string") throw new Error(u);
-    expect(u.outputs?.map((p) => [p.name, p.ty])).toEqual([
-      ["response", "Any"],
-      ["write", "Effect"],
-      ["log", "Effect"],
-    ]);
-    expect(u.body).toEqual({
-      kind: "Composite",
-      children: ["h"],
-      edges: [
-        { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 },
-        { from_child: 0, from_port: 1, to_child: BOUNDARY, to_port: 0 },
-        { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 1 },
-        { from_child: 0, from_port: 2, to_child: BOUNDARY, to_port: 2 },
-      ],
-    });
-    expect(u.inputs).toEqual([port("request", "Record")]);
-    expect(u.params?.map((p) => p.kind === "Frozen" && p.value)).toEqual(["endpoint", "POST", "/todos"]);
-  });
-
-  it("lets a handler ignore the request, and refuses what can't be an endpoint", () => {
-    const listing = endpointUnit("h", [], [port("out", "Any")], "GET", "/todos");
-    if (typeof listing === "string") throw new Error(listing);
-    expect(listing.body.kind === "Composite" && listing.body.edges).toHaveLength(1);
-    expect(endpointUnit("h", [port("a", "Any"), port("b", "Any")], [port("o", "Any")], "GET", "/x")).toMatch(/at most one input/);
-    expect(endpointUnit("h", [], [], "GET", "/x")).toMatch(/needs an output/);
-    expect(endpointUnit("h", [], [port("o", "Any")], "GET", "x")).toMatch(/not a route path/);
-  });
-});
-
-describe("serverUnit", () => {
-  it("is a wireless composite of endpoints with the port as a param", () => {
-    expect(serverUnit(["a", "b"], 8080)).toEqual({
-      body: { kind: "Composite", children: ["a", "b"], edges: [] },
-      params: [
-        { kind: "Frozen", name: "declare", value: "server" },
-        { kind: "Frozen", name: "port", value: "8080" },
-      ],
-      inputs: [],
-      outputs: [],
     });
   });
 });
@@ -196,17 +149,5 @@ describe("toJson", () => {
     expect(toJson(v)).toBe('{"done":false,"due":null,"tags":[2],"title":"say \\"hi\\""}');
     expect(toJson({ type: "Number", value: NaN })).toBeNull();
     expect(toJson({ type: "Effect", value: { sink: "egress", payload: { type: "Number", value: 1 } } })).toBeNull();
-  });
-});
-
-describe("a resume route's endpoint", () => {
-  const out: WPort[] = [{ name: "response", ty: "Any" }];
-  it("names its waiting point only when it has one, so ordinary routes hash as before", () => {
-    const plain = endpointUnit("h", [], out, "GET", "/paid/:token");
-    const resume = endpointUnit("h", [], out, "GET", "/paid/:token", "paid");
-    if (typeof plain === "string" || typeof resume === "string") throw new Error("not built");
-    expect(plain.params?.map((p) => p.name)).toEqual(["declare", "method", "path"]);
-    expect(resume.params).toContainEqual({ kind: "Frozen", name: "resume", value: "paid" });
-    expect(endpointUnit("h", [], out, "GET", "/x", "a b")).toMatch(/not a waiting point's name/);
   });
 });

@@ -7,9 +7,9 @@ import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { initSync, Evaluator, primitive_catalog } from "../wasm/holon_wasm.js";
+import { initSync, Evaluator } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit, type WValue } from "./holon";
-import { buildTemplate, templateDefaults } from "./templates";
+import { templateDefaults, templateInterface } from "./templates";
 
 const SECRET = "whsec_test_0123456789";
 const NOW = 1_792_000_000;
@@ -20,13 +20,10 @@ let verify: Uint8Array;
 beforeAll(() => {
   initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
   ev = new Evaluator();
-  const catalog = new Map<string, WUnit>();
-  for (const u of primitive_catalog() as WUnit[]) {
-    if (u.body.kind === "Primitive") catalog.set(u.body.name, u);
-  }
-  const unit = buildTemplate("stripe_verify", templateDefaults("stripe_verify"), catalog, (c) => ev.insert(buildPreimage(c)));
-  if (typeof unit === "string") throw new Error(unit);
-  verify = buildPreimage(unit);
+  const params = templateDefaults("stripe_verify");
+  const { inputs, outputs } = templateInterface("stripe_verify", params);
+  const node = { id: "v", data: { name: "stripe_verify", body: { kind: "Template" }, inputs, outputs, params } };
+  verify = buildPreimage(ev.get_unit(ev.unit_for(node)) as WUnit);
 });
 
 const text = (value: string): WValue => ({ type: "Text", value });

@@ -2008,7 +2008,7 @@ fn todo_server(state: &AppState, port: &str) -> Hash {
             test_store_read("todos"),
             todos(),
             keyed("lookup", vec![], Type::Any),
-            // The respond template (editor/src/templates.ts) at status 200, missing 404.
+            // The respond template (holon-author's templates.rs) at status 200, missing 404.
             leaf("record", vec![], vec![], Type::Record),
             leaf("const", vec![Param::frozen("value", "200"), Param::frozen("type", "Number")], vec![], Type::Number),
             leaf("with_field", vec![Param::frozen("name", "status")], vec![("record", Type::Record), ("value", Type::Any)], Type::Record),

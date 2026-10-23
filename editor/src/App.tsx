@@ -44,7 +44,7 @@ import { nameOf, rememberName, restoreDocument } from "./docUnits";
 import { DialogProvider, useDialog } from "./Dialog";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS } from "./DeployBar";
-import { TEMPLATES } from "./templates";
+import { templateNames } from "./templates";
 import { primitiveName, unitFor } from "./canvasUnits";
 import {
   deriveServer,
@@ -283,7 +283,6 @@ function Canvas({
     settings,
     getViewport,
     ev,
-    byName,
     dialog,
     setNodes,
     setEdges,
@@ -293,7 +292,7 @@ function Canvas({
     setError: setDeployError,
   });
   // The marketplace: its listings in the palette, publishing from the flows page (useMarketplace.ts).
-  const market = useMarketplace({ refreshOn: page === "canvas" || page === "flows" ? page : null, ev, byName, dialog });
+  const market = useMarketplace({ refreshOn: page === "canvas" || page === "flows" ? page : null, ev, dialog });
 
     // A flow other saved flows place as a node: they keep the version they placed, but say what
     // this save takes away from them should they update.
@@ -338,7 +337,7 @@ function Canvas({
         const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
         getFlow(flow)
           .then((rec) => {
-            const placed = flowAsNode(flow, rec.document, ev, byName, `${flow}-${idRef.current++}`, position, rec.saved_at_epoch_seconds);
+            const placed = flowAsNode(flow, rec.document, ev, `${flow}-${idRef.current++}`, position, rec.saved_at_epoch_seconds);
             if (placed.ok) {
               setDeployError("");
               setNodes((ns) => ns.concat(placed.node));
@@ -358,7 +357,7 @@ function Canvas({
   const manifestOfDocument = useCallback(
     (doc: FlowDocument) => {
       restoreDocument(doc, ev);
-      const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, byName, doc.server?.port ?? DEFAULT_SETTINGS.port);
+      const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, doc.server?.port ?? DEFAULT_SETTINGS.port);
       const caps = (ev.capability_names(hash) as string[]);
       return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
     },
@@ -369,7 +368,7 @@ function Canvas({
   // when the canvas's structure changes, not on moves.
   const derived = useMemo(() => {
     const { nodes: ns, edges: es } = live.current;
-    return deriveServer(ns, es, ev, byName, settings.port);
+    return deriveServer(ns, es, ev, settings.port);
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port]);
@@ -379,7 +378,7 @@ function Canvas({
   const flowCapabilities = useMemo(() => {
     try {
       const { nodes: ns, edges: es } = live.current;
-      const hash = flowUnitHash(ns, es, ev, byName, settings.port);
+      const hash = flowUnitHash(ns, es, ev, settings.port);
       return ((ev.capability_names(hash) as string[])).sort();
     } catch {
       return [];
@@ -462,7 +461,6 @@ function Canvas({
     settings,
     getViewport,
     ev,
-    byName,
     dialog,
     deployments,
     refreshDeployments,
@@ -500,13 +498,12 @@ function Canvas({
     restoring,
     viewDoc,
     ev,
-    byName,
     deployments,
     fitView,
   });
 
   const onProject = useCallback(() => {
-    const result = projectCanvas(nodes, edges, ev, byName, canvasKey);
+    const result = projectCanvas(nodes, edges, ev, canvasKey);
     if (result.ok) {
       setProjection(result.projection);
       setProjError("");
@@ -523,7 +520,7 @@ function Canvas({
   const onGroup = useCallback(() => {
     const selected = nodes.filter((n) => n.selected);
     if (selected.length < 2) return; // mirrors the button's own disabled guard, defensively
-    const result = groupSelection(selected, edges, ev, byName, () => idRef.current++);
+    const result = groupSelection(selected, edges, ev, () => idRef.current++);
     if (result.ok) {
       const selectedIds = new Set(selected.map((n) => n.id));
       setNodes((ns) => [...ns.filter((n) => !selectedIds.has(n.id)), result.node]);
@@ -597,7 +594,7 @@ function Canvas({
   const onInspect = useCallback(() => {
     const selected = nodes.filter((n) => n.selected);
     if (selected.length !== 1) return; // mirrors the button's own disabled guard, defensively
-    setInspecting(unitFor(selected[0], ev, byName));
+    setInspecting(unitFor(selected[0], ev));
   }, [nodes, ev, byName]);
 
   // A boundary field changed: update its slot and re-eval live. Safe to be reactive (unlike
@@ -687,7 +684,7 @@ function Canvas({
       // A flow isn't offered inside itself.
       <Palette
         catalog={catalog}
-        templates={TEMPLATES}
+        templates={templateNames()}
         flows={savedFlows.filter((f) => f !== flowName)}
         market={{ url: market.url, error: market.error, entries: market.catalog }}
         docs={docs}

@@ -6,10 +6,10 @@
 
 import { useCallback, useMemo, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
-import { groupOf, traceOfUnit, type DerivedServer } from "./canvasOps";
+import { flowUnitHash, traceOfUnit, type DerivedServer } from "./canvasOps";
 import { documentUnits } from "./docUnits";
 import { describeItem, isWEncapError } from "./diagnostics";
-import { buildPreimage, type Evaluator, type WEncapSpec, type WUnit } from "./holon";
+import type { Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
 import { changeDeployment, deployUnit, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
 import { browsersOf, type FlowSettings } from "./DeployBar";
@@ -27,7 +27,6 @@ export function useDeployFlow({
   settings,
   getViewport,
   ev,
-  byName,
   dialog,
   deployments,
   refreshDeployments,
@@ -44,7 +43,6 @@ export function useDeployFlow({
   settings: FlowSettings;
   getViewport: () => Viewport;
   ev: Evaluator;
-  byName: Map<string, WUnit>;
   dialog: Dialogs;
   deployments: DeploymentEntry[];
   refreshDeployments: () => void;
@@ -94,11 +92,8 @@ export function useDeployFlow({
       } else {
         const { nodes: ns, edges: es } = live.current;
         if (ns.length === 0) throw new Error("nothing to deploy: the canvas is empty");
-        const { children, wedges } = groupOf(ns, es, ev, byName);
-        const spec = ev.propose_encapsulation(children, wedges) as WEncapSpec;
-        const whole = ev.freeze_encapsulation(children, wedges, spec) as WUnit;
-        hash = ev.insert(buildPreimage(whole));
-        trace = { "*": traceOfUnit(whole, ns, ev) };
+        hash = flowUnitHash(ns, es, ev, settings.port);
+        trace = { "*": traceOfUnit(hash, ns, ev) };
       }
     } catch (err) {
       setError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
@@ -158,7 +153,7 @@ export function useDeployFlow({
     } finally {
       setDeployBusy(false);
     }
-  }, [flowName, setFlowName, dialog, derived, settings, live, ev, byName, deployments, refreshDeployments, getViewport, setError]);
+  }, [flowName, setFlowName, dialog, derived, settings, live, ev, deployments, refreshDeployments, getViewport, setError]);
 
   const onFlowAction = useCallback(
     (action: "run" | "pause" | "stop") => {

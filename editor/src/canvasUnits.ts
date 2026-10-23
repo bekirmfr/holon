@@ -3,33 +3,17 @@
 import { buildPreimage, Evaluator, type WUnit } from "./holon";
 import { stageUnit } from "./server";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
-import { buildTemplate, type TemplateName } from "./templates";
 
 export function primitiveName(u: WUnit): string | null {
   return u.body.kind === "Primitive" ? u.body.name : null;
 }
 
-// A placed node's own hash, for use as a child in project/group (P4.3.1). A genesis primitive
-// is rebuilt fresh from its catalog name+interface — I3 (the same primitive always yields the
-// same hash) makes "rebuild" and "reference" the same operation, exactly how onProject has
-// always worked. A grouped composite is different: it was already frozen when it was grouped,
-// so its hash is just read off PlacedBody directly — its own internal structure is neither
-// rebuilt nor re-inspected here. Shared by onProject and onGroup so there's one implementation
-// of "how do I get this node's hash," not two that could drift.
-export function unitFor(n: PrimitiveNodeType, ev: Evaluator, catalog: Map<string, WUnit>): string {
-  if (n.data.body.kind === "Composite") return n.data.body.hash;
-  if (n.data.body.kind === "Template") {
-    const u = buildTemplate(n.data.name as TemplateName, n.data.params, catalog, (c) => ev.insert(buildPreimage(c)));
-    if (typeof u === "string") throw new Error(`${n.data.name}: ${u}`);
-    return ev.insert(buildPreimage(u));
-  }
-  const wunit: WUnit = {
-    body: { kind: "Primitive", name: n.data.name },
-    params: n.data.params,
-    inputs: n.data.inputs,
-    outputs: n.data.outputs,
-  };
-  return ev.insert(buildPreimage(wunit));
+// A placed node's own hash, for use as a child in project/group: a primitive rebuilt from its
+// name and ports (the same primitive always yields the same hash), a template from its params, a
+// grouped composite read off its body. holon-author decides it (flow.rs `unit_for`), through the
+// Evaluator, which stores it.
+export function unitFor(n: PrimitiveNodeType, ev: Evaluator): string {
+  return ev.unit_for(n);
 }
 
 // Recursively stage a unit's whole closure to holon-server — not just the root. A composite's

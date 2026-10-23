@@ -7,12 +7,12 @@ import { describeItem } from "./diagnostics";
 import { catalogOf, listListings, listingOf, marketplaceUrl, placeListing, publishKeyFor, publishListing, setPublishKey, yankListing, type Listing } from "./marketplace";
 import { getFlow } from "./server";
 import { signedIn } from "./signin";
-import type { Evaluator, WUnit } from "./holon";
+import type { Evaluator } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 
 type Dialogs = { confirm: (message: string, action?: string) => Promise<boolean>; prompt: (message: string, initial?: string) => Promise<string | null> };
 
-export function useMarketplace({ refreshOn, ev, byName, dialog }: { refreshOn: unknown; ev: Evaluator; byName: Map<string, WUnit>; dialog: Dialogs }) {
+export function useMarketplace({ refreshOn, ev, dialog }: { refreshOn: unknown; ev: Evaluator; dialog: Dialogs }) {
   const [url, setUrl] = useState(marketplaceUrl);
   const [listings, setListings] = useState<Listing[]>([]);
   const [error, setError] = useState("");
@@ -45,7 +45,7 @@ export function useMarketplace({ refreshOn, ev, byName, dialog }: { refreshOn: u
         key = (await dialog.prompt(`The marketplace's publish key (kept in this browser for ${at}):`)) ?? "";
         if (!key) return "";
       }
-      const listing = listingOf(name, (await getFlow(name)).document, ev, byName, { description, publisher });
+      const listing = listingOf(name, (await getFlow(name)).document, ev, { description, publisher });
       if (typeof listing === "string") return `not published: ${listing}`;
       try {
         const done = await publishListing(at, key, listing);
@@ -56,7 +56,7 @@ export function useMarketplace({ refreshOn, ev, byName, dialog }: { refreshOn: u
         return `not published: ${e instanceof Error ? e.message : String(e)}`;
       }
     },
-    [ev, byName, dialog, refresh],
+    [ev, dialog, refresh],
   );
 
   /** The listing `id` as a node at `position`, once the person has seen what it may do; null

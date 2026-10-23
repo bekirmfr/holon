@@ -12,7 +12,7 @@ import { documentUnits } from "./docUnits";
 import { holonIndex, interfaceLoss } from "./holonUsage";
 import { getFlow, listDeployments, listFlows, saveFlow, type FlowDocument } from "./server";
 import { savedKeyOf } from "./tabs";
-import type { Evaluator, WUnit } from "./holon";
+import type { Evaluator } from "./holon";
 import type { FlowSettings } from "./DeployBar";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 
@@ -28,7 +28,6 @@ export function useSavedFlows({
   settings,
   getViewport,
   ev,
-  byName,
   dialog,
   setNodes,
   setEdges,
@@ -47,7 +46,6 @@ export function useSavedFlows({
   settings: FlowSettings;
   getViewport: () => Viewport;
   ev: Evaluator;
-  byName: Map<string, WUnit>;
   dialog: Dialogs;
   setNodes: (update: (ns: PrimitiveNodeType[]) => PrimitiveNodeType[]) => void;
   setEdges: (es: Edge[]) => void;
@@ -75,8 +73,8 @@ export function useSavedFlows({
         const users = (await holonIndex(flows, deployed, (n) => getFlow(n).then((r) => r.document))).get(name) ?? [];
         if (users.length === 0) return true;
         const previous = await getFlow(name);
-        const before = flowAsNode(name, previous.document, ev, byName, "before", { x: 0, y: 0 });
-        const after = flowAsNode(name, doc, ev, byName, "after", { x: 0, y: 0 });
+        const before = flowAsNode(name, previous.document, ev, "before", { x: 0, y: 0 });
+        const after = flowAsNode(name, doc, ev, "after", { x: 0, y: 0 });
         const loss = before.ok && after.ok ? interfaceLoss(before.node.data, after.node.data) : [];
         if (loss.length > 0) {
           const where = users.map((u) => (u.kind === "deployment" ? `${u.user} (deployed)` : u.user)).join(", ");
@@ -90,7 +88,7 @@ export function useSavedFlows({
       }
       return true;
     },
-    [savedFlowTimes, ev, byName, dialog],
+    [savedFlowTimes, ev, dialog],
   );
 
   const onSave = useCallback(async () => {
@@ -134,7 +132,7 @@ export function useSavedFlows({
       if (!old || !from) return;
       getFlow(from.flow)
         .then(async (rec) => {
-          const placed = flowAsNode(from.flow, rec.document, ev, byName, id, old.position, rec.saved_at_epoch_seconds);
+          const placed = flowAsNode(from.flow, rec.document, ev, id, old.position, rec.saved_at_epoch_seconds);
           if (!placed.ok) return setError(placed.message);
           const body = placed.node.data.body;
           if (body.kind !== "Composite") return;
@@ -154,7 +152,7 @@ export function useSavedFlows({
         })
         .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
     },
-    [live, ev, byName, setNodes, setEdges, setSaveMsg, setError, dialog],
+    [live, ev, setNodes, setEdges, setSaveMsg, setError, dialog],
   );
 
   return { savedFlowTimes, savedFlows, onSave, updateHolon };

@@ -248,7 +248,6 @@ export function expandComposite(
 export function freezeInner(
   canvas: { nodes: Node[]; edges: Edge[] },
   ev: Evaluator,
-  byName: Map<string, WUnit>,
 ): { ok: true; hash: string; inputs: WPort[]; outputs: WPort[] } | { ok: false; message: string; nodeIds: string[] } {
   const boundaryOf = (id: string) => canvas.nodes.find((n) => n.id === id)?.data as BoundaryData | undefined;
   const ins = boundaryOf(BOUNDARY_IN)?.ports ?? [];
@@ -279,7 +278,7 @@ export function freezeInner(
     expose.push({ child: index.get(node.id)!, port: node.data.outputs.findIndex((q) => q.name === from.sourceHandle), name: p.unit ?? p.name });
   }
   try {
-    const { children, wedges } = groupOf(inner, innerEdges, ev, byName);
+    const { children, wedges } = groupOf(inner, innerEdges, ev);
     const unit = ev.freeze_encapsulation(children, wedges, { promote, expose }) as WUnit;
     const hash = ev.insert(buildPreimage(unit));
     // The node keeps showing the boundary's names; the unit keeps its own.

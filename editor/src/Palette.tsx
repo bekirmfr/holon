@@ -7,7 +7,7 @@
 import type { WUnit } from "./holon";
 import { outputColor } from "./theme";
 import { InfoIcon } from "./NodeDocs";
-import { TEMPLATE_DOCS, type TemplateName } from "./templates";
+import { templateDoc } from "./templates";
 import { MARKET_PREFIX, type Listing } from "./marketplace";
 
 /** The MIME key the palette writes and the canvas reads on a drag-and-drop. */
@@ -113,7 +113,7 @@ export function Palette({
           >
             <span className="hl-palette__swatch" style={{ background: outputColor("Record") }} aria-hidden />
             <span className="hl-palette__name">{name}</span>
-            <InfoIcon text={TEMPLATE_DOCS[name as TemplateName] ?? null} />
+            <InfoIcon text={templateDoc(name)} />
           </div>
         ))}
       </div>

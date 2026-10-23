@@ -18,7 +18,7 @@ const PARAM_CHOICES: Record<string, Record<string, readonly string[]>> = {
   hex: { mode: ["encode", "decode"] },
   base64: { mode: ["encode", "decode"], alphabet: ["standard", "url"] },
 };
-import { templateInterface, type TemplateName } from "./templates";
+import { templateInterface } from "./templates";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
 import { InfoIcon, useNodeActions, useNodeDocs } from "./NodeDocs";
 import { useOptionalDialog } from "./Dialog";
@@ -294,7 +294,7 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
     }
     // A template's ports follow its params (a 204 respond has no body), so re-derive them and
     // drop any wire into an input that no longer exists.
-    const iface = templateInterface(name as TemplateName, next);
+    const iface = templateInterface(name, next);
     updateNodeData(id, { params: next, inputs: iface.inputs, outputs: iface.outputs });
     const kept = new Set(iface.inputs.map((p) => p.name));
     setEdges((eds) => eds.filter((e) => e.target !== id || (e.targetHandle != null && kept.has(e.targetHandle))));

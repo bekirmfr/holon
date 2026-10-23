@@ -541,7 +541,7 @@ effect loop). It can be tested in the editor with no server running.
 packs/hooks/
   pack.toml            name, version, door = "hooks", requires = ["auth", "http"]
   units/
-    stripe_verify.holon     composite: split + fold + hmac_sha256 + secure_equals (an editor template today, editor/src/templates.ts)
+    stripe_verify.holon     composite: split + fold + hmac_sha256 + secure_equals (a template today, crates/holon-author/src/templates.rs)
     github_event.holon      composite: json_parse + field + select
     slack_post.holon        composite: record + json_stringify + http_request
   templates/

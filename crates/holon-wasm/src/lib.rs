@@ -16,18 +16,20 @@
 //!   free to drift). Hashes now cross the boundary as **lowercase hex strings** — usable as JS map
 //!   keys and `===`-comparable, which `Uint8Array` is not.
 
+use holon_author::canvas::{Node, Wire};
+use holon_author::wire::{WEdge, WParam, WType, WUnit};
+use holon_author::{flow, routes, templates, to_hex};
 use holon_core::{
     decode_preimage, default_spec, derive_and_freeze, encode_preimage, genesis_units, hash_unit,
-    parse_hash, Capability, Edge, EncapError, EncapSpec, Expose, Hash, Kind, MapResolver, Param,
-    Port, Promote, Resolver, Type, Unit, UnitBody, Value, ValidationError, MAX_TYPE_DEPTH,
+    parse_hash, Capability, Edge, EncapError, EncapSpec, Expose, Hash, Kind, MapResolver,
+    Promote, Resolver, Unit, Value, ValidationError,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-/// A 32-byte hash as 64 lowercase hex chars — the boundary form of a content address.
-fn to_hex(h: &Hash) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
-}
+// The JS forms of core's units, ports, params and types (`WUnit`, `WPort`, `WParam`, `WType`,
+// `WEdge`) are holon-author's (wire.rs): the same ones the flow documents hold and the command
+// line reads.
 
 /// Hash a unit from its canonical preimage bytes: decode → re-hash → its content address (hex).
 #[wasm_bindgen]
@@ -115,84 +117,6 @@ impl WValue {
 // `WUnit` mirrors `core::Unit` so the editor describes a node as a plain JS object and the bridge
 // encodes it with the ONE core encoder. Children cross as hex hashes; types as plain strings.
 
-/// JS-facing wire type. Mirrors `core::Type` exactly, including its recursive shape
-/// (P1.3.2 editor inch). No `#[serde(tag=...)]` needed: serde's own default (external
-/// tagging) already gives the right shape for free — a nullary variant serializes as a
-/// bare string (`"Number"`), a variant carrying data serializes as a single-key object
-/// (`{"List": "Number"}`, `{"Product": ["Number","Text"]}`). Every existing scalar-only
-/// TS call site (`p.ty === "Number"`, `Record<WType,string>` keyed by the flat cases,
-/// …) is untouched by this — only `List`/`Product`/`Sum` change shape, from a bare tag
-/// to a tagged object, because they are the only variants that now carry a payload.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub enum WType {
-    Number,
-    Boolean,
-    Text,
-    /// A homogeneous list of `T`. `{"List": "Number"}`.
-    List(Box<WType>),
-    /// A positional n-ary tuple. `Pair<A,B>` = `{"Product": [A, B]}`; `Unit` = `{"Product": []}`.
-    Product(Vec<WType>),
-    /// A tagged choice. `Option<T>` = `{"Sum": [T, {"Product": []}]}`.
-    Sum(Vec<WType>),
-    Effect,
-    Any,
-    Record,
-}
-
-impl WType {
-    fn from_core(t: &Type) -> WType {
-        match t {
-            Type::Number => WType::Number,
-            Type::Boolean => WType::Boolean,
-            Type::Text => WType::Text,
-            Type::List(inner) => WType::List(Box::new(WType::from_core(inner))),
-            Type::Product(elems) => WType::Product(elems.iter().map(WType::from_core).collect()),
-            Type::Sum(elems) => WType::Sum(elems.iter().map(WType::from_core).collect()),
-            Type::Effect => WType::Effect,
-            Type::Any => WType::Any,
-            Type::Record => WType::Record,
-        }
-    }
-
-    /// The public entry point: depth 0.
-    fn into_core(self) -> Result<Type, JsError> {
-        self.into_core_at(0)
-    }
-
-    /// Depth-bounded, mirroring core's own `Decoder::ty_at` and for the identical reason: this is
-    /// now a genuinely untrusted-input boundary. `compatible`/`build_preimage` are public
-    /// `#[wasm_bindgen]` functions reachable by any JS on the page (not only this editor's own
-    /// React code), and `WType` can now nest — so a JS caller can hand this a deeply (or
-    /// adversarially) nested object the same way a hostile byte blob could target the decoder.
-    /// Reuses `MAX_TYPE_DEPTH` rather than a parallel bound that could drift from core's.
-    fn into_core_at(self, depth: u32) -> Result<Type, JsError> {
-        if depth > MAX_TYPE_DEPTH {
-            return Err(JsError::new("type nested too deep"));
-        }
-        Ok(match self {
-            WType::Number => Type::Number,
-            WType::Boolean => Type::Boolean,
-            WType::Text => Type::Text,
-            WType::List(inner) => Type::List(Box::new(inner.into_core_at(depth + 1)?)),
-            WType::Product(elems) => Type::Product(
-                elems
-                    .into_iter()
-                    .map(|e| e.into_core_at(depth + 1))
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
-            WType::Sum(elems) => Type::Sum(
-                elems
-                    .into_iter()
-                    .map(|e| e.into_core_at(depth + 1))
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
-            WType::Effect => Type::Effect,
-            WType::Any => Type::Any,
-            WType::Record => Type::Record,
-        })
-    }
-}
-
 /// A category of effect a leaf may touch, outside its inputs — mirrors `core::Capability`.
 /// Every variant crosses as a bare string (`"Clock"`) via serde's default external tagging,
 /// except `StateRead`/`StateWrite`, which now carry their state key and cross as a
@@ -261,150 +185,13 @@ impl WKind {
     }
 }
 
-/// JS-facing param: `{ kind: "Frozen", name, value }` or `{ kind: "Open", name, bind }`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(tag = "kind")]
-pub enum WParam {
-    Frozen { name: String, value: String },
-    Open { name: String, bind: String },
-}
-
-impl WParam {
-    fn from_core(p: &Param) -> WParam {
-        match p {
-            Param::Frozen { name, value } => {
-                WParam::Frozen { name: name.clone(), value: value.clone() }
-            }
-            Param::Open { name, bind } => WParam::Open { name: name.clone(), bind: bind.clone() },
-        }
-    }
-    fn into_core(self) -> Param {
-        match self {
-            WParam::Frozen { name, value } => Param::Frozen { name, value },
-            WParam::Open { name, bind } => Param::Open { name, bind },
-        }
-    }
-}
-
-/// JS-facing port: `{ name, ty: "Number" }`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct WPort {
-    name: String,
-    ty: WType,
-}
-
-/// JS-facing internal wire: child *indices* + port indices. `to_child`/`from_child` == 4294967295
-/// (u32::MAX) is the composite's own boundary.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct WEdge {
-    from_child: u32,
-    from_port: u32,
-    to_child: u32,
-    to_port: u32,
-}
-
-/// JS-facing unit body: `{ kind: "Primitive", name }` or
-/// `{ kind: "Composite", children: [hex…], edges: [...] }`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(tag = "kind")]
-pub enum WBody {
-    Primitive { name: String },
-    Composite { children: Vec<String>, edges: Vec<WEdge> },
-}
-
-/// JS-facing unit. `params` / `inputs` / `outputs` may be omitted in JS (default empty).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct WUnit {
-    body: WBody,
-    #[serde(default)]
-    params: Vec<WParam>,
-    #[serde(default)]
-    inputs: Vec<WPort>,
-    #[serde(default)]
-    outputs: Vec<WPort>,
-}
-
-impl WUnit {
-    fn from_core(u: &Unit) -> WUnit {
-        let body = match &u.body {
-            UnitBody::Primitive { name } => WBody::Primitive { name: name.clone() },
-            UnitBody::Composite { children, edges } => WBody::Composite {
-                children: children.iter().map(to_hex).collect(),
-                edges: edges
-                    .iter()
-                    .map(|e| WEdge {
-                        from_child: e.from_child,
-                        from_port: e.from_port,
-                        to_child: e.to_child,
-                        to_port: e.to_port,
-                    })
-                    .collect(),
-            },
-        };
-        WUnit {
-            body,
-            params: u.params.iter().map(WParam::from_core).collect(),
-            inputs: u
-                .inputs
-                .iter()
-                .map(|p| WPort { name: p.name.clone(), ty: WType::from_core(&p.ty) })
-                .collect(),
-            outputs: u
-                .outputs
-                .iter()
-                .map(|p| WPort { name: p.name.clone(), ty: WType::from_core(&p.ty) })
-                .collect(),
-        }
-    }
-
-    fn into_core(self) -> Result<Unit, JsError> {
-        let body = match self.body {
-            WBody::Primitive { name } => UnitBody::Primitive { name },
-            WBody::Composite { children, edges } => {
-                let mut hs = Vec::with_capacity(children.len());
-                for c in &children {
-                    let h = parse_hash(c)
-                        .ok_or_else(|| JsError::new(&format!("bad child hash: {c}")))?;
-                    hs.push(h);
-                }
-                UnitBody::Composite {
-                    children: hs,
-                    edges: edges
-                        .into_iter()
-                        .map(|e| Edge {
-                            from_child: e.from_child,
-                            from_port: e.from_port,
-                            to_child: e.to_child,
-                            to_port: e.to_port,
-                        })
-                        .collect(),
-                }
-            }
-        };
-        Ok(Unit {
-            body,
-            params: self.params.into_iter().map(WParam::into_core).collect(),
-            inputs: self
-                .inputs
-                .into_iter()
-                .map(|p| Ok(Port { name: p.name, ty: p.ty.into_core()? }))
-                .collect::<Result<Vec<_>, JsError>>()?,
-            outputs: self
-                .outputs
-                .into_iter()
-                .map(|p| Ok(Port { name: p.name, ty: p.ty.into_core()? }))
-                .collect::<Result<Vec<_>, JsError>>()?,
-        })
-    }
-}
-
 /// Build a unit's canonical preimage from a JS [`WUnit`] — the editor's "compile this node to
 /// canonical bytes", through the ONE core encoder. The bytes feed `insert`, `eval`, or `hash`.
 #[wasm_bindgen]
 pub fn build_preimage(unit: JsValue) -> Result<Vec<u8>, JsError> {
     let wunit: WUnit =
         serde_wasm_bindgen::from_value(unit).map_err(|e| JsError::new(&format!("unit: {e}")))?;
-    let core = wunit.into_core()?;
+    let core = wunit.into_core().map_err(|e| JsError::new(&e))?;
     encode_preimage(&core).map_err(|e| JsError::new(&format!("encode: {e:?}")))
 }
 
@@ -513,7 +300,8 @@ pub fn compatible(src: JsValue, dst: JsValue) -> Result<bool, JsError> {
 /// one `into_core` and delegate to `holon_core::compatible`. Fully-qualified so it does not collide
 /// with the exported `compatible` above. Fallible now that `into_core` is depth-bounded.
 fn types_compatible(s: WType, d: WType) -> Result<bool, JsError> {
-    Ok(holon_core::compatible(&s.into_core()?, &d.into_core()?))
+    let (s, d) = (s.into_core().map_err(|e| JsError::new(&e))?, d.into_core().map_err(|e| JsError::new(&e))?);
+    Ok(holon_core::compatible(&s, &d))
 }
 
 // ── The evaluator ────────────────────────────────────────────────────────────────────────────
@@ -789,6 +577,49 @@ impl Evaluator {
         serde_wasm_bindgen::to_value(&kinds).map_err(|e| JsError::new(&format!("effects: {e}")))
     }
 
+    /// A placed node's own unit, stored here, by hash (holon-author's `unit_for`): a primitive
+    /// rebuilt from its name and ports, a template from its params, a grouped composite by its
+    /// hash.
+    pub fn unit_for(&mut self, node: JsValue) -> Result<String, JsError> {
+        let node: Node = serde_wasm_bindgen::from_value(node).map_err(|e| JsError::new(&format!("node: {e}")))?;
+        flow::unit_for(&node, &mut self.resolver).map(|h| to_hex(&h)).map_err(|e| JsError::new(&e))
+    }
+
+    /// A group of nodes as core children plus the wires among them, `{children, wedges}`.
+    pub fn group_of(&mut self, nodes: JsValue, edges: JsValue) -> Result<JsValue, JsError> {
+        #[derive(Serialize)]
+        struct Group {
+            children: Vec<String>,
+            wedges: Vec<WEdge>,
+        }
+        let (nodes, wires) = canvas(nodes, edges)?;
+        let group: Vec<&Node> = nodes.iter().collect();
+        let (children, edges) = flow::group_of(&group, &wires, &mut self.resolver).map_err(|e| JsError::new(&e))?;
+        to_js(&Group { children: children.iter().map(to_hex).collect(), wedges: edges.iter().map(WEdge::from_core).collect() })
+    }
+
+    /// Which node each child of the stored composite `hash` is, in the order it is stored and
+    /// run in, `nodes` being the group it was made from, in the order it was given.
+    pub fn trace_of(&self, hash: &str, nodes: JsValue) -> Result<Vec<String>, JsError> {
+        let nodes: Vec<Node> = serde_wasm_bindgen::from_value(nodes).map_err(|e| JsError::new(&format!("nodes: {e}")))?;
+        let group: Vec<&Node> = nodes.iter().collect();
+        Ok(flow::trace_of(self.resolve_hash(hash)?, &group))
+    }
+
+    /// The server a flow declares, `{endpoints, errors, serverHash, trace}`, its units stored here
+    /// (holon-author's `derive_server`). `port` is as the flow's settings hold it.
+    pub fn derive_server(&mut self, nodes: JsValue, edges: JsValue, port: &str) -> Result<JsValue, JsError> {
+        let (nodes, wires) = canvas(nodes, edges)?;
+        to_js(&flow::derive_server(&nodes, &wires, &mut self.resolver, port))
+    }
+
+    /// The unit a flow deploys as, stored here: its server when it has routes, else the whole flow
+    /// as one composite. Throws why it can't be.
+    pub fn flow_unit(&mut self, nodes: JsValue, edges: JsValue, port: &str) -> Result<String, JsError> {
+        let (nodes, wires) = canvas(nodes, edges)?;
+        flow::flow_unit(&nodes, &wires, &mut self.resolver, port).map(|h| to_hex(&h)).map_err(|e| JsError::new(&e))
+    }
+
     /// Parse a hex hash and resolve it against this Evaluator's own resolver — the identical
     /// "parse then look up" pattern `get_unit`, `capabilities`, and `effects_of` all need.
     /// Factored out once three call sites needed it, not before.
@@ -898,16 +729,7 @@ impl Evaluator {
             .collect::<Result<_, JsValue>>()?;
         let wedges: Vec<WEdge> = serde_wasm_bindgen::from_value(edges)
             .map_err(|e| JsValue::from_str(&format!("edges: {e}")))?;
-        let core_edges: Vec<Edge> = wedges
-            .into_iter()
-            .map(|e| Edge {
-                from_child: e.from_child,
-                from_port: e.from_port,
-                to_child: e.to_child,
-                to_port: e.to_port,
-            })
-            .collect();
-        Ok((hashes, core_edges))
+        Ok((hashes, wedges.into_iter().map(WEdge::into_core).collect()))
     }
 }
 
@@ -919,8 +741,104 @@ impl Default for Evaluator {
 
 // ── Parity & boundary tests: one body, run on BOTH targets ─────────────────────────────────────
 
+// ── Authoring (holon-author) ─────────────────────────────────────────────────────────────────
+// What a flow turns into: its nodes' units, its routes, its server, the unit it deploys as. The
+// editor hands its canvas (nodes and wires, as React Flow holds them; only what decides the
+// units is read) and gets back what core derives, decided once, in Rust, for the editor and the
+// command line alike.
+
+/// Results that hold `null`s and maps cross as plain JSON-shaped values (`null`, objects), not
+/// `undefined` and `Map`.
+fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsError> {
+    value
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
+fn canvas(nodes: JsValue, edges: JsValue) -> Result<(Vec<Node>, Vec<Wire>), JsError> {
+    let nodes = serde_wasm_bindgen::from_value(nodes).map_err(|e| JsError::new(&format!("nodes: {e}")))?;
+    let wires = serde_wasm_bindgen::from_value(edges).map_err(|e| JsError::new(&format!("wires: {e}")))?;
+    Ok((nodes, wires))
+}
+
+fn not_a_template(name: &str) -> JsError {
+    JsError::new(&format!("\"{name}\" is not a template"))
+}
+
+/// The node templates, in palette order (holon-author's templates.rs).
+#[wasm_bindgen]
+pub fn template_names() -> Vec<String> {
+    templates::TEMPLATES.iter().map(|s| s.to_string()).collect()
+}
+
+/// What a template does, for the person placing it; `undefined` for a name that isn't one.
+#[wasm_bindgen]
+pub fn template_doc(name: &str) -> Option<String> {
+    templates::describe(name).map(String::from)
+}
+
+/// A template node's `{inputs, outputs, hiddenInputs}` for these params.
+#[wasm_bindgen]
+pub fn template_interface(name: &str, params: JsValue) -> Result<JsValue, JsError> {
+    let params: Vec<WParam> = serde_wasm_bindgen::from_value(params).map_err(|e| JsError::new(&format!("params: {e}")))?;
+    to_js(&templates::interface(name, &params).ok_or_else(|| not_a_template(name))?)
+}
+
+/// The params a freshly placed template node starts with.
+#[wasm_bindgen]
+pub fn template_defaults(name: &str) -> Result<JsValue, JsError> {
+    to_js(&templates::defaults(name).ok_or_else(|| not_a_template(name))?)
+}
+
+/// A route path's segments, as core parses it: `[{literal, param}]` (one of the two set), or
+/// `null` for a path core refuses.
+#[wasm_bindgen]
+pub fn route_path(path: &str) -> Result<JsValue, JsError> {
+    #[derive(Serialize)]
+    struct Seg {
+        literal: Option<String>,
+        param: Option<String>,
+    }
+    let segs = holon_core::parse_path(path).map(|segs| {
+        segs.into_iter()
+            .map(|s| match s {
+                holon_core::Segment::Literal(l) => Seg { literal: Some(l), param: None },
+                holon_core::Segment::Param(p) => Seg { literal: None, param: Some(p) },
+            })
+            .collect::<Vec<_>>()
+    });
+    to_js(&segs)
+}
+
+/// The flow's connected groups of node ids (wires either way), in the order `ids` gives.
+#[wasm_bindgen]
+pub fn canvas_components(ids: Vec<String>, edges: JsValue) -> Result<JsValue, JsError> {
+    let wires: Vec<Wire> = serde_wasm_bindgen::from_value(edges).map_err(|e| JsError::new(&format!("wires: {e}")))?;
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    to_js(&routes::components(&ids, &wires))
+}
+
+/// The routes a flow declares, `{routes, errors}`: one per connected group holding a request node.
+#[wasm_bindgen]
+pub fn find_routes(nodes: JsValue, edges: JsValue) -> Result<JsValue, JsError> {
+    #[derive(Serialize)]
+    struct Found {
+        routes: Vec<routes::RouteGroup>,
+        errors: Vec<String>,
+    }
+    let (nodes, wires) = canvas(nodes, edges)?;
+    let (routes, errors) = routes::find_routes(&nodes, &wires);
+    to_js(&Found { routes, errors })
+}
+
 #[cfg(test)]
-use holon_core::BOUNDARY;
+use holon_core::{Param, Port, Type, UnitBody, BOUNDARY};
+#[cfg(test)]
+use holon_author::wire::WBody;
+#[cfg(all(test, target_arch = "wasm32"))]
+use holon_core::MAX_TYPE_DEPTH;
+#[cfg(all(test, target_arch = "wasm32"))]
+use holon_author::wire::WPort;
 
 #[cfg(test)]
 fn prim(name: &str) -> Unit {

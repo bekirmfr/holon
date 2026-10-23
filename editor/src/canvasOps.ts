@@ -11,51 +11,29 @@ import { boundaryLabels, encapErrorNodeIndices, isWEncapError } from "./diagnost
 import { isTemplate, templateDefaults, templateInterface } from "./templates";
 import { unitFor } from "./canvasUnits";
 import { defaultBoundaryValue } from "./BoundaryField";
-import { findRoutes, routeSpec } from "./derive";
-import { endpointUnit, serverUnit, type EndpointDraft } from "./endpoint";
+import type { EndpointDraft } from "./endpoint";
 import { restoreDocument } from "./docUnits";
+
+// What a flow turns into (its nodes' units, its routes, its server, the unit it deploys as) is
+// holon-author's (crates/holon-author/src/flow.rs), through the Evaluator, which stores every
+// unit it derives: the same code the command line runs.
 
 /** The unit a flow deploys as: its server when it has routes, else the whole canvas as one
  *  composite. Throws why it can't be derived. */
-export function flowUnitHash(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, byName: Map<string, WUnit>, portText: string): string {
-  const derived = deriveServer(ns, es, ev, byName, portText);
-  if (derived.errors.length > 0) throw new Error(derived.errors.join("; "));
-  if (derived.endpoints.length > 0) {
-    if (!derived.serverHash) throw new Error(`"${portText}" is not a port (set it under ⚙)`);
-    return derived.serverHash;
-  }
-  if (ns.length === 0) throw new Error("the canvas is empty");
-  const { children, wedges } = groupOf(ns, es, ev, byName);
-  const whole = ev.freeze_encapsulation(children, wedges, ev.propose_encapsulation(children, wedges) as WEncapSpec) as WUnit;
-  return ev.insert(buildPreimage(whole));
+export function flowUnitHash(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string): string {
+  return ev.flow_unit(ns, es, portText);
 }
 
 /** A group of canvas nodes as core children (each node's hash) plus the wires among them, by
  *  index. */
-export function groupOf(group: PrimitiveNodeType[], es: Edge[], ev: Evaluator, byName: Map<string, WUnit>) {
-  const indexOf = new Map(group.map((n, i) => [n.id, i]));
-  const children = group.map((n) => unitFor(n, ev, byName));
-  const wedges: WEdge[] = es
-    .filter((e) => indexOf.has(e.source) && indexOf.has(e.target))
-    .map((e) => {
-      const from = indexOf.get(e.source)!;
-      const to = indexOf.get(e.target)!;
-      return {
-        from_child: from,
-        from_port: group[from].data.outputs.findIndex((p) => p.name === e.sourceHandle),
-        to_child: to,
-        to_port: group[to].data.inputs.findIndex((p) => p.name === e.targetHandle),
-      };
-    });
-  return { children, wedges };
+export function groupOf(group: PrimitiveNodeType[], es: Edge[], ev: Evaluator): { children: string[]; wedges: WEdge[] } {
+  return ev.group_of(group, es);
 }
 
 /** Which canvas node each child of a frozen unit is, in the order the unit is stored (and run,
  *  and timed) in: core sorts a composite's children canonically when it hashes it. */
-export function traceOfUnit(unit: WUnit, group: PrimitiveNodeType[], ev: Evaluator): string[] {
-  return unit.body.kind === "Composite"
-    ? Array.from(ev.canonical_child_order(unit.body.children, unit.body.edges), (i) => group[i].id)
-    : [];
+export function traceOfUnit(hash: string, group: PrimitiveNodeType[], ev: Evaluator): string[] {
+  return ev.trace_of(hash, group);
 }
 
 /** The server a canvas declares: its endpoints, why any route can't be one, the server unit's
@@ -68,42 +46,11 @@ export type DerivedServer = {
   trace: Record<string, string[]>;
 };
 
-/** Derive the server from the canvas: each connected group holding a request node is one route
- *  (derive.ts). Each group is projected through core like a selection being grouped, narrowed to
- *  the request input and the response/effect outputs, and wrapped as an endpoint. */
-export function deriveServer(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, byName: Map<string, WUnit>, portText: string): DerivedServer {
-  const { routes, errors } = findRoutes(ns, es);
-  const endpoints: EndpointDraft[] = [];
-  const trace: Record<string, string[]> = {};
-  for (const r of routes) {
-    const label = `${r.method} ${r.path}`;
-    try {
-      const group = r.nodeIds.map((id) => ns.find((n) => n.id === id)!);
-      const { children, wedges } = groupOf(group, es, ev, byName);
-      const spec = routeSpec(ev.propose_encapsulation(children, wedges) as WEncapSpec, group, label);
-      if (typeof spec === "string") {
-        errors.push(spec);
-        continue;
-      }
-      const handler = ev.freeze_encapsulation(children, wedges, spec) as WUnit;
-      trace[label] = traceOfUnit(handler, group, ev);
-      const handlerHash = ev.insert(buildPreimage(handler));
-      const unit = endpointUnit(handlerHash, handler.inputs ?? [], handler.outputs ?? [], r.method, r.path, r.resume);
-      if (typeof unit === "string") {
-        errors.push(`${label}: ${unit}`);
-        continue;
-      }
-      endpoints.push({ method: r.method, path: r.path, hash: ev.insert(buildPreimage(unit)) });
-    } catch (err) {
-      errors.push(`${label}: ${messageOf(err)}`);
-    }
-  }
-  const port = Number(portText);
-  const serverHash =
-    endpoints.length > 0 && errors.length === 0 && Number.isInteger(port) && port >= 1 && port <= 65535
-      ? ev.insert(buildPreimage(serverUnit(endpoints.map((e) => e.hash), port)))
-      : null;
-  return { endpoints, errors, serverHash, trace };
+/** Derive the server from the canvas: each connected group holding a request node is one route.
+ *  Each group is projected through core like a selection being grouped, narrowed to the request
+ *  input and the response/effect outputs, and wrapped as an endpoint. */
+export function deriveServer(ns: PrimitiveNodeType[], es: Edge[], ev: Evaluator, portText: string): DerivedServer {
+  return ev.derive_server(ns, es, portText) as DerivedServer;
 }
 
 /** A projected canvas: the frozen composite, its promoted inputs with the values supplied for
@@ -168,7 +115,6 @@ export function projectCanvas(
   nodes: PrimitiveNodeType[],
   edges: Edge[],
   ev: Evaluator,
-  byName: Map<string, WUnit>,
   basis: string,
 ): { ok: true; projection: Projection } | ({ ok: false } & OpError) {
   // Outside the try on purpose: TypeMismatch only carries an `edge` index, and resolving it
@@ -178,7 +124,7 @@ export function projectCanvas(
     // Child index = position in `nodes` — arbitrary, because core canonicalizes child order, so a
     // cosmetic reorder cannot move the hash (I5). `id`/`position` are dropped here.
     const indexOf = new Map(nodes.map((n, i) => [n.id, i]));
-    const children = nodes.map((n) => unitFor(n, ev, byName));
+    const children = nodes.map((n) => unitFor(n, ev));
 
     // Canvas wire → core edge by index. from_port is the named output's position in the source's
     // interface, to_port the named input's position in the target's.
@@ -260,14 +206,13 @@ export function groupSelection(
   selected: PrimitiveNodeType[],
   edges: Edge[],
   ev: Evaluator,
-  byName: Map<string, WUnit>,
   nextId: () => number,
 ): { ok: true; node: PrimitiveNodeType; edges: Edge[] } | ({ ok: false } & OpError) {
   const selectedIds = new Set(selected.map((n) => n.id));
   const indexOf = new Map(selected.map((n, i) => [n.id, i]));
   let wedges: WEdge[] = [];
   try {
-    const children = selected.map((n) => unitFor(n, ev, byName));
+    const children = selected.map((n) => unitFor(n, ev));
     const innerEdges = edges.filter((e) => selectedIds.has(e.source) && selectedIds.has(e.target));
     wedges = innerEdges.map((e) => {
       const from = indexOf.get(e.source)!;
@@ -363,7 +308,6 @@ export function flowAsNode(
   name: string,
   doc: { nodes: unknown[]; edges: unknown[]; units?: string[]; names?: Record<string, string> },
   ev: Evaluator,
-  byName: Map<string, WUnit>,
   id: string,
   position: { x: number; y: number },
   /** When the flow was saved: the node remembers it, so an update can be offered later. */
@@ -377,7 +321,7 @@ export function flowAsNode(
   }
   const failed = restoreDocument(doc, ev);
   if (failed) return { ok: false, message: `"${name}": its grouped nodes can't be restored: ${failed}` };
-  const grouped = groupSelection(ns, es, ev, byName, () => 0);
+  const grouped = groupSelection(ns, es, ev, () => 0);
   if (!grouped.ok) return { ok: false, message: `"${name}" can't be placed as a node: ${grouped.message}` };
   const source = savedAt === undefined ? {} : { source: { flow: name, savedAt } };
   return { ok: true, node: { ...grouped.node, id, position, data: { ...grouped.node.data, name, ...source } } };

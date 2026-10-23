@@ -1,11 +1,9 @@
-// Building and testing HTTP endpoints in the editor (M1). Pure, like diagnostics.ts: only TYPES
-// come from ./holon, so this is testable without the wasm package. The shapes mirror the Rust
-// side exactly: holon-core's declare.rs (what an endpoint and a server are) and holon-server's
-// data.rs (the request record a handler receives, and how its output becomes a response).
+// Testing HTTP endpoints in the editor (M1): the request record a handler receives and how its
+// output becomes a response, mirroring holon-server's data.rs. What an endpoint and a server unit
+// are is holon-author's (routes.rs), and route paths are parsed by core, both through wasm.
 
-import type { WEdge, WPort, WUnit, WValue } from "./holon";
-
-const BOUNDARY = 4294967295;
+import { route_path } from "../wasm/holon_wasm.js";
+import type { WValue } from "./holon";
 
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type Method = (typeof METHODS)[number];
@@ -13,96 +11,10 @@ export type Method = (typeof METHODS)[number];
 /** One endpoint of the server being built: its route, and the endpoint unit's hash. */
 export type EndpointDraft = { method: Method; path: string; hash: string };
 
-/** Mirrors core's `parse_path`: `/`, or `/` then segments that are literals or params, written
- *  `:name` or `{name}`. */
+/** A route path's segments as core's `parse_path` reads them (`/`, or `/` then literals and
+ *  params written `:name` or `{name}`), or null for a path core refuses. */
 export function parsePath(path: string): { literal: string | null; param: string | null }[] | null {
-  if (!path.startsWith("/")) return null;
-  const rest = path.slice(1);
-  if (rest === "") return [];
-  const word = /^[A-Za-z0-9\-_.~]+$/;
-  const names = new Set<string>();
-  const out: { literal: string | null; param: string | null }[] = [];
-  for (const part of rest.split("/")) {
-    const name = part.startsWith(":")
-      ? part.slice(1)
-      : part.startsWith("{") && part.endsWith("}") && part.length >= 2
-        ? part.slice(1, -1)
-        : null;
-    if (name !== null) {
-      if (!word.test(name) || names.has(name)) return null;
-      names.add(name);
-      out.push({ literal: null, param: name });
-    } else {
-      if (!word.test(part)) return null;
-      out.push({ literal: part, param: null });
-    }
-  }
-  return out;
-}
-
-/**
- * Wrap a projected handler as an endpoint unit. The endpoint's one input is the request record,
- * wired to the handler's input if it has one (a handler with no input, e.g. a plain listing,
- * simply ignores the request). Output 0 is the response: the handler's first non-effect output,
- * or, if it only has effects, its first effect (which the data plane answers with 204). Every
- * other effect output follows, so the host performs it. Returns an error message instead when the
- * handler can't be an endpoint.
- */
-export function endpointUnit(
-  handlerHash: string,
-  handlerInputs: WPort[],
-  handlerOutputs: WPort[],
-  method: Method,
-  path: string,
-  /** The waiting point this route resumes (a request node's `resume`), if it is a resume route. */
-  resume = "",
-): WUnit | string {
-  if (resume !== "" && !/^[A-Za-z0-9_-]{1,64}$/.test(resume)) {
-    return `"${resume}" is not a waiting point's name (letters, digits, - and _)`;
-  }
-  if (parsePath(path) === null) {
-    return `"${path}" is not a route path (use /todos or /todos/:id)`;
-  }
-  if (handlerInputs.length > 1) {
-    return "a handler takes at most one input: the request record";
-  }
-  if (handlerOutputs.length === 0) return "a handler needs an output: the response";
-  const isEffect = (p: WPort) => p.ty === "Effect";
-  const firstData = handlerOutputs.findIndex((p) => !isEffect(p));
-  const responseIndex = firstData >= 0 ? firstData : 0;
-  const order = [
-    responseIndex,
-    ...handlerOutputs.map((_, i) => i).filter((i) => i !== responseIndex && isEffect(handlerOutputs[i])),
-  ];
-  const edges: WEdge[] = order.map((from, to) => ({ from_child: 0, from_port: from, to_child: BOUNDARY, to_port: to }));
-  if (handlerInputs.length === 1) {
-    edges.unshift({ from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 });
-  }
-  return {
-    body: { kind: "Composite", children: [handlerHash], edges },
-    params: [
-      { kind: "Frozen", name: "declare", value: "endpoint" },
-      { kind: "Frozen", name: "method", value: method },
-      { kind: "Frozen", name: "path", value: path },
-      // Only when set, so an ordinary route's endpoint hashes as it always did.
-      ...(resume !== "" ? [{ kind: "Frozen" as const, name: "resume", value: resume }] : []),
-    ],
-    inputs: [{ name: "request", ty: "Record" }],
-    outputs: order.map((i, k) => ({ name: k === 0 ? "response" : handlerOutputs[i].name, ty: handlerOutputs[i].ty })),
-  };
-}
-
-/** A server unit over the given endpoints. Core's `read_server` re-checks everything on deploy. */
-export function serverUnit(endpointHashes: string[], port: number): WUnit {
-  return {
-    body: { kind: "Composite", children: endpointHashes, edges: [] },
-    params: [
-      { kind: "Frozen", name: "declare", value: "server" },
-      { kind: "Frozen", name: "port", value: String(port) },
-    ],
-    inputs: [],
-    outputs: [],
-  };
+  return route_path(path);
 }
 
 const text = (value: string): WValue => ({ type: "Text", value });

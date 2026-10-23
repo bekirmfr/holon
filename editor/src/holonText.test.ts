@@ -38,7 +38,7 @@ greet.out   -> res.body
 `;
 
 const unitOf = (doc: { nodes: unknown[]; edges: unknown[]; server?: { port: string } }, ev: Evaluator) =>
-  flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, catalog, doc.server?.port ?? "");
+  flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, doc.server?.port ?? "");
 
 describe("flows as text", () => {
   it("compiles a flow written by hand into a server with its route", () => {
@@ -48,7 +48,7 @@ describe("flows as text", () => {
     // Each node by its name in the text (what `holon show` prints).
     expect((doc.nodes as PrimitiveNodeType[]).map((n) => `${names.get(n.id)}=${n.data.name}`)).toEqual(["req=request", "name=field", "hi=const", "greet=concat", "res=respond"]);
     expect(doc.server?.port).toBe("8101");
-    const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, catalog, "8101");
+    const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, "8101");
     expect(server.errors).toEqual([]);
     expect(server.endpoints.map((e) => `${e.method} ${e.path}`)).toEqual(["GET /hello/:name"]);
   });

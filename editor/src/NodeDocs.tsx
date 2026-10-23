@@ -6,7 +6,7 @@
 import { createContext, useContext, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PrimitiveData } from "./PrimitiveNode";
-import { TEMPLATE_DOCS, isTemplate } from "./templates";
+import { templateDoc } from "./templates";
 
 /** A placed node's description, given what it is. */
 export type DescribeNode = (data: Pick<PrimitiveData, "name" | "body" | "inputs" | "outputs">) => string | null;
@@ -18,7 +18,7 @@ export type DescribeNode = (data: Pick<PrimitiveData, "name" | "body" | "inputs"
 export function nodeDescriber(docs: Map<string, string>, innerCount: (hash: string) => number | null): DescribeNode {
   return (data) => {
     if (data.body.kind === "Primitive") return docs.get(data.name) ?? null;
-    if (data.body.kind === "Template") return isTemplate(data.name) ? TEMPLATE_DOCS[data.name] : null;
+    if (data.body.kind === "Template") return templateDoc(data.name);
     if (data.body.kind === "Composite") return holonText(data.inputs.map((p) => p.name), data.outputs.map((p) => p.name), innerCount(data.body.hash));
     return null;
   };

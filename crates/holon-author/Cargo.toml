@@ -1,0 +1,15 @@
+[package]
+name = "holon-author"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+publish = false
+
+[dependencies]
+# Pure, like core: no I/O, so the editor runs it in wasm (holon-wasm) and the command line and
+# server natively, the same code.
+holon-core = { path = "../holon-core" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

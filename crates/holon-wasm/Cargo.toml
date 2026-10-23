@@ -12,6 +12,8 @@ crate-type = ["cdylib", "rlib"]
 # The bridge depends on the PURE core ONLY — never holon-host. The host's native I/O
 # (FileStore / std::fs) has no place in a browser; this single edge keeps it out, Cargo-enforced.
 holon-core = { path = "../holon-core" }
+# Authoring (a flow's units, routes and server): pure like core, the same code the command line runs.
+holon-author = { path = "../holon-author" }
 wasm-bindgen = "0.2"
 # The JS <-> WASM Value boundary. serde lives HERE, not in holon-core (which stays blake3-only):
 # `WValue` is a bridge-local serde mirror of `core::Value`. serde-wasm-bindgen (not JSON) because

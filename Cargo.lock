@@ -896,6 +896,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "holon-author"
+version = "0.1.0"
+dependencies = [
+ "holon-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "holon-core"
 version = "0.1.0"
 dependencies = [
@@ -946,6 +955,7 @@ dependencies = [
 name = "holon-wasm"
 version = "0.1.0"
 dependencies = [
+ "holon-author",
  "holon-core",
  "serde",
  "serde-wasm-bindgen",

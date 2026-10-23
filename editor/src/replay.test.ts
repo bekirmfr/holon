@@ -1,6 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { beforeAll, describe, it, expect } from "vitest";
+import { initSync } from "../wasm/holon_wasm.js";
 import { collectionsAtStep, diagnose, executionOrder, innerSteps, isCollectionCell, itemChanged, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, stateAtStep, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
+
+// A run's route group is found by holon-author (the wasm package, loaded from disk).
+beforeAll(() => {
+  initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
+});
 
 const frozen = (name: string, value: string): WParam => ({ kind: "Frozen", name, value });
 const num = (value: number): WValue => ({ type: "Number", value });

@@ -28,7 +28,7 @@ import { manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { SAMPLES, buildSample } from "./samples";
-import { TEMPLATES, TEMPLATE_DOCS } from "./templates";
+import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
 
 let catalog: Map<string, WUnit>;
@@ -51,8 +51,8 @@ function derive(name: string): { caps: string[]; endpoints: number } {
   const ev = new Evaluator();
   for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
   // The unit deploying it would deploy (and the flows page derives a saved flow's manifest from).
-  const hash = flowUnitHash(nodes, edges, ev, catalog, sample.port ?? "8080");
-  const endpoints = sample.port ? deriveServer(nodes, edges, ev, catalog, sample.port).endpoints.length : 0;
+  const hash = flowUnitHash(nodes, edges, ev, sample.port ?? "8080");
+  const endpoints = sample.port ? deriveServer(nodes, edges, ev, sample.port).endpoints.length : 0;
   const caps = (ev.capability_names(hash) as string[]).sort();
   return { caps, endpoints };
 }
@@ -172,7 +172,7 @@ describe("sample flows", () => {
     const saved = buildSample(shout, catalog, variadic, new Evaluator());
     // Placed in another flow's workspace, from what the saved document carries.
     const ev = new Evaluator();
-    const placed = flowAsNode("shout", saved, ev, catalog, "shout-1", { x: 0, y: 0 });
+    const placed = flowAsNode("shout", saved, ev, "shout-1", { x: 0, y: 0 });
     if (!placed.ok) throw new Error(placed.message);
     expect(placed.node.data.name).toBe("shout");
     expect([placed.node.data.inputs.length, placed.node.data.outputs.length]).toEqual([1, 1]);
@@ -182,9 +182,9 @@ describe("sample flows", () => {
     expect(out).toEqual([{ type: "Text", value: "HELLO-HOLON" }]);
 
     const server = buildSample(SAMPLES.find((s) => s.name === "hello-api")!, catalog, variadic, new Evaluator());
-    const refused = flowAsNode("hello-api", server, new Evaluator(), catalog, "x", { x: 0, y: 0 });
+    const refused = flowAsNode("hello-api", server, new Evaluator(), "x", { x: 0, y: 0 });
     expect(refused.ok ? "" : refused.message).toContain("has routes");
-    const empty = flowAsNode("e", { nodes: [], edges: [] }, new Evaluator(), catalog, "x", { x: 0, y: 0 });
+    const empty = flowAsNode("e", { nodes: [], edges: [] }, new Evaluator(), "x", { x: 0, y: 0 });
     expect(empty.ok ? "" : empty.message).toContain("empty");
   });
 
@@ -192,11 +192,11 @@ describe("sample flows", () => {
     const raw = primitive_docs() as Map<string, string>;
     const docs = raw instanceof Map ? raw : new Map(Object.entries(raw as Record<string, string>));
     for (const name of catalog.keys()) expect(docs.get(name), name).toBeTruthy();
-    for (const t of TEMPLATES) expect(TEMPLATE_DOCS[t].length, t).toBeGreaterThan(40);
+    for (const t of templateNames()) expect(templateDoc(t)?.length, t).toBeGreaterThan(40);
     const describe = nodeDescriber(docs, () => 5);
     const port = (name: string) => ({ name, ty: "Text" as const });
     expect(describe({ name: "split", body: { kind: "Primitive" }, inputs: [], outputs: [] })).toBe(docs.get("split"));
-    expect(describe({ name: "respond", body: { kind: "Template" }, inputs: [], outputs: [] })).toBe(TEMPLATE_DOCS.respond);
+    expect(describe({ name: "respond", body: { kind: "Template" }, inputs: [], outputs: [] })).toBe(templateDoc("respond"));
     const holon = describe({ name: "slugify", body: { kind: "Composite", hash: "h" }, inputs: [port("text")], outputs: [port("slug")] });
     expect(holon).toContain("of 5 nodes");
     expect(holon).toContain("Takes text; gives slug");
@@ -245,7 +245,7 @@ describe("sample flows", () => {
     const opened = innerCanvas(publish, nodes, doc.edges as Edge[], ev, catalog, variadic);
     if (!opened.ok) throw new Error(opened.message);
     const canvas = { nodes: opened.nodes, edges: opened.edges };
-    const same = freezeInner(canvas, ev, catalog);
+    const same = freezeInner(canvas, ev);
     if (!same.ok) throw new Error(same.message);
     expect(same.hash, "nothing changed: the very same unit").toBe(publish.data.body.kind === "Composite" ? publish.data.body.hash : "");
     expect(same.inputs.map((p) => p.name)).toEqual(["slug", "author"]);
@@ -255,7 +255,7 @@ describe("sample flows", () => {
       nodes: canvas.nodes.map((n) => (n.id === BOUNDARY_IN ? { ...n, data: { ...(n.data as BoundaryData), ports: (n.data as BoundaryData).ports.map((p) => (p.name === "slug" ? { ...p, name: "key" } : p)) } } : n)),
       edges: canvas.edges.map((e) => (e.source === BOUNDARY_IN && e.sourceHandle === "slug" ? { ...e, sourceHandle: "key" } : e)),
     };
-    const same2 = freezeInner(renamed, ev, catalog);
+    const same2 = freezeInner(renamed, ev);
     if (!same2.ok) throw new Error(same2.message);
     expect(same2.hash).toBe(same.hash);
     expect(same2.inputs.map((p) => p.name)).toEqual(["key", "author"]);
@@ -268,7 +268,7 @@ describe("sample flows", () => {
         return { ...n, data: { ...d, params: d.params.map((p) => (p.name === "value" ? { ...p, value: "not signed" } : p)) } };
       }),
     };
-    const other = freezeInner(edited, ev, catalog);
+    const other = freezeInner(edited, ev);
     if (!other.ok) throw new Error(other.message);
     expect(other.hash).not.toBe(same.hash);
     const out = ev.eval(buildPreimage(ev.get_unit(other.hash) as WUnit), [{ type: "Text", value: "x" }, { type: "Text", value: "y" }]) as (WValue | null)[];
@@ -277,10 +277,10 @@ describe("sample flows", () => {
     // An input feeds one port; an output needs a source.
     const authorEdge = canvas.edges.find((e) => e.source === BOUNDARY_IN && e.sourceHandle === "author")!;
     const fanned = { ...canvas, edges: [...canvas.edges, { ...authorEdge, id: "again", target: canvas.edges.find((e) => e.source === BOUNDARY_IN && e.sourceHandle === "slug")!.target }] };
-    const twice = freezeInner(fanned, ev, catalog);
+    const twice = freezeInner(fanned, ev);
     expect(twice.ok ? "" : twice.message).toContain("feeds 2 ports");
     const unfed = { ...canvas, edges: canvas.edges.filter((e) => !(e.target === BOUNDARY_OUT && e.targetHandle === "receipt")) };
-    const lost = freezeInner(unfed, ev, catalog);
+    const lost = freezeInner(unfed, ev);
     expect(lost.ok ? "" : lost.message).toContain(`output "receipt" isn't fed`);
   });
 
@@ -303,7 +303,7 @@ describe("sample flows", () => {
     };
     const renames = boundaryRenames(canvas);
     expect([...renames.inputs]).toEqual([["slug", "key"]]);
-    const frozen = freezeInner(canvas, ev, catalog);
+    const frozen = freezeInner(canvas, ev);
     if (!frozen.ok) throw new Error(frozen.message);
     const done = replaceComposite(nodes, edges, publish.id, frozen, renames);
     const after = done.nodes.find((n) => n.id === publish.id)!;
@@ -315,7 +315,7 @@ describe("sample flows", () => {
     // Settled: freezing it again unchanged is the same unit, with nothing renamed.
     const settled = settleBoundary(canvas, frozen);
     expect(boundaryRenames(settled).inputs.size).toBe(0);
-    const again = freezeInner(settled, ev, catalog);
+    const again = freezeInner(settled, ev);
     expect(again.ok && again.hash).toBe(frozen.hash);
   });
 
@@ -335,14 +335,14 @@ describe("sample flows", () => {
       return { ...n, data: { ...d, params: d.params.map((p) => (p.name === "value" ? { ...p, value: "not signed" } : p)) } };
     }) };
     const host = { ...top, nodes: [...top.nodes, { ...publish, id: "deeper" }] };
-    const folded = foldLevels([host, inner], 0, (c) => freezeInner(c, ev, catalog));
+    const folded = foldLevels([host, inner], 0, (c) => freezeInner(c, ev));
     if (typeof folded === "string") throw new Error(folded);
     const placed = folded[0].nodes.find((n) => n.id === "deeper") as PrimitiveNodeType;
     expect(folded[0].dirty).toBe(true);
     expect(placed.data.body.kind === "Composite" && placed.data.body.hash).not.toBe(publish.data.body.kind === "Composite" && publish.data.body.hash);
     // A level that can't be frozen says which and why.
     const broken = { ...inner, edges: inner.edges.filter((e) => e.target !== BOUNDARY_OUT) };
-    expect(foldLevels([host, broken], 0, (c) => freezeInner(c, ev, catalog))).toContain(`publish: the output "put" isn't fed`);
+    expect(foldLevels([host, broken], 0, (c) => freezeInner(c, ev))).toContain(`publish: the output "put" isn't fed`);
   });
 
   it("carry the names of the holons in a flow, nested ones too, and teach them back on open", () => {
