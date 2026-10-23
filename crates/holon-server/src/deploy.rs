@@ -49,6 +49,7 @@ pub(crate) fn handle_post_deploy(
     request: &Request,
     // Who deployed it (access.rs), kept with the deployment.
     by: Option<&str>,
+    activity: &crate::activity::Activity,
 ) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -210,6 +211,7 @@ pub(crate) fn handle_post_deploy(
         );
     }
     persist_deployments(deployments_path, deployments, store);
+    activity.record("deployed", &body.slug, by);
 
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds })
 }

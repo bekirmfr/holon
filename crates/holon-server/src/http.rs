@@ -92,6 +92,14 @@ pub(crate) fn read_body(request: &Request) -> Result<Vec<u8>, Response> {
     Ok(bytes)
 }
 
+/// `response`, with what it did recorded in the activity log when it succeeded.
+fn recorded(state: &AppState, response: Response, action: &str, target: &str, by: Option<&str>) -> Response {
+    if response.is_success() {
+        state.activity.record(action, target, by);
+    }
+    response
+}
+
 pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     // `request.url()` returns an owned `String` (not a borrow of `request`) — bound once here
     // rather than called again per branch, both so `strip_prefix` below has something with a
@@ -150,14 +158,14 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, request, by);
+        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, request, by, &state.activity);
         sync_listeners(state);
         return response;
     }
 
     if url == "/flows" {
         if method == "POST" {
-            return handle_post_flows(&state.flows, &state.flows_path, request, by);
+            return handle_post_flows(&state.flows, &state.flows_path, request, by, &state.activity);
         }
         if method == "GET" {
             return handle_get_flows(&state.flows);
@@ -169,8 +177,12 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             return handle_get_flow(&state.flows, name);
         }
         if method == "DELETE" {
-            return handle_delete_flow(&state.flows, &state.flows_path, name);
+            return recorded(state, handle_delete_flow(&state.flows, &state.flows_path, name), "deleted flow", name, by);
         }
+    }
+
+    if method == "GET" && url.split('?').next() == Some("/activity") {
+        return crate::activity::handle_get_activity(&state.activity, request);
     }
 
     if method == "POST" && url == "/deploy/preview" {
@@ -229,7 +241,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return handle_get_permission_view(&state.store, &state.deployments, slug, which);
             }
             if method == "POST" && which == "grant" {
-                return grants::handle_post_grant(state, slug, request);
+                return recorded(state, grants::handle_post_grant(state, slug, request), "granted", slug, by);
             }
         } else if let Some(slug) = rest.strip_suffix("/sessions") {
             if method == "GET" {
@@ -241,7 +253,12 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             if method == "POST" {
                 let response = handle_lifecycle(state, slug, action, request);
                 sync_listeners(state);
-                return response;
+                let done = match action {
+                    "run" => "run",
+                    "pause" => "paused",
+                    _ => "stopped",
+                };
+                return recorded(state, response, done, slug, by);
             }
         } else if let Some(slug) = rest.strip_suffix("/request") {
             if method == "POST" {
@@ -255,7 +272,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 eprintln!("warning: {rest:?}'s secrets weren't removed: {e}");
             }
             sync_listeners(state);
-            return response;
+            return recorded(state, response, "deleted", rest, by);
         }
     }
 

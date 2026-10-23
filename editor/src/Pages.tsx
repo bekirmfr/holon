@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { holonUses, type HolonUse } from "./holonUsage";
+import { getActivity, type ActivityEntry } from "./server";
 import { deleteFlow, getAllFlows, getFlow, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
 import { ManifestSection, type ManifestView } from "./Manifest";
 import { openChoice } from "./tabs";
@@ -247,6 +248,31 @@ export function DeployedPage({
           onChanged={onChanged}
           result={triggerResults[entry.slug]}
         />
+      ))}
+      <ActivityList version={deployments.map((d) => `${d.slug}:${d.status}:${d.unit}`).join(",")} />
+    </div>
+  );
+}
+
+/** What was done on the server, newest first, and by whom (activity.rs): read again whenever the
+ *  deployments change (`version`). */
+function ActivityList({ version }: { version: string }) {
+  const [entries, setEntries] = useState<ActivityEntry[] | null>(null);
+  useEffect(() => {
+    getActivity()
+      .then(setEntries)
+      .catch(() => setEntries(null));
+  }, [version]);
+  if (!entries || entries.length === 0) return null;
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div style={{ color: "#cfe3ff", fontSize: 13, letterSpacing: "0.04em", marginBottom: 6 }}>activity</div>
+      {entries.map((e, i) => (
+        <div key={i} style={{ color: "#9fb4d4", fontSize: 11, padding: "2px 0" }}>
+          <span style={{ color: "#7e8ea8" }}>{new Date(e.at * 1000).toLocaleString()}</span> · {e.action}{" "}
+          <span style={{ color: "#6fd3e0" }}>{e.target}</span>
+          {e.by && <span style={{ color: "#7e8ea8" }}> · by {e.by}</span>}
+        </div>
       ))}
     </div>
   );

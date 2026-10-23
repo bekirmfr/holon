@@ -327,10 +327,13 @@ only the editor.
     set). The file holds each token's BLAKE3 hash, never the token (`holon-server --hash-token`
     reads one on stdin). Users gate the server as the admin token does. Who did what is kept:
     the secrets audit names who made each change (`by`), a saved flow who saved it
-    (`saved_by`), a deployment who deployed it (`deployed_by`), each shown in the editor.
+    (`saved_by`), a deployment who deployed it (`deployed_by`), each shown in the editor; and
+    every save, deploy, run, pause, stop, grant and delete goes in the activity log
+    (`<deployments>.activity.jsonl`, `GET /activity`, the deployed page's "activity"), which
+    outlives what it names.
   - **Left for later:** wiping values from memory beyond the store's own copies; more managers
     (AWS, GCP, Azure, 1Password) behind the same reference form; signing in through an
-    identity provider (OIDC) rather than tokens; attributing pause, stop and delete.
+    identity provider (OIDC) rather than tokens.
 
 ### 4.3 Durable runs: continuing a run later
 Rounds cover waiting inside one request: the caller is on the line, the wait is seconds. Many

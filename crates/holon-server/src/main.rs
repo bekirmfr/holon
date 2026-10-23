@@ -140,6 +140,7 @@
 //! auth *for*.
 
 mod access;
+mod activity;
 mod collections;
 mod data;
 mod dataplane;
@@ -285,6 +286,8 @@ struct AppState {
     /// Every deployment's secrets (`--secrets`, secrets.rs): written over the control plane,
     /// never returned.
     secrets: Arc<SecretStore>,
+    /// What was done on the control plane, by whom (activity.rs).
+    activity: activity::Activity,
 }
 
 impl AppState {
@@ -684,6 +687,7 @@ fn main() {
         eprintln!("holon-server: {addr} is reachable beyond this machine: set HOLON_ADMIN_TOKEN (or --admin-token-file), or name users (--users-file), first");
         std::process::exit(1);
     }
+    let activity = activity::Activity::beside(&deployments_arg);
     let state = AppState {
         store,
         registry,
@@ -698,6 +702,7 @@ fn main() {
         policy: std::sync::RwLock::new(policy),
         policy_path: policy_arg,
         secrets,
+        activity,
         access,
     };
     sync_listeners(&state);

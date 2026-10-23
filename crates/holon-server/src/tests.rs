@@ -32,6 +32,7 @@ fn test_state() -> AppState {
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
+        activity: activity::Activity::memory(),
     }
 }
 
@@ -1439,6 +1440,7 @@ fn deployments_persist_across_a_simulated_restart() {
         policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
+        activity: activity::Activity::memory(),
         };
         let body = serde_json::to_vec(&serde_json::json!({
             "slug": "echo",
@@ -1472,6 +1474,7 @@ fn deployments_persist_across_a_simulated_restart() {
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
+        activity: activity::Activity::memory(),
     };
     let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
     assert_eq!(triggered.status_code, 200);
@@ -2881,6 +2884,7 @@ fn state_persists_across_a_simulated_restart() {
         policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
+        activity: activity::Activity::memory(),
         };
         let deploy_body = serde_json::to_vec(&serde_json::json!({
             "slug": "writer",
@@ -2916,6 +2920,7 @@ fn state_persists_across_a_simulated_restart() {
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
+        activity: activity::Activity::memory(),
     };
     let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
     assert_eq!(triggered2.status_code, 200);
@@ -3126,9 +3131,10 @@ fn tokens_gate_the_control_plane_and_secrets_are_their_own() {
     assert_eq!(with("GET", "/deployments", vec![], Some(secrets)), 401);
 }
 
-/// With named users, a save and a deploy remember who made them, and the listings say so.
+/// With named users, a save and a deploy remember who made them, and every action is in the
+/// activity log with who did it, a deleted deployment's included.
 #[test]
-fn saves_and_deploys_name_who_made_them() {
+fn what_is_done_names_who_did_it() {
     let mut state = test_state();
     let bob = "bob-own-token-0123456789abcdef";
     let users: Vec<access::User> =
@@ -3152,4 +3158,19 @@ fn saves_and_deploys_name_who_made_them() {
     let body = serde_json::json!({ "slug": "echo", "unit": to_hex(&hash_unit(&flow).unwrap()), "acknowledge": ["NetworkIngress", "NetworkEgress"] });
     assert_eq!(as_bob("POST", "/deploy", serde_json::to_vec(&body).unwrap()).status_code, 200);
     assert_eq!(body_json(as_bob("GET", "/deployments", vec![]))["deployments"][0]["deployed_by"], "bob");
+
+    // Pausing, stopping and deleting are recorded too, and outlive the deployment.
+    for action in ["pause", "stop"] {
+        assert!(as_bob("POST", &format!("/deployments/echo/{action}"), b"{}".to_vec()).is_success(), "{action}");
+    }
+    assert!(as_bob("DELETE", "/deployments/echo", vec![]).is_success());
+    let activity = body_json(as_bob("GET", "/activity?limit=10", vec![]));
+    let done: Vec<(String, String, String)> = activity["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["action"].as_str().unwrap().into(), e["target"].as_str().unwrap().into(), e["by"].as_str().unwrap().into()))
+        .collect();
+    let bob = |a: &str, t: &str| (a.to_string(), t.to_string(), "bob".to_string());
+    assert_eq!(done, [bob("deleted", "echo"), bob("stopped", "echo"), bob("paused", "echo"), bob("deployed", "echo"), bob("saved", "mine")], "newest first");
 }

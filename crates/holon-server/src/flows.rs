@@ -10,6 +10,7 @@ pub(crate) fn handle_post_flows(
     flows_path: &str,
     request: &Request,
     by: Option<&str>,
+    activity: &crate::activity::Activity,
 ) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -30,6 +31,7 @@ pub(crate) fn handle_post_flows(
     let mut table = flows.lock().unwrap();
     table.insert(body.name.clone(), record);
     persist_flows(flows_path, &table);
+    activity.record("saved", &body.name, by);
 
     Response::json(&FlowListEntry { name: body.name, saved_at_epoch_seconds, saved_by })
 }

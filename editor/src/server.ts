@@ -207,6 +207,14 @@ export type SecretHistory = {
   events: { at: number; name: string; action: string; version?: number; source?: string; detail?: string; by?: string }[];
 };
 
+/** One thing done on the server: a save, deploy, run, pause, stop, grant or delete, and by whom. */
+export type ActivityEntry = { at: number; action: string; target: string; by?: string };
+
+/** `GET /activity`: what was done, newest first. */
+export async function getActivity(limit = 30): Promise<ActivityEntry[]> {
+  return (await asJson<{ entries: ActivityEntry[] }>(await api(`${BASE}/activity?limit=${limit}`))).entries;
+}
+
 export async function getSecretHistory(slug: string, name: string): Promise<SecretHistory> {
   return asJson<SecretHistory>(await api(secretUrl(slug, name)));
 }
