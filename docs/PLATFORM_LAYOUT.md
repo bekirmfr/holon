@@ -339,6 +339,13 @@ only the editor.
     (AWS, GCP, Azure, 1Password) behind the same reference form; refresh tokens (a sign-in
     lasts as long as the provider's ID token).
 
+  - **One binary, one port** ✅ (`holon-server/src/editor.rs`): the server serves the editor at
+    `/`, beside its API, from the same address, so a machine without a screen is used from any
+    browser that reaches it. Releases build it in (`npm run build` in editor/, then
+    `cargo build --release -p holon-server --features embed-editor`): one file to install;
+    `--editor DIR` serves a folder instead, for working on the editor. The built editor calls the
+    server it is served from. `--data DIR` (or `HOLON_DATA`) keeps all the server's state in one
+    folder: store, flows, deployments, secrets, accounts, host key, policy.
   - **Web pages from other sites** ✅ (⚙ "web pages from"; listeners.rs): a deployment says
     which origins may call its routes (`*`, or `https://…`), none by default. For those the data
     plane answers the browser's preflight and adds `Access-Control-Allow-Origin`; the deploy

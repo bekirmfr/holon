@@ -16,6 +16,7 @@ holon-host = { path = "../holon-host" }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+include_dir = { version = "0.7", optional = true }
 jsonwebtoken = "9"
 rand = "0.10.2"
 # The control plane's HTTP. (The data plane, public-facing, is hyper on tokio instead:
@@ -41,3 +42,8 @@ keyring = { version = "3", features = ["apple-native"] }
 keyring = { version = "3", features = ["windows-native"] }
 # An owner-only ACL on the secrets file and its key file.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Memory"] }
+
+[features]
+# The built editor (editor/dist, from `npm run build` in editor/) compiled into the binary and
+# served at `/` (editor.rs): one file to install. Off by default, so a build needs no editor.
+embed-editor = ["dep:include_dir"]

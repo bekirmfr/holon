@@ -33,6 +33,7 @@ fn test_state() -> AppState {
         secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
+        editor: None,
     }
 }
 
@@ -1441,6 +1442,7 @@ fn deployments_persist_across_a_simulated_restart() {
             secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
+        editor: None,
         };
         let body = serde_json::to_vec(&serde_json::json!({
             "slug": "echo",
@@ -1475,6 +1477,7 @@ fn deployments_persist_across_a_simulated_restart() {
         secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
+        editor: None,
     };
     let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
     assert_eq!(triggered.status_code, 200);
@@ -2885,6 +2888,7 @@ fn state_persists_across_a_simulated_restart() {
             secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
+        editor: None,
         };
         let deploy_body = serde_json::to_vec(&serde_json::json!({
             "slug": "writer",
@@ -2921,6 +2925,7 @@ fn state_persists_across_a_simulated_restart() {
         secrets: Arc::new(SecretStore::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
+        editor: None,
     };
     let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
     assert_eq!(triggered2.status_code, 200);

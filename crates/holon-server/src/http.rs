@@ -108,6 +108,14 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     let url = request.url();
     let method = request.method();
 
+    // The editor's own files (editor.rs), when it's served here: open, as any web page is.
+    if method == "GET"
+        && let Some(source) = &state.editor
+        && let Some(page) = crate::editor::serve(source, request.raw_url())
+    {
+        return page;
+    }
+
     let caller = match reject_untrusted(request, state.port, &state.access) {
         Ok(caller) => caller,
         Err(rejection) => return rejection,

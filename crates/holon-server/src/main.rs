@@ -148,6 +148,7 @@ mod collections;
 mod data;
 mod dataplane;
 mod deploy;
+mod editor;
 mod durable;
 mod firing;
 mod fixtures;
@@ -291,6 +292,8 @@ struct AppState {
     secrets: Arc<SecretStore>,
     /// What was done on the control plane, by whom (activity.rs).
     activity: activity::Activity,
+    /// The editor, served at `/` (editor.rs): built in, or a folder; none without either.
+    editor: Option<editor::Source>,
 }
 
 impl AppState {
@@ -428,6 +431,10 @@ fn main() {
     let mut secrets_key_arg: Option<String> = None;
     let mut dotenv_arg: Option<String> = None;
     let mut accounts_arg = ".holon-accounts.json".to_string();
+    // One folder for all of it (`--data DIR`, or HOLON_DATA): the defaults above move inside it.
+    let mut data_dir: Option<String> = std::env::var("HOLON_DATA").ok().filter(|v| !v.trim().is_empty());
+    // The built editor, served at `/` (`--editor DIR`, or HOLON_EDITOR; editor.rs).
+    let mut editor_dir: Option<String> = std::env::var("HOLON_EDITOR").ok().filter(|v| !v.trim().is_empty());
     let mut allow_hosts: Vec<String> = Vec::new();
     let mut allow_origins: Vec<String> = Vec::new();
     let mut host_key_arg = ".holon-host-key".to_string();
@@ -456,6 +463,10 @@ fn main() {
             // where there is one), `env:VAR` or `file:PATH` (sealing.rs).
             if let Some(v) = args.next() {
                 secrets_key_arg = Some(v);
+            }
+        } else if a == "--data" || a == "--editor" {
+            if let Some(v) = args.next() {
+                if a == "--data" { data_dir = Some(v) } else { editor_dir = Some(v) }
             }
         } else if a == "--accounts" {
             // Where the accounts are kept (accounts.rs): who may use the control plane.
@@ -624,6 +635,25 @@ fn main() {
         }
     }
 
+    // With a data folder, whatever wasn't named on its own goes inside it.
+    if let Some(dir) = &data_dir {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("holon-server: the data folder {dir:?}: {e}");
+            std::process::exit(1);
+        }
+        let inside = |arg: &mut String, default: &str, name: &str| {
+            if arg == default {
+                *arg = std::path::Path::new(dir).join(name).to_string_lossy().into_owned();
+            }
+        };
+        inside(&mut store_arg, ".holon-store", "store");
+        inside(&mut deployments_arg, ".holon-deployments.json", "deployments.json");
+        inside(&mut flows_arg, ".holon-flows.json", "flows.json");
+        inside(&mut policy_arg, "holon.toml", "holon.toml");
+        inside(&mut secrets_arg, ".holon-secrets.json", "secrets.json");
+        inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
+        inside(&mut host_key_arg, ".holon-host-key", "host.key");
+    }
     let backend: DynStore = if store_arg == ":memory:" {
         println!("holon-server: in-memory store (nothing persists past this run)");
         Box::new(MemStore::new())
@@ -693,6 +723,7 @@ fn main() {
         secrets,
         activity,
         access,
+        editor: editor::Source::pick(editor_dir.map(std::path::PathBuf::from)),
     };
     sync_listeners(&state);
 
@@ -700,6 +731,9 @@ fn main() {
         0 => "waiting to be set up".to_string(),
         n => format!("{n} account(s); signing in required"),
     };
+    if let Some(source) = &state.editor {
+        println!("holon-server: the editor ({}) at http://{addr}/", source.describe());
+    }
     println!("holon-server: listening on http://{addr} ({gate}; see access.rs)");
     rouille::start_server(addr, move |request| with_cors(&state.access, request, route(&state, request)));
 }

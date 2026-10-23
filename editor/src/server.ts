@@ -16,7 +16,9 @@ import type { WValue } from "./holon";
 import type { EndpointDraft } from "./endpoint";
 import type { NodeTiming } from "./replay";
 
-const BASE: string = import.meta.env.VITE_HOLON_SERVER ?? "http://127.0.0.1:7420";
+/** The server: VITE_HOLON_SERVER when set; else, built (`npm run build`), the server it is served
+ *  from (holon-server serves the editor itself, editor.rs), and in development the local one. */
+const BASE: string = import.meta.env.VITE_HOLON_SERVER ?? (import.meta.env.DEV ? "http://127.0.0.1:7420" : "");
 
 /** A role on the server: what an account or token may do (access.rs). */
 export type Role = "viewer" | "editor" | "admin";
