@@ -186,6 +186,7 @@ pub(crate) fn load_deployments(
             .unwrap_or_else(SystemTime::now);
 
         println!("loaded deployment {:?} from {path:?} (triggers: {triggers:?})", record.slug);
+        let log = Log::open(recorder::file_for(path, &record.slug));
         loaded.insert(
             record.slug,
             Deployment {
@@ -218,7 +219,7 @@ pub(crate) fn load_deployments(
                 attention: attention.take(),
                 secrets: Vault::default(),
                 parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
-                log: Log::default(),
+                log,
                 document: record.document,
                 versions: record.versions,
                 trigger_count: record.trigger_count,

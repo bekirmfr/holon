@@ -6,18 +6,25 @@
 //! random, ingress) are its whole input. The editor's view mode replays entries node by node
 //! from just this, to show what every node computed and to step through a past run.
 //!
-//! Kept in memory, the newest [`CAPACITY`] per deployment; a restart starts a fresh log.
+//! The newest [`CAPACITY`] per deployment are kept in memory, and in a file of the deployment's
+//! own beside the deployments file (`<deployments>.logs/<slug>.jsonl`, a JSON line per entry,
+//! owner-only), so a restart reads them back and replay still has them. An entry is written as
+//! the control plane serves it: secrets and tokens already redacted. The file is rewritten to the
+//! newest [`CAPACITY`] once it holds twice that; a line half-written by a crash is skipped.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{PerformedEntry, SValue};
 
 /// How many entries a deployment keeps; older ones drop off the front.
 pub const CAPACITY: usize = 500;
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+// A field left out when empty reads back empty.
+#[serde(default)]
 pub struct LogEntry {
     /// Increases by one per entry, across sessions; `GET …/log?after=` reads past it.
     pub seq: u64,
@@ -27,7 +34,7 @@ pub struct LogEntry {
     pub at_ms: u64,
     pub duration_ms: f64,
     /// `"request"` (on the deployment's port), `"trigger"` (`POST /trigger`) or `"tick"`.
-    pub kind: &'static str,
+    pub kind: String,
     /// The matched route, e.g. `"GET /todos/:id"`; `None` for ticks, triggers, unrouted requests.
     pub route: Option<String>,
     /// The request's method and URL, for a request.
@@ -87,7 +94,7 @@ fn is_zero(n: &u32) -> bool {
 }
 
 /// One collection read in a run.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LoggedRead {
     pub path: Vec<u32>,
     pub request: SValue,
@@ -95,14 +102,14 @@ pub struct LoggedRead {
 }
 
 /// The requests performed after one round, to answer the next.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LoggedRound {
     pub exchanges: Vec<LoggedExchange>,
 }
 
 /// One outbound request: the node that made it (its path in the run's root unit), the request,
 /// the response, and when, in microseconds since the run began.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct LoggedExchange {
     pub path: Vec<u32>,
     pub request: SValue,
@@ -131,7 +138,7 @@ impl LoggedRound {
 
 /// One composite child's evaluation: its path of child indices from the run's root unit, when it
 /// started and finished (microseconds since the run began), and what it produced.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct NodeTiming {
     pub path: Vec<u32>,
     pub start_us: f64,
@@ -204,16 +211,91 @@ impl holon_core::Observer for Timer {
 pub struct Log {
     next_seq: u64,
     entries: VecDeque<LogEntry>,
+    /// Where it is kept beside memory (none: memory only, a `:memory:` deployments file).
+    file: Option<PathBuf>,
+    /// How many lines the file holds.
+    written: usize,
+}
+
+/// Where `slug`'s log is kept for the deployments file at `deployments_path`, if anywhere.
+pub fn file_for(deployments_path: &str, slug: &str) -> Option<PathBuf> {
+    (deployments_path != ":memory:").then(|| Path::new(deployments_path).with_extension("logs").join(format!("{slug}.jsonl")))
 }
 
 impl Log {
-    /// Append `entry`, numbering it, and drop the oldest past [`CAPACITY`].
+    /// The log kept at `file` (none: in memory only), with the newest entries it holds read back.
+    pub fn open(file: Option<PathBuf>) -> Log {
+        let mut log = Log { file, ..Log::default() };
+        let Some(path) = &log.file else { return log };
+        let Ok(text) = std::fs::read_to_string(path) else { return log };
+        for line in text.lines() {
+            log.written += 1;
+            // A line a crash cut short is skipped, not fatal: the others still replay.
+            if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {
+                log.next_seq = log.next_seq.max(entry.seq + 1);
+                log.entries.push_back(entry);
+            }
+        }
+        while log.entries.len() > CAPACITY {
+            log.entries.pop_front();
+        }
+        log
+    }
+
+    /// Append `entry`, numbering it, and drop the oldest past [`CAPACITY`]; keep it in the file.
     pub fn push(&mut self, mut entry: LogEntry) {
         entry.seq = self.next_seq;
         self.next_seq += 1;
         self.entries.push_back(entry);
         while self.entries.len() > CAPACITY {
             self.entries.pop_front();
+        }
+        if let Err(e) = self.keep() {
+            eprintln!("holon-server: could not keep the flow log in {:?}: {e}", self.file);
+        }
+    }
+
+    /// Write the newest entry to the file: appended, or the whole file rewritten to the newest
+    /// [`CAPACITY`] once it would hold twice that.
+    fn keep(&mut self) -> std::io::Result<()> {
+        let Some(path) = self.file.clone() else { return Ok(()) };
+        let Some(newest) = self.entries.back() else { return Ok(()) };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        if self.written + 1 > 2 * CAPACITY {
+            let mut all = String::new();
+            for e in &self.entries {
+                all.push_str(&serde_json::to_string(e).map_err(std::io::Error::other)?);
+                all.push('\n');
+            }
+            crate::sealing::write_private(&path, all.as_bytes())?;
+            self.written = self.entries.len();
+            return Ok(());
+        }
+        use std::io::Write;
+        let line = serde_json::to_string(newest).map_err(std::io::Error::other)? + "\n";
+        let new = !path.exists();
+        let mut options = std::fs::OpenOptions::new();
+        options.append(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path)?;
+        if new {
+            crate::sealing::restrict_to_owner(&path)?;
+        }
+        file.write_all(line.as_bytes())?;
+        self.written += 1;
+        Ok(())
+    }
+
+    /// Delete the file: its deployment was deleted.
+    pub fn delete_file(&self) {
+        if let Some(path) = &self.file {
+            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -258,7 +340,7 @@ mod tests {
             session: 1,
             at_ms: 0,
             duration_ms: 0.0,
-            kind: "tick",
+            kind: "tick".into(),
             route: None,
             method: None,
             url: None,
@@ -311,6 +393,43 @@ mod tests {
         assert_eq!(paths, vec![vec![0, 0], vec![0]], "depth 3 left out; inner steps finish first");
         assert!(t.timeline.iter().all(|n| n.end_us >= n.start_us));
         assert!(t.timeline[1].start_us <= t.timeline[0].start_us, "the outer step started first");
+    }
+
+    #[test]
+    fn a_kept_log_reads_back_after_a_restart_skips_a_cut_line_and_stays_bounded() {
+        let dir = std::env::temp_dir().join(format!("holon-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("slug.jsonl");
+        let mut log = Log::open(Some(path.clone()));
+        for _ in 0..3 {
+            log.push(entry());
+        }
+        // A restart: the entries come back, and numbering carries on.
+        let mut again = Log::open(Some(path.clone()));
+        assert_eq!(again.after(None, 10).iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1, 2]);
+        assert_eq!(again.next_seq(), 3);
+        again.push(entry());
+        assert_eq!(Log::open(Some(path.clone())).next_seq(), 4);
+
+        // A line a crash cut short is skipped; the rest still read.
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("{\"seq\": 9, \"sess");
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(Log::open(Some(path.clone())).after(None, 10).len(), 4);
+
+        // Bounded: past twice CAPACITY lines, the file is rewritten to the newest CAPACITY.
+        let mut big = Log::open(Some(path.clone()));
+        for _ in 0..(2 * CAPACITY) {
+            big.push(entry());
+        }
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert!(lines <= 2 * CAPACITY && lines >= CAPACITY, "{lines}");
+        let back = Log::open(Some(path.clone()));
+        assert_eq!(back.after(None, usize::MAX).len(), CAPACITY);
+        assert_eq!(back.next_seq(), big.next_seq());
+        big.delete_file();
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

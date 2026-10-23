@@ -107,7 +107,7 @@ pub(crate) struct FireRequestBody {
 /// fewer place a new `Capability` variant could be added upstream and silently never reach
 /// this mirror. `Clone` so a `Deployment`'s cached `TickEntry` history can be cloned out for a
 /// response without holding the deployments lock across the JSON serialization.
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct PerformedEntry {
     pub(crate) capability: String,
     pub(crate) payload: SValue,

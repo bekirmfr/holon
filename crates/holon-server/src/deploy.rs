@@ -164,7 +164,7 @@ pub(crate) fn handle_post_deploy(
         };
         let (log, old_document, mut versions, old_unit) = match deployments.get_mut(&body.slug) {
             Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions), Some(old.unit)),
-            None => (Log::default(), None, Vec::new(), None),
+            None => (Log::open(recorder::file_for(deployments_path, &body.slug)), None, Vec::new(), None),
         };
         // The version it replaces keeps its canvas, so the runs it logged still show on it.
         if let (Some(unit), Some(doc)) = (old_unit, &old_document)
@@ -475,6 +475,7 @@ pub(crate) fn handle_delete_deployment(
     };
     match removed {
         Some(dep) => {
+            dep.log.delete_file();
             persist_deployments(deployments_path, deployments, store);
             Response::json(&deployment_entry(slug, &dep))
         }

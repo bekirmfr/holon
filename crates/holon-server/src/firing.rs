@@ -392,7 +392,7 @@ pub(crate) fn run_entry(
         session: 0,
         at_ms: started.0,
         duration_ms: started.1.elapsed().as_secs_f64() * 1000.0,
-        kind,
+        kind: kind.to_string(),
         route: None,
         method: None,
         url: None,

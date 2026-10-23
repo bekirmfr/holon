@@ -3065,3 +3065,30 @@ fn each_run_names_its_version_and_each_version_keeps_its_canvas() {
     let kept: Vec<&str> = versions.iter().map(|v| v.unit.as_str()).collect();
     assert_eq!(kept, ["u2", "u3", "u4", "u6", "u7", "u8", "u9", "u10", "u11", "u5"]);
 }
+
+/// A deployment's flow log is kept beside the deployments file: a restart reads it back, so a
+/// past run can still be replayed, and deleting the deployment deletes it.
+#[test]
+fn a_flow_log_survives_a_restart_and_goes_with_its_deployment() {
+    let mut state = test_state();
+    let path = unique_temp_path("kept-log");
+    state.deployments_path = path.clone();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "kept", writer, ack).status_code, 200);
+    for _ in 0..2 {
+        assert_eq!(route(&state, &req("POST", "/trigger/kept", b"hello".to_vec())).status_code, 200);
+    }
+    let file = recorder::file_for(&path, "kept").unwrap();
+    assert!(file.exists());
+
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let entries = reloaded["kept"].log.after(None, 10);
+    assert_eq!(entries.iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1], "read back after a restart");
+    assert_eq!(entries[1].unit, to_hex(&writer));
+
+    route(&state, &req("POST", "/deployments/kept/stop", vec![]));
+    assert_eq!(route(&state, &req("DELETE", "/deployments/kept", vec![])).status_code, 200);
+    assert!(!file.exists(), "deleted with its deployment");
+    let _ = std::fs::remove_file(&path);
+}
