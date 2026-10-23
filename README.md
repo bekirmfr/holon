@@ -50,6 +50,11 @@ git tag v0.1.0 && git push origin v0.1.0
 `dist plan` shows what a release holds; `dist build --artifacts=local` builds this machine's
 archive (it needs the editor built first: `npm --prefix editor run build`).
 
+## License
+
+Proprietary: all rights reserved (see `LICENSE`). No use, copying or distribution without a
+written commercial agreement.
+
 ## Developing
 
 See `CLAUDE.md` for the conventions and `docs/` for the design. The server:

@@ -1,7 +1,10 @@
 [package]
 name = "holon-server"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 edition = "2024"
+# Proprietary: all rights reserved (LICENSE). Never published to crates.io.
+license-file = "../../LICENSE"
+publish = false
 description = "Holon: build services by wiring small, pure parts together; deploy them with exactly the permissions they need, and see every run"
 repository = "https://github.com/bekirmfr/holon"
 homepage = "https://github.com/bekirmfr/holon"
@@ -53,4 +56,6 @@ embed-editor = ["dep:include_dir"]
 
 # Releases (cargo-dist, dist-workspace.toml) build the editor in: one file to install.
 [package.metadata.dist]
+# Released though never published to crates.io (publish = false hides it from dist otherwise).
+dist = true
 features = ["embed-editor"]

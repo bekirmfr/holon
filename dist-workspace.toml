@@ -22,6 +22,8 @@ install-path = "~/.holon/bin"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# Proprietary (LICENSE): releases carry the binaries, never the source.
+source-tarball = false
 # Before building: the core for the editor (wasm-pack), then the editor, which the server
 # builds in (its `embed-editor` feature, set in its Cargo.toml).
 github-build-setup = "../build-setup.yml"
