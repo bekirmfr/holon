@@ -226,10 +226,16 @@ export function parseHolon(text: string): HolonFile {
 // ── compiling ────────────────────────────────────────────────────────────────────────────────
 
 /** `.holon` text as a flow document (and its name), through the samples' builder; errors say
- *  the line. */
-export function compileHolon(text: string, catalog: Map<string, WUnit>, variadic: Set<string>, ev: Evaluator): { name: string | null; doc: FlowDocument } {
+ *  the line. `names`: each top-level node's name in the text, by its id in the document. */
+export function compileHolon(
+  text: string,
+  catalog: Map<string, WUnit>,
+  variadic: Set<string>,
+  ev: Evaluator,
+): { name: string | null; doc: FlowDocument; names: Map<string, string> } {
   const file = parseHolon(text);
   const holons = new Map<string, Holon>();
+  const names = new Map<string, string>();
   /** Run `f` for the statement on `line`: a builder's complaint says the line. */
   const at = <T>(line: number, f: () => T): T => {
     try {
@@ -313,14 +319,14 @@ export function compileHolon(text: string, catalog: Map<string, WUnit>, variadic
           });
           holons.set(s.name, holon);
         }
-        replay(b, top);
+        for (const [name, id] of replay(b, top)) names.set(id, name);
       },
     },
     catalog,
     variadic,
     ev,
   );
-  return { name: file.name, doc };
+  return { name: file.name, doc, names };
 }
 
 // ── writing ──────────────────────────────────────────────────────────────────────────────────

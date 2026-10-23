@@ -135,14 +135,9 @@ switch (command) {
     break;
   }
   case "show": {
-    const { ev, name, doc } = compile(file);
+    // Each node by its name in the text, as the compiler says.
+    const { ev, name, doc, names: nameOfNode } = compile(file);
     const { server } = derive(ev, doc);
-    const text = readFileSync(file, "utf8");
-    const nameOfNode = new Map<string, string>();
-    // The text's own node names, in order, matched to the nodes compiled from them.
-    const declared = [...text.matchAll(/^\s*node\s+("[^"]*"|[^\s=]+)\s*=/gm)].map((m) => m[1].replace(/^"|"$/g, ""));
-    const top = nodesOf(doc).filter((n) => !n.id.includes("."));
-    top.forEach((n, i) => nameOfNode.set(n.id, declared.filter((d) => !d.includes("."))[i] ?? n.id));
     console.log(`${name ?? file}${doc.server?.port ? `  (a server on :${doc.server.port})` : ""}`);
     if (server.endpoints.length) {
       console.log("  routes");

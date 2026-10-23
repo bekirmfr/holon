@@ -43,8 +43,10 @@ const unitOf = (doc: { nodes: unknown[]; edges: unknown[]; server?: { port: stri
 describe("flows as text", () => {
   it("compiles a flow written by hand into a server with its route", () => {
     const ev = new Evaluator();
-    const { name, doc } = compileHolon(HELLO, catalog, variadic, ev);
+    const { name, doc, names } = compileHolon(HELLO, catalog, variadic, ev);
     expect(name).toBe("hello-api");
+    // Each node by its name in the text (what `holon show` prints).
+    expect((doc.nodes as PrimitiveNodeType[]).map((n) => `${names.get(n.id)}=${n.data.name}`)).toEqual(["req=request", "name=field", "hi=const", "greet=concat", "res=respond"]);
     expect(doc.server?.port).toBe("8101");
     const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, catalog, "8101");
     expect(server.errors).toEqual([]);
