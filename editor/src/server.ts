@@ -552,6 +552,9 @@ export type FlowDocument = {
   /** Hex preimages of every unit the canvas's composite nodes reference (their whole closure),
    *  inserted back into the Evaluator on open. Absent in flows saved before it existed. */
   units?: string[];
+  /** What its composites are called, by hash (docUnits.ts): a unit keeps no name, so a holon
+   *  inside another would otherwise show as its hash once reopened. Absent in older flows. */
+  names?: Record<string, string>;
   /** The flow's deploy settings (DeployBar): the port for a flow with routes, the interval for a
    *  clock flow. Absent in older flows; `endpoints`, from flows saved before routes were
    *  derived, is ignored. */

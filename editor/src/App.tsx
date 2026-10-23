@@ -51,7 +51,8 @@ import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
-import { closureOf, documentKey, fromHex, structuralKey, toHex } from "./flowDoc";
+import { documentKey, structuralKey } from "./flowDoc";
+import { documentUnits, nameOf, rememberName, restoreDocument } from "./docUnits";
 import { DialogProvider, useDialog } from "./Dialog";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS, type FlowSettings } from "./DeployBar";
@@ -313,12 +314,8 @@ function Canvas({
       const es = doc.edges as Edge[];
       // A preimage is re-hashed on insert, so a tampered entry can only add a unit nobody
       // points at, never stand in for one.
-      let msg = "";
-      try {
-        for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
-      } catch (e) {
-        msg = `some saved units could not be restored: ${e instanceof Error ? e.message : String(e)}`;
-      }
+      const failed = restoreDocument(doc, ev);
+      let msg = failed ? `some saved units could not be restored: ${failed}` : "";
       const missing = ns.filter((n) => {
         if (n.data.body.kind !== "Composite") return false;
         try {
@@ -369,14 +366,9 @@ function Canvas({
       if (!name) return;
       setFlowName(name);
     }
-    let units: string[];
+    let carried: ReturnType<typeof documentUnits>;
     try {
-      const roots = [
-        ...nodes.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])),
-      ];
-      units = closureOf(roots, (h) => ev.get_unit(h) as WUnit).map((h) =>
-        toHex(buildPreimage(ev.get_unit(h) as WUnit)),
-      );
+      carried = documentUnits(nodes.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])), ev);
     } catch (e) {
       setSaveMsg(`not saved: ${e instanceof Error ? e.message : String(e)}`);
       return;
@@ -385,7 +377,7 @@ function Canvas({
       nodes: nodes as unknown[],
       edges: edges as unknown[],
       viewport: getViewport(),
-      units,
+      ...carried,
       server: settings,
     };
     const key = savedKeyOf(nodes, edges, settings);
@@ -530,7 +522,7 @@ function Canvas({
   // its unit's capabilities from core, plus what its deploy settings ask beyond the defaults.
   const manifestOfDocument = useCallback(
     (doc: FlowDocument) => {
-      for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
+      restoreDocument(doc, ev);
       const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, byName, doc.server?.port ?? DEFAULT_SETTINGS.port);
       const caps = (ev.capability_names(hash) as string[]);
       return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
@@ -728,11 +720,8 @@ function Canvas({
     setDeployBusy(true);
     try {
       const { nodes: ns, edges: es } = live.current;
-      const units = closureOf(
-        ns.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])),
-        (h) => ev.get_unit(h) as WUnit,
-      ).map((h) => toHex(buildPreimage(ev.get_unit(h) as WUnit)));
-      const document: FlowDocument = { nodes: ns, edges: es, viewport: getViewport(), units, server: settings, trace };
+      const carried = documentUnits(ns.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])), ev);
+      const document: FlowDocument = { nodes: ns, edges: es, viewport: getViewport(), ...carried, server: settings, trace };
       await deployUnit(name, hash, ask, interval, document, requirements);
       refreshDeployments();
     } catch (err) {
@@ -765,13 +754,8 @@ function Canvas({
         setDeployError(e instanceof Error ? e.message : String(e));
         return;
       }
-      for (const hex of doc.units ?? []) {
-        try {
-          ev.insert(fromHex(hex));
-        } catch {
-          // a unit that won't decode just stays unresolvable, like on Open
-        }
-      }
+      // A unit that won't decode just stays unresolvable, like on Open.
+      restoreDocument(doc, ev);
       const open = tabOf(slug);
       const base = open === null ? blankTab(slug) : open === activeId ? captureTab() : (stash.current.get(open) ?? blankTab(slug));
       const editCopy = base.meta.viewing
@@ -903,13 +887,10 @@ function Canvas({
   // What each composite has been called on this editor's canvases, by hash: a unit keeps no
   // names, so a composite found inside another (expanding or ungrouping it) takes its name from
   // here, e.g. a "slugify" grouped into something bigger stays "slugify" inside it.
-  const compositeNames = useRef(new Map<string, string>());
+  // Saved and deployed with the flow, and learnt back on open (docUnits.ts).
   useEffect(() => {
-    for (const n of nodes) {
-      if (n.data.body.kind === "Composite" && n.data.name !== n.data.body.hash.slice(0, 8)) compositeNames.current.set(n.data.body.hash, n.data.name);
-    }
+    for (const n of nodes) if (n.data.body.kind === "Composite") rememberName(n.data.body.hash, n.data.name);
   }, [nodes]);
-  const nameOf = useCallback((hash: string) => compositeNames.current.get(hash), []);
 
   // Ungroup a composite: replace it with the nodes inside it, here (canvasOps.expandComposite).
   const ungroup = useCallback((id: string) => {

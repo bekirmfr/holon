@@ -13,7 +13,7 @@ import { unitFor } from "./canvasUnits";
 import { defaultBoundaryValue } from "./BoundaryField";
 import { findRoutes, routeSpec } from "./derive";
 import { endpointUnit, serverUnit, type EndpointDraft } from "./endpoint";
-import { fromHex } from "./flowDoc";
+import { restoreDocument } from "./docUnits";
 
 /** The unit a flow deploys as: its server when it has routes, else the whole canvas as one
  *  composite. Throws why it can't be derived. */
@@ -585,7 +585,7 @@ export function expandComposite(
  */
 export function flowAsNode(
   name: string,
-  doc: { nodes: unknown[]; edges: unknown[]; units?: string[] },
+  doc: { nodes: unknown[]; edges: unknown[]; units?: string[]; names?: Record<string, string> },
   ev: Evaluator,
   byName: Map<string, WUnit>,
   id: string,
@@ -599,11 +599,8 @@ export function flowAsNode(
   if (ns.some((n) => n.data.body.kind === "Template" && (n.data.name === "request" || n.data.name === "respond"))) {
     return { ok: false, message: `"${name}" has routes: it is a server, deployed on its own, not a node of another flow` };
   }
-  try {
-    for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
-  } catch (e) {
-    return { ok: false, message: `"${name}": its grouped nodes can't be restored: ${e instanceof Error ? e.message : String(e)}` };
-  }
+  const failed = restoreDocument(doc, ev);
+  if (failed) return { ok: false, message: `"${name}": its grouped nodes can't be restored: ${failed}` };
   const grouped = groupSelection(ns, es, ev, byName, () => 0);
   if (!grouped.ok) return { ok: false, message: `"${name}" can't be placed as a node: ${grouped.message}` };
   const source = savedAt === undefined ? {} : { source: { flow: name, savedAt } };

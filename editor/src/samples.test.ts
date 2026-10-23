@@ -25,6 +25,7 @@ import {
   type BoundaryPort,
 } from "./canvasOps";
 import { foldLevels } from "./CompositeOverlay";
+import { documentUnits, nameOf, restoreDocument } from "./docUnits";
 import { manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
@@ -344,6 +345,36 @@ describe("sample flows", () => {
     // A level that can't be frozen says which and why.
     const broken = { ...inner, edges: inner.edges.filter((e) => e.target !== BOUNDARY_OUT) };
     expect(foldLevels([host, broken], 0, (c) => freezeInner(c, ev, catalog))).toContain(`publish: the output "put" isn't fed`);
+  });
+
+  it("carry the names of the holons in a flow, nested ones too, and teach them back on open", () => {
+    const ev = new Evaluator();
+    const nested = {
+      ...SAMPLES[0],
+      name: "nested",
+      build: (b: Parameters<(typeof SAMPLES)[0]["build"]>[0]) => {
+        const outer = b.holon(
+          "outer-holon",
+          (inner) => {
+            const shout = inner.holon("inner-holon", (deeper) => void deeper.node("uppercase", {}, [0, 0]), { inputs: ["text"], outputs: ["out"] });
+            inner.place(shout, [0, 0]);
+          },
+          { inputs: ["text"], outputs: ["out"] },
+        );
+        b.place(outer);
+      },
+    };
+    const doc = buildSample(nested, catalog, variadic, ev);
+    expect(Object.values(doc.names ?? {}).sort()).toEqual(["inner-holon", "outer-holon"]);
+    const innerHash = Object.entries(doc.names!).find(([, n]) => n === "inner-holon")![0];
+    expect(nameOf(innerHash), "not known before the flow is opened").toBeUndefined();
+    expect(restoreDocument(doc, new Evaluator())).toBeNull();
+    const outer = (doc.nodes as PrimitiveNodeType[])[0];
+    const opened = innerCanvas(outer, doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, catalog, variadic, nameOf);
+    if (!opened.ok) throw new Error(opened.message);
+    expect(opened.nodes.map((n) => (n.data as { name: string }).name)).toContain("inner-holon");
+    // And saved again with the flow.
+    expect(documentUnits([innerHash], ev).names).toEqual({ [innerHash]: "inner-holon" });
   });
 
   it("ask for what each one shows", () => {

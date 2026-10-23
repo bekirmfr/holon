@@ -10,7 +10,7 @@ import type { Edge } from "@xyflow/react";
 import { buildPreimage, readsFromOutside, type Evaluator, type WUnit, type WValue } from "./holon";
 import { FAIL, type PrimitiveNodeType } from "./PrimitiveNode";
 import { unitFor } from "./canvasUnits";
-import { fromHex } from "./flowDoc";
+import { restoreDocument } from "./docUnits";
 import { valueChip } from "./diagnostics";
 import {
   collectionsAtStep,
@@ -82,13 +82,8 @@ export function useViewMode(input: ViewModeInput) {
     getDeployedDocument(viewing, runUnit)
       .then((doc) => {
         if (stale) return;
-        for (const hex of doc.units ?? []) {
-          try {
-            ev.insert(fromHex(hex));
-          } catch {
-            // a unit that won't decode stays unresolvable, as on Open
-          }
-        }
+        // A unit that won't decode stays unresolvable, as on Open.
+        restoreDocument(doc, ev);
         restoring.current = true;
         setNodes(doc.nodes as PrimitiveNodeType[]);
         setEdges(doc.edges as Edge[]);

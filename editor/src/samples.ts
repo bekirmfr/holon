@@ -57,6 +57,8 @@ export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadi
   const edges: FlowDocument["edges"] = [];
   const counter = { next: 0 };
   const holons: string[] = [];
+  // What each holon is called, saved with the sample (FlowDocument.names).
+  const names: Record<string, string> = {};
   const fail = (what: string): never => {
     throw new Error(`sample "${sample.name}": ${what}`);
   };
@@ -121,6 +123,7 @@ export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadi
         got.length === want.length ? got.map((p, i) => ({ ...p, name: want[i] })) : fail(`holon "${name}" has ${side} ${got.map((p) => p.name).join(", ")}, not ${want.join(", ")}`);
       if (body.kind !== "Composite") return fail(`holon "${name}" isn't a composite`);
       holons.push(body.hash);
+      names[body.hash] = name;
       return { name, hash: body.hash, inputs: named(inputs, ports.inputs, "inputs"), outputs: named(outputs, ports.outputs, "outputs") };
     },
     place(holon, at = [40 + 260 * (counter.next % 5), 40 + 160 * Math.floor(counter.next / 5)]) {
@@ -144,6 +147,7 @@ export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadi
     edges,
     viewport: { x: 10, y: 50, zoom: Math.round(zoom * 100) / 100 },
     units: closureOf(holons, (h) => ev.get_unit(h) as WUnit).map((h) => toHex(buildPreimage(ev.get_unit(h) as WUnit))),
+    names,
     server: {
       port: sample.port ?? "",
       interval: sample.interval ?? "",
