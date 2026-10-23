@@ -4,21 +4,16 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { initSync, Evaluator, primitive_catalog, variadic_primitives } from "../wasm/holon_wasm.js";
-import type { WUnit } from "./holon";
+import { initSync, Evaluator } from "../wasm/holon_wasm.js";
 import type { Edge } from "@xyflow/react";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { deriveServer, flowUnitHash } from "./canvasOps";
-import { compileHolon, parseHolon, printHolon } from "./holonText";
+import { compileHolon, printHolon } from "./holonText";
 import { SAMPLES, buildSample } from "./samples";
 
-let catalog: Map<string, WUnit>;
-let variadic: Set<string>;
 
 beforeAll(() => {
   initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
-  catalog = new Map((primitive_catalog() as WUnit[]).map((u) => [u.body.kind === "Primitive" ? u.body.name : "", u]));
-  variadic = new Set(variadic_primitives() as string[]);
 });
 
 const HELLO = `flow hello-api
@@ -43,7 +38,7 @@ const unitOf = (doc: { nodes: unknown[]; edges: unknown[]; server?: { port: stri
 describe("flows as text", () => {
   it("compiles a flow written by hand into a server with its route", () => {
     const ev = new Evaluator();
-    const { name, doc, names } = compileHolon(HELLO, catalog, variadic, ev);
+    const { name, doc, names } = compileHolon(HELLO, ev);
     expect(name).toBe("hello-api");
     // Each node by its name in the text (what `holon show` prints).
     expect((doc.nodes as PrimitiveNodeType[]).map((n) => `${names.get(n.id)}=${n.data.name}`)).toEqual(["req=request", "name=field", "hi=const", "greet=concat", "res=respond"]);
@@ -55,19 +50,19 @@ describe("flows as text", () => {
 
   it("is the same unit as the same flow built on the canvas (the Hello API sample)", () => {
     const ev = new Evaluator();
-    const sample = buildSample(SAMPLES.find((s) => s.name === "hello-api")!, catalog, variadic, ev);
-    expect(unitOf(compileHolon(HELLO, catalog, variadic, ev).doc, ev)).toBe(unitOf(sample, ev));
+    const sample = buildSample(SAMPLES.find((s) => s.name === "hello-api")!, ev);
+    expect(unitOf(compileHolon(HELLO, ev).doc, ev)).toBe(unitOf(sample, ev));
   });
 
   it.each(SAMPLES.map((s) => [s.name]))("round-trips the %s sample: printed, compiled back, the identical unit", (sampleName) => {
     const ev = new Evaluator();
-    const original = buildSample(SAMPLES.find((s) => s.name === sampleName)!, catalog, variadic, ev);
-    const text = printHolon(sampleName, original, catalog, variadic, ev);
+    const original = buildSample(SAMPLES.find((s) => s.name === sampleName)!, ev);
+    const text = printHolon(sampleName, original, ev);
     // A fresh workspace: everything it needs comes from the text.
     const fresh = new Evaluator();
-    const back = compileHolon(text, catalog, variadic, fresh);
+    const back = compileHolon(text, fresh);
     expect(unitOf(back.doc, fresh), text).toBe(unitOf(original, ev));
-    expect(printHolon(sampleName, back.doc, catalog, variadic, fresh)).toBe(text);
+    expect(printHolon(sampleName, back.doc, fresh)).toBe(text);
   });
 
   it("variadic nodes keep their inputs, and holons their boundary as given", () => {
@@ -83,19 +78,19 @@ holon shout(words "join · list") -> (said) {
 node c = concat[3]
 node s = shout
 `;
-    const { doc } = compileHolon(text, catalog, variadic, ev);
+    const { doc } = compileHolon(text, ev);
     const c = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "concat")!;
     expect(c.data.inputs.map((p) => p.name)).toEqual(["a", "b", "c"]);
     const s = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "shout")!;
     expect(s.data.inputs.map((p) => p.name)).toEqual(["words"]);
-    expect(printHolon("joined", doc, catalog, variadic, ev)).toContain(`holon shout(words "join · list") -> (said`);
+    expect(printHolon("joined", doc, ev)).toContain(`holon shout(words "join · list") -> (said`);
   });
 
   it("names the line of each mistake", () => {
     const ev = new Evaluator();
     const fails = (text: string) => {
       try {
-        compileHolon(text, catalog, variadic, ev);
+        compileHolon(text, ev);
         return "";
       } catch (e) {
         return e instanceof Error ? e.message : String(e);
@@ -108,6 +103,6 @@ node s = shout
     expect(fails('node a = const { value: "oops }')).toBe("line 1: a quote isn't closed");
     expect(fails("holon h() -> () {\nnode a = field")).toBe('line 1: the holon "h" isn\'t closed with }');
     expect(fails("node a = field\nnode a = field")).toBe('line 2: there is a node "a" already');
-    expect(() => parseHolon("node in = field")).toThrow("names a holon's boundary");
+    expect(fails("node in = field")).toContain("names a holon's boundary");
   });
 });

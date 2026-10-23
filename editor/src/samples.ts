@@ -1,17 +1,12 @@
 // Sample flows: one per capability, opened from the flows page as an unsaved copy. Each is built
-// here from the live catalog (and the template interfaces), never from hand-copied node shapes,
+// from the live catalog (and the template interfaces), never from hand-copied node shapes,
 // so a sample can't drift from core: samples.test.ts builds every one and derives it through the
 // real core. Every new feature ships with a sample that shows it (CLAUDE.md).
 
-import type { Edge } from "@xyflow/react";
-import { nextPortName } from "./ports";
-import { BOUNDARY_IN, BOUNDARY_OUT, freezeInner } from "./composites";
-import { buildPreimage, type Evaluator, type WParam, type WPort, type WType, type WUnit } from "./holon";
+import { FlowBuilder } from "../wasm/holon_wasm.js";
+import type { Evaluator, WPort } from "./holon";
 import type { FlowDocument } from "./server";
-import type { PrimitiveNodeType } from "./PrimitiveNode";
-import { isTemplate, templateDefaults, templateInterface } from "./templates";
-import { groupSelection } from "./canvasOps";
-import { closureOf, toHex } from "./flowDoc";
+import { fromHex } from "./flowDoc";
 
 /** A flow of its own, grouped into one composite unit: placed as a node in another flow, it is a
  *  holon, a whole that is also a part. Its hash is the same wherever it's placed. */
@@ -64,146 +59,44 @@ export type Sample = {
   build(b: SampleBuilder): void;
 };
 
-/** A literal's wire type, as the editor sets it when a const's or default's type changes. */
-const literalType = (ty: string): WType => (ty === "Json" ? "Any" : (ty as WType));
-
-/** Lay out `sample` on a canvas: the flow document opening it loads. Its holons are grouped in
- *  `ev`, and their units (the whole closure) travel in the document, as a saved flow's do. */
-export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadic: Set<string>, ev: Evaluator): FlowDocument {
-  const nodes: PrimitiveNodeType[] = [];
-  const edges: FlowDocument["edges"] = [];
-  const counter = { next: 0 };
-  const holons: string[] = [];
-  // What each holon is called, saved with the sample (FlowDocument.names).
-  const names: Record<string, string> = {};
-  const fail = (what: string): never => {
-    throw new Error(`sample "${sample.name}": ${what}`);
+/** Lay out `sample` on a canvas: the flow document opening it loads. Built by holon-author's
+ *  builder (crates/holon-author/src/builder.rs, through the wasm bridge), as the text format
+ *  builds; its holons' units are put into `ev`, and travel in the document (the whole closure),
+ *  as a saved flow's do. */
+export function buildSample(sample: Sample, ev: Evaluator): FlowDocument {
+  const fb = new FlowBuilder();
+  const call = <T>(f: () => T): T => {
+    try {
+      return f();
+    } catch (e) {
+      throw new Error(`sample "${sample.name}": ${e instanceof Error ? e.message : String(e)}`);
+    }
   };
-  const builder = (nodes: PrimitiveNodeType[], edges: FlowDocument["edges"], prefix: string): SampleBuilder => ({
-    node(name, set = {}, at = [40 + 260 * (counter.next % 5), 40 + 160 * Math.floor(counter.next / 5)]) {
-      const id = `${prefix}${name}-${counter.next++}`;
-      const position = { x: at[0], y: at[1] };
-      if (isTemplate(name)) {
-        const defaults = templateDefaults(name);
-        for (const k of Object.keys(set)) if (!defaults.some((p) => p.name === k)) fail(`${name} has no param "${k}"`);
-        const params: WParam[] = defaults.map((p) => (p.name in set ? { kind: "Frozen", name: p.name, value: set[p.name] } : p));
-        const iface = templateInterface(name, params);
-        nodes.push({
-          id,
-          type: "primitive",
-          position,
-          data: { name, body: { kind: "Template" }, ...iface, params, variadic: false, minInputs: 0 },
-        } as PrimitiveNodeType);
-        return id;
-      }
-      const u = catalog.get(name) ?? fail(`no leaf "${name}" in the catalog`);
-      for (const k of Object.keys(set)) if (!(u.params ?? []).some((p) => p.name === k)) fail(`${name} has no param "${k}"`);
-      const params: WParam[] = (u.params ?? []).map((p) => (p.name in set ? { kind: "Frozen", name: p.name, value: set[p.name] } : p));
-      let inputs: WPort[] = u.inputs ?? [];
-      let outputs: WPort[] = u.outputs ?? [];
-      if (name === "const" || name === "default") {
-        const typeParam = params.find((p) => p.name === "type");
-        const ty = literalType(typeParam?.kind === "Frozen" ? typeParam.value : "Number");
-        inputs = inputs.map((p) => ({ ...p, ty }));
-        outputs = outputs.map((p) => ({ ...p, ty }));
-      }
-      nodes.push({
-        id,
-        type: "primitive",
-        position,
-        data: { name, body: { kind: "Primitive" }, inputs, outputs, params, variadic: variadic.has(name), minInputs: inputs.length },
-      } as PrimitiveNodeType);
-      return id;
-    },
-    wire(from, output, to, input) {
-      const src = nodes.find((n) => n.id === from) ?? fail(`no node ${from}`);
-      const dst = nodes.find((n) => n.id === to) ?? fail(`no node ${to}`);
-      if (!src.data.outputs.some((p) => p.name === output)) fail(`${src.data.name} has no output "${output}"`);
-      // A variadic node gains the next input when it is wired, as its "+" adds one.
-      if (!dst.data.inputs.some((p) => p.name === input) && dst.data.variadic && input === nextPortName(dst.data.inputs.map((p) => p.name))) {
-        dst.data.inputs = [...dst.data.inputs, { name: input, ty: dst.data.inputs[0]?.ty ?? "Any" }];
-      }
-      if (!dst.data.inputs.some((p) => p.name === input)) fail(`${dst.data.name} has no input "${input}"`);
-      edges.push({
-        id: `xy-edge__${from}${output}-${to}${input}`,
-        source: from,
-        sourceHandle: output,
-        target: to,
-        targetHandle: input,
-        style: { stroke: "#8295b0", strokeWidth: 1.6 },
-      });
-    },
+  const builder: SampleBuilder = {
+    node: (name, set = {}, at) => call(() => fb.node(name, Object.entries(set), at ? Float64Array.from(at) : undefined)),
+    wire: (from, output, to, input) => call(() => fb.wire(from, output, to, input)),
+    arity: (node, inputs) => call(() => fb.arity(node, inputs)),
     holon(name, build, ports) {
-      const inner: PrimitiveNodeType[] = [];
-      const innerEdges: FlowDocument["edges"] = [];
-      build(builder(inner, innerEdges, `${name}.`));
-      const grouped = groupSelection(inner, innerEdges as Parameters<typeof groupSelection>[1], ev, () => counter.next++);
-      if (!grouped.ok) return fail(`holon "${name}" doesn't group: ${grouped.message}`);
-      const { inputs, outputs, body } = grouped.node.data;
-      const named = (got: WPort[], want: string[], side: string) =>
-        got.length === want.length ? got.map((p, i) => ({ ...p, name: want[i] })) : fail(`holon "${name}" has ${side} ${got.map((p) => p.name).join(", ")}, not ${want.join(", ")}`);
-      if (body.kind !== "Composite") return fail(`holon "${name}" isn't a composite`);
-      holons.push(body.hash);
-      names[body.hash] = name;
-      return { name, hash: body.hash, inputs: named(inputs, ports.inputs, "inputs"), outputs: named(outputs, ports.outputs, "outputs") };
-    },
-    arity(node, count) {
-      const n = nodes.find((x) => x.id === node) ?? fail(`no node ${node}`);
-      if (!n.data.variadic) fail(`${n.data.name} doesn't take more inputs`);
-      if (count < n.data.minInputs) fail(`${n.data.name} takes at least ${n.data.minInputs} inputs`);
-      while (n.data.inputs.length < count) {
-        n.data.inputs = [...n.data.inputs, { name: nextPortName(n.data.inputs.map((p) => p.name)), ty: n.data.inputs[0]?.ty ?? "Any" }];
-      }
+      fb.begin_holon(name);
+      build(builder);
+      return call(() => fb.end_holon(name, ports.inputs, ports.outputs) as Holon);
     },
     holonExact(name, build, ports, wiring) {
-      const inner: PrimitiveNodeType[] = [];
-      const innerEdges: FlowDocument["edges"] = [];
-      build(builder(inner, innerEdges, `${name}.`));
-      const boundary = (side: "in" | "out", list: { name: string; unit?: string }[]) => ({
-        id: side === "in" ? BOUNDARY_IN : BOUNDARY_OUT,
-        type: "boundary",
-        position: { x: 0, y: 0 },
-        data: { side, ports: list.map((p) => ({ name: p.name, ty: "Any" as const, outside: [], unit: p.unit ?? p.name })) },
-      });
-      const wires = [
-        ...wiring.in.map(([port, node, input]) => ({ id: `in-${port}`, source: BOUNDARY_IN, sourceHandle: port, target: node, targetHandle: input })),
-        ...wiring.out.map(([node, output, port]) => ({ id: `out-${port}`, source: node, sourceHandle: output, target: BOUNDARY_OUT, targetHandle: port })),
-      ];
-      const frozen = freezeInner({ nodes: [boundary("in", ports.inputs), ...inner, boundary("out", ports.outputs)], edges: [...(innerEdges as Edge[]), ...wires] }, ev);
-      if (!frozen.ok) return fail(`holon "${name}": ${frozen.message}`);
-      holons.push(frozen.hash);
-      names[frozen.hash] = name;
-      return { name, hash: frozen.hash, inputs: frozen.inputs, outputs: frozen.outputs };
+      fb.begin_holon(name);
+      build(builder);
+      return call(() => fb.end_holon_exact(name, ports.inputs, ports.outputs, wiring.in, wiring.out) as Holon);
     },
-    place(holon, at = [40 + 260 * (counter.next % 5), 40 + 160 * Math.floor(counter.next / 5)]) {
-      const id = `${prefix}${holon.name}-${counter.next++}`;
-      nodes.push({
-        id,
-        type: "primitive",
-        position: { x: at[0], y: at[1] },
-        data: { name: holon.name, body: { kind: "Composite", hash: holon.hash }, inputs: holon.inputs, outputs: holon.outputs, params: [], variadic: false, minInputs: 0 },
-      } as PrimitiveNodeType);
-      return id;
-    },
-  });
-  sample.build(builder(nodes, edges, ""));
-  // Zoomed so the whole sample shows at once, clear of the canvas's panels.
-  const right = Math.max(...nodes.map((n) => n.position.x)) + 320;
-  const bottom = Math.max(...nodes.map((n) => n.position.y)) + 220;
-  const zoom = Math.min(0.8, 820 / right, 640 / bottom);
-  return {
-    nodes,
-    edges,
-    viewport: { x: 10, y: 50, zoom: Math.round(zoom * 100) / 100 },
-    units: closureOf(holons, (h) => ev.get_unit(h) as WUnit).map((h) => toHex(buildPreimage(ev.get_unit(h) as WUnit))),
-    names,
-    server: {
-      port: sample.port ?? "",
-      interval: sample.interval ?? "",
-      ...(sample.optional ? { requirements: { optional: sample.optional } } : {}),
-      ...(sample.browsers ? { browsers: sample.browsers } : {}),
-    },
+    place: (holon, at) => call(() => fb.place(holon, at ? Float64Array.from(at) : undefined)),
   };
+  sample.build(builder);
+  const doc = fb.finish({
+    port: sample.port ?? "",
+    interval: sample.interval ?? "",
+    ...(sample.optional ? { requirements: { optional: sample.optional } } : {}),
+    ...(sample.browsers ? { browsers: sample.browsers } : {}),
+  }) as FlowDocument;
+  for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
+  return doc;
 }
 
 export const SAMPLES: Sample[] = [

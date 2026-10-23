@@ -76,6 +76,11 @@ pub enum WParam {
 }
 
 impl WParam {
+    pub fn name(&self) -> &str {
+        match self {
+            WParam::Frozen { name, .. } | WParam::Open { name, .. } => name,
+        }
+    }
     pub fn frozen(name: &str, value: &str) -> WParam {
         WParam::Frozen { name: name.into(), value: value.into() }
     }

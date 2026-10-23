@@ -10,6 +10,7 @@ publish = false
 # server natively, the same code.
 holon-core = { path = "../holon-core" }
 serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
+# A flow document's fields that only the editor reads pass through as JSON, and the text
+# format quotes as JSON.
 serde_json = "1"
+

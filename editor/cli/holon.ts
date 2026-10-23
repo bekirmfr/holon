@@ -14,8 +14,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Edge } from "@xyflow/react";
-import { initSync, Evaluator, primitive_catalog, variadic_primitives } from "../wasm/holon_wasm.js";
-import type { WUnit } from "../src/holon";
+import { initSync, Evaluator } from "../wasm/holon_wasm.js";
 import type { PrimitiveNodeType } from "../src/PrimitiveNode";
 import { deriveServer, flowUnitHash } from "../src/canvasOps";
 import { describeItem } from "../src/diagnostics";
@@ -30,8 +29,6 @@ if (!core) {
   process.exit(1);
 }
 initSync({ module: readFileSync(core) });
-const catalog = new Map((primitive_catalog() as WUnit[]).map((u) => [u.body.kind === "Primitive" ? u.body.name : "", u]));
-const variadic = new Set(variadic_primitives() as string[]);
 
 const STARTER = `# A flow: one statement a line. Run \`holon check\` on it as you go.
 flow my-flow
@@ -71,7 +68,7 @@ function compile(path: string) {
   }
   const ev = new Evaluator();
   try {
-    return { ev, ...compileHolon(readFileSync(path, "utf8"), catalog, variadic, ev) };
+    return { ev, ...compileHolon(readFileSync(path, "utf8"), ev) };
   } catch (e) {
     if (e instanceof HolonTextError) console.error(`${path}:${e.line}: ${e.message.replace(/^line \d+: /, "")}`);
     else console.error(`${path}: ${e instanceof Error ? e.message : String(e)}`);
@@ -110,7 +107,7 @@ switch (command) {
       const sample = SAMPLES.find((s) => s.name === rest[sampleAt + 1]);
       if (!sample) usage();
       const ev = new Evaluator();
-      text = `# ${sample.title}: ${sample.description}\n${printHolon(sample.name, buildSample(sample, catalog, variadic, ev), catalog, variadic, ev)}`;
+      text = `# ${sample.title}: ${sample.description}\n${printHolon(sample.name, buildSample(sample, ev), ev)}`;
     }
     writeFileSync(file, text);
     console.log(`wrote ${file}`);
@@ -158,7 +155,7 @@ switch (command) {
   }
   case "fmt": {
     const { ev, name, doc } = compile(file);
-    writeFileSync(file, printHolon(name, doc, catalog, variadic, ev));
+    writeFileSync(file, printHolon(name, doc, ev));
     console.log(`formatted ${file}`);
     break;
   }

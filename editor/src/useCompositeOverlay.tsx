@@ -9,7 +9,7 @@ import type { Edge, Node } from "@xyflow/react";
 import { CompositeOverlay, type FrozenOk, type OverlayFrame, type OverlayOps, type Renames } from "./CompositeOverlay";
 import { expandComposite, freezeInner, innerCanvas, replaceComposite } from "./composites";
 import { nodeFromPalette } from "./canvasOps";
-import { nameOf } from "./docUnits";
+import { knownNames } from "./docUnits";
 import { innerSteps } from "./replay";
 import type { Evaluator, WUnit } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
@@ -59,7 +59,7 @@ export function useCompositeOverlay({
   );
   const inside = useCallback(
     (target: PrimitiveNodeType, around: Node[], wires: Edge[]): OverlayFrame | string => {
-      const opened = innerCanvas(target, around.filter((n) => n.type === "primitive") as PrimitiveNodeType[], wires, ev, byName, variadic, nameOf);
+      const opened = innerCanvas(target, around.filter((n) => n.type === "primitive") as PrimitiveNodeType[], wires, ev, knownNames());
       return opened.ok ? { title: target.data.name, nodeId: target.id, nodes: editableInside(opened.nodes), edges: opened.edges, dirty: false } : opened.message;
     },
     [ev, byName, variadic, editableInside],
@@ -73,7 +73,7 @@ export function useCompositeOverlay({
       ungroupIn: (canvas, id) => {
         const target = canvas.nodes.find((n) => n.id === id) as PrimitiveNodeType | undefined;
         if (!target || target.data.body.kind !== "Composite") return "not a composite";
-        const result = expandComposite(target, canvas.edges, ev, byName, variadic, nextId, nameOf);
+        const result = expandComposite(target, canvas.edges, ev, nextId, knownNames());
         return result.ok ? { nodes: [...canvas.nodes.filter((n) => n.id !== id), ...result.nodes], edges: result.edges } : result.message;
       },
     }),
@@ -95,7 +95,7 @@ export function useCompositeOverlay({
     (id: string) => {
       const target = live.current.nodes.find((n) => n.id === id);
       if (!target) return;
-      const opened = innerCanvas(target, live.current.nodes, live.current.edges, ev, byName, variadic, nameOf);
+      const opened = innerCanvas(target, live.current.nodes, live.current.edges, ev, knownNames());
       if (!opened.ok) return onError(opened.message);
       let frameNodes = opened.nodes;
       if (viewing && run.selectedRun) {

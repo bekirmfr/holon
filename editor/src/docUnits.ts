@@ -11,6 +11,9 @@ const names = new Map<string, string>();
 /** What the composite `hash` is called, when known. */
 export const nameOf = (hash: string): string | undefined => names.get(hash);
 
+/** Every composite name known, by hash. */
+export const knownNames = (): Record<string, string> => Object.fromEntries(names);
+
 /** Remember that the composite `hash` is called `name` (a hash's own prefix is not a name). */
 export function rememberName(hash: string, name: string) {
   if (name && name !== hash.slice(0, 8)) names.set(hash, name);

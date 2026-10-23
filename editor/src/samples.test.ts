@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { initSync, Evaluator, primitive_catalog, primitive_docs, variadic_primitives } from "../wasm/holon_wasm.js";
+import { initSync, Evaluator, primitive_catalog, primitive_docs } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit, type WValue } from "./holon";
 import { fromHex } from "./flowDoc";
 import { deriveServer, flowAsNode, flowUnitHash } from "./canvasOps";
@@ -23,7 +23,7 @@ import {
   type BoundaryPort,
 } from "./composites";
 import { foldLevels } from "./CompositeOverlay";
-import { documentUnits, nameOf, restoreDocument } from "./docUnits";
+import { documentUnits, knownNames, nameOf, restoreDocument } from "./docUnits";
 import { manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
@@ -32,19 +32,17 @@ import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
 
 let catalog: Map<string, WUnit>;
-let variadic: Set<string>;
 
 beforeAll(() => {
   initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
   catalog = new Map();
   for (const u of primitive_catalog() as WUnit[]) if (u.body.kind === "Primitive") catalog.set(u.body.name, u);
-  variadic = new Set(variadic_primitives() as string[]);
 });
 
 /** What deploying `sample` asks for, by consent name, or why it can't deploy. */
 function derive(name: string): { caps: string[]; endpoints: number } {
   const sample = SAMPLES.find((s) => s.name === name)!;
-  const doc = buildSample(sample, catalog, variadic, new Evaluator());
+  const doc = buildSample(sample, new Evaluator());
   const nodes = doc.nodes as PrimitiveNodeType[];
   const edges = doc.edges as Edge[];
   // Derived in a fresh workspace, from what the document carries: as opening it does.
@@ -67,7 +65,7 @@ describe("sample flows", () => {
 
   for (const s of SAMPLES) {
     it(`${s.name} builds, derives, and asks for exactly what it uses`, () => {
-      const doc = buildSample(s, catalog, variadic, new Evaluator());
+      const doc = buildSample(s, new Evaluator());
       const requests = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.name === "request" && n.data.body.kind === "Template");
       const { caps, endpoints } = derive(s.name);
       expect(endpoints).toBe(requests.length);
@@ -106,7 +104,7 @@ describe("sample flows", () => {
 
   it("place a whole flow as a node: one unit, wherever it's placed, that works", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
     const placed = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.body.kind === "Composite" && n.data.name === "slugify");
     expect(placed.length).toBe(2);
     const hashes = new Set(placed.map((n) => (n.data.body.kind === "Composite" ? n.data.body.hash : "")));
@@ -119,13 +117,13 @@ describe("sample flows", () => {
     expect(out).toEqual([{ type: "Text", value: "hello-holon-world" }]);
     expect(doc.units?.length, "its closure travels with the document").toBeGreaterThan(0);
     expect(() =>
-      buildSample({ ...SAMPLES[0], build: (b) => void b.holon("h", (i) => void i.node("lowercase"), { inputs: ["a", "b"], outputs: ["c"] }) }, catalog, variadic, new Evaluator()),
+      buildSample({ ...SAMPLES[0], build: (b) => void b.holon("h", (i) => void i.node("lowercase"), { inputs: ["a", "b"], outputs: ["c"] }) }, new Evaluator()),
     ).toThrow('holon "h" has inputs');
   });
 
   it("place a holon that reads and writes outside: its ports are what they say, its needs in the manifest", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
     const publish = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "publish")!;
     if (publish.data.body.kind !== "Composite") throw new Error("not a composite");
     const unit = ev.get_unit(publish.data.body.hash) as WUnit;
@@ -169,7 +167,7 @@ describe("sample flows", () => {
         b.wire(placed, "slug", upper, "s");
       },
     };
-    const saved = buildSample(shout, catalog, variadic, new Evaluator());
+    const saved = buildSample(shout, new Evaluator());
     // Placed in another flow's workspace, from what the saved document carries.
     const ev = new Evaluator();
     const placed = flowAsNode("shout", saved, ev, "shout-1", { x: 0, y: 0 });
@@ -181,7 +179,7 @@ describe("sample flows", () => {
     const out = ev.eval(buildPreimage(ev.get_unit(body.hash) as WUnit), [{ type: "Text", value: "Hello Holon" }]) as (WValue | null)[];
     expect(out).toEqual([{ type: "Text", value: "HELLO-HOLON" }]);
 
-    const server = buildSample(SAMPLES.find((s) => s.name === "hello-api")!, catalog, variadic, new Evaluator());
+    const server = buildSample(SAMPLES.find((s) => s.name === "hello-api")!, new Evaluator());
     const refused = flowAsNode("hello-api", server, new Evaluator(), "x", { x: 0, y: 0 });
     expect(refused.ok ? "" : refused.message).toContain("has routes");
     const empty = flowAsNode("e", { nodes: [], edges: [] }, new Evaluator(), "x", { x: 0, y: 0 });
@@ -204,11 +202,11 @@ describe("sample flows", () => {
 
   it("open a holon as a canvas of its own: its nodes, its wires, its boundary and what that is wired to", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
     const nodes = doc.nodes as PrimitiveNodeType[];
     const edges = doc.edges as Edge[];
     const publish = nodes.find((n) => n.data.name === "publish")!;
-    const opened = innerCanvas(publish, nodes, edges, ev, catalog, variadic);
+    const opened = innerCanvas(publish, nodes, edges, ev);
     if (!opened.ok) throw new Error(opened.message);
     expect(opened.childIds.length).toBe(10);
     expect(opened.nodes.length).toBe(12);
@@ -234,15 +232,15 @@ describe("sample flows", () => {
     const spots = new Set(opened.nodes.map((n) => `${n.position.x},${n.position.y}`));
     expect(spots.size).toBe(opened.nodes.length);
     // A primitive isn't a composite.
-    expect(innerCanvas(nodes.find((n) => n.data.name === "record")!, nodes, edges, ev, catalog, variadic).ok).toBe(false);
+    expect(innerCanvas(nodes.find((n) => n.data.name === "record")!, nodes, edges, ev).ok).toBe(false);
   });
 
   it("freeze an inner canvas back into a composite: unchanged, the same unit; edited, a new one", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
     const nodes = doc.nodes as PrimitiveNodeType[];
     const publish = nodes.find((n) => n.data.name === "publish")!;
-    const opened = innerCanvas(publish, nodes, doc.edges as Edge[], ev, catalog, variadic);
+    const opened = innerCanvas(publish, nodes, doc.edges as Edge[], ev);
     if (!opened.ok) throw new Error(opened.message);
     const canvas = { nodes: opened.nodes, edges: opened.edges };
     const same = freezeInner(canvas, ev);
@@ -286,11 +284,11 @@ describe("sample flows", () => {
 
   it("apply an edited inner canvas: the flow's node becomes the new version, its wires following renamed ports", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
     const nodes = doc.nodes as PrimitiveNodeType[];
     const edges = doc.edges as Edge[];
     const publish = nodes.find((n) => n.data.name === "publish")!;
-    const opened = innerCanvas(publish, nodes, edges, ev, catalog, variadic);
+    const opened = innerCanvas(publish, nodes, edges, ev);
     if (!opened.ok) throw new Error(opened.message);
     // Rename the input "slug" to "key", and drop the output "receipt".
     const port = (side: string, f: (ps: BoundaryPort[]) => BoundaryPort[]) => (n: (typeof opened.nodes)[number]) =>
@@ -321,10 +319,10 @@ describe("sample flows", () => {
 
   it("fold a changed level into the one above, deepest first", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
     const nodes = doc.nodes as PrimitiveNodeType[];
     const publish = nodes.find((n) => n.data.name === "publish")!;
-    const opened = innerCanvas(publish, nodes, doc.edges as Edge[], ev, catalog, variadic);
+    const opened = innerCanvas(publish, nodes, doc.edges as Edge[], ev);
     if (!opened.ok) throw new Error(opened.message);
     const top = { title: "publish", nodeId: publish.id, nodes: opened.nodes, edges: opened.edges, dirty: false };
     // A level below it: an inner canvas of its own (here, publish again under a made-up node id),
@@ -362,13 +360,13 @@ describe("sample flows", () => {
         b.place(outer);
       },
     };
-    const doc = buildSample(nested, catalog, variadic, ev);
+    const doc = buildSample(nested, ev);
     expect(Object.values(doc.names ?? {}).sort()).toEqual(["inner-holon", "outer-holon"]);
     const innerHash = Object.entries(doc.names!).find(([, n]) => n === "inner-holon")![0];
     expect(nameOf(innerHash), "not known before the flow is opened").toBeUndefined();
     expect(restoreDocument(doc, new Evaluator())).toBeNull();
     const outer = (doc.nodes as PrimitiveNodeType[])[0];
-    const opened = innerCanvas(outer, doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, catalog, variadic, nameOf);
+    const opened = innerCanvas(outer, doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, knownNames());
     if (!opened.ok) throw new Error(opened.message);
     expect(opened.nodes.map((n) => (n.data as { name: string }).name)).toContain("inner-holon");
     // And saved again with the flow.
@@ -395,8 +393,8 @@ describe("sample flows", () => {
 
   it("refuse a misspelt leaf, param or port, naming the sample", () => {
     const broken = { ...SAMPLES[0], build: (b: Parameters<(typeof SAMPLES)[0]["build"]>[0]) => b.wire(b.node("field"), "nope", b.node("concat"), "a") };
-    expect(() => buildSample(broken, catalog, variadic, new Evaluator())).toThrow('sample "hello-api": field has no output "nope"');
-    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("fieldd") }, catalog, variadic, new Evaluator())).toThrow('no leaf "fieldd"');
-    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("field", { nam: "x" }) }, catalog, variadic, new Evaluator())).toThrow('has no param "nam"');
+    expect(() => buildSample(broken, new Evaluator())).toThrow('sample "hello-api": field has no output "nope"');
+    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("fieldd") }, new Evaluator())).toThrow('no leaf "fieldd"');
+    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("field", { nam: "x" }) }, new Evaluator())).toThrow('has no param "nam"');
   });
 });

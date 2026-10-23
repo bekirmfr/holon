@@ -16,9 +16,12 @@
 //!   free to drift). Hashes now cross the boundary as **lowercase hex strings** — usable as JS map
 //!   keys and `===`-comparable, which `Uint8Array` is not.
 
-use holon_author::canvas::{Node, Wire};
+use holon_author::builder::{self, FlowDocument, Holon, HolonPort, Settings};
+use holon_author::canvas::{Node, Position, Wire};
+use holon_author::composites::{self, BoundaryPort, Names};
+use holon_author::group::{self, GroupError};
 use holon_author::wire::{WEdge, WParam, WType, WUnit};
-use holon_author::{flow, routes, templates, to_hex};
+use holon_author::{flow, routes, templates, text, to_hex};
 use holon_core::{
     decode_preimage, default_spec, derive_and_freeze, encode_preimage, genesis_units, hash_unit,
     parse_hash, Capability, Edge, EncapError, EncapSpec, Expose, Hash, Kind, MapResolver,
@@ -829,6 +832,184 @@ pub fn find_routes(nodes: JsValue, edges: JsValue) -> Result<JsValue, JsError> {
     let (nodes, wires) = canvas(nodes, edges)?;
     let (routes, errors) = routes::find_routes(&nodes, &wires);
     to_js(&Found { routes, errors })
+}
+
+// ── Composites, grouping and the text format (holon-author) ──────────────────────────────────
+// Grouping a selection, a holon's inside opened as a canvas, expanded, frozen back; a flow built
+// node by node (the samples) and the `.holon` text format. Each answers `{ok: true, …}` or
+// `{ok: false, message, nodeIds}`, as the canvas operations do, so a failure points at nodes.
+
+fn from_js<T: serde::de::DeserializeOwned>(value: JsValue, what: &str) -> Result<T, JsError> {
+    serde_wasm_bindgen::from_value(value).map_err(|e| JsError::new(&format!("{what}: {e}")))
+}
+
+/// `{ok: true, …fields}` from a value that serializes to an object.
+fn ok_with<T: Serialize>(value: &T) -> Result<JsValue, JsError> {
+    let mut v = serde_json::to_value(value).map_err(|e| JsError::new(&e.to_string()))?;
+    if let serde_json::Value::Object(m) = &mut v {
+        m.insert("ok".into(), serde_json::Value::Bool(true));
+    }
+    to_js(&v)
+}
+
+fn failed(e: &GroupError) -> Result<JsValue, JsError> {
+    to_js(&serde_json::json!({ "ok": false, "message": e.message, "nodeIds": e.node_ids }))
+}
+
+#[wasm_bindgen]
+impl Evaluator {
+    /// A selection grouped into one placed composite node, `{ok, node, edges}` (group.rs), its id
+    /// `composite-<id>-…`.
+    pub fn group_selection(&mut self, nodes: JsValue, edges: JsValue, id: f64) -> Result<JsValue, JsError> {
+        let (nodes, wires) = canvas(nodes, edges)?;
+        match group::group_selection(&nodes, &wires, &mut self.resolver, id as u64) {
+            Ok((node, edges)) => ok_with(&serde_json::json!({ "node": node, "edges": edges })),
+            Err(e) => failed(&e),
+        }
+    }
+
+    /// A saved flow placed in another as one node, `{ok, node}` or `{ok: false, message}`. Its
+    /// units must be inserted here first.
+    pub fn flow_as_node(&mut self, name: &str, nodes: JsValue, edges: JsValue, id: &str, position: JsValue, saved_at: Option<f64>) -> Result<JsValue, JsError> {
+        let (nodes, wires) = canvas(nodes, edges)?;
+        let position: Position = from_js(position, "position")?;
+        match group::flow_as_node(name, &nodes, &wires, &mut self.resolver, id, position, saved_at) {
+            Ok(node) => ok_with(&serde_json::json!({ "node": node })),
+            Err(message) => failed(&GroupError::new(message)),
+        }
+    }
+
+    /// The composite node `target` as a canvas of its own, `{ok, nodes, edges, childIds}`: its
+    /// boundary's two nodes, then its children (composites.rs). `names` names nested composites.
+    pub fn inner_canvas(&self, target: JsValue, nodes: JsValue, edges: JsValue, names: JsValue) -> Result<JsValue, JsError> {
+        let target: Node = from_js(target, "target")?;
+        let (nodes, wires) = canvas(nodes, edges)?;
+        let names: Names = from_js(names, "names")?;
+        match composites::inner_canvas(&target, &nodes, &wires, &self.resolver, &names) {
+            Ok(c) => {
+                let json = |e: serde_json::Error| JsError::new(&e.to_string());
+                let mut all = vec![serde_json::to_value(&c.inputs).map_err(json)?, serde_json::to_value(&c.outputs).map_err(json)?];
+                for n in &c.children {
+                    all.push(serde_json::to_value(n).map_err(json)?);
+                }
+                ok_with(&serde_json::json!({ "nodes": all, "edges": c.wires, "childIds": c.child_ids }))
+            }
+            Err(message) => failed(&GroupError::new(message)),
+        }
+    }
+
+    /// The composite node `target` expanded in place, `{ok, nodes, rewired, added}`: its children
+    /// (ids from `ids`, in order), the flow's wires re-pointed, its inner wires as new ones.
+    pub fn expand_composite(&self, target: JsValue, edges: JsValue, ids: Vec<f64>, names: JsValue) -> Result<JsValue, JsError> {
+        let target: Node = from_js(target, "target")?;
+        let wires: Vec<Wire> = from_js(edges, "wires")?;
+        let names: Names = from_js(names, "names")?;
+        let ids: Vec<u64> = ids.into_iter().map(|i| i as u64).collect();
+        match composites::expand_composite(&target, &wires, &self.resolver, &ids, &names) {
+            Ok(expanded) => ok_with(&expanded),
+            Err(message) => failed(&GroupError::new(message)),
+        }
+    }
+
+    /// An inner canvas frozen back into a composite, `{ok, hash, inputs, outputs}`: its boundary's
+    /// ports (`ins`, `outs`), its other nodes, its wires.
+    pub fn freeze_inner(&mut self, ins: JsValue, outs: JsValue, nodes: JsValue, edges: JsValue) -> Result<JsValue, JsError> {
+        let ins: Vec<BoundaryPort> = from_js(ins, "inputs")?;
+        let outs: Vec<BoundaryPort> = from_js(outs, "outputs")?;
+        let (nodes, wires) = canvas(nodes, edges)?;
+        match composites::freeze_inner(&ins, &outs, &nodes, &wires, &mut self.resolver) {
+            Ok((hash, inputs, outputs)) => ok_with(&serde_json::json!({ "hash": hash, "inputs": inputs, "outputs": outputs })),
+            Err(e) => failed(&e),
+        }
+    }
+
+    /// A flow document as `.holon` text (text.rs). Its units are inserted here; `names` names the
+    /// composites the document doesn't.
+    pub fn print_holon(&mut self, name: Option<String>, doc: JsValue, names: JsValue) -> Result<String, JsError> {
+        let doc: FlowDocument = from_js(doc, "document")?;
+        let names: Names = from_js(names, "names")?;
+        text::print(name.as_deref(), &doc, &mut self.resolver, &names).map_err(|e| JsError::new(&e))
+    }
+}
+
+/// `.holon` text as a flow document: `{name, doc, names}` (each top-level node's name in the
+/// text, by id). Throws the first line it can't read or build (`line N: …`).
+#[wasm_bindgen]
+pub fn compile_holon(source: &str) -> Result<JsValue, JsError> {
+    let compiled = text::compile(source).map_err(|e| JsError::new(&e.to_string()))?;
+    to_js(&compiled)
+}
+
+/// A flow built node by node, as the samples build theirs (builder.rs): `node`, `wire`, `arity`,
+/// holons between `begin_holon` and `end_holon` (or `end_holon_exact`), `place`, then `finish`.
+/// Every name is checked: an unknown leaf, param or port throws.
+#[wasm_bindgen]
+pub struct FlowBuilder {
+    inner: builder::FlowBuilder,
+}
+
+impl Default for FlowBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn at_of(at: Option<Vec<f64>>) -> Option<Position> {
+    at.and_then(|a| Some(Position { x: *a.first()?, y: *a.get(1)? }))
+}
+
+#[wasm_bindgen]
+impl FlowBuilder {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> FlowBuilder {
+        FlowBuilder { inner: builder::FlowBuilder::new() }
+    }
+
+    /// A leaf or template, `params` as `[name, value]` pairs, at `[x, y]` (the next spot when
+    /// absent). Answers its id.
+    pub fn node(&mut self, name: &str, params: JsValue, at: Option<Vec<f64>>) -> Result<String, JsError> {
+        let params: Vec<(String, String)> = from_js(params, "params")?;
+        self.inner.node(name, &params, at_of(at)).map_err(|e| JsError::new(&e))
+    }
+
+    pub fn wire(&mut self, from: &str, output: &str, to: &str, input: &str) -> Result<(), JsError> {
+        self.inner.wire(from, output, to, input).map_err(|e| JsError::new(&e))
+    }
+
+    pub fn arity(&mut self, node: &str, inputs: usize) -> Result<(), JsError> {
+        self.inner.arity(node, inputs).map_err(|e| JsError::new(&e))
+    }
+
+    pub fn begin_holon(&mut self, name: &str) {
+        self.inner.begin_holon(name);
+    }
+
+    /// The holon begun last, grouped: `{name, hash, inputs, outputs}`.
+    pub fn end_holon(&mut self, name: &str, inputs: Vec<String>, outputs: Vec<String>) -> Result<JsValue, JsError> {
+        let holon = self.inner.end_holon(name, &inputs, &outputs).map_err(|e| JsError::new(&e))?;
+        to_js(&holon)
+    }
+
+    /// The holon begun last, its boundary given: ports `[{name, unit?}]`, wiring
+    /// `[[port, node, input]]` in and `[[node, output, port]]` out.
+    pub fn end_holon_exact(&mut self, name: &str, inputs: JsValue, outputs: JsValue, wiring_in: JsValue, wiring_out: JsValue) -> Result<JsValue, JsError> {
+        let (inputs, outputs): (Vec<HolonPort>, Vec<HolonPort>) = (from_js(inputs, "inputs")?, from_js(outputs, "outputs")?);
+        let wiring_in: Vec<(String, String, String)> = from_js(wiring_in, "wiring in")?;
+        let wiring_out: Vec<(String, String, String)> = from_js(wiring_out, "wiring out")?;
+        let holon = self.inner.end_holon_exact(name, &inputs, &outputs, &wiring_in, &wiring_out).map_err(|e| JsError::new(&e))?;
+        to_js(&holon)
+    }
+
+    pub fn place(&mut self, holon: JsValue, at: Option<Vec<f64>>) -> Result<String, JsError> {
+        let holon: Holon = from_js(holon, "holon")?;
+        Ok(self.inner.place(&holon, at_of(at)))
+    }
+
+    /// The flow document, with `settings` as its deploy settings.
+    pub fn finish(self, settings: JsValue) -> Result<JsValue, JsError> {
+        let settings: Settings = from_js(settings, "settings")?;
+        to_js(&self.inner.finish(settings))
+    }
 }
 
 #[cfg(test)]

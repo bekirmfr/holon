@@ -4,18 +4,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { initSync, Evaluator, primitive_catalog, variadic_primitives } from "../wasm/holon_wasm.js";
+import { initSync, Evaluator } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit } from "./holon";
 import { catalogOf, listingOf, placeListing, type Listing } from "./marketplace";
 import { SAMPLES, buildSample } from "./samples";
 
-let catalog: Map<string, WUnit>;
-let variadic: Set<string>;
 
 beforeAll(() => {
   initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
-  catalog = new Map((primitive_catalog() as WUnit[]).map((u) => [u.body.kind === "Primitive" ? u.body.name : "", u]));
-  variadic = new Set(variadic_primitives() as string[]);
 });
 
 /** A saved flow without routes: upper-cases its text, through a holon of its own. */
@@ -29,8 +25,6 @@ function shoutFlow(ev: Evaluator) {
         b.place(inner);
       },
     },
-    catalog,
-    variadic,
     ev,
   );
 }

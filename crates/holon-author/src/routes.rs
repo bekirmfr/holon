@@ -237,7 +237,7 @@ mod tests {
             (vec![WPort::new("a", WType::Any)], vec![WPort::new("out", out)])
         };
         let body = if template { PlacedBody::Template } else { PlacedBody::Primitive };
-        Node { id: id.into(), data: NodeData { name: name.into(), body, inputs, outputs, params } }
+        Node::placed(id, Default::default(), NodeData::new(name, body, inputs, outputs, params))
     }
     fn plain(id: &str, name: &str) -> Node {
         node(id, name, vec![], false)
@@ -249,7 +249,7 @@ mod tests {
         node(id, "respond", vec![WParam::frozen("status", "200")], true)
     }
     fn wire(source: &str, target: &str) -> Wire {
-        Wire { source: source.into(), target: target.into(), source_handle: None, target_handle: None }
+        Wire { source_handle: None, target_handle: None, ..Wire::new(source, "", target, "") }
     }
     fn promote(child: u32, port: u32, name: &str) -> Promote {
         Promote { child, port, name: name.into() }

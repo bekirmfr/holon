@@ -40,7 +40,7 @@ import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
 import { InspectPanel } from "./InspectPanel";
 import { structuralKey } from "./flowDoc";
-import { nameOf, rememberName, restoreDocument } from "./docUnits";
+import { knownNames, rememberName, restoreDocument } from "./docUnits";
 import { DialogProvider, useDialog } from "./Dialog";
 import { ServerPanel } from "./ServerPanel";
 import { DeployBar, DEFAULT_SETTINGS } from "./DeployBar";
@@ -304,7 +304,7 @@ function Canvas({
       if (open !== null && !(await dialog.confirm(`"${sample.name}" is open in a tab. Replace it with the sample? Its unsaved changes are lost.`, "Replace"))) {
         return;
       }
-      showTab(open, tabFromDocument(sample.name, buildSample(sample, byName, variadic, ev), false));
+      showTab(open, tabFromDocument(sample.name, buildSample(sample, ev), false));
     },
     [tabOf, dialog, showTab, tabFromDocument, byName, variadic, ev],
   );
@@ -546,7 +546,7 @@ function Canvas({
   const ungroup = useCallback((id: string) => {
     const target = live.current.nodes.find((n) => n.id === id);
     if (!target || target.data.body.kind !== "Composite") return;
-    const result = expandComposite(target, live.current.edges, ev, byName, variadic, () => idRef.current++, nameOf);
+    const result = expandComposite(target, live.current.edges, ev, () => idRef.current++, knownNames());
     if (result.ok) {
       setNodes((ns) => [...ns.filter((n) => n.id !== target.id), ...result.nodes]);
       setEdges(result.edges);
@@ -555,7 +555,7 @@ function Canvas({
     } else {
       setProjError(result.message);
     }
-  }, [ev, byName, variadic, setNodes, setEdges, nameOf]);
+  }, [ev, byName, variadic, setNodes, setEdges]);
 
   // Look inside a composite: its inner flow on a canvas of its own, over this one
   // (useCompositeOverlay.tsx). While it is open, undo and redo are its own.
@@ -817,14 +817,14 @@ function Canvas({
               holonText={{
                 onImport: (text) => {
                   try {
-                    const { name, doc } = compileHolon(text, byName, variadic, ev);
+                    const { name, doc } = compileHolon(text, ev);
                     showTab(null, tabFromDocument(name, doc, false));
                     return null;
                   } catch (e) {
                     return e instanceof Error ? e.message : String(e);
                   }
                 },
-                exportOf: async (name) => printHolon(name, (await getFlow(name)).document, byName, variadic, ev),
+                exportOf: async (name) => printHolon(name, (await getFlow(name)).document, ev),
               }}
               manifestOf={manifestOfDocument}
               marketplace={{

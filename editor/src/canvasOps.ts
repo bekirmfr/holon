@@ -7,7 +7,7 @@
 import type { Edge } from "@xyflow/react";
 import { BOUNDARY, buildPreimage, Evaluator, type WEdge, type WEncapSpec, type WPort, type WUnit, type WValue } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
-import { boundaryLabels, encapErrorNodeIndices, isWEncapError } from "./diagnostics";
+import { encapErrorNodeIndices, isWEncapError } from "./diagnostics";
 import { isTemplate, templateDefaults, templateInterface } from "./templates";
 import { unitFor } from "./canvasUnits";
 import { defaultBoundaryValue } from "./BoundaryField";
@@ -197,103 +197,18 @@ export function excludeProjectedOutput(p: Projection, index: number, ev: Evaluat
   }
 }
 
-// Group a selection into one placed composite node (P4.3.1). Mechanically the same derivation as
-// projecting, just fed a subset: only the selected nodes become children, only edges where BOTH
-// endpoints are selected become the composite's inner wiring — an edge with exactly one endpoint
-// outside the selection is, from the subgraph's own perspective, an ordinary free input or output,
-// so default_spec's proposal derives the right boundary with no new core or bridge logic.
+// Group a selection into one placed composite node: only the selected nodes become children, only
+// wires with both ends selected its inner wiring; a wire with one end outside is, from the
+// selection's side, an open input or output, so core's proposal derives the boundary. The new
+// node's ports are named by provenance ("add · b"), and the wires crossing the selection follow
+// them. holon-author's (group.rs), through the wasm bridge.
 export function groupSelection(
   selected: PrimitiveNodeType[],
   edges: Edge[],
   ev: Evaluator,
   nextId: () => number,
 ): { ok: true; node: PrimitiveNodeType; edges: Edge[] } | ({ ok: false } & OpError) {
-  const selectedIds = new Set(selected.map((n) => n.id));
-  const indexOf = new Map(selected.map((n, i) => [n.id, i]));
-  let wedges: WEdge[] = [];
-  try {
-    const children = selected.map((n) => unitFor(n, ev));
-    const innerEdges = edges.filter((e) => selectedIds.has(e.source) && selectedIds.has(e.target));
-    wedges = innerEdges.map((e) => {
-      const from = indexOf.get(e.source)!;
-      const to = indexOf.get(e.target)!;
-      const fromPort = selected[from].data.outputs.findIndex((p) => p.name === e.sourceHandle);
-      const toPort = selected[to].data.inputs.findIndex((p) => p.name === e.targetHandle);
-      return { from_child: from, from_port: fromPort, to_child: to, to_port: toPort };
-    });
-
-    const composite = ev.project(children, wedges) as WUnit;
-    const hash = ev.insert(buildPreimage(composite));
-    const boundaryEdges = composite.body.kind === "Composite" ? composite.body.edges : [];
-    const rawInputs = composite.inputs ?? [];
-    const rawOutputs = composite.outputs ?? [];
-
-    // Which (selected-node, port) each promoted input / exposed output came from — read off the
-    // boundary edges core computed. Purely index-based, so it works on the raw, possibly-colliding
-    // ports; naming below doesn't change it, it only feeds it.
-    const promotedFrom = rawInputs.map((_, i) => {
-      const be = boundaryEdges.find((e) => e.from_child === BOUNDARY && e.from_port === i);
-      return be ? { child: be.to_child, port: be.to_port } : null;
-    });
-    const exposedFrom = rawOutputs.map((_, i) => {
-      const be = boundaryEdges.find((e) => e.to_child === BOUNDARY && e.to_port === i);
-      return be ? { child: be.from_child, port: be.from_port } : null;
-    });
-
-    // Name the new node's ports by provenance ("add · b", not a bare "b_2"). These become the
-    // ports' real handle ids, renamed after the hash is computed, so they never affect identity.
-    const inputSource = promotedFrom.map((x) => (x ? selected[x.child]?.data.name ?? null : null));
-    const outputSource = exposedFrom.map((x) => (x ? selected[x.child]?.data.name ?? null : null));
-    const inputLabels = boundaryLabels(rawInputs, inputSource);
-    const outputLabels = boundaryLabels(rawOutputs, outputSource);
-    const inputs = rawInputs.map((p, i) => ({ ...p, name: inputLabels[i] }));
-    const outputs = rawOutputs.map((p, i) => ({ ...p, name: outputLabels[i] }));
-
-    const groupId = `composite-${nextId()}-${hash.slice(0, 8)}`;
-    const node: PrimitiveNodeType = {
-      id: groupId,
-      type: "primitive",
-      position: {
-        x: selected.reduce((s, n) => s + n.position.x, 0) / selected.length,
-        y: selected.reduce((s, n) => s + n.position.y, 0) / selected.length,
-      },
-      data: {
-        name: hash.slice(0, 8),
-        body: { kind: "Composite", hash },
-        inputs,
-        outputs,
-        params: [],
-        variadic: false,
-        minInputs: 0,
-      },
-    };
-
-    // Rewire every edge that crossed the selection boundary to the new node's corresponding
-    // handle; drop every edge now inside the frozen composite; leave every other edge as it was.
-    const nextEdges: Edge[] = edges.flatMap((e): Edge[] => {
-      const sIn = selectedIds.has(e.source);
-      const tIn = selectedIds.has(e.target);
-      if (sIn && tIn) return [];
-      if (sIn) {
-        const ci = indexOf.get(e.source)!;
-        const cp = selected[ci].data.outputs.findIndex((p) => p.name === e.sourceHandle);
-        const oi = exposedFrom.findIndex((x) => x?.child === ci && x?.port === cp);
-        if (oi < 0) return []; // shouldn't happen against an honest proposal; drop defensively
-        return [{ ...e, source: groupId, sourceHandle: outputs[oi].name }];
-      }
-      if (tIn) {
-        const ci = indexOf.get(e.target)!;
-        const cp = selected[ci].data.inputs.findIndex((p) => p.name === e.targetHandle);
-        const ii = promotedFrom.findIndex((x) => x?.child === ci && x?.port === cp);
-        if (ii < 0) return [];
-        return [{ ...e, target: groupId, targetHandle: inputs[ii].name }];
-      }
-      return [e];
-    });
-    return { ok: true, node, edges: nextEdges };
-  } catch (err) {
-    return { ok: false, ...failure(err, wedges, selected) };
-  }
+  return ev.group_selection(selected, edges, nextId());
 }
 
 /**
@@ -313,18 +228,9 @@ export function flowAsNode(
   /** When the flow was saved: the node remembers it, so an update can be offered later. */
   savedAt?: number,
 ): { ok: true; node: PrimitiveNodeType } | { ok: false; message: string } {
-  const ns = doc.nodes as PrimitiveNodeType[];
-  const es = doc.edges as Edge[];
-  if (ns.length === 0) return { ok: false, message: `"${name}" is empty: nothing to place` };
-  if (ns.some((n) => n.data.body.kind === "Template" && (n.data.name === "request" || n.data.name === "respond"))) {
-    return { ok: false, message: `"${name}" has routes: it is a server, deployed on its own, not a node of another flow` };
-  }
-  const failed = restoreDocument(doc, ev);
+  const failed = doc.nodes.length > 0 ? restoreDocument(doc, ev) : null;
   if (failed) return { ok: false, message: `"${name}": its grouped nodes can't be restored: ${failed}` };
-  const grouped = groupSelection(ns, es, ev, () => 0);
-  if (!grouped.ok) return { ok: false, message: `"${name}" can't be placed as a node: ${grouped.message}` };
-  const source = savedAt === undefined ? {} : { source: { flow: name, savedAt } };
-  return { ok: true, node: { ...grouped.node, id, position, data: { ...grouped.node.data, name, ...source } } };
+  return ev.flow_as_node(name, doc.nodes, doc.edges, id, position, savedAt);
 }
 
 /**
