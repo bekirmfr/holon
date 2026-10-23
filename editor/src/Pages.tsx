@@ -28,6 +28,7 @@ export function FlowsPage({
   onSwitch,
   samples,
   onOpenSample,
+  holonText,
   manifestOf,
   marketplace,
 }: {
@@ -53,6 +54,9 @@ export function FlowsPage({
   /** Sample flows (samples.ts), one per capability: opening one starts an unsaved copy. */
   samples: Sample[];
   onOpenSample: (sample: Sample) => void;
+  /** Flows as text (holonText.ts): a `.holon` file opened as an unsaved flow (answers why not,
+   *  when it can't be), and a saved flow written as one. */
+  holonText: { onImport: (text: string) => string | null; exportOf: (name: string) => Promise<string> };
 }) {
   const dialog = useDialog();
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
@@ -105,8 +109,24 @@ export function FlowsPage({
 
   return (
     <div style={{ maxWidth: 560 }}>
-      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 12 }}>
-        flows
+      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ flex: 1 }}>flows</span>
+        <label style={{ ...smallBtn, fontSize: 11, letterSpacing: 0 }} title="open a flow written as text (.holon) as an unsaved flow, in a tab of its own">
+          import .holon
+          <input
+            type="file"
+            accept=".holon,text/plain"
+            aria-label="import a .holon file"
+            style={{ display: "none" }}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              const problem = holonText.onImport(await file.text());
+              setMsg(problem ? `${file.name}: ${problem}` : "");
+            }}
+          />
+        </label>
       </div>
       {msg && <div style={{ color: "#e0916f", fontSize: 12, marginBottom: 8 }}>{msg}</div>}
       {flows.length === 0 && !msg && (
@@ -144,6 +164,25 @@ export function FlowsPage({
               onClick={() => marketplace.onPublish(f.name).then((m) => m && setMsg(m))}
             >
               publish
+            </button>
+            <button
+              style={smallBtn}
+              title="download it as text (.holon): edit it anywhere, keep it in git, check it with `holon check`"
+              onClick={() =>
+                holonText
+                  .exportOf(f.name)
+                  .then((text) => {
+                    const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `${f.name}.holon`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  })
+                  .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)))
+              }
+            >
+              .holon
             </button>
             <button style={smallBtn} onClick={() => remove(f.name)} title="delete this saved flow">
               ×

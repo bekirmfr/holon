@@ -22,6 +22,7 @@ import { templateInterface, type TemplateName } from "./templates";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
 import { InfoIcon, useNodeActions, useNodeDocs } from "./NodeDocs";
 import { useOptionalDialog } from "./Dialog";
+import { nextPortName } from "./ports";
 
 /** What a placed primitive node carries. Mirrors the catalog interface; `position`/`id` (view-only) live on the React Flow node, not here.
  *  `variadic`/`minInputs` are P4.1's variadic-arity editing: whether this leaf's port count may
@@ -198,14 +199,6 @@ const toolbarButtonStyle: CSSProperties = {
 // ("a", "b", …) every current variadic leaf uses. Falls back to a numbered name if that
 // convention isn't met — defensive, not expected to trigger for any genesis leaf today, but
 // cheaper than assuming the convention holds forever.
-function nextPortName(existing: string[]): string {
-  const isSingleLetter = existing.length > 0 && existing.every((n) => /^[a-z]$/.test(n));
-  if (isSingleLetter) {
-    const max = Math.max(...existing.map((n) => n.charCodeAt(0)));
-    if (max < "z".charCodeAt(0)) return String.fromCharCode(max + 1);
-  }
-  return `in${existing.length + 1}`;
-}
 
 const fieldStyle: CSSProperties = {
   font: "inherit",

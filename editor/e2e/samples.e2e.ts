@@ -272,3 +272,41 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   expect(after.yanked).toBe(true);
   expect(after.units.length).toBeGreaterThan(0);
 });
+
+test("a flow as text: exported as .holon, checked by the command line, imported back", async ({ page }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const name = `texty-${Date.now().toString(36)}`;
+  await page.goto("/");
+  await page.getByRole("button", { name: "new", exact: true }).click();
+  await page.locator('[aria-modal="true"] input').fill(name);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".hl-tab--active")).toContainText(name);
+  await dropFromPalette(page, "uppercase");
+  await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
+  await expect(page.locator(".hl-canvas")).toContainText("saved");
+
+  // Exported from the flows page.
+  await page.getByRole("button", { name: "flows", exact: true }).click();
+  const row = page.getByText(name, { exact: true }).locator("xpath=..");
+  const download = page.waitForEvent("download");
+  await row.getByRole("button", { name: ".holon" }).click();
+  const file = join(mkdtempSync(join(tmpdir(), "holon-text-")), `${name}.holon`);
+  await (await download).saveAs(file);
+  const text = readFileSync(file, "utf8");
+  expect(text).toContain(`flow ${name}`);
+  expect(text).toMatch(/node uppercase = uppercase/);
+
+  // Checked on the command line, with no browser.
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  const checked = execFileSync(npm, ["run", "-s", "holon", "--", "check", file], { encoding: "utf8", shell: process.platform === "win32" });
+  expect(checked).toContain(`${name}: 1 nodes, 0 wires`);
+  expect(checked).toContain("it only computes");
+
+  // Imported back: an unsaved tab of its own, with the same node.
+  await page.getByLabel("import a .holon file").setInputFiles(file);
+  await expect(page.locator(".hl-tab--active")).toContainText(name);
+  await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1);
+});

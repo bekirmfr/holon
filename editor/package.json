@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "holon": "vite-node cli/holon.ts --"
   },
   "dependencies": {
     "@xyflow/react": "^12.3.5",

@@ -73,6 +73,13 @@ export const TOPICS: Topic[] = [
     ],
   },
   {
+    title: "Flows as text",
+    paragraphs: [
+      "Any flow can be written as a .holon file: one statement a line (node greet = concat, hi.out -> greet.a), holons as blocks. It's the same flow: drawn or written, it compiles to the same unit. Export one from the flows page (.holon) or import one (import .holon); edit it in any editor and keep it in git.",
+      "On any machine, a screen or not: holon new, holon check (its routes, what it may do, or each mistake by line), holon show (an outline) and holon fmt (the canonical form). From editor/: npm run holon -- check my-flow.holon.",
+    ],
+  },
+  {
     title: "Secrets",
     paragraphs: [
       "A secret node reads a secret by name; set its value under ⚙ → secrets, per deployment. Values are sealed on the server, versioned, can be rolled back, and are never shown again or logged.",

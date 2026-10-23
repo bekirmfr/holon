@@ -67,6 +67,7 @@ import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccountMenu, AuthGate, type Me } from "./AuthGate";
 import { AdminPage } from "./AdminPage";
 import { HomePage } from "./HomePage";
+import { compileHolon, printHolon } from "./holonText";
 import { WelcomePage } from "./WelcomePage";
 import { defaultHome, readPrefs, type Prefs } from "./home";
 import { useViewMode, ViewModePanes } from "./useViewMode";
@@ -816,6 +817,18 @@ function Canvas({
               onSwitch={switchTab}
               samples={SAMPLES}
               onOpenSample={onOpenSample}
+              holonText={{
+                onImport: (text) => {
+                  try {
+                    const { name, doc } = compileHolon(text, byName, variadic, ev);
+                    showTab(null, tabFromDocument(name, doc, false));
+                    return null;
+                  } catch (e) {
+                    return e instanceof Error ? e.message : String(e);
+                  }
+                },
+                exportOf: async (name) => printHolon(name, (await getFlow(name)).document, byName, variadic, ev),
+              }}
               manifestOf={manifestOfDocument}
               marketplace={{
                 url: market.url,

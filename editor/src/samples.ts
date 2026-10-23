@@ -3,6 +3,9 @@
 // so a sample can't drift from core: samples.test.ts builds every one and derives it through the
 // real core. Every new feature ships with a sample that shows it (CLAUDE.md).
 
+import type { Edge } from "@xyflow/react";
+import { nextPortName } from "./ports";
+import { BOUNDARY_IN, BOUNDARY_OUT, freezeInner } from "./composites";
 import { buildPreimage, type Evaluator, type WParam, type WPort, type WType, type WUnit } from "./holon";
 import type { FlowDocument } from "./server";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
@@ -19,11 +22,23 @@ export type SampleBuilder = {
   /** A leaf from the catalog or a template, with params set by name, at a canvas position. */
   node(name: string, params?: Record<string, string>, at?: [number, number]): string;
   wire(from: string, output: string, to: string, input: string): void;
+  /** A variadic node given `inputs` inputs, as its "+" adds them. */
+  arity(node: string, inputs: number): void;
   /** Build a flow of its own and group it into one composite, as the editor's "group" does: its
    *  free inputs and outputs become the composite's ports, named `ports` in boundary order. */
   holon(name: string, build: (b: SampleBuilder) => void, ports: { inputs: string[]; outputs: string[] }): Holon;
   /** Place a holon as a node, wired by its port names like any other. */
   place(holon: Holon, at?: [number, number]): string;
+  /** A holon whose boundary is given, not proposed: each input (its name on the node, and the
+   *  unit's own name for it when that differs) feeds the one inner port `wiring.in` says, each
+   *  output is fed as `wiring.out` says, in this order: frozen as the expand view freezes
+   *  (composites.ts's freezeInner), so a holon edited there round-trips exactly. */
+  holonExact(
+    name: string,
+    build: (b: SampleBuilder) => void,
+    ports: { inputs: { name: string; unit?: string }[]; outputs: { name: string; unit?: string }[] },
+    wiring: { in: [port: string, node: string, input: string][]; out: [node: string, output: string, port: string][] },
+  ): Holon;
 };
 
 export type Sample = {
@@ -104,6 +119,10 @@ export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadi
       const src = nodes.find((n) => n.id === from) ?? fail(`no node ${from}`);
       const dst = nodes.find((n) => n.id === to) ?? fail(`no node ${to}`);
       if (!src.data.outputs.some((p) => p.name === output)) fail(`${src.data.name} has no output "${output}"`);
+      // A variadic node gains the next input when it is wired, as its "+" adds one.
+      if (!dst.data.inputs.some((p) => p.name === input) && dst.data.variadic && input === nextPortName(dst.data.inputs.map((p) => p.name))) {
+        dst.data.inputs = [...dst.data.inputs, { name: input, ty: dst.data.inputs[0]?.ty ?? "Any" }];
+      }
       if (!dst.data.inputs.some((p) => p.name === input)) fail(`${dst.data.name} has no input "${input}"`);
       edges.push({
         id: `xy-edge__${from}${output}-${to}${input}`,
@@ -127,6 +146,34 @@ export function buildSample(sample: Sample, catalog: Map<string, WUnit>, variadi
       holons.push(body.hash);
       names[body.hash] = name;
       return { name, hash: body.hash, inputs: named(inputs, ports.inputs, "inputs"), outputs: named(outputs, ports.outputs, "outputs") };
+    },
+    arity(node, count) {
+      const n = nodes.find((x) => x.id === node) ?? fail(`no node ${node}`);
+      if (!n.data.variadic) fail(`${n.data.name} doesn't take more inputs`);
+      if (count < n.data.minInputs) fail(`${n.data.name} takes at least ${n.data.minInputs} inputs`);
+      while (n.data.inputs.length < count) {
+        n.data.inputs = [...n.data.inputs, { name: nextPortName(n.data.inputs.map((p) => p.name)), ty: n.data.inputs[0]?.ty ?? "Any" }];
+      }
+    },
+    holonExact(name, build, ports, wiring) {
+      const inner: PrimitiveNodeType[] = [];
+      const innerEdges: FlowDocument["edges"] = [];
+      build(builder(inner, innerEdges, `${name}.`));
+      const boundary = (side: "in" | "out", list: { name: string; unit?: string }[]) => ({
+        id: side === "in" ? BOUNDARY_IN : BOUNDARY_OUT,
+        type: "boundary",
+        position: { x: 0, y: 0 },
+        data: { side, ports: list.map((p) => ({ name: p.name, ty: "Any" as const, outside: [], unit: p.unit ?? p.name })) },
+      });
+      const wires = [
+        ...wiring.in.map(([port, node, input]) => ({ id: `in-${port}`, source: BOUNDARY_IN, sourceHandle: port, target: node, targetHandle: input })),
+        ...wiring.out.map(([node, output, port]) => ({ id: `out-${port}`, source: node, sourceHandle: output, target: BOUNDARY_OUT, targetHandle: port })),
+      ];
+      const frozen = freezeInner({ nodes: [boundary("in", ports.inputs), ...inner, boundary("out", ports.outputs)], edges: [...(innerEdges as Edge[]), ...wires] }, ev, catalog);
+      if (!frozen.ok) return fail(`holon "${name}": ${frozen.message}`);
+      holons.push(frozen.hash);
+      names[frozen.hash] = name;
+      return { name, hash: frozen.hash, inputs: frozen.inputs, outputs: frozen.outputs };
     },
     place(holon, at = [40 + 260 * (counter.next % 5), 40 + 160 * Math.floor(counter.next / 5)]) {
       const id = `${prefix}${holon.name}-${counter.next++}`;
