@@ -2,9 +2,17 @@
 // holon-server's /auth/prefs): the welcome opens on start until told not to, and the home tab's
 // panes, as customized, come back after a reload.
 
-import { expect, test } from "./fixtures";
+import type { APIRequestContext } from "@playwright/test";
+import { expect, SERVER, test } from "./fixtures";
 
-test("the welcome opens on start until told not to; home keeps its panes", async ({ page }) => {
+/** Wait until the server holds what was just changed (the editor saves as it changes), so a
+ *  reload reads it back rather than racing the last save. */
+async function saved(request: APIRequestContext, token: string, holds: (prefs: string) => boolean) {
+  const headers = { Authorization: `Bearer ${token}` };
+  await expect.poll(async () => holds(await (await request.get(`${SERVER}/auth/prefs`, { headers })).text())).toBe(true);
+}
+
+test("the welcome opens on start until told not to; home keeps its panes", async ({ page, request, adminToken }) => {
   await page.goto("/");
   const tabs = page.getByRole("tablist");
   await expect(tabs.getByRole("tab", { name: "welcome" })).toHaveAttribute("aria-selected", "true");
@@ -14,6 +22,7 @@ test("the welcome opens on start until told not to; home keeps its panes", async
 
   // Not on start any more: the next start is at home, without the welcome tab.
   await page.getByLabel("show this on start").uncheck();
+  await saved(request, adminToken, (p) => p.includes('"welcome":false'));
   await page.reload();
   await expect(tabs.getByRole("tab", { name: "home" })).toHaveAttribute("aria-selected", "true");
   await expect(tabs.getByRole("tab", { name: "welcome" })).toHaveCount(0);
@@ -26,6 +35,7 @@ test("the welcome opens on start until told not to; home keeps its panes", async
   await page.getByRole("button", { name: "move notes earlier" }).click();
   await page.getByRole("button", { name: "remove samples" }).click();
   await page.getByRole("button", { name: "done" }).click();
+  await saved(request, adminToken, (p) => p.includes("deploy the shop on friday") && !p.includes('"samples"'));
   await page.reload();
   await expect(page.getByRole("region", { name: "notes" }).getByRole("textbox")).toHaveValue("deploy the shop on friday");
   await expect(page.getByRole("region", { name: "samples" })).toHaveCount(0);
@@ -35,6 +45,7 @@ test("the welcome opens on start until told not to; home keeps its panes", async
   await page.getByRole("menuitem", { name: "welcome and docs" }).click();
   await expect(tabs.getByRole("tab", { name: "welcome" })).toHaveAttribute("aria-selected", "true");
   await page.getByLabel("show this on start").check();
+  await saved(request, adminToken, (p) => !p.includes('"welcome":false'));
 });
 
 test("pages open in tabs of their own; every tab closes; with none open, home shows", async ({ page }) => {

@@ -93,8 +93,13 @@ export async function signOutHere(): Promise<void> {
 
 /** What the editor keeps for whoever is signed in (home.ts's Prefs, as the server holds it). */
 export const getPrefs = async () => asJson<unknown>(await api(`${BASE}/auth/prefs`));
-export async function setPrefs(prefs: unknown): Promise<void> {
-  await asJson<void>(await post(`${BASE}/auth/prefs`, prefs));
+/** Saves go one at a time, in the order made: several in quick succession (a pane added, moved,
+ *  removed) could otherwise land out of order, leaving an older one on the server. */
+let prefsSaved: Promise<unknown> = Promise.resolve();
+export function setPrefs(prefs: unknown): Promise<void> {
+  const save = prefsSaved.then(async () => asJson<void>(await post(`${BASE}/auth/prefs`, prefs)));
+  prefsSaved = save.catch(() => undefined);
+  return save;
 }
 
 // ── the admin panel ──────────────────────────────────────────────────────────────────────
