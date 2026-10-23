@@ -1,10 +1,12 @@
-// The header's "access" button: the tokens this browser sends holon-server when it was started
-// with them (crates/holon-server/src/access.rs). Kept in this browser only (server.ts), never
-// shown again once saved, and only needed when the server asks for them.
+// The header's "access" button: signing in, when the server has an identity provider (signin.ts,
+// holon-server's oidc.rs), and the tokens this browser sends holon-server when it was started with
+// them (access.rs). Kept in this browser only (server.ts), never shown again once saved, and only
+// needed when the server asks for them.
 
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { getAccessTokens, setAccessTokens } from "./server";
+import { getAccessTokens, getAuthConfig, setAccessTokens } from "./server";
+import { finishSignIn, signedIn, signInExpired, signOut, startSignIn, type AuthConfig } from "./signin";
 
 const field: CSSProperties = {
   font: "inherit",
@@ -33,10 +35,29 @@ export function AccessButton({ style }: { style: CSSProperties }) {
     setOpen(false);
   };
   const current = getAccessTokens();
+  // Signing in: offered when the server says where; a return from the provider finished here.
+  const [auth, setAuth] = useState<AuthConfig | null>(null);
+  const [who, setWho] = useState(() => signedIn()?.who ?? null);
+  const [signInMsg, setSignInMsg] = useState("");
+  useEffect(() => {
+    getAuthConfig().then(setAuth);
+    finishSignIn().then((done) => {
+      if (done === null) return;
+      if (typeof done === "string") return setSignInMsg(done);
+      setWho(done.who);
+      // Everything read before signing in was read without it.
+      location.reload();
+    });
+  }, []);
+  const expired = auth !== null && who === null && signInExpired();
   return (
     <>
-      <button style={style} onClick={() => setOpen(true)} title="the tokens this browser sends holon-server, when it was started with them">
-        access{has.admin || has.secrets ? " ●" : ""}
+      <button
+        style={style}
+        onClick={() => setOpen(true)}
+        title={who ? `signed in as ${who}` : auth ? "sign in, or the tokens this browser sends holon-server" : "the tokens this browser sends holon-server, when it was started with them"}
+      >
+        {who ? `${who} ●` : auth ? (expired ? "sign in again" : "sign in") : `access${has.admin || has.secrets ? " ●" : ""}`}
       </button>
       {open &&
         createPortal(
@@ -50,6 +71,33 @@ export function AccessButton({ style }: { style: CSSProperties }) {
           >
             <div style={{ background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 6, padding: 16, display: "grid", gap: 10, color: "#9fb4d4", fontSize: 12, maxWidth: "calc(100vw - 32px)" }}>
               <div style={{ color: "#e6eefb", fontSize: 13 }}>server access</div>
+              {auth && (
+                <div style={{ display: "grid", gap: 6, paddingBottom: 10, borderBottom: "1px solid #1b2a45" }}>
+                  {who ? (
+                    <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      signed in as <span style={{ color: "#e6eefb" }}>{who}</span>
+                      <button
+                        style={style}
+                        onClick={() => {
+                          signOut();
+                          setWho(null);
+                          location.reload();
+                        }}
+                      >
+                        sign out
+                      </button>
+                    </span>
+                  ) : (
+                    <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <button style={{ ...style, color: "#0e1a2f", background: "#6fd3e0" }} onClick={() => startSignIn(auth)}>
+                        sign in
+                      </button>
+                      <span>through {new URL(auth.issuer).host}</span>
+                    </span>
+                  )}
+                  {signInMsg && <span style={{ color: "#e0916f" }}>{signInMsg}</span>}
+                </div>
+              )}
               <div style={{ maxWidth: 360, lineHeight: 1.45 }}>
                 Only needed when holon-server was started with HOLON_ADMIN_TOKEN (and HOLON_SECRETS_TOKEN). Kept in this browser,
                 sent with each request, never shown again.

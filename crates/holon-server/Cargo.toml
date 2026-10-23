@@ -15,6 +15,7 @@ holon-host = { path = "../holon-host" }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+jsonwebtoken = "9"
 rand = "0.10.2"
 # The control plane's HTTP. (The data plane, public-facing, is hyper on tokio instead:
 # src/dataplane.rs, docs/PLATFORM_LAYOUT.md §7b.)

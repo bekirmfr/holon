@@ -119,6 +119,14 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return Response::empty_204();
     }
 
+    // Where to sign in, when signing in is configured (oidc.rs): needed before signing in.
+    if method == "GET" && url == "/auth/config" {
+        return match state.access.oidc() {
+            Some(oidc) => Response::json(&oidc.public_config()),
+            None => err(404, "signing in isn't configured on this server"),
+        };
+    }
+
     if method == "GET" && url == "/health" {
         return Response::text("ok");
     }

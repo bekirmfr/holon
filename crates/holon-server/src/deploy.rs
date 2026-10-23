@@ -40,6 +40,7 @@ pub(crate) fn is_valid_slug(s: &str) -> bool {
 /// from structure alone). A unit deriving neither capability is refused — nothing would ever
 /// trigger it. A repeat slug is a redeploy, not an error (the L4's Fork 2): the unit, triggers
 /// and schedule are replaced, but the slug's **state is kept** (see the insert below).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_post_deploy(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,

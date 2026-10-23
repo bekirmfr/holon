@@ -331,9 +331,16 @@ only the editor.
     every save, deploy, run, pause, stop, grant and delete goes in the activity log
     (`<deployments>.activity.jsonl`, `GET /activity`, the deployed page's "activity"), which
     outlives what it names.
+  - **Signing in** ✅ (`--oidc-issuer`, `--oidc-client-id`; oidc.rs): with an OpenID Connect
+    provider, the editor signs in (authorization code flow with PKCE, a public client) and
+    sends the ID token as its bearer. The server checks it against the provider's published
+    keys (RS/ES only), its issuer, audience and expiry, then names who it is (email, when the
+    provider verified it, or subject) in the users file, which still decides the role; someone
+    the provider vouches for but the file doesn't name is refused. `GET /auth/config` says
+    where to sign in. The end-to-end tests sign in through a stand-in provider.
   - **Left for later:** wiping values from memory beyond the store's own copies; more managers
-    (AWS, GCP, Azure, 1Password) behind the same reference form; signing in through an
-    identity provider (OIDC) rather than tokens.
+    (AWS, GCP, Azure, 1Password) behind the same reference form; refresh tokens (a sign-in
+    lasts as long as the provider's ID token).
 
 ### 4.3 Durable runs: continuing a run later
 Rounds cover waiting inside one request: the caller is on the line, the wait is seconds. Many

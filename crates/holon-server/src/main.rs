@@ -141,6 +141,7 @@
 
 mod access;
 mod activity;
+mod oidc;
 mod collections;
 mod data;
 mod dataplane;
@@ -424,6 +425,8 @@ fn main() {
     let mut dotenv_arg: Option<String> = None;
     let mut admin_token_file: Option<String> = None;
     let mut users_file: Option<String> = None;
+    let mut oidc_issuer: Option<String> = std::env::var("HOLON_OIDC_ISSUER").ok().filter(|v| !v.trim().is_empty());
+    let mut oidc_client_id: Option<String> = std::env::var("HOLON_OIDC_CLIENT_ID").ok().filter(|v| !v.trim().is_empty());
     let mut secrets_token_file: Option<String> = None;
     let mut allow_hosts: Vec<String> = Vec::new();
     let mut allow_origins: Vec<String> = Vec::new();
@@ -464,13 +467,16 @@ fn main() {
             }
             println!("{}", access::hash_token(&token));
             return;
-        } else if a == "--admin-token-file" || a == "--secrets-token-file" || a == "--allow-host" || a == "--allow-origin" || a == "--users-file" {
+        } else if a == "--admin-token-file" || a == "--secrets-token-file" || a == "--allow-host" || a == "--allow-origin" || a == "--users-file" || a == "--oidc-issuer" || a == "--oidc-client-id" {
             // Who may use the control plane (access.rs). A token's file holds just the token.
             if let Some(v) = args.next() {
                 match a.as_str() {
                     "--admin-token-file" => admin_token_file = Some(v),
                     "--secrets-token-file" => secrets_token_file = Some(v),
                     "--users-file" => users_file = Some(v),
+                    // Signing in through an identity provider (oidc.rs).
+                    "--oidc-issuer" => oidc_issuer = Some(v),
+                    "--oidc-client-id" => oidc_client_id = Some(v),
                     "--allow-host" => allow_hosts.push(v),
                     _ => allow_origins.push(v),
                 }
@@ -678,7 +684,12 @@ fn main() {
         let admin = access::token_from("HOLON_ADMIN_TOKEN", admin_token_file.as_deref())?;
         let secrets = access::token_from("HOLON_SECRETS_TOKEN", secrets_token_file.as_deref())?;
         let users = access::users_from(users_file.as_deref())?;
-        access::Access::with_users(admin, secrets, users, allow_hosts, allow_origins)
+        let access = access::Access::with_users(admin, secrets, users, allow_hosts, allow_origins)?;
+        match (oidc_issuer, oidc_client_id) {
+            (None, None) => Ok(access),
+            (Some(issuer), Some(client_id)) => Ok(access.signing_in_with(oidc::Oidc::discover(&issuer, &client_id)?)),
+            _ => Err("signing in needs both --oidc-issuer and --oidc-client-id (HOLON_OIDC_ISSUER, HOLON_OIDC_CLIENT_ID)".to_string()),
+        }
     })()
     .unwrap_or_else(|e| {
         eprintln!("holon-server: {e}");
@@ -709,10 +720,11 @@ fn main() {
     };
     sync_listeners(&state);
 
-    let gate = match (state.access.is_gated(), state.access.user_count()) {
-        (false, _) => "localhost-only, no token".to_string(),
-        (true, 0) => "admin token required".to_string(),
-        (true, n) => format!("a token required: {n} named user(s)"),
+    let gate = match (state.access.is_gated(), state.access.user_count(), state.access.oidc()) {
+        (false, _, _) => "localhost-only, no token".to_string(),
+        (true, n, Some(oidc)) => format!("signing in through {}: {n} named user(s)", oidc.issuer),
+        (true, 0, None) => "admin token required".to_string(),
+        (true, n, None) => format!("a token required: {n} named user(s)"),
     };
     println!("holon-server: listening on http://{addr} ({gate}; see access.rs)");
     rouille::start_server(addr, move |request| with_cors(&state.access, request, route(&state, request)));

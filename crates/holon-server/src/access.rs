@@ -23,8 +23,14 @@
 //!   - `admin`: everything, writing secrets included, even with a secrets token set.
 //!
 //!   Users count as a gate like the admin token does: with either, every request needs one, and
-//!   the server may listen beyond loopback. Who did what is kept where it matters most: each
-//!   secrets audit entry names who asked (`by`).
+//!   the server may listen beyond loopback. Who did what is kept: the secrets audit, each saved
+//!   flow and deployment, and the activity log name who did it.
+//!
+//! - **Signing in** (oidc.rs): with an identity provider configured, a user may instead be named
+//!   by who they sign in as, `{"name": "ada", "role": "admin", "email": "ada@example.com"}` (or
+//!   `"subject"`, the provider's id for them); the ID token they sign in with is their bearer.
+//!   Someone the provider vouches for but the file doesn't name is refused: signing in says who
+//!   someone is, the file what they may do.
 //!
 //! Tokens are never logged or echoed; a refusal says which token is missing, not what it is.
 
@@ -43,12 +49,18 @@ pub(crate) enum Role {
     Admin,
 }
 
-/// A person with a token of their own: kept as the token's hash.
+/// A person, known by a token of their own (kept as its hash), by who they sign in as (their
+/// email, or the provider's subject), or both.
 #[derive(Deserialize)]
 pub(crate) struct User {
     pub(crate) name: String,
     pub(crate) role: Role,
-    token_blake3: String,
+    #[serde(default)]
+    token_blake3: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
 }
 
 /// Who a request comes from, once let through: a user's name, `admin` or `secrets` (a shared
@@ -64,6 +76,8 @@ pub(crate) struct Access {
     admin: Option<Zeroizing<String>>,
     secrets: Option<Zeroizing<String>>,
     users: Vec<User>,
+    /// The identity provider whose ID tokens it accepts, when one is configured (oidc.rs).
+    oidc: Option<crate::oidc::Oidc>,
     /// Host names it answers as besides loopback's (`api.example.com`, `api.example.com:7420`).
     pub(crate) hosts: Vec<String>,
     /// Editor origins it answers CORS for besides localhost's (`https://holon.example.com`).
@@ -89,8 +103,13 @@ impl Access {
             if users[..i].iter().any(|v| v.name == u.name) {
                 return Err(format!("the user {:?} is named twice", u.name));
             }
-            if u.token_blake3.len() != 64 || !u.token_blake3.bytes().all(|b| b.is_ascii_hexdigit()) {
+            if let Some(h) = &u.token_blake3
+                && (h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()))
+            {
                 return Err(format!("{:?}'s token_blake3 isn't a BLAKE3 hash (64 hex digits): see --hash-token", u.name));
+            }
+            if u.token_blake3.is_none() && u.email.is_none() && u.subject.is_none() {
+                return Err(format!("{:?} needs a token_blake3, or an email or subject to sign in as", u.name));
             }
         }
         let token = |t: Option<String>, what: &str| -> Result<Option<Zeroizing<String>>, String> {
@@ -100,13 +119,26 @@ impl Access {
                 Some(t) => Ok(Some(Zeroizing::new(t))),
             }
         };
-        let users = users.into_iter().map(|u| User { token_blake3: u.token_blake3.to_ascii_lowercase(), ..u }).collect();
-        Ok(Access { admin: token(admin, "admin")?, secrets: token(secrets, "secrets")?, users, hosts, origins })
+        let users = users
+            .into_iter()
+            .map(|u| User { token_blake3: u.token_blake3.map(|h| h.to_ascii_lowercase()), email: u.email.map(|e| e.trim().to_lowercase()), ..u })
+            .collect();
+        Ok(Access { admin: token(admin, "admin")?, secrets: token(secrets, "secrets")?, users, oidc: None, hosts, origins })
     }
 
-    /// Whether every request needs a token: an admin token or named users are set.
+    /// With ID tokens from `oidc` accepted (oidc.rs).
+    pub(crate) fn signing_in_with(self, oidc: crate::oidc::Oidc) -> Access {
+        Access { oidc: Some(oidc), ..self }
+    }
+
+    /// The identity provider, when signing in is configured.
+    pub(crate) fn oidc(&self) -> Option<&crate::oidc::Oidc> {
+        self.oidc.as_ref()
+    }
+
+    /// Whether every request needs a token: an admin token, named users or signing in are set.
     pub(crate) fn is_gated(&self) -> bool {
-        self.admin.is_some() || !self.users.is_empty()
+        self.admin.is_some() || !self.users.is_empty() || self.oidc.is_some()
     }
 
     /// How many named users there are.
@@ -117,7 +149,8 @@ impl Access {
     /// Who `request` comes from, or why it may not go on. `secret_write`: it sets, rolls back or
     /// removes a secret.
     pub(crate) fn check(&self, request: &Request, secret_write: bool) -> Result<Caller, Response> {
-        if request.method() == "OPTIONS" || (request.method() == "GET" && request.url() == "/health") {
+        // Open: a preflight, the health check, and where to sign in (needed before signing in).
+        if request.method() == "OPTIONS" || (request.method() == "GET" && (request.url() == "/health" || request.url() == "/auth/config")) {
             return Ok(Caller::default());
         }
         let presented = request
@@ -126,9 +159,26 @@ impl Access {
             .map(str::trim)
             .unwrap_or("");
         let matches = |t: &Option<Zeroizing<String>>| !presented.is_empty() && t.as_ref().is_some_and(|t| same(presented, t));
-        let user = (!presented.is_empty() && !self.users.is_empty())
-            .then(|| hash_token(presented))
-            .and_then(|hash| self.users.iter().find(|u| same(&hash, &u.token_blake3)));
+        // A signed-in bearer (an ID token) is checked against the provider, then named in the
+        // users file; any other bearer is a token.
+        let signed_in = match &self.oidc {
+            Some(oidc) if crate::oidc::looks_like_jwt(presented) => {
+                let who = oidc.verify(presented).map_err(|e| err(401, format!("sign-in not accepted: {e}")).with_additional_header("WWW-Authenticate", "Bearer"))?;
+                let named = self.users.iter().find(|u| {
+                    u.subject.as_deref() == Some(who.subject.as_str()) || (u.email.is_some() && u.email.as_deref() == who.email.as_deref())
+                });
+                match named {
+                    Some(u) => Some(u),
+                    None => return Err(err(403, format!("signed in as {}, who isn't a user of this server", who.email.as_deref().unwrap_or(&who.subject)))),
+                }
+            }
+            _ => None,
+        };
+        let user = signed_in.or_else(|| {
+            (!presented.is_empty() && !self.users.is_empty())
+                .then(|| hash_token(presented))
+                .and_then(|hash| self.users.iter().find(|u| u.token_blake3.as_deref().is_some_and(|h| same(&hash, h))))
+        });
         let caller = |name: &str| Ok(Caller { name: Some(name.to_string()) });
         let refuse = |which: &str| {
             let refusal = if presented.is_empty() { format!("this needs {which}: send Authorization: Bearer <token>") } else { format!("not {which}") };
@@ -152,7 +202,11 @@ impl Access {
             return if u.role == Role::Viewer && request.method() != "GET" { Err(err(403, format!("{} is a viewer: reads only", u.name))) } else { caller(&u.name) };
         }
         if self.is_gated() {
-            return refuse(if self.users.is_empty() { "the admin token" } else { "a user's own token (or the admin token)" });
+            return refuse(match (self.oidc.is_some(), self.users.is_empty()) {
+                (true, _) => "signing in (or a user's own token)",
+                (false, true) => "the admin token",
+                (false, false) => "a user's own token (or the admin token)",
+            });
         }
         Ok(Caller::default())
     }
@@ -192,7 +246,7 @@ pub(crate) fn users_from(path: Option<&str>) -> Result<Vec<User>, String> {
         return Ok(Vec::new());
     };
     let text = std::fs::read_to_string(&path).map_err(|e| format!("could not read the users file {path:?}: {e}"))?;
-    serde_json::from_str(&text).map_err(|e| format!("the users file {path:?}: {e} (expected a list of {{name, role: viewer|editor|admin, token_blake3}})"))
+    serde_json::from_str(&text).map_err(|e| format!("the users file {path:?}: {e} (expected a list of {{name, role: viewer|editor|admin, token_blake3 | email | subject}})"))
 }
 
 /// A token's hash as a users file keeps it.
@@ -257,7 +311,7 @@ mod tests {
     }
 
     fn user(name: &str, role: Role, token: &str) -> User {
-        User { name: name.into(), role, token_blake3: hash_token(token) }
+        User { name: name.into(), role, token_blake3: Some(hash_token(token)), email: None, subject: None }
     }
 
     const ADA: &str = "ada-own-token-0123456789abcdef";
@@ -288,10 +342,39 @@ mod tests {
     }
 
     #[test]
+    fn signed_in_users_are_named_by_the_users_file() {
+        use crate::oidc::tests::{provider, token};
+        let users: Vec<User> = serde_json::from_value(serde_json::json!([
+            { "name": "ada", "role": "admin", "email": "ada@example.com" },
+            { "name": "cy", "role": "viewer", "subject": "user-cy" },
+        ]))
+        .unwrap();
+        let access = Access::with_users(None, None, users, vec![], vec![]).unwrap().signing_in_with(provider());
+        assert!(access.is_gated());
+        let as_who = |method: &str, url: &str, bearer: &str| {
+            let request = Request::fake_http(method, url, vec![("Authorization".into(), format!("Bearer {bearer}"))], vec![]);
+            access.check(&request, is_secret_write(&request))
+        };
+        let ada = token(serde_json::json!({ "email": "ada@example.com", "email_verified": true }));
+        assert_eq!(as_who("POST", "/deployments/a/secrets/k", &ada).unwrap().name.as_deref(), Some("ada"));
+        let cy = token(serde_json::json!({ "sub": "user-cy" }));
+        assert_eq!(as_who("GET", "/flows", &cy).unwrap().name.as_deref(), Some("cy"));
+        assert_eq!(as_who("POST", "/flows", &cy).unwrap_err().status_code, 403, "a viewer, signed in or not");
+        // Vouched for by the provider, but not a user here; and a token that doesn't check.
+        let stranger = token(serde_json::json!({ "sub": "user-9", "email": "eve@example.com" }));
+        assert_eq!(as_who("GET", "/flows", &stranger).unwrap_err().status_code, 403);
+        let expired = token(serde_json::json!({ "email": "ada@example.com", "exp": crate::deploy::epoch_now() - 3600 }));
+        assert_eq!(as_who("GET", "/flows", &expired).unwrap_err().status_code, 401);
+        // Where to sign in is open; nothing else is.
+        assert!(access.check(&Request::fake_http("GET", "/auth/config", vec![], vec![]), false).is_ok());
+        assert_eq!(access.check(&Request::fake_http("GET", "/flows", vec![], vec![]), false).unwrap_err().status_code, 401);
+    }
+
+    #[test]
     fn a_users_file_needs_distinct_names_and_real_hashes() {
         assert!(Access::with_users(None, None, vec![user("ada", Role::Admin, ADA), user("ada", Role::Viewer, BOB)], vec![], vec![]).is_err());
         assert!(Access::with_users(None, None, vec![user("admin", Role::Admin, ADA)], vec![], vec![]).is_err());
-        let bad = User { name: "ada".into(), role: Role::Admin, token_blake3: "not-a-hash".into() };
+        let bad = User { name: "ada".into(), role: Role::Admin, token_blake3: Some("not-a-hash".into()), email: None, subject: None };
         assert!(Access::with_users(None, None, vec![bad], vec![], vec![]).is_err());
         let parsed: Vec<User> = serde_json::from_str(&format!(r#"[{{"name": "ada", "role": "editor", "token_blake3": "{}"}}]"#, hash_token(ADA))).unwrap();
         assert_eq!(parsed[0].role, Role::Editor);

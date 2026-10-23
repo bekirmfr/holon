@@ -9,6 +9,7 @@
 // unless it was started with tokens (crates/holon-server/src/access.rs): then every request
 // carries one, from what this browser was given under "access" (`api` below).
 
+import { signedIn, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
 import type { WValue } from "./holon";
 import type { EndpointDraft } from "./endpoint";
@@ -46,9 +47,10 @@ export function tokenFor(url: string, method: string, tokens: AccessTokens): str
   return (secretWrite && tokens.secrets) || tokens.admin;
 }
 
-/** `fetch` against the server, carrying its token when one is set. */
+/** `fetch` against the server, carrying its token when one is set: the ID token of whoever is
+ *  signed in (signin.ts), else the tokens given under "access". */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = tokenFor(url, (init.method ?? "GET").toUpperCase(), getAccessTokens());
+  const token = signedIn()?.idToken ?? tokenFor(url, (init.method ?? "GET").toUpperCase(), getAccessTokens());
   if (!token) return fetch(url, init);
   return fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } });
 }
@@ -209,6 +211,12 @@ export type SecretHistory = {
   /** `by`: who did it (a named user, or `admin` / `secrets` for the shared tokens), when known. */
   events: { at: number; name: string; action: string; version?: number; source?: string; detail?: string; by?: string }[];
 };
+
+/** `GET /auth/config`: where to sign in, when the server has an identity provider; else null. */
+export async function getAuthConfig(): Promise<AuthConfig | null> {
+  const res = await fetch(`${BASE}/auth/config`).catch(() => null);
+  return res && res.ok ? ((await res.json()) as AuthConfig) : null;
+}
 
 /** One thing done on the server: a save, deploy, run, pause, stop, grant or delete, and by whom. */
 export type ActivityEntry = { at: number; action: string; target: string; by?: string };
