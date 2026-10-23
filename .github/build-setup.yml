@@ -11,7 +11,7 @@
     node-version: 22
     cache: npm
     cache-dependency-path: editor/package-lock.json
+# (A step here keeps only name, uses, with, run and shell: cd, not working-directory.)
 - name: Build the editor
   shell: bash
-  working-directory: editor
-  run: npm ci && npm run build
+  run: cd editor && npm ci && npm run build

@@ -139,7 +139,7 @@ jobs:
           "cache-dependency-path": "editor/package-lock.json"
           "node-version": 22
       - name: "Build the editor"
-        run: "npm ci && npm run build"
+        run: "cd editor && npm ci && npm run build"
         shell: "bash"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
