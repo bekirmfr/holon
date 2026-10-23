@@ -251,7 +251,7 @@ impl Log {
             self.entries.pop_front();
         }
         if let Err(e) = self.keep() {
-            eprintln!("holon-server: could not keep the flow log in {:?}: {e}", self.file);
+            eprintln!("holon: could not keep the flow log in {:?}: {e}", self.file);
         }
     }
 

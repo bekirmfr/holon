@@ -322,9 +322,10 @@ test("a flow as text: exported as .holon, checked by the command line, imported 
   expect(text).toContain(`flow ${name}`);
   expect(text).toMatch(/node uppercase = uppercase/);
 
-  // Checked on the command line, with no browser.
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  const checked = execFileSync(npm, ["run", "-s", "holon", "--", "check", file], { encoding: "utf8", shell: process.platform === "win32" });
+  // Checked on the command line, with no browser: the `holon` the e2e server was built as.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const checked = execFileSync(holon, ["check", file], { encoding: "utf8" });
   expect(checked).toContain(`${name}: 1 nodes, 0 wires`);
   expect(checked).toContain("it only computes");
 

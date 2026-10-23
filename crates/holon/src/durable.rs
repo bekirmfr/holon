@@ -525,7 +525,7 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<S
     }
     for (slug, run_id, name) in due {
         if let Err(e) = resume_parked(store, deployments, deployments_path, &slug, &run_id, &name, expired_event()) {
-            eprintln!("holon-server: expiring {name:?} of run {run_id} in {slug:?}: {e}");
+            eprintln!("holon: expiring {name:?} of run {run_id} in {slug:?}: {e}");
         }
     }
 }

@@ -111,7 +111,7 @@ pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<
                 accepted = socket.accept() => match accepted {
                     Ok((stream, _)) => stream,
                     Err(e) => {
-                        eprintln!("holon-server: {:?} could not accept a connection: {e}", listener.slug);
+                        eprintln!("holon: {:?} could not accept a connection: {e}", listener.slug);
                         continue;
                     }
                 },
@@ -133,7 +133,7 @@ pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<
             });
         }
     });
-    println!("holon-server: {slug:?} answering on http://{}:{port}", state.data_limits.host);
+    println!("holon: {slug:?} answering on http://{}:{port}", state.data_limits.host);
     Ok(stop)
 }
 

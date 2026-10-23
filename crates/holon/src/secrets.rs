@@ -165,7 +165,7 @@ impl Audit {
             file.write_all(line.as_bytes())
         })();
         if let Err(e) = appended {
-            eprintln!("holon-server: could not append to the secrets audit log {path:?}: {e}");
+            eprintln!("holon: could not append to the secrets audit log {path:?}: {e}");
         }
     }
 
@@ -267,7 +267,7 @@ impl SecretStore {
                 store.resolve(slug, entry);
             }
             store.persist()?;
-            eprintln!("holon-server: sealed {count} secret(s) in {path:?} under {key}");
+            eprintln!("holon: sealed {count} secret(s) in {path:?} under {key}");
             return Ok(store);
         }
         let file: SecretsFile = serde_json::from_value(parsed).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
@@ -409,7 +409,7 @@ impl SecretStore {
     /// kept reaches the runs within a refresh.
     pub(crate) fn refresh(&self) {
         if let Err(e) = self.sources.reload() {
-            eprintln!("holon-server: {e}");
+            eprintln!("holon: {e}");
         }
         let slugs = self.slugs.lock().unwrap();
         for (slug, entry) in slugs.iter() {

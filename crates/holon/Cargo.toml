@@ -1,5 +1,5 @@
 [package]
-name = "holon-server"
+name = "holon"
 version = "0.1.0-rc.3"
 edition = "2024"
 # Proprietary: all rights reserved (the repository's LICENSE, which releases carry: see
@@ -12,7 +12,7 @@ homepage = "https://github.com/bekirmfr/holon"
 [dependencies]
 aes-gcm = "0.10"
 argon2 = "0.5"
-# `holon-server update` (selfmanage.rs): the newest release, and the installer that fetches it.
+# `holon update` (selfmanage.rs): the newest release, and the installer that fetches it.
 axoupdater = { version = "0.10", default-features = false, features = ["blocking", "github_releases"] }
 blake3 = "1"
 getrandom = "0.3"
@@ -20,6 +20,8 @@ getrandom = "0.3"
 # no logic lives here that isn't already in holon-core/holon-host. See
 # docs/L4s/P4.5-P4.6-transport-scoping-L4.md.
 holon-core = { path = "../holon-core" }
+# The flow commands (`holon new`, `check`, `show`, `fmt`), through the same code as the editor.
+holon-author = { path = "../holon-author" }
 holon-host = { path = "../holon-host" }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
@@ -34,7 +36,7 @@ rand = "0.10.2"
 # endpoints a person triggers by clicking a button in the editor, never a stream or a load
 # nothing here needs an async runtime to serve. See the L4's framework-choice note.
 rouille = "3.6"
-# `holon-server uninstall` removes its own executable, which Windows won't do directly.
+# `holon uninstall` removes its own executable, which Windows won't do directly.
 self-replace = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

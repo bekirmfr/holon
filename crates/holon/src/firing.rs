@@ -181,9 +181,9 @@ fn commit(live: &mut State, store: &SharedStore, performed: &[(Capability, Value
     for (cap, payload) in performed {
         if let Capability::StateWrite(key) = cap {
             if !is_storable(payload) {
-                eprintln!("holon-server: refused to store an effect request in state key {key:?}");
+                eprintln!("holon: refused to store an effect request in state key {key:?}");
             } else if let Err(e) = live.insert(key.clone(), payload.clone()) {
-                eprintln!("holon-server: state key {key:?} not written (too large to encode): {e:?}");
+                eprintln!("holon: state key {key:?} not written (too large to encode): {e:?}");
             }
         }
     }
@@ -192,7 +192,7 @@ fn commit(live: &mut State, store: &SharedStore, performed: &[(Capability, Value
         if let Capability::CollectionWrite(name) = cap
             && let Err(e) = collections::apply(live, &mut store, name, payload)
         {
-            eprintln!("holon-server: collection {name:?} not written: {e}");
+            eprintln!("holon: collection {name:?} not written: {e}");
         }
     }
 }
@@ -254,13 +254,13 @@ fn run_attempt(
     // carrying a secret's value, which would put it on disk and in every later snapshot.
     host.performed.retain(|(cap, payload)| {
         if !permit.allows(cap) {
-            eprintln!("holon-server: refused {cap:?}: not granted to this deployment");
+            eprintln!("holon: refused {cap:?}: not granted to this deployment");
             return false;
         }
         if let Capability::StateWrite(key) | Capability::CollectionWrite(key) = cap
             && let Some(name) = secrets::secret_in(payload, secrets)
         {
-            eprintln!("holon-server: refused to store secret {name:?} in {key:?}");
+            eprintln!("holon: refused to store secret {name:?} in {key:?}");
             return false;
         }
         true

@@ -29,7 +29,7 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
         (Some(why), Status::Running) => {
             let _ = dep.life.pause();
             dep.grant.paused = true;
-            eprintln!("holon-server: paused: {why}");
+            eprintln!("holon: paused: {why}");
         }
         (None, Status::Paused) if dep.grant.paused => {
             let _ = dep.life.run(RunFrom::Latest, now);
@@ -87,7 +87,7 @@ pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request)
         match dep.grant.change(&manifest, &policy, &change, now) {
             Ok(grant) => {
                 for c in grant.changes.iter().skip(dep.grant.changes.len()) {
-                    eprintln!("holon-server: grant of {slug:?}: {}", c.change);
+                    eprintln!("holon: grant of {slug:?}: {}", c.change);
                 }
                 dep.grant = grant;
             }
@@ -136,7 +136,7 @@ pub(crate) fn handle_post_permissions_reload(state: &AppState) -> Response {
             })
             .collect()
     };
-    eprintln!("holon-server: policy reloaded from {:?}", state.policy_path);
+    eprintln!("holon: policy reloaded from {:?}", state.policy_path);
     persist_deployments(&state.deployments_path, &state.deployments, &state.store);
     sync_listeners(state);
     let mut reply = permissions_view(&policy);

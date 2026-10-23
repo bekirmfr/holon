@@ -56,7 +56,7 @@ impl Activity {
             std::fs::OpenOptions::new().append(true).create(true).open(path)?.write_all(line.as_bytes())
         })();
         if let Err(e) = appended {
-            eprintln!("holon-server: could not append to the activity log {path:?}: {e}");
+            eprintln!("holon: could not append to the activity log {path:?}: {e}");
         }
     }
 

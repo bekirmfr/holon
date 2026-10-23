@@ -76,7 +76,7 @@ export const TOPICS: Topic[] = [
     title: "Flows as text",
     paragraphs: [
       "Any flow can be written as a .holon file: one statement a line (node greet = concat, hi.out -> greet.a), holons as blocks. It's the same flow: drawn or written, it compiles to the same unit. Export one from the flows page (.holon) or import one (import .holon); edit it in any editor and keep it in git.",
-      "On any machine, a screen or not: holon new, holon check (its routes, what it may do, or each mistake by line), holon show (an outline) and holon fmt (the canonical form). To install the holon command, from editor/: npm run build:cli, then npm install -g . (then: holon check my-flow.holon, anywhere).",
+      "On any machine, a screen or not: holon new, holon check (its routes, what it may do, or each mistake by line), holon show (an outline) and holon fmt (the canonical form). The holon command is the one the installer puts on your PATH, the same one that runs the server (holon serve): holon check my-flow.holon, anywhere.",
     ],
   },
   {

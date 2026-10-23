@@ -1,4 +1,9 @@
-//! holon-server — the browser↔host transport (P4.5.1 / P4.6.1's blocker), local-first.
+//! `holon`: one command for Holon. `holon serve` runs the server (the browser↔host transport,
+//! local-first; below), `new`/`check`/`show`/`fmt` handle flow files (flowcmd.rs), and `version`,
+//! `update` and `uninstall` look after the installation (selfmanage.rs). `holon-server`, the name
+//! releases before 0.1.0-rc.4 installed, is an alias kept for scripts (src/bin/holon-server.rs).
+//!
+//! The server: the browser↔host transport (P4.5.1 / P4.6.1's blocker), local-first.
 //!
 //! Grounded and scoped in `docs/L4s/P4.5-P4.6-transport-scoping-L4.md`. The load-bearing
 //! finding from that note, worth repeating here since it's *why* this file is this thin: a
@@ -153,6 +158,7 @@ mod durable;
 mod firing;
 mod fixtures;
 mod grants;
+mod flowcmd;
 mod flows;
 mod http;
 mod lifecycle;
@@ -396,11 +402,43 @@ struct Deployment {
     versions: Vec<wire::KeptDocument>,
 }
 
+const USAGE: &str = "usage: holon <command>
+
+  serve [options]                    run the server, and the editor at its address
+  new <file> [--sample <name>]       write a starter flow (or a sample: holon new --help)
+  check <file>                       compile a flow: its routes, what it may do, or each mistake
+  show <file>                        an outline: routes, nodes and what feeds them
+  fmt <file>                         rewrite a flow in the canonical form
+  version                            this build's version
+  update [--check] [--to VERSION]    install the newest release (or see if there is one)
+  uninstall [--purge] [--yes]        remove holon (and with --purge, its data and key)";
+
 fn main() {
-    // `version`, `update`, `uninstall`: about this installation, not the server (selfmanage.rs).
-    if let Some(code) = selfmanage::dispatch(&std::env::args().skip(1).collect::<Vec<_>>()) {
-        std::process::exit(code);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let rest = args.get(1..).unwrap_or_default().to_vec();
+    match args.first().map(String::as_str) {
+        Some("serve") => serve(rest),
+        Some(cmd @ ("new" | "check" | "show" | "fmt")) => std::process::exit(flowcmd::run(cmd, &rest)),
+        // `version`, `update`, `uninstall`: about this installation, not the server.
+        _ => match selfmanage::dispatch(&args) {
+            Some(code) => std::process::exit(code),
+            None => {
+                let asked = matches!(args.first().map(String::as_str), None | Some("help" | "--help" | "-h"));
+                if asked {
+                    println!("{USAGE}");
+                    std::process::exit(0);
+                }
+                eprintln!("holon: no command {:?}
+
+{USAGE}", args[0]);
+                std::process::exit(2);
+            }
+        },
     }
+}
+
+/// `holon serve`: the server, with `args` its options.
+fn serve(args: Vec<String>) {
     let addr = std::env::var("HOLON_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:7420".to_string());
 
     // `--store <dir>` for an on-disk FileStore; `--store :memory:` for an in-process MemStore
@@ -430,7 +468,7 @@ fn main() {
     // via `/unit`, then `POST /fire?root=<its hash>` with a real message input to see
     // `RecordingHost` actually record something, unlike the pure `--emit-test-unit` leaf, which
     // triggers nothing.
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     let mut store_arg = ".holon-store".to_string();
     let mut deployments_arg = ".holon-deployments.json".to_string();
     let mut flows_arg = ".holon-flows.json".to_string();
@@ -646,7 +684,7 @@ fn main() {
     // With a data folder, whatever wasn't named on its own goes inside it.
     if let Some(dir) = &data_dir {
         if let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!("holon-server: the data folder {dir:?}: {e}");
+            eprintln!("holon: the data folder {dir:?}: {e}");
             std::process::exit(1);
         }
         let inside = |arg: &mut String, default: &str, name: &str| {
@@ -663,12 +701,12 @@ fn main() {
         inside(&mut host_key_arg, ".holon-host-key", "host.key");
     }
     let backend: DynStore = if store_arg == ":memory:" {
-        println!("holon-server: in-memory store (nothing persists past this run)");
+        println!("holon: in-memory store (nothing persists past this run)");
         Box::new(MemStore::new())
     } else {
         let store = FileStore::new(&store_arg)
             .unwrap_or_else(|e| panic!("could not open store at {store_arg:?}: {e}"));
-        println!("holon-server: file store at {store_arg:?}");
+        println!("holon: file store at {store_arg:?}");
         Box::new(store)
     };
 
@@ -676,8 +714,8 @@ fn main() {
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let refuse_to_start = |e: String| -> ! {
-        eprintln!("holon-server: {e}");
-        eprintln!("holon-server: refusing to start rather than overwrite it — fix the file or move it aside");
+        eprintln!("holon: {e}");
+        eprintln!("holon: refusing to start rather than overwrite it — fix the file or move it aside");
         std::process::exit(1);
     };
     let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
@@ -711,7 +749,7 @@ fn main() {
     // it prints here.
     let accounts = Arc::new(accounts::Accounts::open(&accounts_arg).unwrap_or_else(|e| refuse_to_start(e)));
     if let Some(code) = accounts.setup_code() {
-        println!("holon-server: no accounts yet. Open the editor and set up the first admin with this code: {code}");
+        println!("holon: no accounts yet. Open the editor and set up the first admin with this code: {code}");
     }
     let access = access::Access::new(Arc::clone(&accounts), allow_hosts, allow_origins);
     let activity = activity::Activity::beside(&deployments_arg);
@@ -740,8 +778,8 @@ fn main() {
         n => format!("{n} account(s); signing in required"),
     };
     if let Some(source) = &state.editor {
-        println!("holon-server: the editor ({}) at http://{addr}/", source.describe());
+        println!("holon: the editor ({}) at http://{addr}/", source.describe());
     }
-    println!("holon-server: listening on http://{addr} ({gate}; see access.rs)");
+    println!("holon: listening on http://{addr} ({gate}; see access.rs)");
     rouille::start_server(addr, move |request| with_cors(&state.access, request, route(&state, request)));
 }

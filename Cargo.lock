@@ -896,6 +896,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "holon"
+version = "0.1.0-rc.3"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "axoupdater",
+ "blake3",
+ "getrandom 0.3.4",
+ "holon-author",
+ "holon-core",
+ "holon-host",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "include_dir",
+ "jsonwebtoken",
+ "keyring",
+ "rand 0.10.2",
+ "rouille",
+ "self-replace",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "ureq",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
 name = "holon-author"
 version = "0.1.0"
 dependencies = [
@@ -920,35 +950,6 @@ name = "holon-host"
 version = "0.1.0"
 dependencies = [
  "holon-core",
-]
-
-[[package]]
-name = "holon-server"
-version = "0.1.0-rc.3"
-dependencies = [
- "aes-gcm",
- "argon2",
- "axoupdater",
- "blake3",
- "getrandom 0.3.4",
- "holon-core",
- "holon-host",
- "http-body-util",
- "hyper",
- "hyper-util",
- "include_dir",
- "jsonwebtoken",
- "keyring",
- "rand 0.10.2",
- "rouille",
- "self-replace",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "ureq",
- "windows-sys 0.61.2",
- "zeroize",
 ]
 
 [[package]]

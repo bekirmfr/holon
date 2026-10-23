@@ -68,13 +68,13 @@ impl Readable {
         let Value::Record(r) = request else { return None };
         let name = text(r, "collection")?;
         if !self.granted.contains(name) {
-            eprintln!("holon-server: refused to read collection {name:?}: not granted to this deployment");
+            eprintln!("holon: refused to read collection {name:?}: not granted to this deployment");
             return None;
         }
         if let Some(key) = text(r, "get") {
             let root = self.roots.get(name)?;
             return collection::get(&self.store, root, key).unwrap_or_else(|e| {
-                eprintln!("holon-server: collection {name:?} can't be read: {e:?}");
+                eprintln!("holon: collection {name:?} can't be read: {e:?}");
                 None
             });
         }
@@ -87,7 +87,7 @@ impl Readable {
         match collection::list(&self.store, root, text(list, "prefix").unwrap_or(""), text(list, "after"), limit) {
             Ok(items) => Some(Value::Record(items.into_iter().collect())),
             Err(e) => {
-                eprintln!("holon-server: collection {name:?} can't be listed: {e:?}");
+                eprintln!("holon: collection {name:?} can't be listed: {e:?}");
                 None
             }
         }

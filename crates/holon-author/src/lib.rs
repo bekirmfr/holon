@@ -17,10 +17,14 @@
 //! - [`builder`]: a flow document built node by node, as the samples and the text format do.
 //! - [`text`]: the `.holon` text format: parsed, compiled, printed.
 //! - [`samples`]: the sample flows, one per capability, built with the builder.
+//! - [`describe`]: what a manifest item lets a flow do, in words.
+//! - [`commands`]: `holon new`, `check`, `show` and `fmt`, text in and text out.
 
 pub mod builder;
 pub mod canvas;
+pub mod commands;
 pub mod composites;
+pub mod describe;
 pub mod flow;
 pub mod group;
 pub mod routes;

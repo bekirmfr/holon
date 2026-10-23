@@ -4,8 +4,7 @@
 // the host's controls over it) are DeploymentCard's own section, shown only there.
 
 import { useEffect, useState } from "react";
-import { describeItem } from "./diagnostics";
-import { permissionKind } from "./holon";
+import { describeItem, permissionKind } from "./holon";
 
 /** What a manifest view shows: its items, which it can run without and what starts it, and on a
  *  deployment the ones not granted. */

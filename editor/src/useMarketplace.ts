@@ -3,11 +3,10 @@
 // and the publish key the first time); and placing a listing, after saying what it may do.
 
 import { useCallback, useEffect, useState } from "react";
-import { describeItem } from "./diagnostics";
 import { catalogOf, listListings, listingOf, marketplaceUrl, placeListing, publishKeyFor, publishListing, setPublishKey, yankListing, type Listing } from "./marketplace";
 import { getFlow } from "./server";
 import { signedIn } from "./signin";
-import type { Evaluator } from "./holon";
+import { describeItem, type Evaluator } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 
 type Dialogs = { confirm: (message: string, action?: string) => Promise<boolean>; prompt: (message: string, initial?: string) => Promise<string | null> };

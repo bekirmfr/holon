@@ -14,6 +14,8 @@ jobs:
       - run: cargo test --workspace
       # Lints as errors: the workspace is clean, and stays so.
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The `holon` command, as installed: it writes a sample as text and checks it on its own.
+      - run: cargo run -q -p holon -- new "$RUNNER_TEMP/slugs.holon" --sample slugs && cargo run -q -p holon -- check "$RUNNER_TEMP/slugs.holon"
 
   # 2. The pure core + bridge must COMPILE to wasm32 (catches a dependency that isn't
   #    wasm-compatible — the most common first surprise).
@@ -62,15 +64,12 @@ jobs:
         working-directory: editor
       - run: npx vitest run
         working-directory: editor
-      # The `holon` command line, built as installed: it checks a flow on its own.
-      - run: npm run build:cli && node dist-cli/holon.mjs new "$RUNNER_TEMP/slugs.holon" --sample slugs && node dist-cli/holon.mjs check "$RUNNER_TEMP/slugs.holon"
-        working-directory: editor
-      # The editor, built and compiled into holon-server, as releases are: one binary serves it.
+      # The editor, built and compiled into holon, as releases are: one binary serves it.
       - run: npm run build
         working-directory: editor
-      - run: cargo test -p holon-server --features embed-editor editor
+      - run: cargo test -p holon --features embed-editor editor
 
-  # 5. End to end: the editor in a real browser against a real holon-server, both started by
+  # 5. End to end: the editor in a real browser against a real `holon serve`, both started by
   #    Playwright (editor/playwright.config.ts) with throwaway state. Every sample opens and
   #    deploys through the consent screen; requests replay exactly in view mode.
   e2e:

@@ -12,6 +12,7 @@
 import init, {
   Evaluator,
   build_preimage,
+  describe_item,
   manifest_items,
   manifest_trigger,
   permission_kind,
@@ -241,6 +242,13 @@ export function compatible(src: WType, dst: WType): boolean {
 // ── The manifest and permission rules, from core (holon-core's manifest.rs): the same ones
 // holon-server grants and enforces by, never a TypeScript copy. Call after ensureReady. A
 // unit's capabilities by consent name come from `Evaluator.capability_names(hash)`.
+
+/** A manifest item (a capability's consent name, `HttpRequest("a.com")`, or a requirement,
+ *  `Limit(max_requests=80)`) as a person reads it on the consent screen; one it doesn't know is
+ *  shown as it is. Core's words (holon-author's describe.rs), as `holon check` prints them. */
+export function describeItem(item: string): string {
+  return describe_item(item);
+}
 
 /** A manifest's items: the capabilities (consent names), then what the deploy settings ask
  *  beyond the host's defaults, sorted as the server sorts them. */

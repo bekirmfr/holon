@@ -187,7 +187,7 @@ impl Accounts {
         if let Some(settings) = accounts.oidc_settings() {
             match crate::oidc::Oidc::discover(&settings.issuer, &settings.client_id) {
                 Ok(oidc) => *accounts.oidc.write().unwrap() = Some(oidc),
-                Err(e) => eprintln!("holon-server: signing in through {} is off until it can be read: {e}", settings.issuer),
+                Err(e) => eprintln!("holon: signing in through {} is off until it can be read: {e}", settings.issuer),
             }
         }
         Ok(accounts)

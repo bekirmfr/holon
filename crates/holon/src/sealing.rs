@@ -141,7 +141,7 @@ impl KeySource {
             KeySource::Os { account } => os_store::write(account, &hex)?,
             KeySource::Env(var) => {
                 return Err(format!(
-                    "{var} isn't set: set it to a key (holon-server --new-secrets-key prints one) and keep it safe; without it the secrets can't be read"
+                    "{var} isn't set: set it to a key (holon serve --new-secrets-key prints one) and keep it safe; without it the secrets can't be read"
                 ));
             }
             KeySource::File(path) => {

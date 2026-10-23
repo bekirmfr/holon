@@ -4,18 +4,13 @@
   "license": "UNLICENSED",
   "version": "0.1.0",
   "type": "module",
-  "bin": {
-    "holon": "dist-cli/holon.mjs"
-  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test",
-    "holon": "vite-node cli/holon.ts --",
-    "build:cli": "node scripts/build-cli.mjs"
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@xyflow/react": "^12.3.5",

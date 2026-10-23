@@ -1,4 +1,4 @@
-// An isolated holon-server for the end-to-end tests: its store, deployments, flows, secrets and
+// An isolated Holon server (`holon serve`) for the end-to-end tests: its store, deployments, flows, secrets and
 // keys in a fresh temporary folder, its control plane on 127.0.0.1:7520, so it never touches a
 // developer's own server or state, and everything it wrote goes when it stops. Built first and
 // run as its own binary (not through `cargo run`), so stopping it stops the server itself.
@@ -18,7 +18,7 @@ const fresh = process.argv.includes("--fresh");
 const port = fresh ? 7521 : 7520;
 export const SETUP_CODE = "E2E0-SETUP";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-execFileSync("cargo", ["build", "-p", "holon-server"], { cwd: root, stdio: "inherit" });
+execFileSync("cargo", ["build", "-p", "holon"], { cwd: root, stdio: "inherit" });
 
 // A run stopped abruptly (as a test runner stops its servers on Windows) can't clean up after
 // itself: the next one does. One run at a time (workers: 1), so any left is stale.
@@ -28,10 +28,11 @@ for (const old of readdirSync(tmpdir()).filter((d) => d.startsWith(`holon-e2e-${
 const dir = mkdtempSync(join(tmpdir(), `holon-e2e-${port}-`));
 // CARGO_TARGET_DIR, when set, is where cargo put it (e.g. to build beside a dev server holding
 // target/debug's binary open).
-const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon-server.exe" : "holon-server");
+const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
 const server = spawn(
   binary,
   [
+    "serve",
     "--store", join(dir, "store"),
     "--deployments", join(dir, "deployments.json"),
     "--flows", join(dir, "flows.json"),

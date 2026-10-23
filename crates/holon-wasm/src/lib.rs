@@ -932,6 +932,13 @@ impl Evaluator {
     }
 }
 
+/// What a manifest item (a capability's consent name, or a requirement) lets a flow do, in words
+/// (holon-author's describe.rs).
+#[wasm_bindgen]
+pub fn describe_item(item: &str) -> String {
+    holon_author::describe::describe_item(item)
+}
+
 /// `.holon` text as a flow document: `{name, doc, names}` (each top-level node's name in the
 /// text, by id). Throws the first line it can't read or build (`line N: …`).
 #[wasm_bindgen]

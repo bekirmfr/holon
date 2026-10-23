@@ -153,7 +153,7 @@ pub(crate) fn load_deployments(
         };
         let mut attention = grant.attention(&grant.manifest_of(caps.iter()), policy);
         if let Some(why) = &attention {
-            eprintln!("holon-server: deployment {slug:?} is paused: {why}");
+            eprintln!("holon: deployment {slug:?} is paused: {why}");
         }
         let permit = Arc::new(Permit::new(unit_hash, &grant, policy));
 

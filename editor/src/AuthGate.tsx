@@ -153,7 +153,7 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
       return (
         <Screen
           title="set up"
-          lead="This server has no accounts yet. Create its admin: the setup code was printed where the server started (holon-server: …set up the first admin with this code)."
+          lead="This server has no accounts yet. Create its admin: the setup code was printed where the server started (holon: …set up the first admin with this code)."
           error={error}
           onSubmit={() =>
             attempt(async () => {

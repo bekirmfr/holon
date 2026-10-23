@@ -149,7 +149,7 @@ fn serve_flow(
     if let Some((run_id, name, event, _)) = resume
         && let Err(e) = durable::resume_parked(store, deployments, deployments_path, slug, &run_id, &name, event)
     {
-        eprintln!("holon-server: resuming run {run_id} in {slug:?}: {e}");
+        eprintln!("holon: resuming run {run_id} in {slug:?}: {e}");
     }
     answer
 }
@@ -188,7 +188,7 @@ pub(crate) fn sync_listeners(state: &AppState) {
             }
             Err(e) => {
                 let why = format!("could not listen on port {port}: {e}");
-                eprintln!("holon-server: {slug:?} {why}");
+                eprintln!("holon: {slug:?} {why}");
                 failed.insert(slug, why);
             }
         }

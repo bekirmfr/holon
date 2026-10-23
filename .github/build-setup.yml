@@ -1,5 +1,5 @@
 # Steps cargo-dist runs before each release build (dist-workspace.toml's github-build-setup):
-# the editor, built so holon-server can build it in (its embed-editor feature, editor.rs).
+# the editor, built so holon can build it in (its embed-editor feature, editor.rs).
 # wasm-pack at a pinned version, its own release build for this runner's OS and CPU (an action's
 # download was an old version on Windows and an x86 one on the arm64 Linux runner; building it
 # with cargo took over half an hour on the Intel macOS runner).

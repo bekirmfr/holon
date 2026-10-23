@@ -1,7 +1,7 @@
 [workspace]
 members = ["cargo:."]
 
-# Releases (cargo-dist, `dist`): pushing a version tag (v0.1.0) builds holon-server for each
+# Releases (cargo-dist, `dist`): pushing a version tag (v0.1.0) builds holon for each
 # platform, with the editor built in, and publishes a GitHub Release with the archives, their
 # checksums and the install scripts. `dist plan` shows what a release would hold; `dist build`
 # builds it here. The workflow, .github/workflows/release.yml, is generated: change this file,
@@ -16,7 +16,7 @@ installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax). Linux arm64 builds on
 # GitHub's arm runners (free for public repositories).
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-# Where the install scripts put holon-server: a folder of its own, on the PATH.
+# Where the install scripts put holon (and its holon-server alias): a folder of its own, on the PATH.
 install-path = "~/.holon/bin"
 # Where to host releases
 hosting = "github"
@@ -30,3 +30,10 @@ github-build-setup = "../build-setup.yml"
 # Build provenance (GitHub artifact attestations): anyone can check a download came from this
 # repository's release workflow: `gh attestation verify <file> --repo bekirmfr/holon`.
 github-attestations = true
+# Releases up to 0.1.0-rc.3 installed `holon-server`, which updates itself by running the newest
+# release's `holon-server-installer`: every release carries holon's installers under that name
+# too (.github/workflows/legacy-installers.yml), pre-releases included.
+publish-jobs = ["./legacy-installers"]
+publish-prereleases = true
+# It uploads to the release, which needs write access to the repository's contents.
+github-custom-job-permissions = { "legacy-installers" = { contents = "write" } }

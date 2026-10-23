@@ -1,7 +1,10 @@
 //! The commands that look after this installation rather than serve: `version`, `update` and
 //! `uninstall`. They match what the release installers (cargo-dist, dist-workspace.toml) do:
 //! the binary in `~/.holon/bin`, that folder on PATH, and an install receipt
-//! (`holon-server-receipt.json`) recording where it went.
+//! (`holon-receipt.json`) recording where it went. Releases before 0.1.0-rc.4 installed it as
+//! `holon-server`, with a `holon-server-receipt.json`: updating from one of those runs this
+//! release's installer (published under the old name too), and what's left of the old install
+//! (its receipt) goes on the next update or uninstall.
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -9,28 +12,19 @@ use std::path::{Path, PathBuf};
 use axoupdater::{AxoUpdater, ReleaseSource, ReleaseSourceType, UpdateRequest, Version};
 
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
-const APP: &str = "holon-server";
+const APP: &str = "holon";
+/// The name releases before 0.1.0-rc.4 installed, now an alias (src/bin/holon-server.rs).
+const LEGACY_APP: &str = "holon-server";
 const OWNER: &str = "bekirmfr";
 const REPO: &str = "holon";
 
-const USAGE: &str = "\
-holon-server version               this build's version
-holon-server update --check        is there a newer release?
-holon-server update [--to VERSION] install the newest release (or that one) over this one
-holon-server uninstall [--purge] [--data DIR] [--yes]
-                                   remove holon-server (and with --purge, its data and key)
-
-`update` takes --pre to include pre-releases (on by default when this build is one).";
+use crate::USAGE;
 
 /// The exit code, when `args` (after the program name) is one of these commands.
 pub(crate) fn dispatch(args: &[String]) -> Option<i32> {
     let result = match args.first().map(String::as_str) {
         Some("version" | "--version" | "-V") => {
-            println!("holon-server {VERSION}");
-            Ok(())
-        }
-        Some("help" | "--help" | "-h") => {
-            println!("{USAGE}");
+            println!("holon {VERSION}");
             Ok(())
         }
         Some("update") => update(&args[1..]),
@@ -40,7 +34,7 @@ pub(crate) fn dispatch(args: &[String]) -> Option<i32> {
     Some(match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("holon-server: {e}");
+            eprintln!("holon: {e}");
             1
         }
     })
@@ -73,7 +67,7 @@ fn update(args: &[String]) -> Result<(), String> {
         name: REPO.into(),
         app_name: APP.into(),
     });
-    if let Ok(token) = std::env::var("HOLON_SERVER_GITHUB_TOKEN") {
+    if let Ok(token) = std::env::var("HOLON_GITHUB_TOKEN").or_else(|_| std::env::var("HOLON_SERVER_GITHUB_TOKEN")) {
         updater.set_github_token(&token);
     }
 
@@ -88,9 +82,9 @@ fn update(args: &[String]) -> Result<(), String> {
             .cloned()
             .ok_or("no release found")?;
         if newest > current {
-            println!("holon-server {VERSION}: {newest} is available (holon-server update installs it)");
+            println!("holon {VERSION}: {newest} is available (holon update installs it)");
         } else {
-            println!("holon-server {VERSION} is up to date");
+            println!("holon {VERSION} is up to date");
         }
         return Ok(());
     }
@@ -98,9 +92,9 @@ fn update(args: &[String]) -> Result<(), String> {
     // Updating runs the release's installer into the folder this copy was installed to, which
     // only the receipt knows: a copy unpacked by hand is updated by hand.
     let exe = this_exe()?;
-    let receipt = Receipt::find().ok_or_else(|| {
+    let receipt = Receipt::find(APP).ok_or_else(|| {
         format!(
-            "{} wasn't installed by the holon-server installer (there's no install receipt), so it can't update itself: download the new release from https://github.com/{OWNER}/{REPO}/releases",
+            "{} wasn't installed by the holon installer (there's no install receipt), so it can't update itself: download the new release from https://github.com/{OWNER}/{REPO}/releases",
             exe.display()
         )
     })?;
@@ -111,17 +105,18 @@ fn update(args: &[String]) -> Result<(), String> {
             receipt.install_prefix.display()
         ));
     }
+    forget_legacy(&exe);
     updater.load_receipt().map_err(|e| format!("the install receipt: {e}"))?;
     updater.set_current_version(current).map_err(|e| e.to_string())?;
     updater.configure_version_specifier(request);
     match updater.run_sync().map_err(|e| format!("the update failed: {e}"))? {
         Some(done) => println!(
-            "holon-server: updated {} to {} in {} (restart the server to run it)",
+            "holon: updated {} to {} in {} (restart `holon serve` to run it)",
             done.old_version.map(|v| v.to_string()).unwrap_or_else(|| VERSION.into()),
             done.new_version,
             done.install_prefix
         ),
-        None => println!("holon-server {VERSION} is up to date"),
+        None => println!("holon {VERSION} is up to date"),
     }
     Ok(())
 }
@@ -145,10 +140,15 @@ fn uninstall(args: &[String]) -> Result<(), String> {
 
     let exe = this_exe()?;
     let bin = exe.parent().ok_or("this executable has no folder")?.to_path_buf();
-    let receipt = Receipt::find().filter(|r| r.covers(&exe));
+    let receipt = Receipt::find(APP).filter(|r| r.covers(&exe));
+    // The `holon-server` alias the installer put beside it.
+    let alias = bin.join(if cfg!(windows) { "holon-server.exe" } else { "holon-server" });
 
     // Say what goes before anything does.
     let mut plan = vec![format!("the program {}", exe.display())];
+    if alias.is_file() {
+        plan.push(format!("its alias {}", alias.display()));
+    }
     if let Some(r) = &receipt {
         if r.modify_path {
             plan.push(format!("{} from your PATH", bin.display()));
@@ -158,11 +158,11 @@ fn uninstall(args: &[String]) -> Result<(), String> {
     let data = data_dir.filter(|d| d.is_dir());
     if purge {
         match &data {
-            Some(d) => plan.push(format!("ALL of holon-server's data in {} (flows, deployments, runs, secrets, accounts) and its secrets key", d.display())),
+            Some(d) => plan.push(format!("ALL of holon's data in {} (flows, deployments, runs, secrets, accounts) and its secrets key", d.display())),
             None => return Err("--purge: no data folder found; name it with --data DIR".into()),
         }
     }
-    println!("holon-server uninstall will remove:");
+    println!("holon uninstall will remove:");
     for line in &plan {
         println!("  - {line}");
     }
@@ -183,12 +183,14 @@ fn uninstall(args: &[String]) -> Result<(), String> {
             let _ = std::fs::remove_dir(dir); // only if empty
         }
     }
+    forget_legacy(&exe);
+    remove_file_if_there(&alias)?;
     if let (true, Some(d)) = (purge, &data) {
         let secrets = d.join("secrets.json");
         match crate::sealing::KeySource::parse(None, &secrets.to_string_lossy()).and_then(|k| k.forget().map(|gone| (k, gone))) {
             Ok((key, true)) => println!("removed the secrets key from {key}"),
             Ok(_) => {}
-            Err(e) => eprintln!("holon-server: the secrets key: {e} (remove it by hand)"),
+            Err(e) => eprintln!("holon: the secrets key: {e} (remove it by hand)"),
         }
         std::fs::remove_dir_all(d).map_err(|e| format!("could not remove {}: {e}", d.display()))?;
         println!("removed {}", d.display());
@@ -199,8 +201,19 @@ fn uninstall(args: &[String]) -> Result<(), String> {
     if let (Ok(()), Some(parent)) = (std::fs::remove_dir(&bin), bin.parent()) {
         let _ = std::fs::remove_dir(parent);
     }
-    println!("holon-server is uninstalled{}", if receipt.as_ref().is_some_and(|r| r.modify_path) { " (open a new terminal for the PATH change)" } else { "" });
+    println!("holon is uninstalled{}", if receipt.as_ref().is_some_and(|r| r.modify_path) { " (open a new terminal for the PATH change)" } else { "" });
     Ok(())
+}
+
+/// The receipt a `holon-server` install left (releases before 0.1.0-rc.4), when it was for this
+/// folder: `holon`'s own receipt records the install now.
+fn forget_legacy(exe: &Path) {
+    if let Some(old) = Receipt::find(LEGACY_APP).filter(|r| r.covers(exe))
+        && std::fs::remove_file(&old.path).is_ok()
+        && let Some(dir) = old.path.parent()
+    {
+        let _ = std::fs::remove_dir(dir); // only if empty
+    }
 }
 
 fn confirm(purge: bool) -> Result<bool, String> {
@@ -241,16 +254,16 @@ struct Receipt {
 
 impl Receipt {
     /// Where the installers write it (axoupdater reads the same places).
-    fn find() -> Option<Receipt> {
-        let name = format!("{APP}-receipt.json");
+    fn find(app: &str) -> Option<Receipt> {
+        let name = format!("{app}-receipt.json");
         let mut dirs = Vec::new();
         if let Some(x) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
-            dirs.push(PathBuf::from(x).join(APP));
+            dirs.push(PathBuf::from(x).join(app));
         }
         if cfg!(windows) {
-            dirs.extend(std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(APP)));
+            dirs.extend(std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join(app)));
         } else {
-            dirs.extend(home_dir().map(|h| h.join(".config").join(APP)));
+            dirs.extend(home_dir().map(|h| h.join(".config").join(app)));
         }
         dirs.into_iter().find_map(|dir| {
             let path = dir.join(&name);
@@ -291,8 +304,8 @@ if ($old) {{
   $new = ($old -split ';' | Where-Object {{ $_ -and ([Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') -ne $dir) }}) -join ';'
   if ($new -ne $old) {{
     $key.SetValue('Path', $new, $kind)
-    [Environment]::SetEnvironmentVariable('HOLON_SERVER_UNINSTALL', '1', 'User')
-    [Environment]::SetEnvironmentVariable('HOLON_SERVER_UNINSTALL', [NullString]::Value, 'User')
+    [Environment]::SetEnvironmentVariable('HOLON_UNINSTALL', '1', 'User')
+    [Environment]::SetEnvironmentVariable('HOLON_UNINSTALL', [NullString]::Value, 'User')
     'removed'
   }}
 }}"#
@@ -324,11 +337,13 @@ if ($old) {{
                 let Ok(text) = std::fs::read_to_string(&path) else { continue };
                 if let Some(stripped) = super::strip_rc(&text, &exprs) {
                     std::fs::write(&path, stripped).map_err(|e| format!("could not edit {}: {e}", path.display()))?;
-                    println!("removed holon-server's PATH line from {}", path.display());
+                    println!("removed holon's PATH line from {}", path.display());
                 }
             }
         }
-        super::remove_file_if_there(&home.join(".config/fish/conf.d").join(format!("{}.env.fish", super::APP)))?;
+        for app in [super::APP, super::LEGACY_APP] {
+            super::remove_file_if_there(&home.join(".config/fish/conf.d").join(format!("{app}.env.fish")))?;
+        }
         super::remove_file_if_there(&bin.join("env"))?;
         super::remove_file_if_there(&bin.join("env.fish"))?;
         Ok(())
@@ -394,7 +409,7 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         let dir = dir.canonicalize().unwrap();
         let receipt = |prefix: &Path| Receipt { path: PathBuf::new(), install_prefix: prefix.to_path_buf(), modify_path: true };
-        let exe = dir.join("bin").join("holon-server");
+        let exe = dir.join("bin").join("holon");
         assert!(receipt(&dir).covers(&exe));
         assert!(receipt(&dir.join("bin")).covers(&exe));
         assert!(!receipt(&dir.join("elsewhere")).covers(&exe));

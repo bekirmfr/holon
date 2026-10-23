@@ -3,8 +3,8 @@
 // server's lifecycle.rs.
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { describeItem, formatOutputs, summarizeState } from "./diagnostics";
-import { permissionKind } from "./holon";
+import { formatOutputs, summarizeState } from "./diagnostics";
+import { describeItem, permissionKind } from "./holon";
 import { KindBadge, ManifestSection } from "./Manifest";
 import {
   changeGrant,

@@ -26,7 +26,7 @@ export function useDeployments(page: AppPage, setError: (message: string) => voi
         setListError("");
       })
       .catch((e: unknown) =>
-        setListError(e instanceof ServerError ? e.message : `holon-server isn't answering (${String(e)})`),
+        setListError(e instanceof ServerError ? e.message : `the server isn't answering (${String(e)})`),
       );
   }, []);
 

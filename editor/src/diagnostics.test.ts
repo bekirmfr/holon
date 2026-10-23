@@ -13,7 +13,6 @@ import {
   isWEncapError,
   validationErrorNodeIndices,
   encapErrorNodeIndices,
-  describeItem,
   formatValue,
   formatOutputs,
   summarizeState,
@@ -313,13 +312,4 @@ describe("formatOutputs", () => {
     expect(formatOutputs([v, null])).toBe("1, (none)");
   });
 });
-describe("describeItem", () => {
-  it("reads each kind of manifest item as a sentence", () => {
-    expect(describeItem('HttpRequest("hooks.slack.com")')).toBe("call https://hooks.slack.com");
-    expect(describeItem('StateWrite("todos")')).toBe('write its state "todos"');
-    expect(describeItem("Limit(request_timeout_ms=60000)")).toBe("raise request_timeout_ms to 60000");
-    expect(describeItem('PlainHttp("127.0.0.1:9000")')).toBe("call 127.0.0.1:9000 over plain HTTP (not encrypted)");
-    expect(describeItem("NetworkIngress")).toBe("receive requests");
-    expect(describeItem("SomethingNew")).toBe("SomethingNew");
-  });
-});
+
