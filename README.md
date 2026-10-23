@@ -1,7 +1,39 @@
 # holon
 
-Build services by wiring small, pure parts together, deploy them with exactly the permissions
-they need, and see every run as it happened.
+**Agents propose. Holon shows what they may do, runs only that, and keeps a record of every run.**
+
+An agent (or a person) writes a flow: a small service, as text or on a canvas, wired from pure
+parts. Before it runs:
+
+- **Holon shows what it may do.** What a flow can touch (the hosts it calls, the secrets it
+  reads, the state it keeps, the requests it answers) is derived from its graph, not declared by
+  its author, so it can't be understated. `holon check` prints it; deploying asks for it.
+- **It runs only that.** The host's policy sets what may ever be granted. A deploy has to name
+  every capability that needs approval, and gets a grant; an effect outside the grant is refused
+  when a run tries it, whatever the flow says. A grant can be narrowed while the flow runs.
+- **It keeps a record of every run:** the request, the state it read, the clock, randomness and
+  every response it got, with the version and grant it ran under. Evaluation is pure, so a
+  record replays exactly: the editor steps through any past run node by node.
+
+```
+$ holon new hook.holon --sample stripe-to-slack
+wrote hook.holon
+$ holon check hook.holon
+stripe-to-slack: 17 nodes, 17 wires
+a server on :8103
+  POST /stripe
+unit 0e4840c64ea23983126f5729cdfff0cc2dc55cdc2fcfa067a4f86bd04a69fca7
+it may:
+  read the clock
+  call https://hooks.slack.com
+  receive requests
+  read the secret "slack_webhook_path"
+  read the secret "stripe_webhook_secret"
+```
+
+A flow's identity is the hash of what it is (`unit` above): any change is a new version,
+redeploying it asks for whatever the old grant didn't cover, and every run names the version it
+ran.
 
 ## Installing
 
@@ -99,6 +131,6 @@ written commercial agreement.
 
 ## Developing
 
-See `CLAUDE.md` for the conventions and `docs/` for the design. The server:
-`cargo run -p holon -- serve`; the editor: `npm --prefix editor run dev`; tests: `cargo test`,
-`npm --prefix editor test`, `npm --prefix editor run e2e`.
+See `CLAUDE.md` for the conventions and `docs/README.md` for which design documents are
+current. The server: `cargo run -p holon -- serve`; the editor: `npm --prefix editor run dev`;
+tests: `cargo test`, `npm --prefix editor test`, `npm --prefix editor run e2e`.

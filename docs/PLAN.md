@@ -1,5 +1,12 @@
 # Holon — Implementation Plan
 
+> **Historical (since 2026-10-24): kept for the reasoning, not for the status or the direction.**
+> This was the plan through the marketplace (P3) and the first editor (P4). Its status lines,
+> test counts and "next" items stopped being updated long ago, and its positioning (the
+> marketplace and the shared memo cache as the product) is no longer the direction: see
+> `README.md` for what Holon is for and `docs/PLATFORM_LAYOUT.md` for the current plan. The design
+> notes in `docs/L4s/` that call themselves its companions are historical in the same way.
+
 > **Companion to `COMPOSABLE_VM_DESIGN.md`** (the north star). The design doc says
 > *what is true and why*; this plan is **deduced from it** and says *what we must
 > therefore build, in what order*. It is detailed **progressively** — level by

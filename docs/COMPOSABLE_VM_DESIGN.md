@@ -1,5 +1,11 @@
 # Composable Compute VM — Vision & Architecture
 
+> **Partly historical (since 2026-10-24).** The core model, the invariants (§3), types,
+> evaluation semantics and state (§2–§7) and the genesis primitive set (§13) still describe the
+> code, and still hold. The vision around them does not: Holon is no longer pitched as a visual
+> language with an open marketplace (§1, §8, §10, §12). `README.md` says what it is for now, and
+> `docs/PLATFORM_LAYOUT.md` is the current plan.
+
 *A visual programming substrate where users compose logic from small primitive
 units, package any flow as a new unit, and share units in an open marketplace.*
 
