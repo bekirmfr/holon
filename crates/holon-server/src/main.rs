@@ -140,7 +140,9 @@
 //! auth *for*.
 
 mod access;
+mod accounts;
 mod activity;
+mod auth;
 mod oidc;
 mod collections;
 mod data;
@@ -425,11 +427,7 @@ fn main() {
     let mut secrets_arg = ".holon-secrets.json".to_string();
     let mut secrets_key_arg: Option<String> = None;
     let mut dotenv_arg: Option<String> = None;
-    let mut admin_token_file: Option<String> = None;
-    let mut users_file: Option<String> = None;
-    let mut oidc_issuer: Option<String> = std::env::var("HOLON_OIDC_ISSUER").ok().filter(|v| !v.trim().is_empty());
-    let mut oidc_client_id: Option<String> = std::env::var("HOLON_OIDC_CLIENT_ID").ok().filter(|v| !v.trim().is_empty());
-    let mut secrets_token_file: Option<String> = None;
+    let mut accounts_arg = ".holon-accounts.json".to_string();
     let mut allow_hosts: Vec<String> = Vec::new();
     let mut allow_origins: Vec<String> = Vec::new();
     let mut host_key_arg = ".holon-host-key".to_string();
@@ -459,26 +457,15 @@ fn main() {
             if let Some(v) = args.next() {
                 secrets_key_arg = Some(v);
             }
-        } else if a == "--hash-token" {
-            // A token's hash for a users file (access.rs): the token is read on stdin, so it
-            // stays out of the shell's history.
-            let mut token = String::new();
-            if std::io::stdin().read_line(&mut token).is_err() || token.trim().is_empty() {
-                eprintln!("--hash-token reads a token on stdin");
-                std::process::exit(2);
+        } else if a == "--accounts" {
+            // Where the accounts are kept (accounts.rs): who may use the control plane.
+            if let Some(v) = args.next() {
+                accounts_arg = v;
             }
-            println!("{}", access::hash_token(&token));
-            return;
-        } else if a == "--admin-token-file" || a == "--secrets-token-file" || a == "--allow-host" || a == "--allow-origin" || a == "--users-file" || a == "--oidc-issuer" || a == "--oidc-client-id" {
-            // Who may use the control plane (access.rs). A token's file holds just the token.
+        } else if a == "--allow-host" || a == "--allow-origin" {
+            // Hosts and editor origins it answers as besides loopback's (access.rs).
             if let Some(v) = args.next() {
                 match a.as_str() {
-                    "--admin-token-file" => admin_token_file = Some(v),
-                    "--secrets-token-file" => secrets_token_file = Some(v),
-                    "--users-file" => users_file = Some(v),
-                    // Signing in through an identity provider (oidc.rs).
-                    "--oidc-issuer" => oidc_issuer = Some(v),
-                    "--oidc-client-id" => oidc_client_id = Some(v),
                     "--allow-host" => allow_hosts.push(v),
                     _ => allow_origins.push(v),
                 }
@@ -682,26 +669,13 @@ fn main() {
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|e| panic!("HOLON_SERVER_ADDR {addr:?} is not host:port: {e}"));
     let port = bound.port();
-    let access = (|| {
-        let admin = access::token_from("HOLON_ADMIN_TOKEN", admin_token_file.as_deref())?;
-        let secrets = access::token_from("HOLON_SECRETS_TOKEN", secrets_token_file.as_deref())?;
-        let users = access::users_from(users_file.as_deref())?;
-        let access = access::Access::with_users(admin, secrets, users, allow_hosts, allow_origins)?;
-        match (oidc_issuer, oidc_client_id) {
-            (None, None) => Ok(access),
-            (Some(issuer), Some(client_id)) => Ok(access.signing_in_with(oidc::Oidc::discover(&issuer, &client_id)?)),
-            _ => Err("signing in needs both --oidc-issuer and --oidc-client-id (HOLON_OIDC_ISSUER, HOLON_OIDC_CLIENT_ID)".to_string()),
-        }
-    })()
-    .unwrap_or_else(|e| {
-        eprintln!("holon-server: {e}");
-        std::process::exit(1)
-    });
-    // Reachable beyond this machine only behind a token.
-    if !bound.ip().is_loopback() && !access.is_gated() {
-        eprintln!("holon-server: {addr} is reachable beyond this machine: set HOLON_ADMIN_TOKEN (or --admin-token-file), or name users (--users-file), first");
-        std::process::exit(1);
+    // Everyone signs in (access.rs); a new server first needs its admin, set up with the code
+    // it prints here.
+    let accounts = Arc::new(accounts::Accounts::open(&accounts_arg).unwrap_or_else(|e| refuse_to_start(e)));
+    if let Some(code) = accounts.setup_code() {
+        println!("holon-server: no accounts yet. Open the editor and set up the first admin with this code: {code}");
     }
+    let access = access::Access::new(Arc::clone(&accounts), allow_hosts, allow_origins);
     let activity = activity::Activity::beside(&deployments_arg);
     let state = AppState {
         store,
@@ -722,11 +696,9 @@ fn main() {
     };
     sync_listeners(&state);
 
-    let gate = match (state.access.is_gated(), state.access.user_count(), state.access.oidc()) {
-        (false, _, _) => "localhost-only, no token".to_string(),
-        (true, n, Some(oidc)) => format!("signing in through {}: {n} named user(s)", oidc.issuer),
-        (true, 0, None) => "admin token required".to_string(),
-        (true, n, None) => format!("a token required: {n} named user(s)"),
+    let gate = match accounts.users().len() {
+        0 => "waiting to be set up".to_string(),
+        n => format!("{n} account(s); signing in required"),
     };
     println!("holon-server: listening on http://{addr} ({gate}; see access.rs)");
     rouille::start_server(addr, move |request| with_cors(&state.access, request, route(&state, request)));

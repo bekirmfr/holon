@@ -1,15 +1,15 @@
-//! Signing in through an identity provider (OpenID Connect), for a server several people share:
-//! started with `--oidc-issuer URL --oidc-client-id ID` (or `HOLON_OIDC_ISSUER`,
-//! `HOLON_OIDC_CLIENT_ID`), it reads the provider's discovery document once, and accepts the ID
-//! tokens it signs as bearer tokens. The editor signs in with the authorization code flow and
-//! PKCE (a public client: no secret), told where by `GET /auth/config`.
+//! Signing in through an identity provider (OpenID Connect), optional: an admin sets its issuer
+//! and client id in the admin panel (accounts.rs keeps them), and the server reads the
+//! provider's discovery document, and accepts the ID tokens it signs as bearer tokens. The
+//! editor signs in with the authorization code flow and PKCE (a public client: no secret), told
+//! where by `GET /auth/config`.
 //!
 //! A token is accepted only when its signature checks against the provider's published keys
-//! (JWKS: read at startup, read again for a key it doesn't know, at most once a minute), it was
+//! (JWKS: read when set, read again for a key it doesn't know, at most once a minute), it was
 //! issued by that issuer for this client, and it hasn't expired (a minute's leeway for clocks).
-//! Who it is (its subject, or its email when the provider says it is verified) is then matched
-//! against the users file (access.rs), which says what they may do. Signing in proves who
-//! someone is; the users file still decides what they may do.
+//! Who it is (its email, when the provider says it is verified) is then matched to an account
+//! (access.rs), whose role says what they may do. Signing in proves who someone is; their
+//! account decides what they may do.
 
 use std::sync::RwLock;
 use std::time::{Duration, Instant};

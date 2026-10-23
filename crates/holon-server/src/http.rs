@@ -58,7 +58,7 @@ pub(crate) fn reject_untrusted(request: &Request, port: u16, access: &Access) ->
             return Err(err(415, "POST bodies must be sent as application/json or application/octet-stream"));
         }
     }
-    access.check(request, crate::access::is_secret_write(request))
+    access.check(request)
 }
 
 /// Add CORS headers to every response, in one place — so a new endpoint can never forget them
@@ -119,12 +119,9 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return Response::empty_204();
     }
 
-    // Where to sign in, when signing in is configured (oidc.rs): needed before signing in.
-    if method == "GET" && url == "/auth/config" {
-        return match state.access.oidc() {
-            Some(oidc) => Response::json(&oidc.public_config()),
-            None => err(404, "signing in isn't configured on this server"),
-        };
+    // Signing in, and the admin panel (auth.rs).
+    if let Some(response) = crate::auth::route(state, request, &caller) {
+        return response;
     }
 
     if method == "GET" && url == "/health" {

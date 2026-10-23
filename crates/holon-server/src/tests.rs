@@ -3105,41 +3105,64 @@ fn a_flow_log_survives_a_restart_and_goes_with_its_deployment() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// With tokens configured, the control plane answers only with them: every endpoint needs the
-/// admin token, and writing a secret needs the secrets token, which opens nothing else.
+/// A server with accounts, through its routes: set up with the printed code, then signed in,
+/// an invite accepted, each role doing what it may, and an admin's API token.
 #[test]
-fn tokens_gate_the_control_plane_and_secrets_are_their_own() {
+fn accounts_through_the_routes() {
     let mut state = test_state();
-    let (admin, secrets) = ("admin-token-0123456789abcdef", "secrets-token-0123456789abcdef");
-    state.access = access::Access::new(Some(admin.into()), Some(secrets.into()), vec![], vec![]).unwrap();
-    let with = |method: &str, url: &str, body: Vec<u8>, token: Option<&str>| {
-        let mut r = req(method, url, body);
-        let mut headers = r.headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let code = accounts.setup_code().unwrap();
+    state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+    let call = |method: &str, url: &str, body: serde_json::Value, token: Option<&str>| {
+        let bytes = if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() };
+        let mut headers = req(method, url, bytes.clone()).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
         if let Some(t) = token {
             headers.push(("Authorization".into(), format!("Bearer {t}")));
         }
-        r = Request::fake_http(method, url, headers, r.data().map(|mut d| { let mut v = Vec::new(); std::io::Read::read_to_end(&mut d, &mut v).unwrap(); v }).unwrap_or_default());
-        route(&state, &r).status_code
+        route(&state, &Request::fake_http(method, url, headers, bytes))
     };
-    assert_eq!(with("GET", "/deployments", vec![], None), 401);
-    assert_eq!(with("GET", "/deployments", vec![], Some(admin)), 200);
-    assert_eq!(with("GET", "/health", vec![], None), 200);
-    let set = br#"{"value":"long-enough-value"}"#.to_vec();
-    assert_eq!(with("POST", "/deployments/s/secrets/k", set.clone(), Some(admin)), 401, "the admin token isn't enough");
-    assert_eq!(with("POST", "/deployments/s/secrets/k", set, Some(secrets)), 200);
-    assert_eq!(with("GET", "/deployments/s/secrets", vec![], Some(admin)), 200, "names are an admin read");
-    assert_eq!(with("GET", "/deployments", vec![], Some(secrets)), 401);
+    let null = serde_json::Value::Null;
+    assert_eq!(body_json(call("GET", "/auth/state", null.clone(), None))["setup"], true);
+    assert_eq!(call("GET", "/flows", null.clone(), None).status_code, 403, "not set up yet");
+    let pw = "correct horse battery";
+    assert_eq!(call("POST", "/auth/setup", serde_json::json!({ "code": "NOPE-NOPE", "name": "ada", "password": pw }), None).status_code, 400);
+    let ada = body_json(call("POST", "/auth/setup", serde_json::json!({ "code": code, "name": "ada", "password": pw }), None))["token"].as_str().unwrap().to_string();
+    assert_eq!(call("GET", "/flows", null.clone(), None).status_code, 401, "now everyone signs in");
+    assert_eq!(call("GET", "/flows", null.clone(), Some(&ada)).status_code, 200);
+
+    // An invite: the link's holder sets their password and is signed in, as a viewer.
+    let invite = body_json(call("POST", "/admin/users", serde_json::json!({ "name": "cy", "role": "viewer" }), Some(&ada)))["invite"].as_str().unwrap().to_string();
+    assert_eq!(body_json(call("GET", &format!("/auth/invite?token={invite}"), null.clone(), None))["name"], "cy");
+    let cy = body_json(call("POST", "/auth/invite", serde_json::json!({ "token": invite, "password": pw }), None))["token"].as_str().unwrap().to_string();
+    assert_eq!(body_json(call("GET", "/auth/me", null.clone(), Some(&cy)))["role"], "viewer");
+    assert_eq!(call("POST", "/flows", serde_json::json!({ "name": "x", "document": {} }), Some(&cy)).status_code, 403);
+    assert_eq!(call("GET", "/admin/users", null.clone(), Some(&cy)).status_code, 403);
+    // Signing in again, with the password cy set; then out.
+    let again = body_json(call("POST", "/auth/sign-in", serde_json::json!({ "name": "cy", "password": pw }), None))["token"].as_str().unwrap().to_string();
+    assert_eq!(call("POST", "/auth/sign-out", null.clone(), Some(&again)).status_code, 204);
+    assert_eq!(call("GET", "/flows", null.clone(), Some(&again)).status_code, 401);
+
+    // An admin makes cy an editor; an API token for CI writes, never the admin panel.
+    assert_eq!(body_json(call("POST", "/admin/users/cy", serde_json::json!({ "role": "editor" }), Some(&ada)))["role"], "editor");
+    assert_eq!(call("POST", "/flows", serde_json::json!({ "name": "x", "document": {} }), Some(&cy)).status_code, 200);
+    let ci = body_json(call("POST", "/admin/tokens", serde_json::json!({ "label": "ci", "role": "editor" }), Some(&ada)))["token"].as_str().unwrap().to_string();
+    assert_eq!(call("POST", "/flows", serde_json::json!({ "name": "y", "document": {} }), Some(&ci)).status_code, 200);
+    assert_eq!(call("GET", "/admin/users", null.clone(), Some(&ci)).status_code, 403);
+    let activity = body_json(call("GET", "/activity", null.clone(), Some(&ada)));
+    let saved_by_ci = activity["entries"].as_array().unwrap().iter().any(|e| e["action"] == "saved" && e["by"] == "token:ci");
+    assert!(saved_by_ci, "{activity}");
 }
 
-/// With named users, a save and a deploy remember who made them, and every action is in the
+/// With accounts, a save and a deploy remember who made them, and every action is in the
 /// activity log with who did it, a deleted deployment's included.
 #[test]
 fn what_is_done_names_who_did_it() {
     let mut state = test_state();
-    let bob = "bob-own-token-0123456789abcdef";
-    let users: Vec<access::User> =
-        serde_json::from_value(serde_json::json!([{ "name": "bob", "role": "editor", "token_blake3": access::hash_token(bob) }])).unwrap();
-    state.access = access::Access::with_users(None, None, users, vec![], vec![]).unwrap();
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+    let bob = accounts.accept(&accounts.invite("bob", access::Role::Editor, None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let bob = bob.as_str();
+    state.access = access::Access::new(accounts, vec![], vec![]);
     let as_bob = |method: &str, url: &str, body: Vec<u8>| {
         let r = req(method, url, body.clone());
         let mut headers = r.headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
