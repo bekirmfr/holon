@@ -132,7 +132,21 @@ jobs:
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
       - name: "Install wasm-pack"
-        run: "cargo install wasm-pack --version 0.15.0 --locked"
+        run: |
+          v=0.15.0
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64) t=x86_64-unknown-linux-musl ;;
+            Linux-ARM64) t=aarch64-unknown-linux-musl ;;
+            macOS-X64) t=x86_64-apple-darwin ;;
+            macOS-ARM64) t=aarch64-apple-darwin ;;
+            Windows-X64) t=x86_64-pc-windows-msvc ;;
+            *) echo "no wasm-pack build for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+          # (In the folder: tar on the Windows runner reads a D:\ path as a remote host.)
+          mkdir -p "$RUNNER_TEMP/wasm-pack" && cd "$RUNNER_TEMP/wasm-pack"
+          curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v$v/wasm-pack-v$v-$t.tar.gz" | tar -xz --strip-components=1
+          echo "$RUNNER_TEMP/wasm-pack" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/wasm-pack/wasm-pack" --version
         shell: "bash"
       - name: "Build the core for the editor"
         run: "wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt"

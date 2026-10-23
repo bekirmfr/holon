@@ -1,10 +1,25 @@
 # Steps cargo-dist runs before each release build (dist-workspace.toml's github-build-setup):
 # the editor, built so holon-server can build it in (its embed-editor feature, editor.rs).
-# wasm-pack, built here for this runner (an action's download was an old version on Windows,
-# and an x86 one on the arm64 Linux runner), at a pinned version.
+# wasm-pack at a pinned version, its own release build for this runner's OS and CPU (an action's
+# download was an old version on Windows and an x86 one on the arm64 Linux runner; building it
+# with cargo took over half an hour on the Intel macOS runner).
 - name: Install wasm-pack
   shell: bash
-  run: cargo install wasm-pack --version 0.15.0 --locked
+  run: |
+    v=0.15.0
+    case "$RUNNER_OS-$RUNNER_ARCH" in
+      Linux-X64) t=x86_64-unknown-linux-musl ;;
+      Linux-ARM64) t=aarch64-unknown-linux-musl ;;
+      macOS-X64) t=x86_64-apple-darwin ;;
+      macOS-ARM64) t=aarch64-apple-darwin ;;
+      Windows-X64) t=x86_64-pc-windows-msvc ;;
+      *) echo "no wasm-pack build for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+    esac
+    # (In the folder: tar on the Windows runner reads a D:\ path as a remote host.)
+    mkdir -p "$RUNNER_TEMP/wasm-pack" && cd "$RUNNER_TEMP/wasm-pack"
+    curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v$v/wasm-pack-v$v-$t.tar.gz" | tar -xz --strip-components=1
+    echo "$RUNNER_TEMP/wasm-pack" >> "$GITHUB_PATH"
+    "$RUNNER_TEMP/wasm-pack/wasm-pack" --version
 # --no-opt: wasm-pack's wasm-opt fails to parse the core on the macOS arm64 runner; unoptimized,
 # the core is ~710 KB instead of ~580 KB, and the same everywhere.
 - name: Build the core for the editor
