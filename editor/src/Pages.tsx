@@ -1,9 +1,9 @@
 // The pages shown over the canvas: saved flows, and deployments.
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { holonUses, type HolonUse } from "./holonUsage";
+import { holonIndex, type HolonUse } from "./holonUsage";
 import { getActivity, type ActivityEntry } from "./server";
-import { deleteFlow, getAllFlows, getFlow, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
+import { deleteFlow, getFlow, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
 import { ManifestSection, type ManifestView } from "./Manifest";
 import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
@@ -48,14 +48,13 @@ export function FlowsPage({
 
   const refresh = useCallback(() => {
     listFlows()
-      .then((f) => {
+      .then(async (f) => {
         setFlows(f);
         setMsg("");
+        const deployed = await listDeployments().catch(() => []);
+        setUses(await holonIndex(f, deployed, (name) => getFlow(name).then((r) => r.document)));
       })
       .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
-    getAllFlows()
-      .then((all) => setUses(holonUses(all)))
-      .catch(() => setUses(new Map()));
   }, []);
   useEffect(() => {
     refresh();
@@ -135,19 +134,8 @@ export function FlowsPage({
               ×
             </button>
           </div>
-          {(uses.get(f.name) ?? []).length > 0 && (
-            <div style={{ color: "#7e8ea8", fontSize: 11, marginTop: 4 }} title="saved flows that place this one as a node; each keeps the version it placed until updated (↻ on the node)">
-              placed in{" "}
-              {uses.get(f.name)!.map((u, i) => (
-                <span key={u.user}>
-                  {i > 0 && ", "}
-                  <span style={{ color: "#cfe3ff" }}>{u.user}</span>
-                  {u.nodes > 1 && ` ×${u.nodes}`}
-                  {!u.current && <span style={{ color: "#e0c36f" }}> (an older save)</span>}
-                </span>
-              ))}
-            </div>
-          )}
+          <UsedBy uses={(uses.get(f.name) ?? []).filter((u) => u.kind === "flow")} lead="placed in" title="saved flows that place this one as a node; each keeps the version it placed until updated (↻ on the node)" />
+          <UsedBy uses={(uses.get(f.name) ?? []).filter((u) => u.kind === "deployment")} lead="deployed in" title="deployments whose version places this one as a node; a redeploy takes the version its flow places" />
           <ManifestSection
             version={String(f.saved_at_epoch_seconds)}
             load={() => getFlow(f.name).then((rec) => manifestOf(rec.document))}
@@ -188,6 +176,24 @@ export function FlowsPage({
             open
           </button>
         </div>
+      ))}
+    </div>
+  );
+}
+
+/** Who places a holon, of one kind (saved flows or deployments), and whether from an older save. */
+function UsedBy({ uses, lead, title }: { uses: HolonUse[]; lead: string; title: string }) {
+  if (uses.length === 0) return null;
+  return (
+    <div style={{ color: "#7e8ea8", fontSize: 11, marginTop: 4 }} title={title}>
+      {lead}{" "}
+      {uses.map((u, i) => (
+        <span key={u.user}>
+          {i > 0 && ", "}
+          <span style={{ color: "#cfe3ff" }}>{u.user}</span>
+          {u.nodes > 1 && ` ×${u.nodes}`}
+          {!u.current && <span style={{ color: "#e0c36f" }}> (an older save)</span>}
+        </span>
       ))}
     </div>
   );

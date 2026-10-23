@@ -353,6 +353,8 @@ struct Deployment {
     deployed_at: SystemTime,
     /// Who deployed it, when the server knows (access.rs).
     deployed_by: Option<String>,
+    /// The saved flows its version places as nodes (wire.rs's `HolonUse`), when the editor said.
+    uses: Option<Vec<HolonUse>>,
     /// Running, paused or stopped, and every run session so far with its end-of-session state
     /// snapshot (lifecycle.rs). Persisted.
     life: Lifecycle,

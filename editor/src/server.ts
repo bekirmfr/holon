@@ -9,6 +9,7 @@
 // unless it was started with tokens (crates/holon-server/src/access.rs): then every request
 // carries one, from what this browser was given under "access" (`api` below).
 
+import { usesIn, type Placed } from "./holonUsage";
 import type { WValue } from "./holon";
 import type { EndpointDraft } from "./endpoint";
 import type { NodeTiming } from "./replay";
@@ -147,6 +148,8 @@ export async function deployUnit(
       ...(intervalSeconds !== undefined ? { interval_seconds: intervalSeconds } : {}),
       ...(document !== undefined ? { document } : {}),
       ...(requirements !== undefined ? { requirements } : {}),
+      // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
+      ...(document !== undefined ? { uses: usesIn(document) } : {}),
     }),
   });
   return asJson<DeployResult>(res);
@@ -270,6 +273,8 @@ export type DeploymentEntry = {
   deployed_at_epoch_seconds: number;
   /** Who deployed it (a named user, or `admin`), when the server knows. */
   deployed_by?: string;
+  /** The saved flows its version places. */
+  uses?: Placed[];
   /** The port a server deployment answers on; null for any other deployment. */
   port: number | null;
   status: DeploymentStatus;
@@ -576,8 +581,9 @@ export type FlowDocument = {
 };
 
 /** One entry in `GET /flows` — name + freshness only, never the (possibly large) document. */
-/** `saved_by`: who saved it (a named user, or `admin`), when the server knows. */
-export type FlowListEntry = { name: string; saved_at_epoch_seconds: number; saved_by?: string };
+/** `saved_by`: who saved it (a named user, or `admin`), when the server knows. `uses`: the saved
+ *  flows it places (absent when saved before that was recorded). */
+export type FlowListEntry = { name: string; saved_at_epoch_seconds: number; saved_by?: string; uses?: Placed[] };
 
 /** A full saved flow as `GET /flows/<name>` returns it. */
 export type FlowRecord = FlowListEntry & { document: FlowDocument };
@@ -589,7 +595,8 @@ export async function saveFlow(name: string, document: FlowDocument): Promise<Fl
   const res = await api(`${BASE}/flows`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, document }),
+    // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
+    body: JSON.stringify({ name, document, uses: usesIn(document) }),
   });
   return asJson<FlowListEntry>(res);
 }
@@ -604,12 +611,6 @@ export async function listFlows(): Promise<FlowListEntry[]> {
 export async function getFlow(name: string): Promise<FlowRecord> {
   const res = await api(`${BASE}/flows/${encodeURIComponent(name)}`);
   return asJson<FlowRecord>(res);
-}
-
-/** Every saved flow, documents included (to see which flows place which as holons). */
-export async function getAllFlows(): Promise<FlowRecord[]> {
-  const list = await listFlows();
-  return Promise.all(list.map((f) => getFlow(f.name)));
 }
 
 /** `DELETE /flows/<name>` — remove a saved flow. Throws (404) if it was never there. */

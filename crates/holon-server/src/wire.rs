@@ -138,6 +138,17 @@ pub(crate) struct FlowRecord {
     /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) saved_by: Option<String>,
+    /// The saved flows it places as nodes, and which save of each (the editor says so beside
+    /// the document, which stays opaque). Absent when saved before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) uses: Option<Vec<HolonUse>>,
+}
+
+/// A saved flow placed as a node in another flow or deployment: its name, and which save of it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct HolonUse {
+    pub(crate) flow: String,
+    pub(crate) saved_at: u64,
 }
 
 /// `POST /flows`' request body: upsert by name. The same name saves over the previous
@@ -147,6 +158,8 @@ pub(crate) struct FlowRecord {
 pub(crate) struct SaveFlowBody {
     pub(crate) name: String,
     pub(crate) document: serde_json::Value,
+    #[serde(default)]
+    pub(crate) uses: Option<Vec<HolonUse>>,
 }
 
 /// `GET /flows`' per-entry listing shape — name and freshness only, never the (possibly
@@ -158,6 +171,9 @@ pub(crate) struct FlowListEntry {
     /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) saved_by: Option<String>,
+    /// The saved flows it places (`FlowRecord::uses`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) uses: Option<Vec<HolonUse>>,
 }
 
 /// `POST /deploy`'s request body. `unit` must already be resolvable in the store (staged via
@@ -185,6 +201,8 @@ pub(crate) struct DeployRequestBody {
     /// What it needs beyond its graph: limits, exceptions (permissions.rs).
     #[serde(default)]
     pub(crate) requirements: Requirements,
+    #[serde(default)]
+    pub(crate) uses: Option<Vec<HolonUse>>,
 }
 
 /// The on-disk, persisted shape of one deployment. `triggers` is still not persisted — it's
@@ -232,6 +250,9 @@ pub(crate) struct DeploymentRecord {
     /// Its runs waiting for an event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) parked: Vec<ParkedRun>,
+    /// The saved flows its version places as nodes (`FlowRecord::uses`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) uses: Option<Vec<HolonUse>>,
 }
 
 #[derive(Serialize)]
@@ -268,6 +289,9 @@ pub(crate) struct DeploymentEntry {
     /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) deployed_by: Option<String>,
+    /// The saved flows its version places as nodes (`FlowRecord::uses`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) uses: Option<Vec<HolonUse>>,
     /// Why it can't run until deployed again, if so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) attention: Option<String>,

@@ -62,6 +62,9 @@ pub(crate) fn handle_post_deploy(
     if !is_valid_slug(&body.slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
     }
+    if let Err(e) = crate::flows::check_uses(body.uses.as_deref()) {
+        return err(400, e);
+    }
     let Some(unit_hash) = parse_hash(&body.unit) else {
         return err(400, "unit is not a 64-char hex hash");
     };
@@ -203,6 +206,7 @@ pub(crate) fn handle_post_deploy(
                 error_count: 0,
                 deployed_at: SystemTime::now(),
                 deployed_by: by.map(String::from),
+                uses: body.uses.clone(),
                 life,
                 log,
                 document,
@@ -234,6 +238,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         error_count: dep.error_count,
         deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         deployed_by: dep.deployed_by.clone(),
+        uses: dep.uses.clone(),
         attention: dep.attention.clone(),
         waiting: dep.parked.len(),
     }

@@ -9,8 +9,8 @@ import type { Edge, Viewport } from "@xyflow/react";
 import { flowAsNode } from "./canvasOps";
 import { replaceComposite } from "./composites";
 import { documentUnits } from "./docUnits";
-import { holonUses, interfaceLoss } from "./holonUsage";
-import { getAllFlows, getFlow, listFlows, saveFlow, type FlowDocument } from "./server";
+import { holonIndex, interfaceLoss } from "./holonUsage";
+import { getFlow, listDeployments, listFlows, saveFlow, type FlowDocument } from "./server";
 import { savedKeyOf } from "./tabs";
 import type { Evaluator, WUnit } from "./holon";
 import type { FlowSettings } from "./DeployBar";
@@ -71,15 +71,17 @@ export function useSavedFlows({
     async (name: string, doc: FlowDocument) => {
       if (!savedFlowTimes.has(name)) return true;
       try {
-        const all = await getAllFlows();
-        const users = holonUses(all).get(name) ?? [];
-        const previous = all.find((r) => r.name === name);
-        const before = previous && flowAsNode(name, previous.document, ev, byName, "before", { x: 0, y: 0 });
+        const [flows, deployed] = await Promise.all([listFlows(), listDeployments().catch(() => [])]);
+        const users = (await holonIndex(flows, deployed, (n) => getFlow(n).then((r) => r.document))).get(name) ?? [];
+        if (users.length === 0) return true;
+        const previous = await getFlow(name);
+        const before = flowAsNode(name, previous.document, ev, byName, "before", { x: 0, y: 0 });
         const after = flowAsNode(name, doc, ev, byName, "after", { x: 0, y: 0 });
-        const loss = before?.ok && after.ok ? interfaceLoss(before.node.data, after.node.data) : [];
-        if (users.length > 0 && loss.length > 0) {
+        const loss = before.ok && after.ok ? interfaceLoss(before.node.data, after.node.data) : [];
+        if (loss.length > 0) {
+          const where = users.map((u) => (u.kind === "deployment" ? `${u.user} (deployed)` : u.user)).join(", ");
           return await dialog.confirm(
-            `"${name}" is placed as a node in ${users.map((u) => u.user).join(", ")}. This save changes its ports: ${loss.join("; ")}. They keep the version they placed; updating them would remove wires to those ports. Save anyway?`,
+            `"${name}" is placed as a node in ${where}. This save changes its ports: ${loss.join("; ")}. They keep the version they placed; updating them would remove wires to those ports. Save anyway?`,
             "Save",
           );
         }

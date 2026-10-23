@@ -1778,7 +1778,7 @@ fn persist_writes_whole_files_and_leaves_no_temp_files() {
     for name in ["a", "b"] {
         flows.insert(
             name.to_string(),
-            FlowRecord { name: name.to_string(), saved_at_epoch_seconds: 0, document: serde_json::json!({}), saved_by: None },
+            FlowRecord { name: name.to_string(), saved_at_epoch_seconds: 0, document: serde_json::json!({}), saved_by: None, uses: None },
         );
         persist_flows(&path, &flows);
     }
@@ -3173,4 +3173,33 @@ fn what_is_done_names_who_did_it() {
         .collect();
     let bob = |a: &str, t: &str| (a.to_string(), t.to_string(), "bob".to_string());
     assert_eq!(done, [bob("deleted", "echo"), bob("stopped", "echo"), bob("paused", "echo"), bob("deployed", "echo"), bob("saved", "mine")], "newest first");
+}
+
+/// What a save or a deploy places is kept beside its document and listed, so who uses a holon
+/// is answered from the listings; a malformed list is refused.
+#[test]
+fn saves_and_deploys_list_the_holons_they_place() {
+    let state = test_state();
+    let save = |name: &str, uses: serde_json::Value| {
+        route(&state, &req("POST", "/flows", serde_json::to_vec(&serde_json::json!({ "name": name, "document": {}, "uses": uses })).unwrap()))
+    };
+    assert!(save("slugify", serde_json::json!([])).is_success());
+    assert!(save("blog", serde_json::json!([{ "flow": "slugify", "saved_at": 7 }])).is_success());
+    assert!(route(&state, &req("POST", "/flows", br#"{"name":"old","document":{}}"#.to_vec())).is_success());
+    assert_eq!(save("bad", serde_json::json!([{ "flow": "../x", "saved_at": 1 }])).status_code, 400);
+    let listed = body_json(route(&state, &req("GET", "/flows", vec![])));
+    let uses_of = |name: &str| listed.as_array().unwrap().iter().find(|f| f["name"] == name).unwrap()["uses"].clone();
+    assert_eq!(uses_of("blog"), serde_json::json!([{ "flow": "slugify", "saved_at": 7 }]));
+    assert_eq!(uses_of("slugify"), serde_json::json!([]));
+    assert_eq!(uses_of("old"), serde_json::Value::Null, "saved before uses were recorded: absent, not empty");
+
+    let ingress = test_ingress();
+    route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
+    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
+    let flow = test_ingress_flow(hash_unit(&ingress).unwrap(), hash_unit(&test_sink()).unwrap());
+    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+    let body = serde_json::json!({ "slug": "blog", "unit": to_hex(&hash_unit(&flow).unwrap()), "acknowledge": ["NetworkIngress", "NetworkEgress"], "uses": [{ "flow": "slugify", "saved_at": 7 }] });
+    assert!(route(&state, &req("POST", "/deploy", serde_json::to_vec(&body).unwrap())).is_success());
+    let deployed = body_json(route(&state, &req("GET", "/deployments", vec![])));
+    assert_eq!(deployed["deployments"][0]["uses"], serde_json::json!([{ "flow": "slugify", "saved_at": 7 }]));
 }
