@@ -4,7 +4,8 @@
 
 Holon is shown by what you can build with it. When a feature lands (a primitive, a node template,
 a host capability such as secrets, outbound requests or durable runs), it lands with a **sample
-flow** that uses it, in `editor/src/samples.ts`:
+flow** that uses it, in `crates/holon-author/src/samples.rs` (the editor and `holon new
+--sample` read them through the wasm bridge):
 
 - a short name and a one-line description of what it demonstrates;
 - built from the live catalog (never a hand-copied node shape), so it can't drift from core;

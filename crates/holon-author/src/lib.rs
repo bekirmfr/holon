@@ -16,6 +16,7 @@
 //! - [`composites`]: a composite's inside as a canvas, expanded in place, frozen back.
 //! - [`builder`]: a flow document built node by node, as the samples and the text format do.
 //! - [`text`]: the `.holon` text format: parsed, compiled, printed.
+//! - [`samples`]: the sample flows, one per capability, built with the builder.
 
 pub mod builder;
 pub mod canvas;
@@ -23,6 +24,7 @@ pub mod composites;
 pub mod flow;
 pub mod group;
 pub mod routes;
+pub mod samples;
 pub mod templates;
 pub mod text;
 pub mod wire;

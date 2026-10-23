@@ -61,7 +61,7 @@ import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { DeployedPage, FlowsPage, type AppPage, type PageTab } from "./Pages";
 import { useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
-import { SAMPLES, buildSample, type Sample } from "./samples";
+import { buildSample, samples, type Sample } from "./samples";
 import { blankTab, freshTab, metaSetter, savedKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccountMenu, AuthGate, type Me } from "./AuthGate";
@@ -296,7 +296,7 @@ function Canvas({
 
     // A flow other saved flows place as a node: they keep the version they placed, but say what
     // this save takes away from them should they update.
-  // A sample (samples.ts) opens as an unsaved copy under its own name, in a tab of its own:
+  // A sample (holon-author's samples.rs) opens as an unsaved copy under its own name, in a tab of its own:
   // saving it keeps it. A tab of that name already open is replaced only when confirmed.
   const onOpenSample = useCallback(
     async (sample: Sample) => {
@@ -812,7 +812,7 @@ function Canvas({
               openTabs={tabList}
               onOpen={onOpenFlow}
               onSwitch={switchTab}
-              samples={SAMPLES}
+              samples={samples()}
               onOpenSample={onOpenSample}
               holonText={{
                 onImport: (text) => {
@@ -851,7 +851,7 @@ function Canvas({
               panes={start.prefs.home ?? defaultHome()}
               onPanes={(home) => start.onPrefs({ ...start.prefs, home })}
               deployments={deployments}
-              samples={SAMPLES}
+              samples={samples()}
               market={{ url: market.url, entries: market.catalog }}
               actions={{
                 newFlow: start.onNew,

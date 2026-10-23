@@ -27,21 +27,24 @@ import { documentUnits, knownNames, nameOf, restoreDocument } from "./docUnits";
 import { manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
-import { SAMPLES, buildSample } from "./samples";
+import { buildSample, samples } from "./samples";
+import { compileHolon } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
 
 let catalog: Map<string, WUnit>;
 
+// The sample list comes from the wasm module, and tests are made from it: loaded before they are.
+initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
+
 beforeAll(() => {
-  initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
   catalog = new Map();
   for (const u of primitive_catalog() as WUnit[]) if (u.body.kind === "Primitive") catalog.set(u.body.name, u);
 });
 
 /** What deploying `sample` asks for, by consent name, or why it can't deploy. */
 function derive(name: string): { caps: string[]; endpoints: number } {
-  const sample = SAMPLES.find((s) => s.name === name)!;
+  const sample = samples().find((s) => s.name === name)!;
   const doc = buildSample(sample, new Evaluator());
   const nodes = doc.nodes as PrimitiveNodeType[];
   const edges = doc.edges as Edge[];
@@ -57,13 +60,13 @@ function derive(name: string): { caps: string[]; endpoints: number } {
 
 describe("sample flows", () => {
   it("have unique names, and a port or an interval", () => {
-    expect(new Set(SAMPLES.map((s) => s.name)).size).toBe(SAMPLES.length);
-    for (const s of SAMPLES) expect(Boolean(s.port) !== Boolean(s.interval), s.name).toBe(true);
-    const ports = SAMPLES.flatMap((s) => (s.port ? [s.port] : []));
+    expect(new Set(samples().map((s) => s.name)).size).toBe(samples().length);
+    for (const s of samples()) expect(Boolean(s.port) !== Boolean(s.interval), s.name).toBe(true);
+    const ports = samples().flatMap((s) => (s.port ? [s.port] : []));
     expect(new Set(ports).size, "each server its own port").toBe(ports.length);
   });
 
-  for (const s of SAMPLES) {
+  for (const s of samples()) {
     it(`${s.name} builds, derives, and asks for exactly what it uses`, () => {
       const doc = buildSample(s, new Evaluator());
       const requests = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.name === "request" && n.data.body.kind === "Template");
@@ -93,7 +96,7 @@ describe("sample flows", () => {
 
   it("tell required permissions from optional ones, the trigger always required", () => {
     const { caps } = derive("guarded-api");
-    const optional = SAMPLES.find((s) => s.name === "guarded-api")!.optional;
+    const optional = samples().find((s) => s.name === "guarded-api")!.optional;
     const trigger = manifestTrigger(caps);
     expect(trigger).toBe("NetworkIngress");
     expect(manifestTrigger(derive("heartbeat").caps)).toBe("Clock");
@@ -104,7 +107,7 @@ describe("sample flows", () => {
 
   it("place a whole flow as a node: one unit, wherever it's placed, that works", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
+    const doc = buildSample(samples().find((s) => s.name === "slugs")!, ev);
     const placed = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.body.kind === "Composite" && n.data.name === "slugify");
     expect(placed.length).toBe(2);
     const hashes = new Set(placed.map((n) => (n.data.body.kind === "Composite" ? n.data.body.hash : "")));
@@ -116,14 +119,11 @@ describe("sample flows", () => {
     const out = ev.eval(buildPreimage(unit), [{ type: "Text", value: "Hello Holon World" }]) as (WValue | null)[];
     expect(out).toEqual([{ type: "Text", value: "hello-holon-world" }]);
     expect(doc.units?.length, "its closure travels with the document").toBeGreaterThan(0);
-    expect(() =>
-      buildSample({ ...SAMPLES[0], build: (b) => void b.holon("h", (i) => void i.node("lowercase"), { inputs: ["a", "b"], outputs: ["c"] }) }, new Evaluator()),
-    ).toThrow('holon "h" has inputs');
   });
 
   it("place a holon that reads and writes outside: its ports are what they say, its needs in the manifest", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
+    const doc = buildSample(samples().find((s) => s.name === "slugs")!, ev);
     const publish = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "publish")!;
     if (publish.data.body.kind !== "Composite") throw new Error("not a composite");
     const unit = ev.get_unit(publish.data.body.hash) as WUnit;
@@ -143,31 +143,27 @@ describe("sample flows", () => {
 
   it("place a saved flow as one node: grouped whole, holons inside it and all; never a server", () => {
     // A flow without routes that itself holds a holon: slugify, then uppercase.
-    const shout: (typeof SAMPLES)[number] = {
-      ...SAMPLES.find((s) => s.name === "slugs")!,
-      name: "shout",
-      build(b) {
-        const slugify = b.holon(
-          "slugify",
-          (inner) => {
-            const lower = inner.node("lowercase", {}, [0, 0]);
-            const space = inner.node("const", { value: " ", type: "Text" }, [0, 120]);
-            const words = inner.node("split", {}, [240, 40]);
-            const dash = inner.node("const", { value: "-", type: "Text" }, [240, 160]);
-            const slug = inner.node("join", {}, [480, 60]);
-            inner.wire(lower, "out", words, "text");
-            inner.wire(space, "out", words, "sep");
-            inner.wire(words, "out", slug, "list");
-            inner.wire(dash, "out", slug, "sep");
-          },
-          { inputs: ["text"], outputs: ["slug"] },
-        );
-        const placed = b.place(slugify);
-        const upper = b.node("uppercase");
-        b.wire(placed, "slug", upper, "s");
-      },
-    };
-    const saved = buildSample(shout, new Evaluator());
+    const { doc: saved } = compileHolon(
+      `flow shout
+holon slugify(text) -> (slug) {
+  node lower = lowercase
+  node space = const { value: " ", type: Text }
+  node words = split
+  node dash = const { value: "-", type: Text }
+  node slug = join
+  in.text -> lower.s
+  lower.out -> words.text
+  space.out -> words.sep
+  words.out -> slug.list
+  dash.out -> slug.sep
+  slug.out -> out.slug
+}
+node placed = slugify
+node upper = uppercase
+placed.slug -> upper.s
+`,
+      new Evaluator(),
+    );
     // Placed in another flow's workspace, from what the saved document carries.
     const ev = new Evaluator();
     const placed = flowAsNode("shout", saved, ev, "shout-1", { x: 0, y: 0 });
@@ -179,7 +175,7 @@ describe("sample flows", () => {
     const out = ev.eval(buildPreimage(ev.get_unit(body.hash) as WUnit), [{ type: "Text", value: "Hello Holon" }]) as (WValue | null)[];
     expect(out).toEqual([{ type: "Text", value: "HELLO-HOLON" }]);
 
-    const server = buildSample(SAMPLES.find((s) => s.name === "hello-api")!, new Evaluator());
+    const server = buildSample(samples().find((s) => s.name === "hello-api")!, new Evaluator());
     const refused = flowAsNode("hello-api", server, new Evaluator(), "x", { x: 0, y: 0 });
     expect(refused.ok ? "" : refused.message).toContain("has routes");
     const empty = flowAsNode("e", { nodes: [], edges: [] }, new Evaluator(), "x", { x: 0, y: 0 });
@@ -202,7 +198,7 @@ describe("sample flows", () => {
 
   it("open a holon as a canvas of its own: its nodes, its wires, its boundary and what that is wired to", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
+    const doc = buildSample(samples().find((s) => s.name === "slugs")!, ev);
     const nodes = doc.nodes as PrimitiveNodeType[];
     const edges = doc.edges as Edge[];
     const publish = nodes.find((n) => n.data.name === "publish")!;
@@ -237,7 +233,7 @@ describe("sample flows", () => {
 
   it("freeze an inner canvas back into a composite: unchanged, the same unit; edited, a new one", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
+    const doc = buildSample(samples().find((s) => s.name === "slugs")!, ev);
     const nodes = doc.nodes as PrimitiveNodeType[];
     const publish = nodes.find((n) => n.data.name === "publish")!;
     const opened = innerCanvas(publish, nodes, doc.edges as Edge[], ev);
@@ -284,7 +280,7 @@ describe("sample flows", () => {
 
   it("apply an edited inner canvas: the flow's node becomes the new version, its wires following renamed ports", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
+    const doc = buildSample(samples().find((s) => s.name === "slugs")!, ev);
     const nodes = doc.nodes as PrimitiveNodeType[];
     const edges = doc.edges as Edge[];
     const publish = nodes.find((n) => n.data.name === "publish")!;
@@ -319,7 +315,7 @@ describe("sample flows", () => {
 
   it("fold a changed level into the one above, deepest first", () => {
     const ev = new Evaluator();
-    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, ev);
+    const doc = buildSample(samples().find((s) => s.name === "slugs")!, ev);
     const nodes = doc.nodes as PrimitiveNodeType[];
     const publish = nodes.find((n) => n.data.name === "publish")!;
     const opened = innerCanvas(publish, nodes, doc.edges as Edge[], ev);
@@ -345,22 +341,22 @@ describe("sample flows", () => {
 
   it("carry the names of the holons in a flow, nested ones too, and teach them back on open", () => {
     const ev = new Evaluator();
-    const nested = {
-      ...SAMPLES[0],
-      name: "nested",
-      build: (b: Parameters<(typeof SAMPLES)[0]["build"]>[0]) => {
-        const outer = b.holon(
-          "outer-holon",
-          (inner) => {
-            const shout = inner.holon("inner-holon", (deeper) => void deeper.node("uppercase", {}, [0, 0]), { inputs: ["text"], outputs: ["out"] });
-            inner.place(shout, [0, 0]);
-          },
-          { inputs: ["text"], outputs: ["out"] },
-        );
-        b.place(outer);
-      },
-    };
-    const doc = buildSample(nested, ev);
+    const { doc } = compileHolon(
+      `flow nested
+holon inner-holon(text) -> (out) {
+  node up = uppercase
+  in.text -> up.s
+  up.out -> out.out
+}
+holon outer-holon(text) -> (out) {
+  node shout = inner-holon
+  in.text -> shout.text
+  shout.out -> out.out
+}
+node outer = outer-holon
+`,
+      ev,
+    );
     expect(Object.values(doc.names ?? {}).sort()).toEqual(["inner-holon", "outer-holon"]);
     const innerHash = Object.entries(doc.names!).find(([, n]) => n === "inner-holon")![0];
     expect(nameOf(innerHash), "not known before the flow is opened").toBeUndefined();
@@ -391,10 +387,7 @@ describe("sample flows", () => {
     expect(derive("marketplace").caps).toEqual(["Clock", 'CollectionRead("listings")', 'CollectionWrite("listings")', "NetworkIngress", 'SecretRead("publish_key")']);
   });
 
-  it("refuse a misspelt leaf, param or port, naming the sample", () => {
-    const broken = { ...SAMPLES[0], build: (b: Parameters<(typeof SAMPLES)[0]["build"]>[0]) => b.wire(b.node("field"), "nope", b.node("concat"), "a") };
-    expect(() => buildSample(broken, new Evaluator())).toThrow('sample "hello-api": field has no output "nope"');
-    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("fieldd") }, new Evaluator())).toThrow('no leaf "fieldd"');
-    expect(() => buildSample({ ...SAMPLES[0], build: (b) => void b.node("field", { nam: "x" }) }, new Evaluator())).toThrow('has no param "nam"');
+  it("are holon-author's, built by name", () => {
+    expect(() => buildSample({ ...samples()[0], name: "nope" }, new Evaluator())).toThrow('no sample "nope"');
   });
 });

@@ -3,18 +3,17 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { initSync, Evaluator } from "../wasm/holon_wasm.js";
 import type { Edge } from "@xyflow/react";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { deriveServer, flowUnitHash } from "./canvasOps";
 import { compileHolon, printHolon } from "./holonText";
-import { SAMPLES, buildSample } from "./samples";
+import { buildSample, samples } from "./samples";
 
 
-beforeAll(() => {
-  initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
-});
+// The sample list comes from the wasm module, and tests are made from it: loaded before they are.
+initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
 
 const HELLO = `flow hello-api
 port 8101
@@ -50,13 +49,13 @@ describe("flows as text", () => {
 
   it("is the same unit as the same flow built on the canvas (the Hello API sample)", () => {
     const ev = new Evaluator();
-    const sample = buildSample(SAMPLES.find((s) => s.name === "hello-api")!, ev);
+    const sample = buildSample(samples().find((s) => s.name === "hello-api")!, ev);
     expect(unitOf(compileHolon(HELLO, ev).doc, ev)).toBe(unitOf(sample, ev));
   });
 
-  it.each(SAMPLES.map((s) => [s.name]))("round-trips the %s sample: printed, compiled back, the identical unit", (sampleName) => {
+  it.each(samples().map((s) => [s.name]))("round-trips the %s sample: printed, compiled back, the identical unit", (sampleName) => {
     const ev = new Evaluator();
-    const original = buildSample(SAMPLES.find((s) => s.name === sampleName)!, ev);
+    const original = buildSample(samples().find((s) => s.name === sampleName)!, ev);
     const text = printHolon(sampleName, original, ev);
     // A fresh workspace: everything it needs comes from the text.
     const fresh = new Evaluator();

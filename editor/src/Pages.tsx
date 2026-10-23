@@ -51,7 +51,7 @@ export function FlowsPage({
   /** Open a saved flow in a new tab, or (`reload`) over its open tab. */
   onOpen: (rec: FlowRecord, reload?: boolean) => void;
   onSwitch: (tab: number) => void;
-  /** Sample flows (samples.ts), one per capability: opening one starts an unsaved copy. */
+  /** Sample flows (holon-author's samples.rs), one per capability: opening one starts an unsaved copy. */
   samples: Sample[];
   onOpenSample: (sample: Sample) => void;
   /** Flows as text (holonText.ts): a `.holon` file opened as an unsaved flow (answers why not,

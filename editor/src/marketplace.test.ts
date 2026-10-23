@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit } from "./holon";
 import { catalogOf, listingOf, placeListing, type Listing } from "./marketplace";
-import { SAMPLES, buildSample } from "./samples";
+import { compileHolon } from "./holonText";
 
 
 beforeAll(() => {
@@ -16,17 +16,17 @@ beforeAll(() => {
 
 /** A saved flow without routes: upper-cases its text, through a holon of its own. */
 function shoutFlow(ev: Evaluator) {
-  return buildSample(
-    {
-      ...SAMPLES[0],
-      name: "shout",
-      build: (b) => {
-        const inner = b.holon("upper", (h) => void h.node("uppercase", {}, [0, 0]), { inputs: ["text"], outputs: ["out"] });
-        b.place(inner);
-      },
-    },
+  return compileHolon(
+    `flow shout
+holon upper(text) -> (out) {
+  node up = uppercase
+  in.text -> up.s
+  up.out -> out.out
+}
+node shout = upper
+`,
     ev,
-  );
+  ).doc;
 }
 
 const published = (l: Omit<Listing, "id" | "published_at">, at: number): Listing => ({ ...l, id: `${l.name}@${l.root}`, published_at: at });

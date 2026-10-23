@@ -16,7 +16,7 @@
 //!   free to drift). Hashes now cross the boundary as **lowercase hex strings** — usable as JS map
 //!   keys and `===`-comparable, which `Uint8Array` is not.
 
-use holon_author::builder::{self, FlowDocument, Holon, HolonPort, Settings};
+use holon_author::builder::FlowDocument;
 use holon_author::canvas::{Node, Position, Wire};
 use holon_author::composites::{self, BoundaryPort, Names};
 use holon_author::group::{self, GroupError};
@@ -940,76 +940,19 @@ pub fn compile_holon(source: &str) -> Result<JsValue, JsError> {
     to_js(&compiled)
 }
 
-/// A flow built node by node, as the samples build theirs (builder.rs): `node`, `wire`, `arity`,
-/// holons between `begin_holon` and `end_holon` (or `end_holon_exact`), `place`, then `finish`.
-/// Every name is checked: an unknown leaf, param or port throws.
+/// The sample flows, one per capability, in the order the flows page lists them: `[{name, title,
+/// description, shows, port?, interval?, secrets?, optional?, browsers?, tryIt}]` (samples.rs).
 #[wasm_bindgen]
-pub struct FlowBuilder {
-    inner: builder::FlowBuilder,
+pub fn samples() -> Result<JsValue, JsError> {
+    to_js(&holon_author::samples::samples())
 }
 
-impl Default for FlowBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn at_of(at: Option<Vec<f64>>) -> Option<Position> {
-    at.and_then(|a| Some(Position { x: *a.first()?, y: *a.get(1)? }))
-}
-
+/// The sample `name` laid out on a canvas: the flow document opening it loads, its holons' units
+/// in it. Throws when there's no such sample, or it doesn't build (`sample "name": …`).
 #[wasm_bindgen]
-impl FlowBuilder {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> FlowBuilder {
-        FlowBuilder { inner: builder::FlowBuilder::new() }
-    }
-
-    /// A leaf or template, `params` as `[name, value]` pairs, at `[x, y]` (the next spot when
-    /// absent). Answers its id.
-    pub fn node(&mut self, name: &str, params: JsValue, at: Option<Vec<f64>>) -> Result<String, JsError> {
-        let params: Vec<(String, String)> = from_js(params, "params")?;
-        self.inner.node(name, &params, at_of(at)).map_err(|e| JsError::new(&e))
-    }
-
-    pub fn wire(&mut self, from: &str, output: &str, to: &str, input: &str) -> Result<(), JsError> {
-        self.inner.wire(from, output, to, input).map_err(|e| JsError::new(&e))
-    }
-
-    pub fn arity(&mut self, node: &str, inputs: usize) -> Result<(), JsError> {
-        self.inner.arity(node, inputs).map_err(|e| JsError::new(&e))
-    }
-
-    pub fn begin_holon(&mut self, name: &str) {
-        self.inner.begin_holon(name);
-    }
-
-    /// The holon begun last, grouped: `{name, hash, inputs, outputs}`.
-    pub fn end_holon(&mut self, name: &str, inputs: Vec<String>, outputs: Vec<String>) -> Result<JsValue, JsError> {
-        let holon = self.inner.end_holon(name, &inputs, &outputs).map_err(|e| JsError::new(&e))?;
-        to_js(&holon)
-    }
-
-    /// The holon begun last, its boundary given: ports `[{name, unit?}]`, wiring
-    /// `[[port, node, input]]` in and `[[node, output, port]]` out.
-    pub fn end_holon_exact(&mut self, name: &str, inputs: JsValue, outputs: JsValue, wiring_in: JsValue, wiring_out: JsValue) -> Result<JsValue, JsError> {
-        let (inputs, outputs): (Vec<HolonPort>, Vec<HolonPort>) = (from_js(inputs, "inputs")?, from_js(outputs, "outputs")?);
-        let wiring_in: Vec<(String, String, String)> = from_js(wiring_in, "wiring in")?;
-        let wiring_out: Vec<(String, String, String)> = from_js(wiring_out, "wiring out")?;
-        let holon = self.inner.end_holon_exact(name, &inputs, &outputs, &wiring_in, &wiring_out).map_err(|e| JsError::new(&e))?;
-        to_js(&holon)
-    }
-
-    pub fn place(&mut self, holon: JsValue, at: Option<Vec<f64>>) -> Result<String, JsError> {
-        let holon: Holon = from_js(holon, "holon")?;
-        Ok(self.inner.place(&holon, at_of(at)))
-    }
-
-    /// The flow document, with `settings` as its deploy settings.
-    pub fn finish(self, settings: JsValue) -> Result<JsValue, JsError> {
-        let settings: Settings = from_js(settings, "settings")?;
-        to_js(&self.inner.finish(settings))
-    }
+pub fn build_sample(name: &str) -> Result<JsValue, JsError> {
+    let sample = holon_author::samples::sample(name).ok_or_else(|| JsError::new(&format!("no sample \"{name}\"")))?;
+    to_js(&holon_author::samples::build(sample).map_err(|e| JsError::new(&e))?)
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ import type { PrimitiveNodeType } from "../src/PrimitiveNode";
 import { deriveServer, flowUnitHash } from "../src/canvasOps";
 import { describeItem } from "../src/diagnostics";
 import { compileHolon, HolonTextError, printHolon } from "../src/holonText";
-import { SAMPLES, buildSample } from "../src/samples";
+import { buildSample, samples } from "../src/samples";
 
 // The core: beside this file once built (dist-cli/), else the editor's own build (wasm/).
 const here = dirname(fileURLToPath(import.meta.url));
@@ -50,7 +50,7 @@ greet.out   -> res.body
 function usage(): never {
   console.error(`usage: holon <command> <file>
 
-  new <file> [--sample <name>]   write a starter flow (or a sample: ${SAMPLES.map((s) => s.name).join(", ")})
+  new <file> [--sample <name>]   write a starter flow (or a sample: ${samples().map((s) => s.name).join(", ")})
   check <file>                   compile it: its routes, what it may do, or each mistake
   show <file>                    an outline: routes, nodes and what feeds them
   fmt <file>                     rewrite it in the canonical form`);
@@ -104,7 +104,7 @@ switch (command) {
     const sampleAt = rest.indexOf("--sample");
     let text = STARTER;
     if (sampleAt >= 0) {
-      const sample = SAMPLES.find((s) => s.name === rest[sampleAt + 1]);
+      const sample = samples().find((s) => s.name === rest[sampleAt + 1]);
       if (!sample) usage();
       const ev = new Evaluator();
       text = `# ${sample.title}: ${sample.description}\n${printHolon(sample.name, buildSample(sample, ev), ev)}`;
