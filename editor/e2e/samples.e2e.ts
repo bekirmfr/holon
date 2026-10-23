@@ -177,6 +177,9 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
 test("the flows page says which saved flows place a flow as a node", async ({ page }) => {
   await page.goto("/");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
+  // Names of their own, so a run never meets an earlier one's flows.
+  const run = Date.now().toString(36);
+  const [shout, user] = [`shout-${run}`, `loud-user-${run}`];
   /** A new flow named `name`, `entry` dropped from the palette onto it, saved. */
   const saveWith = async (name: string, entry: string) => {
     await page.getByRole("button", { name: "new", exact: true }).click();
@@ -188,20 +191,24 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
     await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
     await expect(page.locator(".hl-canvas")).toContainText("saved");
   };
-  await saveWith("shout", "uppercase");
-  await saveWith("loud-user", "flow:shout");
+  await saveWith(shout, "uppercase");
+  await saveWith(user, `flow:${shout}`);
   await page.getByRole("button", { name: "flows", exact: true }).click();
-  await expect(page.getByText("placed in loud-user", { exact: true })).toBeVisible();
+  await expect(page.getByText(`placed in ${user}`, { exact: true })).toBeVisible();
   // A save of "shout" that takes its input away asks first, naming who places it.
-  await page.locator(".hl-tab", { hasText: "shout" }).click();
+  await page.locator(".hl-tab", { hasText: shout }).click();
+  await expect(page.locator(".hl-tab--active")).toContainText(shout);
+  await expect(flow.locator(".react-flow__node", { hasText: "uppercase" })).toHaveCount(1);
   await flow.locator(".react-flow__node").click();
   await page.keyboard.press("Delete");
+  await expect(flow.locator(".react-flow__node")).toHaveCount(0);
   await dropFromPalette(page, "concat");
+  await expect(flow.locator(".react-flow__node", { hasText: "concat" })).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   const ask = page.locator('[aria-modal="true"]');
-  await expect(ask).toContainText('"shout" is placed as a node in loud-user');
+  await expect(ask).toContainText(`"${shout}" is placed as a node in ${user}`);
   await expect(ask).toContainText('input "uppercase · s" removed');
   await ask.getByRole("button", { name: "Save" }).click();
   await page.getByRole("button", { name: "flows", exact: true }).click();
-  await expect(page.getByText("(an older save)")).toBeVisible();
+  await expect(page.getByText(`placed in ${user} (an older save)`, { exact: true })).toBeVisible();
 });
