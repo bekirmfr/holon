@@ -700,6 +700,22 @@ fn serve(args: Vec<String>) {
         inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
         inside(&mut host_key_arg, ".holon-host-key", "host.key");
     }
+    // The address first: a second server (one still running from before an update, say) stops
+    // here, before its clock and listeners start beside the first one's. Requests wait for the
+    // state, which is set before the server runs.
+    let state_cell: Arc<std::sync::OnceLock<AppState>> = Arc::new(std::sync::OnceLock::new());
+    let server = {
+        let cell = Arc::clone(&state_cell);
+        rouille::Server::new(&addr, move |request| {
+            let state = cell.get().expect("the server runs once its state is set");
+            with_cors(&state.access, request, route(state, request))
+        })
+    }
+    .unwrap_or_else(|e| {
+        eprintln!("holon: can't listen on {addr}: {e}");
+        eprintln!("holon: is another holon running there? Stop it, or pick another address with HOLON_SERVER_ADDR");
+        std::process::exit(1);
+    });
     let backend: DynStore = if store_arg == ":memory:" {
         println!("holon: in-memory store (nothing persists past this run)");
         Box::new(MemStore::new())
@@ -781,5 +797,8 @@ fn serve(args: Vec<String>) {
         println!("holon: the editor ({}) at http://{addr}/", source.describe());
     }
     println!("holon: listening on http://{addr} ({gate}; see access.rs)");
-    rouille::start_server(addr, move |request| with_cors(&state.access, request, route(&state, request)));
+    if state_cell.set(state).is_err() {
+        unreachable!("the state is set once");
+    }
+    server.run();
 }
