@@ -202,7 +202,7 @@ const opBtn = (enabled: boolean): CSSProperties => ({
   opacity: enabled ? 1 : 0.4,
 });
 
-/** Top right: project / group / expand / inspect, and the current projection (its hash, a field
+/** Top right: project / group / ungroup / inspect, and the current projection (its hash, a field
  *  per promoted input, a result per output with a button that excludes it). */
 export function ProjectionPanel({
   nodeCount,
@@ -245,10 +245,10 @@ export function ProjectionPanel({
       <button
         onClick={onExpand}
         disabled={!canExpand}
-        title={canExpand ? "expand this composite" : "select one composite node to expand"}
+        title={canExpand ? "ungroup: replace this composite with the nodes inside it" : "select one composite node to ungroup (to look inside it, select it and expand)"}
         style={opBtn(canExpand)}
       >
-        expand
+        ungroup
       </button>
       <button
         onClick={onInspect}

@@ -90,3 +90,22 @@ test("a failing run replays exactly and opens on where it failed", async ({ page
   await viewNewestRun(page);
   await expect(page.locator(".hl-view__bottom")).toContainText("failed at field author");
 });
+
+test("a holon expands into a canvas of its own, and ungroups in place", async ({ page }) => {
+  await openSample(page, "A flow inside a flow (holon)");
+  const flow = page.locator(".hl-canvas__flow > .react-flow");
+  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  const overlay = page.locator(".hl-overlay");
+  await expect(overlay.locator(".hl-overlay__crumbs")).toContainText("publish");
+  await expect(overlay.locator(".react-flow__node", { hasText: "collection_put" })).toBeVisible();
+  // Its boundary says what it is wired to in the flow around it.
+  await expect(overlay.locator(".react-flow__node", { hasText: "inputs" })).toContainText("← slugify");
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  // Ungroup replaces it with its nodes, here.
+  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "ungroup" }).click();
+  await expect(flow.locator(".react-flow__node", { hasText: "publish" })).toHaveCount(0);
+  await expect(flow.locator(".react-flow__node", { hasText: "collection_put" })).toHaveCount(1);
+});

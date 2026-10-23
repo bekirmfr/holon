@@ -62,6 +62,7 @@ import {
   deriveServer,
   excludeProjectedOutput,
   flowAsNode,
+  innerCanvas,
   flowUnitHash,
   expandComposite,
   groupOf,
@@ -79,6 +80,9 @@ import { blankMeta, blankTab, metaSetter, nextAfterClose, tabKind, type FlowMeta
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccessButton } from "./AccessButton";
 import { useViewMode, ViewModePanes } from "./useViewMode";
+import { CompositeOverlay, type OverlayFrame } from "./CompositeOverlay";
+import type { Node as FlowNode } from "@xyflow/react";
+import { innerSteps } from "./replay";
 
 // What a save records, for unsaved-change tracking: the canvas plus the server draft.
 const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) =>
@@ -556,7 +560,7 @@ function Canvas({
     },
     [ev, byName, setNodes, setEdges, setSaveMsg],
   );
-  const nodeActions = useMemo(() => ({ updateHolon }), [updateHolon]);
+
 
   // A group of canvas nodes as core children and wires, and the canvas node behind each child of
   // a frozen unit (canvasOps.ts).
@@ -937,12 +941,22 @@ function Canvas({
   }, [nodes, edges, ev, setNodes, setEdges, byName]);
 
   // Expand the one selected composite back into its children, one level.
-  const onExpand = useCallback(() => {
-    const selected = nodes.filter((n) => n.selected);
-    if (selected.length !== 1) return; // mirrors the button's own disabled guard, defensively
-    const target = selected[0];
-    if (target.data.body.kind !== "Composite") return;
-    const result = expandComposite(target, edges, ev, byName, variadic, () => idRef.current++);
+  // What each composite has been called on this editor's canvases, by hash: a unit keeps no
+  // names, so a composite found inside another (expanding or ungrouping it) takes its name from
+  // here, e.g. a "slugify" grouped into something bigger stays "slugify" inside it.
+  const compositeNames = useRef(new Map<string, string>());
+  useEffect(() => {
+    for (const n of nodes) {
+      if (n.data.body.kind === "Composite" && n.data.name !== n.data.body.hash.slice(0, 8)) compositeNames.current.set(n.data.body.hash, n.data.name);
+    }
+  }, [nodes]);
+  const nameOf = useCallback((hash: string) => compositeNames.current.get(hash), []);
+
+  // Ungroup a composite: replace it with the nodes inside it, here (canvasOps.expandComposite).
+  const ungroup = useCallback((id: string) => {
+    const target = live.current.nodes.find((n) => n.id === id);
+    if (!target || target.data.body.kind !== "Composite") return;
+    const result = expandComposite(target, live.current.edges, ev, byName, variadic, () => idRef.current++, nameOf);
     if (result.ok) {
       setNodes((ns) => [...ns.filter((n) => n.id !== target.id), ...result.nodes]);
       setEdges(result.edges);
@@ -951,7 +965,51 @@ function Canvas({
     } else {
       setProjError(result.message);
     }
-  }, [nodes, edges, ev, byName, variadic, setNodes, setEdges]);
+  }, [ev, byName, variadic, setNodes, setEdges, nameOf]);
+
+  // Look inside a composite: its inner flow on a canvas of its own, over this one, grown from
+  // where the node sits (CompositeOverlay.tsx). In view mode, with a run selected, its nodes show
+  // what they produced in the run (the log keeps one level inside each node).
+  const [overlay, setOverlay] = useState<{ frames: OverlayFrame[]; from: { left: number; top: number; width: number; height: number } } | null>(null);
+  const inside = useCallback(
+    (target: PrimitiveNodeType, around: FlowNode[], wires: Edge[]): OverlayFrame | string => {
+      const opened = innerCanvas(target, around.filter((n) => n.type === "primitive") as PrimitiveNodeType[], wires, ev, byName, variadic, nameOf);
+      return opened.ok ? { title: target.data.name, nodes: opened.nodes, edges: opened.edges } : opened.message;
+    },
+    [ev, byName, variadic, nameOf],
+  );
+  const expandNode = useCallback(
+    (id: string) => {
+      const target = live.current.nodes.find((n) => n.id === id);
+      if (!target) return;
+      const opened = innerCanvas(target, live.current.nodes, live.current.edges, ev, byName, variadic, nameOf);
+      if (!opened.ok) return setProjError(opened.message);
+      let frameNodes = opened.nodes;
+      if (viewing && flow.selectedRun) {
+        const steps = innerSteps(flow.selectedRun, flow.viewTrace, id);
+        frameNodes = frameNodes.map((n) => {
+          const step = steps.find((st) => opened.childIds[st.child] === n.id);
+          return step ? { ...n, data: { ...n.data, trace: { outputs: step.outputs ?? [], state: "done", showValues: true } } } : n;
+        });
+      }
+      const box = document.querySelector(".hl-canvas__flow")?.getBoundingClientRect();
+      const at = document.querySelector(`.hl-canvas__flow .react-flow__node[data-id="${CSS.escape(id)}"]`)?.getBoundingClientRect();
+      const from = box && at ? { left: at.left - box.left, top: at.top - box.top, width: at.width, height: at.height } : { left: 0, top: 0, width: 200, height: 100 };
+      setOverlay({ frames: [{ title: target.data.name, nodes: frameNodes, edges: opened.edges }], from });
+    },
+    [ev, byName, variadic, viewing, flow.selectedRun, flow.viewTrace, nameOf],
+  );
+  // Another tab, or the other mode, closes it.
+  useEffect(() => setOverlay(null), [activeId, viewing]);
+  const nodeActions = useMemo(() => ({ updateHolon, expandComposite: expandNode, ungroup }), [updateHolon, expandNode, ungroup]);
+
+  const onExpand = useCallback(() => {
+    const selected = nodes.filter((n) => n.selected);
+    if (selected.length !== 1) return; // mirrors the button's own disabled guard, defensively
+    const target = selected[0];
+    if (target.data.body.kind !== "Composite") return;
+    ungroup(target.id);
+  }, [nodes, ungroup]);
 
   // Open the inspect panel for the single selected node (P4.4.1). Unlike onExpand, this never
   // touches nodes/edges — it only resolves the selected node's own hash (via unitFor, the same
@@ -1134,6 +1192,16 @@ function Canvas({
         </ReactFlow>
         {nodes.length === 0 && page === "canvas" && (
           <div className="hl-canvas__empty">drag a primitive here to place it</div>
+        )}
+        {overlay && (
+          <CompositeOverlay
+            root={flowName ?? "untitled"}
+            frames={overlay.frames}
+            from={overlay.from}
+            inside={inside}
+            onFrames={(frames) => setOverlay((o) => (o ? { ...o, frames } : o))}
+            onClose={() => setOverlay(null)}
+          />
         )}
       </div>
       <ViewModePanes view={view} flow={flow} nodes={nodes} />

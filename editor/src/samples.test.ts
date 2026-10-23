@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator, primitive_catalog, primitive_docs, variadic_primitives } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit, type WValue } from "./holon";
 import { fromHex } from "./flowDoc";
-import { deriveServer, flowAsNode, flowUnitHash } from "./canvasOps";
+import { BOUNDARY_IN, BOUNDARY_OUT, deriveServer, flowAsNode, flowUnitHash, innerCanvas, type BoundaryData } from "./canvasOps";
 import { manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
@@ -187,6 +187,41 @@ describe("sample flows", () => {
     const holon = describe({ name: "slugify", body: { kind: "Composite", hash: "h" }, inputs: [port("text")], outputs: [port("slug")] });
     expect(holon).toContain("of 5 nodes");
     expect(holon).toContain("Takes text; gives slug");
+  });
+
+  it("open a holon as a canvas of its own: its nodes, its wires, its boundary and what that is wired to", () => {
+    const ev = new Evaluator();
+    const doc = buildSample(SAMPLES.find((s) => s.name === "slugs")!, catalog, variadic, ev);
+    const nodes = doc.nodes as PrimitiveNodeType[];
+    const edges = doc.edges as Edge[];
+    const publish = nodes.find((n) => n.data.name === "publish")!;
+    const opened = innerCanvas(publish, nodes, edges, ev, catalog, variadic);
+    if (!opened.ok) throw new Error(opened.message);
+    expect(opened.childIds.length).toBe(10);
+    expect(opened.nodes.length).toBe(12);
+    const boundary = (id: string) => opened.nodes.find((n) => n.id === id)!.data as BoundaryData;
+    expect(boundary(BOUNDARY_IN).ports.map((p) => [p.name, p.outside])).toEqual([
+      ["slug", ["slugify"]],
+      ["author", ["slugify"]],
+    ]);
+    expect(boundary(BOUNDARY_OUT).ports.map((p) => [p.name, p.outside])).toEqual([
+      ["put", []],
+      ["saved", []],
+      ["receipt", ["with_field.value"]],
+    ]);
+    // Every wire lands on a real port: inside, and through the boundary both ways.
+    const ports = new Map(opened.nodes.map((n) => [n.id, n]));
+    for (const e of opened.edges) {
+      expect(ports.has(e.source) && ports.has(e.target), e.id).toBe(true);
+    }
+    // slug enters through one `default` node, which fans out inside.
+    expect(opened.edges.filter((e) => e.source === BOUNDARY_IN).length).toBe(2);
+    expect(opened.edges.filter((e) => e.target === BOUNDARY_OUT).length).toBe(3);
+    // Laid out by how far data has come: no two nodes on the same spot.
+    const spots = new Set(opened.nodes.map((n) => `${n.position.x},${n.position.y}`));
+    expect(spots.size).toBe(opened.nodes.length);
+    // A primitive isn't a composite.
+    expect(innerCanvas(nodes.find((n) => n.data.name === "record")!, nodes, edges, ev, catalog, variadic).ok).toBe(false);
   });
 
   it("ask for what each one shows", () => {

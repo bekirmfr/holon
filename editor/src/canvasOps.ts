@@ -3,7 +3,7 @@
 // Each reads what core computed (the boundary edges) rather than re-deciding it, and leaves
 // setting React state to the caller.
 
-import { addEdge, type Edge } from "@xyflow/react";
+import { addEdge, type Edge, type Node } from "@xyflow/react";
 import { BOUNDARY, buildPreimage, Evaluator, type WEdge, type WEncapSpec, type WPort, type WUnit, type WValue } from "./holon";
 import type { PrimitiveData, PrimitiveNodeType } from "./PrimitiveNode";
 import { boundaryLabels, encapErrorNodeIndices, isWEncapError } from "./diagnostics";
@@ -353,6 +353,142 @@ export function groupSelection(
 // Expand a placed composite node back into its children (P4.3.1's dual of grouping). One level
 // only, deliberately: a nested composite child is revealed still collapsed, as its own composite
 // node. Deep, read-only descent is the inspect panel's job.
+/** What a composite was called on a canvas, by hash: a unit keeps no names, the editor does. */
+export type NameOf = (hash: string) => string | undefined;
+
+/** A composite's children as canvas nodes, rebuilt from their units (not yet placed). A nested
+ *  composite takes the name it had on a canvas (`nameOf`), else the start of its hash. */
+function childNodes(childHashes: string[], ev: Evaluator, byName: Map<string, WUnit>, variadic: Set<string>, nextId: () => number, nameOf?: NameOf): PrimitiveNodeType[] {
+  return childHashes.map((h) => {
+    const cu = ev.get_unit(h) as WUnit;
+    const data: PrimitiveData =
+      cu.body.kind === "Primitive"
+        ? {
+            name: cu.body.name,
+            body: { kind: "Primitive" },
+            inputs: cu.inputs ?? [],
+            outputs: cu.outputs ?? [],
+            params: cu.params ?? [],
+            variadic: variadic.has(cu.body.name),
+            // The catalog's own declared arity, not this (possibly grown-then-frozen) child's
+            // current one — the same floor a palette drop enforces.
+            minInputs: (byName.get(cu.body.name)?.inputs ?? cu.inputs ?? []).length,
+          }
+        : {
+            name: nameOf?.(h) ?? h.slice(0, 8),
+            body: { kind: "Composite", hash: h },
+            inputs: cu.inputs ?? [],
+            outputs: cu.outputs ?? [],
+            params: [],
+            variadic: false,
+            minInputs: 0,
+          };
+    const id = cu.body.kind === "Primitive" ? `${cu.body.name}-${nextId()}` : `composite-${nextId()}-${h.slice(0, 8)}`;
+    return { id, type: "primitive", position: { x: 0, y: 0 }, data };
+  });
+}
+
+/** One port of a composite's boundary as its inner canvas shows it, with what it is wired to
+ *  outside the composite, in the flow around it. */
+export type BoundaryPort = { name: string; ty: WPort["ty"]; outside: string[] };
+export type BoundaryData = { side: "in" | "out"; ports: BoundaryPort[] };
+export const BOUNDARY_IN = "boundary-in";
+export const BOUNDARY_OUT = "boundary-out";
+
+/**
+ * A composite as a canvas of its own, to look inside it without ungrouping: its children as
+ * nodes (read only), laid out left to right in the order data flows (a frozen unit keeps no
+ * positions), its inner wires, and its boundary as two nodes, its inputs on the left and its
+ * outputs on the right, each port labelled with what it is wired to in the flow around it
+ * (`nodes`/`edges`). `childIds[i]` is the canvas id of child `i`, to match a run's inner steps.
+ */
+export function innerCanvas(
+  target: PrimitiveNodeType,
+  nodes: PrimitiveNodeType[],
+  edges: Edge[],
+  ev: Evaluator,
+  byName: Map<string, WUnit>,
+  variadic: Set<string>,
+  nameOf?: NameOf,
+): { ok: true; nodes: Node[]; edges: Edge[]; childIds: string[] } | { ok: false; message: string } {
+  if (target.data.body.kind !== "Composite") return { ok: false, message: "not a composite" };
+  try {
+    const unit = ev.get_unit(target.data.body.hash) as WUnit;
+    if (unit.body.kind !== "Composite") return { ok: false, message: "not a composite" };
+    let n = 0;
+    const children = childNodes(unit.body.children, ev, byName, variadic, () => n++, nameOf).map((c) => ({ ...c, data: { ...c.data, readOnly: true } }));
+    const inner = unit.body.edges;
+
+    // Columns by how far data has come: a child fed only by the boundary is in column 1.
+    const depth = new Array<number>(children.length).fill(1);
+    for (let pass = 0; pass < children.length; pass++) {
+      for (const e of inner) {
+        if (e.from_child !== BOUNDARY && e.to_child !== BOUNDARY) depth[e.to_child] = Math.max(depth[e.to_child], depth[e.from_child] + 1);
+      }
+    }
+    const last = Math.max(1, ...depth) + 1;
+    const rows = new Map<number, number>();
+    const COLUMN = 250;
+    const ROW = 150;
+    children.forEach((c, i) => {
+      const row = rows.get(depth[i]) ?? 0;
+      rows.set(depth[i], row + 1);
+      c.position = { x: depth[i] * COLUMN, y: row * ROW };
+    });
+
+    // What each boundary port is wired to outside: the node (with its port when it has
+    // several), or nothing.
+    const label = (id: string, handle: string | null | undefined, side: "out" | "in") => {
+      const node = nodes.find((x) => x.id === id);
+      if (!node) return id;
+      const ports = side === "out" ? node.data.outputs : node.data.inputs;
+      return ports.length > 1 && handle ? `${node.data.name}.${handle}` : node.data.name;
+    };
+    const ins: BoundaryPort[] = target.data.inputs.map((p) => ({
+      name: p.name,
+      ty: p.ty,
+      outside: edges.filter((e) => e.target === target.id && e.targetHandle === p.name).map((e) => label(e.source, e.sourceHandle, "out")),
+    }));
+    const outs: BoundaryPort[] = target.data.outputs.map((p) => ({
+      name: p.name,
+      ty: p.ty,
+      outside: edges.filter((e) => e.source === target.id && e.sourceHandle === p.name).map((e) => label(e.target, e.targetHandle, "in")),
+    }));
+    const middle = ((Math.max(1, ...rows.values()) - 1) * ROW) / 2;
+    const inData: BoundaryData = { side: "in", ports: ins };
+    const outData: BoundaryData = { side: "out", ports: outs };
+    const boundary: Node[] = [
+      { id: BOUNDARY_IN, type: "boundary", position: { x: -60, y: middle }, data: inData },
+      { id: BOUNDARY_OUT, type: "boundary", position: { x: last * COLUMN, y: middle }, data: outData },
+    ];
+
+    const wires: Edge[] = inner.flatMap((e, i): Edge[] => {
+      const from =
+        e.from_child === BOUNDARY
+          ? { id: BOUNDARY_IN, port: target.data.inputs[e.from_port] }
+          : { id: children[e.from_child]?.id, port: children[e.from_child]?.data.outputs[e.from_port] };
+      const to =
+        e.to_child === BOUNDARY
+          ? { id: BOUNDARY_OUT, port: target.data.outputs[e.to_port] }
+          : { id: children[e.to_child]?.id, port: children[e.to_child]?.data.inputs[e.to_port] };
+      if (!from.id || !from.port || !to.id || !to.port) return [];
+      return [
+        {
+          id: `inner-${i}`,
+          source: from.id,
+          sourceHandle: from.port.name,
+          target: to.id,
+          targetHandle: to.port.name,
+          style: { stroke: outputColor(from.port.ty), strokeWidth: 1.6 },
+        },
+      ];
+    });
+    return { ok: true, nodes: [...boundary, ...children], edges: wires, childIds: children.map((c) => c.id) };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export function expandComposite(
   target: PrimitiveNodeType,
   edges: Edge[],
@@ -360,6 +496,7 @@ export function expandComposite(
   byName: Map<string, WUnit>,
   variadic: Set<string>,
   nextId: () => number,
+  nameOf?: NameOf,
 ): { ok: true; nodes: PrimitiveNodeType[]; edges: Edge[] } | ({ ok: false } & OpError) {
   if (target.data.body.kind !== "Composite") return { ok: false, message: "expand: not a composite", nodeIds: [] };
   try {
@@ -372,34 +509,10 @@ export function expandComposite(
     // one just dropped from the palette), a nested composite stays a placed reference.
     const spacing = 220;
     const startX = target.position.x - ((childHashes.length - 1) * spacing) / 2;
-    const newNodes: PrimitiveNodeType[] = childHashes.map((h, i) => {
-      const cu = ev.get_unit(h) as WUnit;
-      const position = { x: startX + i * spacing, y: target.position.y };
-      const data: PrimitiveData =
-        cu.body.kind === "Primitive"
-          ? {
-              name: cu.body.name,
-              body: { kind: "Primitive" },
-              inputs: cu.inputs ?? [],
-              outputs: cu.outputs ?? [],
-              params: cu.params ?? [],
-              variadic: variadic.has(cu.body.name),
-              // The catalog's own declared arity, not this (possibly grown-then-frozen) child's
-              // current one — the same floor a palette drop enforces.
-              minInputs: (byName.get(cu.body.name)?.inputs ?? cu.inputs ?? []).length,
-            }
-          : {
-              name: h.slice(0, 8),
-              body: { kind: "Composite", hash: h },
-              inputs: cu.inputs ?? [],
-              outputs: cu.outputs ?? [],
-              params: [],
-              variadic: false,
-              minInputs: 0,
-            };
-      const id = cu.body.kind === "Primitive" ? `${cu.body.name}-${nextId()}` : `composite-${nextId()}-${h.slice(0, 8)}`;
-      return { id, type: "primitive", position, data };
-    });
+    const newNodes = childNodes(childHashes, ev, byName, variadic, nextId, nameOf).map((n, i) => ({
+      ...n,
+      position: { x: startX + i * spacing, y: target.position.y },
+    }));
 
     // Canvas edges that pointed at the composite's ports are re-pointed at the right child's
     // handle, by following the boundary edge core built for that port.

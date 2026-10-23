@@ -220,3 +220,28 @@ body {
 }
 .react-flow__handle.hl-handle:hover { box-shadow: 0 0 0 3px rgba(111, 211, 224, 0.18); }
 .react-flow__edge-path { stroke: var(--line); stroke-width: 1.5; }
+
+/* ── Inside a composite: a canvas of its own over the flow, grown from the node ── */
+.hl-overlay {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid #2a3f63;
+  border-radius: 6px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  transition: left 220ms ease, top 220ms ease, width 220ms ease, height 220ms ease, opacity 220ms ease;
+}
+.hl-overlay__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  flex: 0 0 auto;
+}
+.hl-overlay__crumbs { display: flex; align-items: center; font-size: 12px; }
+.hl-overlay__flow { position: relative; flex: 1 1 auto; min-height: 0; }

@@ -183,6 +183,17 @@ const CONST_TYPES: readonly ConstType[] = ["Number", "Boolean", "Text", "Json"];
 // is `Any`; the scalar literals produce exactly their own type.
 const literalPortType = (ty: ConstType): WType => (ty === "Json" ? "Any" : ty);
 
+const toolbarButtonStyle: CSSProperties = {
+  font: "inherit",
+  fontSize: 11,
+  padding: "2px 10px",
+  color: "#0e1a2f",
+  background: "#6fd3e0",
+  border: "none",
+  borderRadius: 3,
+  cursor: "pointer",
+};
+
 // The next port name for a variadic node, continuing the catalog's own single-letter convention
 // ("a", "b", …) every current variadic leaf uses. Falls back to a numbered name if that
 // convention isn't met — defensive, not expected to trigger for any genesis leaf today, but
@@ -220,7 +231,7 @@ const portButtonStyle: CSSProperties = {
   cursor: "pointer",
 };
 
-function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
+function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>) {
   const { name, inputs, outputs, params, variadic, minInputs, error, body, hiddenInputs, readOnly, trace } = data;
   const describe = useNodeDocs();
   const actions = useNodeActions();
@@ -399,6 +410,28 @@ function PrimitiveNodeImpl({ id, data }: NodeProps<PrimitiveNodeType>) {
             values={pinnedPorts.map((p) => trace.outputs[outputs.indexOf(p)] ?? null)}
             onUnpin={togglePin}
           />
+        </NodeToolbar>
+      )}
+
+      {/* A selected composite: look inside it (expand), or replace it with its nodes (ungroup,
+          edit mode only). */}
+      {body.kind === "Composite" && selected && (
+        <NodeToolbar isVisible position={Position.Top}>
+          <span style={{ display: "inline-flex", gap: 4 }}>
+            <button
+              className="nodrag"
+              onClick={() => actions.expandComposite(id)}
+              style={toolbarButtonStyle}
+              title="look inside: its own flow, on a canvas of its own"
+            >
+              expand
+            </button>
+            {!readOnly && (
+              <button className="nodrag" onClick={() => actions.ungroup(id)} style={toolbarButtonStyle} title="replace it with the nodes inside it, here">
+                ungroup
+              </button>
+            )}
+          </span>
         </NodeToolbar>
       )}
 
