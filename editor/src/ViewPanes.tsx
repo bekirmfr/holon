@@ -185,6 +185,7 @@ export function BottomPane({
   exchanges,
   verdict,
   versionNote,
+  listenError,
   onPickNode,
   diagnosis,
   onShowNode,
@@ -206,6 +207,8 @@ export function BottomPane({
   verdict: boolean | null;
   /** Which version the run is shown on, when not the deployment's current one (or why it can't be). */
   versionNote?: string;
+  /** Why the deployment isn't answering on its port, when it isn't: requests sent there never reach it. */
+  listenError?: string;
   onPickNode: (id: string) => void;
   /** Why the selected run failed, when it did (replay.ts's diagnose). */
   diagnosis: Diagnosis | null;
@@ -261,6 +264,12 @@ export function BottomPane({
         </div>
       </Tabs>
       {error && <div style={{ color: bad, padding: "4px 8px" }}>{error}</div>}
+      {listenError && (
+        <div className="hl-view__not-listening" style={{ color: bad, padding: "4px 8px" }}>
+          ✗ not answering: {listenError}. Requests sent to that port reach whatever holds it, not this
+          deployment; free the port, then deploy again.
+        </div>
+      )}
       {diagnosis && <FailureBanner diagnosis={diagnosis} nodes={nodes} onShowNode={onShowNode} />}
       {tab === "log" ? (
         <LogTab entries={entries} selected={selected} pick={pick} />

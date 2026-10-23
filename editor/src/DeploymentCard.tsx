@@ -168,6 +168,9 @@ export function DeploymentCard({
       {entry.attention && (
         <div style={{ color: "#e0916f", fontSize: 11 }}>⚠ {entry.attention}</div>
       )}
+      {entry.listen_error && (
+        <div style={{ color: "#e0916f", fontSize: 11 }}>⚠ not answering: {entry.listen_error}</div>
+      )}
       {(entry.waiting ?? 0) > 0 && <WaitingRuns slug={entry.slug} count={entry.waiting ?? 0} />}
       <ManifestSection
         version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`}

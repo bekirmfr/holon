@@ -16,14 +16,14 @@ async function openSample(page: Page, title: string) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
-/** Deploy the open flow through ⚙ and the consent screen; its port moved up by 1000. Answers
- *  the port it serves on (null for a flow without routes). */
-async function deploy(page: Page): Promise<number | null> {
+/** Deploy the open flow through ⚙ and the consent screen; its port moved up by `by` (1000).
+ *  Answers the port it serves on (null for a flow without routes). */
+async function deploy(page: Page, by = 1000): Promise<number | null> {
   await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "deploy settings" });
   const portField = settings.locator("input").first();
   const given = Number(await portField.inputValue());
-  const port = Number.isInteger(given) && given > 0 ? given + 1000 : null;
+  const port = Number.isInteger(given) && given > 0 ? given + by : null;
   if (port) await portField.fill(String(port));
   await settings.getByRole("button", { name: "done" }).click();
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).click();
@@ -78,6 +78,29 @@ test("hello-api answers, and its run replays exactly in view mode", async ({ pag
   await expect(page.locator(".hl-palette")).toHaveCount(0);
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
   await expect(page.locator(".hl-palette")).toBeVisible();
+});
+
+test("a deployment whose port another program holds says, in view mode, it isn't answering", async ({ page, request }) => {
+  const { createServer } = await import("node:net");
+  // Hello API's port moved up by 2000: one no other test deploys on.
+  const holder = createServer();
+  await new Promise<void>((done) => holder.listen(8101 + 2000, "127.0.0.1", done));
+  await openSample(page, "Hello API");
+  const port = await deploy(page, 2000);
+  expect(port).toBe(8101 + 2000);
+  await expect(page.locator(".hl-canvas")).toContainText("port in use");
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  const banner = page.locator(".hl-view__not-listening");
+  await expect(banner).toContainText(`could not listen on port ${port}`);
+  await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
+
+  // The port freed and deployed again: it answers there, and says nothing.
+  await new Promise((done) => holder.close(done));
+  expect(await deploy(page, 0)).toBe(port);
+  await expect(page.locator(".hl-canvas")).not.toContainText("port in use");
+  expect((await request.get(`http://127.0.0.1:${port}/hello/Ada`)).status()).toBe(200);
+  await viewNewestRun(page);
+  await expect(banner).toHaveCount(0);
 });
 
 test("slugs runs its holons, and view mode shows inside one", async ({ page, request }) => {

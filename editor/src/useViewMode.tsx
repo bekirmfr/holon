@@ -75,7 +75,8 @@ export function useViewMode(input: ViewModeInput) {
   const [versionNote, setVersionNote] = useState("");
   const runUnit = viewing ? selectedRun?.unit : undefined;
   const onOtherVersion = !!runUnit && viewUnit !== null && runUnit !== viewUnit;
-  const currentUnit = viewing ? deployments.find((d) => d.slug === viewing)?.unit : undefined;
+  const viewed = viewing ? deployments.find((d) => d.slug === viewing) : undefined;
+  const currentUnit = viewed?.unit;
   useEffect(() => {
     if (!viewing || !runUnit || runUnit === viewUnit) return;
     let stale = false;
@@ -282,6 +283,8 @@ export function useViewMode(input: ViewModeInput) {
     /** Not comparable with the run while its version's canvas isn't shown. */
     verdict: onOtherVersion ? null : (replayed?.verdict ?? null),
     note,
+    /** Why the deployment isn't answering on its port, when it isn't. */
+    listenError: viewed?.listen_error,
     timings,
     exchanges,
     flowState,
@@ -339,6 +342,7 @@ export function ViewModePanes({ view, flow, nodes }: { view: ViewMode; flow: Flo
         exchanges={view.exchanges}
         verdict={view.verdict}
         versionNote={view.note}
+        listenError={view.listenError}
         onPickNode={view.pickNode}
         diagnosis={replayed?.diagnosis ?? null}
         onShowNode={view.showNode}

@@ -155,6 +155,11 @@ export function DeployBar({
               ⚠ needs approval
             </span>
           )}
+          {entry.listen_error && (
+            <span style={{ color: "#e0916f", fontSize: 11 }} title={entry.listen_error}>
+              ⚠ port in use
+            </span>
+          )}
           {entry.status === "running" && (
             <button style={base} onClick={() => onAction("pause")} title="stop answering, keep the session">
               pause

@@ -223,6 +223,7 @@ pub(crate) fn load_deployments(
                 grant,
                 permit,
                 attention: attention.take(),
+                listen_error: None,
                 secrets: Vault::default(),
                 parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
                 log,

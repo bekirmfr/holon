@@ -197,6 +197,7 @@ pub(crate) fn handle_post_deploy(
                 grant,
                 permit,
                 attention: None,
+                listen_error: None,
                 secrets: secrets.vault(&body.slug),
                 parked,
                 unit: unit_hash,
@@ -246,6 +247,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         uses: dep.uses.clone(),
         browsers: dep.browsers.clone(),
         attention: dep.attention.clone(),
+        listen_error: dep.listen_error.clone(),
         waiting: dep.parked.len(),
     }
 }

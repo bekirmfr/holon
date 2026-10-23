@@ -2336,6 +2336,34 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
     assert!(released, "the port is free again");
 }
 
+/// A server deployment whose port another program holds says so on its entry, rather than looking
+/// like it answers; once the port is free, deploying again listens there and clears it.
+#[test]
+fn a_server_deployment_whose_port_is_taken_says_it_is_not_answering() {
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let holder = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let api = todo_server(&state, &port.to_string());
+    assert_eq!(deploy_server(&state, "todo", api).status_code, 200);
+
+    let entry = |state: &AppState| {
+        let listed = body_json(route(state, &req("GET", "/deployments", vec![])));
+        listed["deployments"].as_array().unwrap().iter().find(|d| d["slug"] == "todo").unwrap().clone()
+    };
+    let taken = entry(&state);
+    let why = taken["listen_error"].as_str().unwrap_or_else(|| panic!("no listen_error: {taken}"));
+    assert!(why.contains(&format!("port {port}")), "{why}");
+
+    drop(holder);
+    assert_eq!(deploy_server(&state, "todo", api).status_code, 200);
+    let freed = entry(&state);
+    assert!(freed.get("listen_error").is_none(), "{freed}");
+    let listed = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert!(listed.starts_with("HTTP/1.1 200"), "{listed}");
+    assert_eq!(route(&state, &req("POST", "/deployments/todo/stop", vec![])).status_code, 200);
+}
+
 fn deploy_server(state: &AppState, slug: &str, unit: Hash) -> Response {
     let body = serde_json::to_vec(&serde_json::json!({
         "slug": slug,

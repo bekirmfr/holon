@@ -307,6 +307,9 @@ pub(crate) struct DeploymentEntry {
     /// Why it can't run until deployed again, if so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) attention: Option<String>,
+    /// Why it isn't answering on its port (it couldn't listen there), if so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) listen_error: Option<String>,
     /// How many of its runs are waiting for an event.
     pub(crate) waiting: usize,
 }

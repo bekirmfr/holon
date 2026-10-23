@@ -375,6 +375,9 @@ struct Deployment {
     /// Why it can't run until it is deployed again, when its grant no longer covers what it
     /// needs (found at load). It is paused meanwhile.
     attention: Option<String>,
+    /// Why a server deployment isn't answering on its port (it couldn't listen there, say another
+    /// program holds it), until a deploy or run listens there again (listeners.rs). Never persisted.
+    listen_error: Option<String>,
     /// Its secrets (the store's vault for its slug): runs read the ones it was granted, and
     /// everything it logs or answers has their values redacted.
     secrets: Vault,

@@ -359,6 +359,9 @@ export type DeploymentEntry = {
   sessions: number;
   /** Why it can't run until deployed again (its grant no longer covers what it needs). */
   attention?: string;
+  /** Why a server deployment isn't answering on its port (it couldn't listen there, say another
+   *  program holds it), until a deploy or run listens there again. */
+  listen_error?: string;
   /** How many of its runs are waiting for an event. */
   waiting?: number;
 };

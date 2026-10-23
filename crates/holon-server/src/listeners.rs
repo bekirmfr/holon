@@ -156,7 +156,9 @@ fn serve_flow(
 
 /// Bring the running listeners in line with the deployments table: stop any whose deployment is
 /// gone or moved port, start one for each server deployment without one. Idempotent; called after
-/// every deploy and undeploy, and once at startup.
+/// every deploy and undeploy, and once at startup. One that can't listen (its port is taken) is
+/// marked with why (`listen_error`), so the editor shows it isn't answering; it is tried again
+/// on the next call.
 pub(crate) fn sync_listeners(state: &AppState) {
     let Some(listeners) = &state.listeners else { return };
     let wanted: BTreeMap<String, u16> = state
@@ -175,6 +177,7 @@ pub(crate) fn sync_listeners(state: &AppState) {
         }
         keep
     });
+    let mut failed = BTreeMap::new();
     for (slug, port) in wanted {
         if running.contains_key(&slug) {
             continue;
@@ -183,8 +186,16 @@ pub(crate) fn sync_listeners(state: &AppState) {
             Ok(stop) => {
                 running.insert(slug, (port, stop));
             }
-            Err(e) => eprintln!("holon-server: {slug:?} could not listen on port {port}: {e}"),
+            Err(e) => {
+                let why = format!("could not listen on port {port}: {e}");
+                eprintln!("holon-server: {slug:?} {why}");
+                failed.insert(slug, why);
+            }
         }
+    }
+    drop(running);
+    for (slug, dep) in state.deployments.lock().unwrap().iter_mut() {
+        dep.listen_error = failed.remove(slug);
     }
 }
 
