@@ -34,9 +34,10 @@ Codex, Zed and more: `holon mcp hosts` lists them, and adds your own). `--help` 
 
 const INSTRUCTIONS: &str = "Holon runs small services (flows) written in its own language, and \
 shows what each may do before it runs. Call `reference` first for the language and its leaves, \
-`check` a text before deploying it, then `deploy`, `call` and `explain`. A first deploy, and any \
-version that needs a new permission, waits for a person to approve it in the editor: tell the \
-user what it asks for and where, and deploy again once they have.";
+`check` a text before deploying it, then `deploy`, `call` and `explain`; `deployments` and `flows` \
+show what is already there, with its text, and `save` keeps a flow without deploying it. A first \
+deploy, and any version that needs a new permission, waits for a person to approve it in the \
+editor: tell the user what it asks for and where, and deploy again once they have.";
 
 // ── reaching a server ───────────────────────────────────────────────────────────────────────
 
@@ -134,6 +135,13 @@ fn tool_list() -> Value {
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
+            "name": "save",
+            "title": "Save a flow",
+            "description": "Save a flow on the Holon server without deploying it: it appears on the editor's flows page, with its text as written, for a person to open, and `deploy` deploys it later. A flow someone else saved under that name is never replaced.",
+            "inputSchema": { "type": "object", "properties": { "text": text, "name": { "type": "string", "description": "the name to save it under: the flow's name unless another is given" } }, "required": ["text"] },
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
             "name": "deploy",
             "title": "Deploy a flow",
             "description": "Deploy a flow to the Holon server. It never approves anything: when the flow may do something not yet approved (a first deploy always is), it is saved for a person, and the answer says what they must approve and where. Once they have deployed it, a new version that needs nothing more deploys from here at once.",
@@ -156,6 +164,20 @@ fn tool_list() -> Value {
                 "required": ["slug", "method", "path"]
             },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true }
+        },
+        {
+            "name": "deployments",
+            "title": "List what is deployed",
+            "description": "What is deployed, one line each (state, version, port, runs, who deployed it), what each waits on a person for, and the flows saved but never deployed. With a slug, that one in full: its routes, what it may do, what its grant doesn't cover, the secrets it reads and which are set, what it waits for, and its text as deployed, even when it has never run.",
+            "inputSchema": { "type": "object", "properties": { "slug": { "type": "string", "description": "one deployment's name; leave out for all" } } },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "flows",
+            "title": "List the saved flows",
+            "description": "The flows saved on the server (by a person in the editor, or by an agent), one line each: who saved it, when, and whether it is deployed. With a name, that flow's text, to read or revise and deploy again.",
+            "inputSchema": { "type": "object", "properties": { "name": { "type": "string", "description": "one saved flow's name; leave out for all" } } },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
             "name": "runs",
@@ -190,8 +212,11 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
             let out = r.out.join("\n");
             if r.code == 0 { Ok(out) } else { Err([out, r.err.join("\n")].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n")) }
         }
+        "save" => save(&*connect()?, arg(args, "text")?, args.get("name").and_then(Value::as_str)),
         "deploy" => deploy(&*connect()?, arg(args, "text")?, args.get("slug").and_then(Value::as_str)),
         "call" => call(&*connect()?, args),
+        "deployments" => deployments(&*connect()?, args.get("slug").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
+        "flows" => flows(&*connect()?, args.get("name").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
         "runs" => runs(&*connect()?, arg(args, "slug")?, args.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 200)),
         "explain" => explain(&*connect()?, arg(args, "slug")?, args.get("run").and_then(Value::as_u64)),
         other => Err(format!("there is no tool \"{other}\"")),
@@ -221,7 +246,7 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
         format!("\nSecrets not set yet (an admin sets them in the editor, under the deployment's ⚙): {}. Until then, a run that reads one gets nothing.", missing.join(", "))
     };
     if !needs.is_empty() {
-        save_for_approval(api, &slug, &plan.document)?;
+        save_for_approval(api, &slug, &saved_document(&plan, text))?;
         return Ok(format!(
             "Not deployed yet: a person has to approve what \"{slug}\" may do. It asks to:\n{}\n\nIt is saved as the flow \"{slug}\" on {}: they open the editor there, open \"{slug}\" from the flows page, and deploy it, which asks them to approve exactly these. Tell them, and deploy again from here once they have: a version that needs nothing more deploys at once.{secrets_note}",
             described(&needs),
@@ -265,17 +290,193 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
 /// Save the flow for a person to deploy, under `slug`, unless that would replace a flow someone
 /// else saved.
 fn save_for_approval(api: &dyn Api, slug: &str, document: &Value) -> Result<(), String> {
+    match save_flow(api, slug, document)? {
+        None => Ok(()),
+        Some(by) => Err(format!("not deployed: it needs a person's approval, and a flow named \"{slug}\" saved by {by} is already on {}; deploy under another slug so theirs isn't replaced", api.server())),
+    }
+}
+
+/// Save `document` as the flow `name`; or, when a flow by that name is someone else's, leave it
+/// and answer whose it is.
+fn save_flow(api: &dyn Api, name: &str, document: &Value) -> Result<Option<String>, String> {
     let me = json_of(api, "GET", "/auth/me", None).ok().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string));
-    let (status, bytes) = api.send("GET", &format!("/flows/{}", seg(slug)), None)?;
+    let (status, bytes) = api.send("GET", &format!("/flows/{}", seg(name)), None)?;
     if status == 200 {
         let saved: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         let by = saved.get("saved_by").and_then(Value::as_str);
         if by.is_some() && by != me.as_deref() {
-            return Err(format!("not deployed: it needs a person's approval, and a flow named \"{slug}\" saved by {} is already on {}; deploy under another slug so theirs isn't replaced", by.unwrap_or("someone"), api.server()));
+            return Ok(Some(by.unwrap_or("someone").to_string()));
         }
     }
-    json_of(api, "POST", "/flows", Some(Body::Json(json!({ "name": slug, "document": document }))))?;
-    Ok(())
+    json_of(api, "POST", "/flows", Some(Body::Json(json!({ "name": name, "document": document }))))?;
+    Ok(None)
+}
+
+/// The document a flow is saved with: the compiled canvas, and the text as written, comments
+/// and all, so the person who opens it reads what the agent wrote (the editor's text pane).
+fn saved_document(plan: &agent::Plan, text: &str) -> Value {
+    let mut document = plan.document.clone();
+    document["source"] = json!(text);
+    document
+}
+
+fn save(api: &dyn Api, text: &str, name: Option<&str>) -> Result<String, String> {
+    let plan = agent::plan(text)?;
+    let name = name.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&plan.name).to_string();
+    if let Some(by) = save_flow(api, &name, &saved_document(&plan, text))? {
+        return Err(format!("not saved: a flow named \"{name}\" saved by {by} is already on {}; save it under another name so theirs isn't replaced", api.server()));
+    }
+    let may = if plan.may.is_empty() { "It only computes.".to_string() } else { format!("When deployed, it may:\n{}", plan.may.iter().map(|i| format!("  - {}", agent::describe(i))).collect::<Vec<_>>().join("\n")) };
+    Ok(format!(
+        "Saved \"{name}\" on {}, not deployed: it is on the editor's flows page, where a person can open it, and `deploy` deploys it (a first deploy, or one that needs a new permission, waits for them).\n{may}",
+        api.server()
+    ))
+}
+
+/// When, as a person reads it.
+fn when(v: &Value) -> String {
+    v.as_u64().map(agent::utc).unwrap_or_else(|| "?".into())
+}
+
+/// The things a deployment waits on a person for, each said as what they do.
+fn waits_for(entry: &Value, saved: Option<&Value>) -> Vec<String> {
+    let slug = entry.get("slug").and_then(Value::as_str).unwrap_or("?");
+    let mut waits = Vec::new();
+    if let Some(a) = entry.get("attention").and_then(Value::as_str) {
+        waits.push(format!("to deploy it again, from the editor: {a}"));
+    }
+    if let Some(s @ ("paused" | "stopped")) = entry.get("status").and_then(Value::as_str) {
+        waits.push(format!("to start it: it is {s} (the editor's deployed page)"));
+    }
+    if let Some(e) = entry.get("listen_error").and_then(Value::as_str) {
+        waits.push(format!("to free its port: {e}"));
+    }
+    let deployed_at = entry.get("deployed_at_epoch_seconds").and_then(Value::as_u64).unwrap_or(0);
+    if let Some(f) = saved.filter(|f| f.get("saved_at_epoch_seconds").and_then(Value::as_u64).unwrap_or(0) > deployed_at) {
+        let by = f.get("saved_by").and_then(Value::as_str).unwrap_or("someone");
+        waits.push(format!("to review a version saved since by {by}, at {}: open \"{slug}\" from the flows page, and deploy it", when(&f["saved_at_epoch_seconds"])));
+    }
+    waits
+}
+
+fn list_of(v: Value, key: Option<&str>) -> Vec<Value> {
+    let v = match key {
+        Some(k) => v.get(k).cloned().unwrap_or(Value::Null),
+        None => v,
+    };
+    v.as_array().cloned().unwrap_or_default()
+}
+
+/// A deployment in one line: its state, version, port, runs and who deployed it.
+fn deployment_line(d: &Value) -> String {
+    let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("?");
+    let n = |k: &str| d.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let unit = s("unit");
+    let mut line = format!("{}: {}, version {}", s("slug"), s("status"), &unit[..unit.len().min(12)]);
+    if let Some(p) = d.get("port").and_then(Value::as_u64) {
+        line.push_str(&format!(", port {p}"));
+    } else if let Some(i) = d.get("interval_seconds").and_then(Value::as_u64) {
+        line.push_str(&format!(", every {i} s"));
+    }
+    let runs = n("trigger_count");
+    line.push_str(&format!("; {runs} run{}, {} failed", if runs == 1 { "" } else { "s" }, n("error_count")));
+    if n("waiting") > 0 {
+        line.push_str(&format!(", {} waiting for an event", n("waiting")));
+    }
+    let by = d.get("deployed_by").and_then(Value::as_str).map(|b| format!(" by {b}")).unwrap_or_default();
+    line.push_str(&format!("; deployed{by} at {}", when(&d["deployed_at_epoch_seconds"])));
+    line
+}
+
+fn deployments(api: &dyn Api, slug: Option<&str>) -> Result<String, String> {
+    let all = list_of(json_of(api, "GET", "/deployments", None)?, Some("deployments"));
+    let flows = list_of(json_of(api, "GET", "/flows", None)?, None);
+    let saved = |slug: &str| flows.iter().find(|f| f.get("name").and_then(Value::as_str) == Some(slug));
+    let deployed = |slug: &str| all.iter().any(|d| d.get("slug").and_then(Value::as_str) == Some(slug));
+    let Some(slug) = slug else {
+        let mut out = Vec::new();
+        if all.is_empty() {
+            out.push(format!("Nothing is deployed on {}.", api.server()));
+        } else {
+            out.push(format!("Deployed on {}:", api.server()));
+        }
+        for d in &all {
+            out.push(format!("  {}", deployment_line(d)));
+            for w in waits_for(d, d.get("slug").and_then(Value::as_str).and_then(saved)) {
+                out.push(format!("    waits for a person {w}"));
+            }
+        }
+        let waiting: Vec<&Value> = flows.iter().filter(|f| f.get("name").and_then(Value::as_str).is_some_and(|n| !deployed(n))).collect();
+        if !waiting.is_empty() {
+            out.push("Saved, never deployed (a person deploys one from the flows page; `flows` shows its text):".into());
+            for f in waiting {
+                let by = f.get("saved_by").and_then(Value::as_str).map(|b| format!(" by {b}")).unwrap_or_default();
+                out.push(format!("  {}: saved{by} at {}", f["name"].as_str().unwrap_or("?"), when(&f["saved_at_epoch_seconds"])));
+            }
+        }
+        return Ok(out.join("\n"));
+    };
+    let Some(d) = all.iter().find(|d| d.get("slug").and_then(Value::as_str) == Some(slug)) else {
+        return match saved(slug) {
+            Some(f) => Ok(format!(
+                "\"{slug}\" isn't deployed. It is saved{} at {}, for a person to deploy from the flows page; `flows` with its name shows its text.",
+                f.get("saved_by").and_then(Value::as_str).map(|b| format!(" by {b}")).unwrap_or_default(),
+                when(&f["saved_at_epoch_seconds"])
+            )),
+            None => Err(format!("nothing named \"{slug}\" is deployed or saved on {}", api.server())),
+        };
+    };
+    let path = format!("/deployments/{}", seg(slug));
+    let manifest = json_of(api, "GET", &format!("{path}/manifest"), None)?;
+    let secrets = json_of(api, "GET", &format!("{path}/secrets"), None).map(|s| list_of(s, Some("names"))).unwrap_or_default();
+    let text = agent::text_of(slug, &json_of(api, "GET", &format!("{path}/document"), None)?);
+    let strings = |v: &Value, k: &str| -> Vec<String> { v.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|i| i.as_str().map(str::to_string)).collect()).unwrap_or_default() };
+    let mut out = vec![format!("On {}: {}", api.server(), deployment_line(d))];
+    if let Ok(plan) = text.as_deref().map_err(String::clone).and_then(agent::plan)
+        && !plan.routes.is_empty()
+    {
+        out.push(format!("Its routes: {}", plan.routes.join(", ")));
+    }
+    let items = strings(&manifest, "items");
+    out.push(if items.is_empty() { "It only computes.".into() } else { format!("It may:\n{}", items.iter().map(|i| format!("  - {}", agent::describe(i))).collect::<Vec<_>>().join("\n")) });
+    let not_granted = strings(&manifest, "not_granted");
+    if !not_granted.is_empty() {
+        out.push(format!("Its grant doesn't cover:\n{}", not_granted.iter().map(|i| format!("  - {}", agent::describe(i))).collect::<Vec<_>>().join("\n")));
+    }
+    let reads: Vec<String> = strings(&manifest, "capabilities").iter().filter_map(|c| c.strip_prefix("SecretRead(\"")?.strip_suffix("\")").map(str::to_string)).collect();
+    if !reads.is_empty() {
+        let named: Vec<String> = reads.iter().map(|r| if secrets.iter().any(|s| s.as_str() == Some(r)) { format!("{r} (set)") } else { format!("{r} (not set: an admin sets it under the deployment's ⚙)") }).collect();
+        out.push(format!("The secrets it reads: {}", named.join(", ")));
+    }
+    let waits = waits_for(d, saved(slug));
+    out.push(if waits.is_empty() { "Nothing waits for a person.".into() } else { format!("It waits for a person:\n{}", waits.iter().map(|w| format!("  - {w}")).collect::<Vec<_>>().join("\n")) });
+    match text {
+        Ok(t) => out.push(format!("\nIts text, as deployed:\n\n{}", t.trim_end())),
+        Err(e) => out.push(format!("\nIts text can't be shown: {e}")),
+    }
+    Ok(out.join("\n"))
+}
+
+fn flows(api: &dyn Api, name: Option<&str>) -> Result<String, String> {
+    let deployed: Vec<String> = list_of(json_of(api, "GET", "/deployments", None)?, Some("deployments")).iter().filter_map(|d| d.get("slug").and_then(Value::as_str).map(str::to_string)).collect();
+    let saved_line = |f: &Value| {
+        let n = f.get("name").and_then(Value::as_str).unwrap_or("?");
+        let by = f.get("saved_by").and_then(Value::as_str).map(|b| format!(" by {b}")).unwrap_or_default();
+        let state = if deployed.iter().any(|d| d == n) { "; deployed under that name" } else { "; not deployed" };
+        format!("{n}: saved{by} at {}{state}", when(&f["saved_at_epoch_seconds"]))
+    };
+    let Some(name) = name else {
+        let all = list_of(json_of(api, "GET", "/flows", None)?, None);
+        if all.is_empty() {
+            return Ok(format!("No flows are saved on {}. The samples are in `reference`.", api.server()));
+        }
+        let mut out = vec![format!("Saved on {} (`flows` with a name shows one's text; the samples are in `reference`):", api.server())];
+        out.extend(all.iter().map(|f| format!("  {}", saved_line(f))));
+        return Ok(out.join("\n"));
+    };
+    let record = json_of(api, "GET", &format!("/flows/{}", seg(name)), None)?;
+    let text = agent::text_of(name, record.get("document").unwrap_or(&Value::Null))?;
+    Ok(format!("{}\n\n{}", saved_line(&record), text.trim_end()))
 }
 
 fn call(api: &dyn Api, args: &Value) -> Result<String, String> {
@@ -656,6 +857,8 @@ mod tests {
         assert!(deploy(&agent, &v2, slug).unwrap().starts_with("Deployed \"agent-slugs\""));
         let called = call(&agent, &json!({ "slug": "agent-slugs", "method": "POST", "path": "/slugs", "body": { "title": "Hi", "author": "Ada" } })).unwrap();
         assert!(called.starts_with("POST /slugs → 200"), "{called}");
+        let listed = runs(&agent, "agent-slugs", 5).unwrap();
+        assert!(listed.contains("sent by ada (agent)"), "the run names who sent it: {listed}");
         // What is a person's stays theirs.
         for (method, path) in [
             ("POST", "/deployments/agent-slugs/grant"),
@@ -697,6 +900,57 @@ mod tests {
         assert!(deploy(&server("local:me"), text, None).unwrap().starts_with("Not deployed yet"), "its own earlier proposal is replaced");
     }
 
+    /// A saved flow reads back as the text the agent wrote; what is deployed reads in full,
+    /// text and all, before it has ever run.
+    #[test]
+    fn what_is_saved_and_deployed_reads_back_as_text() {
+        let state = test_state();
+        assert!(tool(&state, "deployments", json!({})).unwrap().starts_with("Nothing is deployed"));
+        assert!(tool(&state, "flows", json!({})).unwrap().starts_with("No flows are saved"));
+        // Saved, not deployed: listed, and its text is the text as written, comments and all.
+        let saved = tool(&state, "save", json!({ "text": SLUGS_TEXT })).unwrap();
+        assert!(saved.starts_with("Saved \"slugs\"") && saved.contains("receive requests"), "{saved}");
+        let listed = tool(&state, "flows", json!({})).unwrap();
+        assert!(listed.contains("slugs: saved") && listed.contains("not deployed"), "{listed}");
+        let text = tool(&state, "flows", json!({ "name": "slugs" })).unwrap();
+        assert!(text.ends_with(SLUGS_TEXT.trim_end()), "{text}");
+        assert!(tool(&state, "deployments", json!({})).unwrap().contains("Saved, never deployed"));
+        assert!(tool(&state, "deployments", json!({ "slug": "slugs" })).unwrap().contains("isn't deployed. It is saved"));
+        assert!(tool(&state, "deployments", json!({ "slug": "nobody" })).unwrap_err().contains("nothing named \"nobody\""));
+        assert!(tool(&state, "flows", json!({ "name": "nobody" })).is_err());
+        // A person deploys it; then it reads in full, though it has never run.
+        let plan = agent::plan(SLUGS_TEXT).unwrap();
+        for unit in &plan.units {
+            route(&state, &req("POST", "/unit", unit.clone()));
+        }
+        let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "slugs", "unit": plan.unit })).unwrap())))).unwrap();
+        let approve = json!({ "slug": "slugs", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document });
+        assert_eq!(route(&state, &req("POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
+        let all = tool(&state, "deployments", json!({})).unwrap();
+        assert!(all.contains("slugs: running") && all.contains("0 runs, 0 failed"), "{all}");
+        assert!(!all.contains("never deployed"), "{all}");
+        let one = tool(&state, "deployments", json!({ "slug": "slugs" })).unwrap();
+        assert!(one.contains("Its routes: POST /slugs"), "{one}");
+        assert!(one.contains("It may:") && one.contains("receive requests"), "{one}");
+        assert!(one.contains("Nothing waits for a person."), "{one}");
+        assert!(one.contains("Its text, as deployed:") && one.contains("route POST /slugs"), "{one}");
+        assert!(tool(&state, "flows", json!({})).unwrap().contains("deployed under that name"));
+    }
+
+    /// What a deployment waits on a person for, each said as what they do.
+    #[test]
+    fn a_deployment_says_what_it_waits_on_a_person_for() {
+        let running = json!({ "slug": "s", "status": "running", "deployed_at_epoch_seconds": 100 });
+        assert!(waits_for(&running, None).is_empty());
+        assert!(waits_for(&running, Some(&json!({ "saved_at_epoch_seconds": 90 }))).is_empty(), "the version saved before is the one deployed");
+        let newer = waits_for(&running, Some(&json!({ "saved_at_epoch_seconds": 200, "saved_by": "ada (agent)" })));
+        assert!(newer[0].contains("saved since by ada (agent)") && newer[0].contains("flows page"), "{newer:?}");
+        let stuck = json!({ "slug": "s", "status": "paused", "attention": "its grant changed", "listen_error": "port 8200 is taken", "deployed_at_epoch_seconds": 100 });
+        let waits = waits_for(&stuck, None);
+        assert_eq!(waits.len(), 3, "{waits:?}");
+        assert!(waits[0].contains("its grant changed") && waits[1].contains("it is paused") && waits[2].contains("port 8200 is taken"), "{waits:?}");
+    }
+
     #[test]
     fn the_protocol_initializes_lists_and_calls_tools_one_line_at_a_time() {
         let state = test_state();
@@ -720,7 +974,7 @@ mod tests {
         assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(answers[0]["result"]["serverInfo"]["name"], "holon");
         let names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["reference", "check", "deploy", "call", "runs", "explain"]);
+        assert_eq!(names, ["reference", "check", "save", "deploy", "call", "deployments", "flows", "runs", "explain"]);
         assert_eq!(answers[2]["result"]["isError"], false);
         assert!(answers[2]["result"]["content"][0]["text"].as_str().unwrap().starts_with("concat("));
         assert_eq!(answers[3]["result"]["isError"], true, "a mistake is a tool's failure, said: {}", answers[3]);

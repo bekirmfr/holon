@@ -49,6 +49,10 @@ pub struct DataRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Who sent it over the control plane (`holon mcp`'s `call`, the editor's request tester):
+    /// the caller's name, recorded on its run. None on the deployment's own port, where nobody
+    /// signs in.
+    pub by: Option<String>,
 }
 
 /// One HTTP request, as plain strings and bytes. `url` is the path plus any query string.

@@ -976,9 +976,12 @@ step that changed core is done; none changes the host, the server or the documen
    and the flows page's `.holon` download write the sample's file as it is, its names and all,
    rather than printing its document again.
 7. **Agent surface** ✅ (2026-10-24, designed in `docs/L4s/agent-surface-L4.md`). `holon mcp`,
-   a Model Context Protocol server on stdin and stdout, with six tools that speak this form:
-   `reference` (this language on one page, every leaf, the samples), `check`, `deploy`, `call`,
-   `runs` and `explain`. `explain` is §9's promise: the deployed flow printed through the
+   a Model Context Protocol server on stdin and stdout, with nine tools that speak this form:
+   `reference` (this language on one page, every leaf, the samples), `check`, `save`, `deploy`,
+   `call`, `deployments`, `flows`, `runs` and `explain`. What is already on a server reads back
+   as text: a saved flow as the text it was saved with, a deployment in full (what it may do,
+   the secrets it reads, what it waits on a person for) with its text as deployed. A run made
+   through `call` names who sent it. `explain` is §9's promise: the deployed flow printed through the
    language, with the agent's own binding names, and under each statement of the run's route the
    value it had, or the node a missing value first went missing at (`field "author" gave
    nothing`), read from the run's recorded timeline through the document's `trace`. The tools

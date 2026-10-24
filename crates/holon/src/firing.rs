@@ -418,6 +418,7 @@ pub(crate) fn run_entry(
         parked: vec![],
         events: BTreeMap::new(),
         retries: run.retries,
+        by: None,
         reads: run
             .reads
             .iter()

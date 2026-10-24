@@ -117,6 +117,11 @@ pub struct LogEntry {
     /// How many times it ran again because what it read changed before it could commit.
     #[serde(skip_serializing_if = "is_zero")]
     pub retries: u32,
+    /// Who sent the request over the control plane (`holon mcp`'s `call`, `token:claude`, or
+    /// `local:ada (agent)`; the editor's request tester), when it came that way: a request on the
+    /// deployment's own port names nobody.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -492,6 +497,7 @@ mod tests {
             events: BTreeMap::new(),
             reads: vec![],
             retries: 0,
+            by: None,
         }
     }
 

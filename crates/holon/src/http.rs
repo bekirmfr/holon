@@ -280,7 +280,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/request") {
             if method == "POST" {
-                return handle_post_request(state, slug, request);
+                return handle_post_request(state, slug, request, by);
             }
         } else if method == "DELETE" {
             let response = handle_delete_deployment(&state.store, &state.deployments, &state.deployments_path, rest);

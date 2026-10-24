@@ -78,6 +78,20 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     })
 }
 
+/// A flow's document as the language's text: the text it was saved with (the editor's text pane
+/// and the agent tools keep it, comments and all) when that still compiles, else printed from the
+/// canvas, with the binding names an agent gave it.
+pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
+    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
+        && plan(source).is_ok()
+    {
+        return Ok(source.to_string());
+    }
+    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
+    let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
+    print_lines(Some(name), &doc, &mut MapResolver::new(), &Names::new(), &bindings).map(|(text, _)| text)
+}
+
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").
 pub fn describe(item: &str) -> String {
     describe_item(item)
@@ -147,6 +161,9 @@ pub fn run_line(entry: &Value) -> String {
     }
     if let Some(at) = entry.get("at_ms").and_then(Value::as_u64) {
         line.push_str(&format!(", at {}", utc(at / 1000)));
+    }
+    if let Some(by) = s("by") {
+        line.push_str(&format!(", sent by {by}"));
     }
     if let Some(e) = s("error") {
         line.push_str(&format!(" — failed: {e}"));
@@ -505,6 +522,30 @@ mod tests {
         assert!(e.starts_with("text:5:11: unknown name \"nope\""), "{e}");
         assert!(e.contains("^^^^"), "{e}");
         assert!(plan("port 8200\n\nroute GET /a (req) {\n  respond 204\n}\n").unwrap_err().contains("flow <name>"));
+    }
+
+    /// A flow's text: as it was saved, comments and all, when that still compiles; else printed
+    /// from its canvas, with the names it was written with.
+    #[test]
+    fn a_flows_text_is_the_saved_text_or_its_canvas_printed() {
+        let text = samples::sample("slugs").unwrap().text;
+        let mut document = plan(text).unwrap().document;
+        let printed = text_of("slugs", &document).unwrap();
+        assert!(printed.starts_with("flow slugs\n") && printed.contains("author = slugify(req.json.author)"), "{printed}");
+        assert!(!printed.contains('#'), "printed from the canvas: no comments");
+        document["source"] = json!(text);
+        assert_eq!(text_of("slugs", &document).unwrap(), text, "the text as saved");
+        document["source"] = json!("flow slugs\nroute GET /a (req) {\n  respond nope\n}\n");
+        assert_eq!(text_of("slugs", &document).unwrap(), printed, "a saved text that doesn't compile gives way to the canvas");
+    }
+
+    #[test]
+    fn a_runs_line_says_who_sent_it() {
+        let entry = json!({ "seq": 4, "kind": "request", "method": "POST", "url": "/slugs", "status": 200, "duration_ms": 1.25, "at_ms": 1_792_845_653_000u64, "by": "token:claude" });
+        assert_eq!(run_line(&entry), "run 4: POST /slugs → 200, 1.2 ms, at 2026-10-24 12:40:53 UTC, sent by token:claude");
+        let mut on_its_port = entry.clone();
+        on_its_port.as_object_mut().unwrap().remove("by");
+        assert!(!run_line(&on_its_port).contains("sent by"));
     }
 
     #[test]

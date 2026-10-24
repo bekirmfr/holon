@@ -183,11 +183,18 @@ Its tools:
 
 - `reference`: the language on one page, every leaf, the samples.
 - `check`: what `holon check` says, mistakes with their line and a caret.
+- `deployments` and `flows`: what is already on the server, as text. `deployments` lists what
+  is deployed and what each waits on a person for (an approval, a start, a newer version to
+  review); with a slug, one in full: its routes, what it may do, the secrets it reads and which
+  are set, and its text as deployed. `flows` lists the saved flows, or gives one's text to revise.
+- `save`: saves a flow on the editor's flows page without deploying it, never over a flow
+  someone else saved.
 - `deploy`: deploys a flow. It never approves what a flow may do. A first deploy, or a version
   that needs a new permission, is saved instead, and the answer says what a person must approve:
   they open it from the editor's flows page and deploy it there. After that, a version that needs
   nothing more deploys from the agent at once.
-- `call`: sends a request to a deployed flow, logged as a run like any other.
+- `call`: sends a request to a deployed flow, logged as a run like any other, which names who
+  sent it (`sent by token:claude`).
 - `runs` and `explain`: a flow's latest runs, and one run as the flow's text with the value each
   statement had and where a missing value came from.
 

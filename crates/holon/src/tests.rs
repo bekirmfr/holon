@@ -57,7 +57,7 @@ pub(crate) fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
 
 /// A data-plane request with no headers.
 fn fake_data(method: &str, url: &str, body: Vec<u8>) -> data::DataRequest {
-    data::DataRequest { method: method.into(), url: url.into(), headers: vec![], body }
+    data::DataRequest { method: method.into(), url: url.into(), headers: vec![], body, by: None }
 }
 
 pub(crate) fn body_bytes(response: Response) -> Vec<u8> {
@@ -3345,7 +3345,7 @@ fn a_deployment_answers_the_web_pages_it_names() {
     assert_eq!(deploy(serde_json::json!(["not an origin"])).status_code, 400);
     assert!(deploy(serde_json::json!(["https://app.example"])).is_success());
     let from = |origin: &str, method: &str| {
-        let request = data::DataRequest { method: method.into(), url: "/todos".into(), headers: vec![("Origin".into(), origin.into())], body: vec![] };
+        let request = data::DataRequest { method: method.into(), url: "/todos".into(), headers: vec![("Origin".into(), origin.into())], body: vec![], by: None };
         serve_data(&state.store, &state.deployments, &state.deployments_path, "todos", &request)
     };
     let allow = |r: &data::DataResponse| r.headers.iter().find(|(k, _)| k == "access-control-allow-origin").map(|(_, v)| v.clone());

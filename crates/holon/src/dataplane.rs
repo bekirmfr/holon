@@ -162,6 +162,7 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
             .map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
             .collect(),
         body: body.to_vec(),
+        by: None,
     };
     let answered = tokio::task::spawn_blocking(move || {
         serve_data(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request)

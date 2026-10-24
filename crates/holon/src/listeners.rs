@@ -131,6 +131,7 @@ fn serve_flow(
     entry.url = Some(raw_url.to_string());
     entry.status = Some(answer.status);
     entry.response_body = Some(recorder::body_text(&answer.body));
+    entry.by = request.by.clone();
     match parked {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
@@ -225,7 +226,7 @@ pub(crate) struct SentResponseBody {
 /// request on the server's own port would (same routing, same state, counted the same), but
 /// arrives over the control plane, so the browser needs no CORS access to the data plane and the
 /// control plane's request gate still applies.
-pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Request) -> Response {
+pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Request, by: Option<&str>) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
@@ -242,7 +243,7 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
         Some(d) if d.server.is_none() => return err(400, format!("{slug:?} is not an HTTP server deployment")),
         Some(d) => Redactor::of(&d.secrets),
     };
-    let inner = DataRequest { method: send.method, url: send.url, headers: send.headers, body: send.body.into_bytes() };
+    let inner = DataRequest { method: send.method, url: send.url, headers: send.headers, body: send.body.into_bytes(), by: by.map(str::to_string) };
     let answer = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &inner);
     let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), redactor.text(v))).collect();
     let body = redactor.text(&String::from_utf8_lossy(&answer.body));
