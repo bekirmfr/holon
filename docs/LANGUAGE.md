@@ -380,8 +380,8 @@ share one node, bind it: `t = now`.
 Not in the samples yet; the shape the language gives them:
 
 ```
-holon total(prices) -> sum {
-  sum = fold(0, prices, fn: fn(acc, p) -> acc + p)
+holon total(prices) -> amount {
+  amount = fold(0, prices, fn: fn(acc, p) -> acc + p)
 }
 
 holon slug_all(titles) -> slugs {
@@ -545,7 +545,8 @@ Rules the table implies:
 | `{ k: e, "k 2": e2 }` | `record()` then one `with_field{name: k}(record, e)` per field, in written order |
 | `{ ..base, k: e }` | `with_field{name: k}` chained onto `base`'s value; fields in written order |
 | `[ e1, e2, e3 ]` | `list(e1, e2, e3)`, variadic |
-| `[ ]` | `list()` with zero inputs (`list` is well-defined at any count) |
+| `[ ]` | `const{type: Json, value: "[]"}`: a placed `list` has at least its two declared inputs, so the empty list is the one literal that is a `const` |
+| `[ e ]` | `append(list: const "[]", item: e)`, for the same reason |
 
 Interpolation wraps every `{…}` part in `as_text`, the leaf built for it: a text stays itself, a
 number or boolean is written as it reads, a record or list as JSON. So a part may be any value,
@@ -907,15 +908,19 @@ step that changed core is done; none changes the host, the server or the documen
 2. **`coalesce` in core** ✅ (2026-10-24): the leaf, its catalog entry (70th), an explicit
    `eval_at` arm, tests at the leaf and inside a composite, and the heartbeat sample keeping its
    first beat's time through it. No change to the composite walk was needed.
-3. **Lowering onto `FlowBuilder`** (`lang/lower.rs`): resolution, calls with named inputs, the
-   noun and statement sugar of §5.4, literals and interpolation through `as_text`, operators,
-   `.name`, holons via `end_holon_exact`, lambdas as anonymous holons, routes with the implicit
-   request wires, effects, the error catalogue of §9, spans into `extra.source`. Golden test:
-   each sample written in the language lowers to the same unit hash the sample's builder gives,
-   through `flow_unit`. The golden texts spell `concat` where the builder does (interpolation
-   adds an `as_text`), and carry a proposed holon's port names in quotes (§10), since both are in
-   the hash; the tour's texts in §3 are the natural spellings and are checked to compile and
-   derive the same routes and manifest, not the same hash.
+3. **Lowering onto `FlowBuilder`** ✅ (2026-10-24, `lang/lower.rs`): resolution, calls with
+   named inputs, the noun and statement sugar of §5.4, literals and interpolation through
+   `as_text`, operators, `.name`, holons via `end_holon_exact`, lambdas as anonymous holons,
+   routes with the implicit request wires, effects, the error catalogue of §9, spans into
+   `extra.source`. Golden tests, both green: every sample as the wiring form prints it, and the
+   eleven samples in the natural form, lower to the unit hash the sample's builder gives, through
+   `flow_unit`. The natural golden texts spell `concat` where the builder does (interpolation adds
+   an `as_text`), carry a proposed holon's port names in quotes (§10), and bind one `now` where
+   the builder shares one clock node, since all three are in the hash. Three things the lowering
+   settled: a holon's input feeds exactly one inner port in core, so an input used twice passes
+   through one shared `guard(true, input)`, placed on the second use; a port or binding may not
+   take a leaf's name (`sum`, `out`), so `holon total(prices) -> amount`; and type annotations on
+   ports are parsed and not yet checked (the wire-time check at freeze still applies).
 4. **Printer** (`lang/print.rs`), replacing the wiring-form printer as `fmt`'s output. Tests:
    the round-trip properties of §11 over the samples and over canvases grouped by hand (odd port
    names, variadic nodes, multi-output composites).
