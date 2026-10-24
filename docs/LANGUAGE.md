@@ -61,7 +61,7 @@ same graph are the same unit.
 
 | Decision | Choice | Where |
 |---|---|---|
-| What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist today, plus one new leaf, `coalesce` | §1, §6 |
+| What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist today (two leaves, `as_text` and `coalesce`, were added for it) | §1, §6 |
 | What it is not | General-purpose. No loops, recursion, user types, modules, or standard library growth | §2 |
 | The outside world | Nouns: `req`, `secret.name`, `state.key`, `now`, `random`, a declared `collection` used as `notes[key]`, `http.post(host, path, …)`, `await name` | §5.4 |
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`. Method forms (`notes.put(k, v)`) when the effect needs a name | §5.4, §5.10 |
@@ -91,7 +91,7 @@ Three reasons, in order of weight.
    five `node` lines and four wires: fewer tokens, fewer places to misname a port, and errors it
    can read. The MCP tools (`check`, `deploy`, `run`, `explain`) will speak this form.
 2. **Expressiveness without new primitives.** Most of what today takes five nodes is one nested
-   expression. The vocabulary stays at its 69 leaves; the text gets shorter.
+   expression. The vocabulary stays at its 70 leaves; the text gets shorter.
 3. **Review, diff and version control** become ordinary. The derived manifest stays the thing a
    human approves; the text is what they read when the manifest surprises them.
 
@@ -105,8 +105,8 @@ parser and a lowering onto that builder, plus a printer for the other direction.
 document is a way to write units; the units are what runs, hashes, deploys and replays. The
 language adds no construct that does not lower to units that exist. If a construct needs a new
 primitive, that primitive goes through the admission gate (design §13) on its own merits first,
-and the language gets the sugar after. Two did, for this design: `as_text` (built, 2026-10-24)
-and `coalesce` (§5.6, to build).
+and the language gets the sugar after. Two did, for this design, both built on 2026-10-24:
+`as_text` (§5.5) and `coalesce` (§5.6).
 
 **P2. Small, and deliberately not general.** The pull of every language is toward a type system
 with generics, modules, a standard library, loops. Each of those would cost a year and would break
@@ -578,13 +578,15 @@ Lowest to highest precedence; binary operators are left-associative.
 | `a.name` | an output, or `field{name}(a)` | §5.7 |
 | `a[e]` | `lookup(record: a, key: e)` when `a` is not a declared collection | the key arrives on a wire |
 
-`coalesce(a, b)` is the one new leaf this language needs: `a` when present, else `b`. It cannot be
-a composite, because no leaf can see that a wired input is absent (the firing rule hands a node
-nothing), which is exactly the gap `default` plugged for literals. It goes through the admission
-gate as genuinely inexpressible, pure and total, and needs the evaluator to hand it positional
-absence, the same special treatment `map` and `fold` have in `eval_at`, plus an exception to the
-"wired but absent means held" rule in the composite walk. Until it lands, `??` and `else` take
-literals only.
+`coalesce(a, b)` is the one leaf this language needed beyond `as_text`: `a` when present, else
+`b`, the first input that arrived. It cannot be a composite, because no other leaf fires with a
+wired input absent (the firing rule hands a node nothing), which is exactly the gap `default`
+plugged for literals. It went through the admission gate as genuinely inexpressible, pure and
+total (built 2026-10-24, the 70th leaf). It needed less of the evaluator than this design first
+assumed: the leaf path already gathers present inputs in port order, so "the first present" is
+"the first that arrived"; `eval_at` gives it an explicit arm anyway, so the contract is stated
+where absence is visible rather than inherited from an implementation detail. The heartbeat
+sample uses it to keep the time of its first beat: `state.first_beat = state.first_beat ?? now`.
 
 Variadic flattening applies only to a chain of the *same* operator: `a && b && c` is one `and`
 with three inputs; `(a && b) && c`, with explicit parentheses, is two nodes. The parentheses are
@@ -829,7 +831,6 @@ The error catalogue the lowering must produce, each with the span it points at:
 | `state.k` written twice | both assignments |
 | `respond` outside a route / more than one `respond` | the statement |
 | `fn` may only use its own arguments | the free name |
-| `x ?? e` / `else e`: until `coalesce` lands, the fallback must be a literal | `e` |
 | holon `h`: input `p` never used / output `o` never bound / bound twice | the port or the binding |
 | routes `A` and `B` share `x` | the shared binding |
 | `A` clashes with `B` / not a method / not a route path | the route header |
@@ -891,16 +892,15 @@ Properties, tested: `compile(print(doc))` carries the same unit hashes as `doc`;
 
 ## 12. Build order
 
-Each step is one inch: its tests, a live check, a commit. The whole is about two and a half
-weeks. One step changes core; none changes the host, the server or the document format.
+Each step is one inch: its tests, a live check, a commit. The whole is about two weeks. The one
+step that changed core is done; none changes the host, the server or the document format.
 
 1. **Lexer and parser with spans** (`holon-author/src/lang/{lex,ast,parse}.rs`): keywords, nouns,
    durations, interpolated strings, the statement forms, and the wiring form's statements into
    the same AST. Tests: every construct, every error with its column, the eleven samples as text.
-2. **`coalesce` in core**, through the admission gate: the leaf, its catalog entry (70th),
-   `eval_at` handing it positional absence as it does `map` and `fold`, the exception in the
-   composite walk, tests, and a sample that uses an expression fallback. Independent of step 1;
-   it can go first.
+2. **`coalesce` in core** ✅ (2026-10-24): the leaf, its catalog entry (70th), an explicit
+   `eval_at` arm, tests at the leaf and inside a composite, and the heartbeat sample keeping its
+   first beat's time through it. No change to the composite walk was needed.
 3. **Lowering onto `FlowBuilder`** (`lang/lower.rs`): resolution, calls with named inputs, the
    noun and statement sugar of §5.4, literals and interpolation through `as_text`, operators,
    `.name`, holons via `end_holon_exact`, lambdas as anonymous holons, routes with the implicit
@@ -949,8 +949,8 @@ Decided ones are kept, with the decision, for a reader who wonders why.
   holons, which is the honest fix.
 - **F5. `if` without `else`.** *Decided (2026-10-24):* `if c then a` is `a when c`, and
   `if c then a else b` is the same guard with a `coalesce` fallback, so `if` has one meaning,
-  fallback, and `select` is a plain call for the strict choice. This needs the `coalesce` leaf
-  (§5.6).
+  fallback, and `select` is a plain call for the strict choice. The `coalesce` leaf it needs is
+  built (§5.6).
 - **F6. Named inputs.** *Decided (2026-10-24):* a named argument is an input when the unit has
   that port, else a param; `_` is gone. The one clash, `default`, is never written.
 - **F7. Where the layout of a text-authored flow lives.** Auto-layout on import is enough for
