@@ -1,0 +1,3 @@
+# Flows as text keep LF on every checkout: the samples are embedded and must be exactly what
+# `holon fmt` writes (crates/holon-author/samples).
+*.holon text eol=lf
