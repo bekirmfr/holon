@@ -471,6 +471,25 @@ if a composite could not give the same thing. Concretely, native iff one of:
   loop), so `fold` is native. `while` is the case we **refuse** — not because it is
   hard but because admitting it would forfeit totality.
 
+**And a numeric atom must give the same bits everywhere.** Passing the gate is not enough
+for an atom over `Number`: a run must come out the same on the server (native) and in the
+editor (wasm), or hashes, run ids and the run-log chain stop agreeing. So a numeric atom
+is admitted only if one of:
+
+- **IEEE correctly rounds it.** IEEE 754 fixes one exact result for `+ − × ÷`, `sqrt`,
+  comparison and conversions, and wasm requires the same. The genesis numeric atoms are all
+  of this kind, and `sqrt` would be.
+- **It is one pinned, pure-Rust implementation, compiled into every target.** `pow`,
+  `exp`, `log`, `sin` and the rest are *not* correctly rounded by the platform maths
+  libraries, which disagree in the last bit across operating systems, CPUs and wasm hosts.
+  Such an atom calls a pinned software implementation (fixed crate version, no `std`
+  float intrinsics, no fused multiply-add) and never `f64::powf` and friends.
+
+Either way the operand order is fixed (multi-input `add` and `sum` combine in list order,
+since floating point is not associative), and the atom joins the cross-target fraction
+check (`check_fraction_parity` in `holon-wasm`), which runs random fractions through the
+native and the wasm core and pins the hash of every result.
+
 Everything that fails the gate is a **blessed standard-library composite**: pinned,
 canonical, and — by interface parity (I1) — indistinguishable from a primitive to
 whoever drags the block. Convenience is fully served *one tier out*, in the open

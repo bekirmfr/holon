@@ -1123,6 +1123,71 @@ fn check_eval_parity() {
     assert_eq!(holon_core::eval(&comp, &[], &r2).into_vec(), vec![Some(num(7.0))]);
 }
 
+/// Arithmetic on fractions gives the same bits natively and in wasm. Random operands, everyday
+/// fractions and raw bit patterns across the whole finite range (subnormals included), go
+/// through the core's add, subtract, multiply, divide, sum and compare; each result must be
+/// exactly the IEEE operation on this target, and the hash of all of them is pinned, so the
+/// native and wasm runs must agree with each other bit for bit.
+#[cfg(test)]
+fn check_fraction_parity() {
+    // splitmix64: a fixed seed, so both targets draw the same operands.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move || {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    let mut operand = |i: usize| loop {
+        let r = next();
+        let x = if i.is_multiple_of(2) {
+            (r >> 11) as f64 / (1u64 << 53) as f64 * 2000.0 - 1000.0
+        } else {
+            f64::from_bits(r)
+        };
+        if x.is_finite() {
+            return x;
+        }
+    };
+    let num = Value::Number;
+    let r = MapResolver::new();
+    let less = Unit { params: vec![Param::frozen("op", "<")], ..prim("compare") };
+    let sum = Unit { inputs: vec![], ..prim("sum") };
+    let one = |unit: &Unit, inputs: &[Value]| -> Value {
+        let inputs: Vec<Option<Value>> = inputs.iter().cloned().map(Some).collect();
+        match holon_core::eval(unit, &inputs, &r).into_vec().as_slice() {
+            [Some(v)] => v.clone(),
+            other => panic!("expected one value, got {other:?}"),
+        }
+    };
+    let same = |got: &Value, want: f64| match got {
+        Value::Number(x) => assert!(x.to_bits() == want.to_bits() || (x.is_nan() && want.is_nan()), "{x} != {want}"),
+        other => panic!("expected a number, got {other:?}"),
+    };
+    let mut results = Vec::new();
+    for i in 0..2000 {
+        let (a, b) = (operand(i), operand(i));
+        let (va, vb) = (num(a), num(b));
+        let added = one(&prim("add"), &[va.clone(), vb.clone()]);
+        same(&added, a + b);
+        let taken = one(&prim("subtract"), &[va.clone(), vb.clone()]);
+        same(&taken, a - b);
+        let times = one(&prim("multiply"), &[va.clone(), vb.clone()]);
+        same(&times, a * b);
+        let over = one(&prim("divide"), &[va.clone(), vb.clone()]);
+        same(&over, a / b);
+        let list: Vec<f64> = (0..5).map(|_| operand(i)).collect();
+        let total = one(&sum, &[Value::List(list.iter().copied().map(num).collect())]);
+        same(&total, list.iter().fold(0.0, |acc, x| acc + x));
+        let below = one(&less, &[va, vb]);
+        assert_eq!(below, Value::Boolean(a < b));
+        results.extend([added, taken, times, over, total, below]);
+    }
+    let digest = to_hex(&holon_core::hash_value(&Value::List(results)).unwrap());
+    assert_eq!(digest, "7cfce01fd18b2d61697e95827946a049328984738904c64e6af56b9bfb2fb0e2");
+}
+
 /// The signature kit computes the same digests natively and in wasm (sha2/hmac are pure Rust, so
 /// they should; this is the check), through the catalog's own default-configured units.
 #[cfg(test)]
@@ -1298,6 +1363,8 @@ mod native_tests {
     #[test]
     fn eval_parity_native() { check_eval_parity(); }
     #[test]
+    fn fraction_parity_native() { check_fraction_parity(); }
+    #[test]
     fn signature_parity_native() { check_signature_parity(); }
     #[test]
     fn wvalue_roundtrip_native() { check_wvalue_roundtrip(); }
@@ -1333,6 +1400,8 @@ mod wasm_tests {
     fn hash_parity_wasm() { check_hash_parity(); }
     #[wasm_bindgen_test]
     fn eval_parity_wasm() { check_eval_parity(); }
+    #[wasm_bindgen_test]
+    fn fraction_parity_wasm() { check_fraction_parity(); }
     #[wasm_bindgen_test]
     fn signature_parity_wasm() { check_signature_parity(); }
     #[wasm_bindgen_test]
