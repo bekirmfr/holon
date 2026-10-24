@@ -704,6 +704,10 @@ respond_args = expr ("," "status" ":" number)? ("," "missing" ":" number)?
   fresh `const` in each route that uses them. A top-level binding of anything else is an error
   that says why: "routes are separate units; put shared logic in a holon".
 - Clashing routes, bad methods and bad paths are the existing errors, now with a column.
+- A route is everything wired to its request, so a statement in the block that never touches the
+  request (`state.hits = (state.hits ?? 0) + 1`, say) would not be part of the route and would be
+  left out of the server. The lowering refuses it, pointing at the statement: use the request in
+  it, or move it to a flow of its own.
 
 ### 5.12 Flows without routes
 
@@ -835,6 +839,7 @@ The error catalogue the lowering must produce, each with the span it points at:
 | holon `h`: input `p` never used / output `o` never bound / bound twice | the port or the binding |
 | routes `A` and `B` share `x` | the shared binding |
 | `A` clashes with `B` / not a method / not a route path | the route header |
+| this isn't wired to the route's request, so it isn't part of the route | the statement |
 | the wiring form's existing errors | their line, now with a column |
 
 ## 10. The wiring form stays
@@ -872,8 +877,11 @@ The printer turns a flow document into canonical text. The algorithm:
 3. Routes, in the order `find_routes` finds them; then, for a flow without routes, the top-level
    statements.
 4. Within a group, nodes in topological order. A node whose one output has exactly one consumer
-   and is not an Effect prints inline, as a nested expression, at its consumer. A node with
-   several consumers, or a multi-output composite, gets a binding. An Effect with no consumer
+   prints inline, as a nested expression, at its consumer, unless the text named it: `fmt` keeps
+   an author's bindings, as a formatter keeps variables. A node with several consumers, or a
+   multi-output composite, or an `await`, gets a binding. The pass-through the lowering places for
+   a holon input used twice (§12, step 3) prints as the input itself, so `n + n` comes back as
+   written. An Effect with no consumer
    prints as a statement, in the assignment form where there is one (`store_write` as
    `state.k = …`, `collection_put` as `notes[k] = …`, `collection_delete` as `delete notes[k]`),
    else as a bare call. The nouns print for their leaves (`secret.x`, `state.x`, `now`,
@@ -884,12 +892,19 @@ The printer turns a flow document into canonical text. The algorithm:
    it does not; `list` as a list literal; `default` with a literal param and `coalesce` as `??`;
    `guard` as `when`, and `coalesce` over a `guard` as `if … then … else …`; binary leaves as
    operators; `field` chains as `.name`; `respond` as the statement.
-5. Names: a binding takes the node's name from the document when it has one (the wiring form's
-   names, or the editor's labels), else the leaf's name, uniquified.
-6. Any node the rules above cannot express prints in the wiring form.
+5. Names: a binding takes the node's name from the text it came from when it has one (the
+   lowering's names, handed to the printer), else one from what the node is (a `field`'s field,
+   a `secret`'s name, a state key, `t` for the clock, `item`, `page`, `response`), uniquified and
+   kept clear of the leaves, keywords, collections and holons.
+6. Any node the rules above cannot express prints in the wiring form: a group with a request node
+   that isn't a route (the route errors as comments above it), or nodes beside the routes.
 
 Properties, tested: `compile(print(doc))` carries the same unit hashes as `doc`;
-`print(compile(t))` is the canonical form; `print` is idempotent through `compile`.
+`print(compile(t))` is the canonical form up to the author's bindings; `print` is idempotent
+through `compile`. A `concat` of consts stays a `concat` (an interpolated string lowers with an
+`as_text` per part, so only a `concat` with one prints as a string), and a JSON `const` prints as
+a literal only when the literal writes back to the same text, with keys sorted as the lowering
+writes them.
 
 ## 12. Build order
 
@@ -921,9 +936,15 @@ step that changed core is done; none changes the host, the server or the documen
    through one shared `guard(true, input)`, placed on the second use; a port or binding may not
    take a leaf's name (`sum`, `out`), so `holon total(prices) -> amount`; and type annotations on
    ports are parsed and not yet checked (the wire-time check at freeze still applies).
-4. **Printer** (`lang/print.rs`), replacing the wiring-form printer as `fmt`'s output. Tests:
-   the round-trip properties of §11 over the samples and over canvases grouped by hand (odd port
-   names, variadic nodes, multi-output composites).
+4. **Printer** ✅ (2026-10-24, `lang/print.rs`), the output of `holon fmt` and `holon new`, and
+   what `holon check` and `show` read through (the wiring-form printer stays for the editor's
+   export until step 5). Tests: the round-trip properties of §11 over every sample from its
+   builder and from its natural text, a canvas grouped by hand (core's proposed port names, a
+   holon placed twice, a variadic leaf, a multi-output composite with an effect, a lookup), the
+   wiring-form fallback for a request group that isn't a route, and the canonical text of two
+   samples pinned. Two things it settled: `fmt` keeps the author's bindings rather than inlining
+   every single-use value, and the lowering now refuses a route statement not wired to the
+   request, which the printer's output first made visible.
 5. **`holon` and the editor.** `check` prints `line:col` and the caret; the editor's export and
    import use the new printer and parser (through `holon-wasm`); view mode shows the line of the
    selected node. Samples page: "as text" shows the expression form.
