@@ -987,8 +987,21 @@ step that changed core is done; none changes the host, the server or the documen
    protocol on raw lines, a person's saved flow never replaced, and an end-to-end test where a
    person approves the agent's flow in the real editor and the agent calls and explains it.
 
+8. **Editors** ✅ (2026-10-24, designed in `docs/L4s/language-server-L4.md`). `holon lsp`, a
+   Language Server Protocol server on stdin and stdout, and `editors/vscode`, the VS Code
+   extension that starts it. As the text is typed: §9's mistake where the compiler stopped, in
+   `holon check`'s words, and a mistake about the whole flow at its `flow` header; on hover, what
+   a word is (a keyword or noun in a line, a leaf by its signature from the reference, a holon of
+   the text, a binding as the node it is, the flow's name as what `check` says of it); Format
+   Document as `holon fmt` writes. What an editor asks is holon-author's (`editing.rs`), so the
+   web editor can ask it through the bridge too; the protocol only frames messages and converts
+   positions to UTF-16. Highlighting is a TextMate grammar. Tests: each answer on the samples,
+   the protocol on framed messages, the grammar on every sample through VS Code's own TextMate
+   engine, and an integration test in a real VS Code that sees a mistake, fixes it, hovers and
+   formats.
+
 Dependencies: 3 needs 1 and 2; 4 needs 3 (the golden test is what makes the printer checkable);
-5 and 6 need 4; 7 needs 5.
+5 and 6 need 4; 7 and 8 need 5.
 
 ## 13. Open forks
 
