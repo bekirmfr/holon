@@ -794,6 +794,12 @@ takes its first wire's type.
 - **The hash is the DAG's.** Binding names, holon names, lambda parameter names, collection
   declarations, comments, blank lines and statement order are not in the preimage. They are kept
   in the flow document's `names` map (holons) and the nodes' `extra` (spans), never in a unit.
+- **The same node many times over is fine.** Each `{…}` part of a string is an `as_text`, so a
+  route with many strings holds many copies of one unit. The hash tells copies apart by where each
+  one's value goes, down to the route's response and effects (`docs/L4s/child-order-canonical-L4.md`
+  §4), so a route holds as many as it needs, in any order they were written. The one thing it
+  refuses is the same value computed twice and never used: nothing tells those two apart, and
+  `check` says so ("remove one, or use it"). The sample `issue-links` is a route of thirteen parts.
 - **Resolution happens at check time.** A catalog name resolves to `interface_of`; a template to
   its builder; a holon to the hash frozen for it in this file. Every hash the flow depends on is in
   the document's `units` closure, which is its lockfile.

@@ -1,0 +1,15 @@
+flow issue-links
+port 8111
+
+route GET /repos/:owner/:repo/issues/:number (req) {
+  owner = req.params.owner
+  repo = req.params.repo
+  number = req.params.number
+  page = "https://github.com/{owner}/{repo}/issues/{number}"
+  api = "https://api.github.com/repos/{owner}/{repo}/issues/{number}"
+  comments = "{api}/comments"
+  events = "{api}/events"
+  clone = "git@github.com:{owner}/{repo}.git"
+  short = "{owner}/{repo}#{number}"
+  respond { page: page, api: api, comments: comments, events: events, clone: clone, short: short }
+}

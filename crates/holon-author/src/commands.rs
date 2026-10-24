@@ -126,6 +126,9 @@ pub fn check(file: &str, source: &str) -> Report {
     out.push(if caps.is_empty() { "it only computes: it reads and changes nothing outside" } else { "it may:" }.into());
     out.extend(caps.iter().map(|c| format!("  {}", describe_item(c))));
     problems.splice(0..0, server.errors);
+    // The flow has no unit because of its routes' errors: each said once.
+    let mut seen = std::collections::BTreeSet::new();
+    problems.retain(|p| seen.insert(p.clone()));
     let err: Vec<String> = problems.iter().map(|p| format!("{file}: {p}")).collect();
     let code = if err.is_empty() { 0 } else { 1 };
     Report { out, err, code }
@@ -293,6 +296,40 @@ mod tests {
         let r = check("half.holon", "port 8101\nnode req = request { method: GET, path: \"/x\" }");
         assert_eq!(r.code, 1);
         assert!(r.err[0].starts_with("half.holon: "), "{r:?}");
+    }
+
+    /// Many strings in one route: each `{…}` is an `as_text`, all the same unit, told apart by
+    /// where their values go. A value computed twice and never used is said, once.
+    #[test]
+    fn a_route_of_many_interpolations_compiles_and_unused_twins_are_said() {
+        let parts: Vec<String> = (0..12).map(|i| format!("{{req.json.f{i}}}")).collect();
+        let text = format!(
+            "flow links
+port 8106
+
+route POST /links (req) {{
+  a = \"{}\"
+  b = \"{}/{}\"
+  respond {{ a: a, b: b }}
+}}
+",
+            parts.join("/"),
+            parts[..6].join("/"),
+            parts[6..].join("-")
+        );
+        let r = check("links.holon", &text);
+        assert_eq!(r.code, 0, "{r:?}");
+        let r = check("twins.holon", "flow t
+port 8107
+
+route POST /t (req) {
+  x = lowercase(req.json.a)
+  y = lowercase(req.json.a)
+  respond \"ok\"
+}
+");
+        assert_eq!(r.code, 1);
+        assert_eq!(r.err, ["twins.holon: POST /t: the same value is computed twice and never used, so nothing tells the two apart: remove one, or use it"]);
     }
 
     #[test]

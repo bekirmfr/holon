@@ -15,7 +15,7 @@ use crate::wire::WPort;
 use crate::{templates, to_hex};
 
 fn put(store: &mut MapResolver, u: Unit) -> Result<Hash, String> {
-    store.insert(u).map_err(|e| format!("{e:?}"))
+    store.insert(u).map_err(|e| format!("{e}"))
 }
 
 /// A node's own unit, stored, by hash. A primitive is rebuilt from its name, params and ports (the

@@ -411,8 +411,8 @@ fn built_from(parts: &mut Parts, elements: Vec<Unit>, ctor: &str, out: Type) -> 
     }
 }
 
-/// Units built by `constant_unit`, under private keys. They are never hashed (a list of nine
-/// equal elements would be `TooSymmetric`) and never leave the resolver. Keys are 24 bytes of
+/// Units built by `constant_unit`, under private keys. They are never hashed (a value is not a
+/// unit: hashing each part would only cost) and never leave the resolver. Keys are 24 bytes of
 /// 0xFF followed by a counter, which no blake3 output will realistically equal.
 #[derive(Default)]
 struct Parts {

@@ -218,11 +218,22 @@ pub struct Unit {
 pub enum EncodeError {
     /// A field exceeded the 32-bit length budget of the canonical encoding.
     FieldTooLong,
-    /// A composite has more equal-hash (interchangeable) children than the encoder will
-    /// canonicalize by minimization (the product of equal-hash-group factorials exceeds
-    /// [`MAX_CHILD_SYMMETRY`]). Rejected — fail-closed — rather than hashed in a non-canonical
-    /// order; the fix (refinement by wiring) is deferred. See [`canonical_composite`].
-    TooSymmetric,
+    /// Two children of a composite are the same unit and neither one's value reaches the
+    /// composite's outputs, so nothing tells them apart (a value computed twice and never used).
+    /// Rejected — fail-closed — rather than hashed in an order that depends on how the composite
+    /// was written. See [`canonical_child_order`].
+    UnusedTwins,
+}
+
+impl std::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EncodeError::FieldTooLong => write!(f, "a name or value is too long to encode (over 4 GiB)"),
+            EncodeError::UnusedTwins => {
+                write!(f, "the same value is computed twice and never used, so nothing tells the two apart: remove one, or use it")
+            }
+        }
+    }
 }
 
 /// Errors from decoding a unit out of its canonical preimage bytes (the inverse
@@ -313,16 +324,8 @@ impl Encoder {
 // changes no value. The encoder therefore normalizes child order — exactly as it already normalizes
 // edge order — so that presentation order is not part of identity. See child-order-canonical-L4.
 
-/// Cap on the number of equal-hash child orderings the encoder will minimize over (the product of
-/// equal-hash-group factorials). Hand-authored composites rarely have duplicate-hash children; one
-/// exceeding this is rejected ([`EncodeError::TooSymmetric`]) rather than hashed in a non-canonical
-/// order. Lifting it is the trigger for wiring-based refinement (deferred).
-const MAX_CHILD_SYMMETRY: usize = 40_320; // 8!
-
-/// Canonicalize a composite's child order. Children are ordered by hash; equal-hash children
-/// (interchangeable by hash alone) are ordered by minimizing the `(children ++ remapped-sorted-edges)`
-/// serialization over all within-group permutations — a presentation-invariant choice. Edges are
-/// remapped to the new indices (`BOUNDARY` fixed) and sorted. Identity changes; behaviour never does.
+/// Canonicalize a composite's child order: see [`canonical_child_order`]. Edges are remapped to the
+/// new indices (`BOUNDARY` fixed) and sorted. Identity changes; behaviour never does.
 fn canonical_composite(
     children: &[Hash],
     edges: &[Edge],
@@ -335,92 +338,80 @@ fn canonical_composite(
 /// as given, of the child that is child `k` in the canonical (hashed, stored) form. A unit that
 /// went through a store comes back in canonical order, so this is how a child index seen there
 /// (in a timing, say) is traced back to the child as it was authored.
+///
+/// Children are ordered by hash, and children with the same hash by their *path label*
+/// ([`path_labels`]): where each one's value goes, down to the composite's outputs. Every input
+/// port takes one wire, so two different children whose values reach an output have different
+/// paths, and the order is the wiring's alone, never the author's. Two children left tied are
+/// the same unit and their values go nowhere: [`EncodeError::UnusedTwins`].
 pub fn canonical_child_order(children: &[Hash], edges: &[Edge]) -> Result<Vec<usize>, EncodeError> {
     let k = children.len();
-
-    // Child indices ordered by hash; equal-hash children become adjacent.
-    let mut base: Vec<usize> = (0..k).collect();
-    base.sort_by(|&i, &j| children[i].cmp(&children[j]));
+    let mut order: Vec<usize> = (0..k).collect();
+    order.sort_by(|&i, &j| children[i].cmp(&children[j]));
 
     // Fast path: all hashes distinct ⇒ the hash order is the unique canonical order.
-    if base.windows(2).all(|w| children[w[0]] != children[w[1]]) {
-        return Ok(base);
+    if order.windows(2).all(|w| children[w[0]] != children[w[1]]) {
+        return Ok(order);
     }
 
-    // Group the sorted indices into equal-hash runs (the ambiguous groups).
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    let mut i = 0;
-    while i < k {
-        let mut j = i + 1;
-        while j < k && children[base[j]] == children[base[i]] {
-            j += 1;
-        }
-        groups.push(base[i..j].to_vec());
-        i = j;
+    let labels = path_labels(children, edges);
+    order.sort_by(|&i, &j| (children[i], labels[i]).cmp(&(children[j], labels[j])));
+    if order.windows(2).any(|w| (children[w[0]], labels[w[0]]) == (children[w[1]], labels[w[1]])) {
+        return Err(EncodeError::UnusedTwins);
     }
-
-    // Bound the work; reject pathological symmetry rather than hash non-canonically.
-    let mut budget = 1usize;
-    for g in &groups {
-        // Overflow counts as over budget. A plain product wrapped: 66! is a multiple of 2^64,
-        // so it came out as 0, passed this check, and the enumeration below then tried 66!
-        // orderings (debug builds panicked on the overflow instead).
-        match factorial(g.len()).and_then(|f| budget.checked_mul(f)) {
-            Some(b) if b <= MAX_CHILD_SYMMETRY => budget = b,
-            _ => return Err(EncodeError::TooSymmetric),
-        }
-    }
-
-    // Minimize the serialization over every hash-respecting ordering (permute within groups only).
-    let mut best: Option<(Vec<u8>, Vec<usize>)> = None;
-    let mut order: Vec<usize> = Vec::with_capacity(k);
-    enumerate_orderings(&groups, 0, &mut order, &mut |full: &[usize]| {
-        let (kids, es) = apply_child_order(children, edges, full);
-        let key = order_key(&kids, &es);
-        if best.as_ref().is_none_or(|(bk, _)| key < *bk) {
-            best = Some((key, full.to_vec()));
-        }
-    });
-
-    Ok(best.expect("at least one ordering exists").1)
+    Ok(order)
 }
 
-/// `n!`, or `None` if it overflows `usize`.
-fn factorial(n: usize) -> Option<usize> {
-    (1..=n).try_fold(1usize, |acc, k| acc.checked_mul(k))
-}
-
-/// Visit every full ordering formed by permuting each group independently (their cartesian product).
-fn enumerate_orderings(
-    groups: &[Vec<usize>],
-    gi: usize,
-    acc: &mut Vec<usize>,
-    visit: &mut impl FnMut(&[usize]),
-) {
-    if gi == groups.len() {
-        visit(acc);
-        return;
+/// Each child's path label: a hash of the child's own hash and of every edge leaving it, each
+/// edge named by its ports and by where it goes, the composite's output port or the label of the
+/// child it feeds. Labels are computed from the outputs back, so a label covers every path from
+/// the child to the outputs. A child whose value goes nowhere, or that sits on a cycle (no unit
+/// that evaluates has one; a malformed blob might), is labelled by its hash alone.
+fn path_labels(children: &[Hash], edges: &[Edge]) -> Vec<Hash> {
+    let k = children.len();
+    let inside = |c: u32| (c as usize) < k;
+    // The edges leaving each child, and how many children each one feeds yet to be labelled.
+    let mut leaving: Vec<Vec<&Edge>> = vec![Vec::new(); k];
+    for e in edges.iter().filter(|e| inside(e.from_child)) {
+        leaving[e.from_child as usize].push(e);
     }
-    let mut perm = groups[gi].clone();
-    permute(&mut perm, 0, &mut |p: &[usize]| {
-        let mark = acc.len();
-        acc.extend_from_slice(p);
-        enumerate_orderings(groups, gi + 1, acc, visit);
-        acc.truncate(mark);
-    });
-}
-
-/// Visit every permutation of `a` (whose elements are distinct child indices).
-fn permute(a: &mut [usize], i: usize, visit: &mut impl FnMut(&[usize])) {
-    if i + 1 >= a.len() {
-        visit(a);
-        return;
+    let mut waiting: Vec<usize> = leaving.iter().map(|es| es.iter().filter(|e| inside(e.to_child)).count()).collect();
+    let mut labels: Vec<Option<Hash>> = vec![None; k];
+    let mut ready: Vec<usize> = (0..k).filter(|&i| waiting[i] == 0).collect();
+    while let Some(i) = ready.pop() {
+        let mut items: Vec<Vec<u8>> = leaving[i]
+            .iter()
+            .map(|e| {
+                let mut item = Vec::with_capacity(41);
+                if inside(e.to_child) {
+                    item.push(1);
+                    item.extend_from_slice(&labels[e.to_child as usize].expect("a fed child is labelled first"));
+                } else {
+                    item.push(0);
+                }
+                item.extend_from_slice(&e.from_port.to_le_bytes());
+                item.extend_from_slice(&e.to_port.to_le_bytes());
+                item
+            })
+            .collect();
+        items.sort_unstable();
+        let mut h = Hasher::new();
+        h.update(b"holon path label");
+        h.update(&children[i]);
+        for item in &items {
+            h.update(item);
+        }
+        labels[i] = Some(*h.finalize().as_bytes());
+        // Each child feeding this one is one step nearer to being labelled.
+        for e in edges.iter().filter(|e| inside(e.from_child) && e.to_child as usize == i) {
+            let from = e.from_child as usize;
+            waiting[from] -= 1;
+            if waiting[from] == 0 {
+                ready.push(from);
+            }
+        }
     }
-    for j in i..a.len() {
-        a.swap(i, j);
-        permute(a, i + 1, visit);
-        a.swap(i, j);
-    }
+    labels.into_iter().enumerate().map(|(i, l)| l.unwrap_or(children[i])).collect()
 }
 
 /// Apply a child ordering (`order[new_index] = old_index`): reorder children, remap edge endpoints to
@@ -447,23 +438,6 @@ fn apply_child_order(children: &[Hash], edges: &[Edge], order: &[usize]) -> (Vec
     (kids, es)
 }
 
-/// The comparison key for canonicalization: child hashes then edges, as raw bytes. The rest of the
-/// preimage (tags, params, ports) is identical across orderings, so minimizing this key minimizes the
-/// full preimage among hash-respecting orderings.
-fn order_key(kids: &[Hash], es: &[Edge]) -> Vec<u8> {
-    let mut v = Vec::with_capacity(kids.len() * 32 + es.len() * 16);
-    for h in kids {
-        v.extend_from_slice(h);
-    }
-    for e in es {
-        v.extend_from_slice(&e.from_child.to_le_bytes());
-        v.extend_from_slice(&e.from_port.to_le_bytes());
-        v.extend_from_slice(&e.to_child.to_le_bytes());
-        v.extend_from_slice(&e.to_port.to_le_bytes());
-    }
-    v
-}
-
 /// Produce the canonical preimage bytes for a unit. The output is a pure
 /// function of the unit's *structure* — identical structures (regardless of
 /// cosmetics) yield identical bytes; any computational change yields different
@@ -481,7 +455,8 @@ pub fn encode_preimage(unit: &Unit) -> Result<Vec<u8>, EncodeError> {
             e.tag(TAG_COMPOSITE);
 
             // Canonicalize child order (presentation is not identity, §child-order-canonical-L4):
-            // children ordered by hash, ties minimized; edges remapped to the new indices and sorted.
+            // children ordered by hash, ties by where their values go; edges remapped to the new
+            // indices and sorted.
             // After this, the authored child *and* edge order never leak into the hash.
             let (children, edges) = canonical_composite(children, edges)?;
 
@@ -790,11 +765,10 @@ mod tests {
         }
     }
 
-    /// Regression: `factorial` wrapped on overflow. With 66+ identical children it came out 0,
-    /// the symmetry budget passed, and hashing tried 66! orderings: a hang in release, an
-    /// overflow panic in debug. Reachable from untrusted bytes via `decode_preimage` → `hash_unit`.
+    /// Identical children whose values go nowhere can't be told apart, however many: refused at
+    /// once, never searched (the old minimization once tried 66! orderings here).
     #[test]
-    fn many_identical_children_are_too_symmetric_not_a_hang() {
+    fn identical_children_that_feed_nothing_are_refused() {
         let child = hash_unit(&prim("add")).unwrap();
         let composite = |k: usize| Unit {
             body: UnitBody::Composite { children: vec![child; k], edges: vec![] },
@@ -802,11 +776,86 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
         };
-        assert!(hash_unit(&composite(8)).is_ok(), "8! is exactly the budget");
-        assert!(matches!(hash_unit(&composite(9)), Err(EncodeError::TooSymmetric)));
-        for k in [21, 66, 70, 200] {
-            assert!(matches!(hash_unit(&composite(k)), Err(EncodeError::TooSymmetric)), "{k} children");
+        assert!(hash_unit(&composite(1)).is_ok());
+        for k in [2, 9, 66, 200] {
+            assert!(matches!(hash_unit(&composite(k)), Err(EncodeError::UnusedTwins)), "{k} children");
         }
+    }
+
+    /// A fan-in of many identical children, each fed from its own input (what `"{a}/{b}/…"`
+    /// lowers to: an `as_text` per part, into one `concat`), hashes at once and the same however
+    /// the children are listed. Past eight twins the old minimization refused it.
+    #[test]
+    fn many_identical_children_on_distinct_paths_hash_in_any_presentation() {
+        let twin = hash_unit(&prim("add")).unwrap();
+        let sink = hash_unit(&prim("multiply")).unwrap();
+        let fan_in = |k: usize, rotate: usize| {
+            // The sink is child 0; twin `t` (input t, sink port t) sits at index 1 + (t + rotate) % k.
+            let at = |t: usize| 1 + ((t + rotate) % k) as u32;
+            let mut edges = vec![Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }];
+            for t in 0..k {
+                edges.push(Edge { from_child: BOUNDARY, from_port: t as u32, to_child: at(t), to_port: 0 });
+                edges.push(Edge { from_child: at(t), from_port: 0, to_child: 0, to_port: t as u32 });
+            }
+            let mut children = vec![sink];
+            children.extend(std::iter::repeat_n(twin, k));
+            Unit {
+                body: UnitBody::Composite { children, edges },
+                params: vec![],
+                inputs: (0..k).map(|t| Port { name: format!("in{t}"), ty: Type::Number }).collect(),
+                outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+            }
+        };
+        for k in [2, 9, 40] {
+            let h = hash_unit(&fan_in(k, 0)).unwrap();
+            assert_eq!(hash_unit(&fan_in(k, 1)).unwrap(), h, "{k} twins, listed another way");
+            assert_eq!(hash_unit(&fan_in(k, k - 1)).unwrap(), h, "{k} twins, listed another way");
+        }
+    }
+
+    /// Twins whose values go nowhere are refused even when they read different inputs: nothing
+    /// downstream says which is which. One of them used is enough to tell them apart.
+    #[test]
+    fn twins_are_told_apart_by_where_their_values_go() {
+        let add = hash_unit(&prim("add")).unwrap();
+        let unit = |edges: Vec<Edge>| Unit {
+            body: UnitBody::Composite { children: vec![add, add], edges },
+            params: vec![],
+            inputs: vec![Port { name: "x".into(), ty: Type::Number }, Port { name: "y".into(), ty: Type::Number }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        };
+        let reads = vec![
+            Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 },
+            Edge { from_child: BOUNDARY, from_port: 1, to_child: 1, to_port: 0 },
+        ];
+        assert!(matches!(hash_unit(&unit(reads.clone())), Err(EncodeError::UnusedTwins)));
+        let mut used = reads;
+        used.push(Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 });
+        assert!(hash_unit(&unit(used)).is_ok());
+    }
+
+    /// A malformed blob with a cycle neither hangs nor panics: its children are labelled by their
+    /// hashes alone.
+    #[test]
+    fn a_cycle_is_labelled_without_hanging() {
+        let add = hash_unit(&prim("add")).unwrap();
+        let mul = hash_unit(&prim("multiply")).unwrap();
+        let unit = Unit {
+            body: UnitBody::Composite {
+                children: vec![add, mul, add],
+                edges: vec![
+                    Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
+                    Edge { from_child: 1, from_port: 0, to_child: 0, to_port: 0 },
+                    Edge { from_child: 2, from_port: 0, to_child: 0, to_port: 1 },
+                    Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                    Edge { from_child: 7, from_port: 0, to_child: 9, to_port: 0 },
+                ],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        };
+        assert!(matches!(hash_unit(&unit), Err(EncodeError::UnusedTwins)), "both adds sit on or feed the cycle");
     }
 
     /// The reordering `canonical_child_order` reports is the one encoding applies: decoding the
@@ -991,7 +1040,7 @@ mod tests {
     fn duplicate_children_canonicalize() {
         // Two identical-hash children (both `add`) in DIFFERENT roles: one feeds the boundary output,
         // the other is fed by the boundary input. The two presentations (which index plays which
-        // role) must collapse to ONE hash — the duplicate is disambiguated by minimization.
+        // role) must collapse to ONE hash — the duplicate is told apart by where its value goes.
         let add = hash_unit(&prim("add")).unwrap();
         let roles = |out_child: u32, in_child: u32| Unit {
             body: UnitBody::Composite {

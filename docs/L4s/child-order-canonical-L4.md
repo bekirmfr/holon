@@ -70,38 +70,59 @@ non-canonical child order), but its **hash is canonical**, and `eval` is order-i
 downstream cares. Only the on-disk `Store` round-trips through bytes and therefore returns canonical
 order.
 
-## 4. How: hash-sort, ties broken by minimization
+## 4. How: hash-sort, ties broken by where each child's value goes
+
+*Revised 2026-10-24. The first version broke ties by minimization (below, kept as history); a real
+route outgrew it, and ties are now broken by path labels.*
 
 Canonical child order is computed structurally:
 
-1. **Order children by hash.** Distinct hashes ⇒ fully determined order.
-2. **Ties = same-hash children** (two `add` nodes are interchangeable *by hash alone*). For each
-   maximal equal-hash run, choose the within-run ordering whose serialization of
-   `(children ++ remapped-sorted-edges)` is **lexicographically smallest**, minimizing over all
-   within-run permutations. Because the equal-hash partition is itself presentation-invariant and we
-   take the min over an invariantly-defined candidate set, the result is invariant under the input's
-   child order — the same wiring always yields the same bytes.
+1. **Order children by hash.** Distinct hashes ⇒ fully determined order (unchanged: a composite
+   with no two children alike hashes as it always did).
+2. **Ties = same-hash children** (two `as_text` nodes, one per `{…}` part of a string, are the same
+   unit). Each child gets a **path label**: a hash of its own hash and of every edge leaving it,
+   each edge named by its ports and by where it goes, the composite's output port or the label of
+   the child it feeds. Labels are computed from the outputs back (`path_labels`), so a child's label
+   covers every path from it to the outputs. Same-hash children are ordered by label.
 3. **Remap edges** to the new indices (`BOUNDARY` fixed), then sort.
 
-This is canonical-by-minimization: simple, and provably presentation-invariant. The only cost is the
-within-run permutation search, paid **only** when a composite has duplicate-hash children — which
-hand-authored composites rarely do, and then only a couple.
+**Why labels can't tie for children that matter.** Every input port takes exactly one wire, so two
+different children can't feed the same port of the same child. Following any two children's values
+toward the outputs, their paths part somewhere, and so do their labels. Labels are defined by the
+wiring alone (child hashes, port numbers, output ports), never by the order the author listed
+anything, so the order is presentation-invariant. A route's response and every effect are its
+outputs (`route_spec`), so every child that changes what a run does or answers has a path.
 
-**Bound (fail-closed):** the work is the product of equal-hash-group factorials. Capped at
-`MAX_CHILD_SYMMETRY` (= 8! = 40320); a composite with more symmetry than that is **rejected**
-(`EncodeError::TooSymmetric`) rather than canonicalized cheaply. Rejecting — not silently falling
-back to a non-minimized order — is what keeps canonicality honest (a non-minimized fallback would
-not be presentation-invariant, the whole point). Hand-authored composites never approach this;
-hitting it is the trigger for the deferred optimization below.
+**What is left: dead twins, refused.** Two children still tied are the same unit and neither one's
+value reaches an output: a value computed twice and never used. Nothing in the composite tells them
+apart, so the encoder refuses (`EncodeError::UnusedTwins`, fail-closed: never an order that depends
+on presentation), and the author is told to remove one or use it. A single unused child is fine;
+it has no twin to tie with. A malformed blob with a cycle neither hangs nor panics: a child on (or
+feeding) a cycle is labelled by its hash alone.
 
-## 5. Deferred (with a trigger)
+**Cost:** one pass over the edges from the outputs back, whatever the symmetry. There is no search
+and no cap.
 
-**Refinement of duplicate-hash children by their wiring** (a color-refinement / Weisfeiler-Leman
-pass that distinguishes same-hash children by their incident edges before the permutation search,
-shrinking the ambiguous groups). It would make even highly-symmetric composites cheap and lift the
-cap. Not built now: KISS — the minimization is correct and fast for the realistic case. *Trigger:* a
-real composite hits `MAX_CHILD_SYMMETRY` (genuinely many identical-hash children with symmetric
-wiring), at which point refinement is the principled fix and lives in the same encoder seam.
+### The first version: minimization (2026-10, replaced)
+
+For each run of equal-hash children it tried every within-run ordering and kept the one whose
+`(children ++ remapped-sorted-edges)` serialization was smallest, capped at 8! orderings
+(`MAX_CHILD_SYMMETRY`, refused past it as `TooSymmetric`). The cap multiplied across runs, and the
+language lowers each `{…}` part to an `as_text`: nine parts in one route, or six parts sharing one
+separator, were refused. This section's deferred trigger ("a real composite hits
+`MAX_CHILD_SYMMETRY`") was hit by an agent's first medium-sized route, and path labels replaced the
+search outright rather than refining it.
+
+**Hashes changed** for composites with same-hash children (any route with two `{…}` parts, say);
+composites without them hash as before. This was taken in development, with no deployments kept: a
+store holding a composite under its old hash reads it as `Corrupt`, and a server holding such a
+deployment refuses to start until its deployments file is moved aside. `ENCODING_VERSION` stays at 5
+for the reason §3 gives for not bumping: every new encoding was already a valid one.
+
+## 5. Deferred
+
+Nothing for ordering itself. Unused values in general (a single one is legal today) could become an
+error in the language with the line they're on; that is a language decision, not the encoder's.
 
 ## 6. Why now (empty corpus), not at P4.3
 

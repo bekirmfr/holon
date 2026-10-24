@@ -35,7 +35,7 @@ impl From<String> for GroupError {
 
 /// A unit stored, as the editor stores one it was handed.
 pub(crate) fn put_unit(store: &mut MapResolver, unit: Unit) -> Result<Hash, String> {
-    store.insert(unit).map_err(|e| format!("encode: {e:?}"))
+    store.insert(unit).map_err(|e| format!("{e}"))
 }
 
 /// Which of the grouped children (by index) a ValidationError implicates. `TypeMismatch` carries

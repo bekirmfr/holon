@@ -124,7 +124,7 @@ fn e(from_child: u32, from_port: u32, to_child: u32, to_port: u32) -> Edge {
 }
 
 fn put(store: &mut MapResolver, u: Unit) -> Result<Hash, String> {
-    store.insert(u).map_err(|e| format!("{e:?}"))
+    store.insert(u).map_err(|e| format!("{e}"))
 }
 
 /// A genesis leaf as the catalog declares it, with `params` (and, for a variadic one, `inputs`).
