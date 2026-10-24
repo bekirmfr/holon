@@ -895,9 +895,15 @@ Properties, tested: `compile(print(doc))` carries the same unit hashes as `doc`;
 Each step is one inch: its tests, a live check, a commit. The whole is about two weeks. The one
 step that changed core is done; none changes the host, the server or the document format.
 
-1. **Lexer and parser with spans** (`holon-author/src/lang/{lex,ast,parse}.rs`): keywords, nouns,
-   durations, interpolated strings, the statement forms, and the wiring form's statements into
-   the same AST. Tests: every construct, every error with its column, the eleven samples as text.
+1. **Lexer and parser with spans** ✅ (2026-10-24, `holon-author/src/lang/{lex,ast,parse}.rs`):
+   keywords, nouns, durations, interpolated strings (each `{…}` part parsed with the columns of
+   where it sits), the statement forms, and the wiring form's statements into the same tree.
+   Tests: every construct, every error with its column, the eleven samples in the natural form,
+   and every sample as the wiring form prints it, read as the old parser reads it. Two details
+   the parser settled: a newline continues a statement after an operator or a comma and inside
+   parentheses, brackets and record literals, and `else` may start the next line; and a keyword
+   followed by a dot is a plain name, so a wiring-form node named after a leaf (`await.out`)
+   still wires.
 2. **`coalesce` in core** ✅ (2026-10-24): the leaf, its catalog entry (70th), an explicit
    `eval_at` arm, tests at the leaf and inside a composite, and the heartbeat sample keeping its
    first beat's time through it. No change to the composite walk was needed.
