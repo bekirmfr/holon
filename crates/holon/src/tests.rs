@@ -3223,6 +3223,32 @@ fn accounts_through_the_routes() {
     assert!(saved_by_ci, "{activity}");
 }
 
+/// The local token (local.rs) is the OS user's admin, before setup and after, named in the
+/// activity log as that user; another `hl_` token, or the last run's, is nobody.
+#[test]
+fn the_local_token_is_its_users_admin_for_this_run() {
+    let mut state = test_state();
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let stale = accounts.new_local("ada");
+    let local = accounts.new_local("ada");
+    state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+    let call = |method: &str, url: &str, body: Vec<u8>, token: &str| {
+        let mut headers = req(method, url, body.clone()).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        headers.push(("Authorization".into(), format!("Bearer {token}")));
+        route(&state, &Request::fake_http(method, url, headers, body))
+    };
+    assert_eq!(call("GET", "/flows", vec![], &local).status_code, 200, "before setup");
+    assert_eq!(call("GET", "/flows", vec![], &stale).status_code, 403, "the last run's token");
+    accounts.setup(&accounts.setup_code().unwrap(), "bob", "correct horse battery").unwrap();
+    assert_eq!(call("GET", "/flows", vec![], &stale).status_code, 401);
+    assert_eq!(call("GET", "/flows", vec![], "hl_nope").status_code, 401);
+    assert_eq!(call("GET", "/admin/users", vec![], &local).status_code, 200, "an admin");
+    assert!(call("POST", "/flows", br#"{"name":"mine","document":{}}"#.to_vec(), &local).is_success());
+    let activity = body_json(call("GET", "/activity", vec![], &local));
+    let by_local = activity["entries"].as_array().unwrap().iter().any(|e| e["action"] == "saved" && e["by"] == "local:ada");
+    assert!(by_local, "{activity}");
+}
+
 /// With accounts, a save and a deploy remember who made them, and every action is in the
 /// activity log with who did it, a deleted deployment's included.
 #[test]

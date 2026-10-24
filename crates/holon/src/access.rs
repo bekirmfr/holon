@@ -14,6 +14,9 @@
 //! sign-in, invite links, where to sign in through a provider). A server without accounts yet
 //! answers nothing else until its first admin is set up (with the code it prints).
 //!
+//! The OS user running the server signs in through its run file (local.rs): a token made for
+//! this run, good as an admin until it stops, that only that user can read.
+//!
 //! Hosts and origins: the server answers as loopback, and as the hosts and editor origins named
 //! with `--allow-host` / `--allow-origin`. Tokens are never logged or echoed.
 
@@ -82,10 +85,14 @@ impl Access {
         if is_open(method, &url) {
             return Ok(Caller::default());
         }
+        let presented = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or("");
+        // The OS user who runs the server, through its run file (local.rs): its admin, set up or not.
+        if let Some(who) = accounts.local(presented) {
+            return Ok(Caller { name: Some(who.name), role: Some(who.role) });
+        }
         if accounts.needs_setup() {
             return Err(err(403, "this server isn't set up yet: open the editor and enter the setup code it printed when it started"));
         }
-        let presented = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or("");
         let refuse = |message: String| Err(err(401, message).with_additional_header("WWW-Authenticate", "Bearer"));
         if presented.is_empty() {
             return refuse("sign in first".into());

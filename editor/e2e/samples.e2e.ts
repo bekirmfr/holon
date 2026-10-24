@@ -5,7 +5,7 @@
 // developer's deployments on the samples' ports are left alone.
 
 import type { Page } from "@playwright/test";
-import { expect, SERVER, test } from "./fixtures";
+import { expect, RUN_DIR, SERVER, test } from "./fixtures";
 
 /** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. */
 async function openSample(page: Page, title: string) {
@@ -364,7 +364,7 @@ test("likes answers a count in a sentence: the number as text (as_text), then th
 });
 
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
-  const { execFileSync } = await import("node:child_process");
+  const { execFileSync, spawnSync } = await import("node:child_process");
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -402,4 +402,14 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const exported = execFileSync(holon, ["export", "ledger", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
   expect(exported).toContain(`head ${head.slice(0, 12)}`);
   expect(execFileSync(holon, ["verify", out], { encoding: "utf8" })).toContain("re-ran 4 runs");
+
+  // And as the user running the servers, with no token: from their run files (local.rs). Both
+  // test servers run, so it asks which; a port alone picks one.
+  const local = { ...process.env, HOLON_RUN_DIR: RUN_DIR, HOLON_TOKEN: "", HOLON_SERVER: "" };
+  const which = spawnSync(holon, ["export", "ledger"], { encoding: "utf8", env: local });
+  expect(which.status).toBe(1);
+  expect(which.stderr).toContain("pick one with --server 7520 or --server 7521");
+  const mine = join(dir, "as-me.json");
+  expect(execFileSync(holon, ["export", "ledger", "--server", "7520", "-o", mine], { encoding: "utf8", env: local })).toContain(`head ${head.slice(0, 12)}`);
+  expect(execFileSync(holon, ["verify", mine], { encoding: "utf8" })).toContain("re-ran 4 runs");
 });

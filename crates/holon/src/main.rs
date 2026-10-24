@@ -164,6 +164,7 @@ mod flows;
 mod http;
 mod lifecycle;
 mod listeners;
+mod local;
 mod outbound;
 mod permissions;
 mod persist;
@@ -411,7 +412,7 @@ const USAGE: &str = "usage: holon <command>
   check <file>                       compile a flow: its routes, what it may do, or each mistake
   show <file>                        an outline: routes, nodes and what feeds them
   fmt <file>                         rewrite a flow in the canonical form
-  export <slug> [--server URL]       write a deployment's runs to a file (HOLON_TOKEN signs in)
+  export <slug> [--server PORT]      write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
   version                            this build's version
   update [--check] [--to VERSION]    install the newest release (or see if there is one)
@@ -888,6 +889,8 @@ fn serve(args: Vec<String>) {
         println!("holon: the editor ({}) at http://{addr}/", source.describe());
     }
     println!("holon: listening on http://{addr} ({gate}; see access.rs)");
+    // Commands this user runs on this machine find it, and sign in, from here (local.rs).
+    local::publish(bound, &accounts.new_local(&local::user()));
     if state_cell.set(state).is_err() {
         unreachable!("the state is set once");
     }

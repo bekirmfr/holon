@@ -26,6 +26,8 @@ for (const old of readdirSync(tmpdir()).filter((d) => d.startsWith(`holon-e2e-${
   rmSync(join(tmpdir(), old), { recursive: true, force: true });
 }
 const dir = mkdtempSync(join(tmpdir(), `holon-e2e-${port}-`));
+// Its run file (local.rs) goes beside the other test server's, not into ~/.holon/run (fixtures.ts).
+const runDir = join(tmpdir(), "holon-e2e-run");
 // CARGO_TARGET_DIR, when set, is where cargo put it (e.g. to build beside a dev server holding
 // target/debug's binary open).
 const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
@@ -42,10 +44,13 @@ const server = spawn(
     "--host-key", join(dir, "host.key"),
     "--accounts", join(dir, "accounts.json"),
   ],
-  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE } },
+  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir } },
 );
 
-const cleanUp = () => rmSync(dir, { recursive: true, force: true });
+const cleanUp = () => {
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(join(runDir, `${port}.json`), { force: true });
+};
 const stop = () => {
   server.kill();
 };

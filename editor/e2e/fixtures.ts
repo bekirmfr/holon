@@ -2,9 +2,13 @@
 // sets that server up with a known setup code and this admin, and every page here begins with
 // that admin's session in the browser, as signing in leaves it (server.ts's holon.session).
 
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test as base, expect } from "@playwright/test";
 
 export const SERVER = "http://127.0.0.1:7520";
+/** Where the test servers write their run files (local.rs), never the developer's ~/.holon/run. */
+export const RUN_DIR = join(tmpdir(), "holon-e2e-run");
 export const ADMIN = { name: "e2e", password: "e2e-password-0123" };
 
 export const test = base.extend<{ adminToken: string }>({

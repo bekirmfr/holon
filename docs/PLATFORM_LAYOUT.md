@@ -333,7 +333,11 @@ only the editor.
     panel adds people by name and role and gives a one-time link (7 days) for them to set their
     own password; it changes roles, disables (their sessions end), resets (a new link), removes,
     and refuses any change that would leave no admin. API tokens for scripts and CI are made
-    there with a role, shown once, revoked any time. Only hashes of tokens are kept. The server
+    there with a role, shown once, revoked any time. Only hashes of tokens are kept. The OS user
+    running the server needs none on that machine (`local.rs`): `holon serve` writes a run file
+    readable only by that user (`~/.holon/run/<port>.json`, or `HOLON_RUN_DIR`) with its address
+    and a token made for this run, an admin's, named `local:<user>` in the activity log; `holon
+    export` finds the one server running and signs in with it. The server
     answers as loopback, and as the hosts and editor origins named with `--allow-host` /
     `--allow-origin`. Who did what is kept: the secrets audit (`by`), each saved flow
     (`saved_by`) and deployment (`deployed_by`), and the activity log

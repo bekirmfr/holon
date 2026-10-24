@@ -122,6 +122,9 @@ pub(crate) struct Accounts {
     failures: Mutex<HashMap<String, (u32, Option<Instant>)>>,
     /// The identity provider, discovered from `book.oidc` (oidc.rs).
     oidc: RwLock<Option<crate::oidc::Oidc>>,
+    /// The local token's hash and who it is (local.rs): made when the server starts, good as that
+    /// OS user's admin until it stops, never stored.
+    local: Mutex<Option<(String, String)>>,
 }
 
 /// A new secret token: `prefix` and 32 random bytes, base64url.
@@ -201,7 +204,7 @@ impl Accounts {
 
     fn with(path: Option<PathBuf>, book: Book) -> Accounts {
         let code = book.users.is_empty().then(|| std::env::var("HOLON_SETUP_CODE").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(new_setup_code));
-        Accounts { path, book: Mutex::new(book), setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), oidc: RwLock::new(None) }
+        Accounts { path, book: Mutex::new(book), setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), oidc: RwLock::new(None), local: Mutex::new(None) }
     }
 
     fn save(&self, book: &Book) -> Result<(), String> {
@@ -291,6 +294,21 @@ impl Accounts {
             book.sessions.retain(|s| s.hash != hash);
             Ok(())
         });
+    }
+
+    /// A new local token for OS user `user`, replacing any before it: an admin's, for this run of
+    /// the server only (local.rs).
+    pub(crate) fn new_local(&self, user: &str) -> String {
+        let token = new_token("hl_");
+        *self.local.lock().unwrap() = Some((hash_of(&token), format!("local:{user}")));
+        token
+    }
+
+    /// Who the local token is, if `token` is it.
+    pub(crate) fn local(&self, token: &str) -> Option<Who> {
+        let local = self.local.lock().unwrap();
+        let (hash, name) = local.as_ref().filter(|_| token.starts_with("hl_"))?;
+        same(hash, &hash_of(token)).then(|| Who { name: name.clone(), role: Role::Admin })
     }
 
     /// Who a bearer token is: a session's account (not disabled), or an API token.

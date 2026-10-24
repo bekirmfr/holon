@@ -471,12 +471,12 @@ fn list<T: std::fmt::Display>(items: &[T]) -> String {
     shown.join(", ") + if items.len() > 10 { ", …" } else { "" }
 }
 
-/// `holon export <slug> [--server URL] [-o FILE]`: fetch a deployment's runs from a server, as the
-/// editor's "export runs" does, signed in with the API token in `HOLON_TOKEN` (never on the
-/// command line), and write them where `holon verify` reads them.
+/// `holon export <slug> [--server PORT|URL] [-o FILE]`: fetch a deployment's runs from a server, as
+/// the editor's "export runs" does, and write them where `holon verify` reads them. The server
+/// and sign-in come from the one this user runs here (local.rs), or `--server` and `HOLON_TOKEN`.
 pub(crate) fn export(args: &[String]) -> i32 {
     let mut slug = None;
-    let mut server = std::env::var("HOLON_SERVER").ok().filter(|s| !s.trim().is_empty());
+    let mut server = None;
     let mut out = None;
     let mut args = args.iter();
     while let Some(a) = args.next() {
@@ -498,13 +498,19 @@ pub(crate) fn export(args: &[String]) -> i32 {
         eprintln!("{EXPORT_USAGE}");
         return 2;
     };
-    let server = server.unwrap_or_else(|| "http://127.0.0.1:7420".into());
-    let server = server.trim_end_matches('/');
+    let target = match local::target(server.as_deref()) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("holon export: {e}");
+            return 1;
+        }
+    };
+    let server = target.server.as_str();
     let out = out.unwrap_or_else(|| format!("{slug}-runs.json"));
     let url = format!("{server}/deployments/{slug}/export");
     let mut request = ureq::get(&url).timeout(Duration::from_secs(120));
-    if let Some(token) = std::env::var("HOLON_TOKEN").ok().filter(|t| !t.trim().is_empty()) {
-        request = request.set("Authorization", &format!("Bearer {}", token.trim()));
+    if let Some(token) = &target.token {
+        request = request.set("Authorization", &format!("Bearer {token}"));
     }
     let body = match request.call() {
         Ok(response) => {
@@ -523,12 +529,13 @@ pub(crate) fn export(args: &[String]) -> i32 {
                 .unwrap_or_else(|| body.trim().to_string());
             eprintln!("holon export: {server} answered {code}: {why}");
             if code == 401 {
-                eprintln!("holon export: set HOLON_TOKEN to an API token (the editor's admin page, API tokens)");
+                eprintln!("holon export: for a server elsewhere, set HOLON_TOKEN to an API token (the editor's admin page, API tokens)");
             }
             return 1;
         }
         Err(e) => {
             eprintln!("holon export: can't reach {server}: {e}");
+            eprintln!("holon export: is holon serve running there? --server takes the port or address it printed");
             return 1;
         }
     };
@@ -549,8 +556,9 @@ pub(crate) fn export(args: &[String]) -> i32 {
     0
 }
 
-const EXPORT_USAGE: &str = "usage: holon export <slug> [--server URL] [-o FILE]
+const EXPORT_USAGE: &str = "usage: holon export <slug> [--server PORT|URL] [-o FILE]
 
   Writes a deployment's runs (its run log, exactly as written, and every unit they ran) to FILE
-  (default <slug>-runs.json), for holon verify. --server is the holon server (default
-  http://127.0.0.1:7420; or HOLON_SERVER). Signs in with the API token in HOLON_TOKEN.";
+  (default <slug>-runs.json), for holon verify. From the holon serve you run on this machine,
+  signed in as you; with several running, --server <port> picks one. A server elsewhere:
+  --server <URL> (or HOLON_SERVER), signed in with an API token in HOLON_TOKEN.";
