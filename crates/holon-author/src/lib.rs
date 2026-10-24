@@ -21,6 +21,7 @@
 //! - [`samples`]: the sample flows, one per capability, built with the builder.
 //! - [`describe`]: what a manifest item lets a flow do, in words.
 //! - [`commands`]: `holon new`, `check`, `show` and `fmt`, text in and text out.
+//! - [`editing`]: what an editor asks of a text as it is typed (`holon lsp`).
 
 pub mod agent;
 pub mod builder;
@@ -28,6 +29,7 @@ pub mod canvas;
 pub mod commands;
 pub mod composites;
 pub mod describe;
+pub mod editing;
 pub mod flow;
 pub mod group;
 pub mod lang;

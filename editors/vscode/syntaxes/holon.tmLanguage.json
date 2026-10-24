@@ -1,0 +1,131 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Holon",
+  "scopeName": "source.holon",
+  "fileTypes": ["holon"],
+  "patterns": [{ "include": "#comment" }, { "include": "#header" }, { "include": "#route" }, { "include": "#holon" }, { "include": "#node" }, { "include": "#binding" }, { "include": "#expression" }],
+  "repository": {
+    "comment": {
+      "name": "comment.line.number-sign.holon",
+      "match": "#.*$"
+    },
+    "header": {
+      "patterns": [
+        {
+          "match": "^\\s*(flow)\\s+([A-Za-z0-9_-]+)",
+          "captures": { "1": { "name": "keyword.other.flow.holon" }, "2": { "name": "entity.name.namespace.holon" } }
+        },
+        {
+          "match": "^\\s*(collection)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "keyword.other.collection.holon" }, "2": { "name": "variable.other.constant.holon" } }
+        },
+        {
+          "match": "^\\s*(port|every|interval|browsers|optional)\\b",
+          "captures": { "1": { "name": "keyword.other.header.holon" } }
+        }
+      ]
+    },
+    "route": {
+      "match": "\\b(route)\\s+([A-Z]+)\\s+(\\S+)\\s*(\\()\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(\\))(?:\\s+(resumes)\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+      "captures": {
+        "1": { "name": "keyword.other.route.holon" },
+        "2": { "name": "support.constant.method.holon" },
+        "3": { "name": "string.unquoted.path.holon" },
+        "4": { "name": "punctuation.definition.parameters.begin.holon" },
+        "5": { "name": "variable.parameter.request.holon" },
+        "6": { "name": "punctuation.definition.parameters.end.holon" },
+        "7": { "name": "keyword.other.resumes.holon" },
+        "8": { "name": "variable.other.event.holon" }
+      }
+    },
+    "holon": {
+      "match": "\\b(holon)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": { "1": { "name": "keyword.other.holon.holon" }, "2": { "name": "entity.name.function.holon" } }
+    },
+    "node": {
+      "match": "^\\s*(node)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(=)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.other.node.holon" },
+        "2": { "name": "variable.other.definition.holon" },
+        "3": { "name": "keyword.operator.assignment.holon" },
+        "4": { "name": "support.function.holon" }
+      }
+    },
+    "binding": {
+      "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(=)(?!=)",
+      "captures": { "1": { "name": "variable.other.definition.holon" }, "2": { "name": "keyword.operator.assignment.holon" } }
+    },
+    "expression": {
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#number" },
+        {
+          "name": "keyword.control.holon",
+          "match": "\\b(respond|delete|await|if|then|else|when|fn)\\b"
+        },
+        {
+          "name": "constant.language.boolean.holon",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "match": "\\b(secret|state|http|stripe)\\s*(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "variable.language.noun.holon" }, "2": { "name": "punctuation.accessor.holon" }, "3": { "name": "variable.other.member.holon" } }
+        },
+        {
+          "name": "variable.language.noun.holon",
+          "match": "\\b(now|random|ingress)\\b"
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": { "1": { "name": "entity.name.function.call.holon" } }
+        },
+        {
+          "match": "(?<![.\\w])([A-Za-z_][A-Za-z0-9_]*)\\s*(:)(?!:)",
+          "captures": { "1": { "name": "entity.other.attribute-name.holon" }, "2": { "name": "punctuation.separator.key-value.holon" } }
+        },
+        { "name": "keyword.operator.arrow.holon", "match": "->" },
+        { "name": "keyword.operator.spread.holon", "match": "\\.\\." },
+        { "name": "keyword.operator.holon", "match": "\\?\\?|&&|\\|\\||==|!=|<=|>=|[+\\-*/<>!]" },
+        { "name": "keyword.operator.assignment.holon", "match": "=" },
+        { "name": "punctuation.accessor.holon", "match": "\\." },
+        { "name": "punctuation.separator.comma.holon", "match": "," }
+      ]
+    },
+    "number": {
+      "patterns": [
+        { "name": "constant.numeric.duration.holon", "match": "\\b\\d+(?:\\.\\d+)?[smhd]\\b" },
+        { "name": "constant.numeric.holon", "match": "\\b\\d+(?:\\.\\d+)?\\b" }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.holon",
+      "begin": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.holon" } },
+      "end": "\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.holon" } },
+      "patterns": [
+        { "name": "constant.character.escape.holon", "match": "\\\\." },
+        {
+          "name": "meta.interpolation.holon",
+          "begin": "\\{",
+          "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.holon" } },
+          "end": "\\}",
+          "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.holon" } },
+          "contentName": "source.holon.embedded",
+          "patterns": [{ "include": "#interpolated" }]
+        }
+      ]
+    },
+    "interpolated": {
+      "patterns": [
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "patterns": [{ "include": "#interpolated" }]
+        },
+        { "include": "#expression" }
+      ]
+    }
+  }
+}

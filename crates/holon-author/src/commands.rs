@@ -91,6 +91,17 @@ fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(Strin
     (server, unit)
 }
 
+/// What `check` finds wrong with a text that compiles: its server's mistakes, and why it has no
+/// unit.
+pub(crate) fn problems(c: &Lowered, store: &mut MapResolver) -> Vec<String> {
+    let (server, unit) = derive(c, store);
+    let mut problems = server.errors;
+    problems.extend(unit.err());
+    let mut seen = std::collections::BTreeSet::new();
+    problems.retain(|p| seen.insert(p.clone()));
+    problems
+}
+
 /// `holon check`: compiled, its routes, its unit and what it may do; each problem on stderr.
 pub fn check(file: &str, source: &str) -> Report {
     let mut store = MapResolver::new();

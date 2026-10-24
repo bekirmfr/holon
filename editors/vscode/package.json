@@ -1,0 +1,55 @@
+{
+  "name": "holon",
+  "displayName": "Holon",
+  "description": "Holon flows (.holon): highlighting, each mistake holon check finds as you type, hover and formatting, through holon lsp.",
+  "version": "0.1.0",
+  "publisher": "bekirmfr",
+  "license": "SEE LICENSE IN LICENSE",
+  "private": true,
+  "repository": { "type": "git", "url": "https://github.com/bekirmfr/holon" },
+  "engines": { "vscode": "^1.82.0" },
+  "categories": ["Programming Languages", "Formatters"],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "languages": [
+      {
+        "id": "holon",
+        "aliases": ["Holon", "holon"],
+        "extensions": [".holon"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "holon",
+        "scopeName": "source.holon",
+        "path": "./syntaxes/holon.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Holon",
+      "properties": {
+        "holon.path": {
+          "type": "string",
+          "default": "holon",
+          "markdownDescription": "The `holon` command the extension starts as `holon lsp`: its name on the PATH, or its full path."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/grammar.test.js",
+    "test:vscode": "node test/integration/run.js",
+    "package": "vsce package --skip-license"
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "2.4.1",
+    "@vscode/vsce": "3.2.1",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.1.0"
+  }
+}

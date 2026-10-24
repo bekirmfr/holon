@@ -97,3 +97,24 @@ jobs:
         with:
           name: playwright-traces
           path: editor/test-results
+
+  # 6. The VS Code extension (editors/vscode): its grammar on every sample, through VS Code's own
+  #    TextMate engine; then, in a real VS Code (downloaded, on a virtual display), a flow's
+  #    mistake, hover and formatting through `holon lsp`.
+  vscode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p holon
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - run: npm ci
+        working-directory: editors/vscode
+      - run: npm test
+        working-directory: editors/vscode
+      - run: xvfb-run -a npm run test:vscode
+        working-directory: editors/vscode
