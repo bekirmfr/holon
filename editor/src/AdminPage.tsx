@@ -23,11 +23,12 @@ import {
 import { useDialog } from "./Dialog";
 import { ActivityList } from "./Pages";
 
-const ROLES: Role[] = ["viewer", "editor", "admin"];
+const ROLES: Role[] = ["viewer", "editor", "admin", "agent"];
 const ROLE_TITLE: Record<Role, string> = {
   viewer: "reads flows, deployments and logs",
   editor: "also saves, deploys, runs and deletes",
   admin: "also writes secrets and manages this panel",
+  agent: "reads, proposes flows and calls them; never approves, starts, stops or deletes",
 };
 
 const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 8px", color: "#9fb4d4", background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 3, cursor: "pointer" };

@@ -59,11 +59,19 @@ not JSON to be parsed: the same sentences `holon check` and the editor use.
    out (§8), with its `trace` and its settings, its units staged with `POST /unit`, plus the
    binding names under `bindings` so `explain` and the editor keep the agent's names. A person who
    opens it in the editor sees the same canvas.
-6. **Attribution is the sign-in's.** Through the run file the agent acts as `local:<user>`, so
-   the activity log and `deployed_by` show the person. An agent run with `--server` and an API
-   token made for it (`POST /admin/tokens`, role editor) shows as `token:<label>`. A server-side
-   role that can propose but never acknowledge is the stronger guarantee, for when an agent holds
-   its own token and a shell: not built here, and named in the README.
+6. **The server holds an agent to proposing: the `agent` role** (access.rs). An agent reads as a
+   viewer does, and may store units, preview, deploy, save a flow and call a deployed one. Its
+   deploy never approves: `acknowledge` from it is refused (403), as is a deploy that needs an
+   approval it hasn't had, worded for the person who will give it. It may not replace a flow
+   someone else saved (flows.rs), and grants, run/pause/stop, deletes, secrets, the registry,
+   `/fire`, `/trigger` and the admin panel are refused it. `holon mcp` sends every request with
+   `X-Holon-Role: agent`, which lowers whoever sends it to an agent, named `<sign-in> (agent)`:
+   through the run file the agent acts as `local:<user> (agent)`, so the activity log, the flows
+   page and `deployed_by` tell its steps from the person's, and the server, not only the tools,
+   keeps it from approving. That header is a promise its sender keeps: an agent with a shell can
+   read the run file and leave it off. For an agent that holds a shell, an API token of its own
+   with role `agent` (`POST /admin/tokens`, or the admin page), used with `--server` and
+   `HOLON_TOKEN`, is the guarantee: no request made with it approves, whatever sends it.
 
 ## What it does not do
 

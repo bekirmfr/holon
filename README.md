@@ -149,10 +149,13 @@ its host starts (for Claude Code: `claude mcp add holon -- holon mcp`). It reach
 - `runs` and `explain`: a flow's latest runs, and one run as the flow's text with the value each
   statement had and where a missing value came from.
 
-Through the run file, the agent acts as you. Give it an API token of its own with
-`--server <URL>` and `HOLON_TOKEN` to see its deploys under its name; a token's holder could still
-approve with it directly, so a role that can only propose is the stronger guarantee, and isn't
-built yet. Design: `docs/L4s/agent-surface-L4.md`.
+The server holds it to that too: `holon mcp` asks as an `agent`, a role that reads, proposes and
+calls, and never approves, grants, starts, stops, deletes or sets a secret. Through the run file
+it signs in as you, and its steps show as `local:<you> (agent)` in the activity log and on the
+flows page. An agent that also has a shell could read the run file and ask as you; for one,
+make it an API token with role `agent` in the editor's admin page and start `holon mcp
+--server <URL>` with that token in `HOLON_TOKEN`: nothing done with that token approves. Design:
+`docs/L4s/agent-surface-L4.md`.
 
 ## Releasing
 

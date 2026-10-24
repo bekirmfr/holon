@@ -10,6 +10,8 @@ pub(crate) fn handle_post_flows(
     flows_path: &str,
     request: &Request,
     by: Option<&str>,
+    // Whether an agent saves it (access.rs): it may replace only its own.
+    agent: bool,
     activity: &crate::activity::Activity,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -36,6 +38,13 @@ pub(crate) fn handle_post_flows(
     let record = FlowRecord { name: body.name.clone(), document: body.document, saved_at_epoch_seconds, saved_by: saved_by.clone(), uses: uses.clone() };
 
     let mut table = flows.lock().unwrap();
+    if agent
+        && let Some(saved) = table.get(&body.name)
+        && saved.saved_by.as_deref() != by
+    {
+        let whose = saved.saved_by.as_deref().unwrap_or("someone");
+        return err(403, format!("a flow named \"{}\" saved by {whose} is already here, and an agent doesn't replace someone else's flow: save it under another name", body.name));
+    }
     table.insert(body.name.clone(), record);
     persist_flows(flows_path, &table);
     activity.record("saved", &body.name, by);

@@ -1,6 +1,7 @@
 // The agent surface (docs/L4s/agent-surface-L4.md), through the real command, server and editor:
-// an agent writes a flow and deploys it with `holon mcp`; it waits for a person, who deploys it
-// from the flows page and approves what it may do; after that the agent's next version deploys
+// an agent writes a flow and deploys it with `holon mcp`, which the server holds to proposing (the
+// agent role, access.rs) though it signs in as the person; it waits for them, and they deploy it
+// from the flows page, approving what it may do; after that the agent's next version deploys
 // at once, and the agent calls it and reads the run back as its own text.
 
 import { spawn } from "node:child_process";
@@ -50,11 +51,11 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
     expect(proposed.text).toContain("Not deployed yet");
     expect(proposed.text).toContain("receive requests");
 
-    // The person: the flows page lists it, saved by the agent's sign-in; they open it and deploy it, approving.
+    // The person: the flows page lists it, saved by the agent under their sign-in; they open it and deploy it, approving.
     await page.goto("/");
     await page.getByRole("button", { name: "flows", exact: true }).click();
     const row = page.getByText(name, { exact: true }).locator("xpath=..");
-    await expect(row).toContainText("by local:");
+    await expect(row).toContainText(/by local:.+ \(agent\)/);
     await row.getByRole("button", { name: "open", exact: true }).click();
     await expect(page.locator(".hl-tab--active")).toContainText(name);
     await page.locator(".hl-canvas").getByRole("button", { name: /^deploy/ }).click();

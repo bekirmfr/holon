@@ -2,7 +2,8 @@
 //! Context Protocol server on stdin and stdout (docs/L4s/agent-surface-L4.md). It speaks the
 //! language's text and answers in sentences; what it computes is holon-author's (`agent.rs`), and
 //! what it asks a server is what the editor asks. The tools never approve: a deploy that needs a
-//! person's approval is saved for them, and says so.
+//! person's approval is saved for them, and says so. It asks as an agent (`X-Holon-Role`), so the
+//! server holds it to that whatever sign-in it has (access.rs).
 
 use std::io::{BufRead, Read, Write};
 use std::time::Duration;
@@ -22,7 +23,9 @@ An MCP server on stdin and stdout, for an agent's host to start (Claude Code, an
 look up the language, check a flow, deploy it, call it, list its runs and explain one. It reaches
 holon serve as holon export does: --server (or HOLON_SERVER) if given, else the one server you
 run on this machine, signed in as you. Its tools never approve what a flow may do: a deploy that
-needs approval is saved for a person to deploy from the editor.
+needs approval is saved for a person to deploy from the editor. It asks as an agent, so the server
+holds it to proposing too; for an agent with a shell, give it an API token with role agent
+(HOLON_TOKEN) and --server.
 
   claude mcp add holon -- holon mcp";
 
@@ -59,7 +62,8 @@ impl Api for Http {
     }
     fn send(&self, method: &str, path: &str, body: Option<Body>) -> Result<(u16, Vec<u8>), String> {
         let url = format!("{}{path}", self.server);
-        let mut request = ureq::request(method, &url).timeout(Duration::from_secs(60));
+        // As an agent, whoever's sign-in it holds (access.rs): the server keeps it to proposing.
+        let mut request = ureq::request(method, &url).timeout(Duration::from_secs(60)).set("X-Holon-Role", "agent");
         if let Some(token) = &self.token {
             request = request.set("Authorization", &format!("Bearer {token}"));
         }
@@ -564,6 +568,81 @@ mod tests {
         assert!(tool(&state, "deploy", json!({ "text": "flow f\nport 8200\n\nroute GET /a (req) {\n  respond nope\n}\n" })).is_err());
         assert!(tool(&state, "explain", json!({ "slug": "nobody" })).unwrap_err().contains("404"));
         assert!(tool(&state, "check", json!({})).unwrap_err().contains("`text` is missing"));
+    }
+
+    /// The router in-process with a sign-in, sent as `holon mcp` sends it (as an agent) or as the
+    /// editor does (as the person).
+    struct Signed<'a> {
+        state: &'a AppState,
+        token: &'a str,
+        agent: bool,
+    }
+
+    impl Api for Signed<'_> {
+        fn server(&self) -> String {
+            "the test server".into()
+        }
+        fn send(&self, method: &str, path: &str, body: Option<Body>) -> Result<(u16, Vec<u8>), String> {
+            let bytes = match body {
+                None => vec![],
+                Some(Body::Json(v)) => serde_json::to_vec(&v).unwrap(),
+                Some(Body::Bytes(b)) => b,
+            };
+            let mut headers: Vec<(String, String)> = req(method, path, bytes.clone()).headers().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            headers.push(("Authorization".into(), format!("Bearer {}", self.token)));
+            if self.agent {
+                headers.push(("X-Holon-Role".into(), "agent".into()));
+            }
+            let response = route(self.state, &rouille::Request::fake_http(method, path, headers, bytes));
+            Ok((response.status_code, body_bytes(response)))
+        }
+    }
+
+    /// On a server with accounts, an agent holding an admin's sign-in is still an agent: it
+    /// proposes and calls, and the server refuses it the rest, whatever it sends.
+    #[test]
+    fn an_agent_with_an_admins_sign_in_only_proposes() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let slug = Some("agent-slugs");
+        assert!(deploy(&agent, SLUGS_TEXT, slug).unwrap().starts_with("Not deployed yet"));
+        assert_eq!(json_of(&person, "GET", "/flows/agent-slugs", None).unwrap()["saved_by"], "ada (agent)", "proposed under its own name");
+        // Approving it itself is refused, as is deploying what needs approval.
+        let plan = agent::plan(SLUGS_TEXT).unwrap();
+        let ask = |acknowledge: Value| Some(Body::Json(json!({ "slug": "agent-slugs", "unit": plan.unit, "acknowledge": acknowledge, "document": plan.document })));
+        let approved = json_of(&agent, "POST", "/deploy", ask(json!(["NetworkIngress"]))).unwrap_err();
+        assert!(approved.contains("refused") && approved.contains("an agent doesn't approve"), "{approved}");
+        let unasked = json_of(&agent, "POST", "/deploy", ask(json!([]))).unwrap_err();
+        assert!(unasked.contains("needs a person's approval"), "{unasked}");
+        // The person approves; then the agent's next version deploys, and it calls it.
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "agent-slugs", "unit": plan.unit })))).unwrap();
+        json_of(&person, "POST", "/deploy", ask(preview["needs_approval"].clone())).unwrap();
+        let v2 = SLUGS_TEXT.replace("\"unsigned\"", "\"not signed\"");
+        assert!(deploy(&agent, &v2, slug).unwrap().starts_with("Deployed \"agent-slugs\""));
+        let called = call(&agent, &json!({ "slug": "agent-slugs", "method": "POST", "path": "/slugs", "body": { "title": "Hi", "author": "Ada" } })).unwrap();
+        assert!(called.starts_with("POST /slugs → 200"), "{called}");
+        // What is a person's stays theirs.
+        for (method, path) in [
+            ("POST", "/deployments/agent-slugs/grant"),
+            ("POST", "/deployments/agent-slugs/stop"),
+            ("POST", "/deployments/agent-slugs/run"),
+            ("DELETE", "/deployments/agent-slugs"),
+            ("POST", "/deployments/agent-slugs/secrets/k"),
+            ("DELETE", "/flows/agent-slugs"),
+            ("POST", "/trigger/agent-slugs"),
+            ("POST", "/permissions/reload"),
+            ("GET", "/admin/users"),
+        ] {
+            assert_eq!(agent.send(method, path, None).unwrap().0, 403, "{method} {path}");
+        }
+        // The server, too, keeps it from replacing a flow the person saved.
+        json_of(&person, "POST", "/flows", Some(Body::Json(json!({ "name": "mine", "document": {} })))).unwrap();
+        let replaced = json_of(&agent, "POST", "/flows", Some(Body::Json(json!({ "name": "mine", "document": {} })))).unwrap_err();
+        assert!(replaced.contains("saved by ada") && replaced.contains("doesn't replace"), "{replaced}");
+        assert_eq!(person.send("POST", "/deployments/agent-slugs/stop", None).unwrap().0, 200);
     }
 
     /// A deploy that needs approval saves the flow for a person, but never over a flow someone

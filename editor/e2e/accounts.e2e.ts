@@ -93,6 +93,18 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   expect((await request.get(`${SERVER}/flows`, { headers: asCi })).status()).toBe(401);
   // The activity log names who did what.
   await expect(ada.getByText(/made an API token ci · by ada/)).toBeVisible();
+  // An agent's token proposes, and never approves, stops or deletes.
+  await ada.getByLabel("new token's label").fill("claude");
+  await ada.getByLabel("new token's role").selectOption("agent");
+  await ada.getByRole("button", { name: "make token" }).click();
+  const asAgent = { Authorization: `Bearer ${await ada.getByLabel("new API token").inputValue()}` };
+  await ada.getByRole("button", { name: "done" }).click();
+  expect((await request.post(`${SERVER}/flows`, { data: { name: "from-claude", document: { nodes: [], edges: [] } }, headers: asAgent })).status()).toBe(200);
+  const approving = await request.post(`${SERVER}/deploy`, { data: { slug: "from-claude", unit: "0".repeat(64), acknowledge: ["NetworkIngress"] }, headers: asAgent });
+  expect(approving.status()).toBe(403);
+  expect((await approving.json()).error).toContain("an agent doesn't approve");
+  expect((await request.post(`${SERVER}/deployments/from-claude/stop`, { data: {}, headers: asAgent })).status()).toBe(403);
+  expect((await request.delete(`${SERVER}/flows/from-claude`, { headers: asAgent })).status()).toBe(403);
 
   // cy, signed in elsewhere, is disabled: her next step finds her signed out, and she can't
   // sign in again.

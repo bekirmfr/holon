@@ -50,6 +50,8 @@ pub(crate) fn handle_post_deploy(
     request: &Request,
     // Who deployed it (access.rs), kept with the deployment.
     by: Option<&str>,
+    // Whether an agent deploys it (access.rs): it never approves.
+    agent: bool,
     activity: &crate::activity::Activity,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -60,6 +62,9 @@ pub(crate) fn handle_post_deploy(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
+    if agent && !body.acknowledge.is_empty() {
+        return err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval, a person approves, deploying it from the editor");
+    }
     if !is_valid_slug(&body.slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
     }
@@ -114,6 +119,15 @@ pub(crate) fn handle_post_deploy(
         .into_iter()
         .filter(|item| !body.acknowledge.contains(item))
         .collect();
+    if agent && !missing.is_empty() {
+        return err(
+            403,
+            format!(
+                "this needs a person's approval ({}): save it as a flow, and a person approves it by deploying it from the editor",
+                missing.join(", ")
+            ),
+        );
+    }
     if !missing.is_empty() {
         return err(
             400,

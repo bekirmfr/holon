@@ -7,7 +7,16 @@
 //!
 //! - `viewer`: reads only (GET): flows, deployments, logs, a secret's names and history;
 //! - `editor`: everything a viewer does, and saving, deploying, running, pausing, deleting;
-//! - `admin`: everything, writing secrets and the admin panel (`/admin/…`) included.
+//! - `admin`: everything, writing secrets and the admin panel (`/admin/…`) included;
+//! - `agent`: what a viewer does, and proposing: storing units, previewing and deploying a flow
+//!   that needs no approval it hasn't had, saving a flow, and calling a deployed one (a run like
+//!   any other). It never approves (deploy.rs refuses its `acknowledge`), never replaces a flow
+//!   someone else saved (flows.rs), and never grants, starts, stops, deletes or writes a secret:
+//!   those are a person's (docs/L4s/agent-surface-L4.md).
+//!
+//! A request that says `X-Holon-Role: agent` acts as an agent, whoever sends it, under its
+//! sender's name with ` (agent)` after it: how `holon mcp` keeps an agent to proposing when it
+//! signs in as the person who runs it. The header only ever lowers a role.
 //!
 //! Anyone may change their own password and sign out. Open without signing in: a CORS
 //! preflight, the health check, and signing in itself (`/auth/…`: the server's state, setup,
@@ -35,6 +44,7 @@ pub(crate) enum Role {
     Viewer,
     Editor,
     Admin,
+    Agent,
 }
 
 /// Who a request comes from, once let through: an account's name or `token:<label>`, and its
@@ -64,6 +74,21 @@ fn is_open(method: &str, url: &str) -> bool {
         || (method == "POST" && matches!(url, "/auth/setup" | "/auth/sign-in" | "/auth/invite"))
 }
 
+/// What an agent may do besides reading (see the module's notes).
+fn agent_may(method: &str, url: &str) -> bool {
+    let calls = || url.strip_prefix("/deployments/").and_then(|r| r.strip_suffix("/request")).is_some_and(|slug| !slug.is_empty() && !slug.contains('/'));
+    match method {
+        "GET" => true,
+        "POST" => matches!(url, "/unit" | "/deploy/preview" | "/deploy" | "/flows") || calls(),
+        _ => false,
+    }
+}
+
+/// Whether `request` asks to act as an agent (`X-Holon-Role: agent`).
+fn asks_as_agent(request: &Request) -> bool {
+    request.header("X-Holon-Role").is_some_and(|r| r.trim().eq_ignore_ascii_case("agent"))
+}
+
 /// What anyone signed in may do to their own account, viewers too.
 fn is_own(method: &str, url: &str) -> bool {
     (method == "POST" && matches!(url, "/auth/sign-out" | "/auth/password" | "/auth/prefs")) || (method == "GET" && matches!(url, "/auth/me" | "/auth/prefs"))
@@ -87,35 +112,14 @@ impl Access {
         }
         let presented = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or("");
         // The OS user who runs the server, through its run file (local.rs): its admin, set up or not.
-        if let Some(who) = accounts.local(presented) {
-            return Ok(Caller { name: Some(who.name), role: Some(who.role) });
-        }
-        if accounts.needs_setup() {
-            return Err(err(403, "this server isn't set up yet: open the editor and enter the setup code it printed when it started"));
-        }
-        let refuse = |message: String| Err(err(401, message).with_additional_header("WWW-Authenticate", "Bearer"));
-        if presented.is_empty() {
-            return refuse("sign in first".into());
-        }
-        let who: Who = if crate::oidc::looks_like_jwt(presented) {
-            let provider = accounts.oidc();
-            let Some(oidc) = provider.as_ref() else { return refuse("signing in through a provider isn't set on this server".into()) };
-            let identity = match oidc.verify(presented) {
-                Ok(i) => i,
-                Err(e) => return refuse(format!("sign-in not accepted: {e}")),
-            };
-            match identity.email.as_deref().and_then(|e| accounts.by_email(e)) {
-                Some(who) => who,
-                None => {
-                    let shown = identity.email.unwrap_or(identity.subject);
-                    return Err(err(403, format!("signed in as {shown}, who has no account here: ask an admin to add you with that email")));
-                }
-            }
-        } else {
-            match accounts.who(presented) {
-                Some(who) => who,
-                None => return refuse("your sign-in has ended or isn't valid: sign in again".into()),
-            }
+        let who = match accounts.local(presented) {
+            Some(who) => who,
+            None => self.signed_in(accounts, presented)?,
+        };
+        let who = match who.role {
+            Role::Agent => who,
+            _ if asks_as_agent(request) => Who { name: format!("{} (agent)", who.name), role: Role::Agent },
+            _ => who,
         };
         let allowed = match who.role {
             Role::Admin => true,
@@ -123,12 +127,50 @@ impl Access {
             _ if url.starts_with("/admin/") => false,
             Role::Viewer => method == "GET",
             Role::Editor => !is_secret_write(request),
+            Role::Agent => agent_may(method, &url),
         };
         if !allowed {
-            let what = if url.starts_with("/admin/") || is_secret_write(request) { "that needs an admin" } else { "a viewer only reads" };
+            let what = if url.starts_with("/admin/") || is_secret_write(request) {
+                "that needs an admin"
+            } else if who.role == Role::Agent {
+                "an agent proposes and calls; approving, granting, starting, stopping and deleting are a person's"
+            } else {
+                "a viewer only reads"
+            };
             return Err(err(403, format!("{} may not do that: {what}", who.name)));
         }
         Ok(Caller { name: Some(who.name), role: Some(who.role) })
+    }
+
+    /// Who a session, API token or provider's sign-in is, or why it isn't let in.
+    fn signed_in(&self, accounts: &Accounts, presented: &str) -> Result<Who, Response> {
+        if accounts.needs_setup() {
+            return Err(err(403, "this server isn't set up yet: open the editor and enter the setup code it printed when it started"));
+        }
+        let refuse = |message: String| Err(err(401, message).with_additional_header("WWW-Authenticate", "Bearer"));
+        if presented.is_empty() {
+            return refuse("sign in first".into());
+        }
+        if crate::oidc::looks_like_jwt(presented) {
+            let provider = accounts.oidc();
+            let Some(oidc) = provider.as_ref() else { return refuse("signing in through a provider isn't set on this server".into()) };
+            let identity = match oidc.verify(presented) {
+                Ok(i) => i,
+                Err(e) => return refuse(format!("sign-in not accepted: {e}")),
+            };
+            match identity.email.as_deref().and_then(|e| accounts.by_email(e)) {
+                Some(who) => Ok(who),
+                None => {
+                    let shown = identity.email.unwrap_or(identity.subject);
+                    Err(err(403, format!("signed in as {shown}, who has no account here: ask an admin to add you with that email")))
+                }
+            }
+        } else {
+            match accounts.who(presented) {
+                Some(who) => Ok(who),
+                None => refuse("your sign-in has ended or isn't valid: sign in again".into()),
+            }
+        }
     }
 
     /// Whether `origin` is an editor origin this server answers CORS for: localhost's, or one
@@ -207,6 +249,46 @@ mod tests {
         let (ci, _) = accounts.create_token("ci", Role::Editor, "ada").unwrap();
         assert_eq!(call(&access, "POST", "/deploy", Some(&ci)), Ok(Some("token:ci".into())));
         assert_eq!(call(&access, "GET", "/admin/users", Some(&ci)), Err(403));
+    }
+
+    #[test]
+    fn an_agent_proposes_and_calls_and_does_nothing_else() {
+        let (access, [ada, ..]) = server();
+        let accounts = access.accounts().unwrap();
+        let (claude, _) = accounts.create_token("claude", Role::Agent, "ada").unwrap();
+        for (method, url) in [("GET", "/flows"), ("POST", "/unit"), ("POST", "/deploy/preview"), ("POST", "/deploy"), ("POST", "/flows"), ("POST", "/deployments/a/request"), ("GET", "/auth/me")] {
+            assert_eq!(call(&access, method, url, Some(&claude)), Ok(Some("token:claude".into())), "{method} {url}");
+        }
+        for (method, url) in [
+            ("POST", "/deployments/a/grant"),
+            ("POST", "/deployments/a/run"),
+            ("POST", "/deployments/a/pause"),
+            ("POST", "/deployments/a/stop"),
+            ("DELETE", "/deployments/a"),
+            ("DELETE", "/flows/a"),
+            ("POST", "/deployments/a/secrets/k"),
+            ("POST", "/deployments/a/b/request"),
+            ("POST", "/trigger/a"),
+            ("POST", "/fire"),
+            ("POST", "/registry/publish"),
+            ("POST", "/permissions/reload"),
+            ("GET", "/admin/users"),
+        ] {
+            assert_eq!(call(&access, method, url, Some(&claude)), Err(403), "{method} {url}");
+        }
+        // Anyone who says they are an agent is one, an admin and the run file's user too; the
+        // header never raises a role.
+        let as_agent = |method: &str, url: &str, bearer: &str| {
+            let headers = vec![("Host".into(), "localhost:7420".into()), ("Authorization".into(), format!("Bearer {bearer}")), ("X-Holon-Role".into(), "agent".into())];
+            access.check(&Request::fake_http(method, url, headers, vec![])).map(|c| (c.name, c.role)).map_err(|r| r.status_code)
+        };
+        assert_eq!(as_agent("POST", "/deploy", &ada), Ok((Some("ada (agent)".into()), Some(Role::Agent))));
+        assert_eq!(as_agent("POST", "/deployments/a/grant", &ada), Err(403));
+        let local = accounts.new_local("bma");
+        assert_eq!(call(&access, "POST", "/deployments/a/grant", Some(&local)), Ok(Some("local:bma".into())));
+        assert_eq!(as_agent("POST", "/deployments/a/grant", &local), Err(403));
+        assert_eq!(as_agent("POST", "/flows", &local), Ok((Some("local:bma (agent)".into()), Some(Role::Agent))));
+        assert_eq!(as_agent("POST", "/flows", &claude), Ok((Some("token:claude".into()), Some(Role::Agent))), "an agent's name as it is");
     }
 
     #[test]
