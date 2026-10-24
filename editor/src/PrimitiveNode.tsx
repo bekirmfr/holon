@@ -6,7 +6,7 @@
 
 import { memo, useState, type CSSProperties } from "react";
 import { Handle, NodeToolbar, Position, useReactFlow, useUpdateNodeInternals, type NodeProps, type Node } from "@xyflow/react";
-import { compatible, type WParam, type WPort, type WType, type WValue } from "./holon";
+import { compatible, passesExtraPrimitives, type WParam, type WPort, type WType, type WValue } from "./holon";
 import { formatValue, valueChip } from "./diagnostics";
 import { METHODS } from "./endpoint";
 
@@ -265,12 +265,14 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
 
   // Grow/shrink a variadic node's port count (P4.1: variadic-arity editing). Every port a
   // variadic leaf declares is the same type — add/multiply/and/or/concat/list each have uniform
-  // ports — so a new one just copies the last port's type; no type decision is made here. Never
+  // ports — so a new one just copies the last port's type; no type decision is made here. map's
+  // and fold's extra ports are passed to their function after the item, so they take any type. Never
   // shrinks below `minInputs`, the catalog's own declared default (derived at drop time, not a
   // hardcoded floor — see PrimitiveData's own doc for why).
   const addPort = () => {
     const last = inputs[inputs.length - 1];
-    const port: WPort = { name: nextPortName(inputs.map((p) => p.name)), ty: last?.ty ?? "Any" };
+    const ty = passesExtraPrimitives().has(name) ? "Any" : (last?.ty ?? "Any");
+    const port: WPort = { name: nextPortName(inputs.map((p) => p.name)), ty };
     updateNodeData(id, { inputs: [...inputs, port] });
   };
   const removePort = () => {

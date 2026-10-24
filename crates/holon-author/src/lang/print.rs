@@ -459,6 +459,30 @@ impl<'s> Printer<'s> {
         Ok(hname)
     }
 
+    /// A function written as a lambda (a holon the text never named: `fn_1`, `fn_2`…, or none)
+    /// whose body is one expression: its parameters and that expression, to print it back as
+    /// `fn(…) -> …`. None for a named holon, or a body that needs statements of its own.
+    fn lambda_text(&mut self, hash: &str) -> Result<Option<(Vec<String>, String)>, String> {
+        let anonymous = match self.names.get(hash) {
+            None => true,
+            Some(n) => n.strip_prefix("fn_").is_some_and(|k| !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit())),
+        };
+        if !anonymous {
+            return Ok(None);
+        }
+        let lines = self.holon_block(hash, "fn", &[], &[])?;
+        let [(header, _), (body, _), (end, _)] = lines.as_slice() else { return Ok(None) };
+        let Some(rest) = header.strip_prefix("holon fn(") else { return Ok(None) };
+        let Some((params, outs)) = rest.split_once(") -> ") else { return Ok(None) };
+        let out = outs.split(' ').next().unwrap_or_default();
+        let Some(expr) = body.strip_prefix(&format!("  {out} = ")) else { return Ok(None) };
+        // A parameter declared under another name than the unit's (`p "x"`) can't be a lambda's.
+        if end != "}" || params.contains('"') || params.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((params.split(", ").map(str::to_string).collect(), expr.to_string())))
+    }
+
     fn reserved(&self, n: &str) -> bool {
         RESERVED.contains(&n) || interface_of(n).is_some() || templates::is_template(n) || self.collections.contains(n)
     }
@@ -1037,11 +1061,29 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             }
             "map" | "fold" => {
                 let hex = node.param("fn");
-                let hname = if hex.is_empty() { String::new() } else { self.p.holon_for(hex, &[], &[], "fn")? };
                 let inputs: Vec<String> = d.inputs.iter().map(|p| p.name.clone()).collect();
                 let mut args = self.positional_then_named(node, &inputs, &[])?;
-                if !hname.is_empty() {
-                    args.push(format!("fn: {hname}"));
+                // What the function gets before the values passed after the list.
+                let own = if d.name == "fold" { 2 } else { 1 };
+                let lambda = if hex.is_empty() { None } else { self.p.lambda_text(hex)? };
+                match lambda {
+                    // Every input wired, and the function takes each one.
+                    Some((params, body)) if args.len() == inputs.len() && params.len() == inputs.len() && inputs.len() >= own => {
+                        // The values passed are the names the function takes them as, in order:
+                        // the function uses them from around it, as it was written.
+                        let captured = args[own..] == params[own..] && params[own..].windows(2).all(|w| w[0] < w[1]);
+                        if captured {
+                            args.truncate(own);
+                            args.push(format!("fn: fn({}) -> {body}", params[..own].join(", ")));
+                        } else {
+                            args.push(format!("fn: fn({}) -> {body}", params.join(", ")));
+                        }
+                    }
+                    _ if !hex.is_empty() => {
+                        let hname = self.p.holon_for(hex, &[], &[], "fn")?;
+                        args.push(format!("fn: {hname}"));
+                    }
+                    _ => {}
                 }
                 atom(format!("{}({})", d.name, args.join(", ")))
             }
@@ -1254,6 +1296,25 @@ mod tests {
         // once is written where it is used.
         let text = round_trips("f", &first.doc, &BTreeMap::new());
         assert!(text.contains("{slice(sha256(\"{random}:{now}:{req.params.id}\"), 0, 6)} via {req.query.by ?? \"someone\"}\""), "{text}");
+    }
+
+    /// A one-expression function prints back as a lambda, and a value it uses from around it
+    /// prints as the name it is, when that name is in scope; else the value is passed after the
+    /// list, to the function's own parameter. Either way the same unit.
+    #[test]
+    fn functions_print_as_lambdas_and_their_captures_as_names() {
+        let src = "flow f\nport 8200\n\nholon priced(items, rate) -> o {\n  o = map(items, fn: fn(p) -> p * rate)\n}\n\nroute POST /x (req) {\n  rate = req.query.rate ?? 2\n  total = fold(0, req.json.prices, fn: fn(acc, p) -> acc + p * rate)\n  r = req.json\n  values = map(keys(r), fn: fn(k) -> r[k])\n  respond { total: total, values: values, held: priced([1, 2], 3), doubled: map([1], fn: fn(x) -> x * 2) }\n}\n";
+        let first = compile(src).unwrap_or_else(|e| panic!("{e}"));
+        let text = round_trips("f", &first.doc, &first.names);
+        for line in [
+            "  o = map(items, fn: fn(p) -> p * rate)",
+            "  total = fold(0, req.json.prices, fn: fn(acc, p) -> acc + p * rate)",
+            "  values = map(keys(req.json), req.json, fn: fn(k, r) -> r[k])",
+            "doubled: map([1], fn: fn(x) -> x * 2)",
+        ] {
+            assert!(text.contains(line), "missing {line:?} in\n{text}");
+        }
+        assert!(!text.contains("holon fn"), "no function printed as a holon:\n{text}");
     }
 
     #[test]

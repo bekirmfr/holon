@@ -65,15 +65,23 @@ pub const GENESIS: &[&str] = &[
 /// meaning core has chosen to give it — this list names only the leaves where growing arity is
 /// unambiguous, not "everything binary-shaped."
 ///
+/// `map` and `fold` grow differently: inputs after their list, of any type, are passed to their
+/// function after the item (`fn(item, extra…)`, `fn(acc, item, extra…)`), the same on every
+/// application. That is how a lambda's captures reach it as inputs (eval's `eval_map`).
+///
 /// The 4th catalog fact, alongside `compute` / `capabilities_of` / `interface_of`. Purely an
 /// editor concern: growing a *placed* node's port count past the catalog's declared default (2,
 /// same as every other leaf below) — core neither needs nor enforces this list to evaluate
 /// correctly. A `Unit`'s declared `inputs` is free-form data; nothing in `validate`/`hash_unit`
-/// checks it against some external "canonical" shape, and these six leaves' `compute` already
-/// handles whatever count of values it's actually given. This constant exists so the editor
+/// checks it against some external "canonical" shape, and these leaves' `compute` (eval, for `map`
+/// and `fold`) already handles whatever count of values it's actually given. This constant exists so the editor
 /// derives "which leaves may grow" from core, the same way it derives everything else, instead of
 /// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
-pub const VARIADIC: &[&str] = &["add", "multiply", "and", "or", "concat", "list"];
+pub const VARIADIC: &[&str] = &["add", "multiply", "and", "or", "concat", "list", "map", "fold"];
+
+/// The variadic leaves whose extra inputs are any type, passed to their function, rather than
+/// more of the same port.
+pub const PASSES_EXTRA: &[&str] = &["map", "fold"];
 
 /// The canonical genesis interface for `name`, or `None` if it is not a genesis primitive
 /// (fail-closed, mirroring [`crate::capabilities_of`]).

@@ -1,0 +1,9 @@
+flow quote
+port 8112
+
+route POST /quote (req) {
+  tax = req.json.tax ?? 0
+  lines = map(req.json.items, fn: fn(item) -> { name: item.name, total: item.price * item.qty * (1 + tax) })
+  total = fold(0, lines, fn: fn(acc, line) -> acc + line.total)
+  respond { lines: lines, total: total, tax: tax }
+}

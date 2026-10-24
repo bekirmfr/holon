@@ -53,7 +53,7 @@ pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::{eval, eval_observed, eval_one, NoObserver, Observer};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
-pub use catalog::{genesis_units, interface_of, GENESIS, VARIADIC};
+pub use catalog::{genesis_units, interface_of, GENESIS, PASSES_EXTRA, VARIADIC};
 pub use docs::describe;
 pub use manifest::{consent_name, manifest_items, permission_kind, reads_from_outside, trigger, PermissionKind};
 pub use inspect::{adoption_counts, child_refs, dependencies};

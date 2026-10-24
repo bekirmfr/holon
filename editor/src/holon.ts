@@ -20,6 +20,7 @@ import init, {
   primitive_catalog,
   primitive_docs,
   variadic_primitives,
+  passes_extra_primitives,
   compatible as wasm_compatible,
 } from "../wasm/holon_wasm.js";
 
@@ -229,6 +230,15 @@ export function primitiveDocs(): Map<string, string> {
  */
 export function variadicPrimitives(): Set<string> {
   return new Set(variadic_primitives() as string[]);
+}
+
+/**
+ * The variadic leaves whose extra inputs are any type, passed to their function after the item
+ * (`map`, `fold`: core's `catalog::PASSES_EXTRA`), not more of the same port. Call after
+ * {@link ensureReady}.
+ */
+export function passesExtraPrimitives(): Set<string> {
+  return new Set(passes_extra_primitives() as string[]);
 }
 
 /**

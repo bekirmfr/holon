@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
-use holon_core::{interface_of, VARIADIC};
+use holon_core::{interface_of, PASSES_EXTRA, VARIADIC};
 use serde_json::json;
 
 use super::ast::*;
@@ -120,8 +120,10 @@ enum FrameKind {
     Route { request: String, responded: Option<Span> },
     /// A holon's block: its declared outputs, in order, and what each is bound to.
     Holon { declared: Vec<String>, bound: HashMap<String, (Val, Span)>, effects: Vec<(Val, Span)> },
-    /// A function's body: the names outside it, for the error that it may not use them.
-    Lambda { outer: Vec<String> },
+    /// A function's body: the names it uses from around it, in first use, each with its value
+    /// there. Each becomes an input of the function after its parameters, which `map` or `fold`
+    /// is wired to pass (a capture lifted to an input: the function stays a sealed unit).
+    Lambda { captures: Vec<(String, Val)> },
 }
 
 struct Frame {
@@ -761,14 +763,14 @@ impl<'a> Lowerer<'a> {
         Ok(self.out(&id))
     }
 
-    /// A closed function: an anonymous holon with the parameters as inputs and the body as its
-    /// one output. Its hash, as a `fn` param.
-    fn lambda(&mut self, params: &'a [Name], body: &'a Expr, span: Span) -> R<String> {
+    /// A function: an anonymous holon with the parameters as inputs, then each name it uses from
+    /// around it, and the body as its one output. Its hash, as a `fn` param; how many inputs it
+    /// takes; and the values of the names it captured, for the call to pass.
+    fn lambda(&mut self, params: &'a [Name], body: &'a Expr, span: Span) -> R<(String, usize, Vec<Val>)> {
         self.lambdas += 1;
         let name = format!("fn_{}", self.lambdas);
-        let outer: Vec<String> = self.frames.iter().flat_map(|f| f.env.keys().cloned()).collect();
         self.b.begin_holon(&name);
-        let mut frame = Frame::new(FrameKind::Lambda { outer });
+        let mut frame = Frame::new(FrameKind::Lambda { captures: vec![] });
         for p in params {
             self.check_port_name(p)?;
             if frame.env.insert(p.text.clone(), Val::In(p.text.clone())).is_some() {
@@ -783,7 +785,13 @@ impl<'a> Lowerer<'a> {
             return err(body.span, "a function's body can't be a parameter passed straight through: put a node between");
         };
         let output = outputs.get(*port).map(|o| o.name.clone()).unwrap_or_else(|| "out".into());
-        let inputs: Vec<HolonPort> = params.iter().map(|p| HolonPort { name: p.text.clone(), unit: None }).collect();
+        let FrameKind::Lambda { captures } = &frame.kind else { unreachable!() };
+        // By name, not by first use, so the function's inputs are the same however its body is
+        // written, and `fmt` can print the captures back as the names they are.
+        let mut captures = captures.clone();
+        captures.sort_by(|a, b| a.0.cmp(&b.0));
+        let inputs: Vec<HolonPort> =
+            params.iter().map(|p| p.text.clone()).chain(captures.iter().map(|(n, _)| n.clone())).map(|name| HolonPort { name, unit: None }).collect();
         for p in params {
             if !frame.wiring_in.iter().any(|(port, _, _)| *port == p.text) {
                 return err(p.span, format!("the parameter \"{}\" is never used", p.text));
@@ -792,7 +800,7 @@ impl<'a> Lowerer<'a> {
         let mut wiring_in = frame.wiring_in;
         wiring_in.sort_by_key(|(port, _, _)| inputs.iter().position(|p| p.name == *port));
         let h = self.b.end_holon_exact(&name, &inputs, &[HolonPort { name: "out".into(), unit: None }], &wiring_in, &[(id.clone(), output, "out".into())]).or_else(|e| err(span, e))?;
-        Ok(h.hash)
+        Ok((h.hash, inputs.len(), captures.into_iter().map(|(_, v)| v).collect()))
     }
 
     // ── expressions ──────────────────────────────────────────────────────────────────────────
@@ -917,15 +925,19 @@ impl<'a> Lowerer<'a> {
         if let Some(v) = self.cur().env.get(n) {
             return Ok(v.clone());
         }
-        if let Some(c) = self.consts.get(n).copied()
-            && !matches!(self.cur().kind, FrameKind::Lambda { .. })
-        {
+        if let Some(c) = self.consts.get(n).copied() {
             return self.expr(c);
         }
-        if let FrameKind::Lambda { outer } = &self.cur().kind
-            && (outer.iter().any(|o| o == n) || self.consts.contains_key(n))
-        {
-            return err(span, format!("\"{n}\" is outside the function: fn may only use its own arguments"));
+        // A name a function uses from around it: looked up there, and taken in as an input.
+        if matches!(self.cur().kind, FrameKind::Lambda { .. }) {
+            let inner = self.frames.pop().expect("the function's frame");
+            let outside = self.name(n, span);
+            self.frames.push(inner);
+            let v = outside?;
+            let FrameKind::Lambda { captures } = &mut self.frame().kind else { unreachable!() };
+            captures.push((n.to_string(), v));
+            self.frame().env.insert(n.to_string(), Val::In(n.to_string()));
+            return Ok(Val::In(n.to_string()));
         }
         if self.defs.contains_key(n) {
             return err(span, format!("\"{n}\" is a holon: call it, {n}(…)"));
@@ -1117,6 +1129,9 @@ impl<'a> Lowerer<'a> {
         let mut params: Vec<(String, String)> = preset.to_vec();
         let mut given: Vec<Option<&'a Expr>> = vec![None; inputs.len()];
         let mut extra: Vec<&'a Expr> = Vec::new();
+        // A `fn:` argument: how many inputs it takes, and the values it captured, which the call
+        // passes after its own extra inputs.
+        let mut function: Option<(usize, Vec<Val>, Span)> = None;
         let mut positional = 0;
         let zero_input = inputs.is_empty();
         for a in args {
@@ -1149,7 +1164,13 @@ impl<'a> Lowerer<'a> {
                         if params.iter().any(|(k, _)| *k == n.text) {
                             return err(n.span, format!("\"{}\" is given twice", n.text));
                         }
-                        let value = if n.text == "fn" { self.fn_param(&a.value)? } else { self.literal_text(&a.value)? };
+                        let value = if n.text == "fn" {
+                            let (hash, takes, captured) = self.fn_param(&a.value)?;
+                            function = Some((takes, captured, a.value.span));
+                            hash
+                        } else {
+                            self.literal_text(&a.value)?
+                        };
                         params.push((n.text.clone(), value));
                     } else {
                         return err(n.span, format!("\"{leaf}\" has no input or param \"{}\"", n.text));
@@ -1169,15 +1190,31 @@ impl<'a> Lowerer<'a> {
                 vals.push((inputs[k].name.clone(), self.expr(e)?));
             }
         }
-        let names = Self::variadic_ports(inputs, inputs.len() + extra.len());
+        let captured = function.as_ref().map(|(_, c, _)| c.clone()).unwrap_or_default();
+        if let Some((takes, _, fn_span)) = &function
+            && PASSES_EXTRA.contains(&leaf)
+        {
+            let gives = inputs.len() + extra.len() + captured.len();
+            if *takes != gives {
+                let item = if leaf == "fold" { "the result so far and the item" } else { "the item" };
+                let more = extra.len() + captured.len();
+                let after = if more == 0 { String::new() } else { format!(", then {more} more") };
+                return err(*fn_span, format!("\"{leaf}\" gives its function {gives} inputs ({item}{after}); this one takes {takes}"));
+            }
+        }
+        let grown = inputs.len() + extra.len() + captured.len();
+        let names = Self::variadic_ports(inputs, grown);
         for (i, e) in extra.iter().enumerate() {
             vals.push((names[inputs.len() + i].clone(), self.expr(e)?));
+        }
+        for (i, c) in captured.into_iter().enumerate() {
+            vals.push((names[inputs.len() + extra.len() + i].clone(), c));
         }
         let v = self.node(leaf, &params, span)?;
         let Val::Out { id, .. } = &v else { unreachable!() };
         let id = id.clone();
-        if !extra.is_empty() {
-            self.b.arity(&id, inputs.len() + extra.len()).or_else(|e| err(span, e))?;
+        if grown > inputs.len() {
+            self.b.arity(&id, grown).or_else(|e| err(span, e))?;
         }
         for (port, val) in &vals {
             self.connect(val, &id, port, span)?;
@@ -1185,10 +1222,14 @@ impl<'a> Lowerer<'a> {
         Ok(self.out(&id))
     }
 
-    /// A `fn:` argument: a holon by name, or a closed function; its hash.
-    fn fn_param(&mut self, e: &'a Expr) -> R<String> {
+    /// A `fn:` argument: a holon by name, or a function; its hash, how many inputs it takes, and
+    /// the values a function captured from around it.
+    fn fn_param(&mut self, e: &'a Expr) -> R<(String, usize, Vec<Val>)> {
         match &e.kind {
-            ExprKind::Name(n) if self.defs.contains_key(n) => Ok(self.holon(n, e.span)?.hash),
+            ExprKind::Name(n) if self.defs.contains_key(n) => {
+                let h = self.holon(n, e.span)?;
+                Ok((h.hash, h.inputs.len(), vec![]))
+            }
             ExprKind::Name(n) => err(e.span, format!("\"{n}\" is not a holon: fn: takes a holon's name or fn(…) -> …")),
             ExprKind::Lambda { params, body } => self.lambda(params, body, e.span),
             _ => err(e.span, "fn: takes a holon's name or a function, fn(a, b) -> …"),
@@ -1413,10 +1454,47 @@ pub(crate) mod tests {
         assert_eq!(error("holon h(a) -> o {\n  o = a\n}"), (2, 7, "an output can't be an input passed straight through: put a node between".into()));
         assert_eq!(error("holon h(a, b) -> o {\n  o = a + 1\n}"), (1, 12, "the input \"b\" is never used".into()));
         assert_eq!(error("holon h(a) -> (o, p) {\n  o = a + 1\n}"), (1, 19, "the output \"p\" is never bound".into()));
-        assert_eq!(error("x = 1\nholon h(a) -> o {\n  o = fold(0, a, fn: fn(acc, p) -> acc + x)\n}"), (3, 42, "\"x\" is outside the function: fn may only use its own arguments".into()));
+        // A function's body sees what its holon sees, and nothing beyond it.
+        assert_eq!(error("route GET /a (req) {\n  respond h([1])\n}\nholon h(a) -> o {\n  o = map(a, fn: fn(p) -> p + req)\n}"), (5, 31, "unknown name \"req\"".into()));
         assert_eq!(error("holon h(a) -> o {\n  o = h(a)\n}"), (2, 7, "the holon \"h\" places itself: a holon can't contain itself".into()));
         assert_eq!(error("holon h(a) -> o {\n  o = a + 1\n}\nx = h(1, 2)"), (4, 10, "\"h\" takes 1 inputs".into()));
         assert_eq!(error("holon h(a) -> o {\n  o = a + 1\n}\nx = h(k: 1)"), (4, 7, "\"h\" has no input \"k\" (a holon takes no params)".into()));
+    }
+
+    /// A name a function uses from around it is an input of the function after its parameters,
+    /// and `map` (or `fold`) passes it after the item, wired from where the name is bound.
+    #[test]
+    fn a_function_takes_what_it_uses_from_around_it_as_inputs() {
+        let d = compiled("route POST /v (req) {\n  r = req.json\n  respond map(keys(r), fn: fn(k) -> r[k])\n}\n").doc;
+        let map = d.nodes.iter().find(|n| n.data.name == "map").unwrap();
+        assert_eq!(map.data.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["list", "in2"]);
+        assert_eq!(map.data.inputs[1].ty, WType::Any, "an extra input is whatever the function takes");
+        let into = |node: &str, port: &str| d.edges.iter().find(|w| w.target == node && w.target_handle.as_deref() == Some(port)).map(|w| (w.source.clone(), w.source_handle.clone()));
+        let keys = d.nodes.iter().find(|n| n.data.name == "keys").unwrap();
+        assert!(into(&map.id, "in2").is_some());
+        assert_eq!(into(&map.id, "in2"), into(&keys.id, "record"), "r, from where it is bound");
+        // The function: (k, r) -> r[k], a unit of its own, the same however often it is written.
+        let same = compiled("route POST /v (req) {\n  r = req.json\n  a = map(keys(r), fn: fn(k) -> r[k])\n  b = map(keys(r), fn: fn(k) -> r[k])\n  respond [a, b]\n}\n").doc;
+        let fns: Vec<&str> = same.nodes.iter().filter(|n| n.data.name == "map").map(|n| n.param("fn")).collect();
+        assert_eq!(fns[0], fns[1]);
+        assert_eq!(fns[0], map.param("fn"));
+        // Written out: the value passed after the list, to a function of two inputs.
+        let explicit = compiled("route POST /v (req) {\n  r = req.json\n  respond map(keys(r), r, fn: fn(k, r) -> r[k])\n}\n").doc;
+        assert_eq!(explicit.nodes.iter().find(|n| n.data.name == "map").unwrap().param("fn"), map.param("fn"), "one unit, captured or passed");
+        // fold passes them after the result so far and the item; a holon's input is captured too,
+        // and a top-level constant is lowered inside.
+        assert!(compile("rate = 3\nholon h(xs, k) -> o {\n  o = fold(0, xs, fn: fn(acc, p) -> acc + p * k * rate)\n}\nroute GET /a (req) {\n  respond h([1, 2], 2)\n}\n").is_ok());
+        // Nested: the inner function's capture passes through the outer one.
+        assert!(compile("route POST /v (req) {\n  n = req.json.n\n  respond map(req.json.rows, fn: fn(row) -> map(row, fn: fn(x) -> x * n))\n}\n").is_ok());
+    }
+
+    /// A function given the wrong number of inputs is said at the function, counting what the
+    /// call gives it.
+    #[test]
+    fn a_function_of_the_wrong_arity_is_said() {
+        assert_eq!(error("x = map([1], fn: fn(a, b) -> a + b)"), (1, 18, "\"map\" gives its function 1 inputs (the item); this one takes 2".into()));
+        assert_eq!(error("x = fold(0, [1], 5, fn: fn(acc, p) -> acc + p)"), (1, 25, "\"fold\" gives its function 3 inputs (the result so far and the item, then 1 more); this one takes 2".into()));
+        assert_eq!(error("holon h(a, b, c) -> o {\n  o = a + b + c\n}\nx = map([1], fn: h)"), (4, 18, "\"map\" gives its function 1 inputs (the item); this one takes 3".into()));
     }
 
     #[test]

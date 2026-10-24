@@ -228,6 +228,13 @@ pub fn variadic_primitives() -> Vec<String> {
     holon_core::VARIADIC.iter().map(|s| s.to_string()).collect()
 }
 
+/// The variadic leaves whose extra inputs are any type, passed to their function after the item
+/// (`map`, `fold`: core's `catalog::PASSES_EXTRA`), rather than more of the same port.
+#[wasm_bindgen]
+pub fn passes_extra_primitives() -> Vec<String> {
+    holon_core::PASSES_EXTRA.iter().map(|s| s.to_string()).collect()
+}
+
 /// What each genesis primitive does, by name (core's `describe`): the editor shows it on each
 /// node and in the palette, read from core like the catalog, never a TS copy that could drift.
 #[wasm_bindgen]
@@ -1412,7 +1419,11 @@ fn check_variadic_primitives() {
     // The exact set — a tripwire against silent drift between core's list and what crosses.
     let mut sorted = names.clone();
     sorted.sort();
-    assert_eq!(sorted, vec!["add", "and", "concat", "list", "multiply", "or"]);
+    assert_eq!(sorted, vec!["add", "and", "concat", "fold", "list", "map", "multiply", "or"]);
+    // map's and fold's extra inputs are passed to their function: any type, not more of one port.
+    let mut extra = passes_extra_primitives();
+    extra.sort();
+    assert_eq!(extra, vec!["fold", "map"]);
     // subtract shares add's catalog interface line but must NOT be offered as growable — it's
     // not associative, core gives it no N-ary meaning.
     assert!(!names.contains(&"subtract".to_string()));

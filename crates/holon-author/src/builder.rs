@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use holon_core::{encode_preimage, interface_of, parse_hash, Hash, MapResolver, Resolver, UnitBody, VARIADIC};
+use holon_core::{encode_preimage, interface_of, parse_hash, Hash, MapResolver, Resolver, UnitBody, PASSES_EXTRA, VARIADIC};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -259,7 +259,8 @@ impl FlowBuilder {
         }
         while n.data.inputs.len() < inputs {
             let name = next_port_name(&n.data.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>());
-            let ty = n.data.inputs.first().map(|p| p.ty.clone()).unwrap_or(WType::Any);
+            // map's and fold's extra inputs are whatever their function takes after the item.
+            let ty = if PASSES_EXTRA.contains(&n.data.name.as_str()) { WType::Any } else { n.data.inputs.first().map(|p| p.ty.clone()).unwrap_or(WType::Any) };
             n.data.inputs.push(WPort { name, ty });
         }
         Ok(())

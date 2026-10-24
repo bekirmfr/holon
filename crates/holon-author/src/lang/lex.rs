@@ -217,6 +217,13 @@ impl Lexer {
     }
 
     fn number(&mut self, start: Pos) -> Result<(), LexError> {
+        // A unit's hash, as the wiring form writes it bare (`fn: 0068ce…`): a word, not a number.
+        let hex = (0..64).all(|k| self.peek(k).is_some_and(|c| matches!(c, '0'..='9' | 'a'..='f')));
+        if hex && !self.peek(64).is_some_and(is_ident_char) && (0..64).any(|k| self.peek(k).is_some_and(|c| c.is_ascii_alphabetic())) {
+            let word: String = (0..64).map(|_| self.bump()).collect();
+            self.push(Tok::Ident, word, start);
+            return Ok(());
+        }
         let mut s = String::new();
         while self.peek(0).is_some_and(|c| c.is_ascii_digit()) {
             s.push(self.bump());
@@ -397,6 +404,11 @@ mod tests {
         let e = lex("y = 10sec").unwrap_err();
         assert_eq!((e.pos.line, e.pos.col), (1, 5));
         assert!(e.message.starts_with("\"10sec\" is not a number"));
+        // A hash that starts with a digit is a word (the wiring form writes them bare); one
+        // character short, it is a bad number again.
+        let hash = format!("0068ce{}", "a".repeat(58));
+        assert_eq!(kinds(&format!("fn: {hash}")), [Tok::Ident, Tok::Colon, Tok::Ident, Tok::Newline, Tok::Eof]);
+        assert!(lex(&format!("fn: {}", &hash[..63])).unwrap_err().message.starts_with("\"0068ce"));
         let e = lex("a\n  b @ c").unwrap_err();
         assert_eq!((e.pos.line, e.pos.col), (2, 5));
         assert_eq!(e.message, "unexpected character '@'");

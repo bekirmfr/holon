@@ -292,20 +292,35 @@ fn topo_order(n: usize, edges: &[Edge]) -> Option<Vec<usize>> {
 /// param, so `map`'s hash transitively depends on `fn`'s hash (I6 holds via the preimage);
 /// children-based *inspection* (P3.2.1) must additionally treat hash-valued params as
 /// references.
+///
+/// Inputs after the list are passed to every application after the item, the same each time:
+/// `fn(elem, extra…)`. That is how a function uses a value from around it (a lambda's capture,
+/// lifted to an input of its own) while staying a sealed unit. Like any variadic leaf, `map`
+/// fires only when every extra input is present.
 fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
     let list = match inputs.first() {
         Some(Some(Value::List(xs))) => xs,
         _ => return None,
     };
+    let extra = present(&inputs[1..])?;
     let fn_hex = params.iter().find(|p| p.name() == "fn").and_then(|p| p.value())?;
     let fn_hash = parse_hash(fn_hex)?;
     let unit = resolver.resolve(&fn_hash)?;
 
     let mut out = Vec::with_capacity(list.len());
+    let mut args: Vec<Option<Value>> = Vec::with_capacity(1 + extra.len());
     for elem in list {
-        out.push(eval_one(unit, &[Some(elem.clone())], resolver)?); // any None ⇒ whole map None
+        args.clear();
+        args.push(Some(elem.clone()));
+        args.extend(extra.iter().cloned());
+        out.push(eval_one(unit, &args, resolver)?); // any None ⇒ whole map None
     }
     Some(Value::List(out))
+}
+
+/// The inputs, when every one is present.
+fn present(inputs: &[Option<Value>]) -> Option<&[Option<Value>]> {
+    inputs.iter().all(Option::is_some).then_some(inputs)
 }
 
 /// Higher-order `fold` — the **one** iteration primitive, and the universal list donor
@@ -316,7 +331,8 @@ fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver
 /// construct anywhere in the vocabulary, so **every composite is total** (the property the
 /// trustless cache leans on). Any application returning `None` propagates. Like `map`, the
 /// `fn` reference rides a param, so `fold`'s hash transitively depends on it (I6), and
-/// inspection (P3.2.1) must treat hash-valued params as references.
+/// inspection (P3.2.1) must treat hash-valued params as references. Inputs after the list are
+/// passed after the item, as `map` passes them: `fn(acc, elem, extra…)`.
 fn eval_fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
     let init = match inputs.first() {
         Some(Some(v)) => v.clone(),
@@ -326,14 +342,20 @@ fn eval_fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolve
         Some(Some(Value::List(xs))) => xs,
         _ => return None,
     };
+    let extra = present(inputs.get(2..).unwrap_or_default())?;
     let fn_hex = params.iter().find(|p| p.name() == "fn").and_then(|p| p.value())?;
     let fn_hash = parse_hash(fn_hex)?;
     let unit = resolver.resolve(&fn_hash)?;
 
     let mut acc = init;
+    let mut args: Vec<Option<Value>> = Vec::with_capacity(2 + extra.len());
     for elem in list {
-        // fn(acc, elem) → new acc; any None ⇒ the whole fold is None.
-        acc = eval_one(unit, &[Some(acc), Some(elem.clone())], resolver)?;
+        // fn(acc, elem, extra…) → new acc; any None ⇒ the whole fold is None.
+        args.clear();
+        args.push(Some(acc));
+        args.push(Some(elem.clone()));
+        args.extend(extra.iter().cloned());
+        acc = eval_one(unit, &args, resolver)?;
     }
     Some(acc)
 }
@@ -695,6 +717,40 @@ mod tests {
             inputs: vec![Port { name: "list".into(), ty: Type::list_any() }],
             outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
         }
+    }
+
+    /// times(x, k) = x * k: a function of the item and one value from around it.
+    fn times(r: &mut MapResolver) -> Hash {
+        let hmul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
+        let unit = composite(vec![nport("x"), nport("k")], Type::Number, vec![hmul], vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)]);
+        r.insert(unit).unwrap()
+    }
+
+    /// Inputs after the list reach every application after the item, the same each time; one
+    /// absent, nothing fires.
+    #[test]
+    fn map_and_fold_pass_extra_inputs_to_their_function() {
+        let mut r = MapResolver::new();
+        let htimes = times(&mut r);
+        let mut m = map_unit(&htimes);
+        m.inputs.push(Port { name: "in2".into(), ty: Type::Any });
+        let xs = list(vec![num(1.0), num(2.0), num(3.0)]);
+        assert_eq!(eval(&m, &[Some(xs.clone()), Some(num(10.0))], &r).into_vec(), vec![Some(list(vec![num(10.0), num(20.0), num(30.0)]))]);
+        assert_eq!(eval(&m, &[Some(xs.clone()), None], &r).into_vec(), vec![None]);
+        // fold(acc, item, k) = acc + item * k, as a composite: mul(item, k) → add(acc, ·).
+        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
+        let hmul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
+        let step = composite(
+            vec![nport("acc"), nport("item"), nport("k")],
+            Type::Number,
+            vec![hmul, hadd],
+            vec![edge(BOUNDARY, 1, 0, 0), edge(BOUNDARY, 2, 0, 1), edge(BOUNDARY, 0, 1, 0), edge(0, 0, 1, 1), edge(1, 0, BOUNDARY, 0)],
+        );
+        let hstep = r.insert(step).unwrap();
+        let mut f = fold_unit(&hstep);
+        f.inputs.push(Port { name: "in3".into(), ty: Type::Any });
+        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs.clone()), Some(num(2.0))], &r).into_vec(), vec![Some(num(12.0))]);
+        assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs), None], &r).into_vec(), vec![None]);
     }
 
     #[test]

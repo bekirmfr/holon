@@ -70,7 +70,7 @@ same graph are the same unit.
 | Literals | `1`, `"text"`, `true`, `10s`; `"Hello, {name}"` interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` and `list` | §5.5 |
 | Operators | Arithmetic and comparison on numbers, logic, `??` (fallback), `.` (field or output), `[ ]` (lookup), `when` (guard), `if … then … else …` (guard plus fallback) | §5.6 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
-| Functions for `map`/`fold` | A holon by name, or a closed lambda `fn(a, b) -> …`; lambdas may not capture | §5.9 |
+| Functions for `map`/`fold` | A holon by name, or a lambda `fn(a, b) -> …`; a name it uses from around it becomes an input of its own | §5.9 |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
 | Routes | `route METHOD /path (req) [resumes name] { … }`; `respond` is a statement wired to the request implicitly | §5.11 |
 | Flows without routes | The top-level statements are the one unit | §5.12 |
@@ -142,7 +142,6 @@ leaves, never from the words.
 | User-defined types, generics | The checker is wire-time compatibility over nine types. A type system is a different project |
 | Modules, imports, packages | Reuse across files is the marketplace's job (a published holon placed by hash), not a `use` statement. Revisit when packs exist |
 | `+` on texts | An operator lowers to one node, and most values are `Any`, so `+` could not choose between `add` and `concat`. Interpolation is the natural spelling; `concat(a, b)` the explicit one |
-| Lambdas that capture | A `fn` is a pinned unit applied by `map`/`fold` with fixed arity; a capture would need an input nobody supplies. Closed lambdas only |
 | Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (a binding), so the canvas shows what was written |
 | Null | Absence is not a value. `none()` is the optional's empty arm; "nothing" is the evaluator's absent slot (§6.3) |
 | Sequential mutation | `state.x = 1` then `state.x = 2` is an error (a key written twice), because a run reads its starting state and writes once at the end. The syntax looks like assignment; the semantics are a single commit |
@@ -377,20 +376,20 @@ share one node, bind it: `t = now`.
 
 ### map and fold
 
-Not in the samples yet; the shape the language gives them:
+From the `quote` sample: each line's function uses `tax` from the route around it.
 
 ```
-holon total(prices) -> amount {
-  amount = fold(0, prices, fn: fn(acc, p) -> acc + p)
-}
-
-holon slug_all(titles) -> slugs {
-  slugs = map(titles, fn: slugify)
+route POST /quote (req) {
+  tax = req.json.tax ?? 0
+  lines = map(req.json.items, fn: fn(item) -> { name: item.name, total: item.price * item.qty * (1 + tax) })
+  total = fold(0, lines, fn: fn(acc, line) -> acc + line.total)
+  respond { lines: lines, total: total, tax: tax }
 }
 ```
 
-A `fn:` param takes a holon's name or a closed lambda. Either lowers to a composite whose hash
-becomes the frozen `fn` param, which is what `eval_map` and `eval_fold` resolve today.
+A `fn:` param takes a holon's name or a lambda. Either lowers to a composite whose hash becomes
+the frozen `fn` param, which is what `eval_map` and `eval_fold` resolve; what a lambda uses from
+around it reaches it as an input after the item (§5.9).
 
 ## 4. Lexical structure
 
@@ -646,17 +645,33 @@ the nesting.
 The `fn` param of `map` and `fold` takes:
 
 - a holon's name: `map(titles, fn: slugify)`, lowered to that holon's hash;
-- a closed lambda: `fn(acc, p) -> acc + p`, lowered to an anonymous composite with the
-  parameters as inputs in order and the body's value as its one output, then to its hash.
+- a lambda: `fn(acc, p) -> acc + p`, lowered to an anonymous composite with the parameters as
+  inputs in order and the body's value as its one output, then to its hash.
 
-A lambda's body may name only its own parameters, holons, and catalog units. A free name is an
-error: "`fn` may only use its own arguments; a function is a sealed unit, applied to each item".
-`map`'s function takes one argument; `fold`'s takes two, `(acc, item)`. Arity is checked at the
-call.
+`map` and `fold` pass their function the values given after the list, after the item:
+`map(xs, a, b, fn: f)` calls `f(item, a, b)`, `fold(init, xs, a, fn: f)` calls
+`f(acc, item, a)`. They are ports of their own (`in2`, …, typed `Any`), and the call fires only
+when every one is present, as any node does.
+
+A lambda may use a name from around it (a binding of the route or holon it is written in, an
+input of that holon, or a parameter of a lambda it is written in): that is a capture. Each
+captured name becomes an input of the function after its parameters, sorted by name, and the
+call passes the bound value there. So `map(keys(r), fn: fn(k) -> r[k])` is the same unit as
+`map(keys(r), r, fn: fn(k, r) -> r[k])`, the explicit form; in a nested lambda the inner
+capture passes through the outer one. Constants are lowered inside, not captured. A name bound
+nowhere around the lambda is "unknown", as anywhere else; a holon's body sees its own names
+only, so a lambda inside a holon cannot reach a route's.
+
+Arity is checked at the call, counting what the call gives: `map` gives one input plus one per
+extra value, `fold` two plus one per extra. A function that takes another number is an error at
+the function: "`map` gives its function 1 inputs (the item); this one takes 2".
 
 The lambda's hash is its content's, so two identical lambdas are one unit, and the printer names
-anonymous composites `fn_1`, `fn_2`… only when it has to print them as holons (a lambda whose
-body is one expression prints back as a lambda).
+anonymous composites `fn_1`, `fn_2`… only when it has to print them as holons. A lambda whose
+body is one expression prints back as a lambda; when the values passed after the list are the
+names its trailing parameters take, in order, they print as captures, as they were written.
+Parameter names are part of the unit (ports are named), so `fn(k, r)` and `fn(k, rec)` are two
+units that compute the same.
 
 ### 5.10 Effects and statements
 
@@ -847,7 +862,7 @@ The error catalogue the lowering must produce, each with the span it points at:
 | `http.*`'s host must be a literal: it is the permission the deployment asks for | the host |
 | `state.k` written twice | both assignments |
 | `respond` outside a route / more than one `respond` | the statement |
-| `fn` may only use its own arguments | the free name |
+| `map` gives its function `n` inputs; this one takes `m` | the function |
 | holon `h`: input `p` never used / output `o` never bound / bound twice | the port or the binding |
 | routes `A` and `B` share `x` | the shared binding |
 | `A` clashes with `B` / not a method / not a route path | the route header |
@@ -1057,9 +1072,9 @@ Decided ones are kept, with the decision, for a reader who wonders why.
   edit or a canvas edit leaves the arrangement where it was (`docs/L4s/text-pane-L4.md`). An
   author who exports and imports again gets a fresh layout. A sidecar `.holon.layout` (names to
   positions) is the next step if anyone asks; positions in the text are refused.
-- **F8. Lambdas with captures, by lifting.** A capture could be lifted to an extra input of a
-  composite that `map` cannot call today. It would need a `map` that takes extra fixed inputs,
-  which is a core change. Not now.
+- **F8. Lambdas with captures, by lifting.** *Built (2026-10-25):* `map` and `fold` pass the
+  values given after the list to their function, after the item, and a lambda's captures are
+  lifted to those inputs (§5.9). The `quote` sample shows it.
 - **F9. `respond` with a bare number.** `respond 204` is a status; `respond n` with `n` a bound
   number is a body; `respond 42` is a status and the author who wanted a body writes
   `respond body: 42`. The rule is small and the ambiguity rare; revisit if the error report shows
