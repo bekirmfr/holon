@@ -111,7 +111,7 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
 /// Inputs a node works without, left unwired: core treats them as none (its
 /// `has_optional_ports`). An http_request's headers and body; a collection listing's prefix and
 /// after.
-fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
+pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
     let optional: &[&str] = match n.data.name.as_str() {
         "http_request" => &["headers", "body"],
         "collection_list" => &["prefix", "after"],

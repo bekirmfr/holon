@@ -234,7 +234,9 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
         body["interval_seconds"] = json!(i);
     }
     if let Some(b) = &plan.browsers {
-        body["browsers"] = json!(b);
+        // The plan keeps the origins on one line (`https://a.example *`); the deploy request
+        // takes them one by one, as the editor sends them.
+        body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
     }
     json_of(api, "POST", "/deploy", Some(Body::Json(body)))?;
     let entry = json_of(api, "GET", "/deployments", None)?
@@ -566,6 +568,28 @@ mod tests {
         let ok = tool(&state, "explain", json!({ "slug": "slugs", "run": first_run })).unwrap();
         assert!(ok.contains("⇒ \"ada\"") && ok.contains("answered 200"), "{ok}");
         assert!(ok.contains("performed"), "its writes: {ok}");
+    }
+
+    /// A flow's `browsers` line reaches the server as the list its deploy request takes, so a
+    /// flow that answers web pages deploys from the agent like any other.
+    #[test]
+    fn a_flow_that_answers_browsers_deploys_with_them_as_a_list() {
+        let state = test_state();
+        let text = "flow page-api\nport 8199\nbrowsers https://app.example, *\n\nroute GET /hi (req) {\n  name = req.query.name ?? \"you\"\n  respond \"hi {name}\"\n}\n";
+        let first = tool(&state, "deploy", json!({ "text": text })).unwrap();
+        assert!(first.starts_with("Not deployed yet"), "{first}");
+        let plan = agent::plan(text).unwrap();
+        assert_eq!(plan.browsers.as_deref(), Some("https://app.example *"), "the plan keeps them on one line");
+        let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "page-api", "unit": plan.unit })).unwrap())))).unwrap();
+        let approve = json!({ "slug": "page-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document, "browsers": ["https://app.example", "*"] });
+        assert_eq!(route(&state, &req("POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
+        // The next version deploys from the agent, with the origins one by one.
+        let v2 = text.replace("\"hi {name}\"", "\"hello {name}\"");
+        let second = tool(&state, "deploy", json!({ "text": v2 })).unwrap();
+        assert!(second.starts_with("Deployed \"page-api\""), "{second}");
+        let deployments: Value = serde_json::from_slice(&body_bytes(route(&state, &req("GET", "/deployments", vec![])))).unwrap();
+        let entry = deployments["deployments"].as_array().unwrap().iter().find(|d| d["slug"] == "page-api").cloned().unwrap_or(Value::Null);
+        assert_eq!(entry["browsers"], json!(["https://app.example", "*"]), "{entry}");
     }
 
     #[test]

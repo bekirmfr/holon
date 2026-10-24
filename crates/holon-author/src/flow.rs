@@ -10,7 +10,7 @@ use holon_core::{
 use serde::Serialize;
 
 use crate::canvas::{Node, PlacedBody, Wire};
-use crate::routes::{endpoint_unit, find_routes, route_spec, server_unit};
+use crate::routes::{endpoint_unit, find_routes, is_optional_input, route_spec, server_unit};
 use crate::wire::WPort;
 use crate::{templates, to_hex};
 
@@ -159,7 +159,14 @@ pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: 
     }
     let all: Vec<&Node> = nodes.iter().collect();
     let (children, edges) = group_of(&all, wires, store)?;
-    let spec = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
+    let mut spec = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
+    // An input a leaf works without (an http_request's headers and body, a listing's prefix and
+    // after) stays unbound, as `route_spec` leaves it in a route: promoted to the boundary it
+    // would be wired but absent on every run, and core would hold the leaf back for good.
+    spec.promote.retain(|p| {
+        let node = all[p.child as usize];
+        !is_optional_input(node, node.data.inputs.get(p.port as usize).map(|i| i.name.as_str()))
+    });
     let whole = derive_and_freeze(children, edges, &spec, store).map_err(|e| e.to_string())?;
     put(store, whole)
 }

@@ -1240,7 +1240,7 @@ pub(crate) mod tests {
     use crate::composites::Names;
     use crate::flow::{derive_server, flow_unit};
     use crate::{commands, samples, text, to_hex};
-    use holon_core::MapResolver;
+    use holon_core::{MapResolver, Resolver};
 
     /// The unit a document deploys as, through the real core.
     fn hash_of(doc: &FlowDocument) -> String {
@@ -1252,6 +1252,23 @@ pub(crate) mod tests {
 
     fn builders_hash(name: &str) -> String {
         hash_of(&samples::build(samples::sample(name).unwrap()).unwrap())
+    }
+
+    /// A flow without routes is one composite. An input a leaf works without (an http_request's
+    /// headers and body, a listing's prefix and after) stays unbound in it, as in a route:
+    /// promoted to the boundary it would be wired but absent, and core would hold the leaf back
+    /// on every run (a clock flow that never called out, or never listed its collection).
+    #[test]
+    fn a_routeless_flow_leaves_optional_inputs_unbound() {
+        let got = compiled(
+            "flow poll\nevery 10s\ncollection items\n\npage = http.get(\"h.example\", \"/\")\nrecent = items.list(limit: 5)\nstate.last = { status: page.status, n: length(keys(recent)) }\n",
+        );
+        let mut store = MapResolver::new();
+        text::restore(&got.doc, &mut store, &Names::new());
+        let hash = flow_unit(&got.doc.nodes, &got.doc.edges, &mut store, "").unwrap_or_else(|e| panic!("{e}"));
+        let unit = store.resolve(&hash).expect("the unit is stored");
+        let inputs: Vec<&str> = unit.inputs.iter().map(|p| p.name.as_str()).collect();
+        assert!(inputs.is_empty(), "headers, body, prefix and after stay unbound, not {inputs:?}");
     }
 
     /// Every sample's text (samples/*.holon): the natural form, as fmt writes it.
