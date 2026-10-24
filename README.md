@@ -109,6 +109,14 @@ can't be changed, removed or cut off the end unnoticed, even by someone with the
 data folder. Heads wait on disk while the witness is away; its receipts are kept beside the
 logs. The `witness` sample (`holon new w.holon --sample witness`) is a witness you can run
 yourself, on another machine.
+
+`GET /deployments/<slug>/export` writes a deployment's runs to one file: its log, exactly as
+written, and every unit the runs ran. `holon verify runs.json` checks it anywhere, offline: the
+chain is unbroken, each unit is what its hash says, and every run, run again from its log entry
+(the same request, state, clock, random, outbound answers and collection reads, through the same
+core), produces what the log says it did. `--head <hex>` checks a head a witness holds is in it.
+A run that used a secret or a resume token can't be run again (the log never holds their
+values), and is counted, not failed. The `ledger` sample is one to try it on.
 `holon serve --at 8080` listens on another port (`--at 0.0.0.0:8080` on every interface);
 `holon serve --help` lists every option. To reach it from other machines, see `--allow-host` in
 `docs/PLATFORM_LAYOUT.md`, and put HTTPS in front (a reverse proxy).

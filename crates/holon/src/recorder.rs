@@ -406,6 +406,16 @@ impl Log {
         &self.head
     }
 
+    /// The log's lines exactly as written, oldest first, so a copy checks against the chain: the
+    /// file's (every line it holds, a cut one too), or, kept in memory only, each entry as it was
+    /// written.
+    pub fn lines(&self) -> Vec<String> {
+        if let Some(path) = &self.file {
+            return std::fs::read_to_string(path).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default();
+        }
+        self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect()
+    }
+
     /// The seqs of the entries kept that don't follow the line before them: the log was changed
     /// outside holon there.
     pub fn breaks(&self) -> &[u64] {

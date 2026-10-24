@@ -3342,3 +3342,53 @@ fn at_takes_an_address_or_a_port_alone() {
         assert!(parse_at(bad).is_err(), "{bad:?}");
     }
 }
+
+/// A deployment's runs, exported and checked offline: every run runs again to what its entry
+/// says. A copy re-chained after changing what a run performed still links, but that run no longer
+/// re-runs to its entry; a witnessed head is found only in the copy it came from.
+#[test]
+fn exported_runs_verify_and_a_rewritten_log_doesnt() {
+    let mut state = test_state();
+    let path = unique_temp_path("verified-log");
+    state.deployments_path = path.clone();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "verified", writer, ack).status_code, 200);
+    for body in ["hello", "there", "again"] {
+        assert_eq!(route(&state, &req("POST", "/trigger/verified", body.as_bytes().to_vec())).status_code, 200);
+    }
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/verified/export", vec![])))).unwrap();
+    assert_eq!(export.lines.len(), 3);
+    let report = verify::check(&export, Some(&export.head));
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 3);
+    assert_eq!(report.witnessed, Some(Some(2)));
+
+    // Someone with the data folder rewrites what run 1 performed, and chains the lines again.
+    let mut forged = verify::Export { lines: Vec::new(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let mut prev = String::new();
+    for (i, line) in export.lines.iter().enumerate() {
+        let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+        if i == 1 {
+            let performed = v["performed"].to_string().replace("there", "elsewhere");
+            assert_ne!(performed, v["performed"].to_string());
+            v["performed"] = serde_json::from_str(&performed).unwrap();
+        }
+        if !prev.is_empty() {
+            v["prev"] = serde_json::Value::String(prev.clone());
+        }
+        let line = serde_json::to_string(&v).unwrap();
+        prev = recorder::line_hash(&line);
+        forged.lines.push(line);
+    }
+    forged.head = prev;
+    let report = verify::check(&forged, Some(&export.head));
+    assert!(report.breaks.is_empty(), "re-chained, it links");
+    assert_eq!(report.reruns[1], (1, verify::Rerun::Differs("the effects it performed".into())));
+    assert_eq!(report.witnessed, Some(None), "the witnessed head isn't in the rewritten log");
+    assert!(!report.ok());
+
+    route(&state, &req("POST", "/deployments/verified/stop", vec![]));
+    route(&state, &req("DELETE", "/deployments/verified", vec![]));
+    let _ = std::fs::remove_file(&path);
+}

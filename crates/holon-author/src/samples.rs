@@ -259,6 +259,19 @@ static SAMPLES: &[Sample] = &[
         build: witness,
     },
     Sample {
+        name: "ledger",
+        title: "Ledger (every run checkable)",
+        description: "Keeps a balance per account: each post adds its amount and answers the new balance with when it was posted. Export its runs and holon verify runs every posting again, offline, from what its log entry recorded (the balance it read, the clock), and checks it produced what the log says.",
+        shows: &["holon verify", "run export", "collections", "clock", "with_field"],
+        port: Some("8131"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X POST -d '{"amount":5}' http://127.0.0.1:8131/accounts/ada a few times, save GET /deployments/<slug>/export (signed in) as runs.json, then holon verify runs.json"#,
+        build: ledger,
+    },
+    Sample {
         name: "marketplace",
         title: "Marketplace (built with Holon)",
         description: "A marketplace for holons, itself a Holon flow: publishing a listing (a holon's name, description, ports, manifest and its units, by hash) takes the publish key; browsing and reading one are open to any web page; a bad version is yanked, never edited. The editor publishes saved flows to it and places what it lists, checking every unit against its hash.",
@@ -631,6 +644,44 @@ fn likes(b: &mut B) -> R {
     let all_res = respond(b, OK, "404", [1240, 680])?;
     b.wire(&all, "request", &all_res, "request")?;
     b.wire(&counts, "out", &all_res, "body")
+}
+
+fn ledger(b: &mut B) -> R {
+    // POST /accounts/:id {amount}: the balance it finds (0 for a new account) plus the amount,
+    // kept, and answered with when it was posted. No amount, nothing kept: 400.
+    let post = b.node("request", &[("method", "POST"), ("path", "/accounts/:id")], [40, 40])?;
+    let account = field_of(b, "id", &post, "params", [380, 40])?;
+    let amount = field_of(b, "amount", &post, "json", [380, 180])?;
+    let found = b.node("collection_get", &[("collection", "balances")], [640, 40])?;
+    let balance = b.node("default", &[("value", "0"), ("type", "Number")], [900, 40])?;
+    let after = b.node("add", &[], [1160, 100])?;
+    let keep = b.node("collection_put", &[("collection", "balances")], [1420, 160])?;
+    let clock = b.node("clock", &[], [900, 300])?;
+    let empty = b.node("record", &[], [900, 420])?;
+    let with_balance = b.node("with_field", &[("name", "balance")], [1420, 320])?;
+    let receipt = b.node("with_field", &[("name", "posted_at")], [1680, 360])?;
+    let answer = respond(b, OK, "400", [1940, 40])?;
+    b.wire(&account, "out", &found, "key")?;
+    b.wire(&found, "out", &balance, "value")?;
+    b.wire(&balance, "out", &after, "a")?;
+    b.wire(&amount, "out", &after, "b")?;
+    b.wire(&account, "out", &keep, "key")?;
+    b.wire(&after, "out", &keep, "value")?;
+    b.wire(&empty, "out", &with_balance, "record")?;
+    b.wire(&after, "out", &with_balance, "value")?;
+    b.wire(&with_balance, "out", &receipt, "record")?;
+    b.wire(&clock, "out", &receipt, "value")?;
+    b.wire(&post, "request", &answer, "request")?;
+    b.wire(&receipt, "out", &answer, "body")?;
+
+    // GET /accounts/:id: the balance, 404 for an account never posted to.
+    let show = b.node("request", &[("method", "GET"), ("path", "/accounts/:id")], [40, 620])?;
+    let id = field_of(b, "id", &show, "params", [380, 640])?;
+    let current = b.node("collection_get", &[("collection", "balances")], [640, 640])?;
+    let shown = respond(b, OK, "404", [900, 620])?;
+    b.wire(&id, "out", &current, "key")?;
+    b.wire(&show, "request", &shown, "request")?;
+    b.wire(&current, "out", &shown, "body")
 }
 
 fn marketplace(b: &mut B) -> R {

@@ -279,7 +279,10 @@ holon shows as a break, at load and in `GET /deployments/<slug>/log` (`head`, `b
 to a witness outside the server with `--export-heads URL` (`heads.rs`): batched every 5 s, queued
 on disk while it fails, a `trim` head when a log is cut back, the witness's answers kept as
 receipts. The `witness` sample is one; a hosted witness that signs its receipts, and publishes
-its own log's root, is the paid version. The control plane's own cap stays fixed: it serves
+its own log's root, is the paid version. `GET /deployments/<slug>/export` writes the log's lines
+and every unit its runs ran; `holon verify` (`verify.rs`) checks that offline, running every run
+again through `run_rounds` from its entry, its outbound answers and reads from the record, and
+comparing run id, outputs, effects and status (the `ledger` sample). The control plane's own cap stays fixed: it serves
 only the editor.
 
 - **Client:** `ureq` (synchronous, rustls). Runs are synchronous, and on the `hyper` data plane
