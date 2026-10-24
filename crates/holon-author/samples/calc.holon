@@ -1,0 +1,13 @@
+flow calc
+port 8116
+
+route POST /calc (req) {
+  a = req.json.a
+  b = req.json.b
+  respond match req.json.op {
+    "add" -> a + b
+    "sub" -> a - b
+    "mul" -> a * b
+    "div" -> a / b
+  }, missing: 400
+}

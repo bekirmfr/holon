@@ -399,6 +399,26 @@ test("cache-aside answers a name it has from its collection without the fetch, w
   await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("not run: the coalesce after it already had a value");
 });
 
+test("calc's match answers the chosen arm or 400 when it has no value, and view mode shows the other arms as not run", async ({ page, request }) => {
+  await openSample(page, "Calculator (a match)");
+  const port = await deploy(page);
+  // `a / b` has no value when b is 0; an arm not chosen doesn't matter.
+  const add = await request.post(`http://127.0.0.1:${port}/calc`, { data: { op: "add", a: 1, b: 0 } });
+  expect(add.status()).toBe(200);
+  expect(await add.text()).toBe("1");
+  // The chosen arm's absence is the match's: 400, not another arm's value.
+  expect((await request.post(`http://127.0.0.1:${port}/calc`, { data: { op: "div", a: 1, b: 0 } })).status()).toBe(400);
+  // The division ran; the other three arms didn't.
+  await viewNewestRun(page);
+  const skipped = page.locator('.hl-node[data-run="skipped"]');
+  await expect(skipped).toHaveCount(3);
+  for (const leaf of ["add", "subtract", "multiply"]) {
+    await expect(skipped.filter({ has: page.locator(".hl-node__title", { hasText: new RegExp(`^${leaf}\\b`) }) })).toHaveCount(1);
+  }
+  await skipped.filter({ hasText: "subtract" }).locator(".hl-node__title").click();
+  await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("not run: the guard after it didn't take this branch");
+});
+
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const { mkdtempSync } = await import("node:fs");

@@ -173,6 +173,8 @@ pub enum ExprKind {
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
     /// `if cond then then [else els]`.
     If { cond: Box<Expr>, then: Box<Expr>, els: Option<Box<Expr>> },
+    /// `match subject { patterns -> value … [else -> els] }`. `open` is the brace's span.
+    Match { subject: Box<Expr>, arms: Vec<Arm>, els: Option<Box<Expr>>, open: Span },
     /// `await name[, expires: expr]`.
     Await { name: Name, expires: Option<Box<Expr>> },
     /// `fn(params) -> body`.
@@ -207,6 +209,13 @@ pub enum Part {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arg {
     pub name: Option<Name>,
+    pub value: Expr,
+}
+
+/// A `match` arm: the patterns it is chosen by, and its value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Arm {
+    pub patterns: Vec<Expr>,
     pub value: Expr,
 }
 

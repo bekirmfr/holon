@@ -1,9 +1,11 @@
 # `match`: choosing one value by another, without one bad arm spoiling the rest (L4)
 
-**Status:** design, not built (2026-10-25). A language construct only: it lowers to leaves that
-exist (`equals`, `guard`, `or`, `not`, `coalesce`), so the hash and the host don't change. It
-relies on lazy choices (lazy-choices-L4.md), which land first, so that an arm not chosen doesn't
-run (§7).
+**Status:** built (2026-10-25). A language construct only: it lowers to leaves that exist
+(`equals`, `guard`, `or`, `not`, `coalesce`), so the hash and the host don't change. It relies on
+lazy choices (lazy-choices-L4.md), built first, so that an arm not chosen doesn't run (§7). Two
+things the build settled: a lone arm with no `else` is `a when s == p`, with no chain for the
+printer to see, so `fmt` writes it as that `when` (§5); and a `match` prints its arms one to a
+line, the one expression `fmt` writes over several lines.
 
 ---
 
@@ -107,8 +109,10 @@ The printer recognizes the exact shape of §4: a `coalesce` chain whose links ar
 `equals` of one shared subject against constants, optionally ending in a `guard` on
 `not(or(…))` of those same `equals`. It prints that as `match`. Anything that differs (a guard on
 something else, a missing link, a subject that isn't shared) prints as the expressions it is,
-`(a + b when op == "add") ?? …`, so the text never claims a `match` the graph isn't. The samples
-test holds the sample fmt-stable, as for every sample.
+`(a + b when op == "add") ?? …`, so the text never claims a `match` the graph isn't. The subject
+prints inline when only the comparisons use it, and keeps its binding otherwise. A lone arm with
+no `else` is a single `guard`, with no chain, and prints as `a when s == p`. The samples test
+holds the sample fmt-stable, as for every sample.
 
 ## 6. Errors
 

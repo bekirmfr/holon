@@ -746,7 +746,7 @@ impl Parser {
         let lit = |kind: ExprKind| Ok(Expr { kind, span });
         // The wiring form names nodes after their leaves, so `await.out -> via.record` names a
         // node called `await`: a keyword followed by a dot is a plain name.
-        if self.peek_at(1).tok == Tok::Dot && matches!(t.text.as_str(), "await" | "now" | "random" | "ingress" | "if" | "fn" | "true" | "false") {
+        if self.peek_at(1).tok == Tok::Dot && matches!(t.text.as_str(), "await" | "now" | "random" | "ingress" | "if" | "match" | "fn" | "true" | "false") {
             self.next();
             return lit(ExprKind::Name(t.text));
         }
@@ -768,6 +768,7 @@ impl Parser {
                 lit(ExprKind::Noun(Noun::Ingress))
             }
             "if" => self.if_expr(),
+            "match" => self.match_expr(),
             "fn" => self.lambda(),
             "await" => {
                 self.next();
@@ -833,6 +834,55 @@ impl Parser {
             None
         };
         Ok(Expr { kind: ExprKind::If { cond: Box::new(cond), then: Box::new(then), els }, span })
+    }
+
+    /// `match subject { arms }`: arms separated by newlines or commas, each `patterns -> value`,
+    /// and `else -> value` last. Whether a pattern is a literal is the lowering's to say.
+    fn match_expr(&mut self) -> R<Expr> {
+        let head = self.next();
+        let subject = self.expr()?;
+        self.skip_newlines();
+        if !self.is(&Tok::LBrace) {
+            let t = self.peek();
+            return err(t.span.start, format!("expected \"{{\" and the arms after the subject, found {}", describe(t)));
+        }
+        let open = self.next().span;
+        let mut arms = Vec::new();
+        let mut els: Option<Box<Expr>> = None;
+        let close = loop {
+            self.skip_newlines();
+            if self.is(&Tok::RBrace) {
+                break self.next().span;
+            }
+            if els.is_some() {
+                return err(self.peek().span.start, "`else` comes last, once");
+            }
+            if self.is_word("else") {
+                self.next();
+                self.expect(&Tok::Arrow, "\"->\" and the value when no pattern matches")?;
+                self.skip_newlines();
+                els = Some(Box::new(self.expr()?));
+            } else {
+                let mut patterns = vec![self.expr()?];
+                while self.eat(&Tok::Comma) {
+                    self.skip_newlines();
+                    patterns.push(self.expr()?);
+                }
+                self.expect(&Tok::Arrow, "\"->\" and the arm's value")?;
+                self.skip_newlines();
+                let value = self.expr()?;
+                arms.push(Arm { patterns, value });
+            }
+            if self.eat(&Tok::Comma) || self.is(&Tok::Newline) || self.is(&Tok::RBrace) {
+                continue;
+            }
+            let t = self.peek();
+            return err(t.span.start, format!("expected a new line, \",\" or \"}}\" after the arm, found {}", describe(t)));
+        };
+        if arms.is_empty() {
+            return err(open.start, "a `match` needs an arm");
+        }
+        Ok(Expr { kind: ExprKind::Match { subject: Box::new(subject), arms, els, open }, span: head.span.to(close) })
     }
 
     fn lambda(&mut self) -> R<Expr> {
@@ -1112,6 +1162,14 @@ mod tests {
                 Some(e) => format!("if {} then {} else {}", show(&cond.kind), show(&then.kind), show(&e.kind)),
                 None => format!("if {} then {}", show(&cond.kind), show(&then.kind)),
             },
+            ExprKind::Match { subject, arms, els, .. } => {
+                let mut parts: Vec<String> = arms
+                    .iter()
+                    .map(|a| format!("{} -> {}", a.patterns.iter().map(|p| show(&p.kind)).collect::<Vec<_>>().join(", "), show(&a.value.kind)))
+                    .collect();
+                parts.extend(els.iter().map(|e| format!("else -> {}", show(&e.kind))));
+                format!("match {} {{ {} }}", show(&subject.kind), parts.join("; "))
+            }
             ExprKind::Await { name, expires } => match expires {
                 Some(e) => format!("await {} expires {}", name.text, show(&e.kind)),
                 None => format!("await {}", name.text),
@@ -1481,5 +1539,27 @@ mod tests {
             }
             assert_eq!(new.headers.iter().filter(|h| matches!(h.kind, HeaderKind::Optional(_))).count(), old.optional.len(), "{name}: optional");
         }
+    }
+
+    #[test]
+    fn a_match_has_arms_on_lines_or_after_commas_and_an_else_last() {
+        assert_eq!(e("match op { \"a\" -> 1, \"b\", \"c\" -> x + 1 }"), "match op { \"a\" -> 1; \"b\", \"c\" -> <x + 1> }");
+        assert_eq!(e("match req.json.op {\n  1 -> x + 1\n  -2 -> y\n  else -> 0\n}"), "match req.json.op { 1 -> <x + 1>; -2 -> y; else -> 0 }");
+        assert_eq!(e("match b { true -> \"yes\", false -> \"no\", }"), "match b { true -> \"yes\"; false -> \"no\" }");
+        // An atom: it goes where an expression does.
+        assert_eq!(e("match op { 1 -> a } ?? 0"), "<match op { 1 -> a } ?? 0>");
+        // A keyword, but a node may still be called after its leaf in the wiring form.
+        assert_eq!(e("match.out"), "match.out");
+    }
+
+    #[test]
+    fn a_match_says_what_is_wrong_with_its_arms() {
+        assert_eq!(error("x = match op { else -> 1 }"), (1, 14, "a `match` needs an arm".into()));
+        assert_eq!(error("x = match op { }"), (1, 14, "a `match` needs an arm".into()));
+        assert_eq!(error("x = match op {\n  else -> 1\n  \"a\" -> 2\n}"), (3, 3, "`else` comes last, once".into()));
+        assert_eq!(error("x = match op {\n  else -> 1\n  else -> 2\n}"), (3, 3, "`else` comes last, once".into()));
+        assert_eq!(error("x = match op { \"a\" -> 1 \"b\" -> 2 }"), (1, 25, "expected a new line, \",\" or \"}\" after the arm, found \"\\\"b\\\"\"".into()));
+        assert_eq!(error("x = match op \"a\" -> 1"), (1, 14, "expected \"{\" and the arms after the subject, found \"\\\"a\\\"\"".into()));
+        assert_eq!(error("x = match op { \"a\" 1 }"), (1, 20, "expected \"->\" and the arm's value, found \"1\"".into()));
     }
 }

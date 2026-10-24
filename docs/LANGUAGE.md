@@ -73,7 +73,7 @@ same graph are the same unit.
 | Bindings | One form, `name = expr`, everywhere | §5.2 |
 | Calls | `name(inputs…, named…)`: positional arguments are inputs; a named one is an input when the unit has that port, else a param | §5.3 |
 | Literals | `1`, `"text"`, `true`, `10s`; `"Hello, {name}"` interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` and `list` | §5.5 |
-| Operators | Arithmetic and comparison on numbers, logic, `??` (fallback), `.` (field or output), `[ ]` (lookup), `when` (guard), `if … then … else …` (guard plus fallback) | §5.6 |
+| Operators | Arithmetic and comparison on numbers, logic, `??` (fallback), `.` (field or output), `[ ]` (lookup), `when` (guard), `if … then … else …` (guard plus fallback), `match x { … }` (a choice by value) | §5.6, §6.5 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
 | Functions for `map`/`fold` | A holon by name, or a lambda `fn(a, b) -> …`; a name it uses from around it becomes an input of its own | §5.9 |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
@@ -402,7 +402,7 @@ around it reaches it as an input after the item (§5.9).
 - **Comments:** `#` to end of line. `fmt` keeps a comment on the line it was written on, moving it
   with that statement.
 - **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `holon` `route`
-  `resumes` `respond` `delete` `await` `if` `then` `else` `when` `fn` `true` `false`, and the
+  `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`, and the
   wiring form's `node` `at` `in` `out` `interval`. Keywords are valid after a dot (`req.in`) and
   as record keys (`{ in: 1 }`).
 - **Nouns:** `req` (the name a route gives its request; any identifier works), `secret`, `state`,
@@ -575,6 +575,7 @@ Lowest to highest precedence; binary operators are left-associative.
 | `if c then a else b` | `coalesce(guard(cond: c, value: a), b)` | `a` if `c` held and `a` arrived, else `b` (§6.4) |
 | `if c then a` | `guard(cond: c, value: a)` | the same as `a when c` |
 | `a when c` | `guard(cond: c, value: a)` | absent unless `c` is `true` |
+| `match s { p -> a, q, r -> b, else -> e }` | `guard(equals(s, p), a) ?? guard(or(equals(s, q), equals(s, r)), b) ?? guard(not(or(…)), e)` | an atom; the arm whose pattern equals `s`, and its absence is the match's (§6.5) |
 | `a ?? b` | `coalesce(a, b)`; with a literal `b`, `default{type, value}(a)` | `a` when present, else `b`. The two leaves have one meaning; `default` is the one-node form for a literal (a number, text, boolean, or a record/list literal with only literals inside, frozen as `Json`) |
 | `a \|\| b` | `or(a, b)` | variadic: `a \|\| b \|\| c` is one node |
 | `a && b` | `and(a, b)` | variadic |
@@ -798,14 +799,45 @@ The strict three-way choice, where an absent arm makes the whole result absent w
 is `select(c, a, b)`, written as a call. Being strict, it needs, and runs, both arms. It is rarely
 what a flow wants.
 
-### 6.5 Reads at the start, writes at the end
+### 6.5 `match` is a choice
+
+A choice of one value by another (an operator, an event's type, a command) is `match`:
+
+```
+respond match req.json.op {
+  "add" -> a + b
+  "sub", "minus" -> a - b
+  "div" -> a / b
+  else -> 0
+}, missing: 400
+```
+
+The subject is compared with each pattern by `equals` (structural, never coerced: `1` is not
+`"1"`), and the first arm with a matching pattern is chosen. A pattern is a literal: a number, a
+text, `true` or `false`; to test a condition, use `if`. Arms go one to a line, or after commas
+(`match b { true -> "yes", false -> "no" }`), and `else`, if there is one, comes last.
+
+What makes it a choice and not a chain of `if`: **the chosen arm's absence is the match's.** With
+`b = 0`, `a / b` has no value, and `match` with `"div"` has none either, so `respond … missing:`
+answers 400. A chain `if op == "div" then a / b else 0` falls through and answers `0`, silently.
+The arms not chosen don't matter at all, and don't run (§6.4): `"add"` answers `a + b` whatever
+`a / b` would be. So an arm may send a request or `await`; only the chosen arm's are asked. With
+the subject absent, the match is absent, and the `else` with it. With no pattern matching and no
+`else`, it is absent too.
+
+It is sugar, and one unit with what it lowers to: `guard(equals(s, p), a)` for each arm, chained
+by `??`, and the `else` guarded by none of the patterns matching, so a failed arm can't fall
+through to it. The canvas shows those nodes, and `fmt` prints them back as `match`
+(`docs/L4s/match-L4.md`). The `calc` sample shows both halves.
+
+### 6.6 Reads at the start, writes at the end
 
 `state.x` and `notes[k]` on the right of `=` are the values as the run began. The writes are
 Effects the host commits when the run finishes. So a run never sees its own writes, two runs that
 start together both see the old value (and the host's retry, as the likes sample shows, runs one
 again), and a key written twice in one flow has no meaning, so it is an error.
 
-### 6.6 Totality and purity
+### 6.7 Totality and purity
 
 Every program terminates: iteration is `map` and `fold` over a list, bounded by the list (the
 one leaf that makes a list from a number, `range(n)`, makes at most 10000 items), and there is no
@@ -815,7 +847,7 @@ performs after the run settles. `http.*` is answered between rounds (§4.1 of
 `PLATFORM_LAYOUT.md`); `await` parks the run. None of that is visible in the language beyond the
 nodes' names.
 
-### 6.7 Types
+### 6.8 Types
 
 The nine wire types are core's: `Number`, `Boolean`, `Text`, `Record`, `List<T>`,
 `Product<…>`, `Sum<…>`, `Effect`, `Any`. Type annotations are written as `Text`, `List<Text>`,
@@ -1107,7 +1139,7 @@ Decided ones are kept, with the decision, for a reader who wonders why.
   and a chain of `if` falls through when the chosen arm fails. `match op { "add" -> a + b, … }`
   chooses one arm by the subject, so arms not chosen don't matter and a chosen arm's failure is
   the result's. It lowers to `equals`, `guard` and `coalesce`, with the `else` guarded by "no
-  pattern matched". Designed in `docs/L4s/match-L4.md`, not built; it builds on F12.
+  pattern matched". Decided and built (§6.5); the `calc` sample shows it. `docs/L4s/match-L4.md`.
 - **F12. Lazy choices.** Every node was evaluated, so a request inside an `if` branch not taken
   was sent anyway, and an `await` there parked the run. Decided and built: `guard` and `coalesce`
   evaluate only the inputs they need, with "not yet answered" kept apart from absent so a choice

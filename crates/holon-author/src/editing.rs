@@ -66,9 +66,10 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("respond", "`respond <body>, status: 201, missing: 400`: the route's answer; `missing:` is the status when the body has no value. `respond 204` answers a status alone."),
     ("delete", "`delete name[key]`: removes an item from a collection when the run finishes."),
     ("await", "`await event, expires: 1d`: parks the run until the event arrives; the route that `resumes` it goes on."),
-    ("if", "`if c then a else b`: `a` when `c` is true, else `b`. A fallback, not a branch: both sides are computed."),
+    ("if", "`if c then a else b`: `a` when `c` is true, else `b`. A fallback, not a branch: when `a` has no value, `b`. Only the side it needs runs."),
     ("then", "`if c then a else b`: `a` when `c` is true, else `b`."),
-    ("else", "`if c then a else b`: `b` when `c` isn't true, or `a` has no value."),
+    ("else", "`if c then a else b`: `b` when `c` isn't true, or `a` has no value. In a `match`, `else -> v`: `v` when no pattern matched."),
+    ("match", "`match x { \"a\" -> v, 1, 2 -> w, else -> z }`: the value of the arm whose pattern equals `x`; only that arm runs. A chosen arm with no value makes the match have none: it never falls to another arm."),
     ("when", "`a when cond`: `a` only when `cond` is true; else no value."),
     ("fn", "`fn(x) -> expr`: a function for `map` and `fold`, using only its parameters."),
     ("node", "`node name = leaf { params }`: the wiring form's node, wired with `a.out -> b.in`."),
@@ -387,7 +388,7 @@ pub struct Highlight {
 }
 
 /// The words an expression may hold that are the language's own.
-const EXPRESSION_KEYWORDS: &[&str] = &["respond", "delete", "await", "if", "then", "else", "when", "fn"];
+const EXPRESSION_KEYWORDS: &[&str] = &["respond", "delete", "await", "if", "then", "else", "when", "match", "fn"];
 const HEADERS: &[&str] = &["port", "every", "interval", "browsers", "optional"];
 const OPERATORS: &[&str] = &["->", "..", "??", "&&", "||", "==", "!=", "<=", ">=", "+", "-", "*", "/", "<", ">", "!", "="];
 

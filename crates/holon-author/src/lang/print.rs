@@ -28,7 +28,7 @@ use crate::wire::{WParam, WPort, WType};
 /// The words a binding may not take, as lower.rs holds them.
 const RESERVED: &[&str] = &[
     "flow", "port", "every", "browsers", "optional", "collection", "holon", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
-    "when", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
+    "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
 
@@ -285,11 +285,14 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         }
         out.extend(body);
     }
+    // A line may hold several (a `match` and its arms): a node's is the first.
     let mut lines = BTreeMap::new();
-    for (k, (_, ids)) in out.iter().enumerate() {
+    let mut at = 1u32;
+    for (text, ids) in &out {
         for id in ids {
-            lines.entry(id.clone()).or_insert(k as u32 + 1);
+            lines.entry(id.clone()).or_insert(at);
         }
+        at += 1 + text.matches('\n').count() as u32;
     }
     let text: Vec<&str> = out.iter().map(|(l, _)| l.as_str()).collect();
     Ok((format!("{}\n", text.join("\n").trim_end()), lines))
@@ -654,6 +657,22 @@ struct Block<'p, 's, 'g> {
     used: HashSet<String>,
     /// The nodes rendered into the statement being written.
     touched: Vec<String>,
+    /// The indent of the line being written: a `match`'s arms go one deeper.
+    nest: String,
+    /// The nodes a `match` folds in (its comparisons, guards and chain), and a subject only its
+    /// comparisons use: each prints inline, inside the `match`.
+    absorbed: HashSet<String>,
+}
+
+/// The shape a `match` lowers to (match-L4.md §4), as found in a group.
+struct MatchShape<'g> {
+    subject: Src,
+    /// Each arm's pattern constants, and the guard holding its value.
+    arms: Vec<(Vec<&'g Node>, &'g Node)>,
+    /// The guard holding the `else`'s value.
+    els: Option<&'g Node>,
+    /// Every node the `match` folds in, besides its subject and its values.
+    parts: Vec<&'g Node>,
 }
 
 impl<'p, 's, 'g> Block<'p, 's, 'g> {
@@ -662,7 +681,153 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         if let Some((_, name)) = &request {
             used.insert(name.clone());
         }
-        Block { p, g, indent, request, inputs: HashSet::new(), bound: HashMap::new(), used, touched: vec![] }
+        let mut b = Block { p, g, indent, request, inputs: HashSet::new(), bound: HashMap::new(), used, touched: vec![], nest: indent.into(), absorbed: HashSet::new() };
+        for n in &g.nodes {
+            let Some(m) = b.match_shape(n) else { continue };
+            b.absorbed.extend(m.parts.iter().map(|n| n.id.clone()));
+            let patterns: usize = m.arms.iter().map(|(ps, _)| ps.len()).sum();
+            if let Src::Node { id, .. } = &m.subject {
+                let s = g.node(id);
+                if !b.is_request(id) && b.pass_through(s).is_none() && b.free(s) && g.consumed_total(s) == patterns {
+                    b.absorbed.insert(id.clone());
+                }
+            }
+        }
+        b
+    }
+
+    /// Whether `node` may fold into an expression: no name of its own, and one output.
+    fn free(&self, node: &Node) -> bool {
+        !(self.is_request(&node.id) || node.is_template("respond") || node.data.name == "await" || self.bound.contains_key(&node.id) || self.p.bindings.contains_key(&node.id))
+            && node.data.outputs.len() == 1
+    }
+
+    /// The node on `node`'s `input`, when it is a leaf `leaf` with no name, used `uses` times.
+    fn part(&self, node: &Node, input: &str, leaf: &str, uses: usize) -> Option<&'g Node> {
+        match self.g.incoming.get(&(node.id.clone(), input.to_string()))? {
+            Src::Node { id, .. } => {
+                let n = self.g.node(id);
+                (n.data.name == leaf && n.data.body == PlacedBody::Primitive && self.free(n) && self.g.consumed_total(n) == uses).then_some(n)
+            }
+            Src::In(_) => None,
+        }
+    }
+
+    /// The node wired to `node`'s `input`, by id.
+    fn source_id(&self, node: &Node, input: &str) -> Option<String> {
+        match self.g.incoming.get(&(node.id.clone(), input.to_string()))? {
+            Src::Node { id, .. } => Some(id.clone()),
+            Src::In(_) => None,
+        }
+    }
+
+    /// The `match` that `node` is the top of, if it is one: a `coalesce` chain of guards, each on
+    /// its arm's patterns equalling one shared subject, the last perhaps the `else`'s, on none of
+    /// them matching. Anything else prints as the expressions it is.
+    fn match_shape(&self, node: &'g Node) -> Option<MatchShape<'g>> {
+        if node.data.name != "coalesce" || node.data.body != PlacedBody::Primitive {
+            return None;
+        }
+        let mut parts = vec![];
+        let mut links = vec![];
+        let mut cur = node;
+        loop {
+            links.push(self.part(cur, "b", "guard", 1)?);
+            match self.part(cur, "a", "coalesce", 1) {
+                Some(inner) => {
+                    parts.push(inner);
+                    cur = inner;
+                }
+                None => {
+                    links.push(self.part(cur, "a", "guard", 1)?);
+                    break;
+                }
+            }
+        }
+        links.reverse();
+        // The else: the last guard, on `not` of the arms' conditions (their `or`, for several).
+        let last = *links.last().expect("two links at least");
+        let conds: Vec<String> = links[..links.len() - 1].iter().map(|g| self.source_id(g, "cond")).collect::<Option<_>>()?;
+        let mut els = None;
+        if let Some(not) = self.part(last, "cond", "not", 1) {
+            let any = if conds.len() == 1 {
+                (self.source_id(not, "v") == Some(conds[0].clone())).then_some(None)
+            } else {
+                self.part(not, "v", "or", 1)
+                    .filter(|or| or.data.inputs.iter().map(|p| self.source_id(or, &p.name)).collect::<Option<Vec<_>>>() == Some(conds.clone()))
+                    .map(Some)
+            };
+            if let Some(or) = any {
+                parts.push(not);
+                parts.extend(or);
+                els = Some(last);
+            }
+        }
+        let arm_links = if els.is_some() { &links[..links.len() - 1] } else { &links[..] };
+        let uses = 1 + usize::from(els.is_some());
+        let mut subject: Option<Src> = None;
+        let mut seen: Vec<(&str, &str)> = vec![];
+        let mut arms = vec![];
+        for g in arm_links {
+            parts.push(g);
+            let eqs = match self.part(g, "cond", "equals", uses) {
+                Some(eq) => vec![eq],
+                None => {
+                    let or = self.part(g, "cond", "or", uses)?;
+                    parts.push(or);
+                    or.data.inputs.iter().map(|p| self.part(or, &p.name, "equals", 1)).collect::<Option<Vec<_>>>()?
+                }
+            };
+            let mut consts = vec![];
+            for eq in eqs {
+                let s = self.g.incoming.get(&(eq.id.clone(), "a".into()))?;
+                if subject.get_or_insert_with(|| s.clone()) != s {
+                    return None;
+                }
+                let c = self.part(eq, "b", "const", 1)?;
+                let (ty, value) = (c.param("type"), c.param("value"));
+                if !["Number", "Text", "Boolean"].contains(&ty) || literal(ty, value).is_none() {
+                    return None;
+                }
+                // Two equal patterns would not parse back.
+                let same = |(t, v): &(&str, &str)| *t == ty && (*v == value || (ty == "Number" && v.parse::<f64>().ok() == value.parse::<f64>().ok()));
+                if seen.iter().any(same) {
+                    return None;
+                }
+                seen.push((ty, value));
+                parts.push(eq);
+                parts.push(c);
+                consts.push(c);
+            }
+            arms.push((consts, *g));
+        }
+        if let Some(e) = els {
+            parts.push(e);
+        }
+        Some(MatchShape { subject: subject?, arms, els, parts })
+    }
+
+    /// A `match`, its arms one to a line.
+    fn render_match(&mut self, m: MatchShape<'g>) -> Result<(String, u8), String> {
+        for n in &m.parts {
+            self.touch(n);
+        }
+        let (subject, _) = self.value(&m.subject)?;
+        let outer = std::mem::take(&mut self.nest);
+        self.nest = format!("{outer}  ");
+        let mut text = format!("match {subject} {{");
+        for (consts, guard) in &m.arms {
+            let patterns: Vec<String> = consts.iter().map(|c| literal(c.param("type"), c.param("value")).expect("a literal pattern")).collect();
+            let value = self.required(guard, "value")?;
+            text.push_str(&format!("\n{}{} -> {value}", self.nest, patterns.join(", ")));
+        }
+        if let Some(e) = m.els {
+            let value = self.required(e, "value")?;
+            text.push_str(&format!("\n{}else -> {value}", self.nest));
+        }
+        text.push_str(&format!("\n{outer}}}"));
+        self.nest = outer;
+        Ok((text, ATOM))
     }
 
     fn line(&mut self, text: String) -> Line {
@@ -682,10 +847,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// Whether `node`'s one output prints inline at its one consumer. A node the text named keeps
     /// its binding: fmt keeps an author's names.
     fn inline(&self, node: &Node) -> bool {
-        if self.is_request(&node.id) || node.is_template("respond") || node.data.name == "await" || self.bound.contains_key(&node.id) || self.p.bindings.contains_key(&node.id) {
-            return false;
-        }
-        node.data.outputs.len() == 1 && self.g.consumed_total(node) == 1
+        self.free(node) && (self.g.consumed_total(node) == 1 || self.absorbed.contains(&node.id))
     }
 
     /// The input a `guard(true, input)` passes through, when `node` is one: the lowering places it
@@ -1000,6 +1162,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 None => self.generic(node),
             },
             "coalesce" => {
+                if let Some(m) = self.match_shape(self.g.node(&node.id)) {
+                    return self.render_match(m);
+                }
                 if let Some(g) = self.inline_source(node, "a", "guard") {
                     self.touch(g);
                     let c = self.operand(g, "cond", PREC_IF)?;
@@ -1429,5 +1594,48 @@ mod tests {
         assert_eq!(json_literal("{\"k\":[1,\"x\"],\"done\":false}"), None, "unsorted keys don't either");
         assert_eq!(consent("SecretRead(\"receipt_key\")"), "secret.receipt_key");
         assert_eq!(consent("HttpRequest(\"h\")"), "HttpRequest(\"h\")");
+    }
+
+    /// A `match` prints back as written, its arms one to a line; the guards it lowers to,
+    /// written by hand without names, are the same unit and print as the `match` they are.
+    #[test]
+    fn a_match_prints_back_as_a_match() {
+        let src = "flow f\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\", \"minus\" -> 0 - v\n    else -> match v {\n      0 -> \"zero\"\n      else -> \"some\"\n    }\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        let got = compile(src).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(round_trips("f", &got.doc, &got.names), src);
+        let by_hand = "flow f\n\nholon pick(op, v) -> r {\n  r = (1 / v when op == \"inv\") ?? (0 - v when op == \"neg\")\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        let got = compile(by_hand).unwrap();
+        assert!(round_trips("f", &got.doc, &got.names).contains("  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\" -> 0 - v\n  }\n"));
+        // A subject the comparisons alone use folds in; one used elsewhere keeps its binding.
+        let route = "flow f\nport 8200\n\nroute POST /x (req) {\n  respond match req.json.op {\n    \"a\" -> 1\n    else -> 2\n  }, missing: 400\n}\n";
+        let got = compile(route).unwrap();
+        assert_eq!(round_trips("f", &got.doc, &got.names), route);
+        let shared = "flow f\nport 8200\n\nroute POST /x (req) {\n  op = req.json.op\n  respond { op: op, n: match op {\n    \"a\" -> 1\n    \"b\" -> 2\n  } }\n}\n";
+        let got = compile(shared).unwrap();
+        assert_eq!(round_trips("f", &got.doc, &got.names), shared);
+    }
+
+    /// What isn't the exact shape prints as the expressions it is, never as a `match`.
+    #[test]
+    fn near_misses_of_a_match_print_as_what_they_are() {
+        for (body, want) in [
+            // Two subjects.
+            ("  r = (1 when op == \"a\") ?? (2 when v == \"b\")", "  r = if op == \"a\" then 1 else 2 when v == \"b\""),
+            // The pattern on the left.
+            ("  r = (v when \"a\" == op) ?? (2 when op == \"b\")", "  r = if \"a\" == op then v else 2 when op == \"b\""),
+            // A fallback that isn't guarded.
+            ("  r = if op == \"a\" then 1 else v", "  r = if op == \"a\" then 1 else v"),
+            // One arm alone is a `when`.
+            ("  r = match op {\n    \"a\" -> v\n  }", "  r = v when op == \"a\""),
+            // A pattern that isn't a literal.
+            ("  r = (1 when op == v) ?? (2 when op == \"b\")", "  r = if op == v then 1 else 2 when op == \"b\""),
+            // An else on something else than none of the arms matching.
+            ("  r = (v when op == \"a\") ?? (2 when !(op == \"b\"))", "  r = if op == \"a\" then v else 2 when op != \"b\""),
+        ] {
+            let src = format!("flow f\n\nholon pick(op, v) -> r {{\n{body}\n}}\n\nstate.x = pick(\"a\", \"b\")\n");
+            let got = compile(&src).unwrap_or_else(|e| panic!("{e}\n{src}"));
+            let text = round_trips("f", &got.doc, &got.names);
+            assert!(text.contains(&format!("{want}\n}}")), "{body}:\n{text}");
+        }
     }
 }

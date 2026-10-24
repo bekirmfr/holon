@@ -69,7 +69,7 @@ pub fn lower(file: &File) -> R<Lowered> {
 /// Words a binding may not take: the keywords and nouns of the language, and the wiring form's.
 const RESERVED: &[&str] = &[
     "flow", "port", "every", "browsers", "optional", "collection", "holon", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
-    "when", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
+    "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
 
@@ -908,6 +908,7 @@ impl<'a> Lowerer<'a> {
                     Some(b) => self.fallback(guarded, b, e.span),
                 }
             }
+            ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
             ExprKind::Await { name, expires } => {
                 let mut params = vec![("name".to_string(), name.text.clone())];
                 if let Some(x) = expires {
@@ -1013,6 +1014,60 @@ impl<'a> Lowerer<'a> {
                 self.node_with(leaf, &[], &inputs, span)
             }
         }
+    }
+
+    /// `match` (docs/L4s/match-L4.md §4): each arm's value guarded by its patterns matching the
+    /// subject, the arms chained by `coalesce`, and the `else` guarded by none of them matching,
+    /// so a chosen arm that is absent makes the match absent instead of falling through.
+    fn match_expr(&mut self, subject: &'a Expr, arms: &'a [Arm], els: Option<&'a Expr>, span: Span) -> R<Val> {
+        let mut seen: Vec<Pattern> = Vec::new();
+        for p in arms.iter().flat_map(|a| &a.patterns) {
+            let Some(key) = pattern(p) else {
+                return err(p.span, "a pattern is a literal (a number, a text, true or false); to test a condition, use `if`");
+            };
+            if seen.contains(&key) {
+                return err(p.span, format!("{} is matched twice; the second arm could never be chosen", key.text()));
+            }
+            seen.push(key);
+        }
+        let s = self.expr(subject)?;
+        let mut matched = Vec::new();
+        let mut chain: Option<Val> = None;
+        for arm in arms {
+            let mut eqs = Vec::new();
+            for p in &arm.patterns {
+                let c = self.expr(p)?;
+                eqs.push(self.node_with("equals", &[], &[("a", s.clone()), ("b", c)], p.span)?);
+            }
+            let m = self.any_of(eqs, span)?;
+            let v = self.expr(&arm.value)?;
+            let at = arm.patterns[0].span.to(arm.value.span);
+            let guarded = self.node_with("guard", &[], &[("cond", m.clone()), ("value", v)], at)?;
+            matched.push(m);
+            chain = Some(match chain {
+                None => guarded,
+                Some(prev) => self.node_with("coalesce", &[], &[("a", prev), ("b", guarded)], span)?,
+            });
+        }
+        let mut chain = chain.expect("the parser refuses a match without an arm");
+        if let Some(e) = els {
+            let any = self.any_of(matched, span)?;
+            let none = self.node_with("not", &[], &[("v", any)], span)?;
+            let v = self.expr(e)?;
+            let guarded = self.node_with("guard", &[], &[("cond", none), ("value", v)], e.span)?;
+            chain = self.node_with("coalesce", &[], &[("a", chain), ("b", guarded)], span)?;
+        }
+        Ok(chain)
+    }
+
+    /// One condition true when any of `conds` is: the condition itself, or their `or`.
+    fn any_of(&mut self, mut conds: Vec<Val>, span: Span) -> R<Val> {
+        if conds.len() == 1 {
+            return Ok(conds.pop().expect("one"));
+        }
+        let ports = Self::variadic_ports(&[WPort::new("a", WType::Boolean), WPort::new("b", WType::Boolean)], conds.len());
+        let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(conds).collect();
+        self.node_with("or", &[], &inputs, span)
     }
 
     /// `a ?? b`: `default` with a frozen literal, `coalesce` with a value from a wire.
@@ -1235,6 +1290,44 @@ impl<'a> Lowerer<'a> {
             _ => err(e.span, "fn: takes a holon's name or a function, fn(a, b) -> …"),
         }
     }
+}
+
+/// A `match` pattern's value, for telling two patterns apart: `1` and `1.0` are one number, and
+/// a number is never a text (`equals` doesn't coerce).
+enum Pattern {
+    Number(f64, String),
+    Text(String),
+    Bool(bool),
+}
+
+impl PartialEq for Pattern {
+    fn eq(&self, other: &Pattern) -> bool {
+        match (self, other) {
+            (Pattern::Number(a, _), Pattern::Number(b, _)) => a == b,
+            (Pattern::Text(a), Pattern::Text(b)) => a == b,
+            (Pattern::Bool(a), Pattern::Bool(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Pattern {
+    fn text(&self) -> String {
+        match self {
+            Pattern::Number(_, t) => t.clone(),
+            Pattern::Text(s) => format!("{s:?}"),
+            Pattern::Bool(b) => b.to_string(),
+        }
+    }
+}
+
+fn pattern(e: &Expr) -> Option<Pattern> {
+    Some(match &e.kind {
+        ExprKind::Number { value, text } => Pattern::Number(*value, text.clone()),
+        ExprKind::Text(s) => Pattern::Text(s.clone()),
+        ExprKind::Bool(b) => Pattern::Bool(*b),
+        _ => return None,
+    })
 }
 
 /// A literal as `default` freezes it: its type and its text. Records and lists of literals are
@@ -1574,5 +1667,71 @@ pub(crate) mod tests {
         assert!(d.errors.is_empty(), "{:?}", d.errors);
         assert_eq!(d.endpoints.iter().map(|e| (e.method.as_str(), e.path.as_str())).collect::<Vec<_>>(), [("GET", "/hello/:name")]);
         assert_eq!(leaves(&hello.doc), ["request", "const", "field", "as_text", "concat", "respond"]);
+    }
+
+    /// The holon `pick` of a text, as core evaluates it, given `op` and `v`.
+    fn picked(src: &str, op: Option<holon_core::Value>, v: Option<holon_core::Value>) -> Option<holon_core::Value> {
+        let doc = compiled(src).doc;
+        let mut store = MapResolver::new();
+        text::restore(&doc, &mut store, &Names::new());
+        let hash = doc.nodes.iter().find_map(|n| match &n.data.body {
+            crate::canvas::PlacedBody::Composite { hash } => Some(hash.clone()),
+            _ => None,
+        });
+        let (_, unit) = crate::composites::resolve(&store, &hash.expect("pick is placed")).unwrap();
+        let inputs: Vec<Option<holon_core::Value>> = unit.inputs.iter().map(|p| if p.name == "op" { op.clone() } else { v.clone() }).collect();
+        holon_core::eval(unit, &inputs, &store).into_vec().remove(0)
+    }
+
+    const PICK: &str = "flow f\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\", \"minus\" -> 0 - v\n    else -> 99\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
+
+    /// `match` is sugar (match-L4.md §4): the guards written out by hand are the same unit.
+    #[test]
+    fn a_match_is_the_same_unit_as_its_guards_written_by_hand() {
+        let by_hand = "flow f\n\nholon pick(op, v) -> r {\n  m1 = op == \"inv\"\n  m2 = op == \"neg\" || op == \"minus\"\n  r = (1 / v when m1) ?? (0 - v when m2) ?? (99 when !(m1 || m2))\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        assert_eq!(hash_of(&compiled(PICK).doc), hash_of(&compiled(by_hand).doc));
+        // Without an else, the chain alone.
+        let no_else = "flow f\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\" -> 0 - v\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        let by_hand = "flow f\n\nholon pick(op, v) -> r {\n  r = (1 / v when op == \"inv\") ?? (0 - v when op == \"neg\")\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        assert_eq!(hash_of(&compiled(no_else).doc), hash_of(&compiled(by_hand).doc));
+        // One arm and an else: the else guarded by the arm's own comparison, negated.
+        let d = compiled("x = 1\ny = match x { 1 -> \"one\", else -> \"other\" }\n").doc;
+        assert_eq!(&leaves(&d)[1..], ["const", "equals", "const", "guard", "not", "const", "guard", "coalesce"]);
+    }
+
+    /// Every row of match-L4.md §3, through the lowered unit.
+    #[test]
+    fn a_match_chooses_one_arm_and_its_absence_is_the_matchs() {
+        use holon_core::Value::{Boolean, Number, Text};
+        let t = |s: &str| Some(Text(s.into()));
+        let n = |x: f64| Some(Number(x));
+        assert_eq!(picked(PICK, None, n(2.0)), None, "the subject absent: absent, the else too");
+        assert_eq!(picked(PICK, t("inv"), n(2.0)), n(0.5), "the arm chosen, present");
+        assert_eq!(picked(PICK, t("inv"), n(0.0)), None, "the arm chosen, absent: absent, not the else");
+        assert_eq!(picked(PICK, t("neg"), n(0.0)), n(0.0), "another arm absent: no effect");
+        assert_eq!(picked(PICK, t("minus"), n(3.0)), n(-3.0), "a second pattern of an arm");
+        assert_eq!(picked(PICK, t("zzz"), None), n(99.0), "no pattern matched: the else, whatever the arms");
+        let no_else = PICK.replace("    else -> 99\n", "");
+        assert_eq!(picked(&no_else, t("zzz"), n(1.0)), None, "no pattern matched, no else: absent");
+        let absent_else = PICK.replace("else -> 99", "else -> 2 / v");
+        assert_eq!(picked(&absent_else, t("zzz"), n(0.0)), None, "the else chosen, absent: absent");
+        // `equals` doesn't coerce: a number is never a text.
+        let kinds = "flow f\n\nholon pick(op, v) -> r {\n  r = match op {\n    1 -> \"one\"\n    \"1\" -> \"text one\"\n    true -> \"yes\"\n    else -> v\n  }\n}\n\nstate.x = pick(1, 1)\n";
+        assert_eq!(picked(kinds, n(1.0), None), t("one"));
+        assert_eq!(picked(kinds, t("1"), None), t("text one"));
+        assert_eq!(picked(kinds, Some(Boolean(true)), None), t("yes"));
+        assert_eq!(picked(kinds, Some(Boolean(false)), None), None);
+    }
+
+    #[test]
+    fn a_match_pattern_is_a_literal_matched_once() {
+        let literal = "a pattern is a literal (a number, a text, true or false); to test a condition, use `if`";
+        assert_eq!(error("x = 1\ny = match x { x -> 1 }\n"), (2, 15, literal.into()));
+        assert_eq!(error("x = 1\ny = match x { 1 -> 1, x > 2 -> 2 }\n"), (2, 23, literal.into()));
+        assert_eq!(error("x = 1\ny = match x { \"{x}\" -> 1 }\n"), (2, 15, literal.into()));
+        assert_eq!(error("x = 1\ny = match x { [1] -> 1 }\n"), (2, 15, literal.into()));
+        assert_eq!(error("x = 1\ny = match x { \"add\" -> 1, \"add\" -> 2 }\n"), (2, 27, "\"add\" is matched twice; the second arm could never be chosen".into()));
+        assert_eq!(error("x = 1\ny = match x { 1, 2 -> 1, 1.0 -> 2 }\n"), (2, 26, "1.0 is matched twice; the second arm could never be chosen".into()));
+        assert_eq!(error("match = 1\n").2, "expected an expression, found \"=\"");
     }
 }
