@@ -1000,7 +1000,11 @@ step that changed core is done; none changes the host, the server or the documen
    positions to UTF-16. Highlighting is a TextMate grammar. Tests: each answer on the samples,
    the protocol on framed messages, the grammar on every sample through VS Code's own TextMate
    engine, and an integration test in a real VS Code that sees a mistake, completes, fixes it,
-   hovers and formats. Each release carries the extension as `holon-vscode.vsix`.
+   hovers and formats. Each release carries the extension as `holon-vscode.vsix`. The web editor
+   has the same answers in a text pane beside the canvas (designed in
+   `docs/L4s/text-pane-L4.md`): the last edit wins, what is typed drives the canvas once it
+   compiles with the nodes it didn't touch kept in place, and a canvas change writes the text
+   again. `fmt` keeps a text's comments, as §4 says.
 
 Dependencies: 3 needs 1 and 2; 4 needs 3 (the golden test is what makes the printer checkable);
 5 and 6 need 4; 7 and 8 need 5.
