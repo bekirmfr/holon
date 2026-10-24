@@ -63,12 +63,14 @@ import { DeployedPage, FlowsPage, type AppPage, type PageTab } from "./Pages";
 import { useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { buildSample, samples, type Sample } from "./samples";
-import { blankTab, freshTab, metaSetter, savedKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
+import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccountMenu, AuthGate, type Me } from "./AuthGate";
 import { AdminPage } from "./AdminPage";
 import { HomePage } from "./HomePage";
 import { compileHolon, printHolon, sourceLineOf } from "./holonText";
+import { TextPane } from "./TextPane";
+import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
 import { defaultHome, readPrefs, type Prefs } from "./home";
 import { inspectorRun, useViewMode, ViewModePanes } from "./useViewMode";
@@ -201,10 +203,12 @@ function Canvas({
   // The canvas as of this render, for callbacks that read it without depending on it.
   const live = useRef({ nodes, edges });
   live.current = { nodes, edges };
+  // The text a save keeps with the flow (the pane's, as typed, while it stands for the canvas).
+  const source = useMemo(() => sourceToSave(flow.text, syncKeyOf(nodes, edges, settings, flowName)), [flow.text, nodes, edges, settings, flowName]);
   const dirty = useMemo(
     // While viewing, what counts is whether the flow set aside had unsaved changes.
-    () => (viewing ? (beforeView.current?.dirty ?? false) : savedKeyOf(nodes, edges, settings) !== savedKey),
-    [nodes, edges, settings, savedKey, viewing],
+    () => (viewing ? (beforeView.current?.dirty ?? false) : savedKeyOf(nodes, edges, settings, source) !== savedKey),
+    [nodes, edges, settings, source, savedKey, viewing],
   );
 
   // ── Tabs: one per open flow (useTabs.ts) ──────────────────────────────────────────────────
@@ -292,6 +296,7 @@ function Canvas({
     edges,
     live,
     settings,
+    source,
     getViewport,
     ev,
     dialog,
@@ -658,6 +663,9 @@ function Canvas({
 
   const decoratedEdges = viewing ? view.viewEdges : edges;
 
+  // The flow's text beside the canvas (useTextPane.ts, TextPane.tsx).
+  const textPane = useTextPane({ flow, setFlow, nodes, edges, canvasKey, live, setNodes, setEdges, ev, idRef, viewing: viewing !== null });
+
   // How many placed nodes are currently selected — React Flow's own selection state
   // (shift-click / drag-box), already live for delete, now also gating the "group" button
   // (P4.3.1). Cheap enough over a canvas-sized node list not to need memoizing.
@@ -711,7 +719,8 @@ function Canvas({
       />
     )}
     <div
-      className={["hl-canvas", viewing ? "hl-canvas--viewing" : "", inspectorOpen ? "" : "hl-canvas--inspector-closed"].filter(Boolean).join(" ")}
+      className={["hl-canvas", viewing ? "hl-canvas--viewing" : "", inspectorOpen ? "" : "hl-canvas--inspector-closed", textPane.open ? "hl-canvas--text" : ""].filter(Boolean).join(" ")}
+      style={textPane.open ? ({ "--text-width": `${textPane.pane.width}px` } as CSSProperties) : undefined}
       onDrop={onDrop}
       onDragOver={onDragOver}
     >
@@ -774,6 +783,8 @@ function Canvas({
               }
               saveMsg={saveMsg}
               error={page === "canvas" ? deployError || listError : ""}
+              textOpen={textPane.open}
+              onToggleText={textPane.toggle}
             />
           </Panel>
           {!viewing && (
@@ -809,6 +820,7 @@ function Canvas({
         )}
         {compositeOverlay.render(flowName ?? "untitled")}
       </div>
+      {textPane.open && <TextPane key={activeId} {...textPane.pane} />}
       <Inspector node={inspected} unit={inspectedUnit} run={inspectorRun(view, flow)} source={inspectedSource} open={inspectorOpen} onOpen={onInspectorOpen} />
       <ViewModePanes view={view} flow={flow} nodes={nodes} />
       {/* The Flows / Deployed pages are overlays ON TOP of the always-mounted canvas — React

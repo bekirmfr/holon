@@ -961,12 +961,120 @@ pub fn describe_item(item: &str) -> String {
     holon_author::describe::describe_item(item)
 }
 
-/// `.holon` text, in either form, as a flow document: `{name, doc, names}` (each top-level
-/// node's name in the text, by id). Throws the first mistake, as `line:col: message`.
+/// `.holon` text, in either form, as a flow document: `{name, doc, names, lines}` (each
+/// top-level node's name in the text, and the line it is written on, by id). Throws the first
+/// mistake, as `line:col: message`.
 #[wasm_bindgen]
 pub fn compile_holon(source: &str) -> Result<JsValue, JsError> {
     let compiled = lang::compile(source).map_err(|e| JsError::new(&e.to_string()))?;
-    to_js(&serde_json::json!({ "name": compiled.name, "doc": compiled.doc, "names": compiled.names }))
+    let lines: std::collections::BTreeMap<&String, u32> = compiled.spans.iter().map(|(id, s)| (id, s.start.line)).collect();
+    to_js(&serde_json::json!({ "name": compiled.name, "doc": compiled.doc, "names": compiled.names, "lines": lines }))
+}
+
+// ── The text pane (docs/L4s/text-pane-L4.md) ────────────────────────────────────────────────
+// What an editor asks of a text (holon-author's editing.rs, the answers `holon lsp` gives), with
+// positions as the editor counts them: UTF-16 offsets into the whole text. The language counts
+// columns in characters, so each position is converted here against the text.
+
+/// A text's lines, for converting between the language's positions and UTF-16 offsets.
+struct Offsets<'a> {
+    lines: Vec<&'a str>,
+    /// Each line's first offset.
+    starts: Vec<usize>,
+}
+
+impl<'a> Offsets<'a> {
+    fn new(source: &'a str) -> Self {
+        let lines: Vec<&str> = source.split('\n').collect();
+        let mut starts = Vec::with_capacity(lines.len());
+        let mut at = 0;
+        for line in &lines {
+            starts.push(at);
+            at += line.encode_utf16().count() + 1;
+        }
+        Offsets { lines, starts }
+    }
+
+    /// The offset of a 1-based line and column (in characters); past a line's end is its end.
+    fn offset(&self, p: lang::ast::Pos) -> usize {
+        let l = (p.line.max(1) as usize - 1).min(self.lines.len() - 1);
+        let before: usize = self.lines[l].chars().take(p.col.max(1) as usize - 1).map(char::len_utf16).sum();
+        self.starts[l] + before
+    }
+
+    /// The 1-based line and column (in characters) of an offset.
+    fn pos(&self, offset: usize) -> lang::ast::Pos {
+        let l = self.starts.partition_point(|s| *s <= offset).saturating_sub(1);
+        let mut left = offset - self.starts[l];
+        let mut col = 1;
+        for c in self.lines[l].chars() {
+            if left < c.len_utf16() {
+                break;
+            }
+            left -= c.len_utf16();
+            col += 1;
+        }
+        lang::ast::Pos { line: l as u32 + 1, col }
+    }
+}
+
+/// The text's mistakes, as `holon check` says them: `[{from, to, message}]`.
+#[wasm_bindgen]
+pub fn holon_mistakes(source: &str) -> Result<JsValue, JsError> {
+    let at = Offsets::new(source);
+    let found: Vec<_> = holon_author::editing::mistakes(source)
+        .into_iter()
+        .map(|m| serde_json::json!({ "from": at.offset(m.span.start), "to": at.offset(m.span.end), "message": m.message }))
+        .collect();
+    to_js(&found)
+}
+
+/// What the word at `offset` is: `{from, to, text}` (markdown), or null.
+#[wasm_bindgen]
+pub fn holon_hover(source: &str, offset: usize) -> Result<JsValue, JsError> {
+    let at = Offsets::new(source);
+    let said = holon_author::editing::hover(source, at.pos(offset)).map(|h| serde_json::json!({ "from": at.offset(h.span.start), "to": at.offset(h.span.end), "text": h.text }));
+    to_js(&said)
+}
+
+/// What may be written at `offset`, starting with the word typed before it: `[{label, kind,
+/// detail, doc?}]`, `kind` one of keyword, function, variable, module, member.
+#[wasm_bindgen]
+pub fn holon_complete(source: &str, offset: usize) -> Result<JsValue, JsError> {
+    use holon_author::editing::Kind;
+    let at = Offsets::new(source);
+    let offered: Vec<_> = holon_author::editing::complete(source, at.pos(offset))
+        .into_iter()
+        .map(|c| {
+            let kind = match c.kind {
+                Kind::Keyword => "keyword",
+                Kind::Function => "function",
+                Kind::Variable => "variable",
+                Kind::Module => "module",
+                Kind::Member => "member",
+            };
+            serde_json::json!({ "label": c.label, "kind": kind, "detail": c.detail, "doc": c.doc })
+        })
+        .collect();
+    to_js(&offered)
+}
+
+/// The text as `holon fmt` writes it. Throws why it can't be (a mistake).
+#[wasm_bindgen]
+pub fn holon_format(source: &str) -> Result<String, JsError> {
+    holon_author::editing::format(source).map_err(|e| JsError::new(&e))
+}
+
+/// The text's colours: `[{from, to, class}]`, in order, `class` the lowercase name of
+/// editing.rs's `Class` (keyword, noun, function, definition, …).
+#[wasm_bindgen]
+pub fn holon_highlight(source: &str) -> Result<JsValue, JsError> {
+    let at = Offsets::new(source);
+    let coloured: Vec<_> = holon_author::editing::highlight(source)
+        .into_iter()
+        .map(|h| serde_json::json!({ "from": at.offset(h.span.start), "to": at.offset(h.span.end), "class": format!("{:?}", h.class).to_lowercase() }))
+        .collect();
+    to_js(&coloured)
 }
 
 /// The sample flows, one per capability, in the order the flows page lists them: `[{name, title,
@@ -1411,6 +1519,25 @@ mod native_tests {
     fn encap_error_structure_native() { check_encap_error_structure(); }
     #[test]
     fn validation_error_structure_native() { check_validation_error_structure(); }
+
+    /// A line with characters of two UTF-16 units (an emoji) and one unit past the BMP's
+    /// two-byte range (`→`): offsets and the language's columns convert both ways.
+    #[test]
+    fn text_offsets_are_utf16() {
+        use lang::ast::Pos;
+        let text = "flow f\nx = \"😀→\" + y\r\nz";
+        let at = Offsets::new(text);
+        let p = |line, col| Pos { line, col };
+        assert_eq!(at.offset(p(1, 1)), 0);
+        assert_eq!(at.offset(p(2, 1)), 7);
+        // `"` is col 5, the emoji col 6 (2 units), `→` col 7, the closing quote col 8.
+        assert_eq!(at.offset(p(2, 7)), 7 + 5 + 2);
+        assert_eq!(at.offset(p(2, 8)), 7 + 5 + 3);
+        assert_eq!(at.offset(p(2, 99)), 7 + "x = \"😀→\" + y\r".encode_utf16().count(), "past the end is the end");
+        for (line, col) in [(1, 1), (1, 4), (2, 6), (2, 7), (2, 8), (2, 12), (3, 1), (3, 2)] {
+            assert_eq!(at.pos(at.offset(p(line, col))), p(line, col), "{line}:{col}");
+        }
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]

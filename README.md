@@ -143,6 +143,12 @@ the members: `posts.` → get, put, delete, list), and Format Document as `holon
 each release carries it as `holon-vscode.vsix`, and its README says how to install it; any editor with a language client can start `holon lsp` itself. Design:
 `docs/L4s/language-server-L4.md`.
 
+In the web editor, **text** in a flow's toolbar opens its text beside the canvas, with the same
+mistakes, hover, completion and Format. Both are editors and the last edit wins: what you type
+drives the canvas once it compiles (nodes you didn't touch stay where they were), and a change on
+the canvas writes the text again. The text as you typed it, comments and all, is saved with the
+flow. Design: `docs/L4s/text-pane-L4.md`.
+
 An agent writes, deploys and reads flows through `holon mcp`, a Model Context Protocol server
 its host starts (for Claude Code: `claude mcp add holon -- holon mcp`). It reaches the
 `holon serve` you run on this machine, as `holon export` does. Its tools:

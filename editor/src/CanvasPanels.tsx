@@ -29,6 +29,7 @@ const historyBtn = (enabled: boolean): CSSProperties => ({
   borderRadius: 3,
   cursor: enabled ? "pointer" : "default",
   opacity: enabled ? 1 : 0.4,
+  whiteSpace: "nowrap",
 });
 
 const KIND_COLOR = { deployed: "#9ad29f", saved: "#9fb4d4", draft: "#e0c36f" } as const;
@@ -157,6 +158,8 @@ export function FlowToolbar({
   deployBar,
   saveMsg,
   error,
+  textOpen,
+  onToggleText,
 }: {
   histVersion: number;
   mode: Mode;
@@ -176,6 +179,9 @@ export function FlowToolbar({
   deployBar: ReactNode;
   saveMsg: string;
   error: string;
+  /** Whether the flow's text is shown beside the canvas (TextPane.tsx). */
+  textOpen: boolean;
+  onToggleText: () => void;
 }) {
   return (
     // histVersion is what makes the undo/redo disabled state live — history itself is a ref
@@ -186,6 +192,9 @@ export function FlowToolbar({
         {dirty && <span title="unsaved changes"> •</span>}
       </span>
       <ModeSwitch mode={mode} canView={canView} onMode={onMode} />
+      <button onClick={onToggleText} aria-pressed={textOpen} title={textOpen ? "close the flow's text" : "the flow as text, beside the canvas"} style={historyBtn(true)}>
+        text {textOpen ? "on" : "off"}
+      </button>
       {mode === "view" ? (
         <>
           <span style={{ color: "#7e8ea8", fontSize: 11 }}>deployed · read only</span>

@@ -26,6 +26,7 @@ export function useSavedFlows({
   edges,
   live,
   settings,
+  source,
   getViewport,
   ev,
   dialog,
@@ -44,6 +45,8 @@ export function useSavedFlows({
   edges: Edge[];
   live: MutableRefObject<{ nodes: PrimitiveNodeType[]; edges: Edge[] }>;
   settings: FlowSettings;
+  /** The text kept with the flow (the pane's, as typed), or null. */
+  source: string | null;
   getViewport: () => Viewport;
   ev: Evaluator;
   dialog: Dialogs;
@@ -111,9 +114,10 @@ export function useSavedFlows({
       viewport: getViewport(),
       ...carried,
       server: settings,
+      ...(source !== null ? { source } : {}),
     };
     if (!(await placedElsewhereOk(name, doc))) return;
-    const key = savedKeyOf(nodes, edges, settings);
+    const key = savedKeyOf(nodes, edges, settings, source);
     saveFlow(name, doc)
       .then((entry) => {
         setSavedKey(key);
@@ -121,7 +125,7 @@ export function useSavedFlows({
         setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
       })
       .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
-  }, [flowName, nodes, edges, getViewport, ev, settings, dialog, placedElsewhereOk, setFlowName, setSaveMsg, setSavedKey, setSavedOnServer]);
+  }, [flowName, nodes, edges, getViewport, ev, settings, source, dialog, placedElsewhereOk, setFlowName, setSaveMsg, setSavedKey, setSavedOnServer]);
 
   // Place the newest saved version of a holon over the one placed from an older save: same place,
   // and its wires kept to the ports the new version still has.

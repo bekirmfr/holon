@@ -349,6 +349,286 @@ pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
     offered.into_iter().filter(|c| c.label.starts_with(partial) && seen.insert(c.label.clone())).collect()
 }
 
+/// What a stretch of a text is, for colouring it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    Comment,
+    Keyword,
+    /// `secret`, `state`, `now`, …: the outside world.
+    Noun,
+    /// A call, a holon's name, a `node`'s leaf.
+    Function,
+    /// What a statement or header names: a binding, the flow, a collection, a `node`.
+    Definition,
+    /// A route's request, the event it resumes.
+    Parameter,
+    /// After a `.`.
+    Member,
+    /// A named argument or field: `status:`.
+    Property,
+    /// A route's HTTP method.
+    Method,
+    /// A route's path.
+    Path,
+    String,
+    Escape,
+    /// The braces of a string's `{…}` part (what is inside is coloured as code).
+    Interpolation,
+    Number,
+    Boolean,
+    Operator,
+}
+
+/// One coloured stretch: within one line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Highlight {
+    pub span: Span,
+    pub class: Class,
+}
+
+/// The words an expression may hold that are the language's own.
+const EXPRESSION_KEYWORDS: &[&str] = &["respond", "delete", "await", "if", "then", "else", "when", "fn"];
+const HEADERS: &[&str] = &["port", "every", "interval", "browsers", "optional"];
+const OPERATORS: &[&str] = &["->", "..", "??", "&&", "||", "==", "!=", "<=", ">=", "+", "-", "*", "/", "<", ">", "!", "="];
+
+struct Colourer {
+    chars: Vec<char>,
+    line: u32,
+    out: Vec<Highlight>,
+    /// The last thing read was a `.`: a word after it is a member.
+    dot: bool,
+}
+
+impl Colourer {
+    fn mark(&mut self, from: usize, to: usize, class: Class) {
+        if to > from {
+            let at = |i: usize| Pos { line: self.line, col: i as u32 + 1 };
+            self.out.push(Highlight { span: Span { start: at(from), end: at(to) }, class });
+        }
+    }
+
+    fn skip_space(&self, mut i: usize) -> usize {
+        while self.chars.get(i).is_some_and(|c| c.is_whitespace()) {
+            i += 1;
+        }
+        i
+    }
+
+    fn word_end(&self, mut i: usize, also: &[char]) -> usize {
+        while self.chars.get(i).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_' || also.contains(c)) {
+            i += 1;
+        }
+        i
+    }
+
+    fn word(&self, from: usize, to: usize) -> String {
+        self.chars[from..to].iter().collect()
+    }
+
+    /// The next word after spaces, coloured `class`; where it ends.
+    fn next_word(&mut self, i: usize, class: Class, also: &[char]) -> usize {
+        let from = self.skip_space(i);
+        let to = self.word_end(from, also);
+        self.mark(from, to, class);
+        to
+    }
+
+    /// A line: its header or statement form first (what it names), then the rest as code.
+    fn line(&mut self) {
+        let start = self.skip_space(0);
+        let end = self.word_end(start, &[]);
+        let first = self.word(start, end);
+        let mut i = end;
+        match first.as_str() {
+            "flow" => {
+                self.mark(start, end, Class::Keyword);
+                i = self.next_word(i, Class::Definition, &['-']);
+            }
+            "collection" => {
+                self.mark(start, end, Class::Keyword);
+                i = self.next_word(i, Class::Definition, &[]);
+            }
+            "holon" => {
+                self.mark(start, end, Class::Keyword);
+                i = self.next_word(i, Class::Function, &[]);
+            }
+            "node" => {
+                self.mark(start, end, Class::Keyword);
+                i = self.next_word(i, Class::Definition, &[]);
+                let eq = self.skip_space(i);
+                if self.chars.get(eq) == Some(&'=') {
+                    self.mark(eq, eq + 1, Class::Operator);
+                    i = self.next_word(eq + 1, Class::Function, &[]);
+                }
+            }
+            "route" => {
+                self.mark(start, end, Class::Keyword);
+                i = self.next_word(i, Class::Method, &[]);
+                let path = self.skip_space(i);
+                let mut to = path;
+                while self.chars.get(to).is_some_and(|c| !c.is_whitespace() && *c != '(') {
+                    to += 1;
+                }
+                self.mark(path, to, Class::Path);
+                i = to;
+                let open = self.skip_space(i);
+                if self.chars.get(open) == Some(&'(') {
+                    i = self.next_word(open + 1, Class::Parameter, &[]);
+                    let close = self.skip_space(i);
+                    if self.chars.get(close) == Some(&')') {
+                        i = close + 1;
+                        let kw = self.skip_space(i);
+                        let kw_end = self.word_end(kw, &[]);
+                        if self.word(kw, kw_end) == "resumes" {
+                            self.mark(kw, kw_end, Class::Keyword);
+                            i = self.next_word(kw_end, Class::Parameter, &[]);
+                        }
+                    }
+                }
+            }
+            h if HEADERS.contains(&h) => self.mark(start, end, Class::Keyword),
+            w if !w.is_empty() && !w.starts_with(|c: char| c.is_ascii_digit()) => {
+                // `name = …` (not `==`): a binding.
+                let eq = self.skip_space(end);
+                if self.chars.get(eq) == Some(&'=') && self.chars.get(eq + 1) != Some(&'=') && !NOUNS.iter().any(|(n, _)| *n == w) && !EXPRESSION_KEYWORDS.contains(&w) {
+                    self.mark(start, end, Class::Definition);
+                } else {
+                    i = start;
+                }
+            }
+            _ => i = start,
+        }
+        self.code(i, false);
+    }
+
+    /// Code from `i` to the line's end, or (`inside`, in a string's `{…}`) to the `}` that closes
+    /// it: where it stopped.
+    fn code(&mut self, mut i: usize, inside: bool) -> usize {
+        let mut depth = 0;
+        while let Some(&c) = self.chars.get(i) {
+            match c {
+                '#' => {
+                    self.mark(i, self.chars.len(), Class::Comment);
+                    return self.chars.len();
+                }
+                '"' => {
+                    i = self.string(i);
+                    self.dot = false;
+                }
+                '{' if inside => {
+                    depth += 1;
+                    i += 1;
+                }
+                '}' if inside => {
+                    if depth == 0 {
+                        return i;
+                    }
+                    depth -= 1;
+                    i += 1;
+                }
+                c if c.is_whitespace() => i += 1,
+                c if c.is_ascii_digit() => {
+                    let mut to = self.word_end(i, &[]);
+                    if self.chars.get(to) == Some(&'.') && self.chars.get(to + 1).is_some_and(|c| c.is_ascii_digit()) {
+                        to = self.word_end(to + 1, &[]);
+                    }
+                    self.mark(i, to, Class::Number);
+                    self.dot = false;
+                    i = to;
+                }
+                c if c.is_ascii_alphabetic() || c == '_' => {
+                    let to = self.word_end(i, &[]);
+                    let w = self.word(i, to);
+                    let next = self.skip_space(to);
+                    let class = if self.dot {
+                        Some(Class::Member)
+                    } else if EXPRESSION_KEYWORDS.contains(&w.as_str()) {
+                        Some(Class::Keyword)
+                    } else if w == "true" || w == "false" {
+                        Some(Class::Boolean)
+                    } else if NOUNS.iter().any(|(n, _)| *n == w) {
+                        Some(Class::Noun)
+                    } else if self.chars.get(next) == Some(&'(') {
+                        Some(Class::Function)
+                    } else if self.chars.get(next) == Some(&':') && self.chars.get(next + 1) != Some(&':') {
+                        Some(Class::Property)
+                    } else {
+                        None
+                    };
+                    if let Some(class) = class {
+                        self.mark(i, to, class);
+                    }
+                    self.dot = false;
+                    i = to;
+                }
+                _ => {
+                    let rest: String = self.chars[i..self.chars.len().min(i + 2)].iter().collect();
+                    match OPERATORS.iter().find(|op| rest.starts_with(**op)) {
+                        Some(op) => {
+                            self.mark(i, i + op.len(), Class::Operator);
+                            self.dot = false;
+                            i += op.len();
+                        }
+                        None => {
+                            self.dot = c == '.';
+                            i += 1;
+                        }
+                    }
+                }
+            }
+        }
+        i
+    }
+
+    /// A string from its opening quote, with its escapes and `{…}` parts: where it ends (the
+    /// line's end, if it isn't closed yet).
+    fn string(&mut self, open: usize) -> usize {
+        let mut from = open;
+        let mut i = open + 1;
+        while let Some(&c) = self.chars.get(i) {
+            match c {
+                '"' => {
+                    self.mark(from, i + 1, Class::String);
+                    return i + 1;
+                }
+                '\\' => {
+                    self.mark(from, i, Class::String);
+                    let to = (i + 2).min(self.chars.len());
+                    self.mark(i, to, Class::Escape);
+                    i = to;
+                    from = i;
+                }
+                '{' => {
+                    self.mark(from, i, Class::String);
+                    self.mark(i, i + 1, Class::Interpolation);
+                    self.dot = false;
+                    i = self.code(i + 1, true);
+                    if self.chars.get(i) == Some(&'}') {
+                        self.mark(i, i + 1, Class::Interpolation);
+                        i += 1;
+                    }
+                    from = i;
+                }
+                _ => i += 1,
+            }
+        }
+        self.mark(from, i, Class::String);
+        i
+    }
+}
+
+/// The text's colours, line by line, as the language reads its words. Unlike the lexer it never
+/// stops: a string not yet closed, or a line half typed, is coloured as far as it goes.
+pub fn highlight(source: &str) -> Vec<Highlight> {
+    let mut out = vec![];
+    for (l, line) in source.split('\n').enumerate() {
+        let mut c = Colourer { chars: line.strip_suffix('\r').unwrap_or(line).chars().collect(), line: l as u32 + 1, out: vec![], dot: false };
+        c.line();
+        out.append(&mut c.out);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +692,59 @@ mod tests {
         assert!(flow.contains("POST /slugs") && flow.contains("it may:") && flow.contains("receive requests"), "the flow: {flow}");
         assert_eq!(hover(SLUGS, at(SLUGS, "\"-\"", 0, 1)), None, "inside a string");
         assert_eq!(hover(SLUGS, at(SLUGS, "published.receipt", 0, 10)), None, "a field of a value");
+    }
+
+    /// Each coloured stretch of `text` as `(its text, its class)`.
+    fn coloured(text: &str) -> Vec<(String, Class)> {
+        let lines: Vec<Vec<char>> = text.split('\n').map(|l| l.chars().collect()).collect();
+        highlight(text)
+            .into_iter()
+            .map(|h| {
+                assert_eq!(h.span.start.line, h.span.end.line, "within a line");
+                let line = &lines[h.span.start.line as usize - 1];
+                (line[h.span.start.col as usize - 1..h.span.end.col as usize - 1].iter().collect(), h.class)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_text_is_coloured_as_the_language_reads_it() {
+        use Class::*;
+        let has = |text: &str, word: &str, class: Class| {
+            let c = coloured(text);
+            assert!(c.contains(&(word.to_string(), class)), "{word} as {class:?} in {c:?}");
+        };
+        let text = "# hi\nflow hello-api\nport 8200\ncollection notes\n\nroute GET /hello/:name (req) {\n  greeting = \"Hi, {req.params.name}\\n\"\n  notes[req.params.name] = now\n  respond lowercase(greeting), status: 201\n}\n";
+        has(text, "# hi", Comment);
+        has(text, "flow", Keyword);
+        has(text, "hello-api", Definition);
+        has(text, "port", Keyword);
+        has(text, "8200", Number);
+        has(text, "notes", Definition);
+        has(text, "GET", Method);
+        has(text, "/hello/:name", Path);
+        has(text, "req", Parameter);
+        has(text, "greeting", Definition);
+        has(text, "\"Hi, ", String);
+        has(text, "{", Interpolation);
+        has(text, "params", Member);
+        has(text, "\\n", Escape);
+        has(text, "now", Noun);
+        has(text, "respond", Keyword);
+        has(text, "lowercase", Function);
+        has(text, "status", Property);
+        has(text, "=", Operator);
+        // Half typed: a string not closed is a string to the line's end, and what follows is read.
+        let c = coloured("x = \"not closed\ny = lowercase(x)\n");
+        assert!(c.contains(&("\"not closed".to_string(), String)), "{c:?}");
+        assert!(c.contains(&("lowercase".to_string(), Function)), "{c:?}");
+        // Every sample: in order, never overlapping.
+        for s in samples::samples() {
+            let h = highlight(s.text);
+            for w in h.windows(2) {
+                assert!((w[0].span.end.line, w[0].span.end.col) <= (w[1].span.start.line, w[1].span.start.col), "{}: {:?}", s.name, w);
+            }
+        }
     }
 
     /// The labels offered with the cursor where `|` is in `text` (the `|` taken out).

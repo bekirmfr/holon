@@ -139,6 +139,49 @@ body {
   writing-mode: vertical-rl; font-size: 11px; letter-spacing: 0.06em; padding: 10px 0; width: 100%;
 }
 .hl-view__bottom { grid-column: 1 / -1; grid-row: 2; border-top: 1px solid var(--line); }
+
+/* The flow's text, between the canvas and the Inspector (TextPane.tsx). */
+.hl-canvas--text { grid-template-columns: minmax(0, 1fr) var(--text-width, 420px) min(340px, 30%); }
+.hl-canvas--text.hl-canvas--inspector-closed { grid-template-columns: minmax(0, 1fr) var(--text-width, 420px) 28px; }
+.hl-canvas--text .hl-inspector { grid-column: 3; }
+.hl-text {
+  grid-column: 2; grid-row: 1; position: relative; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--bg);
+}
+.hl-text__edge { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; }
+.hl-text__edge:hover { background: #6fd3e033; }
+.hl-text__head {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+  background: var(--panel-2); border-bottom: 1px solid var(--line-soft); font-size: 12px;
+}
+.hl-text__title { color: var(--ink); letter-spacing: 0.04em; }
+.hl-text__note { color: var(--ink-dim); font-size: 11px; }
+.hl-text__button {
+  font: inherit; font-size: 11px; color: #9fb4d4; background: transparent;
+  border: 1px solid var(--line-soft); border-radius: 3px; padding: 1px 8px; cursor: pointer;
+}
+.hl-text__button:hover { color: var(--ink); }
+.hl-text__status { padding: 5px 10px; font-size: 11.5px; color: #e0c36f; background: #2a2a1488; border-bottom: 1px solid var(--line-soft); }
+.hl-text__editor { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.hl-text__picked { background: #6fd3e01a; box-shadow: inset 2px 0 0 #6fd3e0; }
+.hl-text__said { max-width: 460px; padding: 6px 10px; font-size: 12px; line-height: 1.45; }
+.hl-text__said p { margin: 4px 0; }
+.hl-text__said pre { margin: 4px 0; font-family: var(--mono); font-size: 11.5px; color: #82aaff; white-space: pre-wrap; }
+.hl-text__said code { font-family: var(--mono); font-size: 11.5px; color: #c3e88d; }
+/* The language's colours (editing.rs's classes). */
+.hl-tok-comment { color: #6b7d99; font-style: italic; }
+.hl-tok-keyword { color: #c792ea; }
+.hl-tok-noun { color: #f0a35e; }
+.hl-tok-function { color: #82aaff; }
+.hl-tok-definition { color: #e8eef7; font-weight: 600; }
+.hl-tok-parameter { color: #f78c6c; }
+.hl-tok-member { color: #9fd8e8; }
+.hl-tok-property { color: #addb67; }
+.hl-tok-method { color: #ffcb6b; }
+.hl-tok-path, .hl-tok-string { color: #c3e88d; }
+.hl-tok-escape, .hl-tok-interpolation, .hl-tok-operator { color: #89ddff; }
+.hl-tok-number { color: #f78c6c; }
+.hl-tok-boolean { color: #ff9cac; }
 .hl-canvas__empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;

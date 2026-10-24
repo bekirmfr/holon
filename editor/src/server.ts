@@ -681,6 +681,9 @@ export type FlowDocument = {
   /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow
    *  deployed whole), so the log's timings land on the canvas (replay.ts's `nodeTimings`). */
   trace?: Record<string, string[]>;
+  /** The flow's text as its author typed it (the text pane), comments and all, when it stands
+   *  for this canvas; absent when it was never typed (the text is the canvas printed). */
+  source?: string;
 };
 
 /** One entry in `GET /flows` — name + freshness only, never the (possibly large) document. */

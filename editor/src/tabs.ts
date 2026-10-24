@@ -8,7 +8,7 @@ import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { FlowDocument, LogEntry } from "./server";
 import type { FlowSettings } from "./DeployBar";
 import { DEFAULT_SETTINGS } from "./DeployBar";
-import { documentKey } from "./flowDoc";
+import { documentKey, structuralKey } from "./flowDoc";
 import { restoreDocument } from "./docUnits";
 import type { Evaluator } from "./holon";
 import type { History } from "./history";
@@ -38,7 +38,29 @@ export type FlowMeta = {
   selectedRun: LogEntry | null;
   step: number | null;
   inspectNode: string | null;
+  /** The text pane (useTextPane.ts). */
+  text: TextState;
 };
+
+/** The flow's text as the pane holds it (docs/L4s/text-pane-L4.md). */
+export type TextState = {
+  open: boolean;
+  /** What the pane shows: as typed, or the canvas printed; null until it is first shown. */
+  value: string | null;
+  /** The canvas (syncKeyOf) that `synced` stands for: when the canvas's differs, it changed
+   *  since, and the text is written again from it. */
+  key: string;
+  /** The last text that compiled to that canvas (what `value` was, before any mistake since). */
+  synced: string | null;
+  /** Whether `value` is as the person typed it (kept and saved with the flow), not a printing. */
+  typed: boolean;
+};
+
+export const NO_TEXT: TextState = { open: false, value: null, key: "", synced: null, typed: false };
+
+/** What the text stands for: the canvas's structure, its settings and its name. */
+export const syncKeyOf = (ns: { id: string; data: unknown }[], es: Edge[], settings: FlowSettings, name: string | null) =>
+  `${structuralKey(ns, es)}\u0000${JSON.stringify(settings)}\u0000${name ?? ""}`;
 
 /** Everything one tab holds: its flow (`meta`), and the canvas plumbing kept outside React state.
  *  In view mode `nodes`/`edges` are the deployed flow's, and the flow as edited waits in
@@ -60,7 +82,21 @@ export type TabState = {
 export type Mode = "edit" | "view";
 
 /** What a save records, for unsaved-change tracking: the canvas plus the server draft. */
-export const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings) => documentKey(ns, es) + JSON.stringify(settings);
+export const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSettings, source: string | null = null) =>
+  documentKey(ns, es) + JSON.stringify(settings) + (source === null ? "" : `\u0000${source}`);
+
+/** The text a save keeps with the flow: the pane's, when it was typed and stands for the canvas. */
+export const sourceToSave = (t: TextState, key: string): string | null => (t.typed && t.key === key && t.value !== null && t.value === t.synced ? t.value : null);
+
+/** A document's deploy settings, with the defaults for what it doesn't say. */
+export function settingsOf(server: FlowDocument["server"]): FlowSettings {
+  return {
+    port: server?.port ?? DEFAULT_SETTINGS.port,
+    interval: server?.interval ?? DEFAULT_SETTINGS.interval,
+    ...(server?.requirements ? { requirements: server.requirements } : {}),
+    ...(server?.browsers ? { browsers: server.browsers } : {}),
+  };
+}
 
 /** A fresh flow's meta, in edit mode. */
 export function blankMeta(name: string | null): FlowMeta {
@@ -76,6 +112,7 @@ export function blankMeta(name: string | null): FlowMeta {
     selectedRun: null,
     step: null,
     inspectNode: null,
+    text: NO_TEXT,
   };
 }
 
@@ -149,19 +186,16 @@ export function tabFromDocument(name: string | null, doc: FlowDocument, saved: b
   if (missing.length > 0) {
     msg = `${missing.length} grouped node(s) can't be resolved (saved before composites were stored) — rebuild them, then save`;
   }
-  const server: FlowSettings = {
-    port: doc.server?.port ?? DEFAULT_SETTINGS.port,
-    interval: doc.server?.interval ?? DEFAULT_SETTINGS.interval,
-    ...(doc.server?.requirements ? { requirements: doc.server.requirements } : {}),
-    ...(doc.server?.browsers ? { browsers: doc.server.browsers } : {}),
-  };
+  const server = settingsOf(doc.server);
+  // The text it was saved with, as typed: it stands for this canvas.
+  const text: TextState = doc.source ? { open: false, value: doc.source, key: syncKeyOf(ns, es, server, name), synced: doc.source, typed: true } : NO_TEXT;
   // A loaded flow's node ids carry the counters they were minted with: the next id must
   // start past all of them, or a drop would mint a colliding one.
   let max = -1;
   for (const n of ns) for (const m of n.id.matchAll(/\d+/g)) max = Math.max(max, Number(m[0]));
   return {
     ...blankTab(name),
-    meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server) : "", saveMsg: msg },
+    meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server, doc.source ?? null) : "", saveMsg: msg, text },
     nodes: ns,
     edges: es,
     viewport: doc.viewport,
