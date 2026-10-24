@@ -110,6 +110,10 @@ test("the Inspector shows the selected node in edit mode: its ports, and its uni
   await page.locator(".react-flow__node", { hasText: "concat" }).click();
   await expect(inspector).toContainText("concat");
   await expect(inspector).toContainText("inputs");
+  // The node's line in the flow as text (docs/LANGUAGE.md): the whole respond, since concat is
+  // part of that expression.
+  await expect(inspector).toContainText("as text, line");
+  await expect(inspector.locator(".hl-inspector__source")).toHaveText('respond concat("Hello, ", req.params.name)');
   await inspector.getByRole("button", { name: "Unit", exact: true }).click();
   await expect(inspector).toContainText("Pure");
   // Folded to a strip, and opened again.

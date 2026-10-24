@@ -216,15 +216,26 @@ pub struct Printer<'s> {
     bindings: BTreeMap<String, String>,
     holon_names: HashMap<String, String>,
     taken: HashSet<String>,
-    blocks: Vec<String>,
+    blocks: Vec<Vec<Line>>,
     collections: BTreeSet<String>,
     holon_defs: HashSet<String>,
 }
+
+/// A line of the text, and the top-level nodes it stands for (a statement's nodes, a route
+/// header's request, a `node` line's node).
+type Line = (String, Vec<String>);
 
 /// A flow document as canonical text. `known` names composites the document doesn't;
 /// `bindings` names top-level nodes (a lowering's binding names, so a text keeps its names
 /// through `fmt`). The document's units are put into `store` first.
 pub fn print(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, known: &Names, bindings: &BTreeMap<String, String>) -> Result<String, String> {
+    print_lines(name, doc, store, known, bindings).map(|(text, _)| text)
+}
+
+/// [`print`], and the line (1-based) each top-level node is written on: an inline node's is its
+/// consumer's statement, a route's request node's is the route header. What view mode shows
+/// beside a selected node.
+pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, known: &Names, bindings: &BTreeMap<String, String>) -> Result<(String, BTreeMap<String, u32>), String> {
     let names = restore(doc, store, known);
     let mut p = Printer {
         store,
@@ -237,42 +248,69 @@ pub fn print(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, kn
         holon_defs: HashSet::new(),
     };
     p.collect_collections(&doc.nodes)?;
-    let mut out = Vec::new();
+    let mut out: Vec<Line> = Vec::new();
+    let header = |s: String| (s, vec![]);
     if let Some(name) = name.filter(|n| !n.is_empty()) {
-        out.push(format!("flow {}", if plain(name) || name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') { name.to_string() } else { quote(name) }));
+        out.push(header(format!("flow {}", if plain(name) || name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') { name.to_string() } else { quote(name) })));
     }
     if let Some(s) = &doc.server {
         if !s.port.is_empty() {
-            out.push(format!("port {}", param_value(&s.port)));
+            out.push(header(format!("port {}", param_value(&s.port))));
         }
         if !s.interval.is_empty() {
-            out.push(format!("every {}", duration(&s.interval)));
+            out.push(header(format!("every {}", duration(&s.interval))));
         }
         if let Some(b) = s.browsers.as_ref().filter(|b| !b.is_empty()) {
             let origins: Vec<&str> = b.split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).collect();
-            out.push(format!("browsers {}", origins.join(", ")));
+            out.push(header(format!("browsers {}", origins.join(", "))));
         }
         for o in s.requirements.as_ref().and_then(|r| r.optional.as_ref()).into_iter().flatten() {
-            out.push(format!("optional {}", consent(o)));
+            out.push(header(format!("optional {}", consent(o))));
         }
     }
     for c in &p.collections {
-        out.push(format!("collection {c}"));
+        out.push(header(format!("collection {c}")));
     }
     let body = p.flow_body(doc)?;
-    for h in &p.blocks {
-        out.push(String::new());
-        out.push(h.clone());
+    let blocks = std::mem::take(&mut p.blocks);
+    for block in blocks {
+        if !out.is_empty() {
+            out.push(header(String::new()));
+        }
+        out.extend(block);
     }
     if !body.is_empty() {
-        out.push(String::new());
+        if !out.is_empty() {
+            out.push(header(String::new()));
+        }
         out.extend(body);
     }
-    let mut text = out.join("\n");
-    while text.contains("\n\n\n") {
-        text = text.replace("\n\n\n", "\n\n");
+    let mut lines = BTreeMap::new();
+    for (k, (_, ids)) in out.iter().enumerate() {
+        for id in ids {
+            lines.entry(id.clone()).or_insert(k as u32 + 1);
+        }
     }
-    Ok(format!("{}\n", text.trim_end()))
+    let text: Vec<&str> = out.iter().map(|(l, _)| l.as_str()).collect();
+    Ok((format!("{}\n", text.join("\n").trim_end()), lines))
+}
+
+/// Whether the expression form can spell `nodes` as wired: every input a node needs is wired
+/// (the lowering refuses one left out), and nothing but a route's request has a hidden input.
+fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, request: Option<&str>) -> bool {
+    nodes.iter().all(|n| {
+        if request == Some(n.id.as_str()) {
+            return true;
+        }
+        if n.is_template("request") {
+            return false;
+        }
+        n.data.inputs.iter().all(|p| {
+            let optional = n.data.body == PlacedBody::Primitive
+                && matches!((n.data.name.as_str(), p.name.as_str()), ("http_request", "headers" | "body") | ("collection_list", "prefix" | "after"));
+            optional || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
+        })
+    })
 }
 
 /// A consent name as `optional` writes it: a secret by its name, else the server's form.
@@ -332,13 +370,16 @@ impl<'s> Printer<'s> {
 
     /// The top of the flow: its routes, a flow without routes as statements, and whatever the
     /// expression form can't spell in the wiring form.
-    fn flow_body(&mut self, doc: &FlowDocument) -> Result<Vec<String>, String> {
+    fn flow_body(&mut self, doc: &FlowDocument) -> Result<Vec<Line>, String> {
         let (routes, errors) = find_routes(&doc.nodes, &doc.edges);
         let has_request = doc.nodes.iter().any(|n| n.is_template("request"));
-        let mut lines = Vec::new();
+        let mut lines: Vec<Line> = Vec::new();
         if !has_request {
             // One block, the flow's own.
             let group = self.group_of(doc.nodes.iter().collect(), &doc.edges, vec![]);
+            if !expressible(&group.nodes, &group.incoming, None) {
+                return self.wiring_form(&group.nodes, doc.edges.iter(), "").map(|(l, _)| l);
+            }
             let mut body = Block::new(self, &group, "", None);
             lines.extend(body.statements()?);
             return Ok(lines);
@@ -346,39 +387,43 @@ impl<'s> Printer<'s> {
         let ids: Vec<&str> = doc.nodes.iter().map(|n| n.id.as_str()).collect();
         let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let mut routed: HashSet<String> = HashSet::new();
-        let mut first = true;
+        let mut stray_routes: Vec<String> = Vec::new();
         for r in &routes {
             let nodes: Vec<&Node> = r.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
             let request = by_id[r.request_id.as_str()];
             let group = self.group_of(nodes, &doc.edges, vec![]);
+            if !expressible(&group.nodes, &group.incoming, Some(&request.id)) {
+                stray_routes.push(format!("{} {}: an input isn't wired, so the route is written as nodes and wires", r.method, r.path));
+                continue;
+            }
             let req_name = self.request_name(request);
             let mut head = format!("route {} {} ({req_name})", r.method, r.path);
             if !r.resume.is_empty() {
                 head.push_str(&format!(" resumes {}", r.resume));
             }
             head.push_str(" {");
-            if !first {
-                lines.push(String::new());
+            if !lines.is_empty() {
+                lines.push((String::new(), vec![]));
             }
-            first = false;
-            lines.push(head);
+            lines.push((head, vec![request.id.clone()]));
             let mut body = Block::new(self, &group, "  ", Some((request.id.clone(), req_name)));
             lines.extend(body.statements()?);
-            lines.push("}".into());
+            lines.push(("}".into(), vec![]));
             routed.extend(r.node_ids.iter().cloned());
         }
-        // Groups that aren't routes: the wiring form, with the routes' errors said as comments.
+        // Groups that aren't routes written above: the wiring form, with why as comments.
         let stray: Vec<Vec<String>> = components(&ids, &doc.edges).into_iter().filter(|g| !g.iter().any(|id| routed.contains(id))).collect();
         if !stray.is_empty() {
             if !lines.is_empty() {
-                lines.push(String::new());
+                lines.push((String::new(), vec![]));
             }
-            for e in &errors {
-                lines.push(format!("# {e}"));
+            for e in errors.iter().chain(&stray_routes) {
+                lines.push((format!("# {e}"), vec![]));
             }
             let nodes: Vec<&Node> = stray.iter().flatten().map(|id| by_id[id.as_str()]).collect();
             let node_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-            lines.extend(self.wiring_form(&nodes, doc.edges.iter().filter(|w| node_ids.contains(w.source.as_str()) && node_ids.contains(w.target.as_str())), "")?);
+            let (wired, _) = self.wiring_form(&nodes, doc.edges.iter().filter(|w| node_ids.contains(w.source.as_str()) && node_ids.contains(w.target.as_str())), "")?;
+            lines.extend(wired);
         }
         Ok(lines)
     }
@@ -421,7 +466,7 @@ impl<'s> Printer<'s> {
     /// `holon name(inputs) -> (outputs) { body }`, the body as the expand view opens it: the
     /// unit's children as nodes, its edges as wires, its boundary as the block's inputs and output
     /// bindings. Holons inside are written first.
-    fn holon_block(&mut self, hash: &str, hname: &str, shown_in: &[String], shown_out: &[String]) -> Result<String, String> {
+    fn holon_block(&mut self, hash: &str, hname: &str, shown_in: &[String], shown_out: &[String]) -> Result<Vec<Line>, String> {
         let (_, unit) = resolve(self.store, hash)?;
         let unit = unit.clone();
         let ports = |ps: &[holon_core::Port]| ps.iter().map(WPort::from_core).collect::<Vec<_>>();
@@ -480,19 +525,37 @@ impl<'s> Printer<'s> {
             }
         }
         let group = Group::new(opened.children.iter().collect(), wires, bouts);
-        let inputs: HashSet<String> = ins.iter().map(|(n, _)| n.clone()).collect();
-        let mut block = Block::new(self, &group, "  ", None);
-        block.inputs = inputs;
-        let body = block.statements()?;
         let outs_text = if outs.len() == 1 { port(&outs[0]) } else { format!("({})", outs.iter().map(port).collect::<Vec<_>>().join(", ")) };
-        let mut lines = vec![format!("holon {hname}({}) -> {outs_text} {{", ins.iter().map(port).collect::<Vec<_>>().join(", "))];
-        lines.extend(body);
-        lines.push("}".into());
-        Ok(lines.join("\n"))
+        let mut lines: Vec<Line> = vec![(format!("holon {hname}({}) -> {outs_text} {{", ins.iter().map(port).collect::<Vec<_>>().join(", ")), vec![])];
+        if expressible(&group.nodes, &group.incoming, None) {
+            let inputs: HashSet<String> = ins.iter().map(|(n, _)| n.clone()).collect();
+            let mut block = Block::new(self, &group, "  ", None);
+            block.inputs = inputs;
+            lines.extend(block.statements()?);
+        } else {
+            // The wiring form inside: nodes, wires, and the boundary as `in.x -> n.p`, `n.p -> out.y`.
+            let (wired, node_names) = self.wiring_form(&group.nodes, opened.wires.iter(), "  ")?;
+            lines.extend(wired);
+            for ((to, input), src) in &group.incoming {
+                if let Src::In(port) = src
+                    && let Some(n) = node_names.get(to)
+                {
+                    lines.push((format!("  in.{port} -> {n}.{}", if plain(input) { input.clone() } else { quote(input) }), vec![]));
+                }
+            }
+            for (node, output, port) in &group.outs {
+                if let Some(n) = node_names.get(node) {
+                    lines.push((format!("  {n}.{} -> out.{port}", if plain(output) { output.clone() } else { quote(output) }), vec![]));
+                }
+            }
+        }
+        lines.push(("}".into(), vec![]));
+        Ok(lines)
     }
 
-    /// Nodes and wires as the wiring form writes them (no positions): the fallback.
-    fn wiring_form<'w>(&mut self, nodes: &[&Node], wires: impl Iterator<Item = &'w crate::canvas::Wire>, indent: &str) -> Result<Vec<String>, String> {
+    /// Nodes and wires as the wiring form writes them (no positions): the fallback. Answers the
+    /// lines and each node's name in them.
+    fn wiring_form<'w>(&mut self, nodes: &[&Node], wires: impl Iterator<Item = &'w crate::canvas::Wire>, indent: &str) -> Result<(Vec<Line>, HashMap<String, String>), String> {
         let mut names: HashMap<String, String> = HashMap::new();
         let mut taken: HashSet<String> = ["in", "out"].into_iter().map(String::from).collect();
         let mut lines = Vec::new();
@@ -518,14 +581,14 @@ impl<'s> Printer<'s> {
             let declared = interface_of(&d.name).map(|u| u.inputs.len()).unwrap_or(0);
             let arity = if d.body == PlacedBody::Primitive && d.variadic && d.inputs.len() > declared { format!("[{}]", d.inputs.len()) } else { String::new() };
             let params = if shown.is_empty() { String::new() } else { format!(" {{ {} }}", shown.iter().map(|(k, v)| format!("{}: {}", param_value(k), param_value(v))).collect::<Vec<_>>().join(", ")) };
-            lines.push(format!("{indent}node {nname} = {}{arity}{params}", if plain(&kind) { kind.clone() } else { quote(&kind) }));
+            lines.push((format!("{indent}node {nname} = {}{arity}{params}", if plain(&kind) { kind.clone() } else { quote(&kind) }), vec![n.id.clone()]));
         }
         for w in wires {
             let (Some(a), Some(b)) = (names.get(&w.source), names.get(&w.target)) else { continue };
             let p = |s: &str| if plain(s) { s.to_string() } else { quote(s) };
-            lines.push(format!("{indent}{a}.{} -> {b}.{}", p(w.output()), p(w.input())));
+            lines.push((format!("{indent}{a}.{} -> {b}.{}", p(w.output()), p(w.input())), vec![]));
         }
-        Ok(lines)
+        Ok((lines, names))
     }
 
     /// A node's params that differ from its leaf's or template's defaults (a literal's always).
@@ -565,6 +628,8 @@ struct Block<'p, 's, 'g> {
     inputs: HashSet<String>,
     bound: HashMap<String, String>,
     used: HashSet<String>,
+    /// The nodes rendered into the statement being written.
+    touched: Vec<String>,
 }
 
 impl<'p, 's, 'g> Block<'p, 's, 'g> {
@@ -573,7 +638,17 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         if let Some((_, name)) = &request {
             used.insert(name.clone());
         }
-        Block { p, g, indent, request, inputs: HashSet::new(), bound: HashMap::new(), used }
+        Block { p, g, indent, request, inputs: HashSet::new(), bound: HashMap::new(), used, touched: vec![] }
+    }
+
+    fn line(&mut self, text: String) -> Line {
+        (text, std::mem::take(&mut self.touched))
+    }
+
+    /// A node folded into the expression being written without rendering it on its own (a
+    /// string's pieces, a record chain's steps, a guard an `if` absorbs): it is on this line too.
+    fn touch(&mut self, n: &Node) {
+        self.touched.push(n.id.clone());
     }
 
     fn is_request(&self, id: &str) -> bool {
@@ -602,7 +677,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         }
     }
 
-    fn statements(&mut self) -> Result<Vec<String>, String> {
+    fn statements(&mut self) -> Result<Vec<Line>, String> {
         let mut lines = Vec::new();
         let order = self.g.order.clone();
         for id in &order {
@@ -610,9 +685,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             if self.is_request(id) || self.pass_through(node).is_some() {
                 continue;
             }
+            self.touched.clear();
             if node.is_template("respond") {
                 let text = self.respond(node)?;
-                lines.push(format!("{}{text}", self.indent));
+                let l = self.line(format!("{}{text}", self.indent));
+                lines.push(l);
                 continue;
             }
             let outs: Vec<(String, String)> = self.g.outs.iter().filter(|(n, _, _)| n == id).map(|(_, o, p)| (o.clone(), p.clone())).collect();
@@ -620,7 +697,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 // Its one consumer is a boundary output: bind the output here.
                 if let Some((output, port)) = outs.first() {
                     let (text, _) = self.render(node, output)?;
-                    lines.push(format!("{}{port} = {text}", self.indent));
+                    let l = self.line(format!("{}{port} = {text}", self.indent));
+                    lines.push(l);
                 }
                 continue;
             }
@@ -629,22 +707,25 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             let effect = single && node.data.outputs[0].ty == WType::Effect;
             if total == 0 && effect {
                 let text = self.effect_statement(node)?;
-                lines.push(format!("{}{text}", self.indent));
+                let l = self.line(format!("{}{text}", self.indent));
+                lines.push(l);
                 continue;
             }
             if total == 0 && !single && node.data.outputs.iter().any(|o| o.ty == WType::Effect) {
                 let (text, _) = self.render(node, "")?;
-                lines.push(format!("{}{text}", self.indent));
+                let l = self.line(format!("{}{text}", self.indent));
+                lines.push(l);
                 continue;
             }
             // A binding, then any boundary outputs it feeds. Rendered first: a holon's block is
             // written (and its name taken) on first use, and the binding must not shadow it.
             let (text, _) = self.render(node, if single { &node.data.outputs[0].name } else { "" })?;
             let name = self.bind(node);
-            lines.push(format!("{}{name} = {text}", self.indent));
+            let l = self.line(format!("{}{name} = {text}", self.indent));
+            lines.push(l);
             for (output, port) in outs {
                 let value = if single { name.clone() } else { format!("{name}.{output}") };
-                lines.push(format!("{}{port} = {value}", self.indent));
+                lines.push((format!("{}{port} = {value}", self.indent), vec![]));
             }
         }
         Ok(lines)
@@ -707,6 +788,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
                 let node = self.g.node(id);
                 if let Some(port) = self.pass_through(node) {
+                    self.touch(node);
+                    if let Some(c) = self.inline_source(node, "cond", "const") {
+                        self.touch(c);
+                    }
                     return Ok((port, ATOM));
                 }
                 self.render(node, output)
@@ -749,6 +834,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// `node` as an expression, with its precedence. `output` is which output, for a
     /// multi-output node referred to bare (ignored otherwise).
     fn render(&mut self, node: &Node, output: &str) -> Result<(String, u8), String> {
+        self.touched.push(node.id.clone());
         let d = &node.data;
         if let PlacedBody::Composite { hash } = &d.body {
             let shown = |ps: &[WPort]| ps.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
@@ -859,8 +945,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 atom(format!("[{}]", items.join(", ")))
             }
             "append" => {
-                let empty = self.inline_source(node, "list", "const").is_some_and(|c| c.param("type") == "Json" && c.param("value") == "[]");
-                if empty {
+                let empty = self.inline_source(node, "list", "const").filter(|c| c.param("type") == "Json" && c.param("value") == "[]");
+                if let Some(c) = empty {
+                    self.touch(c);
                     let item = self.required(node, "item")?;
                     return atom(format!("[{item}]"));
                 }
@@ -869,6 +956,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "default" => match literal(node.param("type"), node.param("value")) {
                 Some(l) => {
                     if let Some(g) = self.inline_source(node, "value", "guard") {
+                        self.touch(g);
                         let c = self.operand(g, "cond", PREC_IF)?;
                         let t = self.operand(g, "value", PREC_IF)?;
                         return Ok((format!("if {c} then {t} else {l}"), PREC_IF));
@@ -880,6 +968,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             },
             "coalesce" => {
                 if let Some(g) = self.inline_source(node, "a", "guard") {
+                    self.touch(g);
                     let c = self.operand(g, "cond", PREC_IF)?;
                     let t = self.operand(g, "value", PREC_IF)?;
                     let e = self.operand(node, "b", PREC_IF)?;
@@ -929,6 +1018,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             }
             "not" => {
                 if let Some(eq) = self.inline_source(node, "v", "equals") {
+                    self.touch(eq);
                     let a = self.operand(eq, "a", PREC_EQ)?;
                     let b = self.operand(eq, "b", PREC_EQ)?;
                     return Ok((format!("{a} != {b}"), PREC_EQ));
@@ -992,8 +1082,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             if let Some(c) = self.inline_source(node, &p.name, "const")
                 && c.param("type") == "Text"
             {
+                self.touch(c);
                 pieces.push(quote(c.param("value")).trim_matches('"').to_string());
             } else if let Some(a) = self.inline_source(node, &p.name, "as_text") {
+                self.touch(a);
                 let (t, _) = match self.arg(a, "value")? {
                     Some(v) => v,
                     None => return self.generic(node),
@@ -1016,13 +1108,15 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         let mut fields: Vec<(String, String)> = Vec::new();
         let mut cur = node;
         let base = loop {
+            self.touch(cur);
             let key = cur.param("name").to_string();
             let value = self.required(cur, "value")?;
             fields.push((key, value));
             match self.inline_source(cur, "record", "with_field") {
                 Some(inner) => cur = inner,
                 None => {
-                    if self.inline_source(cur, "record", "record").is_some() {
+                    if let Some(empty) = self.inline_source(cur, "record", "record") {
+                        self.touch(empty);
                         break None;
                     }
                     break Some(self.required(cur, "record")?);
@@ -1038,6 +1132,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
 
     /// `respond …` as a statement.
     fn respond(&mut self, node: &Node) -> Result<String, String> {
+        self.touched.push(node.id.clone());
         let (status, missing) = (node.param("status"), node.param("missing"));
         let body = self.arg(node, "body")?.map(|(t, _)| t);
         let mut parts = Vec::new();
@@ -1216,6 +1311,27 @@ mod tests {
         assert!(text.contains("# GET /a and GET /b are wired together"), "{text}");
         let back = compile(&text).unwrap();
         assert_eq!(back.doc.nodes.len(), 3);
+    }
+
+    #[test]
+    fn each_node_knows_its_line() {
+        let src = "flow f\nport 8200\n\nroute GET /x (req) {\n  n = req.params.id\n  respond \"{n} likes\"\n}\n";
+        let first = compile(src).unwrap();
+        let (text, lines) = print_lines(Some("f"), &first.doc, &mut MapResolver::new(), &Names::new(), &first.names).unwrap();
+        assert_eq!(text, src);
+        let line_of = |leaf: &str| first.doc.nodes.iter().filter(|n| n.data.name == leaf).map(|n| lines[&n.id]).collect::<Vec<_>>();
+        assert_eq!(line_of("request"), [4], "the request is the route header");
+        assert_eq!(line_of("field"), [5]);
+        assert_eq!(line_of("as_text"), [6], "an inline node is its consumer's statement");
+        assert_eq!(line_of("respond"), [6]);
+        assert_eq!(line_of("concat"), [6]);
+        // A canvas with an unwired input prints as nodes and wires, each node on its own line.
+        let mut b = FlowBuilder::new();
+        let up = b.node("uppercase", &[], None).unwrap();
+        let doc = b.finish(Default::default());
+        let (text, lines) = print_lines(Some("solo"), &doc, &mut MapResolver::new(), &Names::new(), &BTreeMap::new()).unwrap();
+        assert_eq!(text, "flow solo\n\nnode uppercase = uppercase\n");
+        assert_eq!(lines[&up], 3);
     }
 
     #[test]

@@ -705,12 +705,15 @@ export function Inspector({
   node,
   unit,
   run,
+  source,
   open,
   onOpen,
 }: {
   node: ViewNode | null;
   unit: ReactNode;
   run: InspectorRun | null;
+  /** The node's line in the flow as text (holonText.ts), when the flow prints. */
+  source?: { line: number; text: string } | null;
   open: boolean;
   onOpen: (open: boolean) => void;
 }) {
@@ -739,7 +742,7 @@ export function Inspector({
         ) : tab === "unit" ? (
           node ? unit : <div>select a node to see what its unit is made of</div>
         ) : (
-          <ComponentTab node={node} run={run} />
+          <ComponentTab node={node} run={run} source={source ?? null} />
         )}
       </div>
     </div>
@@ -903,7 +906,7 @@ function CollectionBox({ slug, c }: { slug: string; c: CollectionAtStep }) {
 /** One node inside a holon, as a run went: what it is, what it produced, how long it took. */
 export type InsideStep = { label: string; outputs: (WValue | null)[] | null; us: number };
 
-function ComponentTab({ node, run }: { node: ViewNode | null; run: InspectorRun | null }) {
+function ComponentTab({ node, run, source }: { node: ViewNode | null; run: InspectorRun | null; source: { line: number; text: string } | null }) {
   const describe = useNodeDocs();
   if (!node) return <div>{run ? "click a node on the canvas, or step through the run" : "select a node on the canvas"}</div>;
   const { trace, timing, inside } = run ?? { trace: undefined, timing: undefined, inside: null };
@@ -919,6 +922,17 @@ function ComponentTab({ node, run }: { node: ViewNode | null; run: InspectorRun 
         {timing ? ` · ran ${us(timing.start_us)} → ${us(timing.end_us)} (${us(timing.end_us - timing.start_us)})` : ""}
         {run && !trace ? " · not part of this run" : ""}
       </div>
+      {source && (
+        <Section title={`as text, line ${source.line}`}>
+          <div
+            className="hl-inspector__source"
+            style={{ color: "#cfe3ff", fontFamily: "ui-monospace, Menlo, Consolas, monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+            title="the flow as the language writes it (.holon): this node is part of this line"
+          >
+            {source.text.trim()}
+          </div>
+        </Section>
+      )}
       {trace?.issue && (
         <div style={{ color: trace.issue.role === "origin" ? FAIL : "#d9a596" }}>
           {trace.issue.role === "origin" ? "✗ failed here: " : "↯ "}

@@ -611,6 +611,17 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// A holon's or function's port may be called after a leaf (`sum`, `out`: the wiring form
+    /// names ports that way, and a name in scope wins over a leaf), but not after a keyword, a
+    /// collection or a holon.
+    fn check_port_name(&self, name: &Name) -> R<()> {
+        let n = name.text.as_str();
+        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.collections.contains(n) || self.defs.contains_key(n) {
+            return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
+        }
+        Ok(())
+    }
+
     /// The holon `name`, lowered once, on first use.
     fn holon(&mut self, name: &str, at: Span) -> R<Holon> {
         if let Some(h) = self.holons.get(name) {
@@ -626,13 +637,13 @@ impl<'a> Lowerer<'a> {
         let declared: Vec<String> = def.outputs.iter().map(|p| p.name.text.clone()).collect();
         let mut frame = Frame::new(FrameKind::Holon { declared: declared.clone(), bound: HashMap::new(), effects: vec![] });
         for p in &def.inputs {
-            self.check_name_free(&p.name)?;
+            self.check_port_name(&p.name)?;
             if frame.env.insert(p.name.text.clone(), Val::In(p.name.text.clone())).is_some() {
                 return err(p.name.span, format!("the input \"{}\" is declared twice", p.name.text));
             }
         }
         for p in &def.outputs {
-            self.check_name_free(&p.name)?;
+            self.check_port_name(&p.name)?;
             if def.inputs.iter().any(|i| i.name.text == p.name.text) || declared.iter().filter(|d| **d == p.name.text).count() > 1 {
                 return err(p.name.span, format!("the port \"{}\" is declared twice", p.name.text));
             }
@@ -756,7 +767,7 @@ impl<'a> Lowerer<'a> {
         self.b.begin_holon(&name);
         let mut frame = Frame::new(FrameKind::Lambda { outer });
         for p in params {
-            self.check_name_free(p)?;
+            self.check_port_name(p)?;
             if frame.env.insert(p.text.clone(), Val::In(p.text.clone())).is_some() {
                 return err(p.span, format!("the parameter \"{}\" is declared twice", p.text));
             }
@@ -1425,6 +1436,9 @@ pub(crate) mod tests {
         let twice = &d.nodes[1];
         assert_eq!(twice.data.inputs.len(), 1);
         assert_eq!(error("holon h(a) -> o {\n  o = a + 1\n}\nx = h(1)\nout = 2"), (5, 1, "\"out\" is a keyword; a binding may not shadow it".into()));
+        // A port may be named after a leaf or `out` (the wiring form does), not after a keyword.
+        assert!(compile("holon h(text) -> (out, sum) {\n  out = uppercase(text)\n  sum = text_length(text)\n}\nx = h(\"a\")").is_ok());
+        assert_eq!(error("holon h(route) -> o {\n  o = route + 1\n}"), (1, 9, "\"route\" is taken; pick another name for the port".into()));
         assert_eq!(d.nodes[5].param("fn").len(), 64);
         assert_eq!(error("holon h(a) -> o {\n  o = a\n}"), (2, 7, "an output can't be an input passed straight through: put a node between".into()));
         assert_eq!(error("holon h(a, b) -> o {\n  o = a + 1\n}"), (1, 12, "the input \"b\" is never used".into()));

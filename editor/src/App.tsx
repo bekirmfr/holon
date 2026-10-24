@@ -68,7 +68,7 @@ import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccountMenu, AuthGate, type Me } from "./AuthGate";
 import { AdminPage } from "./AdminPage";
 import { HomePage } from "./HomePage";
-import { compileHolon, printHolon } from "./holonText";
+import { compileHolon, printHolon, sourceLineOf } from "./holonText";
 import { WelcomePage } from "./WelcomePage";
 import { defaultHome, readPrefs, type Prefs } from "./home";
 import { inspectorRun, useViewMode, ViewModePanes } from "./useViewMode";
@@ -602,6 +602,12 @@ function Canvas({
   // what the unit tab descends into, read only.
   const picked = nodes.filter((n) => n.selected);
   const inspected = viewing ? (nodes.find((n) => n.id === flow.inspectNode) ?? null) : picked.length === 1 ? picked[0] : null;
+  // The inspected node's line in the flow as text (docs/LANGUAGE.md): the canvas printed through
+  // the language, so a node is read as the expression it is part of.
+  const inspectedSource = useMemo(
+    () => (inspected ? sourceLineOf(inspected.id, flowName, { nodes: nodes as unknown[], edges: edges as unknown[], server: flow.settings }, ev) : null),
+    [inspected, nodes, edges, flow.settings, flowName, ev],
+  );
   const inspectedUnit = useMemo(() => {
     if (!inspected) return null;
     try {
@@ -803,7 +809,7 @@ function Canvas({
         )}
         {compositeOverlay.render(flowName ?? "untitled")}
       </div>
-      <Inspector node={inspected} unit={inspectedUnit} run={inspectorRun(view, flow)} open={inspectorOpen} onOpen={onInspectorOpen} />
+      <Inspector node={inspected} unit={inspectedUnit} run={inspectorRun(view, flow)} source={inspectedSource} open={inspectorOpen} onOpen={onInspectorOpen} />
       <ViewModePanes view={view} flow={flow} nodes={nodes} />
       {/* The Flows / Deployed pages are overlays ON TOP of the always-mounted canvas — React
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,
@@ -838,6 +844,7 @@ function Canvas({
                   }
                 },
                 exportOf: async (name) => printHolon(name, (await getFlow(name)).document, ev),
+                textOfSample: (sample) => printHolon(sample.name, buildSample(sample, ev), ev),
               }}
               manifestOf={manifestOfDocument}
               marketplace={{

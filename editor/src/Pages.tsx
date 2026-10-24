@@ -56,7 +56,7 @@ export function FlowsPage({
   onOpenSample: (sample: Sample) => void;
   /** Flows as text (holonText.ts): a `.holon` file opened as an unsaved flow (answers why not,
    *  when it can't be), and a saved flow written as one. */
-  holonText: { onImport: (text: string) => string | null; exportOf: (name: string) => Promise<string> };
+  holonText: { onImport: (text: string) => string | null; exportOf: (name: string) => Promise<string>; textOfSample: (sample: Sample) => string };
 }) {
   const dialog = useDialog();
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
@@ -269,6 +269,24 @@ export function FlowsPage({
           </div>
           <button style={smallBtn} onClick={() => onOpenSample(s)} title={`open "${s.name}" as an unsaved copy`}>
             open
+          </button>
+          <button
+            style={smallBtn}
+            title="download it as text (.holon), as the language writes it: read it, change it anywhere, check it with `holon check`"
+            onClick={() => {
+              try {
+                const url = URL.createObjectURL(new Blob([holonText.textOfSample(s)], { type: "text/plain" }));
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${s.name}.holon`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch (e) {
+                setMsg(e instanceof Error ? e.message : String(e));
+              }
+            }}
+          >
+            .holon
           </button>
         </div>
       ))}

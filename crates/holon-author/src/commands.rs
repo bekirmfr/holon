@@ -57,9 +57,23 @@ pub fn sample_names() -> String {
     samples::samples().iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
 }
 
-/// The file compiled, its units in `store`; or its mistake, as `<file>:<line>:<col>: …`.
+/// A mistake as the commands print one: `<file>:<line>:<col>: <message>`, then the line it is
+/// on, then a caret under the span.
+fn mistake(file: &str, source: &str, e: &lang::LowerError) -> Report {
+    let mut err = vec![format!("{file}:{e}")];
+    let (start, end) = (e.span.start, e.span.end);
+    if let Some(line) = source.lines().nth((start.line as usize).saturating_sub(1)) {
+        err.push(format!("  {line}"));
+        let col = start.col.max(1) as usize;
+        let width = if end.line == start.line && end.col > start.col { (end.col - start.col) as usize } else { 1 };
+        err.push(format!("  {}{}", " ".repeat(col - 1), "^".repeat(width)));
+    }
+    Report { err, code: 1, ..Default::default() }
+}
+
+/// The file compiled, its units in `store`; or its mistake, said with its line and a caret.
 fn compile(file: &str, source: &str, store: &mut MapResolver) -> Result<Lowered, Report> {
-    let compiled = lang::compile(source).map_err(|e| Report::failed(format!("{file}:{e}")))?;
+    let compiled = lang::compile(source).map_err(|e| mistake(file, source, &e))?;
     text::restore(&compiled.doc, store, &Names::new());
     Ok(compiled)
 }
@@ -170,7 +184,11 @@ mod tests {
     #[test]
     fn a_mistake_names_its_file_and_line() {
         let r = check("bad.holon", "node a = field\nnode b = concat\na.nope -> b.a");
-        assert_eq!(r, Report { err: vec![r#"bad.holon:3:1: field has no output "nope""#.into()], code: 1, ..Default::default() });
+        assert_eq!(r.code, 1);
+        assert_eq!(r.err, [r#"bad.holon:3:1: field has no output "nope""#, "  a.nope -> b.a", "  ^^^^^^^^^^^^^"]);
+        // The caret sits under the column, in the expression form too.
+        let r = check("bad.holon", "route GET /a (req) {\n  respond concat(req.body, nope)\n}");
+        assert_eq!(r.err, [r#"bad.holon:2:28: unknown name "nope""#, "    respond concat(req.body, nope)", "                             ^^^^"]);
         // A flow that compiles but can't be a server: its route says why.
         let r = check("half.holon", "port 8101\nnode req = request { method: GET, path: \"/x\" }");
         assert_eq!(r.code, 1);

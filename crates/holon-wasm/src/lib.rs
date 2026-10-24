@@ -20,8 +20,9 @@ use holon_author::builder::FlowDocument;
 use holon_author::canvas::{Node, Position, Wire};
 use holon_author::composites::{self, BoundaryPort, Names};
 use holon_author::group::{self, GroupError};
+use holon_author::lang;
 use holon_author::wire::{WEdge, WParam, WType, WUnit};
-use holon_author::{flow, routes, templates, text, to_hex};
+use holon_author::{flow, routes, templates, to_hex};
 use holon_core::{
     decode_preimage, default_spec, derive_and_freeze, encode_preimage, genesis_units, hash_unit,
     parse_hash, Capability, Edge, EncapError, EncapSpec, Expose, Hash, Kind, MapResolver,
@@ -923,13 +924,34 @@ impl Evaluator {
         }
     }
 
-    /// A flow document as `.holon` text (text.rs). Its units are inserted here; `names` names the
-    /// composites the document doesn't.
-    pub fn print_holon(&mut self, name: Option<String>, doc: JsValue, names: JsValue) -> Result<String, JsError> {
+    /// A flow document as `.holon` text in the language's expression form (holon-author's
+    /// lang/print.rs). Its units are inserted here; `names` names the composites the document
+    /// doesn't; `bindings` (optional) names top-level nodes, by id, so a text imported and
+    /// exported keeps its names.
+    pub fn print_holon(&mut self, name: Option<String>, doc: JsValue, names: JsValue, bindings: JsValue) -> Result<String, JsError> {
         let doc: FlowDocument = from_js(doc, "document")?;
         let names: Names = from_js(names, "names")?;
-        text::print(name.as_deref(), &doc, &mut self.resolver, &names).map_err(|e| JsError::new(&e))
+        let bindings = bindings_from(bindings)?;
+        lang::print(name.as_deref(), &doc, &mut self.resolver, &names, &bindings).map_err(|e| JsError::new(&e))
     }
+
+    /// [`Self::print_holon`], with the line each top-level node is written on: `{text, lines}`,
+    /// `lines` by node id (1-based). What view mode shows beside a selected node.
+    pub fn print_holon_lines(&mut self, name: Option<String>, doc: JsValue, names: JsValue, bindings: JsValue) -> Result<JsValue, JsError> {
+        let doc: FlowDocument = from_js(doc, "document")?;
+        let names: Names = from_js(names, "names")?;
+        let bindings = bindings_from(bindings)?;
+        let (text, lines) = lang::print::print_lines(name.as_deref(), &doc, &mut self.resolver, &names, &bindings).map_err(|e| JsError::new(&e))?;
+        to_js(&serde_json::json!({ "text": text, "lines": lines }))
+    }
+}
+
+/// Top-level node names by id, or none when JS passed nothing.
+fn bindings_from(v: JsValue) -> Result<std::collections::BTreeMap<String, String>, JsError> {
+    if v.is_undefined() || v.is_null() {
+        return Ok(Default::default());
+    }
+    from_js(v, "bindings")
 }
 
 /// What a manifest item (a capability's consent name, or a requirement) lets a flow do, in words
@@ -939,12 +961,12 @@ pub fn describe_item(item: &str) -> String {
     holon_author::describe::describe_item(item)
 }
 
-/// `.holon` text as a flow document: `{name, doc, names}` (each top-level node's name in the
-/// text, by id). Throws the first line it can't read or build (`line N: …`).
+/// `.holon` text, in either form, as a flow document: `{name, doc, names}` (each top-level
+/// node's name in the text, by id). Throws the first mistake, as `line:col: message`.
 #[wasm_bindgen]
 pub fn compile_holon(source: &str) -> Result<JsValue, JsError> {
-    let compiled = text::compile(source).map_err(|e| JsError::new(&e.to_string()))?;
-    to_js(&compiled)
+    let compiled = lang::compile(source).map_err(|e| JsError::new(&e.to_string()))?;
+    to_js(&serde_json::json!({ "name": compiled.name, "doc": compiled.doc, "names": compiled.names }))
 }
 
 /// The sample flows, one per capability, in the order the flows page lists them: `[{name, title,

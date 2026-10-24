@@ -8,7 +8,7 @@ import { initSync, Evaluator } from "../wasm/holon_wasm.js";
 import type { Edge } from "@xyflow/react";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { deriveServer, flowUnitHash } from "./canvasOps";
-import { compileHolon, printHolon } from "./holonText";
+import { compileHolon, printHolon, printHolonLines, sourceLineOf } from "./holonText";
 import { buildSample, samples } from "./samples";
 
 
@@ -82,10 +82,10 @@ node s = shout
     expect(c.data.inputs.map((p) => p.name)).toEqual(["a", "b", "c"]);
     const s = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "shout")!;
     expect(s.data.inputs.map((p) => p.name)).toEqual(["words"]);
-    expect(printHolon("joined", doc, ev)).toContain(`holon shout(words "join · list") -> (said`);
+    expect(printHolon("joined", doc, ev)).toContain(`holon shout(words "join · list") -> said`);
   });
 
-  it("names the line of each mistake", () => {
+  it("names the line and column of each mistake", () => {
     const ev = new Evaluator();
     const fails = (text: string) => {
       try {
@@ -95,13 +95,32 @@ node s = shout
         return e instanceof Error ? e.message : String(e);
       }
     };
-    expect(fails("node a = fieldd")).toBe('line 1: no leaf "fieldd" in the catalog');
-    expect(fails("node a = field { nam: x }")).toBe('line 1: field has no param "nam"');
-    expect(fails("node a = field\nnode b = concat\na.nope -> b.a")).toBe('line 3: field has no output "nope"');
-    expect(fails("node a = field\nx.out -> a.record")).toContain('line 2: no node "x"');
-    expect(fails('node a = const { value: "oops }')).toBe("line 1: a quote isn't closed");
-    expect(fails("holon h() -> () {\nnode a = field")).toBe('line 1: the holon "h" isn\'t closed with }');
-    expect(fails("node a = field\nnode a = field")).toBe('line 2: there is a node "a" already');
+    expect(fails("node a = fieldd")).toBe('line 1, column 10: no leaf "fieldd" in the catalog');
+    expect(fails("node a = field { nam: x }")).toBe('line 1, column 10: field has no param "nam"');
+    expect(fails("node a = field\nnode b = concat\na.nope -> b.a")).toBe('line 3, column 1: field has no output "nope"');
+    expect(fails("node a = field\nx.out -> a.record")).toContain('line 2, column 1: no node "x"');
+    expect(fails('node a = const { value: "oops }')).toBe("line 1, column 25: a quote isn't closed");
+    expect(fails("holon h() -> () {\nnode a = field")).toBe("line 1, column 17: the block isn't closed with }");
+    expect(fails("node a = field\nnode a = field")).toBe('line 2, column 6: there is a node "a" already');
     expect(fails("node in = field")).toContain("names a holon's boundary");
+    // The expression form too, into the string.
+    expect(fails('route GET /a (req) {\n  respond "{nope} likes"\n}')).toBe('line 2, column 13: unknown name "nope"');
+  });
+
+  it("writes the expression form, keeps a text's names through it, and knows each node's line", () => {
+    const ev = new Evaluator();
+    const src = "flow f\nport 8200\n\nroute GET /x (req) {\n  n = req.params.id\n  respond \"{n} likes\"\n}\n";
+    const { name, doc, names } = compileHolon(src, ev);
+    expect(printHolon(name, doc, ev, names)).toBe(src);
+    const { text, lines } = printHolonLines(name, doc, ev, names);
+    expect(text).toBe(src);
+    const field = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "field")!;
+    expect(lines.get(field.id)).toBe(5);
+    // The Inspector's line is of the canvas as it prints without a text's names: inline.
+    expect(sourceLineOf(field.id, name, doc, ev)).toEqual({ line: 5, text: '  respond "{req.params.id} likes"' });
+    // A canvas the expression form can't spell (an unwired input) is written as nodes and wires.
+    const { doc: solo, names: soloNames } = compileHolon("flow solo\nnode up = uppercase\n", ev);
+    expect(printHolon("solo", solo, ev, soloNames)).toBe("flow solo\n\nnode up = uppercase\n");
+    expect(printHolon("solo", solo, ev)).toBe("flow solo\n\nnode uppercase = uppercase\n");
   });
 });
