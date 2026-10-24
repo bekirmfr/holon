@@ -15,6 +15,10 @@ this user runs on this machine, signed in by its run file, or by `HOLON_TOKEN`.
 holon mcp [--server PORT|URL]
 ```
 
+`holon mcp setup HOST` adds it to a host's settings, for every major host and any other a person
+names, and for a server elsewhere keeps the token so no host's file holds it:
+`mcp-setup-L4.md`.
+
 ## The tools
 
 | Tool | Takes | Answers | Needs a server |
@@ -72,6 +76,7 @@ not JSON to be parsed: the same sentences `holon check` and the editor use.
    read the run file and leave it off. For an agent that holds a shell, an API token of its own
    with role `agent` (`POST /admin/tokens`, or the admin page), used with `--server` and
    `HOLON_TOKEN`, is the guarantee: no request made with it approves, whatever sends it.
+   `holon mcp setup --server` asks for that token once and keeps it (`mcp-setup-L4.md`).
 
 ## What it does not do
 

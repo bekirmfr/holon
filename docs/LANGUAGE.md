@@ -986,6 +986,9 @@ step that changed core is done; none changes the host, the server or the documen
    API token with that role is the guarantee for an agent with a shell. Tests: the tools against the in-process router (text to an explained failing run), the
    protocol on raw lines, a person's saved flow never replaced, and an end-to-end test where a
    person approves the agent's flow in the real editor and the agent calls and explains it.
+   `holon mcp setup` (`docs/L4s/mcp-setup-L4.md`) adds it to a host's own settings file, for
+   21 hosts and any other a person adds, changing only its entry; for a server elsewhere it
+   keeps the agent token itself, so no host's file holds one.
 
 8. **Editors** ✅ (2026-10-24, designed in `docs/L4s/language-server-L4.md`). `holon lsp`, a
    Language Server Protocol server on stdin and stdout, and `editors/vscode`, the VS Code

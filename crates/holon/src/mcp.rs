@@ -18,16 +18,19 @@ use crate::local;
 const VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
 const USAGE: &str = "usage: holon mcp [--server PORT|URL]
+       holon mcp setup [HOST…|--all] [--server PORT|URL] [--project DIR] [--print] [--remove]
+       holon mcp hosts [add NAME --config PATH --like HOST | remove NAME]
 
 An MCP server on stdin and stdout, for an agent's host to start (Claude Code, an IDE): tools to
 look up the language, check a flow, deploy it, call it, list its runs and explain one. It reaches
 holon serve as holon export does: --server (or HOLON_SERVER) if given, else the one server you
 run on this machine, signed in as you. Its tools never approve what a flow may do: a deploy that
 needs approval is saved for a person to deploy from the editor. It asks as an agent, so the server
-holds it to proposing too; for an agent with a shell, give it an API token with role agent
-(HOLON_TOKEN) and --server.
+holds it to proposing too; for an agent with a shell, give it an API token with role agent and
+--server (setup --server keeps the token; HOLON_TOKEN gives one).
 
-  claude mcp add holon -- holon mcp";
+`holon mcp setup HOST` adds it to a host's settings (Claude Code, Claude Desktop, Cursor, VS Code,
+Codex, Zed and more: `holon mcp hosts` lists them, and adds your own). `--help` on either says more.";
 
 const INSTRUCTIONS: &str = "Holon runs small services (flows) written in its own language, and \
 shows what each may do before it runs. Call `reference` first for the language and its leaves, \
@@ -432,6 +435,11 @@ pub(crate) fn serve(input: impl BufRead, mut output: impl Write, connect: &Conne
 
 /// `holon mcp`.
 pub(crate) fn run(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("setup") => return crate::mcphosts::setup(&args[1..]),
+        Some("hosts") => return crate::mcphosts::hosts(&args[1..]),
+        _ => {}
+    }
     let mut server: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {

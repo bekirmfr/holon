@@ -11,7 +11,8 @@
 //! from loopback alone proves nothing (a web page, another user's program and a port forward
 //! all arrive there), so the control plane still asks every request who it is; the file is how
 //! the user's own commands answer. A server elsewhere, or a script in CI, uses an API token
-//! (`HOLON_TOKEN`), as before.
+//! (`HOLON_TOKEN`), as before, or the token `holon mcp setup --server` kept for that server in
+//! `~/.holon/tokens.json`, readable only by the user.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -28,13 +29,48 @@ pub(crate) struct RunFile {
     pub(crate) pid: u32,
 }
 
+/// This user's home folder.
+pub(crate) fn home() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 /// Where run files are kept: `HOLON_RUN_DIR`, else `~/.holon/run`.
 pub(crate) fn dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("HOLON_RUN_DIR").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(d));
     }
-    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(var).filter(|v| !v.is_empty()).map(|h| PathBuf::from(h).join(".holon").join("run"))
+    home().map(|h| h.join(".holon").join("run"))
+}
+
+/// Where the tokens for servers elsewhere are kept: `~/.holon/tokens.json`, each server's URL to
+/// its token, readable only by this user.
+pub(crate) fn tokens_file() -> Option<PathBuf> {
+    home().map(|h| h.join(".holon").join("tokens.json"))
+}
+
+fn tokens_in(file: &Path) -> std::collections::BTreeMap<String, String> {
+    std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// The token kept for `server` (a URL, as [`server_url`] writes it).
+pub(crate) fn saved_token(file: &Path, server: &str) -> Option<String> {
+    tokens_in(file).remove(server)
+}
+
+/// Keep `token` for `server`, or with none, forget the one kept: whether there was one before.
+pub(crate) fn keep_token(file: &Path, server: &str, token: Option<&str>) -> Result<bool, String> {
+    let mut all = tokens_in(file);
+    let had = match token {
+        Some(t) => all.insert(server.to_string(), t.to_string()).is_some(),
+        None => all.remove(server).is_some(),
+    };
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("couldn't make {}: {e}", dir.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(&all).unwrap_or_default();
+    crate::sealing::write_private(file, &bytes).map_err(|e| format!("couldn't write {}: {e}", file.display()))?;
+    Ok(had)
 }
 
 /// The operating-system user this runs as, as the activity log names local commands.
@@ -114,12 +150,14 @@ pub(crate) struct Target {
 }
 
 /// Which server, and how to sign in: `--server` (or `HOLON_SERVER`) if given, else the one server
-/// this user runs on this machine; `HOLON_TOKEN` if set, else that server's run file's token.
+/// this user runs on this machine; `HOLON_TOKEN` if set, else the token kept for that server
+/// (`holon mcp setup --server`, chosen for it), else its run file's.
 pub(crate) fn target(given: Option<&str>) -> Result<Target, String> {
     let env_token = std::env::var("HOLON_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let given = given.map(str::to_string).or_else(|| std::env::var("HOLON_SERVER").ok().filter(|s| !s.trim().is_empty()));
     let files = dir().map(|d| run_files(&d)).unwrap_or_default();
-    target_from(given.as_deref(), env_token, files, answers)
+    let kept = |server: &str| tokens_file().and_then(|f| saved_token(&f, server));
+    target_from(given.as_deref(), env_token, files, answers, kept)
 }
 
 /// [`target`], given what it reads: testable without a server.
@@ -128,10 +166,12 @@ fn target_from(
     env_token: Option<String>,
     files: Vec<(PathBuf, RunFile)>,
     answers: impl Fn(&str) -> Option<bool>,
+    kept: impl Fn(&str) -> Option<String>,
 ) -> Result<Target, String> {
     if let Some(given) = given {
         let server = server_url(given);
-        let token = env_token.or_else(|| files.into_iter().find(|(_, f)| f.server == server).map(|(_, f)| f.token));
+        let from_run = files.into_iter().find(|(_, f)| f.server == server).map(|(_, f)| f.token);
+        let token = env_token.or_else(|| kept(&server)).or(from_run);
         return Ok(Target { server, token });
     }
     let mut running = Vec::new();
@@ -164,6 +204,10 @@ fn target_from(
 mod tests {
     use super::*;
 
+    fn none(_: &str) -> Option<String> {
+        None
+    }
+
     fn file(port: u16) -> (PathBuf, RunFile) {
         let f = RunFile { server: format!("http://127.0.0.1:{port}"), token: format!("hl_{port}"), pid: 1 };
         (PathBuf::from(format!("/nowhere/{port}.json")), f)
@@ -179,26 +223,45 @@ mod tests {
     #[test]
     fn the_one_server_running_is_the_target_with_its_token() {
         let up = |s: &str| Some(s.ends_with("7401"));
-        let t = target_from(None, None, vec![file(7400), file(7401)], up).unwrap();
+        let t = target_from(None, None, vec![file(7400), file(7401)], up, none).unwrap();
         assert_eq!(t, Target { server: "http://127.0.0.1:7401".into(), token: Some("hl_7401".into()) });
         // HOLON_TOKEN wins over the file's.
-        let t = target_from(None, Some("ht_x".into()), vec![file(7401)], |_| Some(true)).unwrap();
+        let t = target_from(None, Some("ht_x".into()), vec![file(7401)], |_| Some(true), none).unwrap();
         assert_eq!(t.token.as_deref(), Some("ht_x"));
     }
 
     #[test]
     fn none_or_several_running_say_what_to_pass() {
-        let none = target_from(None, None, vec![file(7401)], |_| Some(false)).unwrap_err();
-        assert!(none.contains("no holon serve is running"), "{none}");
-        let two = target_from(None, None, vec![file(7401), file(7420)], |_| Some(true)).unwrap_err();
+        let nothing = target_from(None, None, vec![file(7401)], |_| Some(false), none).unwrap_err();
+        assert!(nothing.contains("no holon serve is running"), "{nothing}");
+        let two = target_from(None, None, vec![file(7401), file(7420)], |_| Some(true), none).unwrap_err();
         assert!(two.contains("--server 7401 or --server 7420"), "{two}");
     }
 
     #[test]
     fn a_server_given_by_port_signs_in_with_its_run_file() {
-        let t = target_from(Some("7420"), None, vec![file(7401), file(7420)], |_| unreachable!("not probed")).unwrap();
+        let t = target_from(Some("7420"), None, vec![file(7401), file(7420)], |_| unreachable!("not probed"), none).unwrap();
         assert_eq!(t, Target { server: "http://127.0.0.1:7420".into(), token: Some("hl_7420".into()) });
-        let elsewhere = target_from(Some("https://holon.example.com"), None, vec![file(7420)], |_| None).unwrap();
+        let elsewhere = target_from(Some("https://holon.example.com"), None, vec![file(7420)], |_| None, none).unwrap();
         assert_eq!(elsewhere.token, None);
+        // The token kept for it, over its run file's; HOLON_TOKEN still wins.
+        let kept = |s: &str| (s == "https://holon.example.com" || s.ends_with(":7420")).then(|| "ht_kept".to_string());
+        assert_eq!(target_from(Some("7420"), None, vec![file(7420)], |_| None, kept).unwrap().token.as_deref(), Some("ht_kept"));
+        assert_eq!(target_from(Some("https://holon.example.com/"), None, vec![], |_| None, kept).unwrap().token.as_deref(), Some("ht_kept"));
+        assert_eq!(target_from(Some("https://holon.example.com"), Some("ht_env".into()), vec![], |_| None, kept).unwrap().token.as_deref(), Some("ht_env"));
+    }
+
+    #[test]
+    fn a_token_is_kept_per_server_and_forgotten() {
+        let dir = std::env::temp_dir().join(format!("holon-tokens-{}", std::process::id()));
+        let file = dir.join("tokens.json");
+        assert!(!keep_token(&file, "https://a.example", Some("ht_a")).unwrap());
+        assert!(keep_token(&file, "https://a.example", Some("ht_a2")).unwrap(), "replaced");
+        keep_token(&file, "https://b.example", Some("ht_b")).unwrap();
+        assert_eq!(saved_token(&file, "https://a.example").as_deref(), Some("ht_a2"));
+        assert!(keep_token(&file, "https://a.example", None).unwrap());
+        assert_eq!(saved_token(&file, "https://a.example"), None);
+        assert_eq!(saved_token(&file, "https://b.example").as_deref(), Some("ht_b"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

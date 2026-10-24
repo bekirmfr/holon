@@ -159,6 +159,7 @@ mod firing;
 mod fixtures;
 mod grants;
 mod heads;
+mod jsonedit;
 mod flowcmd;
 mod flows;
 mod http;
@@ -167,6 +168,7 @@ mod listeners;
 mod local;
 mod lsp;
 mod mcp;
+mod mcphosts;
 mod outbound;
 mod permissions;
 mod persist;
@@ -418,6 +420,7 @@ const USAGE: &str = "usage: holon <command>
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
+  mcp setup [HOST…|--all]            add holon mcp to an agent host's settings (mcp hosts: which)
   lsp                                a language server for editors (LSP, on stdin and stdout):
                                      mistakes as you type, hover, formatting
   version                            this build's version

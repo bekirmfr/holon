@@ -115,7 +115,8 @@ ran. In the editor, the run log's "export runs" (beside the head the log chains 
 run changed outside holon); on the command line, `holon export <slug>`, from the `holon serve` you
 run on the same machine, signed in as you, into `<slug>-runs.json` here (`--to <folder>` and
 `--as <name>` put it elsewhere; `--server <port>` picks one of several servers; a server
-elsewhere takes `--server <URL>` and an API token in `HOLON_TOKEN`); or `GET /deployments/<slug>/export`. `holon verify
+elsewhere takes `--server <URL>` and an API token in `HOLON_TOKEN`, or the one `holon mcp setup
+--server` kept for it); or `GET /deployments/<slug>/export`. `holon verify
 runs.json` checks it anywhere, offline: the
 chain is unbroken, each unit is what its hash says, and every run, run again from its log entry
 (the same request, state, clock, random, outbound answers and collection reads, through the same
@@ -150,8 +151,35 @@ the canvas writes the text again. The text as you typed it, comments and all, is
 flow. Design: `docs/L4s/text-pane-L4.md`.
 
 An agent writes, deploys and reads flows through `holon mcp`, a Model Context Protocol server
-its host starts (for Claude Code: `claude mcp add holon -- holon mcp`). It reaches the
-`holon serve` you run on this machine, as `holon export` does. Its tools:
+its host starts. It reaches the `holon serve` you run on this machine, as `holon export` does.
+To add it to a host:
+
+```sh
+holon mcp hosts                          # the hosts it knows, which are here, and what they have
+holon mcp setup claude-code cursor       # add it to those (or --all: every one found here)
+```
+
+It knows Claude Code, Claude Desktop, Cursor, VS Code (Copilot), Visual Studio, GitHub Copilot
+CLI, Devin Desktop and CLI, Windsurf, Zed, Gemini CLI, Antigravity, OpenAI Codex, Cline, Junie,
+Kiro, opencode, LM Studio and Continue, and shows Goose and JetBrains AI Assistant the entry to
+paste. It writes the entry into the host's own settings file and leaves the rest of the file as
+it was, comments and all; each line it prints says what that host needs to load it (a new
+session, a restart). `--project DIR` writes a project's files instead of yours, `--print` shows
+the entry without writing, `--remove` takes it out. A host it doesn't know is added once, as like
+one it does, then set up like the others:
+
+```sh
+holon mcp hosts add my-ide --config ~/.my-ide/mcp.json --like cursor
+holon mcp setup my-ide
+```
+
+For a `holon serve` on another machine, `holon mcp setup HOST --server https://holon.example.com`
+asks for an API token with role `agent` (made on that server's admin page; or give it in
+`HOLON_TOKEN`), checks it with the server, and keeps it in `~/.holon/tokens.json`, readable only
+by you: the host's file names the server and never holds the token. `--server` with `--remove`
+forgets it. Design: `docs/L4s/mcp-setup-L4.md`.
+
+Its tools:
 
 - `reference`: the language on one page, every leaf, the samples.
 - `check`: what `holon check` says, mistakes with their line and a caret.
@@ -167,8 +195,8 @@ The server holds it to that too: `holon mcp` asks as an `agent`, a role that rea
 calls, and never approves, grants, starts, stops, deletes or sets a secret. Through the run file
 it signs in as you, and its steps show as `local:<you> (agent)` in the activity log and on the
 flows page. An agent that also has a shell could read the run file and ask as you; for one,
-make it an API token with role `agent` in the editor's admin page and start `holon mcp
---server <URL>` with that token in `HOLON_TOKEN`: nothing done with that token approves. Design:
+make it an API token with role `agent` in the editor's admin page and set it up with
+`--server` as above: nothing done with that token approves. Design:
 `docs/L4s/agent-surface-L4.md`.
 
 ## Releasing

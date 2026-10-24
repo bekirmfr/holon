@@ -44,6 +44,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 toml = "0.8"
+# `holon mcp setup` (mcphosts.rs) edits Codex's config.toml with its comments kept.
+toml_edit = "0.22"
 ureq = "2"
 zeroize = "1"
 
@@ -54,8 +56,8 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target."cfg(windows)".dependencies]
 keyring = { version = "3", features = ["windows-native"] }
-# An owner-only ACL on the secrets file and its key file.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Memory"] }
+# An owner-only ACL on the secrets file and its key file; a token typed without showing it.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Console", "Win32_System_Memory"] }
 
 [features]
 # The built editor (editor/dist, from `npm run build` in editor/) compiled into the binary and
