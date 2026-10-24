@@ -46,7 +46,9 @@ default `holon` on the PATH). Any other editor with a language client uses `holo
    the server starts and when it isn't installed; semantic tokens can come later if the grammar's
    guesses (a call is a word before `(`, a binding a word before `=`) prove wrong.
 6. **The extension is small and plain JavaScript.** One file, `vscode-languageclient` its only
-   dependency, no build step; `npm run package` makes the `.vsix` (`@vscode/vsce`).
+   dependency, bundled with it by esbuild into `dist/extension.js` (`npm run bundle`), so the
+   `.vsix` (`npm run package`, `@vscode/vsce`) holds that, the manifest, the language
+   configuration, the grammar and the README: seven files, no `node_modules`.
 
 ## What it does not do
 

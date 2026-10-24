@@ -29,8 +29,12 @@ code --install-extension holon-0.1.0.vsix
 
 ```sh
 npm test               # the grammar, through VS Code's TextMate engine, on every sample
-npm run test:vscode    # in a real VS Code, against target/debug's holon (cargo build -p holon)
+npm run bundle         # extension.js and its client into dist/extension.js (esbuild)
+npm run test:vscode    # bundled, in a real VS Code, against target/debug's holon (cargo build -p holon)
 ```
+
+`npm run package` bundles first; the `.vsix` holds only the bundle, the manifest, the language
+configuration, the grammar and this README.
 
 `test:vscode` downloads a VS Code into `.vscode-test` the first time; `VSCODE_PATH` names an
 installed one instead, and `HOLON_PATH` another `holon`.

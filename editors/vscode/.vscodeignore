@@ -1,3 +1,8 @@
-test/**
-.vscode-test/**
-*.vsix
+# The package is the bundle (dist/extension.js, with vscode-languageclient in it), the manifest,
+# the language configuration, the grammar and the README; everything else stays here.
+**
+!package.json
+!README.md
+!language-configuration.json
+!syntaxes/holon.tmLanguage.json
+!dist/extension.js

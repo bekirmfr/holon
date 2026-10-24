@@ -6,17 +6,30 @@
   "publisher": "bekirmfr",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
-  "repository": { "type": "git", "url": "https://github.com/bekirmfr/holon" },
-  "engines": { "vscode": "^1.82.0" },
-  "categories": ["Programming Languages", "Formatters"],
-  "main": "./extension.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bekirmfr/holon"
+  },
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters"
+  ],
+  "main": "./dist/extension.js",
   "activationEvents": [],
   "contributes": {
     "languages": [
       {
         "id": "holon",
-        "aliases": ["Holon", "holon"],
-        "extensions": [".holon"],
+        "aliases": [
+          "Holon",
+          "holon"
+        ],
+        "extensions": [
+          ".holon"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -40,8 +53,11 @@
   },
   "scripts": {
     "test": "node --test test/grammar.test.js",
+    "bundle": "esbuild extension.js --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18 --minify --sourcemap",
+    "pretest:vscode": "npm run bundle",
     "test:vscode": "node test/integration/run.js",
-    "package": "vsce package --skip-license"
+    "vscode:prepublish": "npm run bundle",
+    "package": "vsce package --skip-license --no-dependencies"
   },
   "dependencies": {
     "vscode-languageclient": "9.0.1"
@@ -49,6 +65,7 @@
   "devDependencies": {
     "@vscode/test-electron": "2.4.1",
     "@vscode/vsce": "3.2.1",
+    "esbuild": "0.24.0",
     "vscode-oniguruma": "2.0.1",
     "vscode-textmate": "9.1.0"
   }
