@@ -1,0 +1,7 @@
+flow fetch-json
+port 8106
+
+route GET /slideshow (req) {
+  page = http.get("httpbin.org", "/json")
+  respond parse_json(page.body).slideshow.title
+}

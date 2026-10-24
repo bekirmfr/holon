@@ -917,8 +917,17 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 if !["get", "post", "put", "patch", "delete", "head"].contains(&method.as_str()) {
                     return self.generic(node);
                 }
+                // The host, the path, then headers and body by name: they are optional, and read
+                // better named.
                 let mut args = vec![quote(node.param("host"))];
-                args.extend(self.positional_then_named(node, &["path".into(), "headers".into(), "body".into()], &[])?);
+                if let Some((t, _)) = self.arg(node, "path")? {
+                    args.push(t);
+                }
+                for input in ["headers", "body"] {
+                    if let Some((t, _)) = self.arg(node, input)? {
+                        args.push(format!("{input}: {t}"));
+                    }
+                }
                 atom(format!("http.{method}({})", args.join(", ")))
             }
             "await" => {
@@ -1204,12 +1213,12 @@ mod tests {
     }
 
     #[test]
-    fn every_sample_round_trips_from_its_natural_text() {
-        for (name, src) in crate::lang::lower::tests::golden() {
+    fn every_sample_round_trips_from_its_text() {
+        for (name, src) in crate::lang::lower::tests::sample_texts() {
             let first = compile(src).unwrap_or_else(|e| panic!("{name}: {e}"));
             let text = round_trips(name, &first.doc, &first.names);
             // Names from the text survive fmt.
-            if *name == "guarded-api" {
+            if name == "guarded-api" {
                 assert!(text.contains("  ok = "), "{text}");
                 assert!(text.contains("  receipt = "), "{text}");
             }
@@ -1221,14 +1230,14 @@ mod tests {
         let hello = samples::build(samples::sample("hello-api").unwrap()).unwrap();
         assert_eq!(
             printed(Some("hello-api"), &hello, &BTreeMap::new()),
-            "flow hello-api\nport 8101\n\nroute GET /hello/:name (req) {\n  respond concat(\"Hello, \", req.params.name)\n}\n"
+            "flow hello-api\nport 8101\n\nroute GET /hello/:name (req) {\n  respond \"Hello, {req.params.name}\"\n}\n"
         );
         let heartbeat = samples::build(samples::sample("heartbeat").unwrap()).unwrap();
         assert_eq!(
             printed(Some("heartbeat"), &heartbeat, &BTreeMap::new()),
             "flow heartbeat\nevery 10s\n\nt = now\nstate.last_beat = t\nstate.beats = (state.beats ?? 0) + 1\nstate.first_beat = state.first_beat ?? t\n"
         );
-        let likes = compile(crate::lang::lower::tests::golden().iter().find(|(n, _)| *n == "likes").unwrap().1).unwrap();
+        let likes = compile(samples::sample("likes").unwrap().text).unwrap();
         let text = printed(Some("likes"), &likes.doc, &likes.names);
         assert!(text.contains("collection likes\n"), "{text}");
         assert!(text.contains("  respond \"{likes[req.params.id] ?? 0} likes\"\n"), "{text}");

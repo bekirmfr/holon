@@ -1,0 +1,18 @@
+flow likes
+port 8108
+collection likes
+
+route POST /posts/:id/like (req) {
+  id = req.params.id
+  n = (likes[id] ?? 0) + 1
+  likes[id] = n
+  respond n, missing: 400
+}
+
+route GET /posts/:id/likes (req) {
+  respond "{likes[req.params.id] ?? 0} likes"
+}
+
+route GET /likes (req) {
+  respond likes.list()
+}

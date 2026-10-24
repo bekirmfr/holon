@@ -47,10 +47,13 @@ describe("flows as text", () => {
     expect(server.endpoints.map((e) => `${e.method} ${e.path}`)).toEqual(["GET /hello/:name"]);
   });
 
-  it("is the same unit as the same flow built on the canvas (the Hello API sample)", () => {
+  it("is the same unit written in either form: nodes and wires, or the expression form", () => {
     const ev = new Evaluator();
+    const natural = 'flow hello-api\nport 8101\n\nroute GET /hello/:name (req) {\n  respond concat("Hello, ", req.params.name)\n}\n';
+    expect(unitOf(compileHolon(HELLO, ev).doc, ev)).toBe(unitOf(compileHolon(natural, ev).doc, ev));
+    // The sample itself interpolates, which is one as_text more: a different unit, the same answer.
     const sample = buildSample(samples().find((s) => s.name === "hello-api")!, ev);
-    expect(unitOf(compileHolon(HELLO, ev).doc, ev)).toBe(unitOf(sample, ev));
+    expect((sample.nodes as PrimitiveNodeType[]).map((n) => n.data.name)).toEqual(["request", "const", "field", "as_text", "concat", "respond"]);
   });
 
   it.each(samples().map((s) => [s.name]))("round-trips the %s sample: printed, compiled back, the identical unit", (sampleName) => {

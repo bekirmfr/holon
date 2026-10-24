@@ -1,0 +1,9 @@
+flow guarded-api
+port 8109
+optional secret.receipt_key
+
+route GET /me (req) {
+  ok = secure_equals(req.headers.authorization, "Bearer {secret.api_token}")
+  receipt = hmac_sha256(secret.receipt_key, req.path) ?? "unsigned"
+  respond { receipt: receipt } when ok, missing: 401
+}

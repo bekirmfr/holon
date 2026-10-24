@@ -1,0 +1,26 @@
+flow marketplace
+port 8120
+browsers *
+collection listings
+
+route GET /listings (req) {
+  respond listings.list(after: req.query.after ?? "", limit: 200)
+}
+
+route GET /listings/:id (req) {
+  respond listings[req.params.id]
+}
+
+route POST /listings (req) {
+  id = "{req.json.name}@{req.json.root}"
+  listing = { ..req.json, published_at: now, id: id } when secure_equals(req.headers.authorization, "Bearer {secret.publish_key}")
+  listings[id] = listing
+  respond listing, missing: 401
+}
+
+route POST /listings/:id/yank (req) {
+  id = req.params.id
+  yanked = { ..listings[id], yanked: true } when secure_equals(req.headers.authorization, "Bearer {secret.publish_key}")
+  listings[id] = yanked
+  respond yanked, missing: 401
+}

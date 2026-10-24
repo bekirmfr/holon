@@ -1,0 +1,6 @@
+flow hello-api
+port 8101
+
+route GET /hello/:name (req) {
+  respond "Hello, {req.params.name}"
+}

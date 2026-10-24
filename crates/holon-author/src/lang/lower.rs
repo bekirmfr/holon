@@ -96,7 +96,9 @@ fn number_text(n: f64) -> String {
 /// A value on a wire: a node's output, or, inside a holon or a function, one of its inputs.
 #[derive(Clone, Debug)]
 enum Val {
-    Out { id: String, outputs: Vec<WPort>, port: usize },
+    /// A node's output `port`; `explicit` when `.name` picked it out of several, so a further
+    /// `.name` is a field and a binding of it names no node.
+    Out { id: String, outputs: Vec<WPort>, port: usize, explicit: bool },
     In(String),
 }
 
@@ -237,6 +239,7 @@ impl<'a> Lowerer<'a> {
         let settings = self.settings(file)?;
         let name = file.headers.iter().find_map(|h| if let HeaderKind::Flow(n) = &h.kind { Some(n.clone()) } else { None });
         let mut doc = self.b.finish(settings);
+        super::layout::lay_out(&mut doc);
         for node in &mut doc.nodes {
             if let Some(s) = self.spans.get(&node.id) {
                 node.extra.insert("source".into(), json!({ "line": s.start.line, "col": s.start.col, "endLine": s.end.line, "endCol": s.end.col }));
@@ -291,7 +294,7 @@ impl<'a> Lowerer<'a> {
 
     fn out(&self, id: &str) -> Val {
         let outputs = self.b.data(id).map(|d| d.outputs.clone()).unwrap_or_default();
-        Val::Out { id: id.into(), outputs, port: 0 }
+        Val::Out { id: id.into(), outputs, port: 0, explicit: false }
     }
 
     /// Wire `v` into `to`'s `input`; a holon's or function's input is recorded for its boundary.
@@ -301,7 +304,7 @@ impl<'a> Lowerer<'a> {
     /// identity on presence. It is placed on the second use, and the first use is moved onto it.
     fn connect(&mut self, v: &Val, to: &str, input: &str, span: Span) -> R<()> {
         match v {
-            Val::Out { id, outputs, port } => {
+            Val::Out { id, outputs, port, .. } => {
                 let output = outputs.get(*port).map(|p| p.name.clone()).unwrap_or_else(|| "out".into());
                 self.b.wire(id, &output, to, input).or_else(|e| err(span, e))
             }
@@ -396,7 +399,7 @@ impl<'a> Lowerer<'a> {
                 }
                 self.check_bindable(name)?;
                 let v = self.expr(value)?;
-                if let Val::Out { id, port: 0, .. } = &v {
+                if let Val::Out { id, port: 0, explicit: false, .. } = &v {
                     self.names.entry(id.clone()).or_insert_with(|| name.text.clone());
                 }
                 self.frame().env.insert(name.text.clone(), v);
@@ -671,7 +674,7 @@ impl<'a> Lowerer<'a> {
             for p in &def.outputs {
                 let port = HolonPort { name: p.name.text.clone(), unit: p.unit.clone() };
                 if let Some((v, span)) = bound.get(&p.name.text) {
-                    let Val::Out { id, outputs: outs, port: k } = v else { unreachable!("checked when bound") };
+                    let Val::Out { id, outputs: outs, port: k, .. } = v else { unreachable!("checked when bound") };
                     let output = outs.get(*k).map(|o| o.name.clone()).unwrap_or_else(|| "out".into());
                     let _ = span;
                     wiring_out.push((id.clone(), output, p.name.text.clone()));
@@ -683,7 +686,7 @@ impl<'a> Lowerer<'a> {
             // Effects written as statements leave as outputs too, named after their leaves.
             let mut counts: HashMap<String, usize> = HashMap::new();
             for (v, span) in &effects {
-                let Val::Out { id, outputs: outs, port } = v else { continue };
+                let Val::Out { id, outputs: outs, port, .. } = v else { continue };
                 let leaf = self.b.data(id).map(|d| d.name.clone()).unwrap_or_default();
                 let base = match leaf.as_str() {
                     "collection_put" => "put",
@@ -776,7 +779,7 @@ impl<'a> Lowerer<'a> {
         let result = self.expr(body);
         let frame = self.frames.pop().expect("the function's frame");
         let v = result?;
-        let Val::Out { id, outputs, port } = &v else {
+        let Val::Out { id, outputs, port, .. } = &v else {
             return err(body.span, "a function's body can't be a parameter passed straight through: put a node between");
         };
         let output = outputs.get(*port).map(|o| o.name.clone()).unwrap_or_else(|| "out".into());
@@ -836,11 +839,11 @@ impl<'a> Lowerer<'a> {
                 let v = self.expr(base)?;
                 // One output of a multi-output node, selected by name; from then on the value
                 // is that one output, so a further `.name` is a field.
-                if let Val::Out { id, outputs, .. } = &v
+                if let Val::Out { id, outputs, explicit: false, .. } = &v
                     && outputs.len() > 1
                     && let Some(k) = outputs.iter().position(|p| p.name == name.text)
                 {
-                    return Ok(Val::Out { id: id.clone(), outputs: vec![outputs[k].clone()], port: 0 });
+                    return Ok(Val::Out { id: id.clone(), outputs: outputs.clone(), port: k, explicit: true });
                 }
                 self.node_with("field", &[("name".into(), name.text.clone())], &[("record", v)], e.span)
             }
@@ -1239,12 +1242,6 @@ pub(crate) mod tests {
     use crate::{commands, samples, text, to_hex};
     use holon_core::MapResolver;
 
-    /// The samples in the natural form, spelled to place exactly the builders' nodes: shared with
-    /// the printer's round-trip tests.
-    pub(crate) fn golden() -> &'static [(&'static str, &'static str)] {
-        GOLDEN
-    }
-
     /// The unit a document deploys as, through the real core.
     fn hash_of(doc: &FlowDocument) -> String {
         let mut store = MapResolver::new();
@@ -1255,6 +1252,11 @@ pub(crate) mod tests {
 
     fn builders_hash(name: &str) -> String {
         hash_of(&samples::build(samples::sample(name).unwrap()).unwrap())
+    }
+
+    /// Every sample's text (samples/*.holon): the natural form, as fmt writes it.
+    pub(crate) fn sample_texts() -> Vec<(&'static str, &'static str)> {
+        samples::samples().iter().map(|s| (s.name, s.text)).collect()
     }
 
     fn compiled(src: &str) -> Lowered {
@@ -1274,7 +1276,7 @@ pub(crate) mod tests {
     // ── the golden tests: a text lowers to the builder's unit ──
 
     #[test]
-    fn every_sample_in_the_wiring_form_lowers_to_the_builders_unit() {
+    fn every_sample_in_the_wiring_form_lowers_to_the_same_unit_as_its_text() {
         for s in samples::samples() {
             let doc = samples::build(s).unwrap();
             let src = text::print(Some(s.name), &doc, &mut MapResolver::new(), &Names::new()).unwrap();
@@ -1284,55 +1286,6 @@ pub(crate) mod tests {
         }
         // And the starter, in the expression form.
         assert!(compile(commands::STARTER).is_ok());
-    }
-
-    /// The samples in the natural form, spelled so they place exactly the builders' nodes: where
-    /// a builder uses `concat`, so does the text (interpolation adds `as_text`); a holon grouped
-    /// by proposal carries its unit's port names in quotes; one `now` is bound and shared.
-    const GOLDEN: &[(&str, &str)] = &[
-        ("hello-api", "flow hello-api\nport 8101\n\nroute GET /hello/:name (req) {\n  respond concat(\"Hello, \", req.params.name)\n}\n"),
-        (
-            "notes-api",
-            "flow notes-api\nport 8102\ncollection notes\n\nroute GET /notes (req) {\n  respond notes.list(after: req.query.after ?? \"\", limit: 50)\n}\nroute PUT /notes/:id (req) {\n  notes[req.params.id] = req.json\n  respond req.json, missing: 400\n}\nroute GET /notes/:id (req) {\n  respond notes[req.params.id]\n}\nroute DELETE /notes/:id (req) {\n  delete notes[req.params.id]\n  respond 204\n}\n",
-        ),
-        (
-            "stripe-to-slack",
-            "flow stripe-to-slack\nport 8103\n\nroute POST /stripe (req) {\n  event = stripe.verify(req, secret.stripe_webhook_secret, now, tolerance: 5m).event\n  sent  = http.post(\"hooks.slack.com\", secret.slack_webhook_path,\n            headers: { \"content-type\": \"application/json\" },\n            body: json({ text: concat(\"Stripe: \", event.type) }))\n  respond sent.status, missing: 400\n}\n",
-        ),
-        (
-            "guarded-api",
-            "flow guarded-api\nport 8109\noptional secret.receipt_key\n\nroute GET /me (req) {\n  ok      = secure_equals(req.headers.authorization, concat(\"Bearer \", secret.api_token))\n  receipt = hmac_sha256(secret.receipt_key, req.path, encoding: hex) ?? \"unsigned\"\n  respond { receipt: receipt } when ok, missing: 401\n}\n",
-        ),
-        (
-            "slugs",
-            "flow slugs\nport 8110\ncollection posts\noptional secret.receipt_key\n\nholon slugify(text \"s\") -> (slug \"out\") {\n  slug = join(split(lowercase(text), \" \"), \"-\")\n}\n\nholon publish(slug \"value\", author \"value\") -> (put \"out\", saved \"out\", receipt \"out\") {\n  s       = slug ?? \"\"\n  put     = posts.put(s, { author: author, at: now })\n  saved   = state.set(last_post, s)\n  receipt = hmac_sha256(secret.receipt_key, s, encoding: hex) ?? \"unsigned\"\n}\n\nroute POST /slugs (req) {\n  title     = slugify(req.json.title)\n  author    = slugify(req.json.author)\n  published = publish(title, author)\n  respond { title: title, author: author, receipt: published.receipt }, missing: 400\n}\n\nroute GET /slugs (req) {\n  respond posts.list(limit: 100)\n}\n",
-        ),
-        ("heartbeat", "flow heartbeat\nevery 10s\n\nt = now\nstate.last_beat = t\nstate.beats = (state.beats ?? 0) + 1\nstate.first_beat = state.first_beat ?? t\n"),
-        (
-            "approval",
-            "flow approval\nport 8105\n\nroute POST /orders (req) {\n  respond concat(\"/paid/\", resume_token(paid))\n  paid = await paid, expires: 1d\n  state.last_order = { ..req.json, paid_via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks, the order is paid\"\n}\n",
-        ),
-        ("fetch-json", "flow fetch-json\nport 8106\n\nroute GET /slideshow (req) {\n  page = http.get(\"httpbin.org\", \"/json\")\n  respond parse_json(page.body).slideshow.title\n}\n"),
-        (
-            "sign-payload",
-            "flow sign-payload\nport 8107\n\nroute POST /sign (req) {\n  respond { signature:   hmac_sha256(secret.signing_key, req.body, encoding: hex),\n            body_base64: base64(req.body, mode: encode) }, missing: 400\n}\n",
-        ),
-        (
-            "likes",
-            "flow likes\nport 8108\ncollection likes\n\nroute POST /posts/:id/like (req) {\n  id = req.params.id\n  n  = (likes[id] ?? 0) + 1\n  likes[id] = n\n  respond n, missing: 400\n}\n\nroute GET /posts/:id/likes (req) {\n  respond \"{likes[req.params.id] ?? 0} likes\"\n}\n\nroute GET /likes (req) {\n  respond likes.list(limit: 100)\n}\n",
-        ),
-        (
-            "witness",
-            "flow witness\nport 8130\ncollection batches\n\nroute POST /heads (req) {\n  ok    = secure_equals(req.headers.authorization, concat(\"Bearer \", secret.witness_key))\n  batch = req.json.batch\n  t     = now\n  batches[batch] = { ..req.json, witnessed_at: t } when ok\n  respond { batch: batch, witnessed_at: t } when ok, missing: 401\n}\n\nroute GET /batches (req) {\n  respond batches.list(after: req.query.after ?? \"\", limit: 200)\n}\n",
-        ),
-    ];
-
-    #[test]
-    fn every_sample_in_the_natural_form_lowers_to_the_builders_unit() {
-        for (name, src) in GOLDEN {
-            let got = compile(src).unwrap_or_else(|e| panic!("{name}: {e}\n{src}"));
-            assert_eq!(hash_of(&got.doc), builders_hash(name), "{name}");
-        }
     }
 
     // ── each construct, by the nodes it places ──

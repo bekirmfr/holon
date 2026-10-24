@@ -1,0 +1,7 @@
+flow heartbeat
+every 10s
+
+t = now
+state.last_beat = t
+state.beats = (state.beats ?? 0) + 1
+state.first_beat = state.first_beat ?? t

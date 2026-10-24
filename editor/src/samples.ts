@@ -29,6 +29,8 @@ export type Sample = {
   browsers?: string;
   /** How to try it once deployed. */
   tryIt: string;
+  /** The flow in the language, as its file in crates/holon-author/samples/ is written. */
+  text: string;
 };
 
 let list: Sample[] | null = null;

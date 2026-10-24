@@ -204,11 +204,14 @@ placed.slug -> upper.s
     const publish = nodes.find((n) => n.data.name === "publish")!;
     const opened = innerCanvas(publish, nodes, edges, ev);
     if (!opened.ok) throw new Error(opened.message);
-    expect(opened.childIds.length).toBe(10);
-    expect(opened.nodes.length).toBe(12);
+    // The holon's leaves, plus the pass-through its thrice-used `slug` input shares (a guard and
+    // its constant true), as the language lowers it (docs/LANGUAGE.md, step 3).
+    expect(opened.childIds.length).toBe(11);
+    expect(opened.nodes.length).toBe(13);
     const boundary = (id: string) => opened.nodes.find((n) => n.id === id)!.data as BoundaryData;
+    // slug arrives through the `?? ""` at the call site (a default), author straight from slugify.
     expect(boundary(BOUNDARY_IN).ports.map((p) => [p.name, p.outside])).toEqual([
-      ["slug", ["slugify"]],
+      ["slug", ["default"]],
       ["author", ["slugify"]],
     ]);
     expect(boundary(BOUNDARY_OUT).ports.map((p) => [p.name, p.outside])).toEqual([
@@ -221,7 +224,7 @@ placed.slug -> upper.s
     for (const e of opened.edges) {
       expect(ports.has(e.source) && ports.has(e.target), e.id).toBe(true);
     }
-    // slug enters through one `default` node, which fans out inside.
+    // slug enters once, through the pass-through that fans out inside.
     expect(opened.edges.filter((e) => e.source === BOUNDARY_IN).length).toBe(2);
     expect(opened.edges.filter((e) => e.target === BOUNDARY_OUT).length).toBe(3);
     // Laid out by how far data has come: no two nodes on the same spot.

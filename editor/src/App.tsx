@@ -844,7 +844,7 @@ function Canvas({
                   }
                 },
                 exportOf: async (name) => printHolon(name, (await getFlow(name)).document, ev),
-                textOfSample: (sample) => printHolon(sample.name, buildSample(sample, ev), ev),
+                textOfSample: (sample) => sample.text,
               }}
               manifestOf={manifestOfDocument}
               marketplace={{

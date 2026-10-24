@@ -64,6 +64,14 @@ pub struct Viewport {
     pub zoom: f64,
 }
 
+/// Where the canvas looks so that all of `nodes` shows at once, clear of the canvas's panels.
+pub fn fit(nodes: &[Node]) -> Viewport {
+    let right = nodes.iter().map(|n| n.position().x).fold(f64::NEG_INFINITY, f64::max) + 320.0;
+    let bottom = nodes.iter().map(|n| n.position().y).fold(f64::NEG_INFINITY, f64::max) + 220.0;
+    let zoom = 0.8f64.min(820.0 / right).min(640.0 / bottom);
+    Viewport { x: 10.0, y: 50.0, zoom: (zoom * 100.0).round() / 100.0 }
+}
+
 /// A flow document: its nodes and wires, where the canvas looks, the units of its composites
 /// (hex preimages, their whole closure, children first) and their names, its deploy settings.
 /// What isn't read here passes through.
@@ -330,9 +338,7 @@ impl FlowBuilder {
             self.frames.pop();
         }
         let top = self.frames.pop().expect("the flow's own frame");
-        let right = top.nodes.iter().map(|n| n.position().x).fold(f64::NEG_INFINITY, f64::max) + 320.0;
-        let bottom = top.nodes.iter().map(|n| n.position().y).fold(f64::NEG_INFINITY, f64::max) + 220.0;
-        let zoom = 0.8f64.min(820.0 / right).min(640.0 / bottom);
+        let viewport = Some(fit(&top.nodes));
         let units = closure_of(&self.holons, &self.store)
             .iter()
             .filter_map(|h| self.store.resolve(h).and_then(|u| encode_preimage(u).ok()))
@@ -341,7 +347,7 @@ impl FlowBuilder {
         FlowDocument {
             nodes: top.nodes,
             edges: top.wires,
-            viewport: Some(Viewport { x: 10.0, y: 50.0, zoom: (zoom * 100.0).round() / 100.0 }),
+            viewport,
             units: Some(units),
             names: Some(self.names),
             server: Some(settings),

@@ -1,0 +1,25 @@
+flow slugs
+port 8110
+optional secret.receipt_key
+collection posts
+
+holon slugify(text) -> slug {
+  slug = join(split(lowercase(text), " "), "-")
+}
+
+holon publish(slug, author) -> (put, saved, receipt) {
+  saved = state.set(last_post, slug)
+  put = posts.put(slug, { author: author, at: now })
+  receipt = hmac_sha256(secret.receipt_key, slug) ?? "unsigned"
+}
+
+route POST /slugs (req) {
+  title = slugify(req.json.title)
+  author = slugify(req.json.author)
+  published = publish(title ?? "", author)
+  respond { title: title, author: author, receipt: published.receipt }, missing: 400
+}
+
+route GET /slugs (req) {
+  respond posts.list()
+}

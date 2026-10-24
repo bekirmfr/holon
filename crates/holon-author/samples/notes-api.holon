@@ -1,0 +1,21 @@
+flow notes-api
+port 8102
+collection notes
+
+route GET /notes (req) {
+  respond notes.list(after: req.query.after ?? "", limit: 50)
+}
+
+route PUT /notes/:id (req) {
+  notes[req.params.id] = req.json
+  respond req.json, missing: 400
+}
+
+route GET /notes/:id (req) {
+  respond notes[req.params.id]
+}
+
+route DELETE /notes/:id (req) {
+  delete notes[req.params.id]
+  respond 204
+}

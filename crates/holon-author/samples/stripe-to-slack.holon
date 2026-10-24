@@ -1,0 +1,8 @@
+flow stripe-to-slack
+port 8103
+
+route POST /stripe (req) {
+  verified = stripe.verify(req, secret.stripe_webhook_secret, now)
+  sent = http.post("hooks.slack.com", secret.slack_webhook_path, headers: { "content-type": "application/json" }, body: json({ text: "Stripe: {verified.event.type}" }))
+  respond sent.status, missing: 400
+}

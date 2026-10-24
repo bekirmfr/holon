@@ -47,9 +47,7 @@ route GET /hello/:name (req) {
 pub fn new_flow(sample: Option<&str>) -> Result<String, String> {
     let Some(name) = sample else { return Ok(STARTER.into()) };
     let sample = samples::sample(name).ok_or_else(|| format!("no sample \"{name}\" (there are {})", sample_names()))?;
-    let doc = samples::build(sample)?;
-    let text = lang::print(Some(sample.name), &doc, &mut MapResolver::new(), &Names::new(), &Default::default())?;
-    Ok(format!("# {}: {}\n{text}", sample.title, sample.description))
+    Ok(format!("# {}: {}\n{}", sample.title, sample.description, sample.text))
 }
 
 /// Every sample's name, for a usage line.
@@ -211,6 +209,8 @@ mod tests {
         for s in samples::samples() {
             let text = new_flow(Some(s.name)).unwrap();
             assert_eq!(check(&format!("{}.holon", s.name), &text).code, 0, "{}", s.name);
+            // The sample's own text, its names and all, under its title.
+            assert!(text.ends_with(s.text), "{}", s.name);
         }
         assert_eq!(new_flow(None).unwrap(), STARTER);
         assert_eq!(check("my-flow.holon", STARTER).code, 0);

@@ -1,0 +1,6 @@
+flow sign-payload
+port 8107
+
+route POST /sign (req) {
+  respond { signature: hmac_sha256(secret.signing_key, req.body), body_base64: base64(req.body) }, missing: 400
+}

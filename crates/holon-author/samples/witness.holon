@@ -1,0 +1,15 @@
+flow witness
+port 8130
+collection batches
+
+route POST /heads (req) {
+  ok = secure_equals(req.headers.authorization, "Bearer {secret.witness_key}")
+  batch = req.json.batch
+  t = now
+  batches[batch] = { ..req.json, witnessed_at: t } when ok
+  respond { batch: batch, witnessed_at: t } when ok, missing: 401
+}
+
+route GET /batches (req) {
+  respond batches.list(after: req.query.after ?? "", limit: 200)
+}

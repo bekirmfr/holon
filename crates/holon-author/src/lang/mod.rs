@@ -7,9 +7,10 @@
 //! parser, whose errors say the line and column; [`lower`] turns the tree into a flow document
 //! through the flow builder, every node from the live catalog, so a text and the same flow drawn
 //! on the canvas are the same unit; [`print`] writes a flow document back as canonical text, the
-//! same unit again.
+//! same unit again; [`layout`] places a compiled text's nodes on the canvas.
 
 pub mod ast;
+pub mod layout;
 pub mod lex;
 pub mod lower;
 pub mod parse;
