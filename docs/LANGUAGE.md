@@ -89,7 +89,7 @@ Three reasons, in order of weight.
 1. **Agents write the flows.** The product direction (agent actions you can prove) makes an agent
    the main author. An agent is far better at `join(split(lowercase(text), " "), "-")` than at
    five `node` lines and four wires: fewer tokens, fewer places to misname a port, and errors it
-   can read. The MCP tools (`check`, `deploy`, `run`, `explain`) will speak this form.
+   can read. The MCP tools (`check`, `deploy`, `call`, `explain`, step 7) speak this form.
 2. **Expressiveness without new primitives.** Most of what today takes five nodes is one nested
    expression. The vocabulary stays at its 70 leaves; the text gets shorter.
 3. **Review, diff and version control** become ordinary. The derived manifest stays the thing a
@@ -972,8 +972,18 @@ step that changed core is done; none changes the host, the server or the documen
    node by hand and a compiled sample otherwise opened on a plain grid; and `holon new --sample`
    and the flows page's `.holon` download write the sample's file as it is, its names and all,
    rather than printing its document again.
-7. **Agent surface.** The MCP tools take and return this form. Not part of this document; it is
-   why the order above puts the parser before the printer.
+7. **Agent surface** ✅ (2026-10-24, designed in `docs/L4s/agent-surface-L4.md`). `holon mcp`,
+   a Model Context Protocol server on stdin and stdout, with six tools that speak this form:
+   `reference` (this language on one page, every leaf, the samples), `check`, `deploy`, `call`,
+   `runs` and `explain`. `explain` is §9's promise: the deployed flow printed through the
+   language, with the agent's own binding names, and under each statement of the run's route the
+   value it had, or the node a missing value first went missing at (`field "author" gave
+   nothing`), read from the run's recorded timeline through the document's `trace`. The tools
+   never approve: a deploy that needs approval is saved as a flow for a person to deploy from the
+   editor, and once they have, a version that needs nothing more deploys from the agent at once.
+   Tests: the tools against the in-process router (text to an explained failing run), the
+   protocol on raw lines, a person's saved flow never replaced, and an end-to-end test where a
+   person approves the agent's flow in the real editor and the agent calls and explains it.
 
 Dependencies: 3 needs 1 and 2; 4 needs 3 (the golden test is what makes the printer checkable);
 5 and 6 need 4; 7 needs 5.
@@ -1021,6 +1031,6 @@ Decided ones are kept, with the decision, for a reader who wonders why.
 
 ## 14. What this document does not decide
 
-The MCP server and its tools, the export and verifier for run logs, the sandboxed WebAssembly
-primitive, and the marketplace's `use`. Each depends on this language existing and none changes
-it.
+The MCP server and its tools (decided in `docs/L4s/agent-surface-L4.md`), the export and
+verifier for run logs, the sandboxed WebAssembly primitive, and the marketplace's `use`. Each
+depends on this language existing and none changes it.
