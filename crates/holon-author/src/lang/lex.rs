@@ -159,12 +159,38 @@ impl Lexer {
     fn string(&mut self, start: Pos) -> Result<(), LexError> {
         self.bump(); // the opening quote
         let mut s = String::new();
+        self.string_body(start, &mut s)?;
+        self.push(Tok::Str, s, start);
+        Ok(())
+    }
+
+    /// The characters of a string after its opening quote, up to its closing one (consumed, left
+    /// out). A `{…}` part may hold a string of its own (`"{slice(sha256("{now}"), 0, 6)}"`, as
+    /// the printer writes a value used once): it is scanned the same way and kept whole, quotes
+    /// and all, for the part's own parse (parse.rs). Outside a part, `{{` and `}}` are braces.
+    fn string_body(&mut self, start: Pos, s: &mut String) -> Result<(), LexError> {
+        let mut depth = 0usize;
         loop {
             match self.peek(0) {
                 None | Some('\n') => return self.err(start, "a quote isn't closed"),
-                Some('"') => {
+                Some('"') if depth == 0 => {
                     self.bump();
-                    break;
+                    return Ok(());
+                }
+                Some('"') => {
+                    // A string inside the part, or the quote that ends this one with a part
+                    // left open (`"ab {x"`): tried as the former, read as the latter when the
+                    // text doesn't close that way (parse.rs then says which brace is open).
+                    let (at, pos, len) = (self.i, self.pos, s.len());
+                    s.push(self.bump());
+                    if self.string_body(pos, s).is_ok() {
+                        s.push('"');
+                    } else {
+                        (self.i, self.pos) = (at, pos);
+                        s.truncate(len);
+                        self.bump();
+                        return Ok(());
+                    }
                 }
                 Some('\\') => {
                     s.push(self.bump());
@@ -173,11 +199,21 @@ impl Lexer {
                         Some(_) => s.push(self.bump()),
                     }
                 }
+                Some(c @ ('{' | '}')) if depth == 0 && self.peek(1) == Some(c) => {
+                    s.push(self.bump());
+                    s.push(self.bump());
+                }
+                Some('{') => {
+                    depth += 1;
+                    s.push(self.bump());
+                }
+                Some('}') => {
+                    depth = depth.saturating_sub(1);
+                    s.push(self.bump());
+                }
                 Some(_) => s.push(self.bump()),
             }
         }
-        self.push(Tok::Str, s, start);
-        Ok(())
     }
 
     fn number(&mut self, start: Pos) -> Result<(), LexError> {
@@ -318,6 +354,17 @@ mod tests {
             ]
         );
         assert_eq!(kinds("5m 2h 1d"), [Tok::Duration(300.0), Tok::Duration(7200.0), Tok::Duration(86400.0), Tok::Newline, Tok::Eof]);
+    }
+
+    /// A string inside a `{…}` part is part of the string, quotes and all, as are the parts and
+    /// braces inside it; outside a part a quote still ends the string.
+    #[test]
+    fn a_string_inside_a_part_belongs_to_the_string() {
+        let texts = |src: &str| lex(src).unwrap().into_iter().filter(|t| t.tok == Tok::Str).map(|t| t.text).collect::<Vec<_>>();
+        assert_eq!(texts("s = \"{f(\"x\")}-{g(\"{{\")} {{\" + \"}}\""), ["{f(\"x\")}-{g(\"{{\")} {{", "}}"]);
+        assert_eq!(texts("s = \"a {slice(sha256(\"{now}:{x}\"), 0, 6)} b\""), ["a {slice(sha256(\"{now}:{x}\"), 0, 6)} b"]);
+        assert_eq!(texts("s = \"{h(\"q \\\" q\")}\""), ["{h(\"q \\\" q\")}"], "an escaped quote inside stays escaped");
+        assert!(lex("s = \"{f(\"x\")\n").is_err(), "a string inside an open part doesn't close the outer one");
     }
 
     #[test]

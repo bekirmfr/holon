@@ -80,6 +80,27 @@ fn unescape_at(chars: &[char], i: &mut usize) -> Option<char> {
     })
 }
 
+/// With `i` just past a string's opening quote, moves it just past the closing one, over the
+/// string's `{…}` parts and the strings inside them (the lexer's `string_body` rule). None when
+/// the string isn't closed.
+fn skip_string(chars: &[char], i: &mut usize) -> Option<()> {
+    let mut depth = 0usize;
+    while *i < chars.len() {
+        let c = chars[*i];
+        *i += 1;
+        match c {
+            '\\' => *i += 1,
+            '"' if depth == 0 => return Some(()),
+            '"' => skip_string(chars, i)?,
+            '{' | '}' if depth == 0 && chars.get(*i) == Some(&c) => *i += 1,
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
+}
+
 impl Parser {
     // ── tokens ───────────────────────────────────────────────────────────────────────────────
 
@@ -983,6 +1004,14 @@ impl Parser {
                         match chars[i] {
                             '{' => depth += 1,
                             '}' => depth -= 1,
+                            // A string inside the part: its braces are its own.
+                            '"' => {
+                                i += 1;
+                                if skip_string(&chars, &mut i).is_none() {
+                                    return err(col_of(open), "a { in a string isn't closed with } (write {{ for a brace)");
+                                }
+                                continue;
+                            }
                             _ => {}
                         }
                         i += 1;
@@ -1293,6 +1322,8 @@ mod tests {
         assert_eq!(e("\"{x}\""), "{x}");
         assert_eq!(e("\"a {{b}} c\""), "\"a {b} c\"");
         assert_eq!(e("\"{ json({ a: 1 }) }\""), "{json({a: 1})}", "braces nest inside a part");
+        assert_eq!(e("\"{slice(sha256(\"{now}:{x}\"), 0, 6)}!\""), "{slice(sha256({now}+\":\"+{x}), 0, 6)}+\"!\"", "a string nests inside a part, with parts of its own");
+        assert_eq!(e("\"{f(\"}}\")}\""), "{f(\"}\")}", "a brace inside the nested string is its own");
         // The part's expression carries the string's columns: `x` at column 10 of `s = "ab {x}"`.
         let Item::Stmt(s) = &file("s = \"ab {x}\"").items[0] else { panic!() };
         let StmtKind::Bind { value: Expr { kind: ExprKind::Interpolated(parts), .. }, .. } = &s.kind else { panic!() };

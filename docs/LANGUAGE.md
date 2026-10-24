@@ -548,6 +548,9 @@ Rules the table implies:
 | `[ ]` | `const{type: Json, value: "[]"}`: a placed `list` has at least its two declared inputs, so the empty list is the one literal that is a `const` |
 | `[ e ]` | `append(list: const "[]", item: e)`, for the same reason |
 
+A part is any expression, a string of its own included: `"{slice(sha256("{now}"), 0, 6)}"` is
+how the printer writes a value used once, and reads back as written.
+
 Interpolation wraps every `{…}` part in `as_text`, the leaf built for it: a text stays itself, a
 number or boolean is written as it reads, a record or list as JSON. So a part may be any value,
 and the lowering never depends on knowing a part's type. The one `as_text` node per part is the

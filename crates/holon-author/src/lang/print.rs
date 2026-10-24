@@ -1244,6 +1244,18 @@ mod tests {
         assert!(text.contains("  likes[id] = n\n"), "{text}");
     }
 
+    /// A value used once is written inline, inside an interpolated part too; when it holds a
+    /// string of its own (`"{slice(sha256("{now}"), 0, 6)}"`), the text must still read back.
+    #[test]
+    fn a_string_inside_a_part_round_trips() {
+        let src = "flow f\nport 8200\n\nroute GET /x/:id (req) {\n  seed = sha256(\"{random}:{now}:{req.params.id}\")\n  by = req.query.by ?? \"someone\"\n  respond \"{req.params.id}-{slice(seed, 0, 6)} via {by}\"\n}\n";
+        let first = compile(src).unwrap_or_else(|e| panic!("{e}"));
+        // Without the author's names (a document the editor opens from a deploy), each value used
+        // once is written where it is used.
+        let text = round_trips("f", &first.doc, &BTreeMap::new());
+        assert!(text.contains("{slice(sha256(\"{random}:{now}:{req.params.id}\"), 0, 6)} via {req.query.by ?? \"someone\"}\""), "{text}");
+    }
+
     #[test]
     fn the_natural_spellings_print_as_written() {
         let src = "flow f\nport 8200\ncollection notes\n\nholon twice(n) -> o {\n  o = n + n\n}\n\nroute POST /x (req) {\n  item = notes[req.params.id] ?? { k: [1, \"a\"] }\n  ok = req.headers.authorization == \"Bearer {secret.tok}\" && !(item.done)\n  sent = http.post(\"h.example\", \"/p\", body: json({ ..item, n: twice(item.n) }))\n  paid = await paid, expires: 2h\n  notes[req.params.id] = if ok then item else { }\n  state.last = { ..req.json, paid_via: paid.method }\n  respond { status: sent.status } when ok, status: 201, missing: 401\n}\n";
