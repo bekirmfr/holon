@@ -15,7 +15,9 @@
 //! - [`group`]: a selection grouped into one composite, a saved flow placed as one node.
 //! - [`composites`]: a composite's inside as a canvas, expanded in place, frozen back.
 //! - [`builder`]: a flow document built node by node, as the samples and the text format do.
-//! - [`text`]: the `.holon` text format: parsed, compiled, printed.
+//! - [`text`]: the `.holon` text format's wiring form: parsed, compiled, printed.
+//! - [`lang`]: the language (docs/LANGUAGE.md): both forms of the text as one syntax tree, with
+//!   spans. Its lowering and printer are the build order's next steps.
 //! - [`samples`]: the sample flows, one per capability, built with the builder.
 //! - [`describe`]: what a manifest item lets a flow do, in words.
 //! - [`commands`]: `holon new`, `check`, `show` and `fmt`, text in and text out.
@@ -27,6 +29,7 @@ pub mod composites;
 pub mod describe;
 pub mod flow;
 pub mod group;
+pub mod lang;
 pub mod routes;
 pub mod samples;
 pub mod templates;
