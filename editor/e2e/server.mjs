@@ -33,6 +33,7 @@ const server = spawn(
   binary,
   [
     "serve",
+    "--at", `127.0.0.1:${port}`,
     "--store", join(dir, "store"),
     "--deployments", join(dir, "deployments.json"),
     "--flows", join(dir, "flows.json"),
@@ -41,7 +42,7 @@ const server = spawn(
     "--host-key", join(dir, "host.key"),
     "--accounts", join(dir, "accounts.json"),
   ],
-  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SERVER_ADDR: `127.0.0.1:${port}`, HOLON_SETUP_CODE: SETUP_CODE } },
+  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE } },
 );
 
 const cleanUp = () => rmSync(dir, { recursive: true, force: true });

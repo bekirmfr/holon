@@ -3332,3 +3332,13 @@ fn a_deployment_answers_the_web_pages_it_names() {
     assert!(deploy(serde_json::json!(["*"])).is_success());
     assert_eq!(allow(&from("https://elsewhere.example", "GET")).as_deref(), Some("https://elsewhere.example"));
 }
+
+#[test]
+fn at_takes_an_address_or_a_port_alone() {
+    assert_eq!(parse_at("8080").unwrap().to_string(), "127.0.0.1:8080");
+    assert_eq!(parse_at("0.0.0.0:7420").unwrap().to_string(), "0.0.0.0:7420");
+    assert_eq!(parse_at("[::1]:9000").unwrap().to_string(), "[::1]:9000");
+    for bad in ["", "localhost:8080", "8080:", "127.0.0.1", "70000"] {
+        assert!(parse_at(bad).is_err(), "{bad:?}");
+    }
+}

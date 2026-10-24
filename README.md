@@ -109,7 +109,8 @@ can't be changed, removed or cut off the end unnoticed, even by someone with the
 data folder. Heads wait on disk while the witness is away; its receipts are kept beside the
 logs. The `witness` sample (`holon new w.holon --sample witness`) is a witness you can run
 yourself, on another machine.
-To reach it from other machines, see `--allow-host` and `HOLON_SERVER_ADDR` in
+`holon serve --at 8080` listens on another port (`--at 0.0.0.0:8080` on every interface);
+`holon serve --help` lists every option. To reach it from other machines, see `--allow-host` in
 `docs/PLATFORM_LAYOUT.md`, and put HTTPS in front (a reverse proxy).
 
 Flows can also be written as text (`.holon` files), on any machine, a screen or not:

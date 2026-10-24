@@ -96,7 +96,7 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 | test-unit emitters (1724–1840) + CLI flags | `bin/holon-fixtures.rs` (separate binary). Root `*.bin` / `*.json` move to `fixtures/`. |
 
 **Two planes, two security postures:**
-- **Control plane** (`127.0.0.1:7420`): editor-only, localhost, hardened against CSRF and DNS rebinding.
+- **Control plane** (`127.0.0.1:7420`, or where `holon serve --at` says): editor-only, localhost, hardened against CSRF and DNS rebinding.
 - **Data plane** (user-declared ports): public-facing by intent. It does no CORS magic; each endpoint's
   own logic plus `packs/auth` decides who is allowed.
 

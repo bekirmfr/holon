@@ -414,6 +414,38 @@ const USAGE: &str = "usage: holon <command>
   update [--check] [--to VERSION]    install the newest release (or see if there is one)
   uninstall [--purge] [--yes]        remove holon (and with --purge, its data and key)";
 
+const SERVE_USAGE: &str = "usage: holon serve [options]
+
+  --at [IP:]PORT             where the server and editor listen (default 127.0.0.1:7420;
+                             a port alone means 127.0.0.1; or HOLON_SERVER_ADDR)
+  --data DIR                 keep everything below in DIR (or HOLON_DATA)
+  --data-host IP             where deployed flows' own servers listen (default 127.0.0.1)
+  --allow-host HOST          a host name it answers to besides localhost (repeatable)
+  --allow-origin ORIGIN      an editor origin it answers besides localhost's (repeatable)
+  --keep-runs N              runs each deployment's log keeps (default 500; or HOLON_KEEP_RUNS)
+  --export-heads URL         send each run's head to a witness (or HOLON_EXPORT_HEADS; its
+                             token in HOLON_EXPORT_HEADS_TOKEN)
+  --secrets PATH             the secrets file
+  --secrets-key os|env:VAR|file:PATH
+                             where the secrets file's key is kept (default: the OS key store)
+  --new-secrets-key          print a fresh key for --secrets-key env:VAR, and exit
+  --dotenv FILE              a .env file HOLON_SECRET_* values are also read from
+  --editor DIR               serve the editor from DIR instead of the built-in one
+  --store PATH|:memory:      --deployments PATH|:memory:   --flows PATH
+  --accounts PATH            --policy PATH                 --host-key PATH
+                             where each of those is kept
+
+A new server prints a one-time setup code for its first admin (or takes HOLON_SETUP_CODE).";
+
+/// Where `--at` (or HOLON_SERVER_ADDR) says to listen: `IP:PORT`, or a port alone on 127.0.0.1.
+fn parse_at(v: &str) -> Result<std::net::SocketAddr, String> {
+    let v = v.trim();
+    if let Ok(port) = v.parse::<u16>() {
+        return Ok(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+    }
+    v.parse().map_err(|_| format!("{v:?} isn't an address to listen on: give IP:PORT (127.0.0.1:8080, 0.0.0.0:8080, [::1]:8080) or a port"))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rest = args.get(1..).unwrap_or_default().to_vec();
@@ -440,7 +472,8 @@ fn main() {
 
 /// `holon serve`: the server, with `args` its options.
 fn serve(args: Vec<String>) {
-    let addr = std::env::var("HOLON_SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:7420".to_string());
+    // Where it listens (`--at [IP:]PORT`, or HOLON_SERVER_ADDR).
+    let mut at: Option<String> = std::env::var("HOLON_SERVER_ADDR").ok().filter(|v| !v.trim().is_empty());
 
     // `--store <dir>` for an on-disk FileStore; `--store :memory:` for an in-process MemStore
     // (nothing persisted across restarts — useful for a quick local session or a test run).
@@ -491,7 +524,16 @@ fn serve(args: Vec<String>) {
     // A witness every run's head goes to (`--export-heads URL`, or HOLON_EXPORT_HEADS; heads.rs).
     let mut export_heads: Option<String> = std::env::var("HOLON_EXPORT_HEADS").ok().filter(|v| !v.trim().is_empty());
     while let Some(a) = args.next() {
-        if a == "--export-heads" {
+        if a == "--help" || a == "-h" {
+            println!("{SERVE_USAGE}");
+            return;
+        } else if a == "--at" {
+            at = args.next();
+            if at.is_none() {
+                eprintln!("--at needs where to listen: IP:PORT, or a port");
+                std::process::exit(2);
+            }
+        } else if a == "--export-heads" {
             export_heads = args.next();
             if export_heads.is_none() {
                 eprintln!("--export-heads needs the witness's URL");
@@ -695,8 +737,19 @@ fn serve(args: Vec<String>) {
                 "stage all three via /unit, then POST /deploy with {{\"slug\":\"...\",\"unit\":\"<hash>\",\"interval_seconds\":5}}."
             );
             return;
+        } else {
+            eprintln!("holon serve: no option {a:?}
+
+{SERVE_USAGE}");
+            std::process::exit(2);
         }
     }
+
+    let bound = parse_at(at.as_deref().unwrap_or("127.0.0.1:7420")).unwrap_or_else(|e| {
+        eprintln!("holon: --at {e}");
+        std::process::exit(2);
+    });
+    let addr = bound.to_string();
 
     if let Some(v) = keep_runs {
         match v.trim().parse::<usize>() {
@@ -749,7 +802,7 @@ fn serve(args: Vec<String>) {
     }
     .unwrap_or_else(|e| {
         eprintln!("holon: can't listen on {addr}: {e}");
-        eprintln!("holon: is another holon running there? Stop it, or pick another address with HOLON_SERVER_ADDR");
+        eprintln!("holon: is another holon running there? Stop it, or pick another address with --at");
         std::process::exit(1);
     });
     let backend: DynStore = if store_arg == ":memory:" {
@@ -793,9 +846,6 @@ fn serve(args: Vec<String>) {
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
-    let bound = addr
-        .parse::<std::net::SocketAddr>()
-        .unwrap_or_else(|e| panic!("HOLON_SERVER_ADDR {addr:?} is not host:port: {e}"));
     let port = bound.port();
     // Everyone signs in (access.rs); a new server first needs its admin, set up with the code
     // it prints here.
