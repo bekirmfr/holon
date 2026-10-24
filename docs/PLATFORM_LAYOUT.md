@@ -271,8 +271,11 @@ the host default, always within what was granted.
 
 **Limits that exist today move under the same model:** the data plane's inbound body cap
 (hardcoded 8 MiB, `MAX_BODY_BYTES`; the default becomes 10 MiB to match the outbound one) and the
-flow log's retention (hardcoded 500 entries, `recorder::CAPACITY`) become host defaults with
-ceilings, which a deployment may ask to raise. The control plane's own cap stays fixed: it serves
+flow log's retention become host defaults with ceilings, which a deployment may ask to raise.
+Retention is a host setting already (`--keep-runs N` or `HOLON_KEEP_RUNS`, 500 runs per deployment
+without it); the ceiling and a deployment's own ask are left for later. The kept log is a hash
+chain (`recorder.rs`): each entry names the line before it, and a run changed or removed outside
+holon shows as a break, at load and in `GET /deployments/<slug>/log` (`head`, `breaks`). The control plane's own cap stays fixed: it serves
 only the editor.
 
 - **Client:** `ureq` (synchronous, rustls). Runs are synchronous, and on the `hyper` data plane

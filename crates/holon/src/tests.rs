@@ -3138,6 +3138,43 @@ fn a_flow_log_survives_a_restart_and_goes_with_its_deployment() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// The runs a deployment logs are a hash chain through the routes: the log says its head, a
+/// restart reads it back unbroken, and a run changed in the file outside holon shows as a break
+/// at the run after it.
+#[test]
+fn a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break() {
+    let mut state = test_state();
+    let path = unique_temp_path("chained-log");
+    state.deployments_path = path.clone();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "chained", writer, ack).status_code, 200);
+    for _ in 0..3 {
+        assert_eq!(route(&state, &req("POST", "/trigger/chained", b"hello".to_vec())).status_code, 200);
+    }
+    let log = body_json(route(&state, &req("GET", "/deployments/chained/log", vec![])));
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(entries[0].get("prev"), None, "the first run has nothing before it");
+    let file = recorder::file_for(&path, "chained").unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(entries[1]["prev"], recorder::line_hash(lines[0]));
+    assert_eq!(log["head"], recorder::line_hash(lines[2]));
+    assert_eq!(log["breaks"], serde_json::json!([]));
+    assert!(load_deployments(&path, &state.store, &state.policy()).unwrap()["chained"].log.breaks().is_empty());
+
+    // The first run's body changed in the file: the second no longer follows it.
+    let changed = text.replacen("hello", "jello", 1);
+    assert_ne!(changed, text, "the run's request is in the file");
+    std::fs::write(&file, changed).unwrap();
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    assert_eq!(reloaded["chained"].log.breaks(), [1]);
+
+    route(&state, &req("POST", "/deployments/chained/stop", vec![]));
+    route(&state, &req("DELETE", "/deployments/chained", vec![]));
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A server with accounts, through its routes: set up with the printed code, then signed in,
 /// an invite accepted, each role doing what it may, and an admin's API token.
 #[test]

@@ -13,7 +13,8 @@ parts. Before it runs:
   when a run tries it, whatever the flow says. A grant can be narrowed while the flow runs.
 - **It keeps a record of every run:** the request, the state it read, the clock, randomness and
   every response it got, with the version and grant it ran under. Evaluation is pure, so a
-  record replays exactly: the editor steps through any past run node by node.
+  record replays exactly: the editor steps through any past run node by node. The record is a
+  hash chain: each run names the one before it, so a run changed or taken out afterwards shows.
 
 ```
 $ holon new hook.holon --sample stripe-to-slack
@@ -99,6 +100,7 @@ holon serve --data ~/.holon/data
 
 Then open http://127.0.0.1:7420. The first time, the server prints a one-time setup code: enter
 it in the editor to create the admin. `--data` keeps all of the server's state in one folder.
+Each deployment keeps its newest 500 runs; `--keep-runs N` (or `HOLON_KEEP_RUNS`) sets how many.
 To reach it from other machines, see `--allow-host` and `HOLON_SERVER_ADDR` in
 `docs/PLATFORM_LAYOUT.md`, and put HTTPS in front (a reverse proxy).
 

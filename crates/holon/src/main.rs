@@ -485,8 +485,16 @@ fn serve(args: Vec<String>) {
     let mut allow_origins: Vec<String> = Vec::new();
     let mut host_key_arg = ".holon-host-key".to_string();
     let mut data_limits = dataplane::DataLimits::default();
+    // How many runs each deployment's log keeps (`--keep-runs N`, or HOLON_KEEP_RUNS; recorder.rs).
+    let mut keep_runs: Option<String> = std::env::var("HOLON_KEEP_RUNS").ok().filter(|v| !v.trim().is_empty());
     while let Some(a) = args.next() {
-        if a == "--data-host" {
+        if a == "--keep-runs" {
+            keep_runs = args.next();
+            if keep_runs.is_none() {
+                eprintln!("--keep-runs needs a number of runs (at least 1)");
+                std::process::exit(2);
+            }
+        } else if a == "--data-host" {
             // The address data-plane listeners bind (default 127.0.0.1): `0.0.0.0` opens every
             // deployed server to the network.
             match args.next().map(|v| v.parse()) {
@@ -678,6 +686,16 @@ fn serve(args: Vec<String>) {
                 "stage all three via /unit, then POST /deploy with {{\"slug\":\"...\",\"unit\":\"<hash>\",\"interval_seconds\":5}}."
             );
             return;
+        }
+    }
+
+    if let Some(v) = keep_runs {
+        match v.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => recorder::set_keep(n),
+            _ => {
+                eprintln!("holon: --keep-runs (or HOLON_KEEP_RUNS) needs a number of runs, at least 1, not {v:?}");
+                std::process::exit(2);
+            }
         }
     }
 

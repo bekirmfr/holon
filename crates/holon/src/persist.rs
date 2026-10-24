@@ -190,6 +190,14 @@ pub(crate) fn load_deployments(
 
         println!("loaded deployment {:?} from {path:?} (triggers: {triggers:?})", record.slug);
         let log = Log::open(recorder::file_for(path, &record.slug));
+        if !log.breaks().is_empty() {
+            let runs: Vec<String> = log.breaks().iter().map(u64::to_string).collect();
+            eprintln!(
+                "holon: {:?}'s run log was changed outside holon: run {} doesn't follow the run before it",
+                record.slug,
+                runs.join(", run ")
+            );
+        }
         loaded.insert(
             record.slug,
             Deployment {

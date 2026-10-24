@@ -6,11 +6,19 @@
 //! random, ingress) are its whole input. The editor's view mode replays entries node by node
 //! from just this, to show what every node computed and to step through a past run.
 //!
-//! The newest [`CAPACITY`] per deployment are kept in memory, and in a file of the deployment's
-//! own beside the deployments file (`<deployments>.logs/<slug>.jsonl`, a JSON line per entry,
-//! owner-only), so a restart reads them back and replay still has them. An entry is written as
-//! the control plane serves it: secrets and tokens already redacted. The file is rewritten to the
-//! newest [`CAPACITY`] once it holds twice that; a line half-written by a crash is skipped.
+//! The newest entries per deployment (the host's `--keep-runs`, [`DEFAULT_KEEP`] without it) are
+//! kept in memory, and in a file of the deployment's own beside the deployments file
+//! (`<deployments>.logs/<slug>.jsonl`, a JSON line per entry, owner-only), so a restart reads
+//! them back and replay still has them. An entry is written as the control plane serves it:
+//! secrets and tokens already redacted. The file is cut back to the newest it keeps once it holds
+//! twice that; a line half-written by a crash is skipped.
+//!
+//! The file is a hash chain: each entry's `prev` is the BLAKE3 hash of the line before it, exactly
+//! as written. Cutting the file back keeps the newest lines byte for byte, so the chain still
+//! checks from the oldest line kept (whose `prev` names one no longer there). Opening the file
+//! checks it: an entry whose `prev` isn't the line before it (one changed, removed or inserted
+//! outside holon) is a break, reported by its seq. Entries from before the chain (no `prev`)
+//! check only once one with a `prev` has been seen.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -19,8 +27,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::{PerformedEntry, SValue};
 
-/// How many entries a deployment keeps; older ones drop off the front.
-pub const CAPACITY: usize = 500;
+/// How many entries a deployment keeps when the host doesn't say; older ones drop off the front.
+pub const DEFAULT_KEEP: usize = 500;
+
+static KEEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(DEFAULT_KEEP);
+
+/// How many entries each deployment's log keeps from now on (the server sets it once, at start;
+/// at least 1).
+pub fn set_keep(n: usize) {
+    KEEP.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many entries each deployment's log keeps.
+pub fn keep() -> usize {
+    KEEP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A line's hash in the chain, hex.
+pub fn line_hash(line: &str) -> String {
+    blake3::hash(line.as_bytes()).to_hex().to_string()
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 // A field left out when empty reads back empty.
@@ -28,6 +54,10 @@ pub const CAPACITY: usize = 500;
 pub struct LogEntry {
     /// Increases by one per entry, across sessions; `GET …/log?after=` reads past it.
     pub seq: u64,
+    /// The hash of the line before it in the log file (hex; see the module docs). Empty for the
+    /// first entry, and for entries written before the chain.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub prev: String,
     /// The run session it happened in.
     pub session: u32,
     /// When it started, milliseconds since the epoch.
@@ -207,14 +237,28 @@ impl holon_core::Observer for Timer {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct Log {
     next_seq: u64,
     entries: VecDeque<LogEntry>,
+    /// How many entries it keeps.
+    keep: usize,
     /// Where it is kept beside memory (none: memory only, a `:memory:` deployments file).
     file: Option<PathBuf>,
     /// How many lines the file holds.
     written: usize,
+    /// Whether the file ends in a line a crash cut short, which the next line mustn't join.
+    cut: bool,
+    /// The hash of the newest line: the next entry's `prev`.
+    head: String,
+    /// The seqs of the entries that don't follow the line before them (see the module docs).
+    breaks: Vec<u64>,
+}
+
+impl Default for Log {
+    fn default() -> Log {
+        Log::open(None)
+    }
 }
 
 /// Where `slug`'s log is kept for the deployments file at `deployments_path`, if anywhere.
@@ -223,58 +267,95 @@ pub fn file_for(deployments_path: &str, slug: &str) -> Option<PathBuf> {
 }
 
 impl Log {
-    /// The log kept at `file` (none: in memory only), with the newest entries it holds read back.
+    /// The log kept at `file` (none: in memory only), keeping as many entries as the host set,
+    /// with the newest it holds read back and its chain checked.
     pub fn open(file: Option<PathBuf>) -> Log {
-        let mut log = Log { file, ..Log::default() };
+        Log::open_keeping(file, keep())
+    }
+
+    /// [`Log::open`], keeping `keep` entries.
+    pub fn open_keeping(file: Option<PathBuf>, keep: usize) -> Log {
+        let mut log = Log {
+            next_seq: 0,
+            entries: VecDeque::new(),
+            keep: keep.max(1),
+            file,
+            written: 0,
+            cut: false,
+            head: String::new(),
+            breaks: Vec::new(),
+        };
         let Some(path) = &log.file else { return log };
         let Ok(text) = std::fs::read_to_string(path) else { return log };
+        log.cut = !text.is_empty() && !text.ends_with('\n');
+        let mut chained = false;
         for line in text.lines() {
             log.written += 1;
-            // A line a crash cut short is skipped, not fatal: the others still replay.
+            // A line a crash cut short is skipped, not fatal: the others still replay, and the
+            // chain goes on from the line before it.
             if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {
+                if (chained || !entry.prev.is_empty()) && !log.head.is_empty() && entry.prev != log.head {
+                    log.breaks.push(entry.seq);
+                }
+                chained |= !entry.prev.is_empty();
+                log.head = line_hash(line);
                 log.next_seq = log.next_seq.max(entry.seq + 1);
                 log.entries.push_back(entry);
             }
         }
-        while log.entries.len() > CAPACITY {
+        while log.entries.len() > log.keep {
             log.entries.pop_front();
         }
+        // Only the entries kept count (the file's first line has nothing before it to check).
+        log.breaks.retain(|seq| log.entries.front().is_some_and(|oldest| *seq >= oldest.seq));
         log
     }
 
-    /// Append `entry`, numbering it, and drop the oldest past [`CAPACITY`]; keep it in the file.
+    /// Append `entry`, numbering it and chaining it to the one before, and drop the oldest past
+    /// what it keeps; keep it in the file.
     pub fn push(&mut self, mut entry: LogEntry) {
         entry.seq = self.next_seq;
         self.next_seq += 1;
+        entry.prev = self.head.clone();
+        let line = match serde_json::to_string(&entry) {
+            Ok(line) => line,
+            Err(e) => {
+                eprintln!("holon: could not write a flow log entry: {e}");
+                return;
+            }
+        };
+        self.head = line_hash(&line);
         self.entries.push_back(entry);
-        while self.entries.len() > CAPACITY {
+        while self.entries.len() > self.keep {
             self.entries.pop_front();
         }
-        if let Err(e) = self.keep() {
+        if let Err(e) = self.keep_line(&line) {
             eprintln!("holon: could not keep the flow log in {:?}: {e}", self.file);
         }
     }
 
-    /// Write the newest entry to the file: appended, or the whole file rewritten to the newest
-    /// [`CAPACITY`] once it would hold twice that.
-    fn keep(&mut self) -> std::io::Result<()> {
+    /// Write the newest entry's `line` to the file: appended, or, once the file would hold twice
+    /// what the log keeps, the file cut back to the newest it keeps, those lines as they were.
+    fn keep_line(&mut self, line: &str) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
-        let Some(newest) = self.entries.back() else { return Ok(()) };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        if self.written + 1 > 2 * CAPACITY {
+        if self.written + 1 > 2 * self.keep {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().filter(|l| serde_json::from_str::<LogEntry>(l).is_ok()).collect();
             let mut all = String::new();
-            for e in &self.entries {
-                all.push_str(&serde_json::to_string(e).map_err(std::io::Error::other)?);
+            for l in lines[lines.len().saturating_sub(self.keep - 1)..].iter().copied().chain([line]) {
+                all.push_str(l);
                 all.push('\n');
             }
             crate::sealing::write_private(&path, all.as_bytes())?;
-            self.written = self.entries.len();
+            self.written = all.lines().count();
+            self.cut = false;
             return Ok(());
         }
         use std::io::Write;
-        let line = serde_json::to_string(newest).map_err(std::io::Error::other)? + "\n";
+        let text = if std::mem::take(&mut self.cut) { format!("\n{line}\n") } else { format!("{line}\n") };
         let new = !path.exists();
         let mut options = std::fs::OpenOptions::new();
         options.append(true).create(true);
@@ -287,9 +368,21 @@ impl Log {
         if new {
             crate::sealing::restrict_to_owner(&path)?;
         }
-        file.write_all(line.as_bytes())?;
+        file.write_all(text.as_bytes())?;
         self.written += 1;
         Ok(())
+    }
+
+    /// The hash of the newest entry's line: what the next entry's `prev` will be, and what a copy
+    /// of the log can be checked up to.
+    pub fn head(&self) -> &str {
+        &self.head
+    }
+
+    /// The seqs of the entries kept that don't follow the line before them: the log was changed
+    /// outside holon there.
+    pub fn breaks(&self) -> &[u64] {
+        &self.breaks
     }
 
     /// Delete the file: its deployment was deleted.
@@ -337,6 +430,7 @@ mod tests {
         LogEntry {
             unit: String::new(),
             seq: 0,
+            prev: String::new(),
             session: 1,
             at_ms: 0,
             duration_ms: 0.0,
@@ -366,17 +460,108 @@ mod tests {
 
     #[test]
     fn numbers_entries_reads_past_a_seq_and_keeps_the_newest() {
-        let mut log = Log::default();
-        for _ in 0..(CAPACITY + 5) {
+        let keep = 20;
+        let mut log = Log::open_keeping(None, keep);
+        for _ in 0..(keep + 5) {
             log.push(entry());
         }
-        assert_eq!(log.next_seq(), (CAPACITY + 5) as u64);
+        assert_eq!(log.next_seq(), (keep + 5) as u64);
         let all = log.after(None, usize::MAX);
-        assert_eq!(all.len(), CAPACITY);
+        assert_eq!(all.len(), keep);
         assert_eq!(all[0].seq, 5, "the five oldest dropped off");
-        let newer = log.after(Some((CAPACITY + 2) as u64), 10);
-        assert_eq!(newer.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![(CAPACITY + 3) as u64, (CAPACITY + 4) as u64]);
-        assert_eq!(log.after(None, 3).iter().map(|e| e.seq).collect::<Vec<_>>(), vec![502, 503, 504], "the newest 3");
+        let newer = log.after(Some((keep + 2) as u64), 10);
+        assert_eq!(newer.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![(keep + 3) as u64, (keep + 4) as u64]);
+        assert_eq!(log.after(None, 3).iter().map(|e| e.seq).collect::<Vec<_>>(), vec![22, 23, 24], "the newest 3");
+    }
+
+    /// A fresh directory for one test's log files.
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("holon-log-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn each_entry_names_the_line_before_it_and_the_chain_survives_cutting_back() {
+        let dir = temp_dir("chain");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 3);
+        for _ in 0..3 {
+            log.push(entry());
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let first: LogEntry = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first.prev, "", "the first entry has nothing before it");
+        for pair in lines.windows(2) {
+            let next: LogEntry = serde_json::from_str(pair[1]).unwrap();
+            assert_eq!(next.prev, line_hash(pair[0]));
+        }
+        assert_eq!(log.head(), line_hash(lines[2]));
+
+        // Past twice what it keeps, the file is cut back to the newest lines as they were: the
+        // chain still checks, from the oldest kept, and a reopened log goes on from its head.
+        for _ in 0..4 {
+            log.push(entry());
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 3, "cut back to the newest 3 on the 7th");
+        let back = Log::open_keeping(Some(path.clone()), 3);
+        assert!(back.breaks().is_empty(), "{:?}", back.breaks());
+        assert_eq!(back.head(), log.head());
+        assert_eq!(back.after(None, 10).iter().map(|e| e.seq).collect::<Vec<_>>(), [4, 5, 6]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_line_changed_removed_or_inserted_outside_holon_is_a_break_at_the_entry_after_it() {
+        let dir = temp_dir("breaks");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 10);
+        for _ in 0..5 {
+            log.push(entry());
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let write = |lines: &[String]| std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let breaks = || Log::open_keeping(Some(path.clone()), 10).breaks().to_vec();
+        assert!(breaks().is_empty());
+
+        // A run's outcome changed: the entry after it no longer follows.
+        let mut changed = lines.clone();
+        changed[1] = changed[1].replace("\"tick\"", "\"trigger\"");
+        write(&changed);
+        assert_eq!(breaks(), [2]);
+
+        // A run removed.
+        let mut removed = lines.clone();
+        removed.remove(2);
+        write(&removed);
+        assert_eq!(breaks(), [3]);
+
+        // The newest run removed leaves no break: what proves it is the head, kept elsewhere.
+        write(&lines[..4]);
+        assert!(breaks().is_empty());
+        assert_ne!(Log::open_keeping(Some(path.clone()), 10).head(), log.head());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn entries_from_before_the_chain_read_back_and_the_chain_starts_after_them() {
+        let dir = temp_dir("legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("slug.jsonl");
+        let old: Vec<String> = (0..3)
+            .map(|seq| serde_json::to_string(&LogEntry { seq, ..entry() }).unwrap())
+            .collect();
+        std::fs::write(&path, old.join("\n") + "\n").unwrap();
+        let mut log = Log::open_keeping(Some(path.clone()), 10);
+        assert!(log.breaks().is_empty());
+        log.push(entry());
+        let back = Log::open_keeping(Some(path.clone()), 10);
+        assert!(back.breaks().is_empty());
+        assert_eq!(back.after(None, 10).last().unwrap().prev, line_hash(&old[2]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -397,36 +582,44 @@ mod tests {
 
     #[test]
     fn a_kept_log_reads_back_after_a_restart_skips_a_cut_line_and_stays_bounded() {
-        let dir = std::env::temp_dir().join(format!("holon-log-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        const KEEP: usize = 20;
+        let dir = temp_dir("restart");
         let path = dir.join("nested").join("slug.jsonl");
-        let mut log = Log::open(Some(path.clone()));
+        let open = || Log::open_keeping(Some(path.clone()), KEEP);
+        let mut log = open();
         for _ in 0..3 {
             log.push(entry());
         }
         // A restart: the entries come back, and numbering carries on.
-        let mut again = Log::open(Some(path.clone()));
+        let mut again = open();
         assert_eq!(again.after(None, 10).iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1, 2]);
         assert_eq!(again.next_seq(), 3);
         again.push(entry());
-        assert_eq!(Log::open(Some(path.clone())).next_seq(), 4);
+        assert_eq!(open().next_seq(), 4);
 
-        // A line a crash cut short is skipped; the rest still read.
+        // A line a crash cut short is skipped; the rest still read, and the next entry starts a
+        // line of its own, chained to the last whole one.
         let mut text = std::fs::read_to_string(&path).unwrap();
         text.push_str("{\"seq\": 9, \"sess");
         std::fs::write(&path, text).unwrap();
-        assert_eq!(Log::open(Some(path.clone())).after(None, 10).len(), 4);
+        let mut cut = open();
+        assert_eq!(cut.after(None, 10).len(), 4);
+        cut.push(entry());
+        let back = open();
+        assert_eq!(back.after(None, 10).len(), 5);
+        assert!(back.breaks().is_empty(), "{:?}", back.breaks());
 
-        // Bounded: past twice CAPACITY lines, the file is rewritten to the newest CAPACITY.
-        let mut big = Log::open(Some(path.clone()));
-        for _ in 0..(2 * CAPACITY) {
+        // Bounded: past twice what it keeps, the file is cut back to the newest it keeps.
+        let mut big = open();
+        for _ in 0..(2 * KEEP) {
             big.push(entry());
         }
         let lines = std::fs::read_to_string(&path).unwrap().lines().count();
-        assert!((CAPACITY..=2 * CAPACITY).contains(&lines), "{lines}");
-        let back = Log::open(Some(path.clone()));
-        assert_eq!(back.after(None, usize::MAX).len(), CAPACITY);
+        assert!((KEEP..=2 * KEEP).contains(&lines), "{lines}");
+        let back = open();
+        assert_eq!(back.after(None, usize::MAX).len(), KEEP);
         assert_eq!(back.next_seq(), big.next_seq());
+        assert!(back.breaks().is_empty());
         big.delete_file();
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);

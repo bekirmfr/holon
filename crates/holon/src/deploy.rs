@@ -624,12 +624,19 @@ pub(crate) fn handle_post_trigger(
 
 /// `GET /deployments/<slug>/log?after=<seq>&limit=<n>` — the flow log past `after` (all of it
 /// without), oldest first, at most `limit` (default 200) newest. `next` is the seq the next
-/// entry will get, so a poller can ask for `after=next-1`.
+/// entry will get, so a poller can ask for `after=next-1`. `head` is the hash of the newest
+/// entry's line, and `breaks` the seqs of entries that don't follow the one before them: the log
+/// file was changed outside holon there (recorder.rs).
 pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     let after = request.get_param("after").and_then(|a| a.parse::<u64>().ok());
     let limit = request.get_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(200);
     match deployments.lock().unwrap().get(slug) {
-        Some(dep) => Response::json(&serde_json::json!({ "entries": dep.log.after(after, limit), "next": dep.log.next_seq() })),
+        Some(dep) => Response::json(&serde_json::json!({
+            "entries": dep.log.after(after, limit),
+            "next": dep.log.next_seq(),
+            "head": dep.log.head(),
+            "breaks": dep.log.breaks(),
+        })),
         None => err(404, format!("no deployment {slug:?}")),
     }
 }
