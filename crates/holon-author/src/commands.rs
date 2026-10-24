@@ -167,11 +167,102 @@ pub fn show(file: &str, source: &str) -> Report {
     Report { out, ..Default::default() }
 }
 
-/// `holon fmt`: the file's text in the canonical form, or its mistake.
+/// `holon fmt`: the file's text in the canonical form, its comments kept, or its mistake.
 pub fn fmt(file: &str, source: &str) -> Result<String, Report> {
     let mut store = MapResolver::new();
     let c = compile(file, source, &mut store)?;
-    lang::print(c.name.as_deref(), &c.doc, &mut store, &Names::new(), &c.names).map_err(|e| Report::failed(format!("{file}: {e}")))
+    let printed = lang::print(c.name.as_deref(), &c.doc, &mut store, &Names::new(), &c.names).map_err(|e| Report::failed(format!("{file}: {e}")))?;
+    Ok(with_comments(source, &printed))
+}
+
+/// A line split at its `#` comment (one outside a string): the code, and the comment if any.
+fn split_comment(line: &str) -> (&str, Option<&str>) {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (i, c) in line.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '#' if !quoted => return (&line[..i], Some(&line[i..])),
+            _ => {}
+        }
+    }
+    (line, None)
+}
+
+/// What a line of code says, whatever its spacing: how a statement is found again once printed.
+fn spoken(code: &str) -> String {
+    code.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// `printed` (the canonical form of `source`) with `source`'s comments put back: each comment
+/// line above the statement it was above (with a blank line between when it had one), each
+/// comment after code after that line. A statement is found again by what it says, whatever its
+/// spacing, in order; a comment whose statement printing wrote otherwise goes with the next one
+/// found, and any left over at the end.
+pub(crate) fn with_comments(source: &str, printed: &str) -> String {
+    struct Anchor {
+        spoken: String,
+        above: Vec<String>,
+        gap: bool,
+        after: Option<String>,
+    }
+    let mut anchors: Vec<Anchor> = vec![];
+    let mut above: Vec<String> = vec![];
+    let mut gap = false;
+    for line in source.lines() {
+        let (code, comment) = split_comment(line);
+        if code.trim().is_empty() {
+            match comment {
+                Some(c) => {
+                    above.push(c.trim_end().to_string());
+                    gap = false;
+                }
+                None => gap = !above.is_empty(),
+            }
+            continue;
+        }
+        anchors.push(Anchor { spoken: spoken(code), above: std::mem::take(&mut above), gap, after: comment.map(|c| c.trim_end().to_string()) });
+        gap = false;
+    }
+    if anchors.iter().all(|a| a.above.is_empty() && a.after.is_none()) && above.is_empty() {
+        return printed.to_string();
+    }
+    let lines: Vec<&str> = printed.lines().collect();
+    let mut before: Vec<Vec<String>> = vec![vec![]; lines.len()];
+    let mut trailing: Vec<Option<String>> = vec![None; lines.len()];
+    let mut at = 0;
+    let mut carried: Vec<String> = vec![];
+    for a in anchors {
+        let found = (at..lines.len()).find(|&j| spoken(lines[j]) == a.spoken);
+        let Some(j) = found else {
+            carried.extend(a.above);
+            carried.extend(a.after);
+            continue;
+        };
+        let indent: String = lines[j].chars().take_while(|c| c.is_whitespace()).collect();
+        let mut put: Vec<String> = carried.drain(..).chain(a.above).map(|c| format!("{indent}{c}")).collect();
+        if a.gap && !put.is_empty() {
+            put.push(String::new());
+        }
+        before[j].extend(put);
+        if let Some(c) = a.after {
+            trailing[j] = Some(c);
+        }
+        at = j + 1;
+    }
+    carried.extend(above);
+    let mut out: Vec<String> = vec![];
+    for (j, line) in lines.iter().enumerate() {
+        out.append(&mut before[j]);
+        out.push(match &trailing[j] {
+            Some(c) => format!("{line} {c}"),
+            None => line.to_string(),
+        });
+    }
+    out.extend(carried);
+    format!("{}\n", out.join("\n").trim_end())
 }
 
 #[cfg(test)]
@@ -214,6 +305,20 @@ mod tests {
     }
 
     #[test]
+    fn fmt_keeps_the_comments() {
+        let messy = "# says hello\n\nflow   hello-api # the flow\nport 8101\nroute GET /hello/:name (req) {\n      # the answer\n      respond   \"Hi, {req.params.name} # not a comment\"   # trailing\n}\n# the end\n";
+        let once = fmt("hello.holon", messy).unwrap();
+        assert_eq!(
+            once,
+            "# says hello\n\nflow hello-api # the flow\nport 8101\n\nroute GET /hello/:name (req) {\n  # the answer\n  respond \"Hi, {req.params.name} # not a comment\" # trailing\n}\n# the end\n"
+        );
+        assert_eq!(fmt("hello.holon", &once).unwrap(), once, "stable");
+        // A statement printing writes otherwise: its comment goes with the next one found.
+        let rewritten = fmt("hello.holon", "flow f\nport 8200\n\nroute GET /a (req) {\n  # the answer\n  respond concat(\"a\", \"b\")\n}\n").unwrap();
+        assert!(rewritten.contains("# the answer"), "{rewritten}");
+    }
+
+    #[test]
     fn fmt_is_stable_and_every_sample_round_trips_through_new() {
         let once = fmt("hello.holon", HELLO).unwrap();
         assert_eq!(fmt("hello.holon", &once).unwrap(), once);
@@ -225,10 +330,8 @@ mod tests {
         }
         assert_eq!(new_flow(None).unwrap(), STARTER);
         assert_eq!(check("my-flow.holon", STARTER).code, 0);
-        // The starter is already canonical, and a sample's text is what fmt would write.
-        assert_eq!(fmt("my-flow.holon", STARTER).unwrap(), STARTER.lines().skip(1).collect::<Vec<_>>().join("
-") + "
-");
+        // The starter is already canonical, its comment and all.
+        assert_eq!(fmt("my-flow.holon", STARTER).unwrap(), STARTER);
         let likes = new_flow(Some("likes")).unwrap();
         assert!(likes.contains("collection likes
 "), "{likes}");
