@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.0-rc.16
+
+Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.15 keep running.
+What changes for them is what runs (below): a request in a branch not taken is no longer sent.
+
+- **A branch not taken doesn't run.** `guard` and `coalesce` evaluate only the inputs they need:
+  `if c then a else b` runs `a` only when `c` is true and `b` only when it isn't (or `a` has no
+  value), `a when c` runs `a` only when `c` is true, and `x ?? y` runs `y` only when `x` has no
+  value. So a request in an untaken branch isn't sent, an `await` there doesn't park the run, a
+  read there isn't made, and a holon there isn't entered. No value changes. A choice that waits on
+  an answer waits a round instead of deciding early. `select` stays strict and runs both sides,
+  and a holon's inputs are still computed before it is entered. View mode dims the nodes a run
+  didn't run, and the Inspector names the choice that skipped them. New sample: `cache-aside`.
+- **`match`: a choice by value.** `match op { "add" -> a + b, "div" -> a / b, else -> 0 }`
+  chooses the arm whose pattern equals the subject. Only that arm runs, and if it has no value
+  the match has none (so `respond … missing: 400` answers 400), where a chain of `if` would fall
+  through to its `else`. Patterns are literals; an arm may take several (`"sub", "minus" ->`).
+  It lowers to `equals`, `guard` and `coalesce`, and `holon fmt` prints those back as `match`.
+  `match` is now a keyword. New sample: `calc`.
+- **`range(n)`** is the list `[0, …, n-1]`, for a whole `n` up to 10000 (nothing otherwise), so
+  a `map` can count and still ends. New sample: `tickets`.
+- **`holon verify` checks runs that made requests.** It answered a run's requests only from the
+  earlier parts of a durable run, so any run that sent a request failed to check.
+
 ## 0.1.0-rc.15
 
 **Delete the flows you deployed before this release, then deploy them again.** Some units are
