@@ -38,7 +38,8 @@ import { changeDeployment, getFlow, getPrefs, setPrefs, type FlowDocument, type 
 import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
-import { InspectPanel } from "./InspectPanel";
+import { UnitTree } from "./UnitTree";
+import { Inspector } from "./ViewPanes";
 import { structuralKey } from "./flowDoc";
 import { knownNames, rememberName, restoreDocument } from "./docUnits";
 import { DialogProvider, useDialog } from "./Dialog";
@@ -70,7 +71,7 @@ import { HomePage } from "./HomePage";
 import { compileHolon, printHolon } from "./holonText";
 import { WelcomePage } from "./WelcomePage";
 import { defaultHome, readPrefs, type Prefs } from "./home";
-import { useViewMode, ViewModePanes } from "./useViewMode";
+import { inspectorRun, useViewMode, ViewModePanes } from "./useViewMode";
 import { useCompositeOverlay } from "./useCompositeOverlay";
 import { useSavedFlows } from "./useSavedFlows";
 import { useDeployFlow } from "./useDeployFlow";
@@ -128,11 +129,22 @@ function Canvas({
   // indices (see encapErrorNodeIndices), not guessed. Purely presentational: never read by
   // onProject/onDrop, never affects hashing — a node's identity doesn't know it's "wrong."
   const [errorNodeIds, setErrorNodeIds] = useState<Set<string>>(new Set());
-  // Which hash is currently shown in the inspect panel (P4.4.1) — null when closed. Purely a
-  // view concern, like errorNodeIds above: never read by onProject/onGroup/onExpand, never
-  // affects the canvas or hashing. Read-only, deliberately unlike expand (P4.3.1): opening this
-  // never touches `nodes`/`edges` at all.
-  const [inspecting, setInspecting] = useState<string | null>(null);
+  // Whether the Inspector is open or folded to a strip, remembered per browser.
+  const [inspectorOpen, setInspectorOpen] = useState(() => {
+    try {
+      return localStorage.getItem("holon.inspector") !== "closed";
+    } catch {
+      return true;
+    }
+  });
+  const onInspectorOpen = useCallback((open: boolean) => {
+    setInspectorOpen(open);
+    try {
+      localStorage.setItem("holon.inspector", open ? "open" : "closed");
+    } catch {
+      // Not remembered, then.
+    }
+  }, []);
 
   const canvasKey = useMemo(() => structuralKey(nodes, edges), [nodes, edges]);
   useEffect(() => {
@@ -148,7 +160,6 @@ function Canvas({
     setProjection(null);
     setProjError("");
     setErrorNodeIds(new Set());
-    setInspecting(null);
     setDeployError("");
   }, []);
 
@@ -586,16 +597,19 @@ function Canvas({
     ungroup(target.id);
   }, [nodes, ungroup]);
 
-  // Open the inspect panel for the single selected node (P4.4.1). Unlike onExpand, this never
-  // touches nodes/edges — it only resolves the selected node's own hash (via unitFor, the same
-  // resolution onProject/onGroup already use — a fresh primitive gets inserted if it hasn't
-  // been yet, an already-frozen composite is just read off its own body.hash) and hands that
-  // hash to the panel, which does its own read-only descent from there.
-  const onInspect = useCallback(() => {
-    const selected = nodes.filter((n) => n.selected);
-    if (selected.length !== 1) return; // mirrors the button's own disabled guard, defensively
-    setInspecting(unitFor(selected[0], ev));
-  }, [nodes, ev, byName]);
+  // The node the Inspector shows: in view mode the one clicked or stepped to, otherwise the one
+  // selected (none when several are). Its unit (via unitFor, as project and group resolve it) is
+  // what the unit tab descends into, read only.
+  const picked = nodes.filter((n) => n.selected);
+  const inspected = viewing ? (nodes.find((n) => n.id === flow.inspectNode) ?? null) : picked.length === 1 ? picked[0] : null;
+  const inspectedUnit = useMemo(() => {
+    if (!inspected) return null;
+    try {
+      return <UnitTree hash={unitFor(inspected, ev)} ev={ev} />;
+    } catch (err) {
+      return <div style={{ color: "#e0916f" }}>{err instanceof Error ? err.message : String(err)}</div>;
+    }
+  }, [inspected, ev]);
 
   // A boundary field changed: update its slot and re-eval live. Safe to be reactive (unlike
   // projecting itself) because a boundary value is never part of the composite's hash — it's a
@@ -690,7 +704,11 @@ function Canvas({
         docs={docs}
       />
     )}
-    <div className={viewing ? "hl-canvas hl-canvas--viewing" : "hl-canvas"} onDrop={onDrop} onDragOver={onDragOver}>
+    <div
+      className={["hl-canvas", viewing ? "hl-canvas--viewing" : "", inspectorOpen ? "" : "hl-canvas--inspector-closed"].filter(Boolean).join(" ")}
+      onDrop={onDrop}
+      onDragOver={onDragOver}
+    >
       <div className="hl-canvas__flow">
         <ReactFlow<PrimitiveNodeType>
           nodes={decoratedNodes}
@@ -753,7 +771,7 @@ function Canvas({
             />
           </Panel>
           {!viewing && (
-            <Panel position="top-right">
+            <Panel position="bottom-right">
               <ProjectionPanel
                 nodeCount={nodes.length}
                 selectedCount={selectedCount}
@@ -761,7 +779,6 @@ function Canvas({
                 onProject={onProject}
                 onGroup={onGroup}
                 onExpand={onExpand}
-                onInspect={onInspect}
                 projection={projection}
                 onBoundaryChange={setBoundaryValue}
                 onExcludeOutput={excludeOutput}
@@ -780,17 +797,13 @@ function Canvas({
               />
             </Panel>
           )}
-          {inspecting && (
-            <Panel position="bottom-right">
-              <InspectPanel hash={inspecting} ev={ev} onClose={() => setInspecting(null)} />
-            </Panel>
-          )}
         </ReactFlow>
         {nodes.length === 0 && page === "canvas" && (
           <div className="hl-canvas__empty">drag a primitive here to place it</div>
         )}
         {compositeOverlay.render(flowName ?? "untitled")}
       </div>
+      <Inspector node={inspected} unit={inspectedUnit} run={inspectorRun(view, flow)} open={inspectorOpen} onOpen={onInspectorOpen} />
       <ViewModePanes view={view} flow={flow} nodes={nodes} />
       {/* The Flows / Deployed pages are overlays ON TOP of the always-mounted canvas — React
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,

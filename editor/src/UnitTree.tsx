@@ -87,24 +87,13 @@ function InspectRow({ node, depth }: { node: InspectNode; depth: number }) {
 }
 
 /**
- * The inspection panel itself. `hash` is the unit being inspected — for a placed primitive
- * node this is already resolved by the caller (via `unitFor`, the same as `onProject`/`onGroup`
- * already do), so nothing here needs to know whether the root came from a fresh primitive or an
- * already-frozen composite. `onClose` is the only way this ever affects anything outside
- * itself — there is no other side effect, on purpose.
+ * A unit's closure as a tree, read only: the Inspector's "unit" tab. `hash` is the unit inspected
+ * (for a placed node, resolved by the caller with `unitFor`), so nothing here needs to know
+ * whether the root came from a fresh primitive or an already-frozen composite.
  */
-export function InspectPanel({
-  hash,
-  ev,
-  onClose,
-}: {
-  hash: string;
-  ev: Evaluator;
-  onClose: () => void;
-}) {
-  // Built once per hash, synchronously — every call here (get_unit, capabilities, effects_of)
-  // is a synchronous wasm call against data already resolved in this session, so there's
-  // nothing to await and nothing to cache beyond this: re-inspecting is cheap.
+export function UnitTree({ hash, ev }: { hash: string; ev: Evaluator }) {
+  // Built once per hash, synchronously: every call here (get_unit, capabilities, effects_of) is
+  // a synchronous wasm call against data already resolved in this session.
   const tree = useMemo(() => {
     try {
       return { ok: true as const, node: buildInspectTree(hash, ev) };
@@ -112,47 +101,5 @@ export function InspectPanel({
       return { ok: false as const, message: err instanceof Error ? err.message : String(err) };
     }
   }, [hash, ev]);
-
-  return (
-    <div
-      style={{
-        background: "#0e1a2f",
-        border: "1px solid #1b2a45",
-        borderRadius: 4,
-        padding: 10,
-        minWidth: 220,
-        maxWidth: 340,
-        maxHeight: 320,
-        overflow: "auto",
-        fontSize: 12,
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span style={{ color: "#9fb4d4", letterSpacing: "0.04em" }}>inspect</span>
-        <button
-          className="nodrag"
-          onClick={onClose}
-          style={{
-            font: "inherit",
-            fontSize: 10,
-            color: "#9fb4d4",
-            background: "transparent",
-            border: "1px solid #1b2a45",
-            borderRadius: 3,
-            width: 16,
-            height: 16,
-            padding: 0,
-            cursor: "pointer",
-          }}
-        >
-          ×
-        </button>
-      </div>
-      {tree.ok ? (
-        <InspectRow node={tree.node} depth={0} />
-      ) : (
-        <div style={{ color: "#e0916f" }}>{tree.message}</div>
-      )}
-    </div>
-  );
+  return tree.ok ? <InspectRow node={tree.node} depth={0} /> : <div style={{ color: "#e0916f" }}>{tree.message}</div>;
 }

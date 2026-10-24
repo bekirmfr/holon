@@ -1,5 +1,5 @@
 // The canvas's tab strip (one tab per open flow), and its two button panels: the flow toolbar
-// (top left) and the projection panel (top right).
+// (top left) and the projection panel (bottom right).
 
 import type { CSSProperties, ReactNode } from "react";
 import type { WValue } from "./holon";
@@ -230,7 +230,7 @@ const opBtn = (enabled: boolean): CSSProperties => ({
   opacity: enabled ? 1 : 0.4,
 });
 
-/** Top right: project / group / ungroup / inspect, and the current projection (its hash, a field
+/** Bottom right: project / group / ungroup, and the current projection (its hash, a field
  *  per promoted input, a result per output with a button that excludes it). */
 export function ProjectionPanel({
   nodeCount,
@@ -239,7 +239,6 @@ export function ProjectionPanel({
   onProject,
   onGroup,
   onExpand,
-  onInspect,
   projection,
   onBoundaryChange,
   onExcludeOutput,
@@ -251,7 +250,6 @@ export function ProjectionPanel({
   onProject: () => void;
   onGroup: () => void;
   onExpand: () => void;
-  onInspect: () => void;
   projection: Projection | null;
   onBoundaryChange: (index: number, value: WValue | null) => void;
   onExcludeOutput: (index: number) => void;
@@ -277,14 +275,6 @@ export function ProjectionPanel({
         style={opBtn(canExpand)}
       >
         ungroup
-      </button>
-      <button
-        onClick={onInspect}
-        disabled={selectedCount !== 1}
-        title={selectedCount === 1 ? "inspect this node" : "select one node to inspect"}
-        style={opBtn(selectedCount === 1)}
-      >
-        inspect
       </button>
       {projection && (
         <div style={{ fontSize: 12, color: "#9fb4d4", textAlign: "right", lineHeight: 1.4 }}>

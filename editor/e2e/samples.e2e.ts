@@ -103,6 +103,21 @@ test("a deployment whose port another program holds says, in view mode, it isn't
   await expect(banner).toHaveCount(0);
 });
 
+test("the Inspector shows the selected node in edit mode: its ports, and its unit inside", async ({ page }) => {
+  await openSample(page, "Hello API");
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await expect(inspector).toContainText("select a node on the canvas");
+  await page.locator(".react-flow__node", { hasText: "concat" }).click();
+  await expect(inspector).toContainText("concat");
+  await expect(inspector).toContainText("inputs");
+  await inspector.getByRole("button", { name: "Unit", exact: true }).click();
+  await expect(inspector).toContainText("Pure");
+  // Folded to a strip, and opened again.
+  await inspector.getByRole("button", { name: "fold the Inspector" }).click();
+  await page.getByRole("button", { name: "open the Inspector" }).click();
+  await expect(inspector).toContainText("Pure");
+});
+
 test("slugs runs its holons, and view mode shows inside one", async ({ page, request }) => {
   await openSample(page, "A flow inside a flow (holon)");
   const port = await deploy(page);
@@ -110,8 +125,8 @@ test("slugs runs its holons, and view mode shows inside one", async ({ page, req
   expect(await answer.json()).toMatchObject({ title: "hello-holon-world", author: "ada-lovelace", receipt: "unsigned" });
   await viewNewestRun(page);
   await page.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.getByRole("button", { name: "Component", exact: true }).click();
-  const side = page.locator(".hl-view__side");
+  const side = page.getByRole("complementary", { name: "Inspector" });
+  await side.getByRole("button", { name: "Node", exact: true }).click();
   await expect(side).toContainText("inside, as the run went");
   await expect(side).toContainText('collection_put "posts"');
   await expect(side).toContainText("hello-holon-world");

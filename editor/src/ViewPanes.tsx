@@ -424,8 +424,9 @@ function LogTab({ entries, selected, pick }: { entries: LogEntry[]; selected: Lo
 function Field({ name, value, color }: { name: string; value: string; color?: string }) {
   return (
     <div style={{ display: "flex", gap: 8 }}>
-      <span style={{ color: dim, minWidth: 90 }}>{name}</span>
-      <span style={{ color: color ?? ink, wordBreak: "break-word", whiteSpace: "pre-wrap", flex: 1 }}>{value}</span>
+      {/* A long name (a hash used as a key) wraps within its share instead of crowding out the value. */}
+      <span style={{ color: dim, minWidth: 90, maxWidth: "40%", flexShrink: 0, overflowWrap: "anywhere" }}>{name}</span>
+      <span style={{ color: color ?? ink, overflowWrap: "anywhere", whiteSpace: "pre-wrap", flex: 1, minWidth: 0 }}>{value}</span>
     </div>
   );
 }
@@ -627,19 +628,8 @@ function TimelineTab({
   );
 }
 
-export function SidePane({
-  slug,
-  run,
-  step,
-  order,
-  stateAfter,
-  changed,
-  collections,
-  node,
-  trace,
-  timing,
-  inside,
-}: {
+/** What the Inspector shows of a run, in view mode: the flow state as of the step it is at. */
+export type InspectorRun = {
   slug: string;
   run: LogEntry | null;
   step: number | null;
@@ -649,29 +639,60 @@ export function SidePane({
   changed: string[];
   /** The collections the run touched, as of `step` (replay.ts's collectionsAtStep). */
   collections: CollectionAtStep[];
-  /** The node the component tab shows, with what it computed in this run. */
-  node: ViewNode | null;
+  /** What the node computed in this run. */
   trace: NodeTrace | undefined;
   timing: { start_us: number; end_us: number } | undefined;
   /** For a holon: its own nodes, as the run went (null for any other node). */
   inside: InsideStep[] | null;
+};
+
+type InspectorTab = "node" | "unit" | "state";
+
+/**
+ * The Inspector, on the canvas's right in both modes: the selected node (its docs, params and
+ * ports, and in view mode what it computed in the run), what its unit is made of, and in view
+ * mode the flow state. `unit` is the selected node's unit hash, for the unit tab; `run` is
+ * there only in view mode. Folds to a strip, remembered per browser.
+ */
+export function Inspector({
+  node,
+  unit,
+  run,
+  open,
+  onOpen,
+}: {
+  node: ViewNode | null;
+  unit: ReactNode;
+  run: InspectorRun | null;
+  open: boolean;
+  onOpen: (open: boolean) => void;
 }) {
-  const [tab, setTab] = useState<"state" | "component">("state");
+  const [picked, setTab] = useState<InspectorTab>("node");
+  const tab = picked === "state" && !run ? "node" : picked;
+  const tabs: [InspectorTab, string][] = [["node", "Node"], ["unit", "Unit"], ...(run ? [["state", "Flow state"] as [InspectorTab, string]] : [])];
+  if (!open) {
+    return (
+      <div className="nodrag nowheel hl-inspector hl-inspector--closed" style={paneStyle}>
+        <button className="hl-inspector__fold" onClick={() => onOpen(true)} title="open the Inspector" aria-label="open the Inspector">
+          ‹ Inspector
+        </button>
+      </div>
+    );
+  }
   return (
-    <div className="nodrag nowheel hl-view__side" style={paneStyle}>
-      <Tabs
-        tabs={[
-          ["state", "Flow state"],
-          ["component", "Component"],
-        ]}
-        tab={tab}
-        onTab={setTab}
-      />
+    <div className="nodrag nowheel hl-inspector" style={paneStyle} role="complementary" aria-label="Inspector">
+      <Tabs tabs={tabs} tab={tab} onTab={setTab}>
+        <button className="hl-inspector__close" onClick={() => onOpen(false)} title="fold the Inspector away" aria-label="fold the Inspector">
+          ›
+        </button>
+      </Tabs>
       <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
-        {tab === "state" ? (
-          <StateTab slug={slug} run={run} step={step} order={order} after={stateAfter} changed={changed} collections={collections} />
+        {tab === "state" && run ? (
+          <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} />
+        ) : tab === "unit" ? (
+          node ? unit : <div>select a node to see what its unit is made of</div>
         ) : (
-          <ComponentTab node={node} trace={trace} timing={timing} inside={inside} />
+          <ComponentTab node={node} run={run} />
         )}
       </div>
     </div>
@@ -835,19 +856,10 @@ function CollectionBox({ slug, c }: { slug: string; c: CollectionAtStep }) {
 /** One node inside a holon, as a run went: what it is, what it produced, how long it took. */
 export type InsideStep = { label: string; outputs: (WValue | null)[] | null; us: number };
 
-function ComponentTab({
-  node,
-  trace,
-  timing,
-  inside,
-}: {
-  node: ViewNode | null;
-  trace: NodeTrace | undefined;
-  timing: { start_us: number; end_us: number } | undefined;
-  inside: InsideStep[] | null;
-}) {
+function ComponentTab({ node, run }: { node: ViewNode | null; run: InspectorRun | null }) {
   const describe = useNodeDocs();
-  if (!node) return <div>click a node on the canvas, or step through the run</div>;
+  if (!node) return <div>{run ? "click a node on the canvas, or step through the run" : "select a node on the canvas"}</div>;
+  const { trace, timing, inside } = run ?? { trace: undefined, timing: undefined, inside: null };
   const { data } = node;
   const doc = describe(data as Parameters<typeof describe>[0]);
   const kind = data.body.kind === "Template" ? "template" : data.body.kind === "Composite" ? "composite" : "primitive";
@@ -858,7 +870,7 @@ function ComponentTab({
       <div style={{ color: dim }}>
         {kind}
         {timing ? ` · ran ${us(timing.start_us)} → ${us(timing.end_us)} (${us(timing.end_us - timing.start_us)})` : ""}
-        {!trace ? " · not part of this run" : ""}
+        {run && !trace ? " · not part of this run" : ""}
       </div>
       {trace?.issue && (
         <div style={{ color: trace.issue.role === "origin" ? FAIL : "#d9a596" }}>

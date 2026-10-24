@@ -28,7 +28,7 @@ import {
   type ReplayNode,
 } from "./replay";
 import { getDeployedDocument, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
-import { BottomPane, SidePane, type InsideStep } from "./ViewPanes";
+import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
 import type { FlowMeta } from "./tabs";
 
 type Setter<T> = (value: T | ((prev: T) => T)) => void;
@@ -305,30 +305,34 @@ export function useViewMode(input: ViewModeInput) {
 
 export type ViewMode = ReturnType<typeof useViewMode>;
 
-/** View mode's panes: the flow state and component on the side, the log and timeline below. */
-export function ViewModePanes({ view, flow, nodes }: { view: ViewMode; flow: FlowMeta; nodes: PrimitiveNodeType[] }) {
+/** What the Inspector shows of the run in view mode (null outside it): the flow state as of the
+ *  step, and what the inspected node computed. */
+export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | null {
   const { viewing, selectedRun, step, inspectNode } = flow;
+  if (!viewing) return null;
+  const { replayed } = view;
+  const trace = inspectNode ? replayed?.traces.get(inspectNode) : undefined;
+  return {
+    slug: viewing,
+    run: selectedRun,
+    step,
+    order: replayed?.order ?? [],
+    stateAfter: view.flowState.after,
+    changed: view.flowState.changed,
+    collections: view.collections,
+    trace: trace && inspectNode ? { ...trace, issue: replayed?.diagnosis?.issues.get(inspectNode) } : undefined,
+    timing: inspectNode ? view.timings.get(inspectNode) : undefined,
+    inside: view.inside,
+  };
+}
+
+/** View mode's bottom pane: the log and the timeline (the Inspector, on the right, is App's). */
+export function ViewModePanes({ view, flow, nodes }: { view: ViewMode; flow: FlowMeta; nodes: PrimitiveNodeType[] }) {
+  const { viewing, selectedRun, step } = flow;
   if (!viewing) return null;
   const { replayed } = view;
   return (
     <>
-      <SidePane
-        slug={viewing}
-        collections={view.collections}
-        run={selectedRun}
-        step={step}
-        order={replayed?.order ?? []}
-        stateAfter={view.flowState.after}
-        changed={view.flowState.changed}
-        node={nodes.find((n) => n.id === inspectNode) ?? null}
-        trace={
-          inspectNode && replayed?.traces.get(inspectNode)
-            ? { ...replayed.traces.get(inspectNode)!, issue: replayed.diagnosis?.issues.get(inspectNode) }
-            : undefined
-        }
-        timing={inspectNode ? view.timings.get(inspectNode) : undefined}
-        inside={view.inside}
-      />
       <BottomPane
         slug={viewing}
         selected={selectedRun}
