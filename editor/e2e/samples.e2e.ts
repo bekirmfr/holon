@@ -349,3 +349,16 @@ test("a flow as text: exported as .holon, checked by the command line, imported 
   await expect(page.locator(".hl-tab--active")).toContainText(name);
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1);
 });
+
+test("likes answers a count in a sentence: the number as text (as_text), then the words", async ({ page, request }) => {
+  await openSample(page, "Likes counter (runs side by side)");
+  const port = await deploy(page);
+  // A fresh post: liked once, then shown.
+  const post = `e2e-${Date.now()}`;
+  expect((await request.post(`http://127.0.0.1:${port}/posts/${post}/like`)).status()).toBe(200);
+  const shown = await request.get(`http://127.0.0.1:${port}/posts/${post}/likes`);
+  expect(shown.status()).toBe(200);
+  expect(await shown.text()).toBe("1 likes");
+  // Never liked: the count falls back to 0, and as_text writes it.
+  expect(await (await request.get(`http://127.0.0.1:${port}/posts/${post}-never/likes`)).text()).toBe("0 likes");
+});

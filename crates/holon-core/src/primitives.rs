@@ -133,6 +133,22 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             Some(Value::Text(to_text_str(v)))
         }
 
+        // A value as it reads in a message: a text is itself (NOT quoted, unlike `to_text`, which
+        // writes values as literals so a nested "5" and 5 stay apart), a record or list is its
+        // JSON, and anything else is as `to_text` writes it. The one conversion that is the
+        // identity on text, which is what lets `"you have {n} likes"` take any value: `concat`
+        // refuses a number, `to_text` would quote a text, and no composite can tell the two
+        // apart (there is no type test). Total, like `to_text`: JSON has no form for a non-finite
+        // number or an effect, so those fall back to `to_text`'s rendering.
+        "as_text" => {
+            let [v] = inputs else { return None };
+            Some(Value::Text(match v {
+                Value::Text(s) => s.clone(),
+                Value::Record(_) | Value::List(_) => crate::json::stringify(v).unwrap_or_else(|| to_text_str(v)),
+                _ => to_text_str(v),
+            }))
+        }
+
         // The other universal any-typed primitive alongside `to_text`, same reasoning: one
         // uniform check that works before you know a value's runtime type — reading
         // `store_read(key)` (declared `Any`), say, where you often genuinely don't. Total over
@@ -926,6 +942,31 @@ mod tests {
         // Sum — shown by arm index, never a guessed "Some"/"None" label.
         let some5 = Value::Sum { arm: 0, payload: Box::new(num(5.0)) };
         assert_eq!(compute("to_text", &[&some5], &[]), Some(txt("sum#0(5)")));
+    }
+    #[test]
+    fn as_text_is_the_identity_on_text_and_renders_everything_else() {
+        // The whole point: a text comes back bare, where to_text would quote it.
+        assert_eq!(compute("as_text", &[&txt("hi")], &[]), Some(txt("hi")));
+        assert_eq!(compute("as_text", &[&txt("")], &[]), Some(txt("")));
+        // Numbers and booleans as to_text writes them.
+        assert_eq!(compute("as_text", &[&num(3.0)], &[]), Some(txt("3")));
+        assert_eq!(compute("as_text", &[&num(-0.0)], &[]), Some(txt("0")));
+        assert_eq!(compute("as_text", &[&num(-2.5)], &[]), Some(txt("-2.5")));
+        assert_eq!(compute("as_text", &[&boo(false)], &[]), Some(txt("false")));
+        // Records and lists as JSON: what a message or a log line wants, texts inside quoted.
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("id".to_string(), num(7.0));
+        fields.insert("title".to_string(), txt("buy milk"));
+        assert_eq!(compute("as_text", &[&Value::Record(fields)], &[]), Some(txt(r#"{"id":7,"title":"buy milk"}"#)));
+        assert_eq!(compute("as_text", &[&list(vec![num(1.0), txt("a")])], &[]), Some(txt(r#"[1,"a"]"#)));
+        // Total: what JSON can't write falls back to to_text's rendering, never to nothing.
+        assert_eq!(compute("as_text", &[&list(vec![num(f64::INFINITY)])], &[]), Some(txt("[inf]")));
+        let effect = Value::Effect { sink: "store_write:count".into(), payload: Box::new(num(3.0)) };
+        assert_eq!(compute("as_text", &[&effect], &[]), Some(txt("effect(store_write:count, 3)")));
+        assert_eq!(compute("as_text", &[&num(f64::NAN)], &[]), Some(txt("NaN")));
+        // Arity: exactly one input, like to_text.
+        assert_eq!(compute("as_text", &[], &[]), None);
+        assert_eq!(compute("as_text", &[&num(1.0), &num(2.0)], &[]), None);
     }
     #[test]
     fn to_text_is_total_even_for_a_non_finite_number() {

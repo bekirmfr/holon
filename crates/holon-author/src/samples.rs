@@ -236,13 +236,13 @@ static SAMPLES: &[Sample] = &[
         name: "likes",
         title: "Likes counter (runs side by side)",
         description: "Each like reads a post's count from a collection, adds one and writes it back. Likes arriving at once run side by side; one whose count changed under it runs again, so none is lost.",
-        shows: &["concurrent runs", "retries", "read-modify-write on a collection item", "collection_list"],
+        shows: &["concurrent runs", "retries", "read-modify-write on a collection item", "collection_list", "as_text"],
         port: Some("8108"),
         interval: None,
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: "seq 50 | xargs -P 20 -I{} curl -s -X POST http://127.0.0.1:8108/posts/1/like, then GET /posts/1/likes (50) and GET /likes; the log marks runs that ran again",
+        try_it: "seq 50 | xargs -P 20 -I{} curl -s -X POST http://127.0.0.1:8108/posts/1/like, then GET /posts/1/likes (\"50 likes\") and GET /likes; the log marks runs that ran again",
         build: likes,
     },
     Sample {
@@ -601,12 +601,20 @@ fn likes(b: &mut B) -> R {
     b.wire(&more, "out", &like_res, "body")?;
 
     // GET /posts/:id/likes: the count, 0 before the first like.
+    // GET /posts/:id/likes: the count in a sentence, "50 likes": the number as text (as_text,
+    // which leaves a text as it is and writes anything else), then the words.
     let show = b.node("request", &[("method", "GET"), ("path", "/posts/:id/likes")], [40, 380])?;
-    let show_res = respond(b, OK, "404", [1240, 380])?;
+    let show_res = respond(b, OK, "404", [1740, 380])?;
     b.wire(&show, "request", &show_res, "request")?;
     let id = field_of(b, "id", &show, "params", [480, 400])?;
     let count = count_of(b, &id, [740, 400])?;
-    b.wire(&count, "out", &show_res, "body")?;
+    let digits = b.node("as_text", &[], [1240, 400])?;
+    let likes = text(b, " likes", [1240, 520])?;
+    let sentence = b.node("concat", &[], [1480, 440])?;
+    b.wire(&count, "out", &digits, "value")?;
+    b.wire(&digits, "out", &sentence, "a")?;
+    b.wire(&likes, "out", &sentence, "b")?;
+    b.wire(&sentence, "out", &show_res, "body")?;
 
     // GET /likes: every post's count, in id order.
     let all = b.node("request", &[("method", "GET"), ("path", "/likes")], [40, 680])?;

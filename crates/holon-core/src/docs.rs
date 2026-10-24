@@ -71,7 +71,8 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "secure_equals" => "Whether two texts are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.",
 
         // ── any value ──
-        "to_text" => "Any value written out as text.",
+        "to_text" => "Any value written out as text, as a literal: a text comes out in quotes.",
+        "as_text" => "Any value as it reads in a message: a text is itself, a number or true/false as written, a record or list as JSON. For putting a value into a text.",
         "is_truthy" => "Whether a value counts as true: not 0, false, empty text, an empty list or record, or none.",
         "guard" => "Passes value on only when cond is true; otherwise nothing, so what follows doesn't run.",
         "default" => "Passes its input on, or the value set on the node when the input didn't arrive: how a flow fills a gap.",
