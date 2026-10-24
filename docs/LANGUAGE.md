@@ -945,9 +945,15 @@ step that changed core is done; none changes the host, the server or the documen
    samples pinned. Two things it settled: `fmt` keeps the author's bindings rather than inlining
    every single-use value, and the lowering now refuses a route statement not wired to the
    request, which the printer's output first made visible.
-5. **`holon` and the editor.** `check` prints `line:col` and the caret; the editor's export and
-   import use the new printer and parser (through `holon-wasm`); view mode shows the line of the
-   selected node. Samples page: "as text" shows the expression form.
+5. **`holon` and the editor** ✅ (2026-10-24). `check`, `show` and `fmt` print a mistake as
+   `file:line:col: message`, the line, and a caret under the span. The editor's export and import
+   go through the language (`compile_holon` and `print_holon` in `holon-wasm`), so a `.holon`
+   downloaded from the flows page is the expression form, and an imported text keeps its names
+   through an export (`print_holon` takes the lowering's bindings). The Inspector shows, for the
+   selected node in either mode, its line in the flow as text: the canvas printed through the
+   language (`print_lines`, each top-level node to the line it is written on; an inline node to
+   its consumer's statement, a route's request to the route header). The flows page offers each
+   sample as `.holon`, written by the language.
 6. **Samples as text.** Each sample becomes a `.holon` file in `crates/holon-author/samples/`,
    written in the natural form, compiled at test time and embedded; the Rust builders go, and the
    samples' hashes become the texts'. The rule in `CLAUDE.md` becomes "every feature ships with a
