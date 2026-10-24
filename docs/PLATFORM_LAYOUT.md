@@ -150,7 +150,10 @@ bounded:  by the run's limits (§4.2): its wall-clock budget and its outbound-re
   as JSON; an Effect anywhere refused) and asks the run's observer for its answer, by the node's
   path. With no answer yet, `response` is absent; the host performs the request and answers it in
   the next round, the way `store_read` is filled in. On the canvas it reads as a node that simply
-  has a response. A request inside a `map`/`fold` body is never answered (bodies aren't observed).
+  has a response. A request inside a `map`/`fold` function is asked for at the node's path then
+  the item's index (`[…, map, k, …]`), so each item's is sent and answered on its own; `map`
+  applies every item before giving up, so all of a round's requests go out together. Collection
+  reads and waiting points inside a function are asked for the same way.
 - **Absent means "not yet" for one round, and "no value" at the end.** Nodes downstream of an
   unanswered request are absent, so a `default`/`missing` may fire early; that round's output is
   discarded anyway. Only the final round's answer counts.

@@ -673,6 +673,12 @@ names its trailing parameters take, in order, they print as captures, as they we
 Parameter names are part of the unit (ports are named), so `fn(k, r)` and `fn(k, rec)` are two
 units that compute the same.
 
+A function reads from outside as anything else does: a collection read, an outbound request or a
+waiting point inside it is answered by the host, once per item, recorded at the item's own path,
+and replayed from there (the `basket` sample prices each line from a collection). View mode shows
+a `map` or `fold` whose function reads from outside with what the run recorded it produced, as it
+does a holon that reads.
+
 ### 5.10 Effects and statements
 
 The IR has one rule for effects: an Effect-typed output that nothing consumes is exposed by the

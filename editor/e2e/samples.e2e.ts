@@ -367,6 +367,20 @@ test("likes answers a count in a sentence: the number as text (as_text), then th
   expect(await (await request.get(`http://127.0.0.1:${port}/posts/${post}-never/likes`)).text()).toBe("0 likes");
 });
 
+test("basket reads a price inside a mapped function, per item, and its run replays exactly", async ({ page, request }) => {
+  await openSample(page, "Basket (a collection read inside a function)");
+  const port = await deploy(page);
+  const [tea, cake] = [`tea-${Date.now()}`, `cake-${Date.now()}`];
+  expect((await request.put(`http://127.0.0.1:${port}/prices/${tea}`, { data: { price: 4 } })).status()).toBe(200);
+  expect((await request.put(`http://127.0.0.1:${port}/prices/${cake}`, { data: { price: 3 } })).status()).toBe(200);
+  const basket = await request.post(`http://127.0.0.1:${port}/basket`, { data: { items: [{ name: tea, qty: 2 }, { name: cake, qty: 1 }] } });
+  expect(basket.status()).toBe(200);
+  expect(await basket.json()).toEqual({ lines: [{ name: tea, total: 8 }, { name: cake, total: 3 }], total: 11 });
+  // The map's reads aren't the canvas's nodes: view mode shows it with what the run recorded.
+  await viewNewestRun(page);
+  expect((await request.post(`http://127.0.0.1:${port}/basket`, { data: { items: [{ name: `scone-${Date.now()}`, qty: 1 }] } })).status()).toBe(404);
+});
+
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const { mkdtempSync } = await import("node:fs");

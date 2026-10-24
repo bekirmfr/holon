@@ -131,11 +131,14 @@ export function useViewMode(input: ViewModeInput) {
       // Stepped through in the order the run evaluated its nodes.
       executionOrder(nodeTimings(selectedRun, viewTrace)),
       // A holon reading from outside within itself replays from what the run recorded.
+      // So does a map or fold whose function reads from outside.
       (node) => {
-        const body = (node as PrimitiveNodeType).data.body;
-        if (body.kind !== "Composite") return false;
+        const { body, name, params } = (node as PrimitiveNodeType).data;
+        const fn = body.kind === "Primitive" && (name === "map" || name === "fold") ? params.find((p) => p.kind === "Frozen" && p.name === "fn") : undefined;
+        const hash = body.kind === "Composite" ? body.hash : fn?.kind === "Frozen" ? fn.value : "";
+        if (!hash) return false;
         try {
-          return readsFromOutside(ev.capability_names(body.hash) as string[]);
+          return readsFromOutside(ev.capability_names(hash) as string[]);
         } catch {
           return true;
         }

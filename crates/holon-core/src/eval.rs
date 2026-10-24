@@ -50,8 +50,11 @@ pub fn eval(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> 
 /// by its path of child indices from the root (`[2]`, then `[2, 0]` inside it, …), and asked for
 /// the answer to each `http_request` whose request is ready. Core never reads a clock or does IO:
 /// an observer is how the host times each step (the flow log's timeline) and answers requests
-/// (the rounds of §4.1) without that impurity entering here. `map`/`fold` bodies are not
-/// observed, so a request inside one is never answered.
+/// (the rounds of §4.1) without that impurity entering here. Inside a `map`/`fold`, each
+/// application of the function is at the node's path then the item's index (`[2, 0]` for the
+/// first item of the `map` at `[2]`, `[2, 0, 1]` for that application's child 1, …): its requests
+/// and reads are asked for there, each item's its own, but its steps aren't reported, so a path
+/// one below a node is still that node's own child.
 pub trait Observer {
     fn enter(&mut self, _path: &[u32]) {}
     fn leave(&mut self, _path: &[u32]) {}
@@ -94,10 +97,10 @@ fn eval_at(
     match &unit.body {
         // `map` is higher-order — it invokes the evaluator — so it lives here, where
         // recursion lives, rather than in first-order `compute`.
-        UnitBody::Primitive { name } if name == "map" => smallvec![eval_map(inputs, &unit.params, resolver)],
+        UnitBody::Primitive { name } if name == "map" => smallvec![eval_map(inputs, &unit.params, resolver, observer, path)],
         // `fold` is the one iteration primitive (the universal list donor): also higher-order,
         // so it lives here too. It threads an accumulator, which `map` does not.
-        UnitBody::Primitive { name } if name == "fold" => smallvec![eval_fold(inputs, &unit.params, resolver)],
+        UnitBody::Primitive { name } if name == "fold" => smallvec![eval_fold(inputs, &unit.params, resolver, observer, path)],
         // An outbound request: built here, answered (or not yet) by the host through the observer.
         UnitBody::Primitive { name } if name == "http_request" => {
             smallvec![primitives::http_request(inputs, &unit.params).and_then(|r| observer.answer(path, &r))]
@@ -147,7 +150,7 @@ fn eval_at(
 /// Convenience for the (still overwhelming majority of) callers that only ever deal with a
 /// single-output unit: the one output, or `None` if the unit doesn't declare *exactly* one —
 /// zero outputs, or two-or-more, both fail closed here rather than silently taking the first of
-/// several. This is what `map`/`fold` use for their `fn` argument below: a multi-output
+/// several. `map`/`fold` apply their `fn` by the same rule (`apply`, below): a multi-output
 /// combinator isn't yet a meaningful thing (would it build a list of tuples? a tuple of lists?
 /// — a real, separate design question, deferred per the P4.7 L4 §10), so refusing it here is
 /// honest, not a workaround.
@@ -296,8 +299,9 @@ fn topo_order(n: usize, edges: &[Edge]) -> Option<Vec<usize>> {
 /// Inputs after the list are passed to every application after the item, the same each time:
 /// `fn(elem, extra…)`. That is how a function uses a value from around it (a lambda's capture,
 /// lifted to an input of its own) while staying a sealed unit. Like any variadic leaf, `map`
-/// fires only when every extra input is present.
-fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+/// fires only when every extra input is present. Each application asks the host for what it
+/// requests or reads at its own path (see [`Observer`]).
+fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Option<Value> {
     let list = match inputs.first() {
         Some(Some(Value::List(xs))) => xs,
         _ => return None,
@@ -309,13 +313,36 @@ fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver
 
     let mut out = Vec::with_capacity(list.len());
     let mut args: Vec<Option<Value>> = Vec::with_capacity(1 + extra.len());
-    for elem in list {
+    let mut asks = Asks(observer);
+    for (k, elem) in list.iter().enumerate() {
         args.clear();
         args.push(Some(elem.clone()));
         args.extend(extra.iter().cloned());
-        out.push(eval_one(unit, &args, resolver)?); // any None ⇒ whole map None
+        // Every item is applied, even after one comes out absent, so each item's requests are
+        // asked in the same round rather than one round per item. Any None ⇒ whole map None.
+        out.push(apply(unit, &args, resolver, &mut asks, path, k));
     }
-    Some(Value::List(out))
+    out.into_iter().collect::<Option<Vec<Value>>>().map(Value::List)
+}
+
+/// One application of a `map`/`fold` function, to item `k`: evaluated at the node's path then
+/// `k`, its one output (or `None`, as [`eval_one`]).
+fn apply(unit: &Unit, args: &[Option<Value>], resolver: &impl Resolver, asks: &mut Asks, path: &mut Vec<u32>, k: usize) -> Option<Value> {
+    path.push(u32::try_from(k).ok()?);
+    let mut outs = eval_at(unit, args, resolver, asks, path);
+    path.pop();
+    if outs.len() == 1 { outs.pop().unwrap() } else { None }
+}
+
+/// The observer inside a `map`/`fold` application: it passes on what is asked (requests, reads,
+/// waiting points) and nothing of the steps. One type however deep the nesting, so a function
+/// that maps again evaluates under the same observer type.
+struct Asks<'a>(&'a mut dyn Observer);
+
+impl Observer for Asks<'_> {
+    fn answer(&mut self, path: &[u32], request: &Value) -> Option<Value> {
+        self.0.answer(path, request)
+    }
 }
 
 /// The inputs, when every one is present.
@@ -332,8 +359,9 @@ fn present(inputs: &[Option<Value>]) -> Option<&[Option<Value>]> {
 /// trustless cache leans on). Any application returning `None` propagates. Like `map`, the
 /// `fn` reference rides a param, so `fold`'s hash transitively depends on it (I6), and
 /// inspection (P3.2.1) must treat hash-valued params as references. Inputs after the list are
-/// passed after the item, as `map` passes them: `fn(acc, elem, extra…)`.
-fn eval_fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+/// passed after the item, as `map` passes them: `fn(acc, elem, extra…)`, and each application
+/// asks at its own path, as `map`'s do.
+fn eval_fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Option<Value> {
     let init = match inputs.first() {
         Some(Some(v)) => v.clone(),
         _ => return None,
@@ -349,13 +377,14 @@ fn eval_fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolve
 
     let mut acc = init;
     let mut args: Vec<Option<Value>> = Vec::with_capacity(2 + extra.len());
-    for elem in list {
+    let mut asks = Asks(observer);
+    for (k, elem) in list.iter().enumerate() {
         // fn(acc, elem, extra…) → new acc; any None ⇒ the whole fold is None.
         args.clear();
         args.push(Some(acc));
         args.push(Some(elem.clone()));
         args.extend(extra.iter().cloned());
-        acc = eval_one(unit, &args, resolver)?;
+        acc = apply(unit, &args, resolver, &mut asks, path, k)?;
     }
     Some(acc)
 }
@@ -751,6 +780,60 @@ mod tests {
         f.inputs.push(Port { name: "in3".into(), ty: Type::Any });
         assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs.clone()), Some(num(2.0))], &r).into_vec(), vec![Some(num(12.0))]);
         assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs), None], &r).into_vec(), vec![None]);
+    }
+
+    /// A read inside a mapped function is asked of the host, at the map's path then the item's
+    /// index, each item's on its own; the application's steps aren't reported. A fold's alike.
+    #[test]
+    fn a_read_inside_map_or_fold_is_answered_at_the_items_path() {
+        use std::collections::BTreeMap;
+        #[derive(Default)]
+        struct Prices {
+            asked: Vec<(Vec<u32>, Value)>,
+            entered: Vec<Vec<u32>>,
+        }
+        impl Observer for Prices {
+            fn enter(&mut self, path: &[u32]) {
+                self.entered.push(path.to_vec());
+            }
+            fn answer(&mut self, path: &[u32], request: &Value) -> Option<Value> {
+                self.asked.push((path.to_vec(), request.clone()));
+                let Value::Record(r) = request else { return None };
+                match &r["get"] {
+                    Value::Text(k) if k == "tea" => Some(num(4.0)),
+                    Value::Text(k) if k == "cake" => Some(num(3.0)),
+                    _ => None,
+                }
+            }
+        }
+        let mut r = MapResolver::new();
+        let get = Unit { params: vec![Param::frozen("collection", "prices")], ..prim("collection_get", 1, Type::Any) };
+        let hget = r.insert(get).unwrap();
+        // price(key) = prices[key], one child deep.
+        let price = composite(vec![Port { name: "key".into(), ty: Type::Text }], Type::Any, vec![hget], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)]);
+        let hprice = r.insert(price).unwrap();
+        let hmap = r.insert(map_unit(&hprice)).unwrap();
+        // The flow: its one child is the map, at [0].
+        let flow = composite(vec![Port { name: "keys".into(), ty: Type::list_any() }], Type::list_any(), vec![hmap], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)]);
+        let keys = list(vec![Value::Text("tea".into()), Value::Text("cake".into())]);
+        let mut seen = Prices::default();
+        assert_eq!(eval_observed(&flow, &[Some(keys.clone())], &r, &mut seen).into_vec(), vec![Some(list(vec![num(4.0), num(3.0)]))]);
+        let get = |k: &str| Value::Record(BTreeMap::from([("collection".to_string(), Value::Text("prices".into())), ("get".to_string(), Value::Text(k.into()))]));
+        assert_eq!(seen.asked, vec![(vec![0, 0, 0], get("tea")), (vec![0, 1, 0], get("cake"))], "map [0], item k, the read at child 0");
+        assert_eq!(seen.entered, vec![vec![0]], "only the map itself is a step");
+        assert_eq!(eval(&flow, &[Some(keys.clone())], &r).into_vec(), vec![None], "no one to answer: absent, as outside a map");
+        // fold(0, keys, fn: (acc, key) -> acc + prices[key]).
+        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
+        let step = composite(
+            vec![nport("acc"), Port { name: "key".into(), ty: Type::Text }],
+            Type::Number,
+            vec![hget, hadd],
+            vec![edge(BOUNDARY, 1, 0, 0), edge(BOUNDARY, 0, 1, 0), edge(0, 0, 1, 1), edge(1, 0, BOUNDARY, 0)],
+        );
+        let hstep = r.insert(step).unwrap();
+        let mut seen = Prices::default();
+        assert_eq!(eval_observed(&fold_unit(&hstep), &[Some(num(0.0)), Some(keys)], &r, &mut seen).into_vec(), vec![Some(num(7.0))]);
+        assert_eq!(seen.asked.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), vec![vec![0, 0], vec![1, 0]], "item k, the read at child 0");
     }
 
     #[test]

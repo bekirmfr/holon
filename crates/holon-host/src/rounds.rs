@@ -575,6 +575,41 @@ mod tests {
         assert!(host.0.is_empty());
     }
 
+    /// A request inside a mapped function is sent for each item, in one round, each at its own
+    /// path (the map's, then the item's index); the next round answers each its own, and a
+    /// replay from the record gives the same.
+    #[test]
+    fn a_request_inside_map_is_sent_and_answered_per_item() {
+        let mut r = MapResolver::new();
+        let request = r.insert(leaf("http_request", vec![Param::frozen("method", "GET"), Param::frozen("host", "api.example.com")], 3, Type::Record)).unwrap();
+        let body = r.insert(leaf("field", vec![Param::frozen("name", "body")], 1, Type::Any)).unwrap();
+        // fetch(path) = http_request(path).body
+        let fetch = Unit {
+            body: UnitBody::Composite { children: vec![request, body], edges: vec![e(BOUNDARY, 0, 0, 0), e(0, 0, 1, 0), e(1, 0, BOUNDARY, 0)] },
+            params: vec![],
+            inputs: vec![Port { name: "path".into(), ty: Type::Text }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        };
+        let hfetch = r.insert(fetch).unwrap();
+        let map = Unit { params: vec![Param::frozen("fn", hfetch.iter().map(|b| format!("{b:02x}")).collect::<String>())], ..leaf("map", vec![], 1, Type::list_any()) };
+        let hmap = r.insert(map).unwrap();
+        let flow = Unit {
+            body: UnitBody::Composite { children: vec![hmap], edges: vec![e(BOUNDARY, 0, 0, 0), e(0, 0, BOUNDARY, 0)] },
+            params: vec![],
+            inputs: vec![Port { name: "paths".into(), ty: Type::list_any() }],
+            outputs: vec![Port { name: "out".into(), ty: Type::list_any() }],
+        };
+        let paths = Value::List(vec![txt("/a"), txt("/b")]);
+        let echo = Echo::default();
+        let out = run_rounds(&flow, &[Some(paths.clone())], &[], &r, &mut Performed::default(), &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        assert_eq!(out.outputs, vec![Some(Value::List(vec![txt("/a"), txt("/b")]))]);
+        assert_eq!(out.rounds.len(), 1, "both items' requests go out in one round");
+        assert_eq!(out.rounds[0].exchanges.iter().map(|x| x.path.clone()).collect::<Vec<_>>(), vec![vec![0, 0, 0], vec![0, 1, 0]]);
+        assert_eq!(*echo.0.lock().unwrap(), ["https://api.example.com/a", "https://api.example.com/b"]);
+        let replayed = holon_core::eval_observed(&flow, &[Some(paths)], &r, &mut Recorded::new(&out.rounds)).into_vec();
+        assert_eq!(replayed, out.outputs, "a replay answers each item from the record");
+    }
+
     #[test]
     fn a_flow_without_requests_is_one_round_like_fire() {
         let mut r = MapResolver::new();
