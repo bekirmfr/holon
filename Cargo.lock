@@ -897,7 +897,7 @@ dependencies = [
 
 [[package]]
 name = "holon"
-version = "0.1.0-rc.10"
+version = "0.1.0-rc.11"
 dependencies = [
  "aes-gcm",
  "argon2",
