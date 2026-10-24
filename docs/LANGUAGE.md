@@ -992,13 +992,15 @@ step that changed core is done; none changes the host, the server or the documen
    extension that starts it. As the text is typed: §9's mistake where the compiler stopped, in
    `holon check`'s words, and a mistake about the whole flow at its `flow` header; on hover, what
    a word is (a keyword or noun in a line, a leaf by its signature from the reference, a holon of
-   the text, a binding as the node it is, the flow's name as what `check` says of it); Format
-   Document as `holon fmt` writes. What an editor asks is holon-author's (`editing.rs`), so the
+   the text, a binding as the node it is, the flow's name as what `check` says of it); completion
+   of what may be written there (the text's names, the nouns, the leaves called by name, the
+   keywords, and after a `.` the members of what is before it); Format Document as `holon fmt`
+   writes. What an editor asks is holon-author's (`editing.rs`), so the
    web editor can ask it through the bridge too; the protocol only frames messages and converts
    positions to UTF-16. Highlighting is a TextMate grammar. Tests: each answer on the samples,
    the protocol on framed messages, the grammar on every sample through VS Code's own TextMate
-   engine, and an integration test in a real VS Code that sees a mistake, fixes it, hovers and
-   formats.
+   engine, and an integration test in a real VS Code that sees a mistake, completes, fixes it,
+   hovers and formats. Each release carries the extension as `holon-vscode.vsix`.
 
 Dependencies: 3 needs 1 and 2; 4 needs 3 (the golden test is what makes the printer checkable);
 5 and 6 need 4; 7 and 8 need 5.
@@ -1029,9 +1031,13 @@ Decided ones are kept, with the decision, for a reader who wonders why.
   built (§5.6).
 - **F6. Named inputs.** *Decided (2026-10-24):* a named argument is an input when the unit has
   that port, else a param; `_` is gone. The one clash, `default`, is never written.
-- **F7. Where the layout of a text-authored flow lives.** Auto-layout on import is enough for
-  review; an author who then arranges the canvas and exports loses the arrangement. A sidecar
-  `.holon.layout` is the obvious fix if anyone asks.
+- **F7. Where the layout of a text-authored flow lives.** *Decided (2026-10-24):* in the
+  editor's saved flow only, for now. Structure is identity and shape is only visual, so a
+  `.holon` file carries no positions: outside the editor it is laid out by the builder on import,
+  and inside it the saved flow keeps each node's position by its name in the text, so a text
+  edit or a canvas edit leaves the arrangement where it was (`docs/L4s/text-pane-L4.md`). An
+  author who exports and imports again gets a fresh layout. A sidecar `.holon.layout` (names to
+  positions) is the next step if anyone asks; positions in the text are refused.
 - **F8. Lambdas with captures, by lifting.** A capture could be lifted to an extra input of a
   composite that `map` cannot call today. It would need a `map` that takes extra fixed inputs,
   which is a core change. Not now.
