@@ -57,7 +57,7 @@
     "pretest:vscode": "npm run bundle",
     "test:vscode": "node test/integration/run.js",
     "vscode:prepublish": "npm run bundle",
-    "package": "vsce package --skip-license --no-dependencies"
+    "package": "vsce package --skip-license --no-dependencies --out holon-vscode.vsix"
   },
   "dependencies": {
     "vscode-languageclient": "9.0.1"

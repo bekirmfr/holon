@@ -9,6 +9,9 @@
 - hover: what a keyword, noun or leaf is (its signature and what it does), a holon of the file, a
   collection, a route's request, a binding as the node it is; on the flow's name, its routes and
   what it may do;
+- completion: what may be written where the cursor is (the file's bindings, holons, collections
+  and requests, the nouns, the leaves with their signatures, keywords), and after a `.` the
+  members (`posts.` → get, put, delete, list; `req.` → params, query, headers, body, json);
 - Format Document: the canonical form, as `holon fmt` writes it.
 
 It starts `holon lsp`, so `holon` must be installed (see the repository's README), on the PATH or
@@ -17,13 +20,15 @@ starts `holon lsp` on stdin and stdout. Design: `docs/L4s/language-server-L4.md`
 
 ## Installing
 
-From this folder:
+Each release from v0.1.0-rc.10 on carries it as `holon-vscode.vsix`, beside `holon`
+(`https://github.com/bekirmfr/holon/releases/download/<tag>/holon-vscode.vsix`):
 
 ```sh
-npm install
-npm run package
-code --install-extension holon-0.1.0.vsix
+gh release download v0.1.0-rc.10 --repo bekirmfr/holon --pattern holon-vscode.vsix
+code --install-extension holon-vscode.vsix
 ```
+
+Or from this folder: `npm install`, `npm run package`, then the same `code --install-extension`.
 
 ## Developing
 

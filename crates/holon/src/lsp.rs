@@ -1,7 +1,7 @@
 //! `holon lsp`: a `.holon` file read by an editor as it is typed (docs/L4s/language-server-L4.md),
 //! as a Language Server Protocol server on stdin and stdout. What it says is holon-author's
-//! (`editing.rs`): each mistake `holon check` finds, what the word under the cursor is, and the
-//! text as `holon fmt` writes it. This file frames the messages and converts positions: the
+//! (`editing.rs`): each mistake `holon check` finds, what the word under the cursor is, what may
+//! be written there, and the text as `holon fmt` writes it. This file frames the messages and converts positions: the
 //! language counts columns in characters, the protocol in UTF-16 code units.
 
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ const USAGE: &str = "usage: holon lsp
 
 A language server on stdin and stdout, for an editor to start (the VS Code extension in
 editors/vscode does): each mistake holon check finds, as you type; what a word is, on hover;
-and formatting, as holon fmt writes it. It needs no server.";
+what may be written, as completions; and formatting, as holon fmt writes it. It needs no server.";
 
 // ── framing ─────────────────────────────────────────────────────────────────────────────────
 
@@ -92,6 +92,17 @@ fn everything(text: &str) -> Value {
     json!({ "start": { "line": 0, "character": 0 }, "end": { "line": lines - 1, "character": last } })
 }
 
+/// The protocol's number for what a completion offers.
+fn kind(k: editing::Kind) -> u8 {
+    match k {
+        editing::Kind::Member => 2,
+        editing::Kind::Function => 3,
+        editing::Kind::Variable => 6,
+        editing::Kind::Module => 9,
+        editing::Kind::Keyword => 14,
+    }
+}
+
 // ── the server ──────────────────────────────────────────────────────────────────────────────
 
 /// The texts the editor has open, by URI.
@@ -118,6 +129,7 @@ impl Server {
                 "capabilities": {
                     "textDocumentSync": { "openClose": true, "change": 1 },
                     "hoverProvider": true,
+                    "completionProvider": { "triggerCharacters": ["."] },
                     "documentFormattingProvider": true,
                 },
                 "serverInfo": { "name": "holon", "version": env!("CARGO_PKG_VERSION") },
@@ -143,6 +155,20 @@ impl Server {
                 let text = self.texts.get(&uri).map(String::as_str).unwrap_or("");
                 let found = editing::hover(text, from_lsp(text, &params["position"]));
                 vec![answer(found.map_or(Value::Null, |h| json!({ "contents": { "kind": "markdown", "value": h.text }, "range": range(text, h.span) })))]
+            }
+            "textDocument/completion" => {
+                let text = self.texts.get(&uri).map(String::as_str).unwrap_or("");
+                let items: Vec<Value> = editing::complete(text, from_lsp(text, &params["position"]))
+                    .into_iter()
+                    .map(|c| {
+                        let mut item = json!({ "label": c.label, "kind": kind(c.kind), "detail": c.detail });
+                        if let Some(doc) = c.doc {
+                            item["documentation"] = json!({ "kind": "markdown", "value": doc });
+                        }
+                        item
+                    })
+                    .collect();
+                vec![answer(json!(items))]
             }
             "textDocument/formatting" => {
                 let text = self.texts.get(&uri).map(String::as_str).unwrap_or("");
@@ -246,6 +272,7 @@ mod tests {
             notify("initialized", json!({})),
             notify("textDocument/didOpen", json!({ "textDocument": { "uri": uri, "languageId": "holon", "version": 1, "text": SLUGS } })),
             request(2, "textDocument/hover", json!({ "textDocument": { "uri": uri }, "position": { "line": 6, "character": 22 } })),
+            request(20, "textDocument/completion", json!({ "textDocument": { "uri": uri }, "position": { "line": 23, "character": 16 } })),
             notify("textDocument/didChange", json!({ "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": bad }] })),
             request(3, "textDocument/formatting", json!({ "textDocument": { "uri": uri }, "options": { "tabSize": 2, "insertSpaces": true } })),
             notify("textDocument/didChange", json!({ "textDocument": { "uri": uri, "version": 3 }, "contentChanges": [{ "text": messy }] })),
@@ -262,6 +289,11 @@ mod tests {
         let hover = &sent[2]["result"];
         assert!(hover["contents"]["value"].as_str().unwrap().contains("lowercase("), "{hover}");
         assert_eq!(hover["range"], json!({ "start": { "line": 6, "character": 20 }, "end": { "line": 6, "character": 29 } }));
+        // After `posts.` on line 24 (0-based 23): the collection's methods, as members.
+        let offered = sent[3]["result"].as_array().unwrap();
+        assert_eq!(offered.iter().map(|c| c["label"].as_str().unwrap()).collect::<Vec<_>>(), ["get", "put", "delete", "list"]);
+        assert_eq!(offered[0]["kind"], 2);
+        let sent = [&sent[..3], &sent[4..]].concat();
         // The mistake: `nope`, the 24th character, after an emoji that is one character and two
         // UTF-16 units.
         let d = &sent[3]["params"]["diagnostics"][0];

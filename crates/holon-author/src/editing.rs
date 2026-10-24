@@ -180,6 +180,175 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     said(format!("`{word}`: a `{}` node.{what}", node.data.name))
 }
 
+/// What a completion offers is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Keyword,
+    /// A leaf or a holon: called as `name(…)`.
+    Function,
+    /// A binding, a route's request, a secret or state key used in the text.
+    Variable,
+    /// A collection, or a noun for the outside world.
+    Module,
+    /// After a `.`: a part of the request, a noun's or collection's method.
+    Member,
+}
+
+/// One word a completion offers, with what it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Completion {
+    pub label: String,
+    pub kind: Kind,
+    /// A line: a signature, or what it is.
+    pub detail: String,
+    /// Markdown, if there is more to say.
+    pub doc: Option<String>,
+}
+
+/// Leaves a text doesn't call by name: it writes them as nouns (`http.get`, `state.x`,
+/// `notes[k]`, `now`, `secret.k`, `await`) or literals (`1`, `{ … }`).
+const SPOKEN_OTHERWISE: &[&str] = &[
+    "http_request", "clock", "random", "ingress", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
+    "collection_delete", "egress", "const", "record", "json_parse", "json_stringify",
+];
+
+/// The leaves a text calls by name, as it names them: their name, signature and what they do.
+fn callable() -> Vec<(String, String, String)> {
+    let mut all: Vec<(String, String, String)> = agent::leaves().into_iter().filter(|(n, _, _)| !SPOKEN_OTHERWISE.contains(&n.as_str())).map(|(n, s, d)| (n, s, d.to_string())).collect();
+    for (written, leaf) in [("json", "json_stringify"), ("parse_json", "json_parse")] {
+        if let Some((_, sig, doc)) = agent::leaves().into_iter().find(|(n, _, _)| n == leaf) {
+            all.push((written.into(), sig.replacen(leaf, written, 1), doc.to_string()));
+        }
+    }
+    all
+}
+
+/// Whether `line` (the text before the cursor on its line) ends inside a `#` comment.
+fn in_comment(line: &str) -> bool {
+    let mut quoted = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if quoted => {
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            '#' if !quoted => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn word(label: &str, kind: Kind, detail: impl Into<String>, doc: Option<String>) -> Completion {
+    Completion { label: label.to_string(), kind, detail: detail.into(), doc }
+}
+
+/// What may be written at `at`: after `head.`, `head`'s members; elsewhere, the language's words,
+/// the leaves it calls by name, and this text's holons, bindings, collections and requests. Inside
+/// a string or a comment, nothing.
+pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
+    let lines: Vec<&str> = source.split('\n').collect();
+    let line = lines.get(at.line.saturating_sub(1) as usize).map(|l| l.strip_suffix('\r').unwrap_or(l)).unwrap_or("");
+    let before: String = line.chars().take(at.col.saturating_sub(1) as usize).collect();
+    if in_comment(&before) {
+        return vec![];
+    }
+    let mut prefix = lines[..at.line.saturating_sub(1) as usize].join("\n");
+    if at.line > 1 {
+        prefix.push('\n');
+    }
+    prefix.push_str(&before);
+    // A prefix that doesn't lex ends inside a string (or its `{…}`): nothing to offer.
+    let Ok(typed) = lex(&prefix) else { return vec![] };
+    // (The lexer ends a text with a newline; one at the cursor isn't typed.)
+    let typed: Vec<&Token> = typed.iter().filter(|t| t.tok != Tok::Eof && !(t.tok == Tok::Newline && (t.span.start.line, t.span.start.col) >= (at.line, at.col))).collect();
+    let (partial, context) = match typed.last() {
+        Some(t) if t.tok == Tok::Ident && t.span.end == at => (t.text.as_str(), typed.len().checked_sub(2).map(|i| typed[i])),
+        last => ("", last.copied()),
+    };
+    // The whole text's words, as far as it lexes: names may be defined after the cursor.
+    let all = lex(source).unwrap_or_else(|_| typed.iter().map(|t| (*t).clone()).collect());
+    let after = |i: usize, tok: Tok| all.get(i + 1).is_some_and(|t| t.tok == tok);
+    let ident_after = |i: usize| all.get(i + 1).filter(|t| t.tok == Tok::Ident).map(|t| t.text.clone());
+    let header = |kw: &str| -> Vec<String> {
+        let mut found: Vec<String> = all.iter().enumerate().filter(|(_, t)| t.tok == Tok::Ident && t.text == kw).filter_map(|(i, _)| ident_after(i)).collect();
+        found.dedup();
+        found
+    };
+    let collections = header("collection");
+    let holons = header("holon");
+    // A noun's keys as used: `secret.k`, `state.k`.
+    let keys = |noun: &str| -> Vec<String> {
+        let mut found: Vec<String> = all.iter().enumerate().filter(|(i, t)| t.tok == Tok::Ident && t.text == noun && after(*i, Tok::Dot)).filter_map(|(i, _)| ident_after(i + 1)).filter(|k| k != "set").collect();
+        found.sort();
+        found.dedup();
+        found
+    };
+    // Each route's request name: the word in `route METHOD /path (req)`'s parentheses.
+    let requests: Vec<String> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.tok == Tok::Ident && t.text == "route")
+        .filter_map(|(i, _)| all[i..].iter().position(|t| t.tok == Tok::LParen).and_then(|p| ident_after(i + p)))
+        .collect();
+
+    let offered: Vec<Completion> = if context.is_some_and(|t| t.tok == Tok::Dot) {
+        let head_at = typed.len().checked_sub(if partial.is_empty() { 2 } else { 3 });
+        let Some(head) = head_at.and_then(|i| typed.get(i)).filter(|t| t.tok == Tok::Ident).map(|t| t.text.as_str()) else { return vec![] };
+        match head {
+            "secret" => keys("secret").iter().map(|k| word(k, Kind::Variable, format!("secret.{k}: used in this flow"), None)).collect(),
+            "state" => {
+                let mut v = vec![word("set", Kind::Member, "state.set(key, value): written when the run finishes", None)];
+                v.extend(keys("state").iter().map(|k| word(k, Kind::Variable, format!("state.{k}: used in this flow"), None)));
+                v
+            }
+            "http" => ["get", "post", "put", "patch", "delete", "head"]
+                .iter()
+                .map(|m| word(m, Kind::Member, format!("http.{m}(\"host\", path, headers: h, body: b)"), line_of(NOUNS, "http").map(str::to_string)))
+                .collect(),
+            "stripe" => vec![word("verify", Kind::Member, "stripe.verify(req, secret.whsec, now)", line_of(NOUNS, "stripe").map(str::to_string))],
+            c if collections.iter().any(|k| k == c) => [
+                ("get", "get(key): the item, or no value"),
+                ("put", "put(key, value): written when the run finishes"),
+                ("delete", "delete(key): removed when the run finishes"),
+                ("list", "list(prefix: p, after: a, limit: 50): a page of items"),
+            ]
+            .iter()
+            .map(|(m, d)| word(m, Kind::Member, format!("{c}.{d}"), None))
+            .collect(),
+            r if requests.iter().any(|q| q == r) => [
+                ("params", "the path's :names"),
+                ("query", "the query string's names"),
+                ("headers", "the request's headers, by lowercase name"),
+                ("body", "the body, as text"),
+                ("json", "the body, parsed as JSON"),
+            ]
+            .iter()
+            .map(|(m, d)| word(m, Kind::Member, format!("{r}.{m}: {d}"), None))
+            .collect(),
+            _ => vec![],
+        }
+    } else {
+        let mut v: Vec<Completion> = vec![];
+        v.extend(holons.iter().map(|h| word(h, Kind::Function, "a holon of this flow", None)));
+        let bindings = all.iter().enumerate().filter(|(i, t)| {
+            let starts = i.checked_sub(1).map(|j| &all[j]).is_none_or(|p| matches!(p.tok, Tok::Newline | Tok::LBrace));
+            t.tok == Tok::Ident && starts && after(*i, Tok::Eq) && !["node", "state"].contains(&t.text.as_str())
+        });
+        v.extend(bindings.map(|(_, t)| word(&t.text, Kind::Variable, "a binding of this flow", None)));
+        v.extend(requests.iter().map(|r| word(r, Kind::Variable, "a route's request", Some(REQUEST.to_string()))));
+        v.extend(collections.iter().map(|c| word(c, Kind::Module, "a collection of this flow", line_of(KEYWORDS, "collection").map(str::to_string))));
+        v.extend(NOUNS.iter().map(|(n, d)| word(n, Kind::Module, "the outside world: one permission", Some(d.to_string()))));
+        v.extend(callable().into_iter().map(|(n, sig, doc)| word(&n, Kind::Function, sig, (!doc.is_empty()).then_some(doc))));
+        v.extend(KEYWORDS.iter().map(|(k, d)| word(k, Kind::Keyword, "keyword", Some(d.to_string()))));
+        v.extend(["flow", "true", "false"].iter().map(|k| word(k, Kind::Keyword, "keyword", None)));
+        v
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    offered.into_iter().filter(|c| c.label.starts_with(partial) && seen.insert(c.label.clone())).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +412,44 @@ mod tests {
         assert!(flow.contains("POST /slugs") && flow.contains("it may:") && flow.contains("receive requests"), "the flow: {flow}");
         assert_eq!(hover(SLUGS, at(SLUGS, "\"-\"", 0, 1)), None, "inside a string");
         assert_eq!(hover(SLUGS, at(SLUGS, "published.receipt", 0, 10)), None, "a field of a value");
+    }
+
+    /// The labels offered with the cursor where `|` is in `text` (the `|` taken out).
+    fn offered(text: &str) -> Vec<String> {
+        let (l, line) = text.lines().enumerate().find(|(_, l)| l.contains('|')).unwrap();
+        let at = Pos { line: l as u32 + 1, col: line[..line.find('|').unwrap()].chars().count() as u32 + 1 };
+        complete(&text.replacen('|', "", 1), at).into_iter().map(|c| c.label).collect()
+    }
+
+    #[test]
+    fn completion_offers_what_may_be_written_there() {
+        let body = |line: &str| SLUGS.replacen("  respond posts.list()", line, 1);
+        // A leaf, by the letters typed; with its signature.
+        assert_eq!(offered(&body("  respond lowe|")), ["lowercase"]);
+        let typed = body("  respond lowe");
+        let lower = complete(&typed, Pos { line: typed.lines().position(|l| l.ends_with("lowe")).unwrap() as u32 + 1, col: 15 });
+        assert_eq!((lower[0].kind, lower[0].detail.as_str()), (Kind::Function, "lowercase(s: Text) -> out: Text"));
+        // This text's own words: a holon, a binding, a collection, the request.
+        let words = offered(&body("  respond |"));
+        for w in ["slugify", "publish", "title", "published", "posts", "req", "secret", "state", "now", "http", "concat", "json", "parse_json", "respond", "if"] {
+            assert!(words.contains(&w.to_string()), "{w}: {words:?}");
+        }
+        for w in ["http_request", "collection_put", "json_stringify", "const"] {
+            assert!(!words.contains(&w.to_string()), "{w} is written another way");
+        }
+        // After a dot: the members of what is before it.
+        assert_eq!(offered(&body("  respond posts.|")), ["get", "put", "delete", "list"]);
+        assert_eq!(offered(&body("  respond posts.l|")), ["list"]);
+        assert_eq!(offered(&body("  respond req.|")), ["params", "query", "headers", "body", "json"]);
+        assert_eq!(offered(&body("  respond secret.|")), ["receipt_key"]);
+        assert_eq!(offered(&body("  respond state.|")), ["set"]);
+        assert_eq!(offered(&body("  respond http.p|")), ["post", "put", "patch"]);
+        assert_eq!(offered(&body("  respond published.|")), Vec::<String>::new(), "a value's fields aren't known");
+        // Nothing inside a string or a comment.
+        assert_eq!(offered(&body("  respond \"lo|")), Vec::<String>::new());
+        assert_eq!(offered(&body("  respond 1 # lo|")), Vec::<String>::new());
+        // A text cut off mid-statement still offers.
+        assert!(offered("flow f\nport 8200\ncollection notes\n\nroute GET /n (req) {\n  respond no|").contains(&"notes".to_string()));
     }
 
     #[test]

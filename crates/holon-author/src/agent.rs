@@ -421,7 +421,7 @@ fn ports(ps: &[WPort]) -> String {
 }
 
 /// Every leaf in the live catalog: its interface, and a line on what it does.
-fn leaves() -> Vec<(String, String, &'static str)> {
+pub(crate) fn leaves() -> Vec<(String, String, &'static str)> {
     genesis_units()
         .iter()
         .filter_map(|u| {

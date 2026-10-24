@@ -1,5 +1,6 @@
 // Inside VS Code, through the extension and `holon lsp`: a flow's mistake shows as you open it and
-// goes when it is fixed; a hover says what a word is; formatting writes what `holon fmt` does.
+// goes when it is fixed; completion offers what may be written; a hover says what a word is;
+// formatting writes what `holon fmt` does.
 
 const assert = require("node:assert");
 const vscode = require("vscode");
@@ -14,7 +15,7 @@ async function eventually(get, what) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
-async function run() {
+async function checks() {
   const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, "hello.holon");
   const doc = await vscode.workspace.openTextDocument(uri);
   await vscode.window.showTextDocument(doc);
@@ -25,6 +26,12 @@ async function run() {
   assert.equal(mistake.message, 'unknown name "nope"');
   assert.equal(mistake.source, "holon");
   assert.deepEqual([mistake.range.start.line, mistake.range.start.character, mistake.range.end.character], [3, 14, 18]);
+
+  // Completion: after `no`, the words that start so (`now` among them), each with its line.
+  const list = await vscode.commands.executeCommand("vscode.executeCompletionItemProvider", uri, new vscode.Position(3, 16));
+  const now = list.items.find((i) => i.label === "now");
+  assert.ok(now, `offered: ${list.items.map((i) => i.label).join(", ")}`);
+  assert.match(now.detail, /permission/);
 
   // Fixed: the mistake goes.
   const fix = new vscode.WorkspaceEdit();
@@ -50,6 +57,18 @@ async function run() {
   formatting.set(uri, edits);
   assert.ok(await vscode.workspace.applyEdit(formatting));
   assert.equal(doc.getText(), 'flow hello\nport 8200\n\nroute GET /hello/:name (req) {\n  respond "Hello, {req.params.name}"\n}\n');
+}
+
+/** The checks; what failed is written to the workspace's failure.txt for run.js to print, since
+ *  VS Code's test host doesn't always pass its console through. */
+async function run() {
+  try {
+    await checks();
+  } catch (e) {
+    const file = require("node:path").join(vscode.workspace.workspaceFolders[0].uri.fsPath, "failure.txt");
+    require("node:fs").writeFileSync(file, e instanceof Error ? e.stack ?? e.message : String(e));
+    throw e;
+  }
 }
 
 module.exports = { run };

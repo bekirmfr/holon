@@ -25,12 +25,13 @@ default `holon` on the PATH). Any other editor with a language client uses `holo
 |---|---|
 | a text opened or changed | its mistakes, published as diagnostics: the first one it can't compile past, with its span and `holon check`'s words; or, compiled, what is wrong with the flow as a whole (a clash of routes, no driver), at its `flow` header |
 | hover | the word under the cursor: a keyword or noun in a line; a leaf or template by its signature and what it does (the reference); a holon of the text by its signature; a collection; a route's request and its parts; a binding as the node it is; the flow's name as what `holon check` says of it: its routes and what it may do |
+| completion | what may be written at the cursor, starting with the word typed so far: the text's bindings, holons, collections and requests, the nouns, the leaves that are called by name (with their signatures and docs), the keywords; after a `.`, the members of what is before it (a collection's `get`/`put`/`delete`/`list`, a request's parts, `http`'s methods, the `secret` and `state` keys the text uses); nothing in a string or a comment |
 | format | the text as `holon fmt` writes it, one edit; a text with a mistake is left as it is |
 
 ## Decisions
 
 1. **The language is holon-author's; the protocol is `holon`'s.** `editing.rs` holds what an
-   editor asks (`mistakes`, `hover`, `format`) as plain functions with tests, so the web editor
+   editor asks (`mistakes`, `hover`, `complete`, `format`) as plain functions with tests, so the web editor
    can use them through the wasm bridge later; `crates/holon/src/lsp.rs` only frames messages and
    converts positions.
 2. **Whole text, every change.** The client sends the full text on each change
@@ -48,19 +49,23 @@ default `holon` on the PATH). Any other editor with a language client uses `holo
 6. **The extension is small and plain JavaScript.** One file, `vscode-languageclient` its only
    dependency, bundled with it by esbuild into `dist/extension.js` (`npm run bundle`), so the
    `.vsix` (`npm run package`, `@vscode/vsce`) holds that, the manifest, the language
-   configuration, the grammar and the README: seven files, no `node_modules`.
+   configuration, the grammar and the README: seven files, no `node_modules`. The release workflow
+   builds it and puts it on each release as `holon-vscode.vsix`
+   (`.github/workflows/vscode-extension.yml`, a cargo-dist publish job), so installing it is one
+   download.
 
 ## What it does not do
 
-No completion, go-to-definition, rename or code actions yet; no workspace-wide state (each file
+No go-to-definition, rename or code actions yet; completion offers words, not snippets; no workspace-wide state (each file
 is a flow on its own); no deploying from the editor (that is the web editor's, where a person
 approves).
 
 ## Tests
 
 `editing.rs`: every sample has no mistakes; a mistake's span and words; a mistake about the flow
-at its header; each kind of hover on the `slugs` sample; format is `fmt`. `lsp.rs`: the protocol
+at its header; each kind of hover on the `slugs` sample; what completion offers after a word, after
+a `.`, in a string or comment and in a text cut off mid-line; format is `fmt`. `lsp.rs`: the protocol
 on framed messages, initialize to shutdown, with a change publishing a diagnostic and positions in
 UTF-16. The extension: the grammar tokenizes every sample (`vscode-textmate`), and an integration
-test in a real VS Code (`@vscode/test-electron`) opens a `.holon`, sees its mistake, hovers and
-formats through `holon lsp`.
+test in a real VS Code (`@vscode/test-electron`) opens a `.holon`, sees its mistake, completes,
+hovers and formats through `holon lsp`.

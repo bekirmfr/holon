@@ -19,12 +19,16 @@ async function main() {
   fs.writeFileSync(path.join(workspace, ".vscode", "settings.json"), JSON.stringify({ "holon.path": holon }));
   fs.writeFileSync(path.join(workspace, "hello.holon"), "flow hello\nport 8200\nroute GET /hello/:name (req) {\n    respond   nope\n}\n");
 
+  const failure = path.join(workspace, "failure.txt");
   await runTests({
     vscodeExecutablePath: process.env.VSCODE_PATH,
     extensionDevelopmentPath: extension,
     extensionTestsPath: path.join(__dirname, "suite.js"),
     // Its own user data, so an installed VS Code that is open isn't the one asked.
     launchArgs: [workspace, "--user-data-dir", path.join(workspace, ".user"), "--disable-extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes"],
+  }).catch((e) => {
+    if (fs.existsSync(failure)) console.error(`\nthe suite failed:\n${fs.readFileSync(failure, "utf8")}\n`);
+    throw e;
   });
 }
 

@@ -33,7 +33,9 @@ github-attestations = true
 # Releases up to 0.1.0-rc.3 installed `holon-server`, which updates itself by running the newest
 # release's `holon-server-installer`: every release carries holon's installers under that name
 # too (.github/workflows/legacy-installers.yml), pre-releases included.
-publish-jobs = ["./legacy-installers"]
+publish-jobs = ["./legacy-installers", "./vscode-extension"]
 publish-prereleases = true
-# It uploads to the release, which needs write access to the repository's contents.
-github-custom-job-permissions = { "legacy-installers" = { contents = "write" } }
+# The VS Code extension (editors/vscode) rides along as holon-vscode.vsix
+# (.github/workflows/vscode-extension.yml). Both upload to the release, which needs write access
+# to the repository's contents.
+github-custom-job-permissions = { "legacy-installers" = { contents = "write" }, "vscode-extension" = { contents = "write" } }

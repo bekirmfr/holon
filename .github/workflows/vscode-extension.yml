@@ -1,0 +1,38 @@
+# The VS Code extension (editors/vscode), packaged and put on each release as holon-vscode.vsix,
+# under the same name every time, so `…/releases/latest/download/holon-vscode.vsix` is the newest
+# full release's and `…/releases/download/<tag>/holon-vscode.vsix` any release's. Run by
+# release.yml (cargo-dist's publish-jobs, dist-workspace.toml) once the release is up.
+
+name: vscode extension
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  upload:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - run: npm ci
+        working-directory: editors/vscode
+      - name: Package it and upload it to the release
+        working-directory: editors/vscode
+        run: |
+          npm run package
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" holon-vscode.vsix

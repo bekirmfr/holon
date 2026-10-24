@@ -137,9 +137,10 @@ holon fmt my-flow.holon                  # rewrite it in the canonical form
 
 In an editor, `holon lsp` reads a flow as you type, as `holon check` does: each mistake where it
 is, what a word is on hover (a leaf's signature, a noun's permission, on the flow's name its
-routes and what it may do), and Format Document as `holon fmt` writes. `editors/vscode` is the VS
-Code extension (highlighting, and a client that starts `holon lsp`; its README says how to
-install it); any editor with a language client can start `holon lsp` itself. Design:
+routes and what it may do), completion (the text's names, the nouns and leaves, and after a `.`
+the members: `posts.` → get, put, delete, list), and Format Document as `holon fmt` writes.
+`editors/vscode` is the VS Code extension (highlighting, and a client that starts `holon lsp`);
+each release carries it as `holon-vscode.vsix`, and its README says how to install it; any editor with a language client can start `holon lsp` itself. Design:
 `docs/L4s/language-server-L4.md`.
 
 An agent writes, deploys and reads flows through `holon mcp`, a Model Context Protocol server
