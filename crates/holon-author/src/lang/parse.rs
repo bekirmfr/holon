@@ -470,6 +470,14 @@ impl Parser {
                 match e.kind {
                     ExprKind::Name(text) => StmtKind::Bind { name: Name { text, span: e.span }, value },
                     ExprKind::State(key) => StmtKind::StateWrite { key: Name { text: key, span: e.span }, value },
+                    ExprKind::Noun(n) => {
+                        let word = match n {
+                            Noun::Now => "now",
+                            Noun::Random => "random",
+                            Noun::Ingress => "ingress",
+                        };
+                        return err(e.span.start, format!("\"{word}\" is a keyword; a binding may not shadow it"));
+                    }
                     ExprKind::Index { base, key } => match base.kind {
                         ExprKind::Name(text) => StmtKind::CollectionWrite { collection: Name { text, span: base.span }, key: *key, value },
                         _ => return err(e.span.start, "can't assign to this: a name, state.key, or collection[key]"),

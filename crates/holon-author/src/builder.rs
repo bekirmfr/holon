@@ -212,6 +212,12 @@ impl FlowBuilder {
         self.frame().nodes.iter_mut().find(|n| n.id == id).ok_or_else(|| format!("no node {id}"))
     }
 
+    /// A placed node of the flow being built (the holon's, while one is begun), by id: its ports
+    /// and params, as the language's lowering reads them back.
+    pub fn data(&self, id: &str) -> Option<&NodeData> {
+        self.frames.last().and_then(|f| f.nodes.iter().find(|n| n.id == id)).map(|n| &n.data)
+    }
+
     /// A wire from `from`'s output to `to`'s input. A variadic node gains the next input when it
     /// is wired, as its "+" adds one.
     pub fn wire(&mut self, from: &str, output: &str, to: &str, input: &str) -> Result<(), String> {
