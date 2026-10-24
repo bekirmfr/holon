@@ -158,6 +158,7 @@ mod durable;
 mod firing;
 mod fixtures;
 mod grants;
+mod heads;
 mod flowcmd;
 mod flows;
 mod http;
@@ -487,8 +488,16 @@ fn serve(args: Vec<String>) {
     let mut data_limits = dataplane::DataLimits::default();
     // How many runs each deployment's log keeps (`--keep-runs N`, or HOLON_KEEP_RUNS; recorder.rs).
     let mut keep_runs: Option<String> = std::env::var("HOLON_KEEP_RUNS").ok().filter(|v| !v.trim().is_empty());
+    // A witness every run's head goes to (`--export-heads URL`, or HOLON_EXPORT_HEADS; heads.rs).
+    let mut export_heads: Option<String> = std::env::var("HOLON_EXPORT_HEADS").ok().filter(|v| !v.trim().is_empty());
     while let Some(a) = args.next() {
-        if a == "--keep-runs" {
+        if a == "--export-heads" {
+            export_heads = args.next();
+            if export_heads.is_none() {
+                eprintln!("--export-heads needs the witness's URL");
+                std::process::exit(2);
+            }
+        } else if a == "--keep-runs" {
             keep_runs = args.next();
             if keep_runs.is_none() {
                 eprintln!("--keep-runs needs a number of runs (at least 1)");
@@ -717,6 +726,15 @@ fn serve(args: Vec<String>) {
         inside(&mut secrets_arg, ".holon-secrets.json", "secrets.json");
         inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
         inside(&mut host_key_arg, ".holon-host-key", "host.key");
+    }
+    if let Some(url) = &export_heads {
+        // The token stays out of the command line: HOLON_EXPORT_HEADS_TOKEN.
+        let token = std::env::var("HOLON_EXPORT_HEADS_TOKEN").ok();
+        if let Err(e) = heads::start(url, token, heads::dir_for(&deployments_arg), Duration::from_secs(5)) {
+            eprintln!("holon: {e}");
+            std::process::exit(2);
+        }
+        println!("holon: each run's head goes to the witness at {url}");
     }
     // The address first: a second server (one still running from before an update, say) stops
     // here, before its clock and listeners start beside the first one's. Requests wait for the

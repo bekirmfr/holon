@@ -253,6 +253,8 @@ pub struct Log {
     head: String,
     /// The seqs of the entries that don't follow the line before them (see the module docs).
     breaks: Vec<u64>,
+    /// The deployment it is the log of, whose heads go to the witness, if one is set (heads.rs).
+    slug: Option<String>,
 }
 
 impl Default for Log {
@@ -273,6 +275,14 @@ impl Log {
         Log::open_keeping(file, keep())
     }
 
+    /// The log of deployment `slug`, kept beside the deployments file at `deployments_path`: its
+    /// heads go to the witness, if one is set.
+    pub fn for_deployment(deployments_path: &str, slug: &str) -> Log {
+        let mut log = Log::open(file_for(deployments_path, slug));
+        log.slug = Some(slug.to_string());
+        log
+    }
+
     /// [`Log::open`], keeping `keep` entries.
     pub fn open_keeping(file: Option<PathBuf>, keep: usize) -> Log {
         let mut log = Log {
@@ -284,6 +294,7 @@ impl Log {
             cut: false,
             head: String::new(),
             breaks: Vec::new(),
+            slug: None,
         };
         let Some(path) = &log.file else { return log };
         let Ok(text) = std::fs::read_to_string(path) else { return log };
@@ -325,6 +336,7 @@ impl Log {
             }
         };
         self.head = line_hash(&line);
+        self.export("run", entry.seq, &self.head, entry.at_ms);
         self.entries.push_back(entry);
         while self.entries.len() > self.keep {
             self.entries.pop_front();
@@ -344,10 +356,18 @@ impl Log {
         if self.written + 1 > 2 * self.keep {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             let lines: Vec<&str> = text.lines().filter(|l| serde_json::from_str::<LogEntry>(l).is_ok()).collect();
+            let kept: Vec<&str> = lines[lines.len().saturating_sub(self.keep - 1)..].iter().copied().chain([line]).collect();
             let mut all = String::new();
-            for l in lines[lines.len().saturating_sub(self.keep - 1)..].iter().copied().chain([line]) {
+            for l in &kept {
                 all.push_str(l);
                 all.push('\n');
+            }
+            // The witness hears that the runs before the oldest kept are gone by the host's choice.
+            if let Ok(oldest) = serde_json::from_str::<LogEntry>(kept[0])
+                && !oldest.prev.is_empty()
+            {
+                let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+                self.export("trim", oldest.seq, &oldest.prev, now_ms);
             }
             crate::sealing::write_private(&path, all.as_bytes())?;
             self.written = all.lines().count();
@@ -371,6 +391,13 @@ impl Log {
         file.write_all(text.as_bytes())?;
         self.written += 1;
         Ok(())
+    }
+
+    /// Queue a head for the witness (heads.rs), when this is a deployment's log.
+    fn export(&self, kind: &str, seq: u64, head: &str, at_ms: u64) {
+        if let Some(slug) = &self.slug {
+            crate::heads::note(crate::heads::Head { deployment: slug.clone(), kind: kind.into(), seq, head: head.into(), at_ms });
+        }
     }
 
     /// The hash of the newest entry's line: what the next entry's `prev` will be, and what a copy

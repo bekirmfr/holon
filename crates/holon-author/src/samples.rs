@@ -246,6 +246,19 @@ static SAMPLES: &[Sample] = &[
         build: likes,
     },
     Sample {
+        name: "witness",
+        title: "Run witness",
+        description: "Takes the run heads a holon server sends it (holon serve --export-heads), with the witness key: keeps each batch with when it arrived and answers a receipt, so a run log changed afterwards no longer matches what was witnessed.",
+        shows: &["run log hash chain", "--export-heads", "collections", "secrets", "secure_equals", "guard"],
+        port: Some("8130"),
+        interval: None,
+        secrets: &[SampleSecret { name: "witness_key", what: "the token servers send (their HOLON_EXPORT_HEADS_TOKEN)", from: None }],
+        optional: &[],
+        browsers: None,
+        try_it: "start a server with HOLON_EXPORT_HEADS_TOKEN set to the witness key and --export-heads http://127.0.0.1:8130/heads, let any deployment run, then GET http://127.0.0.1:8130/batches",
+        build: witness,
+    },
+    Sample {
         name: "marketplace",
         title: "Marketplace (built with Holon)",
         description: "A marketplace for holons, itself a Holon flow: publishing a listing (a holon's name, description, ports, manifest and its units, by hash) takes the publish key; browsing and reading one are open to any web page; a bad version is yanked, never edited. The editor publishes saved flows to it and places what it lists, checking every unit against its hash.",
@@ -694,6 +707,66 @@ fn marketplace(b: &mut B) -> R {
     b.wire(&may_yank, "out", &rewrite, "value")?;
     b.wire(&yank, "request", &yanked, "request")?;
     b.wire(&may_yank, "out", &yanked, "body")
+}
+
+/// Whether `req`'s Authorization header is "Bearer " and the secret `name`, compared in constant
+/// time.
+fn bearer_matches(b: &mut B, req: &str, name: &str, [x, y]: [i32; 2]) -> R<String> {
+    let auth = b.node("field", &[("name", "authorization")], [x, y])?;
+    let bearer = text(b, "Bearer ", [x, y + 120])?;
+    let key = b.node("secret", &[("name", name)], [x, y + 220])?;
+    let expected = b.node("concat", &[], [x + 260, y + 160])?;
+    let matches = b.node("secure_equals", &[], [x + 520, y + 60])?;
+    b.wire(req, "headers", &auth, "record")?;
+    b.wire(&bearer, "out", &expected, "a")?;
+    b.wire(&key, "out", &expected, "b")?;
+    b.wire(&auth, "out", &matches, "a")?;
+    b.wire(&expected, "out", &matches, "b")?;
+    Ok(matches)
+}
+
+fn witness(b: &mut B) -> R {
+    // POST /heads: with the witness key, keep the batch under its name with when it arrived, and
+    // answer a receipt of both. No key, and nothing is kept: 401.
+    let take = b.node("request", &[("method", "POST"), ("path", "/heads")], [40, 40])?;
+    let ok = bearer_matches(b, &take, "witness_key", [320, 40])?;
+    let batch = b.node("field", &[("name", "batch")], [320, 380])?;
+    let clock = b.node("clock", &[], [320, 500])?;
+    let stamped = b.node("with_field", &[("name", "witnessed_at")], [580, 440])?;
+    let allowed = b.node("guard", &[], [1100, 300])?;
+    let keep = b.node("collection_put", &[("collection", "batches")], [1360, 380])?;
+    let empty = b.node("record", &[], [580, 600])?;
+    let named = b.node("with_field", &[("name", "batch")], [840, 600])?;
+    let receipt = b.node("with_field", &[("name", "witnessed_at")], [1100, 600])?;
+    let receipt_ok = b.node("guard", &[], [1360, 560])?;
+    let answered = respond(b, OK, "401", [1620, 40])?;
+    b.wire(&take, "json", &batch, "record")?;
+    b.wire(&take, "json", &stamped, "record")?;
+    b.wire(&clock, "out", &stamped, "value")?;
+    b.wire(&ok, "out", &allowed, "cond")?;
+    b.wire(&stamped, "out", &allowed, "value")?;
+    b.wire(&batch, "out", &keep, "key")?;
+    b.wire(&allowed, "out", &keep, "value")?;
+    b.wire(&empty, "out", &named, "record")?;
+    b.wire(&batch, "out", &named, "value")?;
+    b.wire(&named, "out", &receipt, "record")?;
+    b.wire(&clock, "out", &receipt, "value")?;
+    b.wire(&ok, "out", &receipt_ok, "cond")?;
+    b.wire(&receipt, "out", &receipt_ok, "value")?;
+    b.wire(&take, "request", &answered, "request")?;
+    b.wire(&receipt_ok, "out", &answered, "body")?;
+
+    // GET /batches: what was witnessed, in batch order (a page at a time, from ?after=).
+    let list = b.node("request", &[("method", "GET"), ("path", "/batches")], [40, 860])?;
+    let after = b.node("field", &[("name", "after")], [320, 880])?;
+    let from = b.node("default", &[("value", ""), ("type", "Text")], [580, 880])?;
+    let page = b.node("collection_list", &[("collection", "batches"), ("limit", "200")], [840, 880])?;
+    let listed = respond(b, OK, "404", [1100, 860])?;
+    b.wire(&list, "query", &after, "record")?;
+    b.wire(&after, "out", &from, "value")?;
+    b.wire(&from, "out", &page, "after")?;
+    b.wire(&list, "request", &listed, "request")?;
+    b.wire(&page, "out", &listed, "body")
 }
 
 #[cfg(test)]

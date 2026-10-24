@@ -174,7 +174,7 @@ pub(crate) fn handle_post_deploy(
         };
         let (log, old_document, mut versions, old_unit) = match deployments.get_mut(&body.slug) {
             Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions), Some(old.unit)),
-            None => (Log::open(recorder::file_for(deployments_path, &body.slug)), None, Vec::new(), None),
+            None => (Log::for_deployment(deployments_path, &body.slug), None, Vec::new(), None),
         };
         // The version it replaces keeps its canvas, so the runs it logged still show on it.
         if let (Some(unit), Some(doc)) = (old_unit, &old_document)

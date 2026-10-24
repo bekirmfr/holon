@@ -275,7 +275,11 @@ flow log's retention become host defaults with ceilings, which a deployment may 
 Retention is a host setting already (`--keep-runs N` or `HOLON_KEEP_RUNS`, 500 runs per deployment
 without it); the ceiling and a deployment's own ask are left for later. The kept log is a hash
 chain (`recorder.rs`): each entry names the line before it, and a run changed or removed outside
-holon shows as a break, at load and in `GET /deployments/<slug>/log` (`head`, `breaks`). The control plane's own cap stays fixed: it serves
+holon shows as a break, at load and in `GET /deployments/<slug>/log` (`head`, `breaks`). Heads go
+to a witness outside the server with `--export-heads URL` (`heads.rs`): batched every 5 s, queued
+on disk while it fails, a `trim` head when a log is cut back, the witness's answers kept as
+receipts. The `witness` sample is one; a hosted witness that signs its receipts, and publishes
+its own log's root, is the paid version. The control plane's own cap stays fixed: it serves
 only the editor.
 
 - **Client:** `ureq` (synchronous, rustls). Runs are synchronous, and on the `hyper` data plane

@@ -101,6 +101,14 @@ holon serve --data ~/.holon/data
 Then open http://127.0.0.1:7420. The first time, the server prints a one-time setup code: enter
 it in the editor to create the admin. `--data` keeps all of the server's state in one folder.
 Each deployment keeps its newest 500 runs; `--keep-runs N` (or `HOLON_KEEP_RUNS`) sets how many.
+
+`--export-heads URL` (or `HOLON_EXPORT_HEADS`) sends each run's head, the hash its log chains up
+to, to a witness outside the server, a few seconds after the run; with `HOLON_EXPORT_HEADS_TOKEN`,
+as a bearer token. Only hashes leave the server. Once the witness holds a head, a run before it
+can't be changed, removed or cut off the end unnoticed, even by someone with the server's whole
+data folder. Heads wait on disk while the witness is away; its receipts are kept beside the
+logs. The `witness` sample (`holon new w.holon --sample witness`) is a witness you can run
+yourself, on another machine.
 To reach it from other machines, see `--allow-host` and `HOLON_SERVER_ADDR` in
 `docs/PLATFORM_LAYOUT.md`, and put HTTPS in front (a reverse proxy).
 

@@ -189,7 +189,7 @@ pub(crate) fn load_deployments(
             .unwrap_or_else(SystemTime::now);
 
         println!("loaded deployment {:?} from {path:?} (triggers: {triggers:?})", record.slug);
-        let log = Log::open(recorder::file_for(path, &record.slug));
+        let log = Log::for_deployment(path, &record.slug);
         if !log.breaks().is_empty() {
             let runs: Vec<String> = log.breaks().iter().map(u64::to_string).collect();
             eprintln!(
