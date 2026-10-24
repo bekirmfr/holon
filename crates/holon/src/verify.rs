@@ -470,3 +470,87 @@ fn list<T: std::fmt::Display>(items: &[T]) -> String {
     let shown: Vec<String> = items.iter().take(10).map(T::to_string).collect();
     shown.join(", ") + if items.len() > 10 { ", …" } else { "" }
 }
+
+/// `holon export <slug> [--server URL] [-o FILE]`: fetch a deployment's runs from a server, as the
+/// editor's "export runs" does, signed in with the API token in `HOLON_TOKEN` (never on the
+/// command line), and write them where `holon verify` reads them.
+pub(crate) fn export(args: &[String]) -> i32 {
+    let mut slug = None;
+    let mut server = std::env::var("HOLON_SERVER").ok().filter(|s| !s.trim().is_empty());
+    let mut out = None;
+    let mut args = args.iter();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--server" => server = args.next().cloned(),
+            "-o" | "--out" => out = args.next().cloned(),
+            "--help" | "-h" => {
+                println!("{EXPORT_USAGE}");
+                return 0;
+            }
+            _ if slug.is_none() && !a.starts_with('-') => slug = Some(a.clone()),
+            _ => {
+                eprintln!("holon export: no option {a:?}\n\n{EXPORT_USAGE}");
+                return 2;
+            }
+        }
+    }
+    let Some(slug) = slug else {
+        eprintln!("{EXPORT_USAGE}");
+        return 2;
+    };
+    let server = server.unwrap_or_else(|| "http://127.0.0.1:7420".into());
+    let server = server.trim_end_matches('/');
+    let out = out.unwrap_or_else(|| format!("{slug}-runs.json"));
+    let url = format!("{server}/deployments/{slug}/export");
+    let mut request = ureq::get(&url).timeout(Duration::from_secs(120));
+    if let Some(token) = std::env::var("HOLON_TOKEN").ok().filter(|t| !t.trim().is_empty()) {
+        request = request.set("Authorization", &format!("Bearer {}", token.trim()));
+    }
+    let body = match request.call() {
+        Ok(response) => {
+            let mut text = String::new();
+            if let Err(e) = response.into_reader().read_to_string(&mut text) {
+                eprintln!("holon export: reading the answer from {server} failed: {e}");
+                return 1;
+            }
+            text
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let body = response.into_string().unwrap_or_default();
+            let why = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(str::to_string))
+                .unwrap_or_else(|| body.trim().to_string());
+            eprintln!("holon export: {server} answered {code}: {why}");
+            if code == 401 {
+                eprintln!("holon export: set HOLON_TOKEN to an API token (the editor's admin page, API tokens)");
+            }
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("holon export: can't reach {server}: {e}");
+            return 1;
+        }
+    };
+    let export: Export = match serde_json::from_str(&body) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("holon export: {server} didn't answer with runs: {e}");
+            return 1;
+        }
+    };
+    if let Err(e) = std::fs::write(&out, &body) {
+        eprintln!("holon export: can't write {out}: {e}");
+        return 1;
+    }
+    let head = export.head.get(..12).unwrap_or(&export.head);
+    println!("wrote {out}: {} runs of {slug:?}, head {head}", export.lines.len());
+    println!("check it anywhere: holon verify {out}");
+    0
+}
+
+const EXPORT_USAGE: &str = "usage: holon export <slug> [--server URL] [-o FILE]
+
+  Writes a deployment's runs (its run log, exactly as written, and every unit they ran) to FILE
+  (default <slug>-runs.json), for holon verify. --server is the holon server (default
+  http://127.0.0.1:7420; or HOLON_SERVER). Signs in with the API token in HOLON_TOKEN.";

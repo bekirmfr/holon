@@ -110,8 +110,11 @@ data folder. Heads wait on disk while the witness is away; its receipts are kept
 logs. The `witness` sample (`holon new w.holon --sample witness`) is a witness you can run
 yourself, on another machine.
 
-`GET /deployments/<slug>/export` writes a deployment's runs to one file: its log, exactly as
-written, and every unit the runs ran. `holon verify runs.json` checks it anywhere, offline: the
+A deployment's runs export to one file: its log, exactly as written, and every unit the runs
+ran. In the editor, the run log's "export runs" (beside the head the log chains up to, and any
+run changed outside holon); on the command line, `holon export <slug>` (`--server URL`, signed in
+with an API token in `HOLON_TOKEN`); or `GET /deployments/<slug>/export`. `holon verify
+runs.json` checks it anywhere, offline: the
 chain is unbroken, each unit is what its hash says, and every run, run again from its log entry
 (the same request, state, clock, random, outbound answers and collection reads, through the same
 core), produces what the log says it did. `--head <hex>` checks a head a witness holds is in it.

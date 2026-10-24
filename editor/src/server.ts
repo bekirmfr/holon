@@ -542,11 +542,30 @@ export type LoggedRound = {
 };
 
 /** `GET /deployments/<slug>/log` — entries past `after` (all without), oldest first. `next` is
- *  the seq the next entry will get. */
-export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number }> {
+ *  the seq the next entry will get; `head` the hash the log chains up to (what a witness holds),
+ *  `breaks` the runs that don't follow the one before them (changed outside holon). */
+export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number; head: string; breaks: number[] }> {
   const q = after === undefined ? "" : `?after=${after}`;
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
   return asJson(res);
+}
+
+/** `GET /deployments/<slug>/export` — the deployment's runs as one file (its log, exactly as
+ *  written, and every unit they ran), saved as `<slug>-runs.json` for `holon verify`. */
+export async function downloadRuns(slug: string): Promise<void> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/export`);
+  // A server from before exports answers the route with a bare 404 (a missing deployment's has a
+  // reason): say which it is.
+  if (res.status === 404 && !(await res.clone().text()).trim()) {
+    throw new Error("this server can't export runs yet: it is older than this editor; update it (holon update) and start it again");
+  }
+  if (!res.ok) await asJson(res);
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${slug}-runs.json`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 /** `GET /deployments/<slug>/document` — the canvas it was deployed from. Throws

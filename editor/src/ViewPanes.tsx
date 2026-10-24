@@ -5,7 +5,7 @@
 // outputs it had in that run (replayed, replay.ts).
 
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { getCollectionItems, getLog, type LogEntry } from "./server";
+import { downloadRuns, getCollectionItems, getLog, type LogEntry } from "./server";
 import { formatValue } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
@@ -74,16 +74,20 @@ export function nodeLabel(n: ViewNode): string {
 /** The deployment's flow log, polled: everything at first, then only what came after the newest. */
 function useFlowLog(slug: string) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [chain, setChain] = useState<{ head: string; breaks: number[] }>({ head: "", breaks: [] });
   const [error, setError] = useState("");
   const last = useRef<number | undefined>(undefined);
   useEffect(() => {
     last.current = undefined;
     setEntries([]);
+    setChain({ head: "", breaks: [] });
     let stopped = false;
     const poll = () =>
       getLog(slug, last.current)
-        .then(({ entries: fresh }) => {
-          if (stopped || fresh.length === 0) return;
+        .then(({ entries: fresh, head, breaks }) => {
+          if (stopped) return;
+          setChain((old) => (old.head === head && old.breaks.length === (breaks ?? []).length ? old : { head, breaks: breaks ?? [] }));
+          if (fresh.length === 0) return;
           last.current = fresh[fresh.length - 1].seq;
           setEntries((old) => [...old, ...fresh].slice(-KEEP));
           setError("");
@@ -96,7 +100,7 @@ function useFlowLog(slug: string) {
       clearInterval(timer);
     };
   }, [slug]);
-  return { entries, error };
+  return { entries, chain, error };
 }
 
 function Tabs<T extends string>({
@@ -215,7 +219,7 @@ export function BottomPane({
   /** Bring a node into view and inspect it. */
   onShowNode: (id: string) => void;
 }) {
-  const { entries, error } = useFlowLog(slug);
+  const { entries, chain, error } = useFlowLog(slug);
   const [tab, setTab] = useState<"log" | "timeline">("log");
   // Live: always show the newest run. A tab coming back with a run selected keeps it (and its
   // step) instead: live starts only when nothing is selected.
@@ -272,7 +276,10 @@ export function BottomPane({
       )}
       {diagnosis && <FailureBanner diagnosis={diagnosis} nodes={nodes} onShowNode={onShowNode} />}
       {tab === "log" ? (
-        <LogTab entries={entries} selected={selected} pick={pick} />
+        <>
+          <ChainBar slug={slug} head={chain.head} breaks={chain.breaks} />
+          <LogTab entries={entries} selected={selected} pick={pick} />
+        </>
       ) : (
         <TimelineTab
           run={selected}
@@ -286,6 +293,46 @@ export function BottomPane({
           issues={diagnosis?.issues ?? new Map()}
         />
       )}
+    </div>
+  );
+}
+
+/** The run log as a record: the head it chains up to (what a witness holds), any run changed
+ *  outside holon, and its runs exported for `holon verify`, which runs each again, offline. */
+function ChainBar({ slug, head, breaks }: { slug: string; head: string; breaks: number[] }) {
+  const [note, setNote] = useState("");
+  const exportRuns = () =>
+    downloadRuns(slug).then(
+      () => setNote(`saved ${slug}-runs.json · check it anywhere: holon verify ${slug}-runs.json`),
+      (e: unknown) => setNote(e instanceof Error ? e.message : String(e)),
+    );
+  const copy = () =>
+    navigator.clipboard.writeText(head).then(
+      () => setNote("head copied"),
+      () => setNote(head),
+    );
+  if (!head) return null;
+  return (
+    <div className="hl-view__chain" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "4px 8px", borderBottom: "1px solid #1b2a45" }}>
+      {breaks.length > 0 ? (
+        <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
+          ✗ chain breaks at run {breaks.join(", ")}: changed outside holon
+        </span>
+      ) : (
+        <span style={{ color: dim }} title="each run names the hash of the one before it">
+          chain unbroken
+        </span>
+      )}
+      <span style={{ color: dim }}>
+        head <span style={{ color: ink }} title={head}>{head.slice(0, 12)}</span>
+      </span>
+      <button style={small} onClick={copy} title="copy the head: what a witness holds, and what holon verify --head checks">
+        copy
+      </button>
+      <button style={small} onClick={exportRuns} title="save the runs and the units they ran, for holon verify">
+        export runs
+      </button>
+      {note && <span style={{ color: dim }}>{note}</span>}
     </div>
   );
 }

@@ -411,6 +411,7 @@ const USAGE: &str = "usage: holon <command>
   check <file>                       compile a flow: its routes, what it may do, or each mistake
   show <file>                        an outline: routes, nodes and what feeds them
   fmt <file>                         rewrite a flow in the canonical form
+  export <slug> [--server URL]       write a deployment's runs to a file (HOLON_TOKEN signs in)
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
   version                            this build's version
   update [--check] [--to VERSION]    install the newest release (or see if there is one)
@@ -455,6 +456,7 @@ fn main() {
         Some("serve") => serve(rest),
         Some(cmd @ ("new" | "check" | "show" | "fmt")) => std::process::exit(flowcmd::run(cmd, &rest)),
         Some("verify") => std::process::exit(verify::run(&rest)),
+        Some("export") => std::process::exit(verify::export(&rest)),
         // `version`, `update`, `uninstall`: about this installation, not the server.
         _ => match selfmanage::dispatch(&args) {
             Some(code) => std::process::exit(code),

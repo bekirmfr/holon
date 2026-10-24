@@ -362,3 +362,44 @@ test("likes answers a count in a sentence: the number as text (as_text), then th
   // Never liked: the count falls back to 0, and as_text writes it.
   expect(await (await request.get(`http://127.0.0.1:${port}/posts/${post}-never/likes`)).text()).toBe("0 likes");
 });
+
+test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "Ledger (every run checkable)");
+  const port = await deploy(page);
+  for (const amount of [5, 0.1, 0.2]) {
+    const res = await request.post(`http://127.0.0.1:${port}/accounts/ada`, { data: { amount } });
+    expect(res.ok()).toBe(true);
+  }
+  expect((await request.post(`http://127.0.0.1:${port}/accounts/ada`, { data: {} })).status()).toBe(400);
+  await viewNewestRun(page);
+
+  // Exported from the run log: the head it chains up to, and the file.
+  const chain = page.locator(".hl-view__chain");
+  await expect(chain).toContainText("chain unbroken");
+  const head = (await chain.locator("[title]").filter({ hasText: /^[0-9a-f]{12}$/ }).getAttribute("title"))!;
+  expect(head).toMatch(/^[0-9a-f]{64}$/);
+  const dir = mkdtempSync(join(tmpdir(), "holon-runs-"));
+  const download = page.waitForEvent("download");
+  await chain.getByRole("button", { name: "export runs" }).click();
+  const file = join(dir, "ledger-runs.json");
+  await (await download).saveAs(file);
+  await expect(chain).toContainText("holon verify ledger-runs.json");
+
+  // Checked on the command line, each run run again: the `holon` the e2e server was built as.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const verified = execFileSync(holon, ["verify", file, "--head", head], { encoding: "utf8" });
+  expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
+  expect(verified).toContain("so no run up to it was changed or removed");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+
+  // The same file from the command line, signed in with a token.
+  const out = join(dir, "from-cli.json");
+  const exported = execFileSync(holon, ["export", "ledger", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  expect(exported).toContain(`head ${head.slice(0, 12)}`);
+  expect(execFileSync(holon, ["verify", out], { encoding: "utf8" })).toContain("re-ran 4 runs");
+});
