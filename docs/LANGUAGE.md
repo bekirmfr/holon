@@ -981,7 +981,9 @@ step that changed core is done; none changes the host, the server or the documen
    nothing`), read from the run's recorded timeline through the document's `trace`. The tools
    never approve: a deploy that needs approval is saved as a flow for a person to deploy from the
    editor, and once they have, a version that needs nothing more deploys from the agent at once.
-   Tests: the tools against the in-process router (text to an explained failing run), the
+   The server holds it to that too: `holon mcp` asks as an `agent`, a role that proposes and
+   calls and never approves, grants, starts, stops or deletes, shown as `<sign-in> (agent)`; an
+   API token with that role is the guarantee for an agent with a shell. Tests: the tools against the in-process router (text to an explained failing run), the
    protocol on raw lines, a person's saved flow never replaced, and an end-to-end test where a
    person approves the agent's flow in the real editor and the agent calls and explains it.
 
