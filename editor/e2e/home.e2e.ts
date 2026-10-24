@@ -48,6 +48,25 @@ test("the welcome opens on start until told not to; home keeps its panes", async
   await saved(request, adminToken, (p) => !p.includes('"welcome":false'));
 });
 
+test("a welcome that loads late doesn't take you from a page you opened", async ({ page }) => {
+  // The prefs answer is held until the flows page is open, as on a slow server.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  await page.route("**/auth/prefs", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await held;
+    await route.continue();
+  });
+  await page.goto("/");
+  const tabs = page.getByRole("tablist");
+  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await expect(tabs.getByRole("tab", { name: "flows" })).toHaveAttribute("aria-selected", "true");
+  release();
+  // The welcome opens beside it, and the flows page stays shown.
+  await expect(tabs.getByRole("tab", { name: "welcome" })).toBeVisible();
+  await expect(tabs.getByRole("tab", { name: "flows" })).toHaveAttribute("aria-selected", "true");
+});
+
 test("pages open in tabs of their own; every tab closes; with none open, home shows", async ({ page }) => {
   await page.goto("/");
   const tabs = page.getByRole("tablist");

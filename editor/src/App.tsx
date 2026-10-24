@@ -923,7 +923,9 @@ function Editor({ me }: { me: Me }) {
         setPrefsState(p);
         if (p.welcome !== false) {
           setPages((ps) => (ps.includes("welcome") ? ps : [...ps, "welcome"]));
-          setPage("welcome");
+          // Shown only if they are still where the editor started: prefs that arrive after
+          // they opened something else don't take them away from it.
+          setPage((shown) => (shown === "home" ? "welcome" : shown));
         }
       })
       .catch(() => undefined);
