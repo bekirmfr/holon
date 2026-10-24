@@ -11,6 +11,10 @@ hmac = "0.12"
 sha2 = "0.10"
 smallvec = "1"
 
+[features]
+# The eager evaluator, for differential tests in other crates.
+eager-oracle = []
+
 [dev-dependencies]
 criterion = "0.5"
 

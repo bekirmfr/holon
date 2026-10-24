@@ -29,6 +29,10 @@ mod declare;
 mod docs;
 mod encapsulate;
 mod eval;
+/// The evaluator before lazy choices: the oracle the tests check `eval` against.
+#[cfg(any(test, feature = "eager-oracle"))]
+#[doc(hidden)]
+pub mod eager;
 mod crypto;
 mod fork;
 mod kind;
@@ -50,7 +54,7 @@ pub use primitives::{MAX_AWAIT_SECONDS, MAX_RANGE};
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
-pub use eval::{eval, eval_observed, eval_one, NoObserver, Observer};
+pub use eval::{choice_next, eval, eval_observed, eval_one, Answer, Choice, NoObserver, Observer, Slot};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
 pub use catalog::{genesis_units, interface_of, GENESIS, PASSES_EXTRA, VARIADIC};

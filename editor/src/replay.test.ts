@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, it, expect } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
-import { collectionsAtStep, diagnose, executionOrder, innerSteps, isCollectionCell, itemChanged, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, stateAtStep, wireKey, type ReplayInput, type ReplayNode } from "./replay";
+import { collectionsAtStep, diagnose, executionOrder, innerSteps, isCollectionCell, itemChanged, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
@@ -77,9 +77,10 @@ describe("replay", () => {
     state_before: { todos: list(num(1), num(2)) },
   };
 
-  it("replays only the route's group, in dependency order, from the recorded inputs", () => {
+  it("replays only the route's group, in the order core runs it, from the recorded inputs", () => {
     const { order, traces } = replay(nodes, edges, entry, evalNode);
-    expect(order).toEqual(["r", "sr", "ap", "sw"]);
+    // From the root (the write) back through what each node needs, its inputs in port order.
+    expect(order).toEqual(["sr", "r", "ap", "sw"]);
     expect(traces.get("sr")?.outputs).toEqual([list(num(1), num(2))]);
     expect(traces.get("ap")?.inputs).toEqual([list(num(1), num(2)), num(7)]);
     expect(traces.get("sw")?.outputs).toEqual([list(num(1), num(2), num(7))]);
@@ -332,17 +333,86 @@ describe("collections as a run saw and changed them", () => {
   });
 });
 
+describe("choices", () => {
+  // GET /p: `respond (http.get(req.body) when req.json) ?? fallback`, the shape `if` lowers to.
+  const nodes = [
+    req("GET", "/p", "r"),
+    n("h", "http_request", ["path", "headers", "body"], ["response"]),
+    n("g", "guard", ["cond", "value"], ["out"]),
+    n("k", "store_read", [], ["out"], [frozen("key", "fallback")]),
+    n("co", "coalesce", ["a", "b"], ["out"]),
+    n("resp", "respond", ["value"], ["response"], [], "Template"),
+  ];
+  const edges = [
+    wire("r", "body", "h", "path"),
+    wire("r", "json", "g", "cond"),
+    wire("h", "response", "g", "value"),
+    wire("g", "out", "co", "a"),
+    wire("k", "out", "co", "b"),
+    wire("co", "out", "resp", "value"),
+  ];
+  const entry = (go: boolean): ReplayInput => ({
+    kind: "request",
+    route: "GET /p",
+    request: { type: "Record", value: [["body", { type: "Boolean", value: go }]] },
+    sourced: [],
+    state_before: { fallback: num(0) },
+  });
+  const group = nodes.map((x) => x.id);
+
+  it("doesn't run a branch the guard didn't take, and names the guard", () => {
+    const run = replay(nodes, edges, entry(false), evalNode, new Map([["h", num(5)]]));
+    expect(run.order).toEqual(["r", "g", "k", "co", "resp"]);
+    expect(run.traces.has("h")).toBe(false);
+    expect(run.notRun).toEqual(new Map([["h", "g"]]));
+    expect(whyNotRun(nodes, run.notRun.get("h")!)).toBe("not run: the guard after it didn't take this branch");
+    expect(run.traces.get("resp")?.outputs).toEqual([num(0)]);
+  });
+
+  it("doesn't run the fallback once the coalesce has a value", () => {
+    const run = replay(nodes, edges, entry(true), evalNode, new Map([["h", num(5)]]));
+    expect(run.order).toEqual(["r", "h", "g", "co", "resp"]);
+    expect(run.notRun).toEqual(new Map([["k", "co"]]));
+    expect(whyNotRun(nodes, "co")).toBe("not run: the coalesce after it already had a value");
+    expect(run.traces.get("resp")?.outputs).toEqual([num(5)]);
+  });
+
+  it("leaves a branch not taken out of the diagnosis", () => {
+    // Without a fallback, the guard's false condition is where the answer went missing; the
+    // request it skipped neither failed nor starved.
+    const bare = nodes.filter((x) => x.id !== "k" && x.id !== "co");
+    const wires = [...edges.filter((w) => w.target !== "co" && w.source !== "co"), wire("g", "out", "resp", "value")];
+    const run = replay(bare, wires, entry(false), evalNode);
+    const d = diagnose(bare, wires, { status: 404, error: null }, run)!;
+    expect(d.origins).toEqual(["g"]);
+    expect(d.issues.has("h")).toBe(false);
+  });
+
+  it("checks the nodes it ran against the run's timeline, where the timeline can tell", () => {
+    const run = replay(nodes, edges, entry(false), evalNode);
+    const at = (ids: string[]) => new Map(ids.map((id) => [id, {}]));
+    expect(sameNodesRan(group, run, at(["r", "g", "k", "co", "resp"]), false)).toBe(true);
+    expect(sameNodesRan(group, run, at(["r", "h", "g", "co", "resp"]), false)).toBe(false);
+    // Logged before choices were lazy: every node is in the timeline, taken or not.
+    expect(sameNodesRan(group, run, at(group), false)).toBe(null);
+    expect(sameNodesRan(group, run, new Map(), false)).toBe(null);
+    expect(sameNodesRan(group, run, at(["r"]), true)).toBe(null);
+  });
+});
+
 describe("execution order", () => {
   it("steps through the nodes as the run evaluated them, where that's known", () => {
     const nodes = [n("a", "x", [], ["out"]), n("b", "x", [], ["out"]), n("c", "x", ["in"], ["out"])];
     const edges = [wire("a", "out", "c", "in")];
     const tick = { kind: "tick", route: null, request: null, sourced: [], state_before: {} };
-    expect(replay(nodes, edges, tick, evalNode).order).toEqual(["a", "b", "c"]);
+    // Roots (b, c) in canvas order, each after what it needs.
+    expect(replay(nodes, edges, tick, evalNode).order).toEqual(["b", "a", "c"]);
     const timings = new Map([["b", { start_us: 1, end_us: 2 }], ["a", { start_us: 3, end_us: 4 }], ["c", { start_us: 5, end_us: 6 }]]);
     expect(executionOrder(timings)).toEqual(["b", "a", "c"]);
     expect(replay(nodes, edges, tick, evalNode, new Map(), new Map(), executionOrder(timings)).order).toEqual(["b", "a", "c"]);
-    // An order that breaks a dependency can't be followed past it: c still waits for a.
-    expect(replay(nodes, edges, tick, evalNode, new Map(), new Map(), ["c", "b", "a"]).order).toEqual(["b", "a", "c"]);
+    // The roots in the run's order; an order that breaks a dependency can't be followed past it:
+    // c still waits for a.
+    expect(replay(nodes, edges, tick, evalNode, new Map(), new Map(), ["c", "b", "a"]).order).toEqual(["a", "c", "b"]);
   });
 });
 

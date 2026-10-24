@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use holon_core::{eval_observed, hash_value, Capability, Hash, Observer, Resolver, Unit, Value};
+use holon_core::{eval_observed, hash_value, Answer, Capability, Hash, Observer, Resolver, Slot, Unit, Value};
 
 use crate::{perform_effects, Host, SourcedResolver};
 
@@ -242,7 +242,7 @@ pub fn run_rounds(
 }
 
 /// Answers a run's requests from a record of its rounds instead of the network: how a logged run
-/// is replayed. A request the record doesn't have stays unanswered.
+/// is replayed. A request the record doesn't have is absent: nothing more will come.
 pub struct Recorded {
     answers: BTreeMap<(Vec<u32>, Hash), Value>,
 }
@@ -259,8 +259,8 @@ impl Recorded {
 }
 
 impl Observer for Recorded {
-    fn answer(&mut self, path: &[u32], request: &Value) -> Option<Value> {
-        self.answers.get(&(path.to_vec(), request_key(request))).cloned()
+    fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
+        self.answers.get(&(path.to_vec(), request_key(request))).cloned().into()
     }
 }
 
@@ -299,10 +299,10 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
     fn leave(&mut self, path: &[u32]) {
         self.inner.leave(path);
     }
-    fn produced(&mut self, path: &[u32], outputs: &[Option<Value>]) {
+    fn produced(&mut self, path: &[u32], outputs: &[Slot]) {
         self.inner.produced(path, outputs);
     }
-    fn answer(&mut self, path: &[u32], request: &Value) -> Option<Value> {
+    fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
         if let Some(name) = text_field(request, "await") {
             let event = self.waits.event(name);
             if event.is_none() && !self.waiting.iter().any(|w| w.name == name) {
@@ -315,22 +315,24 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
                 };
                 self.waiting.push(Waiting { name: name.to_string(), expires });
             }
-            return event;
+            // An event not yet delivered is not yet: what waits on it waits too.
+            return event.map_or(Answer::NotYet, Answer::Value);
         }
         if let Some(name) = text_field(request, "resume_token") {
-            return Some(Value::Text(self.waits.token(name)));
+            return Answer::Value(Value::Text(self.waits.token(name)));
         }
         if text_field(request, "collection").is_some() {
-            return self.waits.read(path, request);
+            return self.waits.read(path, request).into();
         }
         let key = (path.to_vec(), request_key(request));
         if let Some(answer) = self.answers.get(&key) {
-            return Some(answer.clone());
+            return Answer::Value(answer.clone());
         }
         if !self.pending.iter().any(|(p, r)| p == path && r == request) {
             self.pending.push((path.to_vec(), request.clone()));
         }
-        None
+        // Performed before the next round, and answered in it.
+        Answer::NotYet
     }
 }
 
@@ -611,6 +613,90 @@ mod tests {
         assert_eq!(sent, ["https://api.example.com/a", "https://api.example.com/b"]);
         let replayed = holon_core::eval_observed(&flow, &[Some(paths)], &r, &mut Recorded::new(&out.rounds)).into_vec();
         assert_eq!(replayed, out.outputs, "a replay answers each item from the record");
+    }
+
+    /// `respond if go then http.get(â€¦) else "skipped"`, as `if` lowers:
+    /// `coalesce(guard(go, http_request("/json")), "skipped")`, with `node` in the request's place.
+    fn branch(r: &mut MapResolver, node: Unit) -> Unit {
+        let constant = |v: &str| leaf("const", vec![Param::frozen("value", v), Param::frozen("type", "Text")], 0, Type::Text);
+        // The path goes to the node if it takes one (an `await` doesn't).
+        let mut edges = if node.inputs.is_empty() { vec![] } else { vec![e(0, 0, 1, 0)] };
+        let children = vec![
+            r.insert(constant("/json")).unwrap(),                      // 0
+            r.insert(node).unwrap(),                                   // 1
+            r.insert(leaf("guard", vec![], 2, Type::Any)).unwrap(),    // 2
+            r.insert(constant("skipped")).unwrap(),                    // 3
+            r.insert(leaf("coalesce", vec![], 2, Type::Any)).unwrap(), // 4
+        ];
+        edges.extend([e(BOUNDARY, 0, 2, 0), e(1, 0, 2, 1), e(2, 0, 4, 0), e(3, 0, 4, 1), e(4, 0, BOUNDARY, 0)]);
+        Unit {
+            body: UnitBody::Composite { children, edges },
+            params: vec![],
+            inputs: vec![Port { name: "go".into(), ty: Type::Boolean }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        }
+    }
+
+    /// The leak lazy choices fix: a request in a branch not taken was sent anyway, and its answer
+    /// thrown away. Now it is sent only when its branch is taken.
+    #[test]
+    fn a_request_in_a_branch_not_taken_is_not_sent() {
+        let mut r = MapResolver::new();
+        let flow = branch(&mut r, leaf("http_request", vec![Param::frozen("method", "GET"), Param::frozen("host", "api.example.com")], 3, Type::Record));
+        let run = |go: bool, echo: &Echo| run_rounds(&flow, &[Some(Value::Boolean(go))], &[], &r, &mut Performed::default(), echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
+
+        let echo = Echo::default();
+        let out = run(false, &echo);
+        assert_eq!(out.outputs, vec![Some(txt("skipped"))]);
+        assert!(echo.0.lock().unwrap().is_empty(), "nothing sent");
+        assert!(out.rounds.is_empty());
+
+        let echo = Echo::default();
+        let out = run(true, &echo);
+        assert_eq!(out.outputs, vec![Some(record(&[("status", Value::Number(200.0)), ("body", txt("/json"))]))]);
+        assert_eq!(*echo.0.lock().unwrap(), vec!["https://api.example.com/json"], "sent once");
+    }
+
+    /// An `await` in a branch not taken doesn't park the run: nothing waits on it.
+    #[test]
+    fn an_await_in_a_branch_not_taken_does_not_park_the_run() {
+        let mut r = MapResolver::new();
+        let flow = branch(&mut r, leaf("await", vec![Param::frozen("name", "paid"), Param::frozen("expires", "60")], 0, Type::Any));
+        let run = |go: bool| run_rounds(&flow, &[Some(Value::Boolean(go))], &[], &r, &mut Performed::default(), &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let out = run(false);
+        assert!(out.waiting.is_empty());
+        assert_eq!(out.outputs, vec![Some(txt("skipped"))]);
+        let out = run(true);
+        assert_eq!(out.waiting, vec![Waiting { name: "paid".into(), expires: 60 }]);
+        assert_eq!(out.outputs, vec![None], "waiting, not fallen through to the else");
+    }
+
+    /// A collection read in a branch not taken isn't made, so it isn't recorded against the run.
+    #[test]
+    fn a_read_in_a_branch_not_taken_is_not_made() {
+        #[derive(Default)]
+        struct Reads(Vec<Vec<u32>>);
+        impl Waits for Reads {
+            fn event(&self, _: &str) -> Option<Value> {
+                None
+            }
+            fn token(&mut self, _: &str) -> String {
+                String::new()
+            }
+            fn read(&mut self, path: &[u32], _: &Value) -> Option<Value> {
+                self.0.push(path.to_vec());
+                Some(txt("stored"))
+            }
+        }
+        let mut r = MapResolver::new();
+        let flow = branch(&mut r, leaf("collection_get", vec![Param::frozen("collection", "prices")], 1, Type::Any));
+        let run = |go: bool, reads: &mut Reads| run_rounds(&flow, &[Some(Value::Boolean(go))], &[], &r, &mut Performed::default(), &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver, reads, &[]);
+        let mut reads = Reads::default();
+        assert_eq!(run(false, &mut reads).outputs, vec![Some(txt("skipped"))]);
+        assert!(reads.0.is_empty());
+        let mut reads = Reads::default();
+        assert_eq!(run(true, &mut reads).outputs, vec![Some(txt("stored"))]);
+        assert_eq!(reads.0, vec![vec![1]]);
     }
 
     #[test]

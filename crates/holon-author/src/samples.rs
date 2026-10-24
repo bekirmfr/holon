@@ -198,6 +198,19 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/tickets.holon"),
     },
     Sample {
+        name: "cache-aside",
+        title: "Cache-aside (a branch not taken)",
+        description: "Hands out an id per name, fetched once (a fresh uuid from httpbin) and kept in a collection: a name it has an id for is answered from the collection, and the fetch, the ?? fallback it doesn't need, isn't run at all, so no request goes out. The run log and view mode show it as not run.",
+        shows: &["coalesce", "lazy choices", "collections", "http"],
+        port: Some("8115"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl http://127.0.0.1:8115/id/ada twice: the same id, and the second run sends no request (or set one: curl -X PUT -d '{"id":"x"}' http://127.0.0.1:8115/id/bob)"#,
+        text: include_str!("../samples/cache-aside.holon"),
+    },
+    Sample {
         name: "heartbeat",
         title: "Heartbeat",
         description: "A clock flow: every 10 seconds it records the time, counts the beats in its state, and keeps the time of the first beat (a fallback that is itself a value: coalesce).",
@@ -355,6 +368,42 @@ mod tests {
     fn a_mistake_in_a_sample_names_it_and_the_line() {
         let broken = Sample { text: "flow hello-api\nport 8101\n\nroute GET /hello/:name (req) {\n  respond concat(\"Hello, \", req.params.nmae.x, nope)\n}\n", ..sample("hello-api").unwrap().clone() };
         assert_eq!(build(&broken).unwrap_err(), r#"sample "hello-api": 5:48: unknown name "nope""#);
+    }
+
+    /// Lazy choices change which nodes run, never a value (docs/L4s/lazy-choices-L4.md §2): every
+    /// sample's routes, sent a request with each path parameter and a JSON body, give what
+    /// evaluating every node gives.
+    #[test]
+    fn every_samples_routes_give_what_the_eager_evaluator_gives() {
+        use holon_core::{eager::eval_eager, eval, parse_hash, Resolver, Value};
+        use std::collections::BTreeMap;
+        let text = |s: &str| Value::Text(s.into());
+        let mut checked = 0;
+        for s in samples() {
+            let lowered = lang::compile(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            let mut store = MapResolver::new();
+            crate::text::restore(&lowered.doc, &mut store, &Names::new());
+            let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
+            let server = crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port);
+            for e in &server.endpoints {
+                let unit = store.resolve(&parse_hash(&e.hash).unwrap()).unwrap();
+                let params: BTreeMap<String, Value> = e.path.split('/').filter_map(|seg| seg.strip_prefix(':')).map(|k| (k.to_string(), text("tea"))).collect();
+                for body in ["", r#"{"id":"x","price":4,"amount":5,"items":[{"name":"tea","qty":2}],"event":"gig","count":2,"text":"hi"}"#] {
+                    let request = Value::Record(BTreeMap::from([
+                        ("method".to_string(), text(&e.method)),
+                        ("path".to_string(), text(&e.path)),
+                        ("params".to_string(), Value::Record(params.clone())),
+                        ("query".to_string(), Value::Record(BTreeMap::new())),
+                        ("headers".to_string(), Value::Record(BTreeMap::new())),
+                        ("body".to_string(), text(body)),
+                    ]));
+                    let inputs = [Some(request)];
+                    assert_eq!(eval(unit, &inputs, &store).into_vec(), eval_eager(unit, &inputs, &store), "{} {} {}", s.name, e.method, e.path);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 40, "{checked}");
     }
 
     #[test]

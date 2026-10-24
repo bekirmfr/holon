@@ -852,6 +852,12 @@ fn granted_exceptions_let_a_request_reach_a_local_server() {
     assert_eq!(deployed.status_code, 200);
     let fired = body_json(route(&state, &req("POST", "/trigger/local", b"/hi".to_vec())));
     assert_eq!(fired["performed"][0]["payload"]["value"], "hello", "the answer's body reached the egress");
+
+    // The run checks offline: its request is answered from its own record, not sent again.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/local/export", vec![])))).unwrap();
+    let report = verify::check(&export, None);
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)]);
 }
 
 /// The grant is the boundary at run time: an effect it doesn't cover isn't performed, whatever

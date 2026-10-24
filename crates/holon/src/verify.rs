@@ -251,7 +251,9 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], resolver: &MapReso
         differs.push("its run id");
     }
 
-    let prior: Vec<Round> = earlier.iter().flat_map(|e| &e.rounds).map(round_of).collect();
+    // Its outbound requests are answered from the record (the earlier parts', then its own), never
+    // sent again.
+    let prior: Vec<Round> = earlier.iter().flat_map(|e| &e.rounds).chain(&entry.rounds).map(round_of).collect();
     let mut reads: Vec<(Vec<u32>, Value, Option<Value>)> = Vec::new();
     for read in earlier.iter().flat_map(|e| &e.reads).chain(&entry.reads) {
         reads.push((read.path.clone(), read.request.clone().into_core(), read.answer.clone().map(SValue::into_core)));

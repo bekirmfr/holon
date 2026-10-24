@@ -14,3 +14,6 @@ serde = { version = "1", features = ["derive"] }
 # format quotes as JSON.
 serde_json = "1"
 
+[dev-dependencies]
+# The eager evaluator, the oracle the samples are checked against.
+holon-core = { path = "../holon-core", features = ["eager-oracle"] }

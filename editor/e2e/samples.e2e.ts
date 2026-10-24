@@ -381,6 +381,24 @@ test("basket reads a price inside a mapped function, per item, and its run repla
   expect((await request.post(`http://127.0.0.1:${port}/basket`, { data: { items: [{ name: `scone-${Date.now()}`, qty: 1 }] } })).status()).toBe(404);
 });
 
+test("cache-aside answers a name it has from its collection without the fetch, which view mode shows as not run", async ({ page, request }) => {
+  await openSample(page, "Cache-aside (a branch not taken)");
+  const port = await deploy(page);
+  const name = `ada-${Date.now()}`;
+  // Set its id (so the test needs no network), then ask for it: the ?? has it, so the fetch, its
+  // fallback, never runs.
+  expect((await request.put(`http://127.0.0.1:${port}/id/${name}`, { data: { id: "x-1" } })).status()).toBe(200);
+  const got = await request.get(`http://127.0.0.1:${port}/id/${name}`);
+  expect(got.status()).toBe(200);
+  expect(await got.text()).toContain("x-1");
+  // The replay takes the branch the run took, which the run's timeline confirms.
+  await viewNewestRun(page);
+  const skipped = page.locator('.hl-node[data-run="skipped"]');
+  await expect(skipped.filter({ hasText: "http_request" })).toHaveCount(1);
+  await skipped.filter({ hasText: "http_request" }).locator(".hl-node__title").click();
+  await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("not run: the coalesce after it already had a value");
+});
+
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const { mkdtempSync } = await import("node:fs");

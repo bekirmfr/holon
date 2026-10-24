@@ -784,11 +784,19 @@ Absence is not a value: it cannot be stored, compared or passed to a lambda. `no
 `if c then a else b` is `coalesce(guard(c, a), b)`: `a` when `c` is `true` and `a` arrived,
 otherwise `b`. So `c` absent gives `b`, and `c` true with `a` absent gives `b` too. This is the
 meaning that fits a dataflow of absences, and it is one meaning: `if c then a` is the same
-`guard`, and `a when c` is the same again, read the other way round. Both `a` and `b` are
-computed; `if` chooses which value flows on, and never short-circuits.
+`guard`, and `a when c` is the same again, read the other way round.
+
+Only what the choice needs is run (lazy choices, `docs/L4s/lazy-choices-L4.md`): `a` only when `c`
+is `true`, and `b` only when `guard(c, a)` came out absent. So a branch not taken asks the host
+nothing: its requests aren't sent, its `await`s don't park the run, its reads aren't made, and a
+holon in it isn't entered. `x ?? y` is the same rule: `y` only when `x` is absent. This changes
+no value, only what runs. While `c` (or `x`) waits on an answer from the host, the choice waits
+too, and decides in the next round. A holon's inputs are computed before it is entered, as a
+call's arguments are: `h(go, http.get(…))` sends the request even if `h` only uses it when `go`.
 
 The strict three-way choice, where an absent arm makes the whole result absent whatever `c` says,
-is `select(c, a, b)`, written as a call. It is rarely what a flow wants.
+is `select(c, a, b)`, written as a call. Being strict, it needs, and runs, both arms. It is rarely
+what a flow wants.
 
 ### 6.5 Reads at the start, writes at the end
 
@@ -1095,6 +1103,17 @@ Decided ones are kept, with the decision, for a reader who wonders why.
   form (`posts.put(k, v)`) is what `fmt` prints there, and the assignment form gets a generated
   output name. Alternative: let a holon's unnamed effects be exposed under names derived from
   their keys (`put_posts`). Decide when the first holon with several writes exists.
+- **F11. A choice by value, `match`.** A record used as a table is spoiled by one absent entry,
+  and a chain of `if` falls through when the chosen arm fails. `match op { "add" -> a + b, … }`
+  chooses one arm by the subject, so arms not chosen don't matter and a chosen arm's failure is
+  the result's. It lowers to `equals`, `guard` and `coalesce`, with the `else` guarded by "no
+  pattern matched". Designed in `docs/L4s/match-L4.md`, not built; it builds on F12.
+- **F12. Lazy choices.** Every node was evaluated, so a request inside an `if` branch not taken
+  was sent anyway, and an `await` there parked the run. Decided and built: `guard` and `coalesce`
+  evaluate only the inputs they need, with "not yet answered" kept apart from absent so a choice
+  waits instead of deciding early (§6.4). No value changes, only what the host is asked. `select`
+  stays strict: an absent side makes it absent, so it needs both. The `cache-aside` sample shows
+  it. `docs/L4s/lazy-choices-L4.md`.
 
 ## 14. What this document does not decide
 

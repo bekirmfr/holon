@@ -7,10 +7,13 @@
 // for a holon (a placed composite) that reads from outside inside it, a clock, a secret, state,
 // the network: the replay has none of those to give it, so it shows what the run recorded.
 //
-// Pure: evaluation itself is passed in (`evalNode`), so this is testable without the wasm
-// package. Only TYPES come from ./holon.
+// Which nodes run follows core: from the run's answer and effects back through what each needs,
+// a choice (`guard`, `coalesce`) needing only what core's choice rule (through wasm) says, so a
+// branch the run didn't take shows as not run, not as run with nothing.
+//
+// Evaluation itself is passed in (`evalNode`), so this is testable without a real evaluator.
 
-import type { WParam, WPort, WValue } from "./holon";
+import { choiceNext, type WParam, type WPort, type WValue } from "./holon";
 import { components } from "./derive";
 
 export type ReplayNode = {
@@ -66,6 +69,9 @@ export type Replay = {
   /** The nodes the run went through, in the order they were evaluated. */
   order: string[];
   traces: Map<string, NodeTrace>;
+  /** The nodes of the run's group it didn't run, each with the choice that skipped it (`null`
+   *  when none did: a cycle, or nothing the run needed uses it). */
+  notRun: Map<string, string | null>;
 };
 
 const frozen = (params: WParam[], name: string) => {
@@ -81,7 +87,7 @@ const frozen = (params: WParam[], name: string) => {
  */
 export function stateAtStep(
   before: Record<string, WValue>,
-  run: Replay,
+  run: Pick<Replay, "order" | "traces">,
   nodes: ReplayNode[],
   step: number | null,
 ): { after: Record<string, WValue>; changed: string[] } {
@@ -130,7 +136,7 @@ export const isCollectionCell = (k: string) => k.startsWith(COLLECTION_CELL);
  */
 export function collectionsAtStep(
   entry: { state_before: Record<string, WValue>; reads?: { request: WValue; answer: WValue | null }[] },
-  run: Replay | null,
+  run: Pick<Replay, "order" | "traces"> | null,
   nodes: ReplayNode[],
   step: number | null,
 ): CollectionAtStep[] {
@@ -361,8 +367,11 @@ export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: Replay
 }
 
 /**
- * Re-run `entry` over the canvas. Sourced leaves take their recorded values; a request node
- * takes the recorded request; every other node is evaluated by `evalNode` on the values its
+ * Re-run `entry` over the canvas, as core runs it: from the nodes the run's answer and effects
+ * come from (and any node nothing consumes), back through what each needs. An ordinary node needs
+ * every wired input; a choice (`guard`, `coalesce`) only what core's choice rule says, so a branch
+ * not taken isn't run, here as in the run. Sourced leaves take their recorded values; a request
+ * node takes the recorded request; every other node is evaluated by `evalNode` on the values its
  * wires bring in (`null` for an unwired or absent input).
  */
 export function replay(
@@ -382,11 +391,40 @@ export function replay(
 ): Replay {
   const ids = new Set(runGroup(nodes, edges, entry));
   const group = nodes.filter((n) => ids.has(n.id));
+  const byId = new Map(group.map((n) => [n.id, n]));
   const wires = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
+  const traces = new Map<string, NodeTrace>();
+  const order: string[] = [];
+  const notRun = new Map<string, string | null>();
 
-  // Dependency order (Kahn). Among the nodes ready to run, the one the run itself evaluated first
-  // goes first, then canvas order: so a replay steps through the nodes as the run did (core
-  // evaluates in a dependency order too), and is deterministic without timings.
+  // A cycle can't be deployed; if a canvas has one anyway, nothing runs, as in core.
+  const indegree = new Map(group.map((n) => [n.id, 0]));
+  for (const e of wires) indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
+  const ready = group.filter((n) => indegree.get(n.id) === 0).map((n) => n.id);
+  let sorted = 0;
+  while (ready.length > 0) {
+    const id = ready.pop()!;
+    sorted++;
+    for (const e of wires.filter((w) => w.source === id)) {
+      indegree.set(e.target, indegree.get(e.target)! - 1);
+      if (indegree.get(e.target) === 0) ready.push(e.target);
+    }
+  }
+  if (sorted < group.length) {
+    for (const n of group) notRun.set(n.id, null);
+    return { order, traces, notRun };
+  }
+
+  // The roots, as the unit the run ran has them: for a request, the respond node, every effect
+  // left unwired, and any node nothing consumes; for a whole flow, every node with an output left
+  // unwired. Among them, the one the run evaluated first goes first, then canvas order.
+  const wiredOut = (n: ReplayNode, port: string) => wires.some((w) => w.source === n.id && w.sourceHandle === port);
+  const isRoot = (n: ReplayNode) =>
+    entry.kind === "request"
+      ? !wires.some((w) => w.source === n.id) ||
+        (n.data.name === "respond" && n.data.body.kind === "Template") ||
+        n.data.outputs.some((p) => p.ty === "Effect" && !wiredOut(n, p.name))
+      : n.data.outputs.length === 0 || n.data.outputs.some((p) => !wiredOut(n, p.name));
   const rank = (id: string) => {
     const i = executed.indexOf(id);
     return [i < 0 ? Infinity : i, group.findIndex((n) => n.id === id)];
@@ -396,81 +434,132 @@ export function replay(
     const [rb, cb] = rank(b);
     return ra !== rb ? ra - rb : ca - cb;
   };
-  const indegree = new Map(group.map((n) => [n.id, 0]));
-  for (const e of wires) indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
-  const ready = group.filter((n) => indegree.get(n.id) === 0).map((n) => n.id);
-  ready.sort(before);
-  const order: string[] = [];
-  while (ready.length > 0) {
-    const id = ready.shift()!;
-    order.push(id);
-    for (const e of wires.filter((w) => w.source === id)) {
-      const left = indegree.get(e.target)! - 1;
-      indegree.set(e.target, left);
-      if (left === 0) {
-        ready.push(e.target);
-        ready.sort(before);
-      }
-    }
-  }
+  const roots = group
+    .filter(isRoot)
+    .map((n) => n.id)
+    .sort(before);
 
   const sourced = new Map(entry.sourced);
-  const traces = new Map<string, NodeTrace>();
   // An absent output can cross the wasm boundary as undefined: absent is null here, always.
   const evaluate = (node: ReplayNode, inputs: (WValue | null)[]) => evalNode(node, inputs).map((o) => o ?? null);
-  for (const id of order) {
-    const node = group.find((n) => n.id === id)!;
-    const inputs = node.data.inputs.map((port) => {
-      const wire = wires.find((w) => w.target === id && w.targetHandle === port.name);
+  const incoming = (id: string, port: string) => wires.find((w) => w.target === id && w.targetHandle === port);
+  const carried = (w: ReplayEdge) => {
+    const at = byId.get(w.source)!.data.outputs.findIndex((p) => p.name === w.sourceHandle);
+    return traces.get(w.source)?.outputs[at] ?? null;
+  };
+  // Each input as seen so far: undefined while the node feeding it hasn't been evaluated.
+  const seenBy = (node: ReplayNode) =>
+    node.data.inputs.map((port) => {
+      const wire = incoming(node.id, port.name);
       if (!wire) return null;
-      const from = group.find((n) => n.id === wire.source)!;
-      const at = from.data.outputs.findIndex((p) => p.name === wire.sourceHandle);
-      return traces.get(wire.source)?.outputs[at] ?? null;
+      return traces.has(wire.source) ? carried(wire) : undefined;
     });
+
+  // What one node computes once everything it needs has arrived.
+  const run = (id: string, node: ReplayNode, inputs: (WValue | null)[]): NodeTrace => {
     const name = node.data.name;
-    let outputs: (WValue | null)[];
-    if (node.data.body.kind === "Primitive" && name === "store_read") {
-      outputs = [entry.state_before[frozen(node.data.params, "key") ?? ""] ?? null];
-    } else if (node.data.body.kind === "Primitive" && name === "clock") {
-      outputs = [sourced.get("Clock") ?? null];
-    } else if (node.data.body.kind === "Primitive" && name === "random") {
-      outputs = [sourced.get("Random") ?? null];
-    } else if (node.data.body.kind === "Primitive" && name === "ingress") {
-      outputs = [sourced.get("NetworkIngress") ?? null];
-    } else if (node.data.body.kind === "Primitive" && name === "await") {
-      // A waiting point answers with the event the log says was delivered, if any.
-      outputs = [entry.events?.[frozen(node.data.params, "name") ?? ""] ?? null];
-    } else if (node.data.body.kind === "Primitive" && name === "resume_token") {
-      // A token is a credential: the log has it redacted, and so does the replay.
-      outputs = [{ type: "Text", value: `‹token:${frozen(node.data.params, "await") ?? ""}›` }];
-    } else if (node.data.body.kind === "Primitive" && name === "secret") {
-      // The editor never has a secret's value: a placeholder stands in, as the log shows it.
-      outputs = [{ type: "Text", value: `‹secret:${frozen(node.data.params, "name") ?? ""}›` }];
-    } else if (node.data.body.kind === "Primitive" && (name === "http_request" || name === "collection_get" || name === "collection_list")) {
+    const primitive = node.data.body.kind === "Primitive";
+    const param = (p: string) => frozen(node.data.params, p) ?? "";
+    if (primitive && name === "store_read") return { inputs, outputs: [entry.state_before[param("key")] ?? null] };
+    if (primitive && name === "clock") return { inputs, outputs: [sourced.get("Clock") ?? null] };
+    if (primitive && name === "random") return { inputs, outputs: [sourced.get("Random") ?? null] };
+    if (primitive && name === "ingress") return { inputs, outputs: [sourced.get("NetworkIngress") ?? null] };
+    // A waiting point answers with the event the log says was delivered, if any.
+    if (primitive && name === "await") return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
+    // A token is a credential: the log has it redacted, and so does the replay.
+    if (primitive && name === "resume_token") return { inputs, outputs: [{ type: "Text", value: `‹token:${param("await")}›` }] };
+    // The editor never has a secret's value: a placeholder stands in, as the log shows it.
+    if (primitive && name === "secret") return { inputs, outputs: [{ type: "Text", value: `‹secret:${param("name")}›` }] };
+    if (primitive && (name === "http_request" || name === "collection_get" || name === "collection_list")) {
       // Answered from the record, never the network or the store: a replay is offline and
       // exact, and shows the collection as the run found it, whatever it holds now.
-      outputs = [responses.get(id) ?? null];
-    } else if (name === "request" && node.data.body.kind === "Template") {
+      return { inputs, outputs: [responses.get(id) ?? null] };
+    }
+    if (name === "request" && node.data.body.kind === "Template") {
       const fed = [entry.request];
-      outputs = evaluate(node, fed);
-      traces.set(id, { inputs: fed, outputs });
-      continue;
-    } else if (inputs.some(hasPlaceholder) || readsOutside(node)) {
+      return { inputs: fed, outputs: evaluate(node, fed) };
+    }
+    if (inputs.some(hasPlaceholder) || readsOutside(node)) {
       // Fed a secret or token the log doesn't hold, or reading from outside within itself: what
       // the run recorded, if it did.
       const recorded = produced.get(id);
-      if (recorded) {
-        traces.set(id, { inputs, outputs: recorded, recorded: true });
-      } else {
-        traces.set(id, { inputs, outputs: evaluate(node, inputs), placeholder: true });
-      }
-      continue;
-    } else {
-      outputs = evaluate(node, inputs);
+      return recorded ? { inputs, outputs: recorded, recorded: true } : { inputs, outputs: evaluate(node, inputs), placeholder: true };
     }
-    traces.set(id, { inputs, outputs });
+    return { inputs, outputs: evaluate(node, inputs) };
+  };
+
+  // Depth first from the roots, with an explicit stack, as core walks: a node runs once what it
+  // needs is evaluated; until then, the node feeding what it needs next is pushed.
+  const stack = [...roots].reverse();
+  while (stack.length > 0) {
+    const id = stack[stack.length - 1];
+    if (traces.has(id)) {
+      stack.pop();
+      continue;
+    }
+    const node = byId.get(id)!;
+    const seen = seenBy(node);
+    const choice = node.data.body.kind === "Primitive" ? choiceNext(node.data.name, seen) : null;
+    const need = choice ? ("need" in choice ? choice.need : -1) : seen.findIndex((v) => v === undefined);
+    if (need >= 0) {
+      stack.push(incoming(id, node.data.inputs[need].name)!.source);
+      continue;
+    }
+    stack.pop();
+    order.push(id);
+    const inputs = seen.map((v) => v ?? null);
+    traces.set(id, choice && "done" in choice ? { inputs, outputs: [choice.done] } : run(id, node, inputs));
   }
-  return { order, traces };
+
+  // A node not run was skipped by the first choice on its way to the roots: the nearest node
+  // downstream that ran (only a choice runs without everything it is fed).
+  for (const n of group) {
+    if (traces.has(n.id)) continue;
+    const visited = new Set([n.id]);
+    const queue = [n.id];
+    let by: string | null = null;
+    while (queue.length > 0 && by === null) {
+      const at = queue.shift()!;
+      for (const w of wires.filter((x) => x.source === at)) {
+        if (traces.has(w.target)) {
+          by = w.target;
+          break;
+        }
+        if (!visited.has(w.target)) {
+          visited.add(w.target);
+          queue.push(w.target);
+        }
+      }
+    }
+    notRun.set(n.id, by);
+  }
+  return { order, traces, notRun };
+}
+
+/** Why a node didn't run, in a line: the choice that skipped it (`by`, from `notRun`), in its
+ *  own terms. */
+export function whyNotRun(nodes: ReplayNode[], by: string | null): string {
+  const choice = by === null ? undefined : nodes.find((n) => n.id === by);
+  if (!choice) return "not run: nothing the run needed uses it";
+  switch (choice.data.name) {
+    case "guard":
+      return "not run: the guard after it didn't take this branch";
+    case "coalesce":
+      return "not run: the coalesce after it already had a value";
+    default:
+      return `not run: the ${choice.data.name} after it didn't need it`;
+  }
+}
+
+/** Whether the replay ran the nodes the run ran, where the run's timeline (its final round) says.
+ *  `null` when it can't tell: no timeline, a run that waited (what waits on an event isn't run,
+ *  but a replay has nothing to wait for), or one logged before choices were lazy (its timeline
+ *  lists every node, taken or not). */
+export function sameNodesRan(group: string[], run: Replay, timings: Map<string, unknown>, waited: boolean): boolean | null {
+  if (timings.size === 0 || waited) return null;
+  if (run.notRun.size > 0 && group.every((id) => timings.has(id))) return null;
+  const ran = new Set(run.order);
+  return group.every((id) => ran.has(id) === timings.has(id));
 }
 
 // ── Why a run failed ──────────────────────────────────────────────────────────────────────────

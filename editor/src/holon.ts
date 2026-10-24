@@ -17,6 +17,7 @@ import init, {
   manifest_trigger,
   permission_kind,
   reads_from_outside,
+  choice_next,
   primitive_catalog,
   primitive_docs,
   variadic_primitives,
@@ -278,6 +279,16 @@ export function manifestTrigger(capabilities: string[]): string | null {
  *  secret, state, the network…): a replay can't recompute it, and shows what the run recorded. */
 export function readsFromOutside(capabilities: string[]): boolean {
   return reads_from_outside(capabilities);
+}
+
+/** What a choice leaf needs next: evaluate the input at a port, or it is decided. */
+export type Choice = { need: number } | { done: WValue | null };
+
+/** Core's choice rule: what a `guard` or `coalesce` needs next, given the inputs seen so far
+ *  (`undefined`: not evaluated yet, `null`: absent), or its output once decided; `null` for a
+ *  leaf that isn't a choice. A replay walks a run by it, as core evaluates one. */
+export function choiceNext(name: string, seen: (WValue | null | undefined)[]): Choice | null {
+  return (choice_next(name, seen.map((v) => (v === undefined ? null : { value: v }))) as Choice | undefined) ?? null;
 }
 
 /** Whether a manifest item is required or optional (core's rule), and what that means. */

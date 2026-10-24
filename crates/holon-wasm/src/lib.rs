@@ -289,6 +289,39 @@ pub fn reads_from_outside(capabilities: Vec<String>) -> bool {
     holon_core::reads_from_outside(&capabilities)
 }
 
+/// One input of a choice as a replay has seen it: `null` not evaluated yet, else `{value}`
+/// (`value: null` for absent).
+#[derive(Deserialize)]
+struct WSeen {
+    value: Option<WValue>,
+}
+
+/// What a choice needs next: `{need: port}`, or `{done: value}` (`null` for absent).
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum WChoice {
+    Need(usize),
+    Done(Option<WValue>),
+}
+
+/// Core's choice rule (`choice_next`): what a `guard` or `coalesce` needs next, given the inputs
+/// seen so far, or its output once decided; `undefined` for a leaf that isn't a choice. The
+/// editor's replay walks a run by it, so the nodes it shows as not run are the ones the run
+/// didn't run. A replay never has a pending input: what the record lacks is absent.
+#[wasm_bindgen]
+pub fn choice_next(name: &str, seen: JsValue) -> Result<JsValue, JsError> {
+    let seen: Vec<Option<WSeen>> = serde_wasm_bindgen::from_value(seen).map_err(|e| JsError::new(&format!("seen: {e}")))?;
+    let seen: Vec<Option<holon_core::Slot>> = seen
+        .into_iter()
+        .map(|s| s.map(|s| s.value.map_or(holon_core::Slot::Absent, |v| holon_core::Slot::Value(v.into_core()))))
+        .collect();
+    let choice = holon_core::choice_next(name, &seen).map(|c| match c {
+        holon_core::Choice::Need(p) => WChoice::Need(p),
+        holon_core::Choice::Done(slot) => WChoice::Done(slot.value().map(WValue::from_core)),
+    });
+    serde_wasm_bindgen::to_value(&choice).map_err(|e| JsError::new(&format!("choice: {e}")))
+}
+
 /// Core's genesis interfaces mirrored to `WUnit` via the *same* `from_core` `load_unit` uses — no
 /// second core→JS converter. Shared by the bridge fn and its tests.
 fn catalog_wunits() -> Vec<WUnit> {

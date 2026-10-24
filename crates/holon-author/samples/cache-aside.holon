@@ -1,0 +1,15 @@
+flow cache-aside
+port 8115
+collection ids
+
+route GET /id/:name (req) {
+  name = req.params.name
+  id = ids[name] ?? parse_json(http.get("httpbin.org", "/uuid").body).uuid
+  ids[name] = id
+  respond id
+}
+
+route PUT /id/:name (req) {
+  ids[req.params.name] = req.json.id
+  respond req.json.id
+}

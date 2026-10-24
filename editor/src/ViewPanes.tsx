@@ -688,6 +688,8 @@ export type InspectorRun = {
   collections: CollectionAtStep[];
   /** What the node computed in this run. */
   trace: NodeTrace | undefined;
+  /** Why it didn't run, when it is in the run's group but a choice didn't need it. */
+  notRun?: string;
   timing: { start_us: number; end_us: number } | undefined;
   /** For a holon: its own nodes, as the run went (null for any other node). */
   inside: InsideStep[] | null;
@@ -909,7 +911,7 @@ export type InsideStep = { label: string; outputs: (WValue | null)[] | null; us:
 function ComponentTab({ node, run, source }: { node: ViewNode | null; run: InspectorRun | null; source: { line: number; text: string } | null }) {
   const describe = useNodeDocs();
   if (!node) return <div>{run ? "click a node on the canvas, or step through the run" : "select a node on the canvas"}</div>;
-  const { trace, timing, inside } = run ?? { trace: undefined, timing: undefined, inside: null };
+  const { trace, timing, inside, notRun } = run ?? { trace: undefined, timing: undefined, inside: null, notRun: undefined };
   const { data } = node;
   const doc = describe(data as Parameters<typeof describe>[0]);
   const kind = data.body.kind === "Template" ? "template" : data.body.kind === "Composite" ? "composite" : "primitive";
@@ -920,8 +922,9 @@ function ComponentTab({ node, run, source }: { node: ViewNode | null; run: Inspe
       <div style={{ color: dim }}>
         {kind}
         {timing ? ` · ran ${us(timing.start_us)} → ${us(timing.end_us)} (${us(timing.end_us - timing.start_us)})` : ""}
-        {run && !trace ? " · not part of this run" : ""}
+        {run && !trace && !notRun ? " · not part of this run" : ""}
       </div>
+      {notRun && <div style={{ color: dim }}>↷ {notRun}</div>}
       {source && (
         <Section title={`as text, line ${source.line}`}>
           <div

@@ -65,7 +65,8 @@ export type PrimitiveData = {
    *  Rendering only, like `error`: set on a copy of the node, never on the canvas state. */
   trace?: {
     outputs: (WValue | null)[];
-    state: "active" | "done" | "pending" | "outside";
+    /** `skipped`: in the run's group, but a choice didn't need it, so the run didn't run it. */
+    state: "active" | "done" | "pending" | "outside" | "skipped";
     /** Its part in a failed run (replay.ts's diagnose): where the failure started, or starved. */
     issue?: { role: "origin" | "starved"; reason: string };
     /** Whether its output values show as chips (the view toolbar's "values" toggle). */
@@ -356,7 +357,9 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
         ...(trace?.state === "active" ? { borderColor: "#6fd3e0", boxShadow: "0 0 0 2px #6fd3e0" } : {}),
         ...(trace?.state === "pending" ? { opacity: 0.55 } : {}),
         ...(trace?.state === "outside" ? { opacity: 0.3 } : {}),
+        ...(trace?.state === "skipped" ? { opacity: 0.4, borderStyle: "dotted" } : {}),
       }}
+      data-run={trace?.state}
     >
       <div className="hl-node__title">
         <span>{name}</span>

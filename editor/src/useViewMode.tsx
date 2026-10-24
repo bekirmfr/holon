@@ -23,7 +23,10 @@ import {
   recordedReads,
   recordedResponses,
   replay,
+  runGroup,
+  sameNodesRan,
   stateAtStep,
+  whyNotRun,
   wireKey,
   type ReplayNode,
 } from "./replay";
@@ -153,6 +156,10 @@ export function useViewMode(input: ViewModeInput) {
     if (selectedRun.kind === "request" && respond && selectedRun.outputs.length > 0) {
       verdict = JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(selectedRun.outputs[0]);
     }
+    // It ran the nodes the run ran (a branch the run took, the replay took), where the timeline
+    // can tell.
+    const group = runGroup(ns, es, selectedRun);
+    if (sameNodesRan(group, run, nodeTimings(selectedRun, viewTrace), (selectedRun.parked?.length ?? 0) > 0) === false) verdict = false;
     return { ...run, verdict, diagnosis };
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -246,7 +253,8 @@ export function useViewMode(input: ViewModeInput) {
     const order = replayed?.order ?? [];
     return nodes.map((n) => {
       const i = order.indexOf(n.id);
-      const state: "active" | "done" | "pending" | "outside" = i < 0 ? "outside" : step === null || i < step ? "done" : i === step ? "active" : "pending";
+      const state: "active" | "done" | "pending" | "outside" | "skipped" =
+        i < 0 ? (replayed?.notRun.has(n.id) ? "skipped" : "outside") : step === null || i < step ? "done" : i === step ? "active" : "pending";
       const issue = replayed?.diagnosis?.issues.get(n.id);
       const trace = replayed ? { outputs: replayed.traces.get(n.id)?.outputs ?? [], state, issue, showValues } : undefined;
       return { ...n, data: { ...n.data, readOnly: true, trace } };
@@ -259,6 +267,8 @@ export function useViewMode(input: ViewModeInput) {
     if (!replayed) return edges;
     const ran = new Set(replayed.order);
     return edges.map((e) => {
+      // A wire out of a node not run carried nothing, not even absence.
+      if (replayed.notRun.has(e.source)) return { ...e, style: { ...e.style, opacity: 0.2, strokeDasharray: "2 5" } };
       if (!ran.has(e.source) || !ran.has(e.target)) return e;
       const from = nodes.find((n) => n.id === e.source);
       const at = from ? from.data.outputs.findIndex((p) => p.name === e.sourceHandle) : -1;
@@ -324,6 +334,7 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
     changed: view.flowState.changed,
     collections: view.collections,
     trace: trace && inspectNode ? { ...trace, issue: replayed?.diagnosis?.issues.get(inspectNode) } : undefined,
+    notRun: inspectNode && replayed?.notRun.has(inspectNode) ? whyNotRun(view.viewNodes, replayed.notRun.get(inspectNode)!) : undefined,
     timing: inspectNode ? view.timings.get(inspectNode) : undefined,
     inside: view.inside,
   };

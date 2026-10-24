@@ -222,9 +222,10 @@ impl holon_core::Observer for Timer {
             self.open.push(t);
         }
     }
-    fn produced(&mut self, path: &[u32], outputs: &[Option<holon_core::Value>]) {
+    fn produced(&mut self, path: &[u32], outputs: &[holon_core::Slot]) {
         if path.len() <= Self::DEPTH {
-            let outputs: Vec<Option<SValue>> = outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect();
+            // A pending output (a round still waiting on an answer) is logged as nothing yet.
+            let outputs: Vec<Option<SValue>> = outputs.iter().map(|o| o.value().map(SValue::from_core)).collect();
             let size = serde_json::to_vec(&outputs).map_or(usize::MAX, |b| b.len());
             self.produced = (size <= Self::MAX_RECORDED_BYTES).then_some(outputs);
         }
