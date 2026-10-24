@@ -1,5 +1,6 @@
-//! The flow commands of `holon`: flows as text files (text.rs), checked and shown on any machine,
-//! a screen or not, through the same code as the editor. Each takes the file's name and text and
+//! The flow commands of `holon`: flows as text files (the language, lang/, in either of its
+//! forms), checked and shown on any machine, a screen or not, through the same code as the
+//! editor. Each takes the file's name and text and
 //! answers what to print (and, for `fmt`, the file's new text); the binary reads and writes files.
 //!
 //!   holon new <file> [--sample <name>]   a starter flow (or a sample)
@@ -7,14 +8,15 @@
 //!   holon show <file>                    an outline: routes, nodes and what feeds them
 //!   holon fmt <file>                     rewrite it in the canonical form
 //!
-//! A mistake is printed as `<file>:<line>: <message>`, and the exit code is 1.
+//! A mistake is printed as `<file>:<line>:<col>: <message>`, and the exit code is 1.
 
 use holon_core::{capabilities, consent_name, MapResolver, Resolver};
 
 use crate::composites::Names;
 use crate::describe::describe_item;
 use crate::flow::{derive_server, flow_unit, DerivedServer};
-use crate::text::{self, Compiled};
+use crate::lang::{self, Lowered};
+use crate::text;
 use crate::wire::WParam;
 use crate::{samples, to_hex};
 
@@ -32,21 +34,13 @@ impl Report {
     }
 }
 
-pub const STARTER: &str = r#"# A flow: one statement a line. Run `holon check` on it as you go.
+pub const STARTER: &str = r#"# A flow: a route, and what it answers. Run `holon check` on it as you go.
 flow my-flow
 port 8200
 
-node req   = request { method: GET, path: "/hello/:name" }
-node name  = field { name: name }
-node hi    = const { value: "Hello, ", type: Text }
-node greet = concat
-node res   = respond { status: "200", missing: "404" }
-
-req.params  -> name.record
-hi.out      -> greet.a
-name.out    -> greet.b
-req.request -> res.request
-greet.out   -> res.body
+route GET /hello/:name (req) {
+  respond "Hello, {req.params.name}"
+}
 "#;
 
 /// A new flow's text: the starter, or the sample `sample` (headed by its title and description).
@@ -54,7 +48,7 @@ pub fn new_flow(sample: Option<&str>) -> Result<String, String> {
     let Some(name) = sample else { return Ok(STARTER.into()) };
     let sample = samples::sample(name).ok_or_else(|| format!("no sample \"{name}\" (there are {})", sample_names()))?;
     let doc = samples::build(sample)?;
-    let text = text::print(Some(sample.name), &doc, &mut MapResolver::new(), &Names::new())?;
+    let text = lang::print(Some(sample.name), &doc, &mut MapResolver::new(), &Names::new(), &Default::default())?;
     Ok(format!("# {}: {}\n{text}", sample.title, sample.description))
 }
 
@@ -63,19 +57,19 @@ pub fn sample_names() -> String {
     samples::samples().iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
 }
 
-/// The file compiled, its units in `store`; or its mistake, as `<file>:<line>: …`.
-fn compile(file: &str, source: &str, store: &mut MapResolver) -> Result<Compiled, Report> {
-    let compiled = text::compile(source).map_err(|e| Report::failed(format!("{file}:{}: {}", e.line, e.message)))?;
+/// The file compiled, its units in `store`; or its mistake, as `<file>:<line>:<col>: …`.
+fn compile(file: &str, source: &str, store: &mut MapResolver) -> Result<Lowered, Report> {
+    let compiled = lang::compile(source).map_err(|e| Report::failed(format!("{file}:{e}")))?;
     text::restore(&compiled.doc, store, &Names::new());
     Ok(compiled)
 }
 
-fn port_of(c: &Compiled) -> &str {
+fn port_of(c: &Lowered) -> &str {
     c.doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or_default()
 }
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
-fn derive(c: &Compiled, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
+fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
     let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
     let unit = flow_unit(&c.doc.nodes, &c.doc.edges, store, port_of(c)).map(|hash| {
         let mut caps: Vec<String> = store.resolve(&hash).map(|u| capabilities(u, store).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
@@ -154,7 +148,7 @@ pub fn show(file: &str, source: &str) -> Report {
 pub fn fmt(file: &str, source: &str) -> Result<String, Report> {
     let mut store = MapResolver::new();
     let c = compile(file, source, &mut store)?;
-    text::print(c.name.as_deref(), &c.doc, &mut store, &Names::new()).map_err(|e| Report::failed(format!("{file}: {e}")))
+    lang::print(c.name.as_deref(), &c.doc, &mut store, &Names::new(), &c.names).map_err(|e| Report::failed(format!("{file}: {e}")))
 }
 
 #[cfg(test)]
@@ -176,7 +170,7 @@ mod tests {
     #[test]
     fn a_mistake_names_its_file_and_line() {
         let r = check("bad.holon", "node a = field\nnode b = concat\na.nope -> b.a");
-        assert_eq!(r, Report { err: vec![r#"bad.holon:3: field has no output "nope""#.into()], code: 1, ..Default::default() });
+        assert_eq!(r, Report { err: vec![r#"bad.holon:3:1: field has no output "nope""#.into()], code: 1, ..Default::default() });
         // A flow that compiles but can't be a server: its route says why.
         let r = check("half.holon", "port 8101\nnode req = request { method: GET, path: \"/x\" }");
         assert_eq!(r.code, 1);
@@ -202,6 +196,15 @@ mod tests {
         }
         assert_eq!(new_flow(None).unwrap(), STARTER);
         assert_eq!(check("my-flow.holon", STARTER).code, 0);
+        // The starter is already canonical, and a sample's text is what fmt would write.
+        assert_eq!(fmt("my-flow.holon", STARTER).unwrap(), STARTER.lines().skip(1).collect::<Vec<_>>().join("
+") + "
+");
+        let likes = new_flow(Some("likes")).unwrap();
+        assert!(likes.contains("collection likes
+"), "{likes}");
+        assert!(likes.contains("route POST /posts/:id/like (req) {
+"), "{likes}");
         assert!(new_flow(Some("nope")).unwrap_err().starts_with("no sample \"nope\""));
     }
 }

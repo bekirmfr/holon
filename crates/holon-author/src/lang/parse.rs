@@ -1425,10 +1425,12 @@ mod tests {
             let wires = stmts.iter().filter(|s| matches!(s, text::Stmt::Wire { .. })).count();
             (nodes, wires)
         }
-        let mut texts = vec![("starter".to_string(), commands::STARTER.to_string())];
+        let mut texts = Vec::new();
         for s in samples::samples() {
-            texts.push((s.name.to_string(), commands::new_flow(Some(s.name)).unwrap()));
+            let doc = samples::build(s).unwrap();
+            texts.push((s.name.to_string(), text::print(Some(s.name), &doc, &mut holon_core::MapResolver::new(), &crate::composites::Names::new()).unwrap()));
         }
+        assert!(parse(commands::STARTER).is_ok());
         for (name, src) in texts {
             let new = parse(&src).unwrap_or_else(|e| panic!("{name}: {e}\n{src}"));
             let old = text::parse(&src).unwrap_or_else(|e| panic!("{name}: old parser: {e}"));

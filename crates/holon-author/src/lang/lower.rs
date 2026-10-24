@@ -133,6 +133,8 @@ struct Frame {
     written: HashMap<String, Span>,
     /// Boundary inputs used more than once, by port: the pass-through node their uses share.
     shared: HashMap<String, Val>,
+    /// The nodes placed in this block, in order.
+    created: Vec<String>,
     /// Whether any wiring-form statement appeared (a holon with none of its own boundary wires
     /// then freezes with the proposed boundary, as the wiring form always did).
     wiring_form: bool,
@@ -140,7 +142,7 @@ struct Frame {
 
 impl Frame {
     fn new(kind: FrameKind) -> Frame {
-        Frame { kind, env: HashMap::new(), wiring_in: vec![], wiring_out: vec![], written: HashMap::new(), shared: HashMap::new(), wiring_form: false }
+        Frame { kind, env: HashMap::new(), wiring_in: vec![], wiring_out: vec![], written: HashMap::new(), shared: HashMap::new(), created: vec![], wiring_form: false }
     }
 }
 
@@ -156,6 +158,9 @@ struct Lowerer<'a> {
     names: BTreeMap<String, String>,
     spans: BTreeMap<String, Span>,
     lambdas: usize,
+    /// Each route's request node, the nodes its block placed, and its header's span: a route is
+    /// everything wired to its request, so a node left unwired to it would silently fall out.
+    routes: Vec<(String, Vec<String>, Span)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -173,6 +178,7 @@ impl<'a> Lowerer<'a> {
             names: BTreeMap::new(),
             spans: BTreeMap::new(),
             lambdas: 0,
+            routes: vec![],
         }
     }
 
@@ -236,6 +242,17 @@ impl<'a> Lowerer<'a> {
                 node.extra.insert("source".into(), json!({ "line": s.start.line, "col": s.start.col, "endLine": s.end.line, "endCol": s.end.col }));
             }
         }
+        // A route is the connected group holding its request: a statement in its block that
+        // doesn't reach the request isn't part of the route, and would be left out of the server.
+        let ids: Vec<&str> = doc.nodes.iter().map(|n| n.id.as_str()).collect();
+        let groups = crate::routes::components(&ids, &doc.edges);
+        for (request, created, head) in &self.routes {
+            let Some(group) = groups.iter().find(|g| g.contains(request)) else { continue };
+            if let Some(stray) = created.iter().find(|id| !group.contains(id)) {
+                let span = self.spans.get(stray).copied().unwrap_or(*head);
+                return err(span, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own");
+            }
+        }
         Ok(Lowered { name, doc, names: self.names, spans: self.spans })
     }
 
@@ -268,6 +285,7 @@ impl<'a> Lowerer<'a> {
     fn node(&mut self, leaf: &str, params: &[(String, String)], span: Span) -> R<Val> {
         let id = self.b.node(leaf, params, None).or_else(|e| err(span, e))?;
         self.spans.insert(id.clone(), span);
+        self.frame().created.push(id.clone());
         Ok(self.out(&id))
     }
 
@@ -566,7 +584,8 @@ impl<'a> Lowerer<'a> {
         let Val::Out { id, .. } = &request else { unreachable!() };
         let id = id.clone();
         self.names.insert(id.clone(), r.request.text.clone());
-        let mut frame = Frame::new(FrameKind::Route { request: id, responded: None });
+        let mut frame = Frame::new(FrameKind::Route { request: id.clone(), responded: None });
+        frame.created.push(id);
         self.check_name_free(&r.request)?;
         frame.env.insert(r.request.text.clone(), request);
         self.frames.push(frame);
@@ -575,7 +594,8 @@ impl<'a> Lowerer<'a> {
         }
         let frame = self.frames.pop().expect("the route's frame");
         // No respond and no effect: route_spec would refuse it too; say so here, at the route.
-        let FrameKind::Route { responded, .. } = frame.kind else { unreachable!() };
+        let FrameKind::Route { responded, request } = frame.kind else { unreachable!() };
+        self.routes.push((request, frame.created, r.method.span.to(r.path.span)));
         let has_effect = r.body.iter().any(|s| !matches!(s.kind, StmtKind::Bind { .. } | StmtKind::Respond(_) | StmtKind::Node { .. } | StmtKind::Wire { .. }));
         if responded.is_none() && !has_effect && !frame.wiring_form {
             return err(r.method.span.to(r.path.span), "the route answers nothing: add a respond (or an effect, answered 204)");
@@ -720,6 +740,7 @@ impl<'a> Lowerer<'a> {
             .collect::<R<_>>()?;
         let id = self.b.place(&h, None);
         self.spans.insert(id.clone(), span);
+        self.frame().created.push(id.clone());
         for (port, v) in &vals {
             self.connect(v, &id, port, span)?;
         }
@@ -1200,12 +1221,18 @@ fn literal_json(e: &Expr) -> Option<serde_json::Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::composites::Names;
     use crate::flow::{derive_server, flow_unit};
     use crate::{commands, samples, text, to_hex};
     use holon_core::MapResolver;
+
+    /// The samples in the natural form, spelled to place exactly the builders' nodes: shared with
+    /// the printer's round-trip tests.
+    pub(crate) fn golden() -> &'static [(&'static str, &'static str)] {
+        GOLDEN
+    }
 
     /// The unit a document deploys as, through the real core.
     fn hash_of(doc: &FlowDocument) -> String {
@@ -1238,11 +1265,14 @@ mod tests {
     #[test]
     fn every_sample_in_the_wiring_form_lowers_to_the_builders_unit() {
         for s in samples::samples() {
-            let src = commands::new_flow(Some(s.name)).unwrap();
+            let doc = samples::build(s).unwrap();
+            let src = text::print(Some(s.name), &doc, &mut MapResolver::new(), &Names::new()).unwrap();
             let got = compile(&src).unwrap_or_else(|e| panic!("{}: {e}\n{src}", s.name));
             assert_eq!(hash_of(&got.doc), builders_hash(s.name), "{}", s.name);
             assert_eq!(got.name.as_deref(), Some(s.name));
         }
+        // And the starter, in the expression form.
+        assert!(compile(commands::STARTER).is_ok());
     }
 
     /// The samples in the natural form, spelled so they place exactly the builders' nodes: where
@@ -1427,6 +1457,11 @@ mod tests {
         assert_eq!(error("route GET /a (req) {\n  respond 1, status: 700\n}"), (2, 22, "a status is a number from 100 to 599".into()));
         assert_eq!(error("route GET /a (req) {\n  respond \"x\", status: 204\n}"), (2, 11, "a 204 answers with no body".into()));
         assert_eq!(error("route GET /a (req) {\n  1 + 1\n  respond 2\n}"), (2, 3, "a value nobody uses: bind it, or remove it".into()));
+        // A statement that never touches the request isn't in the route's group: said, not dropped.
+        assert_eq!(
+            error("route GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  respond 2\n}"),
+            (2, 17, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own".into())
+        );
         assert_eq!(error("x = 1 + 1\nroute GET /a (req) {\n  respond x\n}"), (1, 1, "routes are separate units; put shared logic in a holon (only a literal may be bound at the top level)".into()));
         // A literal at the top level is placed afresh in each route that uses it.
         let d = compiled("greeting = \"hi\"\nroute GET /a (req) {\n  respond greeting\n}\nroute GET /b (req) {\n  respond greeting\n}\n").doc;
