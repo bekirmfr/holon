@@ -471,17 +471,20 @@ fn list<T: std::fmt::Display>(items: &[T]) -> String {
     shown.join(", ") + if items.len() > 10 { ", …" } else { "" }
 }
 
-/// `holon export <slug> [--server PORT|URL] [-o FILE]`: fetch a deployment's runs from a server, as
+/// `holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME]`: fetch a deployment's runs from a server, as
 /// the editor's "export runs" does, and write them where `holon verify` reads them. The server
 /// and sign-in come from the one this user runs here (local.rs), or `--server` and `HOLON_TOKEN`.
 pub(crate) fn export(args: &[String]) -> i32 {
     let mut slug = None;
     let mut server = None;
-    let mut out = None;
+    let (mut to, mut name, mut out) = (None, None, None);
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
+            "--to" => to = args.next().cloned(),
+            "--as" => name = args.next().cloned(),
+            // The whole path at once, as rc.7 and rc.8 took it.
             "-o" | "--out" => out = args.next().cloned(),
             "--help" | "-h" => {
                 println!("{EXPORT_USAGE}");
@@ -498,6 +501,13 @@ pub(crate) fn export(args: &[String]) -> i32 {
         eprintln!("{EXPORT_USAGE}");
         return 2;
     };
+    let out = match export_path(&slug, to.as_deref(), name.as_deref(), out.as_deref()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("holon export: {e}");
+            return 2;
+        }
+    };
     let target = match local::target(server.as_deref()) {
         Ok(t) => t,
         Err(e) => {
@@ -506,7 +516,6 @@ pub(crate) fn export(args: &[String]) -> i32 {
         }
     };
     let server = target.server.as_str();
-    let out = out.unwrap_or_else(|| format!("{slug}-runs.json"));
     let url = format!("{server}/deployments/{slug}/export");
     let mut request = ureq::get(&url).timeout(Duration::from_secs(120));
     if let Some(token) = &target.token {
@@ -546,19 +555,47 @@ pub(crate) fn export(args: &[String]) -> i32 {
             return 1;
         }
     };
-    if let Err(e) = std::fs::write(&out, &body) {
-        eprintln!("holon export: can't write {out}: {e}");
+    let written = match out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        Some(dir) => std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&out, &body)),
+        None => std::fs::write(&out, &body),
+    };
+    if let Err(e) = written {
+        eprintln!("holon export: can't write {}: {e}", out.display());
         return 1;
     }
     let head = export.head.get(..12).unwrap_or(&export.head);
-    println!("wrote {out}: {} runs of {slug:?}, head {head}", export.lines.len());
-    println!("check it anywhere: holon verify {out}");
+    // Where it is in full, so the hint below runs from any folder.
+    let path = std::path::absolute(&out).unwrap_or(out).display().to_string();
+    let arg = if path.contains(' ') { format!("\"{path}\"") } else { path.clone() };
+    println!("wrote {path}: {} runs of {slug:?}, head {head}", export.lines.len());
+    println!("check it anywhere: holon verify {arg}");
     0
 }
 
-const EXPORT_USAGE: &str = "usage: holon export <slug> [--server PORT|URL] [-o FILE]
+/// Where `holon export` writes: `--to` (a folder, default here) and `--as` (a name, default
+/// `<slug>-runs.json`, `.json` added when it has no extension), or `-o`, the whole path.
+pub(crate) fn export_path(slug: &str, to: Option<&str>, name: Option<&str>, out: Option<&str>) -> Result<std::path::PathBuf, String> {
+    use std::path::{Path, PathBuf};
+    if let Some(out) = out {
+        if to.is_some() || name.is_some() {
+            return Err("-o is the whole path: give it, or --to and --as, not both".into());
+        }
+        return Ok(PathBuf::from(out));
+    }
+    let name = match name {
+        Some(n) if n.contains(['/', '\\']) => return Err(format!("--as takes a file name ({n:?} is a path): the folder goes in --to")),
+        Some(n) if n.trim().is_empty() => return Err("--as needs a file name".into()),
+        Some(n) if Path::new(n).extension().is_none() => format!("{n}.json"),
+        Some(n) => n.to_string(),
+        None => format!("{slug}-runs.json"),
+    };
+    Ok(Path::new(to.unwrap_or("")).join(name))
+}
 
-  Writes a deployment's runs (its run log, exactly as written, and every unit they ran) to FILE
-  (default <slug>-runs.json), for holon verify. From the holon serve you run on this machine,
+const EXPORT_USAGE: &str = "usage: holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME]
+
+  Writes a deployment's runs (its run log, exactly as written, and every unit they ran) to a file
+  for holon verify: NAME (default <slug>-runs.json) in FOLDER (default this one, made if it
+  isn't there). From the holon serve you run on this machine,
   signed in as you; with several running, --server <port> picks one. A server elsewhere:
   --server <URL> (or HOLON_SERVER), signed in with an API token in HOLON_TOKEN.";

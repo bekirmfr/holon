@@ -412,7 +412,7 @@ const USAGE: &str = "usage: holon <command>
   check <file>                       compile a flow: its routes, what it may do, or each mistake
   show <file>                        an outline: routes, nodes and what feeds them
   fmt <file>                         rewrite a flow in the canonical form
-  export <slug> [--server PORT]      write a deployment's runs to a file, for holon verify
+  export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
   version                            this build's version
   update [--check] [--to VERSION]    install the newest release (or see if there is one)

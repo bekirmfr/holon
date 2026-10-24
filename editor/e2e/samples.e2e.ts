@@ -413,7 +413,10 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const which = spawnSync(holon, ["export", "ledger"], { encoding: "utf8", env: local });
   expect(which.status).toBe(1);
   expect(which.stderr).toContain("pick one with --server 7520 or --server 7521");
-  const mine = join(dir, "as-me.json");
-  expect(execFileSync(holon, ["export", "ledger", "--server", "7520", "-o", mine], { encoding: "utf8", env: local })).toContain(`head ${head.slice(0, 12)}`);
+  // Into a folder of its own (made for it), by a name (.json added), the full path said.
+  const mine = join(dir, "audits", "as-me.json");
+  const asMe = execFileSync(holon, ["export", "ledger", "--server", "7520", "--to", join(dir, "audits"), "--as", "as-me"], { encoding: "utf8", env: local });
+  expect(asMe).toContain(`wrote ${mine}: 4 runs of "ledger", head ${head.slice(0, 12)}`);
+  expect(asMe).toContain(`holon verify ${mine}`);
   expect(execFileSync(holon, ["verify", mine], { encoding: "utf8" })).toContain("re-ran 4 runs");
 });

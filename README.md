@@ -113,7 +113,8 @@ yourself, on another machine.
 A deployment's runs export to one file: its log, exactly as written, and every unit the runs
 ran. In the editor, the run log's "export runs" (beside the head the log chains up to, and any
 run changed outside holon); on the command line, `holon export <slug>`, from the `holon serve` you
-run on the same machine, signed in as you (`--server <port>` picks one of several; a server
+run on the same machine, signed in as you, into `<slug>-runs.json` here (`--to <folder>` and
+`--as <name>` put it elsewhere; `--server <port>` picks one of several servers; a server
 elsewhere takes `--server <URL>` and an API token in `HOLON_TOKEN`); or `GET /deployments/<slug>/export`. `holon verify
 runs.json` checks it anywhere, offline: the
 chain is unbroken, each unit is what its hash says, and every run, run again from its log entry

@@ -3359,6 +3359,21 @@ fn a_deployment_answers_the_web_pages_it_names() {
     assert_eq!(allow(&from("https://elsewhere.example", "GET")).as_deref(), Some("https://elsewhere.example"));
 }
 
+/// `holon export`'s file: `--to` a folder and `--as` a name (`.json` added when it has none),
+/// each defaulted; `-o` the whole path, alone.
+#[test]
+fn an_export_goes_to_a_folder_as_a_name() {
+    use std::path::Path;
+    let at = |to, name, out| verify::export_path("ledger", to, name, out);
+    assert_eq!(at(None, None, None).unwrap(), Path::new("ledger-runs.json"));
+    assert_eq!(at(Some("audits"), None, None).unwrap(), Path::new("audits").join("ledger-runs.json"));
+    assert_eq!(at(None, Some("tuesday"), None).unwrap(), Path::new("tuesday.json"));
+    assert_eq!(at(Some("audits"), Some("t.txt"), None).unwrap(), Path::new("audits").join("t.txt"));
+    assert_eq!(at(None, None, Some("x/y.json")).unwrap(), Path::new("x/y.json"));
+    assert!(at(None, Some("audits/t"), None).unwrap_err().contains("--to"));
+    assert!(at(Some("audits"), None, Some("y.json")).unwrap_err().contains("not both"));
+}
+
 #[test]
 fn at_takes_an_address_or_a_port_alone() {
     assert_eq!(parse_at("8080").unwrap().to_string(), "127.0.0.1:8080");
