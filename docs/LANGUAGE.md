@@ -1,6 +1,7 @@
 # The Holon language: flows as programs
 
-**Status:** design, 2026-10-24. Nothing here is built yet; §12 is the build order.
+**Status:** design, 2026-10-24 (syntax revised the same day for readability). Nothing here is built
+yet; §12 is the build order.
 **Companions:** `COMPOSABLE_VM_DESIGN.md` (the invariants this language must keep),
 `PLATFORM_LAYOUT.md` (the runtime it compiles for), `crates/holon-author/src/text.rs` (the
 wiring form it extends).
@@ -19,52 +20,62 @@ intermediate representation, and this language is a second surface over it, besi
 Nothing in the semantics moves. Purity, totality, derived manifests, content addressing and exact
 replay are properties of the IR, so they hold for every program by construction.
 
+The guiding rule for the syntax: **the world the flow touches is written as nouns, what the flow
+does as verbs, and a line should read aloud as a sentence.** Every construct is tested by reading
+it to someone who has never seen Holon.
+
 ```
 flow hello-api
 port 8101
 
 route GET /hello/:name (req) {
-  respond("Hello, " ++ req.params.name)
+  respond "Hello, {req.params.name}"
 }
 ```
 
 ```
-holon slugify(text) -> slug {
-  slug = join(split(lowercase(text), " "), "-")
-}
+flow heartbeat
+every 10s
 
+state.last_beat = now
+state.beats = (state.beats ?? 0) + 1
+```
+
+```
 route POST /stripe (req) {
-  let event = stripe_verify(req, secret(name: stripe_webhook_secret), clock(), tolerance: 300).event
-  let sent  = http_request(secret(name: slack_webhook_path),
-                           { "content-type": "application/json" },
-                           json_stringify({ text: "Stripe: " ++ event.type }),
-                           method: POST, host: "hooks.slack.com")
-  respond(sent.status, missing: 400)
+  event = stripe.verify(req, secret.stripe_webhook_secret, now, tolerance: 5m).event
+  sent  = http.post("hooks.slack.com", secret.slack_webhook_path,
+            headers: { "content-type": "application/json" },
+            body: json({ text: "Stripe: {event.type}" }))
+  respond sent.status, missing: 400
 }
 ```
 
-A nested call is a wire. `let` is a named wire. A holon is a function. A route is one connected
-group with a `request` node. The hash of a program is the hash of the DAG it lowers to, so names
-and formatting are cosmetic, and two differently written programs with the same graph are the
-same unit.
+A nested call is a wire. A binding is a named wire. A holon is a function. A route is one
+connected group with a `request` node. `state.x`, `secret.x`, `now`, `notes[id]` and `http.post`
+are each exactly one catalog leaf, spelled as a noun. The hash of a program is the hash of the DAG
+it lowers to, so names and formatting are cosmetic, and two differently written programs with the
+same graph are the same unit.
 
 **The decisions, in one table.** Each is argued in the section named.
 
 | Decision | Choice | Where |
 |---|---|---|
-| What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist today | §1, §6 |
+| What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist today, plus one new leaf, `coalesce` | §1, §6 |
 | What it is not | General-purpose. No loops, recursion, user types, modules, or standard library growth | §2 |
-| Calls | `name(inputs…, param: value…)`: positional arguments are inputs (wires), named ones are params (frozen) | §5.3 |
-| Absent inputs | `_` skips an optional input; trailing optional inputs may be omitted | §5.3 |
-| Literals | `1`, `"text"`, `true` lower to `const`; `{…}` and `[…]` to `record`/`with_field` and `list` | §5.4 |
-| Operators | Arithmetic, comparison, logic, `++` (concat), `??` (default), `.` (field or output), `[ ]` (lookup), `if/then/else` (select), `when` (guard) | §5.5 |
-| Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.6 |
-| Functions for `map`/`fold` | A holon by name, or a closed lambda `fn(a, b) -> …`; lambdas may not capture | §5.8 |
-| Effects | Effect-typed values need no statement; an unused Effect is performed, an unused non-Effect is an error | §5.9 |
-| Routes | `route METHOD /path (req) [resume name] { … }`; `respond` is wired to the request implicitly | §5.10 |
-| Flows without routes | The top-level statements are the one unit | §5.11 |
-| Sharing | A `let` used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
-| Hash | The lowered DAG's. Let names, holon names, layout and comments are not in it | §7 |
+| The outside world | Nouns: `req`, `secret.name`, `state.key`, `now`, `random`, a declared `collection` used as `notes[key]`, `http.post(host, path, …)`, `await name` | §5.4 |
+| Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`. Method forms (`notes.put(k, v)`) when the effect needs a name | §5.4, §5.10 |
+| Bindings | One form, `name = expr`, everywhere | §5.2 |
+| Calls | `name(inputs…, named…)`: positional arguments are inputs; a named one is an input when the unit has that port, else a param | §5.3 |
+| Literals | `1`, `"text"`, `true`, `10s`; `"Hello, {name}"` interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` and `list` | §5.5 |
+| Operators | Arithmetic and comparison on numbers, logic, `??` (fallback), `.` (field or output), `[ ]` (lookup), `when` (guard), `if … then … else …` (guard plus fallback) | §5.6 |
+| Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
+| Functions for `map`/`fold` | A holon by name, or a closed lambda `fn(a, b) -> …`; lambdas may not capture | §5.9 |
+| Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
+| Routes | `route METHOD /path (req) [resumes name] { … }`; `respond` is a statement wired to the request implicitly | §5.11 |
+| Flows without routes | The top-level statements are the one unit | §5.12 |
+| Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
+| Hash | The lowered DAG's. Binding names, holon names, layout and comments are not in it | §7 |
 | Layout | Not in the text. Positions live in the flow document; import lays out automatically | §8 |
 | Diagnostics | `file:line:col: message`; every node keeps its span, so `check`, replay and the agent tools point at the expression | §9 |
 | The netlist form | Stays valid, as the wiring form, in the same file; `fmt` prints the expression form | §10 |
@@ -80,7 +91,7 @@ Three reasons, in order of weight.
    five `node` lines and four wires: fewer tokens, fewer places to misname a port, and errors it
    can read. The MCP tools (`check`, `deploy`, `run`, `explain`) will speak this form.
 2. **Expressiveness without new primitives.** Most of what today takes five nodes is one nested
-   expression. The vocabulary stays at its 68 leaves; the text gets shorter.
+   expression. The vocabulary stays at its 69 leaves; the text gets shorter.
 3. **Review, diff and version control** become ordinary. The derived manifest stays the thing a
    human approves; the text is what they read when the manifest surprises them.
 
@@ -92,9 +103,10 @@ parser and a lowering onto that builder, plus a printer for the other direction.
 
 **P1. The IR is the program.** A `.holon` text is a way to write a flow document; the flow
 document is a way to write units; the units are what runs, hashes, deploys and replays. The
-language adds no construct that does not lower to units that exist today. If a construct needs a
-new primitive, that primitive goes through the admission gate (design §13) on its own merits
-first, and the language gets the sugar after.
+language adds no construct that does not lower to units that exist. If a construct needs a new
+primitive, that primitive goes through the admission gate (design §13) on its own merits first,
+and the language gets the sugar after. Two did, for this design: `as_text` (built, 2026-10-24)
+and `coalesce` (§5.6, to build).
 
 **P2. Small, and deliberately not general.** The pull of every language is toward a type system
 with generics, modules, a standard library, loops. Each of those would cost a year and would break
@@ -104,7 +116,7 @@ Python. When expressiveness genuinely runs out, the answer is a sandboxed determ
 WebAssembly primitive (a module with no imports is pure, and is content-addressed by its bytes),
 never a language feature.
 
-**P3. Names are cosmetic, the graph is identity.** A `let` name, a holon name, a comment, the
+**P3. Names are cosmetic, the graph is identity.** A binding name, a holon name, a comment, the
 order of independent statements: none of it reaches the hash. Two programs that lower to the same
 DAG are the same unit, and `fmt` prints them identically.
 
@@ -116,6 +128,12 @@ stays what it is best at: showing a run, node by node.
 core, and run natively in `holon`, in the server, and in the editor through `holon-wasm`. No
 TypeScript copy of any of it.
 
+**P6. Nouns are sugar, never magic.** `state.beats` reads as a variable and *is* one
+`store_read` node; `notes[id] = v` reads as a mutation and *is* one `collection_put` node whose
+effect the host performs when the run finishes. The sugar table in §5.4 is exhaustive: a reader
+who knows it knows exactly which leaf every noun is, and the manifest is still derived from the
+leaves, never from the words.
+
 **Refused, with the reason:**
 
 | Refused | Why |
@@ -123,16 +141,19 @@ TypeScript copy of any of it.
 | `while`, recursion, unbounded iteration | Totality. `map` and `fold` over a list are the only iteration, bounded by the list |
 | User-defined types, generics | The checker is wire-time compatibility over nine types. A type system is a different project |
 | Modules, imports, packages | Reuse across files is the marketplace's job (a published holon placed by hash), not a `use` statement. Revisit when packs exist |
-| String interpolation `"Hello, {name}"` | Sugar for `concat`, but `{x}` with a non-text `x` fails at run time. Deferred until `to_text` insertion can be typed (fork F3) |
+| `+` on texts | An operator lowers to one node, and most values are `Any`, so `+` could not choose between `add` and `concat`. Interpolation is the natural spelling; `concat(a, b)` the explicit one |
 | Lambdas that capture | A `fn` is a pinned unit applied by `map`/`fold` with fixed arity; a capture would need an input nobody supplies. Closed lambdas only |
-| Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (`let`), so the canvas shows what was written |
+| Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (a binding), so the canvas shows what was written |
 | Null | Absence is not a value. `none()` is the optional's empty arm; "nothing" is the evaluator's absent slot (§6.3) |
+| Sequential mutation | `state.x = 1` then `state.x = 2` is an error (a key written twice), because a run reads its starting state and writes once at the end. The syntax looks like assignment; the semantics are a single commit |
 
 ## 3. A tour, by the samples
 
-Every sample in `crates/holon-author/src/samples.rs`, written in the language. Each lowers to the
-same nodes the builder places today, so each is also a golden test (§12). `req` is the name the
-route gives its request; bare, it is the whole request record.
+Every sample in `crates/holon-author/src/samples.rs`, written in the language. `req` is the name
+the route gives its request; bare, it is the whole request record. Each lowers to the nodes the
+builder places today, with two deliberate differences named in §12's golden test: where a sample
+spells `concat` and `const` by hand, the natural text interpolates (one `as_text` node more), and
+a holon grouped by proposal has core's proposed port names (§10 carries them).
 
 ### hello-api
 
@@ -141,42 +162,46 @@ flow hello-api
 port 8101
 
 route GET /hello/:name (req) {
-  respond("Hello, " ++ req.params.name)
+  respond "Hello, {req.params.name}"
 }
 ```
 
 Lowers to: `request{method: GET, path: /hello/:name}`, `field{name: name}` on its `params`
-output, `const{type: Text, value: "Hello, "}`, `concat(a, b)`, `respond{status: 200, missing: 404}`
-with `request` and `body` wired. Five nodes, five wires: the sample.
+output, `as_text` of that, `const{type: Text, value: "Hello, "}`, `concat(a, b)`, and
+`respond{status: 200, missing: 404}` with `request` and `body` wired. Six nodes, six wires.
 
-### notes-api
+### notes-api: a collection
 
 ```
 flow notes-api
 port 8102
+collection notes
 
 route GET /notes (req) {
-  respond(collection_list(_, req.query.after ?? "", collection: notes, limit: 50))
+  respond notes.list(after: req.query.after ?? "", limit: 50)
 }
 
 route PUT /notes/:id (req) {
-  collection_put(req.params.id, req.json, collection: notes)
-  respond(req.json, missing: 400)
+  notes[req.params.id] = req.json
+  respond req.json, missing: 400
 }
 
 route GET /notes/:id (req) {
-  respond(collection_get(req.params.id, collection: notes))
+  respond notes[req.params.id]
 }
 
 route DELETE /notes/:id (req) {
-  collection_delete(req.params.id, collection: notes)
-  respond(status: 204)
+  delete notes[req.params.id]
+  respond 204
 }
 ```
 
-`_` leaves `collection_list`'s optional `prefix` unwired. `?? ""` is a `default{type: Text,
-value: ""}` node. The `collection_put` statement is an Effect nobody reads, so it is exposed and
-the host performs it when the run finishes (§5.9). `respond(status: 204)` has no body input.
+`collection notes` names the collection; it grants nothing, the manifest is still derived from
+the leaves. `notes[k]` is `collection_get{collection: notes}`, `notes[k] = v` is `collection_put`,
+`delete notes[k]` is `collection_delete`, `notes.list(…)` is `collection_list` with its optional
+inputs named and its `limit` param. `?? ""` is a `default{type: Text, value: ""}` node. The write
+in the PUT route is an Effect nobody reads, so it is exposed and the host performs it when the
+run finishes (§5.10). `respond 204` has no body.
 
 ### stripe-to-slack
 
@@ -185,87 +210,91 @@ flow stripe-to-slack
 port 8103
 
 route POST /stripe (req) {
-  let event = stripe_verify(req, secret(name: stripe_webhook_secret), clock(), tolerance: 300).event
-  let sent  = http_request(secret(name: slack_webhook_path),
-                           { "content-type": "application/json" },
-                           json_stringify({ text: "Stripe: " ++ event.type }),
-                           method: POST, host: "hooks.slack.com")
-  respond(sent.status, missing: 400)
+  event = stripe.verify(req, secret.stripe_webhook_secret, now, tolerance: 5m).event
+  sent  = http.post("hooks.slack.com", secret.slack_webhook_path,
+            headers: { "content-type": "application/json" },
+            body: json({ text: "Stripe: {event.type}" }))
+  respond sent.status, missing: 400
 }
 ```
 
-`stripe_verify` has two outputs, so `.event` selects one (§5.6). The record literal lowers to
-`record()` then `with_field{name: content-type}` (§5.4). `sent.status` is a field of
-`http_request`'s one output. When the signature fails, `event` is absent, nothing downstream
-fires, `sent.status` is absent, and `respond` answers its `missing` status: 400, and nothing was
-posted. Exactly the sample's behaviour, from the same nodes.
+`stripe.verify` is the `stripe_verify` template; it has two outputs, so `.event` selects one
+(§5.7). `secret.x` is a `secret{name: x}` node; `now` a `clock`; `5m` is 300. `http.post` is
+`http_request{method: POST, host: "hooks.slack.com"}` with the path positional and the optional
+inputs named; the host is a literal because it is the permission. `json(x)` is `json_stringify`.
+When the signature fails, `event` is absent, nothing downstream fires, `sent.status` is absent,
+and `respond` answers its `missing` status: 400, and nothing was posted.
 
 ### guarded-api
 
 ```
 flow guarded-api
 port 8109
-optional SecretRead("receipt_key")
+optional secret.receipt_key
 
 route GET /me (req) {
-  let ok      = secure_equals(req.headers.authorization, "Bearer " ++ secret(name: api_token))
-  let receipt = hmac_sha256(secret(name: receipt_key), req.path, encoding: hex) ?? "unsigned"
-  respond({ receipt: receipt } when ok, missing: 401)
+  ok      = secure_equals(req.headers.authorization, "Bearer {secret.api_token}")
+  receipt = hmac_sha256(secret.receipt_key, req.path, encoding: hex) ?? "unsigned"
+  respond { receipt: receipt } when ok, missing: 401
 }
 ```
 
-`req.path`: `path` is not an output of `request`, so it is a field of the request record.
-`when` is `guard(cond, value)`: when `ok` is false the body is absent and the route answers 401.
+`optional secret.receipt_key` is the deploy setting `optional SecretRead("receipt_key")`.
+`req.path`: `path` is not an output of `request`, so it is a field of the request record. `when`
+is `guard(cond, value)`: when `ok` is false the body is absent and the route answers 401.
 
 ### slugs: holons
 
 ```
 flow slugs
 port 8110
-optional SecretRead("receipt_key")
+collection posts
+optional secret.receipt_key
 
 holon slugify(text) -> slug {
   slug = join(split(lowercase(text), " "), "-")
 }
 
 holon publish(slug, author) -> (put, saved, receipt) {
-  let s   = slug ?? ""
-  put     = collection_put(s, { author: author, at: clock() }, collection: posts)
-  saved   = store_write(s, key: last_post)
-  receipt = hmac_sha256(secret(name: receipt_key), s, encoding: hex) ?? "unsigned"
+  s       = slug ?? ""
+  put     = posts.put(s, { author: author, at: now })
+  saved   = state.set(last_post, s)
+  receipt = hmac_sha256(secret.receipt_key, s, encoding: hex) ?? "unsigned"
 }
 
 route POST /slugs (req) {
-  let title     = slugify(req.json.title)
-  let author    = slugify(req.json.author)
-  let published = publish(title, author)
-  respond({ title: title, author: author, receipt: published.receipt }, missing: 400)
+  title     = slugify(req.json.title)
+  author    = slugify(req.json.author)
+  published = publish(title, author)
+  respond { title: title, author: author, receipt: published.receipt }, missing: 400
 }
 
 route GET /slugs (req) {
-  respond(collection_list(collection: posts, limit: 100))
+  respond posts.list(limit: 100)
 }
 ```
 
 A holon is a composite with a given boundary, frozen exactly as `end_holon_exact` freezes it: the
-declared port names are the unit's port names. (A holon grouped on the canvas, or by the samples'
-builder, gets the names core proposes, such as `s` and `out`; the quoted form of §10,
-`holon slugify(text "s") -> (slug "out")`, carries those, so such a holon round-trips to the
-same hash.) `slugify` is placed twice and is one unit, one hash. `publish`'s `put` and `saved` outputs are Effects nobody reads in the route, so they are
-exposed and performed; its manifest (a collection write, a state write, the clock, an optional
-secret) is derived from its leaves as always.
+declared port names are the unit's port names. Inside `publish`, the two writes are *named
+outputs*, so they are spelled in the method form, `posts.put(k, v)` and `state.set(k, v)`, the
+same leaves the assignment forms lower to. The route never mentions `put` or `saved`: they are
+Effect outputs nobody reads, so they are exposed and performed. `slugify` is placed twice and is
+one unit, one hash.
 
 ### heartbeat: a flow without routes
 
 ```
 flow heartbeat
-interval 10
+every 10s
 
-store_write(clock(), key: last_beat)
-store_write((store_read(key: beats) ?? 0) + 1, key: beats)
+state.last_beat = now
+state.beats = (state.beats ?? 0) + 1
 ```
 
-No routes, so the top-level statements are the one unit the clock fires (§5.11).
+No routes, so the top-level statements are the one unit the clock fires (§5.12). `state.beats` on
+the right is `store_read{key: beats}`, the run's starting value; the assignment is
+`store_write{key: beats}`, committed when the run finishes. Which is why the line means exactly
+what it says.
 
 ### approval: a durable run
 
@@ -274,66 +303,77 @@ flow approval
 port 8105
 
 route POST /orders (req) {
-  respond("/paid/" ++ resume_token(await: paid))
-  let paid = await(name: paid, expires: 86400)
-  store_write({ ..req.json, paid_via: paid.method }, key: last_order)
+  respond "/paid/{resume_token(paid)}"
+  paid = await paid, expires: 1d
+  state.last_order = { ..req.json, paid_via: paid.method }
 }
 
-route GET /paid/:token (req) resume paid {
-  respond("thanks, the order is paid")
+route GET /paid/:token (req) resumes paid {
+  respond "thanks, the order is paid"
 }
 ```
 
 Statement order carries no meaning beyond names being defined before use: the response is
 produced in the first round, the run parks at `await`, and the state write happens when the link
-is opened. `{ ..base, k: v }` is `with_field` over an existing record (§5.4).
+is opened. `{ ..base, k: v }` is `with_field` over an existing record (§5.5). `resumes paid` is
+the request template's `resume` param.
 
 ### fetch-json, sign-payload, likes, witness
 
 ```
 route GET /slideshow (req) {
-  let page = http_request("/json", method: GET, host: "httpbin.org")
-  respond(json_parse(page.body).slideshow.title)
+  page = http.get("httpbin.org", "/json")
+  respond parse_json(page.body).slideshow.title
 }
 ```
 
 ```
 route POST /sign (req) {
-  respond({ signature:   hmac_sha256(secret(name: signing_key), req.body, encoding: hex),
-            body_base64: base64(req.body, mode: encode, alphabet: standard) }, missing: 400)
+  respond { signature:   hmac_sha256(secret.signing_key, req.body, encoding: hex),
+            body_base64: base64(req.body, mode: encode) }, missing: 400
 }
 ```
 
 ```
+flow likes
+port 8108
+collection likes
+
 route POST /posts/:id/like (req) {
-  let id = req.params.id
-  let n  = (collection_get(id, collection: likes) ?? 0) + 1
-  collection_put(id, n, collection: likes)
-  respond(n, missing: 400)
+  id = req.params.id
+  n  = (likes[id] ?? 0) + 1
+  likes[id] = n
+  respond n, missing: 400
 }
 
 route GET /posts/:id/likes (req) {
-  respond(collection_get(req.params.id, collection: likes) ?? 0)
+  respond "{likes[req.params.id] ?? 0} likes"
 }
 
 route GET /likes (req) {
-  respond(collection_list(collection: likes, limit: 100))
+  respond likes.list(limit: 100)
 }
 ```
 
 ```
+flow witness
+port 8130
+collection batches
+
 route POST /heads (req) {
-  let ok    = secure_equals(req.headers.authorization, "Bearer " ++ secret(name: witness_key))
-  let batch = req.json.batch
-  let now   = clock()
-  collection_put(batch, { ..req.json, witnessed_at: now } when ok, collection: batches)
-  respond({ batch: batch, witnessed_at: now } when ok, missing: 401)
+  ok    = secure_equals(req.headers.authorization, "Bearer {secret.witness_key}")
+  batch = req.json.batch
+  batches[batch] = { ..req.json, witnessed_at: now } when ok
+  respond { batch: batch, witnessed_at: now } when ok, missing: 401
 }
 
 route GET /batches (req) {
-  respond(collection_list(_, req.query.after ?? "", collection: batches, limit: 200))
+  respond batches.list(after: req.query.after ?? "", limit: 200)
 }
 ```
+
+`now` written twice is two `clock` nodes (§6.2); both read the same instant, the run's start. To
+share one node, bind it: `t = now`.
 
 ### map and fold
 
@@ -357,44 +397,52 @@ becomes the frozen `fn` param, which is what `eval_map` and `eval_fold` resolve 
 - **Encoding:** UTF-8. Lines end in `\n` or `\r\n`.
 - **Comments:** `#` to end of line. `fmt` keeps a comment on the line it was written on, moving it
   with that statement.
-- **Keywords:** `flow` `port` `interval` `browsers` `optional` `holon` `route` `resume` `let`
-  `if` `then` `else` `when` `fn` `node` `at` `in` `out` `true` `false`. Keywords are valid after
-  a dot (`req.in`) and as record keys (`{ in: 1 }`).
-- **Identifiers:** `[A-Za-z_][A-Za-z0-9_]*`. Route paths and consent names have their own rules
-  below. A name that is a catalog leaf or template (`clock`, `respond`) cannot be bound by `let`,
-  `holon` or a lambda parameter; the error names the clash.
+- **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `holon` `route`
+  `resumes` `respond` `delete` `await` `if` `then` `else` `when` `fn` `true` `false`, and the
+  wiring form's `node` `at` `in` `out` `interval`. Keywords are valid after a dot (`req.in`) and
+  as record keys (`{ in: 1 }`).
+- **Nouns:** `req` (the name a route gives its request; any identifier works), `secret`, `state`,
+  `now`, `random`, `ingress`, `http`, `stripe`, and every declared collection. `secret`, `state`,
+  `http` and `stripe` are namespaces: they take a dot. The nouns are reserved like keywords.
+- **Identifiers:** `[A-Za-z_][A-Za-z0-9_]*`. A name that is a catalog leaf, a template, a keyword
+  or a noun cannot be bound; the error names the clash. Route paths and consent names have their
+  own rules below.
 - **Numbers:** a finite decimal: `0`, `86400`, `-1`, `2.5`, `1e3`. No hex, no infinity, no NaN,
   since `const` refuses them. Lowered as written, trimmed.
-- **Text:** `"…"` with JSON escapes. Lowered as the unescaped string.
+- **Durations:** a number with a unit, `10s`, `5m`, `2h`, `1d`, lowered to the number of seconds
+  (`5m` is `300`). A duration is a number; it may be used wherever a number may.
+- **Text:** `"…"` with JSON escapes, and `{expr}` interpolation (§5.5). `{{` and `}}` are literal
+  braces.
 - **Bare words as param values:** after `param:`, a bare identifier or a route-path-like token is
-  the text itself: `collection: notes`, `method: POST`, `host: "hooks.slack.com"` (a dot needs
+  the text itself: `collection: notes`, `encoding: hex`, `host: "hooks.slack.com"` (a dot needs
   quotes). This keeps the common case unquoted, as the wiring form does.
-- **Punctuation:** `( ) { } [ ] , : = . _ -> ..` and the operators of §5.5.
+- **Punctuation:** `( ) { } [ ] , : = . -> ..` and the operators of §5.6.
 - **Route paths:** `/` followed by segments of `[A-Za-z0-9_.-]+` or `:name`, as `parse_path`
   accepts. Read as one token after `route METHOD`.
-- **Consent names** (after `optional`): `Name` or `Name("text")`, exactly the `consent_name` form
-  the server prints (`SecretRead("receipt_key")`, `HttpRequest("api.example.com")`).
+- **Consent names** (after `optional`): `secret.name` for a secret, or the server's own form,
+  `Name` or `Name("text")` exactly as `consent_name` prints it (`HttpRequest("api.example.com")`).
 
 ## 5. Syntax and lowering
 
 Grammar in EBNF; `*` zero or more, `?` optional, `|` choice. Newlines separate statements; a
 statement may continue on the next line while parentheses, braces or brackets are open, or after
-a binary operator. Semicolons are not used.
+a binary operator or a comma. Semicolons are not used.
 
-### 5.1 File
+### 5.1 File and headers
 
 ```
 file      = header* item*
-header    = "flow" ident | "port" number | "interval" number
-          | "browsers" origin ("," origin)* | "optional" consent
+header    = "flow" ident | "port" number | "every" duration
+          | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
 item      = holon | route | statement | wiring        # wiring: the netlist form, §10
 ```
 
-Headers are the flow's deploy settings, exactly as today (`Settings`). Statements at the top level
-are the body of a flow without routes (§5.11); with routes, only `let` of literals is allowed at
-the top level (§5.10).
+Headers are the flow's deploy settings, exactly as today (`Settings`): `every 10s` is `interval`
+10. `collection notes` declares a name for the body (§5.4); several may be declared, one per line.
+Statements at the top level are the body of a flow without routes (§5.12); with routes, only
+bindings of literals are allowed at the top level (§5.11).
 
-### 5.2 Definitions
+### 5.2 Definitions and statements
 
 ```
 holon     = "holon" ident "(" ports? ")" "->" outputs block
@@ -402,85 +450,148 @@ ports     = port ("," port)*
 port      = ident (":" type)? (string)?            # the string: the unit's own port name, §10
 outputs   = port | "(" ports ")"
 block     = "{" statement* "}"
-route     = "route" method path "(" ident ")" ("resume" ident)? block
+route     = "route" method path "(" ident ")" ("resumes" ident)? block
 method    = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
-statement = "let" ident "=" expr
-          | ident "=" expr                          # in a holon: an output's value
-          | expr                                    # an effect, §5.9
+statement = ident "=" expr                          # a binding; in a holon, also an output
+          | "state" "." ident "=" expr              # a state write
+          | ident "[" expr "]" "=" expr             # a collection write (ident: a collection)
+          | "delete" ident "[" expr "]"             # a collection delete
+          | "respond" respond_args                  # in a route
+          | expr                                    # an effect, §5.10
 ```
 
-A holon's block binds each declared output exactly once with `name = expr`; an input is a name in
-scope. A route's block binds the request name; `respond` may appear once (or not at all when the
-route only has effects, answered 204, the existing rule).
+One binding form: `name = expr`. In a holon, a declared output is bound the same way; an input is
+a name in scope. A name is bound once per block and is visible after its binding.
 
-### 5.3 Calls: inputs are positional, params are named
+### 5.3 Calls: inputs are positional, names fill in the rest
 
 ```
 call      = ident "(" args? ")"
 args      = arg ("," arg)*
-arg       = expr | "_" | ident ":" value
-value     = number | string | bareword | ident      # a param's frozen text; ident for fn:
+arg       = expr | ident ":" (expr | value)
+value     = number | duration | string | bareword | ident     # a param's frozen text
 ```
 
 Positional arguments are **inputs**, matched to the unit's input ports in catalog order; each
-becomes a wire. Named arguments are **params**, frozen into the node. A unit may have an input and
-a param of the same name (`default` has both `value`s); the position-versus-name rule keeps them
-apart without a second syntax.
+becomes a wire. A named argument is an **input** when the unit has an input port of that name
+(`http.post(host, path, headers: h, body: b)`, `notes.list(after: a)`), otherwise a **param**,
+frozen into the node (`encoding: hex`, `limit: 50`). Positional arguments come first.
 
+- The one unit with an input and a param of the same name is `default`, and it is never written:
+  `??` is its spelling.
 - Too many positional arguments is an error, except on a variadic leaf (`add`, `multiply`, `and`,
   `or`, `concat`, `list`), where each extra argument grows the node by one input, named as the
   canvas names them (`c`, `d`, … then `in<n>`), through `FlowBuilder::arity`.
-- `_` leaves an input unwired. Only an optional input may be left unwired
-  (`http_request`'s `headers` and `body`, `collection_list`'s `prefix` and `after`, as
-  `is_optional_input` and core's `has_optional_ports` say); for any other, `_` is an error
-  naming the port. Trailing optional inputs may be omitted.
-- An unknown param name, or a param given twice, is an error naming the unit. Params not given
-  take the catalog's defaults, as a dropped node does.
-- A zero-input call still takes parentheses: `clock()`, `record()`. This is what keeps a bare
-  identifier unambiguous as a bound name.
+- An optional input (`http_request`'s `headers` and `body`, `collection_list`'s `prefix` and
+  `after`, as `is_optional_input` and core's `has_optional_ports` say) may be left out. Any other
+  input left out is an error naming the port.
+- An unknown name, or a name given twice, is an error naming the unit. Params not given take the
+  catalog's defaults, as a dropped node does.
+- A zero-input leaf written as a call still takes parentheses: `record()`, `none()`. The nouns
+  (§5.4) are the exceptions, and are the reason the exceptions exist.
 
-### 5.4 Literals
+Every catalog leaf and template is callable by its own name with this rule (`concat(a, b)`,
+`field(r, name: id)`, `clock()`, `collection_get(k, collection: notes)`); the nouns and
+statements below are sugar over those calls, and `fmt` prints the sugar.
+
+### 5.4 The outside world, as nouns
+
+Each form is exactly one leaf. This table is exhaustive; nothing else is sugared.
+
+| Written | Lowers to | Reads as |
+|---|---|---|
+| `req` | the route's `request` template node, its `request` output | the request |
+| `req.params`, `req.query`, `req.headers`, `req.body`, `req.json` | that output of the request node | its parts |
+| `secret.api_token` | `secret{name: api_token}` | a secret |
+| `state.beats` (in an expression) | `store_read{key: beats}` | the state, as the run began |
+| `state.beats = e` | `store_write{key: beats}(e)` | set the state when the run finishes |
+| `state.set(beats, e)` | the same `store_write`, as an expression | the write, as a value to name |
+| `now` | `clock()` | the time the run started |
+| `random` | `random()` | one random number for the run |
+| `ingress` | `ingress()` | what arrived at the deployment |
+| `notes[k]` (`notes` a declared collection) | `collection_get{collection: notes}(k)` | the item under `k` |
+| `notes[k] = e` | `collection_put{collection: notes}(k, e)` | put it when the run finishes |
+| `delete notes[k]` | `collection_delete{collection: notes}(k)` | delete it when the run finishes |
+| `notes.get(k)`, `notes.put(k, e)`, `notes.delete(k)` | the same three leaves, as expressions | the operation, as a value to name |
+| `notes.list(prefix: p, after: a, limit: n)` | `collection_list{collection: notes, limit: n}(p, a)` | a page of items, in key order |
+| `http.get(host, path, headers: h, body: b)` and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host}(path, h, b)` | a call to that host |
+| `stripe.verify(req, secret, now, tolerance: d)` | the `stripe_verify` template | a verified Stripe event |
+| `await paid, expires: 1d` | `await{name: paid, expires: 86400}` | the event, when it arrives |
+| `resume_token(paid)` | `resume_token{await: paid}` | the token that delivers it |
+| `json(x)`, `parse_json(x)` | `json_stringify(x)`, `json_parse(x)` | JSON out, JSON in |
+
+Rules the table implies:
+
+- A collection must be declared in the header before `notes[k]` means a collection; an undeclared
+  name followed by `[ ]` is a `lookup` on a record (§5.6). The declaration is a *name*, not a
+  permission: `check` still derives `CollectionRead("notes")` from the `collection_get` leaves.
+- `http.*`'s host must be a text literal, because the host is the capability the deployment asks
+  for; a host from a wire is an error that says so.
+- `state.x` on the right of `=` and on the left are different leaves, read and write, and that is
+  the whole semantics of state in Holon: read at the start, write at the end. The same key may be
+  written once per flow (one `store_write` per key), or the error says which two lines collide.
+- The assignment and `delete` forms are statements; their Effect is exposed and performed
+  (§5.10). The method forms are the same leaves as expressions, for a holon that must name its
+  effects as outputs, or for an effect whose value is passed on (`published.put`).
+
+### 5.5 Literals and text
 
 | Written | Lowers to |
 |---|---|
-| `1`, `-2.5` | `const{type: Number, value: "<as written>"}` |
+| `1`, `-2.5`, `5m` | `const{type: Number, value: "<as written, seconds for a duration>"}` |
 | `"text"` | `const{type: Text, value: …}` |
 | `true`, `false` | `const{type: Boolean, value: …}` |
+| `"Hello, {name}!"` | one `concat` over the pieces: `const` for each literal piece, `as_text(expr)` for each `{…}`; a string that is one `{expr}` with no literal text is `as_text(expr)` alone |
 | `{ k: e, "k 2": e2 }` | `record()` then one `with_field{name: k}(record, e)` per field, in written order |
 | `{ ..base, k: e }` | `with_field{name: k}` chained onto `base`'s value; fields in written order |
 | `[ e1, e2, e3 ]` | `list(e1, e2, e3)`, variadic |
 | `[ ]` | `list()` with zero inputs (`list` is well-defined at any count) |
 
+Interpolation wraps every `{…}` part in `as_text`, the leaf built for it: a text stays itself, a
+number or boolean is written as it reads, a record or list as JSON. So a part may be any value,
+and the lowering never depends on knowing a part's type. The one `as_text` node per part is the
+price of that rule; the alternative, skipping it when the part is statically `Text`, would make
+the hash depend on type annotations elsewhere in the file.
+
 Record keys are identifiers or strings; a key that is not a plain word must be quoted
 (`"content-type"`). Record and list literals always lower structurally, never to a `const` of type
 `Json`, so the lowering is one-to-one and the canvas shows the fields. A single-node JSON constant
-is still available as `const(value: "[]", type: Json)` and as the right side of `??` (§5.5).
+is the right side of `??` (§5.6), or `const(value: "[]", type: Json)` spelled out.
 
-### 5.5 Operators
+### 5.6 Operators
 
-Lowest to highest precedence; all binary operators are left-associative.
+Lowest to highest precedence; binary operators are left-associative.
 
 | Operator | Lowers to | Note |
 |---|---|---|
-| `a when c` | `guard(cond: c, value: a)` | Absent unless `c` is `true` |
-| `if c then a else b` | `select(cond: c, if_true: a, if_false: b)` | A prefix form; both arms are evaluated (§6.4) |
-| `a ?? lit` | `default{type, value}(a)` | `lit` must be a literal: a number, text, boolean, or a record/list literal with only literals inside (frozen as `Json`). The fallback is a frozen param, which is why it cannot be an expression |
-| `a \|\| b` | `or(a, b)` | Variadic: `a \|\| b \|\| c` is one node |
-| `a && b` | `and(a, b)` | Variadic |
-| `a == b`, `a != b` | `equals(a, b)`, `not(equals(a, b))` | Structural, any two values |
-| `a < b`, `<=`, `>`, `>=` | `compare{op}(a, b)` | Numbers only, as `compare` is |
-| `a ++ b` | `concat(a, b)` | Variadic; texts only |
-| `a + b`, `a - b` | `add(a, b)`, `subtract(a, b)` | `add` variadic |
+| `if c then a else b` | `coalesce(guard(cond: c, value: a), b)` | `a` if `c` held and `a` arrived, else `b` (§6.4) |
+| `if c then a` | `guard(cond: c, value: a)` | the same as `a when c` |
+| `a when c` | `guard(cond: c, value: a)` | absent unless `c` is `true` |
+| `a ?? b` | `coalesce(a, b)`; with a literal `b`, `default{type, value}(a)` | `a` when present, else `b`. The two leaves have one meaning; `default` is the one-node form for a literal (a number, text, boolean, or a record/list literal with only literals inside, frozen as `Json`) |
+| `a \|\| b` | `or(a, b)` | variadic: `a \|\| b \|\| c` is one node |
+| `a && b` | `and(a, b)` | variadic |
+| `a == b`, `a != b` | `equals(a, b)`, `not(equals(a, b))` | structural, any two values, never coerced |
+| `a < b`, `<=`, `>`, `>=` | `compare{op}(a, b)` | numbers only, as `compare` is |
+| `a + b`, `a - b` | `add(a, b)`, `subtract(a, b)` | numbers only; `add` variadic |
 | `a * b`, `a / b` | `multiply(a, b)`, `divide(a, b)` | `multiply` variadic |
 | `!a` | `not(a)` | |
-| `a.name` | an output, or `field{name}(a)` | §5.6 |
-| `a[e]` | `lookup(record: a, key: e)` | The key arrives on a wire |
+| `a.name` | an output, or `field{name}(a)` | §5.7 |
+| `a[e]` | `lookup(record: a, key: e)` when `a` is not a declared collection | the key arrives on a wire |
 
-Variadic flattening applies only to a chain of the *same* operator: `a ++ b ++ c` is one `concat`
-with three inputs; `(a ++ b) ++ c`, with explicit parentheses, is two nodes. The parentheses are
-the author saying "two".
+`coalesce(a, b)` is the one new leaf this language needs: `a` when present, else `b`. It cannot be
+a composite, because no leaf can see that a wired input is absent (the firing rule hands a node
+nothing), which is exactly the gap `default` plugged for literals. It goes through the admission
+gate as genuinely inexpressible, pure and total, and needs the evaluator to hand it positional
+absence, the same special treatment `map` and `fold` have in `eval_at`, plus an exception to the
+"wired but absent means held" rule in the composite walk. Until it lands, `??` and `else` take
+literals only.
 
-### 5.6 Multi-output values: `.name`
+Variadic flattening applies only to a chain of the *same* operator: `a && b && c` is one `and`
+with three inputs; `(a && b) && c`, with explicit parentheses, is two nodes. The parentheses are
+the author saying "two". There is no text operator: interpolation is the spelling, `concat(a, b)`
+the explicit call.
+
+### 5.7 Multi-output values: `.name`
 
 A call to a holon with several outputs, or to the `request` or `stripe_verify` template, produces
 several values. The rules:
@@ -488,37 +599,43 @@ several values. The rules:
 1. `v.name`, where `name` is one of `v`'s output names, is that output. No node is placed.
 2. Otherwise `v.name` is `field{name}` applied to `v`'s value (its first output), one node.
 3. A bare multi-output `v` in input position is its first output. For `request` that is the
-   request record, which is what `stripe_verify`, `respond` and `field` want.
+   request record, which is what `stripe.verify`, `respond` and `field` want.
 
 Output names win over field names. To read a field of the request record that shares a name with
 an output (`body`), write `req.request.body`: output `request`, then the field. The printer uses
 the same rule in reverse, so the text round-trips.
 
-A holon with several outputs may also be destructured: `let (put, saved, receipt) = publish(s, a)`.
+A holon with several outputs may also be destructured: `(put, saved, receipt) = publish(s, a)`.
 Each name is a wire from that output.
 
-### 5.7 Holons
+### 5.8 Holons
 
 ```
 holon publish(slug, author) -> (put, saved, receipt) { … }
 ```
 
 Lowers through `FlowBuilder::begin_holon` … `end_holon_exact`: the block's nodes are the inner
-canvas, each input name is a boundary input wired to every use, each `name = expr` is a boundary
-output wired from its expression. The declared names are the unit's port names, in declared order,
-so the composite freezes exactly as the expand view would freeze it. An input never used, or an
-output never assigned, is an error.
+canvas, each input name is a boundary input wired to every use, each `name = expr` binding a
+declared output is a boundary output wired from its expression. The declared names are the unit's
+port names, in declared order, so the composite freezes exactly as the expand view would freeze
+it. An input never used, or an output never bound, is an error.
 
 Types on ports are optional annotations: `holon slugify(text: Text) -> (slug: Text)`. When given
 they are checked against what the wires carry; when absent, a port takes its first wire's type, as
 the canvas does today. A holon takes no params (as now); a flow's holon is placed by name,
 `slugify(x)`, and the unit's hash is the same wherever it is placed.
 
+A holon that writes names its writes as outputs in the method form (`put = posts.put(k, v)`),
+because a holon's effects leave it through its boundary and a boundary port has a name. An
+assignment statement inside a holon (`posts[k] = v`) is allowed too: the lowering exposes its
+Effect under a generated name (`put`, `put_2`, …), which the printer then shows. Declaring the
+name is clearer and is what `fmt` prints.
+
 Holons are defined at the top level and are visible to the whole file, in any order, so a holon
 may use one defined below it. They may not be nested in text; a holon placed inside another is
 the nesting.
 
-### 5.8 Functions for `map` and `fold`
+### 5.9 Functions for `map` and `fold`
 
 The `fn` param of `map` and `fold` takes:
 
@@ -535,51 +652,60 @@ The lambda's hash is its content's, so two identical lambdas are one unit, and t
 anonymous composites `fn_1`, `fn_2`… only when it has to print them as holons (a lambda whose
 body is one expression prints back as a lambda).
 
-### 5.9 Effects and statements
+### 5.10 Effects and statements
 
 The IR has one rule for effects: an Effect-typed output that nothing consumes is exposed by the
 group, and the host performs it when the run finishes (writes, puts, deletes, egress). The
 language keeps that rule and adds no `perform` keyword:
 
-- An expression statement whose type is `Effect` is an effect: `store_write(x, key: k)`.
+- The write statements, `state.k = e`, `notes[k] = e` and `delete notes[k]`, are effects.
+- An expression statement whose type is `Effect` is an effect: `egress(payload)`,
+  `notes.put(k, v)`.
 - An expression statement of any other type is an error: "a value nobody uses". Bind it or
-  remove it. (A `let` never used is a warning, printed by `check`.)
-- A `let` bound to an Effect and never used is still performed; naming it changes nothing.
+  remove it. (A binding never used is a warning, printed by `check`.)
+- A binding to an Effect and never used is still performed; naming it changes nothing.
 - A multi-output holon's Effect outputs that the caller does not read are performed. The `slugs`
   route performs `publish`'s `put` and `saved` without mentioning them.
 
-Effects are values, so `if c then store_write(a, key: k) else store_write(b, key: k)` places two
-writes and a `select`, and only the chosen Effect reaches the boundary: one write is performed.
-The idiom the samples use, and the one the printer prefers, guards the value instead:
-`store_write(a when ok, key: k)`.
+Effects are values, so `if c then state.set(k, a) else state.set(k, b)` places two writes and a
+`select`-like pair, and only the chosen Effect reaches the boundary: one write is performed. The
+idiom the samples use, and the one the printer prefers, guards the value instead:
+`state.k = a when ok`.
 
-### 5.10 Routes
+### 5.11 Routes
 
 ```
 route POST /orders (req) { … }
-route GET /paid/:token (req) resume paid { … }
+route GET /paid/:token (req) resumes paid { … }
 ```
 
 Lowers to a `request{method, path, resume}` template node named by the parenthesised identifier,
-and the block's nodes. Every `respond(…)` and every use of `req` wires into the same connected
-group, which is what makes the block one route (`find_routes` works by connectivity, unchanged).
+and the block's nodes. Every `respond` and every use of `req` wires into the same connected group,
+which is what makes the block one route (`find_routes` works by connectivity, unchanged).
 
-- `respond(body, status: 200, missing: 404)` is the template; `status` and `missing` default as
-  the catalog's defaults do; `respond(status: 204)` takes no body. Its hidden `request` input is
-  wired to the route's request node by the lowering; writing `respond` outside a route is an
-  error.
+```
+respond_args = expr ("," "status" ":" number)? ("," "missing" ":" number)?
+             | number                                # a status alone: no body (204)
+             | "status" ":" number
+```
+
+- `respond body, status: 200, missing: 404` is the `respond` template; `status` and `missing`
+  default as the catalog's defaults do. `respond 204`, a bare status with nothing after it, is
+  `respond{status: 204}` with no body input; to answer a literal number as a body, write
+  `respond body: 42`. The hidden `request` input is wired to the route's request node by the
+  lowering; `respond` outside a route is an error.
 - A route needs one `respond`, or at least one effect (answered 204); more than one `respond` is
   an error naming the route, as `route_spec` says today.
-- Two routes may not share a node. A top-level `let` would wire two routes into one group, so at
-  the top level of a flow with routes only `let` of a literal is allowed, and it is lowered by
-  placing a fresh `const` in each route that uses it. A top-level `let` of anything else is an
-  error that says why: "routes are separate units; put shared logic in a holon".
+- Two routes may not share a node. A top-level binding would wire two routes into one group, so at
+  the top level of a flow with routes only bindings of literals are allowed, lowered by placing a
+  fresh `const` in each route that uses them. A top-level binding of anything else is an error
+  that says why: "routes are separate units; put shared logic in a holon".
 - Clashing routes, bad methods and bad paths are the existing errors, now with a column.
 
-### 5.11 Flows without routes
+### 5.12 Flows without routes
 
-With no `route` in the file, the top-level statements are the flow: a clock flow (`interval`), or
-a flow placed as a holon in another. They lower to the whole canvas grouped as one composite,
+With no `route` in the file, the top-level statements are the flow: a clock flow (`every`), or a
+flow placed as a holon in another. They lower to the whole canvas grouped as one composite,
 exactly `flow_unit`'s existing rule. The flow's outputs are its unused values, which is why a
 non-Effect expression statement is allowed here and only here: it is an output. `respond` is an
 error.
@@ -588,19 +714,19 @@ error.
 
 The language has no semantics of its own: a program means what its DAG means under the one
 evaluator. This section says what that is, in the language's terms, because it differs from a
-conventional language in three places.
+conventional language in four places.
 
 ### 6.1 Dataflow, not control flow
 
 A statement does not "run"; a node computes when its inputs are present. Statement order only
-constrains names (defined before use) and the printer's layout. `respond` first and `store_write`
-last, or the reverse, is the same unit.
+constrains names (defined before use) and the printer's layout. `respond` first and a state
+write last, or the reverse, is the same unit.
 
 ### 6.2 Sharing is explicit
 
-A `let` is one node and as many wires as uses. The same call written twice is two nodes, each
-computed (and, for `clock()` and `secret(…)`, each sourced, with the same value within a run).
-There is no common-subexpression elimination, so the canvas shows exactly what was written, and a
+A binding is one node and as many wires as uses. The same call written twice is two nodes, each
+computed (and, for `now` and `secret.x`, each sourced, with the same value within a run). There
+is no common-subexpression elimination, so the canvas shows exactly what was written, and a
 replay's node-by-node values match the text's expressions one to one.
 
 ### 6.3 Absence
@@ -609,31 +735,42 @@ A node whose wired input did not arrive produces nothing, and nothing flows on f
 the evaluator's firing rule and it is how the language expresses "not found", "unauthorized" and
 "not verified" without exceptions:
 
-- `collection_get` of a missing key is absent; `?? 0` fills it; `respond` of an absent body answers
-  the `missing` status.
+- `notes[k]` of a missing key is absent; `?? 0` fills it; `respond` of an absent body answers the
+  `missing` status.
 - `x when c` is absent unless `c` is `true`.
-- `stripe_verify(…).event` is absent when the signature fails, so nothing after it fires.
+- `stripe.verify(…).event` is absent when the signature fails, so nothing after it fires.
 
 Absence is not a value: it cannot be stored, compared or passed to a lambda. `none()` is a value
 (the optional's empty arm) and is unrelated.
 
-### 6.4 `if` is eager and strict
+### 6.4 `if` is a fallback, not a branch
 
-`if c then a else b` is `select`. Both `a` and `b` are computed; `select` chooses which value
-flows on. If either arm is absent, the result is absent, whatever `c` is, because `select` needs
-all three inputs. `if` is therefore not a guard and not short-circuit. For "only when", use
-`when`; for "this or that fallback", use `??`.
+`if c then a else b` is `coalesce(guard(c, a), b)`: `a` when `c` is `true` and `a` arrived,
+otherwise `b`. So `c` absent gives `b`, and `c` true with `a` absent gives `b` too. This is the
+meaning that fits a dataflow of absences, and it is one meaning: `if c then a` is the same
+`guard`, and `a when c` is the same again, read the other way round. Both `a` and `b` are
+computed; `if` chooses which value flows on, and never short-circuits.
 
-### 6.5 Totality and purity
+The strict three-way choice, where an absent arm makes the whole result absent whatever `c` says,
+is `select(c, a, b)`, written as a call. It is rarely what a flow wants.
+
+### 6.5 Reads at the start, writes at the end
+
+`state.x` and `notes[k]` on the right of `=` are the values as the run began. The writes are
+Effects the host commits when the run finishes. So a run never sees its own writes, two runs that
+start together both see the old value (and the host's retry, as the likes sample shows, runs one
+again), and a key written twice in one flow has no meaning, so it is an error.
+
+### 6.6 Totality and purity
 
 Every program terminates: iteration is `map` and `fold` over a list, bounded by the list, and
 there is no recursion (a holon cannot place itself, since its hash does not exist until it is
 frozen). No construct performs an effect during evaluation; effects are values that the host
-performs after the run settles. `http_request` is answered between rounds (§4.1 of
+performs after the run settles. `http.*` is answered between rounds (§4.1 of
 `PLATFORM_LAYOUT.md`); `await` parks the run. None of that is visible in the language beyond the
 nodes' names.
 
-### 6.6 Types
+### 6.7 Types
 
 The nine wire types are core's: `Number`, `Boolean`, `Text`, `Record`, `List<T>`,
 `Product<…>`, `Sum<…>`, `Effect`, `Any`. Type annotations are written as `Text`, `List<Text>`,
@@ -644,15 +781,15 @@ takes its first wire's type.
 
 ## 7. Names, hashes and canonical form
 
-- **The hash is the DAG's.** `let` names, holon names, lambda parameter names, comments, blank
-  lines and statement order are not in the preimage. They are kept in the flow document's `names`
-  map (holons) and the nodes' `extra` (spans), never in a unit.
+- **The hash is the DAG's.** Binding names, holon names, lambda parameter names, collection
+  declarations, comments, blank lines and statement order are not in the preimage. They are kept
+  in the flow document's `names` map (holons) and the nodes' `extra` (spans), never in a unit.
 - **Resolution happens at check time.** A catalog name resolves to `interface_of`; a template to
   its builder; a holon to the hash frozen for it in this file. Every hash the flow depends on is in
   the document's `units` closure, which is its lockfile.
 - **Canonical text.** `holon fmt` prints the expression form from the document (§11), with a fixed
   layout: headers, holons (inner before outer, in first-use order), routes in declared order,
-  within a block the topological order of the nodes with a `let` wherever a value is used more
+  within a block the topological order of the nodes with a binding wherever a value is used more
   than once. `fmt(fmt(t)) = fmt(t)`, and two texts that lower to the same document print the same.
 
 ## 8. Layout
@@ -680,17 +817,20 @@ The error catalogue the lowering must produce, each with the span it points at:
 
 | Error | Points at |
 |---|---|
-| unknown name `x` (not a leaf, template, holon or binding) | the name |
-| `x` is a leaf; a binding may not shadow it | the binding |
+| unknown name `x` (not a leaf, template, holon, noun, collection or binding) | the name |
+| `x` is a leaf (or keyword, or noun); a binding may not shadow it | the binding |
 | `f` takes `n` inputs, `m` given | the extra or missing argument |
-| `f` has no param `p` / `p` given twice | the param |
-| input `p` can't be left unwired | the `_` |
+| `f` has no input or param `p` / `p` given twice | the name |
+| input `p` can't be left out | the call |
 | `Text` doesn't fit `Number` at `f`'s `p` | the argument |
 | a value nobody uses | the statement |
-| `respond` outside a route / more than one `respond` | the call |
+| `notes` is not a declared collection (did you mean `collection notes` in the header?) | the name |
+| `http.*`'s host must be a literal: it is the permission the deployment asks for | the host |
+| `state.k` written twice | both assignments |
+| `respond` outside a route / more than one `respond` | the statement |
 | `fn` may only use its own arguments | the free name |
-| `x ?? e`: the fallback must be a literal | `e` |
-| holon `h`: input `p` never used / output `o` never set / set twice | the port or the assignment |
+| `x ?? e` / `else e`: until `coalesce` lands, the fallback must be a literal | `e` |
+| holon `h`: input `p` never used / output `o` never bound / bound twice | the port or the binding |
 | routes `A` and `B` share `x` | the shared binding |
 | `A` clashes with `B` / not a method / not a route path | the route header |
 | the wiring form's existing errors | their line, now with a column |
@@ -706,7 +846,7 @@ holon slugify(text "lowercase · s") -> (slug "out") { … }
 ```
 
 Both forms coexist in one file and share one namespace: a `node` name can be used in an
-expression (`greet.out` is its output), and a `let` name can be a wire's end (`greet.out ->
+expression (`greet.out` is its output), and a binding can be a wire's end (`greet.out ->
 res.body`). This matters for two reasons:
 
 1. **Round-tripping arbitrary canvases.** A composite made on the canvas can have port names the
@@ -721,89 +861,112 @@ res.body`). This matters for two reasons:
 
 The printer turns a flow document into canonical text. The algorithm:
 
-1. Holons first: every composite the document carries (the `units` closure), inner before outer,
-   each printed once under its name from the `names` map (or a generated one), its inner canvas
-   opened with `inner_canvas` exactly as the expand view opens it.
-2. Routes, in the order `find_routes` finds them; then, for a flow without routes, the top-level
+1. Headers: the settings, then one `collection` line per collection name any leaf in the flow
+   names, sorted.
+2. Holons: every composite the document carries (the `units` closure), inner before outer, each
+   printed once under its name from the `names` map (or a generated one), its inner canvas opened
+   with `inner_canvas` exactly as the expand view opens it. Effect outputs print in the method
+   form under their port names.
+3. Routes, in the order `find_routes` finds them; then, for a flow without routes, the top-level
    statements.
-3. Within a group, nodes in topological order. A node whose one output has exactly one consumer
-   and is not an Effect prints inline, as a nested call, at its consumer. A node with several
-   consumers, or an Effect, or a multi-output composite, gets a `let` (an Effect with no consumer
-   prints as a bare statement). Consts print as literals; `record`/`with_field` chains print as
-   record literals when the chain starts at `record()` or as `{ ..base, … }` when it does not;
-   `list` prints as a list literal; `default` with a literal param prints as `??`; `guard` as
-   `when`; `select` as `if`; binary leaves as operators; `field` chains as `.name`.
-4. Names: a `let` takes the node's name from the document when it has one (the wiring form's
+4. Within a group, nodes in topological order. A node whose one output has exactly one consumer
+   and is not an Effect prints inline, as a nested expression, at its consumer. A node with
+   several consumers, or a multi-output composite, gets a binding. An Effect with no consumer
+   prints as a statement, in the assignment form where there is one (`store_write` as
+   `state.k = …`, `collection_put` as `notes[k] = …`, `collection_delete` as `delete notes[k]`),
+   else as a bare call. The nouns print for their leaves (`secret.x`, `state.x`, `now`,
+   `notes[k]`, `notes.list(…)`, `http.post(…)`, `stripe.verify(…)`, `await x`); consts print as
+   literals, a duration-shaped `expires`/`tolerance`/`every` as a duration;
+   `concat` over `as_text` parts and consts prints as an interpolated string; `record`/`with_field`
+   chains print as record literals when the chain starts at `record()` or as `{ ..base, … }` when
+   it does not; `list` as a list literal; `default` with a literal param and `coalesce` as `??`;
+   `guard` as `when`, and `coalesce` over a `guard` as `if … then … else …`; binary leaves as
+   operators; `field` chains as `.name`; `respond` as the statement.
+5. Names: a binding takes the node's name from the document when it has one (the wiring form's
    names, or the editor's labels), else the leaf's name, uniquified.
-5. Any node the rules above cannot express prints in the wiring form.
+6. Any node the rules above cannot express prints in the wiring form.
 
 Properties, tested: `compile(print(doc))` carries the same unit hashes as `doc`;
 `print(compile(t))` is the canonical form; `print` is idempotent through `compile`.
 
 ## 12. Build order
 
-Each step is one inch: its tests, a live check, a commit. The whole is about two weeks, and no
-step changes core, the host, the server or the document format.
+Each step is one inch: its tests, a live check, a commit. The whole is about two and a half
+weeks. One step changes core; none changes the host, the server or the document format.
 
-1. **Lexer and parser with spans** (`holon-author/src/lang/{lex,ast,parse}.rs`). The existing
-   `text.rs` statements parse into the same AST as the wiring form. Tests: every construct, every
-   error with its column, the eleven samples as text.
-2. **Lowering onto `FlowBuilder`** (`lang/lower.rs`): resolution, calls, literals, operators,
+1. **Lexer and parser with spans** (`holon-author/src/lang/{lex,ast,parse}.rs`): keywords, nouns,
+   durations, interpolated strings, the statement forms, and the wiring form's statements into
+   the same AST. Tests: every construct, every error with its column, the eleven samples as text.
+2. **`coalesce` in core**, through the admission gate: the leaf, its catalog entry (70th),
+   `eval_at` handing it positional absence as it does `map` and `fold`, the exception in the
+   composite walk, tests, and a sample that uses an expression fallback. Independent of step 1;
+   it can go first.
+3. **Lowering onto `FlowBuilder`** (`lang/lower.rs`): resolution, calls with named inputs, the
+   noun and statement sugar of §5.4, literals and interpolation through `as_text`, operators,
    `.name`, holons via `end_holon_exact`, lambdas as anonymous holons, routes with the implicit
    request wires, effects, the error catalogue of §9, spans into `extra.source`. Golden test:
    each sample written in the language lowers to the same unit hash the sample's builder gives,
-   through `flow_unit`; where a sample's holon was grouped by proposal, the text carries the
-   proposed port names in quotes (§10), since the unit's port names are part of its hash.
-3. **Printer** (`lang/print.rs`), replacing the wiring-form printer as `fmt`'s output. Tests:
+   through `flow_unit`. The golden texts spell `concat` where the builder does (interpolation
+   adds an `as_text`), and carry a proposed holon's port names in quotes (§10), since both are in
+   the hash; the tour's texts in §3 are the natural spellings and are checked to compile and
+   derive the same routes and manifest, not the same hash.
+4. **Printer** (`lang/print.rs`), replacing the wiring-form printer as `fmt`'s output. Tests:
    the round-trip properties of §11 over the samples and over canvases grouped by hand (odd port
    names, variadic nodes, multi-output composites).
-4. **`holon` and the editor.** `check` prints `line:col` and the caret; the editor's export and
+5. **`holon` and the editor.** `check` prints `line:col` and the caret; the editor's export and
    import use the new printer and parser (through `holon-wasm`); view mode shows the line of the
    selected node. Samples page: "as text" shows the expression form.
-5. **Samples as text.** Each sample becomes a `.holon` file in `crates/holon-author/samples/`,
-   compiled at test time and embedded; the Rust builders go. The rule in `CLAUDE.md` becomes
-   "every feature ships with a sample written in the language", and the sample is the
-   documentation of the feature. (Only after step 2's golden test has held for a release.)
-6. **Agent surface.** The MCP tools take and return this form. Not part of this document; it is
+6. **Samples as text.** Each sample becomes a `.holon` file in `crates/holon-author/samples/`,
+   written in the natural form, compiled at test time and embedded; the Rust builders go, and the
+   samples' hashes become the texts'. The rule in `CLAUDE.md` becomes "every feature ships with a
+   sample written in the language", and the sample is the documentation of the feature. (Only
+   after step 3's golden test has held for a release.)
+7. **Agent surface.** The MCP tools take and return this form. Not part of this document; it is
    why the order above puts the parser before the printer.
 
-Dependencies: 2 needs 1; 3 needs 2 (the golden test is what makes the printer checkable); 4 and 5
-need 3; 6 needs 4.
+Dependencies: 3 needs 1 and 2; 4 needs 3 (the golden test is what makes the printer checkable);
+5 and 6 need 4; 7 needs 5.
 
 ## 13. Open forks
 
 Decided provisionally above; listed here so they are revisited on evidence, not forgotten.
+Decided ones are kept, with the decision, for a reader who wonders why.
 
 - **F1. Bare words as param values.** `collection: notes` without quotes is convenient and
-  matches the wiring form, but a value like `GET` and a name like `paid` read the same as
+  matches the wiring form, but a value like `hex` and a name like `paid` read the same as
   identifiers. Alternative: quotes always. Decide after agents have written a hundred flows:
   count the mistakes.
-- **F2. Positional params for the one-param leaves.** `secret("api_token")`, `store_read("beats")`
-  read better than `secret(name: api_token)`. It breaks the "positional is an input" rule for
-  zero-input leaves only. Tempting; refused for now because one rule is worth more than two
-  characters, and because `default` shows the rule can't be bent in general.
-- **F3. String interpolation.** Decided (2026-10-24): `"Hello, {name}"` lowers to one `concat`
-  over its pieces, each `{…}` part wrapped in `as_text`, the leaf added for this: the identity
-  on text, a number or boolean as written, a record or list as JSON. So a part may be any
-  value. `++` is dropped; `+` stays numeric (an operator must lower to one node, and most
-  values are `Any`, so `+` could not choose between `add` and `concat`). `concat(a, b)` remains
-  the spelled form. The syntax sections are to be rewritten to this.
-- **F4. Top-level `let` beyond literals.** The restriction exists because routes must be separate
-  groups. An alternative is duplicating the whole subexpression per route, which keeps routes
-  separate at the cost of hidden node copies. Refused for now: the error message points at
+- **F2. Positional params for zero-input leaves.** *Decided (2026-10-24):* the nouns of §5.4
+  replace the need. `secret.api_token` and `state.beats` read better than either
+  `secret(name: api_token)` or `secret("api_token")`, and they keep the one call rule intact for
+  everything else.
+- **F3. String interpolation.** *Decided (2026-10-24):* `"Hello, {name}"` lowers to one `concat`
+  over its pieces, each `{…}` part wrapped in `as_text`, the leaf added for this. `++` is gone;
+  `+` stays numeric.
+- **F4. Top-level bindings beyond literals.** The restriction exists because routes must be
+  separate groups. An alternative is duplicating the whole subexpression per route, which keeps
+  routes separate at the cost of hidden node copies. Refused for now: the error message points at
   holons, which is the honest fix.
-- **F5. `if` as a guard pair.** Some will expect `if c then a` without `else` to mean `a when c`.
-  Allowed as sugar? It would make `if` mean two different nodes. Refused; the error suggests
-  `when`.
-- **F6. Named inputs.** `collection_list(after: x, collection: notes)` would let an author skip
-  optional inputs without `_`. It needs a rule for the name clash (`default`'s `value`). Deferred
-  until `_` proves annoying.
+- **F5. `if` without `else`.** *Decided (2026-10-24):* `if c then a` is `a when c`, and
+  `if c then a else b` is the same guard with a `coalesce` fallback, so `if` has one meaning,
+  fallback, and `select` is a plain call for the strict choice. This needs the `coalesce` leaf
+  (§5.6).
+- **F6. Named inputs.** *Decided (2026-10-24):* a named argument is an input when the unit has
+  that port, else a param; `_` is gone. The one clash, `default`, is never written.
 - **F7. Where the layout of a text-authored flow lives.** Auto-layout on import is enough for
   review; an author who then arranges the canvas and exports loses the arrangement. A sidecar
   `.holon.layout` is the obvious fix if anyone asks.
 - **F8. Lambdas with captures, by lifting.** A capture could be lifted to an extra input of a
   composite that `map` cannot call today. It would need a `map` that takes extra fixed inputs,
   which is a core change. Not now.
+- **F9. `respond` with a bare number.** `respond 204` is a status; `respond n` with `n` a bound
+  number is a body; `respond 42` is a status and the author who wanted a body writes
+  `respond body: 42`. The rule is small and the ambiguity rare; revisit if the error report shows
+  people tripping on it.
+- **F10. Effects inside holons.** Writes inside a holon leave it as named outputs, so the method
+  form (`posts.put(k, v)`) is what `fmt` prints there, and the assignment form gets a generated
+  output name. Alternative: let a holon's unnamed effects be exposed under names derived from
+  their keys (`put_posts`). Decide when the first holon with several writes exists.
 
 ## 14. What this document does not decide
 
