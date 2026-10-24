@@ -149,11 +149,11 @@ leaves, never from the words.
 
 ## 3. A tour, by the samples
 
-Every sample in `crates/holon-author/src/samples.rs`, written in the language. `req` is the name
-the route gives its request; bare, it is the whole request record. Each lowers to the nodes the
-builder places today, with two deliberate differences named in §12's golden test: where a sample
-spells `concat` and `const` by hand, the natural text interpolates (one `as_text` node more), and
-a holon grouped by proposal has core's proposed port names (§10 carries them).
+Every sample, written in the language. `req` is the name the route gives its request; bare, it is
+the whole request record. The samples' own files are `crates/holon-author/samples/*.holon`, kept
+exactly as `holon fmt` writes them (step 6 of §12); the texts below are the same flows as a reader
+would first write them, with a default here and there that `fmt` leaves out (`limit: 100`,
+`encoding: hex`, `tolerance: 5m`).
 
 ### hello-api
 
@@ -803,8 +803,11 @@ takes its first wire's type.
 
 Positions are not part of a program. The expression form has no `at`. The flow document keeps
 positions, as it does today, so a flow authored on the canvas keeps its layout through save and
-open. When text is compiled, nodes are laid out automatically: columns by topological depth, rows
-by statement order, holons and routes stacked. When a document is printed, positions are dropped.
+open. When text is compiled, nodes are laid out automatically (`lang/layout.rs`): each connected
+group (a route, the flow's own statements) is a band, stacked in the order the text writes them;
+inside a band a node's column is its depth, a node nothing feeds sits just before the first node
+it feeds, and a column keeps statement order. A holon's own canvas is laid out when it is
+expanded, as before. When a document is printed, positions are dropped.
 The `at` clause of the wiring form (§10) stays accepted for compatibility, and `fmt` drops it.
 
 ## 9. Diagnostics and source maps
@@ -954,11 +957,21 @@ step that changed core is done; none changes the host, the server or the documen
    language (`print_lines`, each top-level node to the line it is written on; an inline node to
    its consumer's statement, a route's request to the route header). The flows page offers each
    sample as `.holon`, written by the language.
-6. **Samples as text.** Each sample becomes a `.holon` file in `crates/holon-author/samples/`,
-   written in the natural form, compiled at test time and embedded; the Rust builders go, and the
-   samples' hashes become the texts'. The rule in `CLAUDE.md` becomes "every feature ships with a
-   sample written in the language", and the sample is the documentation of the feature. (Only
-   after step 3's golden test has held for a release.)
+6. **Samples as text** ✅ (2026-10-24). Each sample is a `.holon` file in
+   `crates/holon-author/samples/`, written in the natural form and embedded with `include_str!`;
+   its entry in `samples.rs` keeps what the flows page shows (title, description, what it shows,
+   how to try it, secrets), and tests hold the two together: the text's headers match the entry,
+   and each file is exactly what `holon fmt` writes, so the files are canonical (defaults such as
+   `limit: 100` or `encoding: hex` are not written, and statements inside a holon follow the
+   unit's own child order). The Rust builders are gone, and the samples' hashes are the texts'.
+   `CLAUDE.md`'s rule now says a sample is written in the language, and the sample is the
+   documentation of the feature. One consequence worth knowing: a holon input used more than once
+   lowers through a shared pass-through (step 3), so `publish` in slugs has two leaves more than a
+   hand-wired canvas would, and `title ?? ""` moved to the call site so the holon needs no inner
+   binding. Two things the step needed: the layout of §8, since the builders had placed every
+   node by hand and a compiled sample otherwise opened on a plain grid; and `holon new --sample`
+   and the flows page's `.holon` download write the sample's file as it is, its names and all,
+   rather than printing its document again.
 7. **Agent surface.** The MCP tools take and return this form. Not part of this document; it is
    why the order above puts the parser before the printer.
 
