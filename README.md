@@ -135,6 +135,25 @@ holon show my-flow.holon                 # an outline: routes, nodes and what fe
 holon fmt my-flow.holon                  # rewrite it in the canonical form
 ```
 
+An agent writes, deploys and reads flows through `holon mcp`, a Model Context Protocol server
+its host starts (for Claude Code: `claude mcp add holon -- holon mcp`). It reaches the
+`holon serve` you run on this machine, as `holon export` does. Its tools:
+
+- `reference`: the language on one page, every leaf, the samples.
+- `check`: what `holon check` says, mistakes with their line and a caret.
+- `deploy`: deploys a flow. It never approves what a flow may do. A first deploy, or a version
+  that needs a new permission, is saved instead, and the answer says what a person must approve:
+  they open it from the editor's flows page and deploy it there. After that, a version that needs
+  nothing more deploys from the agent at once.
+- `call`: sends a request to a deployed flow, logged as a run like any other.
+- `runs` and `explain`: a flow's latest runs, and one run as the flow's text with the value each
+  statement had and where a missing value came from.
+
+Through the run file, the agent acts as you. Give it an API token of its own with
+`--server <URL>` and `HOLON_TOKEN` to see its deploys under its name; a token's holder could still
+approve with it directly, so a role that can only propose is the stronger guarantee, and isn't
+built yet. Design: `docs/L4s/agent-surface-L4.md`.
+
 ## Releasing
 
 Releases are built by `.github/workflows/release.yml` (cargo-dist; its config is

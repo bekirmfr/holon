@@ -22,6 +22,7 @@
 //! - [`describe`]: what a manifest item lets a flow do, in words.
 //! - [`commands`]: `holon new`, `check`, `show` and `fmt`, text in and text out.
 
+pub mod agent;
 pub mod builder;
 pub mod canvas;
 pub mod commands;

@@ -11,7 +11,7 @@ use super::*;
 use holon_core::hash_value;
 use holon_host::fire_sourced_with;
 
-fn test_state() -> AppState {
+pub(crate) fn test_state() -> AppState {
     let backend: DynStore = Box::new(MemStore::new());
     let store = SharedStore(Arc::new(Mutex::new(backend)));
     let registry = Mutex::new(Registry::new(store.clone()));
@@ -45,7 +45,7 @@ fn host_header() -> (String, String) {
 
 /// A request as the editor sends it: our Host, and for a POST the Content-Type its body is
 /// (a JSON body starts with `{` or `[`; preimages and trigger text go as raw bytes).
-fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
+pub(crate) fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
     let mut headers = vec![host_header()];
     if method == "POST" {
         let json = matches!(body.first(), Some(b'{' | b'['));
@@ -60,7 +60,7 @@ fn fake_data(method: &str, url: &str, body: Vec<u8>) -> data::DataRequest {
     data::DataRequest { method: method.into(), url: url.into(), headers: vec![], body }
 }
 
-fn body_bytes(response: Response) -> Vec<u8> {
+pub(crate) fn body_bytes(response: Response) -> Vec<u8> {
     let (mut reader, _) = response.data.into_reader_and_size();
     let mut buf = Vec::new();
     reader.read_to_end(&mut buf).unwrap();

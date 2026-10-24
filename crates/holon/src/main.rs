@@ -165,6 +165,7 @@ mod http;
 mod lifecycle;
 mod listeners;
 mod local;
+mod mcp;
 mod outbound;
 mod permissions;
 mod persist;
@@ -414,6 +415,8 @@ const USAGE: &str = "usage: holon <command>
   fmt <file>                         rewrite a flow in the canonical form
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
+  mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
+                                     call and explain flows; it never approves what they may do
   version                            this build's version
   update [--check] [--to VERSION]    install the newest release (or see if there is one)
   uninstall [--purge] [--yes]        remove holon (and with --purge, its data and key)";
@@ -458,6 +461,7 @@ fn main() {
         Some(cmd @ ("new" | "check" | "show" | "fmt")) => std::process::exit(flowcmd::run(cmd, &rest)),
         Some("verify") => std::process::exit(verify::run(&rest)),
         Some("export") => std::process::exit(verify::export(&rest)),
+        Some("mcp") => std::process::exit(mcp::run(&rest)),
         // `version`, `update`, `uninstall`: about this installation, not the server.
         _ => match selfmanage::dispatch(&args) {
             Some(code) => std::process::exit(code),

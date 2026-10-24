@@ -70,7 +70,7 @@ fn mistake(file: &str, source: &str, e: &lang::LowerError) -> Report {
 }
 
 /// The file compiled, its units in `store`; or its mistake, said with its line and a caret.
-fn compile(file: &str, source: &str, store: &mut MapResolver) -> Result<Lowered, Report> {
+pub(crate) fn compile(file: &str, source: &str, store: &mut MapResolver) -> Result<Lowered, Report> {
     let compiled = lang::compile(source).map_err(|e| mistake(file, source, &e))?;
     text::restore(&compiled.doc, store, &Names::new());
     Ok(compiled)
