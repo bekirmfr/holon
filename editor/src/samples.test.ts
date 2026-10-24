@@ -379,7 +379,14 @@ node outer = outer-holon
       'SecretRead("slack_webhook_path")',
       'SecretRead("stripe_webhook_secret")',
     ]);
-    expect(derive("heartbeat").caps).toEqual(["Clock", 'StateRead("beats")', 'StateWrite("beats")', 'StateWrite("last_beat")']);
+    expect(derive("heartbeat").caps).toEqual([
+      "Clock",
+      'StateRead("beats")',
+      'StateRead("first_beat")',
+      'StateWrite("beats")',
+      'StateWrite("first_beat")',
+      'StateWrite("last_beat")',
+    ]);
     expect(derive("approval").caps).toEqual(['Await("paid")', "NetworkIngress", 'StateWrite("last_order")']);
     expect(derive("fetch-json").caps).toEqual(['HttpRequest("httpbin.org")', "NetworkIngress"]);
     expect(derive("sign-payload").caps).toEqual(["NetworkIngress", 'SecretRead("signing_key")']);

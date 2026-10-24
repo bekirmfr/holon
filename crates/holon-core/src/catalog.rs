@@ -37,8 +37,9 @@ pub const GENESIS: &[&str] = &[
     "json_parse", "json_stringify",
     // pure — signatures and encodings (5): checking a webhook's signature
     "sha256", "hmac_sha256", "hex", "base64", "secure_equals",
-    // pure — universal, any-typed (6): as_text is to_text's message form, the identity on text
-    "to_text", "as_text", "is_truthy", "guard", "default", "equals",
+    // pure — universal, any-typed (7): as_text is to_text's message form, the identity on text;
+    // coalesce is the first input that arrived, `default` with its fallback on a wire
+    "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals",
     // request/response — performed by the host, answered in the next round (1)
     "http_request",
     // drivers — sourced, no compute (4)
@@ -199,6 +200,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "to_text" | "as_text" => prim(vec![port("value", Any)], vec![], Text),
         "is_truthy" => prim(vec![port("value", Any)], vec![], Boolean),
         "guard" => prim(vec![port("cond", Boolean), port("value", Any)], vec![], Any),
+        // `a` when it arrived, else `b`: the fallback on a wire where `default`'s is frozen.
+        "coalesce" => prim(vec![port("a", Any), port("b", Any)], vec![], Any),
         "default" => prim(
             vec![port("value", Any)],
             vec![Param::frozen("value", "0"), Param::frozen("type", "Number")],
@@ -275,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_69_leaves() {
+    fn genesis_has_70_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -283,8 +286,22 @@ mod tests {
         // keyed record kit (lookup, insert, remove), find, extend, http_request, secret, and the
         // durable-run pair (await, resume_token), the signature kit (sha256, hmac_sha256,
         // hex, base64, secure_equals), split, the collection kit (get, list, put, delete), and
-        // as_text (the language's string interpolation, docs/LANGUAGE.md).
-        assert_eq!(GENESIS.len(), 69);
+        // as_text (the language's string interpolation) and coalesce (its `??` and `if … else`
+        // with a fallback on a wire), both for docs/LANGUAGE.md.
+        assert_eq!(GENESIS.len(), 70);
+    }
+
+    #[test]
+    fn coalesce_is_in_the_catalog_with_two_any_inputs() {
+        assert!(GENESIS.contains(&"coalesce"));
+        let unit = interface_of("coalesce").unwrap();
+        let inputs: Vec<_> = unit.inputs.iter().map(|p| (p.name.as_str(), p.ty.clone())).collect();
+        assert_eq!(inputs, [("a", Type::Any), ("b", Type::Any)]);
+        assert_eq!(unit.outputs.len(), 1);
+        assert_eq!(unit.outputs[0].ty, Type::Any);
+        assert!(unit.params.is_empty());
+        // Not variadic: a variadic leaf fails closed on an absent input, the opposite of this one.
+        assert!(!VARIADIC.contains(&"coalesce"));
     }
 
     #[test]

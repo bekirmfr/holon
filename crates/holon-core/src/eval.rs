@@ -116,6 +116,12 @@ fn eval_at(
         UnitBody::Primitive { name } if name == "resume_token" => {
             smallvec![primitives::resume_token_request(&unit.params).and_then(|r| observer.answer(path, &r))]
         }
+        // `coalesce` is the one leaf whose meaning is about absence: the first input that
+        // arrived. The generic arm below would give the same answer today (it gathers present
+        // inputs in port order), but that is a property of its implementation, not its
+        // contract, and the firing rule it serves says the opposite ("a wired input absent,
+        // nothing fires"). This arm is the contract, stated once, where absence is visible.
+        UnitBody::Primitive { name } if name == "coalesce" => smallvec![inputs.iter().flatten().next().cloned()],
         UnitBody::Primitive { name } => {
             // Gather present values in port order **by reference** — `compute` borrows them,
             // so an O(1) reader (head/length/is_empty) copies only what it returns, not the
@@ -396,6 +402,32 @@ mod tests {
 
     /// Regression: absent inputs used to be dropped before `compute`, so a variadic leaf fired
     /// on whatever was left — `and(true, <absent>)` was `true`, an auth check failing open.
+    #[test]
+    fn coalesce_fires_on_an_absent_wired_input_and_takes_the_first_that_arrived() {
+        let r = MapResolver::new();
+        let leaf = prim("coalesce", 2, Type::Any);
+        let (a, b) = (num(1.0), num(2.0));
+        assert_eq!(eval(&leaf, &[Some(a.clone()), Some(b.clone())], &r).into_vec(), vec![Some(a.clone())]);
+        assert_eq!(eval(&leaf, &[None, Some(b.clone())], &r).into_vec(), vec![Some(b.clone())]);
+        assert_eq!(eval(&leaf, &[Some(a.clone()), None], &r).into_vec(), vec![Some(a.clone())]);
+        assert_eq!(eval(&leaf, &[None, None], &r).into_vec(), vec![None]);
+
+        // Inside a composite, the case the language lowers `x ?? y` to: `a` comes from a node
+        // that produced nothing (head of an empty list), `b` from one that did. Both wired, one
+        // absent: coalesce still fires, and answers b. The same wiring with any other leaf in
+        // coalesce's place produces nothing (the firing rule), which is why it is a leaf.
+        let mut r = MapResolver::new();
+        let empty = r.insert(prim("list", 0, Type::list_any())).unwrap();
+        let head = r.insert(prim("head", 1, Type::Any)).unwrap();
+        let fallback = r.insert(Unit { params: vec![Param::frozen("value", "7"), Param::frozen("type", "Number")], ..prim("const", 0, Type::Number) }).unwrap();
+        let pick = r.insert(leaf.clone()).unwrap();
+        let wiring = vec![edge(0, 0, 1, 0), edge(1, 0, 3, 0), edge(2, 0, 3, 1), edge(3, 0, BOUNDARY, 0)];
+        let c = composite(vec![], Type::Any, vec![empty, head, fallback, pick], wiring.clone());
+        assert_eq!(eval(&c, &[], &r).into_vec(), vec![Some(num(7.0))]);
+        let with_add = composite(vec![], Type::Any, vec![empty, head, fallback, r.insert(prim("add", 2, Type::Number)).unwrap()], wiring);
+        assert_eq!(eval(&with_add, &[], &r).into_vec(), vec![None]);
+    }
+
     #[test]
     fn variadic_leaf_with_an_absent_input_fails_closed() {
         let r = MapResolver::new();

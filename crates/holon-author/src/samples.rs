@@ -183,8 +183,8 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "heartbeat",
         title: "Heartbeat",
-        description: "A clock flow: every 10 seconds it records the time and counts the beats in its state.",
-        shows: &["clock", "interval", "state across runs", "default", "add"],
+        description: "A clock flow: every 10 seconds it records the time, counts the beats in its state, and keeps the time of the first beat (a fallback that is itself a value: coalesce).",
+        shows: &["clock", "interval", "state across runs", "default", "coalesce", "add"],
         port: None,
         interval: Some("10"),
         secrets: &[],
@@ -506,7 +506,16 @@ fn heartbeat(b: &mut B) -> R {
     b.wire(&read, "out", &count, "value")?;
     b.wire(&count, "out", &more, "a")?;
     b.wire(&one, "out", &more, "b")?;
-    b.wire(&more, "out", &save, "value")
+    b.wire(&more, "out", &save, "value")?;
+    // The first beat's time, kept: what is in state already, else this beat's time (coalesce: a
+    // fallback that is a value from a wire, where default's is fixed on the node). Written every
+    // tick, with the same value from the second tick on.
+    let first = b.node("store_read", &[("key", "first_beat")], [40, 440])?;
+    let kept = b.node("coalesce", &[], [300, 460])?;
+    let keep = b.node("store_write", &[("key", "first_beat")], [560, 460])?;
+    b.wire(&first, "out", &kept, "a")?;
+    b.wire(&clock, "out", &kept, "b")?;
+    b.wire(&kept, "out", &keep, "value")
 }
 
 fn approval(b: &mut B) -> R {

@@ -76,6 +76,7 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "is_truthy" => "Whether a value counts as true: not 0, false, empty text, an empty list or record, or none.",
         "guard" => "Passes value on only when cond is true; otherwise nothing, so what follows doesn't run.",
         "default" => "Passes its input on, or the value set on the node when the input didn't arrive: how a flow fills a gap.",
+        "coalesce" => "Passes a on, or b when a didn't arrive: a fallback that is itself computed, where default's is a fixed value.",
         "equals" => "Whether two values are the same.",
 
         // ── outside the run ──

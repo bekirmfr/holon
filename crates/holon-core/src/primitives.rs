@@ -149,6 +149,17 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             }))
         }
 
+        // The first of its inputs that arrived: `a` when present, else `b`. The one leaf that
+        // fires with a wired input absent, which is what makes it inexpressible as a composite:
+        // every other node produces nothing when a wired input is missing, so no wiring of them
+        // can say "this, or else that". `default` is the same idea with a frozen literal for
+        // `b`; this takes `b` from a wire. The evaluator gathers present inputs in port order
+        // (eval.rs hands this leaf exactly that, deliberately), so the first present one IS the
+        // first that arrived; with nothing present it produces nothing, like everything else.
+        // Two inputs, not variadic: a variadic leaf fails closed on an absent input, the
+        // opposite of this one, and `a ?? b ?? c` is two nodes.
+        "coalesce" => inputs.first().map(|v| (*v).clone()),
+
         // The other universal any-typed primitive alongside `to_text`, same reasoning: one
         // uniform check that works before you know a value's runtime type — reading
         // `store_read(key)` (declared `Any`), say, where you often genuinely don't. Total over
@@ -967,6 +978,17 @@ mod tests {
         // Arity: exactly one input, like to_text.
         assert_eq!(compute("as_text", &[], &[]), None);
         assert_eq!(compute("as_text", &[&num(1.0), &num(2.0)], &[]), None);
+    }
+    #[test]
+    fn coalesce_is_the_first_input_that_arrived() {
+        // Both present: the first. Only one present (the evaluator drops the absent one, keeping
+        // order): that one, whichever side it was on. None present: nothing.
+        assert_eq!(compute("coalesce", &[&num(1.0), &num(2.0)], &[]), Some(num(1.0)));
+        assert_eq!(compute("coalesce", &[&txt("b")], &[]), Some(txt("b")));
+        assert_eq!(compute("coalesce", &[], &[]), None);
+        // Any kind passes through untouched, an Effect included (as select passes one).
+        let effect = Value::Effect { sink: "store_write:k".into(), payload: Box::new(num(3.0)) };
+        assert_eq!(compute("coalesce", &[&effect, &num(0.0)], &[]), Some(effect));
     }
     #[test]
     fn to_text_is_total_even_for_a_non_finite_number() {
