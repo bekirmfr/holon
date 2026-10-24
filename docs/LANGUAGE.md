@@ -20,6 +20,11 @@ intermediate representation, and this language is a second surface over it, besi
 Nothing in the semantics moves. Purity, totality, derived manifests, content addressing and exact
 replay are properties of the IR, so they hold for every program by construction.
 
+Total is the language's boundary, stated here so nobody finds it by surprise: every run ends.
+There is no recursion and no loop; `map` and `fold` go over a list, and `range(n)` counts to at
+most 10000. Anything with nested or unbounded structure (a tree of any depth, a search that
+runs until it finds something) is out of reach, by design.
+
 The guiding rule for the syntax: **the world the flow touches is written as nouns, what the flow
 does as verbs, and a line should read aloud as a sentence.** Every construct is tested by reading
 it to someone who has never seen Holon.
@@ -91,7 +96,7 @@ Three reasons, in order of weight.
    five `node` lines and four wires: fewer tokens, fewer places to misname a port, and errors it
    can read. The MCP tools (`check`, `deploy`, `call`, `explain`, step 7) speak this form.
 2. **Expressiveness without new primitives.** Most of what today takes five nodes is one nested
-   expression. The vocabulary stays at its 70 leaves; the text gets shorter.
+   expression. The vocabulary stays at its leaves (71, with `range`); the text gets shorter.
 3. **Review, diff and version control** become ordinary. The derived manifest stays the thing a
    human approves; the text is what they read when the manifest surprises them.
 
@@ -138,7 +143,7 @@ leaves, never from the words.
 
 | Refused | Why |
 |---|---|
-| `while`, recursion, unbounded iteration | Totality. `map` and `fold` over a list are the only iteration, bounded by the list |
+| `while`, recursion, unbounded iteration | Totality. `map` and `fold` over a list are the only iteration, bounded by the list; `range(n)` makes a list to count over, of at most 10000 |
 | User-defined types, generics | The checker is wire-time compatibility over nine types. A type system is a different project |
 | Modules, imports, packages | Reuse across files is the marketplace's job (a published holon placed by hash), not a `use` statement. Revisit when packs exist |
 | `+` on texts | An operator lowers to one node, and most values are `Any`, so `+` could not choose between `add` and `concat`. Interpolation is the natural spelling; `concat(a, b)` the explicit one |
@@ -794,8 +799,9 @@ again), and a key written twice in one flow has no meaning, so it is an error.
 
 ### 6.6 Totality and purity
 
-Every program terminates: iteration is `map` and `fold` over a list, bounded by the list, and
-there is no recursion (a holon cannot place itself, since its hash does not exist until it is
+Every program terminates: iteration is `map` and `fold` over a list, bounded by the list (the
+one leaf that makes a list from a number, `range(n)`, makes at most 10000 items), and there is no
+recursion (a holon cannot place itself, since its hash does not exist until it is
 frozen). No construct performs an effect during evaluation; effects are values that the host
 performs after the run settles. `http.*` is answered between rounds (§4.1 of
 `PLATFORM_LAYOUT.md`); `await` parks the run. None of that is visible in the language beyond the

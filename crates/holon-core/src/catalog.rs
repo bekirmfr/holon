@@ -25,6 +25,8 @@ pub const GENESIS: &[&str] = &[
     "concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split",
     // pure — list convenience, demotion-deferred (7)
     "list", "get", "append", "extend", "length", "sum", "join",
+    // pure — counting (1): 0 to n-1, n capped, so a map over it still ends
+    "range",
     // pure — product constructor (1)
     "pair",
     // pure — sum constructor (2)
@@ -150,6 +152,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // `append` adds one item; `extend` adds every item of a second list (`concat` is text's).
         "extend" => prim(vec![port("list", Type::list_any()), port("items", Type::list_any())], vec![], Type::list_any()),
         "length" => prim(vec![port("list", Type::list_any())], vec![], Number),
+        "range" => prim(vec![port("n", Number)], vec![], Type::List(Box::new(Number))),
         // sum/join are monomorphic in their element, so they declare it precisely: a typed
         // List<Text> is now refused by sum at wire time (core validate), caught earlier than the
         // old runtime None. A constructed List<Any> still bridges in (the Any wildcard).
@@ -286,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_70_leaves() {
+    fn genesis_has_71_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -295,8 +298,8 @@ mod tests {
         // durable-run pair (await, resume_token), the signature kit (sha256, hmac_sha256,
         // hex, base64, secure_equals), split, the collection kit (get, list, put, delete), and
         // as_text (the language's string interpolation) and coalesce (its `??` and `if … else`
-        // with a fallback on a wire), both for docs/LANGUAGE.md.
-        assert_eq!(GENESIS.len(), 70);
+        // with a fallback on a wire), both for docs/LANGUAGE.md, and range.
+        assert_eq!(GENESIS.len(), 71);
     }
 
     #[test]

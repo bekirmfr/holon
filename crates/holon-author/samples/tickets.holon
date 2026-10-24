@@ -1,0 +1,7 @@
+flow tickets
+port 8114
+
+route POST /tickets (req) {
+  event = req.json.event
+  respond map(range(req.json.count), fn: fn(k) -> "{event} #{k + 1}"), missing: 400
+}

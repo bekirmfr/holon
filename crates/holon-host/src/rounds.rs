@@ -605,7 +605,10 @@ mod tests {
         assert_eq!(out.outputs, vec![Some(Value::List(vec![txt("/a"), txt("/b")]))]);
         assert_eq!(out.rounds.len(), 1, "both items' requests go out in one round");
         assert_eq!(out.rounds[0].exchanges.iter().map(|x| x.path.clone()).collect::<Vec<_>>(), vec![vec![0, 0, 0], vec![0, 1, 0]]);
-        assert_eq!(*echo.0.lock().unwrap(), ["https://api.example.com/a", "https://api.example.com/b"]);
+        // Performed side by side, so in either order.
+        let mut sent = echo.0.lock().unwrap().clone();
+        sent.sort();
+        assert_eq!(sent, ["https://api.example.com/a", "https://api.example.com/b"]);
         let replayed = holon_core::eval_observed(&flow, &[Some(paths)], &r, &mut Recorded::new(&out.rounds)).into_vec();
         assert_eq!(replayed, out.outputs, "a replay answers each item from the record");
     }

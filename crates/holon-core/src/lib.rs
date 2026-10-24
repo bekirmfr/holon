@@ -45,7 +45,7 @@ mod value;
 mod value_hash;
 
 pub mod primitives;
-pub use primitives::MAX_AWAIT_SECONDS;
+pub use primitives::{MAX_AWAIT_SECONDS, MAX_RANGE};
 
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};

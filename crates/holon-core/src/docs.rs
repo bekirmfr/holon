@@ -44,6 +44,7 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "append" => "A list with item added at the end.",
         "extend" => "A list with every item of items added at the end.",
         "length" => "How many items a list has.",
+        "range" => "The numbers from 0 to n-1, as a list: map over it to do something n times. n is a whole number up to 10000; any other is nothing.",
         "sum" => "The total of a list of numbers.",
         "join" => "Joins a list of texts into one, with sep between each.",
         "pair" => "Two values held together as one.",

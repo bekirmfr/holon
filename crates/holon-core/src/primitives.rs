@@ -268,6 +268,16 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             let [l] = inputs else { return None };
             Some(Value::Number(as_list(l)?.len() as f64))
         }
+        // The one leaf that makes a list from a number, so it is where counting is bounded: a
+        // `map` over it ends because it has at most MAX_RANGE items.
+        "range" => {
+            let [n] = inputs else { return None };
+            let n = as_number(n)?;
+            if n.fract() != 0.0 || !(0.0..=MAX_RANGE as f64).contains(&n) {
+                return None;
+            }
+            Some(Value::List((0..n as u64).map(|k| Value::Number(k as f64)).collect()))
+        }
         "sum" => {
             let [l] = inputs else { return None };
             let mut acc = 0.0;
@@ -511,6 +521,9 @@ pub(crate) fn is_sink(name: &str) -> bool {
 
 /// The most items one `collection_list` returns.
 pub const MAX_LIST_LIMIT: u64 = 1000;
+
+/// The largest `n` a `range` counts to.
+pub const MAX_RANGE: u64 = 10_000;
 
 /// What a `collection_get` asks the host: `{collection: <name>, get: <key>}`.
 pub(crate) fn collection_get_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
@@ -815,6 +828,20 @@ mod tests {
         let effect = Value::Effect { sink: "egress".into(), payload: Box::new(txt("x")) };
         assert_eq!(compute("collection_put", &[&txt("k"), &effect], &items), None, "an effect is not data");
         assert_eq!(compute("collection_put", &[&num(1.0), &txt("v")], &items), None);
+    }
+
+    /// `range(n)` counts from 0 to n-1; a fraction, a negative, a non-number or more than
+    /// MAX_RANGE is nothing.
+    #[test]
+    fn range_counts_to_n_and_no_further_than_its_cap() {
+        let nums = |xs: &[f64]| Some(Value::List(xs.iter().map(|&x| num(x)).collect()));
+        assert_eq!(compute("range", &[&num(3.0)], &[]), nums(&[0.0, 1.0, 2.0]));
+        assert_eq!(compute("range", &[&num(0.0)], &[]), nums(&[]));
+        let Some(Value::List(most)) = compute("range", &[&num(MAX_RANGE as f64)], &[]) else { panic!() };
+        assert_eq!((most.len(), most.last()), (MAX_RANGE as usize, Some(&num(MAX_RANGE as f64 - 1.0))));
+        for n in [num(MAX_RANGE as f64 + 1.0), num(-1.0), num(2.5), num(f64::INFINITY), txt("3")] {
+            assert_eq!(compute("range", &[&n], &[]), None, "{n:?}");
+        }
     }
 
     #[test]

@@ -245,7 +245,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "add" | "multiply" | "subtract" | "divide"
         | "compare" | "and" | "or" | "not" | "select"
         | "concat" | "uppercase" | "lowercase" | "text_length" | "slice" | "index_of" | "split"
-        | "list" | "get" | "append" | "extend" | "length" | "sum" | "join"
+        | "list" | "get" | "append" | "extend" | "length" | "sum" | "join" | "range"
         | "cons" | "head" | "tail" | "is_empty"
         | "pair"
         | "some" | "none"
