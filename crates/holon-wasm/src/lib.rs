@@ -1884,7 +1884,8 @@ mod wasm_tests {
     fn primitive_catalog_crosses_js_boundary() {
         let js = primitive_catalog().unwrap();
         let cat: Vec<WUnit> = serde_wasm_bindgen::from_value(js).unwrap();
-        assert_eq!(cat.len(), 71);
+        // Every leaf core has, however many that is: a new leaf needn't change this test.
+        assert_eq!(cat.len(), genesis_units().len());
         assert!(cat
             .iter()
             .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));
