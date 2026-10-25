@@ -174,8 +174,15 @@ fn what_a_call_costs() {
     let big = ModuleLimits { fuel: 4_000_000_000, memory: 256 << 20 };
     let engine = Engine::new();
     let measure = |label: &str, src: &str, args: Vec<Value>| {
-        let (_, cost) = engine.run_measured(ENGINE, &big, &[Some(t(src)), Some(Value::List(args))]).unwrap();
-        println!("{label}: fuel {} memory {} bytes", cost.fuel, cost.memory);
+        // The first call compiles the engine module (cached after); the second is a warm call.
+        let inputs = [Some(t(src)), Some(Value::List(args))];
+        let cold = std::time::Instant::now();
+        let (_, cost) = engine.run_measured(ENGINE, &big, &inputs).unwrap();
+        let cold = cold.elapsed();
+        let warm = std::time::Instant::now();
+        engine.run_measured(ENGINE, &big, &inputs).unwrap();
+        let warm = warm.elapsed();
+        println!("{label}: fuel {} memory {} bytes; {:.1} ms cold, {:.1} ms warm ({})", cost.fuel, cost.memory, cold.as_secs_f64() * 1e3, warm.as_secs_f64() * 1e3, if cfg!(debug_assertions) { "debug" } else { "release" });
         cost
     };
     let trivial = measure("trivial", "(s) => s.toUpperCase() + '!'", vec![t("hi")]);
