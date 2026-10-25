@@ -32,9 +32,10 @@ use crate::to_hex;
 /// bytes. The two module limits are what a flow's module bodies may compute and hold per call
 /// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
 /// gets, so the policy has ceilings for them and no `[limits]` entry.
-pub(crate) const LIMIT_NAMES: [&str; 14] = [
+pub(crate) const LIMIT_NAMES: [&str; 15] = [
     "connect_timeout_ms",
     "request_timeout_ms",
+    "claim_wait_ms",
     "run_budget_ms",
     "clock_run_budget_ms",
     "max_requests",
@@ -82,6 +83,7 @@ fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &Durable
     BTreeMap::from([
         ("connect_timeout_ms".into(), ms(request.connect_timeout)),
         ("request_timeout_ms".into(), ms(request.request_timeout)),
+        ("claim_wait_ms".into(), ms(request.claim_wait)),
         ("run_budget_ms".into(), ms(request.run_budget)),
         ("clock_run_budget_ms".into(), ms(clock_budget)),
         ("max_requests".into(), request.max_requests as u64),
@@ -110,6 +112,7 @@ fn numbers_to_limits(base: &Limits, numbers: &BTreeMap<String, u64>, clock: bool
         match name.as_str() {
             "connect_timeout_ms" => l.connect_timeout = Duration::from_millis(n),
             "request_timeout_ms" => l.request_timeout = Duration::from_millis(n),
+            "claim_wait_ms" => l.claim_wait = Duration::from_millis(n),
             "run_budget_ms" if !clock => l.run_budget = Duration::from_millis(n),
             "clock_run_budget_ms" if clock => l.run_budget = Duration::from_millis(n),
             "max_requests" => l.max_requests = n as usize,
@@ -642,12 +645,20 @@ impl Permit {
         self.items.contains(&format!("{cap:?}"))
     }
 
+    /// The names inside the granted items of one kind (`CollectionRead("notes")` → `notes`).
+    fn named(&self, kind: &str) -> BTreeSet<String> {
+        let prefix = format!("{kind}(\"");
+        self.items.iter().filter_map(|i| i.strip_prefix(prefix.as_str())?.strip_suffix("\")").map(str::to_string)).collect()
+    }
+
     /// The collections it may read, by name.
     pub(crate) fn collections_read(&self) -> BTreeSet<String> {
-        self.items
-            .iter()
-            .filter_map(|i| i.strip_prefix("CollectionRead(\"")?.strip_suffix("\")").map(str::to_string))
-            .collect()
+        self.named("CollectionRead")
+    }
+
+    /// The collections it may write, by name: the ones whose keys a run claims before calling out.
+    pub(crate) fn collections_written(&self) -> BTreeSet<String> {
+        self.named("CollectionWrite")
     }
 }
 

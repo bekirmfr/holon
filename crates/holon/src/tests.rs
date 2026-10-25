@@ -1210,7 +1210,7 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
         }
     }
     // Not in the value store on disk either: nothing that contains it was ever written.
-    assert!(state.deployments.lock().unwrap()["s"].state.as_ref().unwrap().lock().unwrap().get("k").is_none());
+    assert!(state.deployments.lock().unwrap()["s"].state.as_ref().unwrap().state.lock().unwrap().get("k").is_none());
     assert!(!matched.contains(value), "the trigger's reply doesn't either");
 
     // Deleting the deployment forgets its secrets.
@@ -1272,7 +1272,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
         let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "shop", &fake_data(method, url, vec![]));
         (r.status, String::from_utf8(r.body).unwrap())
     };
-    let written = || state.deployments.lock().unwrap()["shop"].state.as_ref().unwrap().lock().unwrap().get("paid").cloned();
+    let written = || state.deployments.lock().unwrap()["shop"].state.as_ref().unwrap().state.lock().unwrap().get("paid").cloned();
     let runs = || body_json(route(&state, &req("GET", "/deployments/shop/runs", vec![])))["runs"].as_array().unwrap().clone();
 
     // Order: answered with its token, waiting, nothing written yet.
@@ -1329,7 +1329,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
 
     // Expiry: nobody pays; past its deadline it gets {expired: true} and finishes (its write
     // reads a field the event doesn't have, so nothing is written).
-    *state.deployments.lock().unwrap().get_mut("shop").unwrap().state.as_ref().unwrap().lock().unwrap() = State::new();
+    *state.deployments.lock().unwrap().get_mut("shop").unwrap().state.as_ref().unwrap().state.lock().unwrap() = State::new();
     call("POST", "/orders");
     assert_eq!(runs().len(), 1);
     durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
@@ -1655,7 +1655,7 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     deploy(stateless, serde_json::json!(["NetworkIngress", "Random"]));
 
     let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
-    let held = reloaded["writer"].state.as_ref().expect("state must survive the restart").lock().unwrap().clone();
+    let held = reloaded["writer"].state.as_ref().expect("state must survive the restart").state.lock().unwrap().clone();
     assert_eq!(held.get("k"), Some(&Value::Text("kept".into())));
     let _ = std::fs::remove_file(&path);
 }
@@ -1692,7 +1692,7 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     let hash = hash_value(&Value::Text("kept".into())).unwrap();
     assert_eq!(file[0]["state_refs"]["k"], to_hex(&hash));
     let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
-    assert_eq!(to_hex(&reloaded["writer"].state.as_ref().unwrap().lock().unwrap().root()), root);
+    assert_eq!(to_hex(&reloaded["writer"].state.as_ref().unwrap().state.lock().unwrap().root()), root);
 
     // Stop (session 1 keeps "kept"), start fresh and write something else (session 2), then
     // restore session 1: the root is the one it had, and its snapshot shares the value's hash.
@@ -1735,7 +1735,7 @@ fn inline_state_from_older_files_moves_into_the_store() {
     std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
     let loaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
-    assert_eq!(loaded["writer"].state.as_ref().unwrap().lock().unwrap().get("k"), Some(&Value::Text("live".into())));
+    assert_eq!(loaded["writer"].state.as_ref().unwrap().state.lock().unwrap().get("k"), Some(&Value::Text("live".into())));
     let first = loaded["writer"].life.snapshot(1).expect("the inline snapshot became references");
     assert_eq!(state.store.get_value(&first["k"]).unwrap(), Some(Value::Text("first".into())));
 
@@ -2431,7 +2431,7 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
     let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
     assert_eq!(reloaded["todo-api"].triggers, vec!["Http :18080"], "labelled as when it was deployed");
-    let todos = reloaded["todo-api"].state.as_ref().unwrap().lock().unwrap().get("todos").unwrap().clone();
+    let todos = reloaded["todo-api"].state.as_ref().unwrap().state.lock().unwrap().get("todos").unwrap().clone();
     assert!(matches!(todos, Value::Record(ref items) if items.len() == 1));
     let _ = std::fs::remove_file(&path);
 }
@@ -2693,7 +2693,7 @@ fn a_fire_in_progress_does_not_stall_the_table() {
 
     // Simulate "a" mid-fire: hold its state lock, as fire_with_state does for a whole round.
     let a_state = state.deployments.lock().unwrap()["a"].state.clone().unwrap();
-    let mid_fire = a_state.lock().unwrap();
+    let mid_fire = a_state.state.lock().unwrap();
 
     std::thread::scope(|s| {
         // Deploying "b" persists, and persisting needs "a"'s state, so this waits for "a".
@@ -2939,7 +2939,7 @@ fn state_persists_across_a_simulated_restart() {
     // deployment can still be triggered again afterward.
     let reloaded = load_deployments(&deployments_path, &store, &Policy::default()).unwrap();
     let dep = reloaded.get("writer").unwrap();
-    let restored_state = dep.state.as_ref().unwrap().lock().unwrap();
+    let restored_state = dep.state.as_ref().unwrap().state.lock().unwrap();
     assert_eq!(restored_state.get("counter"), Some(&Value::Text("before-restart".to_string())));
     drop(restored_state);
 
@@ -3438,4 +3438,285 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
     route(&state, &req("POST", "/deployments/verified/stop", vec![]));
     route(&state, &req("DELETE", "/deployments/verified", vec![]));
     let _ = std::fs::remove_file(&path);
+}
+
+// ── key claims: a key read before a call is held until the run commits ───────────────────────
+// (docs/L4s/key-claims-L4.md §10)
+
+/// A local HTTP server that counts hits per path: `/slow` answers after 400 ms, the rest at once.
+/// Lives as long as the test process.
+fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    let hits = Arc::new(Mutex::new(BTreeMap::new()));
+    let counted = Arc::clone(&hits);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let counted = Arc::clone(&counted);
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = head.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("").to_string();
+                *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
+                let body = match path.as_str() {
+                    "/slow" => {
+                        std::thread::sleep(Duration::from_millis(400));
+                        "slow"
+                    }
+                    "/name" => "k",
+                    _ => "fast",
+                };
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+            });
+        }
+    });
+    (host, hits)
+}
+
+/// The read-call-write flows the claim tests run, calling `host` over plain HTTP.
+fn idem_text(host: &str) -> String {
+    format!(
+        r#"flow idem
+port 18131
+collection seen
+
+route POST /go/:k (req) {{
+  prior = seen[req.params.k]
+  fresh = {{ got: http.get("{host}", "/slow").body }}
+  result = prior ?? fresh
+  seen[req.params.k] = result
+  respond result
+}}
+
+route PUT /set/:k (req) {{
+  seen[req.params.k] = {{ got: req.body }}
+  respond {{ set: req.body }}
+}}
+
+route GET /seen/:k (req) {{
+  respond seen[req.params.k]
+}}
+
+route POST /chain (req) {{
+  mine = seen["b"] ?? "none"
+  name = http.get("{host}", "/name").body
+  other = seen[name] ?? "nobody"
+  done = http.get("{host}", "/fast", headers: {{ "x-other": json(other) }}).body
+  seen["b"] = {{ mine: mine, other: other, done: done, who: req.body }}
+  respond {{ other: other }}
+}}
+
+route POST /hold/:k (req) {{
+  prior = seen[req.params.k]
+  got = http.get("{host}", "/fast").body
+  respond "{{resume_token(paid)}}"
+  paid = await paid, expires: 1h
+  seen[req.params.k] = {{ got: got, paid: paid.body, prior: prior ?? "none" }}
+}}
+
+route GET /paid/:token (req) resumes paid {{
+  respond "ok"
+}}
+"#
+    )
+}
+
+/// A test state whose policy lets a flow call a local plain-HTTP host, with `extra` policy lines.
+fn claims_state(extra: &str) -> AppState {
+    let state = test_state();
+    let policy = format!("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n{extra}");
+    *state.policy.write().unwrap() = Arc::new(Policy::parse(&policy).unwrap());
+    state
+}
+
+/// Compile `text` with the language, stage its units, and deploy it acknowledging what it asks;
+/// its slug.
+fn deploy_text(state: &AppState, text: &str, host: &str) -> String {
+    let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+    for u in &plan.units {
+        assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let unit = parse_hash(&plan.unit).unwrap();
+    let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
+    let preview = body_json(route(
+        state,
+        &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit, "requirements": requirements })).unwrap()),
+    ));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
+    let r = deploy_json(state, &plan.name, unit, serde_json::json!({ "acknowledge": asked, "requirements": requirements }));
+    let status = r.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    plan.name
+}
+
+/// A data-plane request to `slug`: its status, body and how long it took.
+fn data_call(state: &AppState, slug: &str, method: &str, url: &str, body: &str) -> (u16, String, Duration) {
+    let t0 = std::time::Instant::now();
+    let r = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &fake_data(method, url, body.as_bytes().to_vec()));
+    (r.status, String::from_utf8(r.body).unwrap(), t0.elapsed())
+}
+
+fn log_entries(state: &AppState, slug: &str) -> Vec<serde_json::Value> {
+    body_json(route(state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))["entries"].as_array().unwrap().clone()
+}
+
+fn hits_of(hits: &Mutex<BTreeMap<String, usize>>, path: &str) -> usize {
+    hits.lock().unwrap().get(path).copied().unwrap_or(0)
+}
+
+/// Two requests with one key at once: the second waits for the first's claim, finds the first's
+/// record, and sends nothing; both answer the same; the processor saw one call.
+#[test]
+fn a_racing_pair_on_one_key_calls_out_once() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k2", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k2", ""));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!((a.0, b.0), (200, 200), "{a:?} {b:?}");
+    assert_eq!(a.1, b.1, "both answer the first's record");
+    assert_eq!(hits_of(&hits, "/slow"), 1, "one call for one key");
+    let entries = log_entries(&state, &slug);
+    let second = entries.iter().find(|e| e["retries"] == 1).unwrap_or_else(|| panic!("one run ran again: {entries:#?}"));
+    let claims = second["claims"].as_array().unwrap();
+    assert!(claims.iter().any(|c| c["key"] == "seen[k2]" && c["waited_ms"].as_f64().unwrap() > 100.0 && c["overtaken"] == true), "{claims:?}");
+    let first = entries.iter().find(|e| e["retries"] != 1).unwrap();
+    assert_eq!(first["claims"][0], serde_json::json!({ "key": "seen[k2]", "waited_ms": first["claims"][0]["waited_ms"], "overtaken": false }));
+}
+
+/// Two keys never wait for each other: both call out, side by side.
+#[test]
+fn different_keys_never_wait() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k3", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k4", ""));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!((a.0, b.0), (200, 200));
+    assert_eq!(hits_of(&hits, "/slow"), 2);
+    assert!(a.2 < Duration::from_millis(700) && b.2 < Duration::from_millis(700), "not serialized: {:?} {:?}", a.2, b.2);
+    for e in log_entries(&state, &slug) {
+        assert_eq!(e["retries"], serde_json::Value::Null, "{e}");
+        for c in e["claims"].as_array().into_iter().flatten() {
+            assert!(c["waited_ms"].as_f64().unwrap() < 50.0, "{c}");
+        }
+    }
+}
+
+/// A run that sends nothing claims nothing: the counter under many triggers at once, as before,
+/// and no entry has claims.
+#[test]
+fn a_run_that_sends_nothing_claims_nothing() {
+    let state = test_state();
+    let unit = counter(&state, vec![], vec![]);
+    let ack = serde_json::json!(["NetworkIngress", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    assert_eq!(deploy_json(&state, "c", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    std::thread::scope(|s| {
+        for _ in 0..24 {
+            s.spawn(|| assert_eq!(route(&state, &req("POST", "/trigger/c", b"go".to_vec())).status_code, 200));
+        }
+    });
+    let shown = body_json(route(&state, &req("GET", "/deployments/c/state", vec![])));
+    assert_eq!(shown["state"]["count"]["value"], 24.0, "{shown}");
+    for e in log_entries(&state, "c") {
+        assert!(e.get("claims").is_none(), "{e}");
+    }
+    assert!(state.deployments.lock().unwrap()["c"].state.as_ref().unwrap().claims.held().is_empty());
+}
+
+/// A run that only writes a key another run holds waits for that run to commit: the claimer's
+/// read is never changed under it, so it runs once and calls out once.
+#[test]
+fn a_lock_free_writer_waits_for_a_claim() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let (a, w) = std::thread::scope(|s| {
+        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k5", ""));
+        std::thread::sleep(Duration::from_millis(100));
+        let w = s.spawn(|| data_call(&state, &slug, "PUT", "/set/k5", "mine"));
+        (a.join().unwrap(), w.join().unwrap())
+    });
+    assert_eq!((a.0, w.0), (200, 200), "{a:?} {w:?}");
+    assert!(w.2 >= Duration::from_millis(200), "the writer waited for the claim: {:?}", w.2);
+    assert_eq!(hits_of(&hits, "/slow"), 1);
+    assert_eq!(data_call(&state, &slug, "GET", "/seen/k5", "").1, r#"{"got":"mine"}"#, "the writer landed after the claimer");
+    let entries = log_entries(&state, &slug);
+    let claimer = entries.iter().find(|e| e["route"] == "POST /go/:k").unwrap();
+    assert_eq!(claimer["retries"], serde_json::Value::Null, "{claimer}");
+}
+
+/// A later round that needs a key another run holds, while holding keys of its own: the run lets
+/// go, waits, and runs again; its earlier request is answered from its record, not sent again.
+#[test]
+fn a_later_round_needing_a_held_key_restarts_without_resending() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k", ""));
+        std::thread::sleep(Duration::from_millis(100));
+        let b = s.spawn(|| data_call(&state, &slug, "POST", "/chain", "me"));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!((a.0, b.0), (200, 200), "{a:?} {b:?}");
+    assert_eq!(b.1, r#"{"other":{"got":"slow"}}"#, "the chain read what the first run wrote");
+    assert_eq!((hits_of(&hits, "/name"), hits_of(&hits, "/slow"), hits_of(&hits, "/fast")), (1, 1, 1));
+    let entries = log_entries(&state, &slug);
+    let chain = entries.iter().find(|e| e["route"] == "POST /chain").unwrap();
+    assert_eq!(chain["retries"], 1, "{chain}");
+    let claims = chain["claims"].as_array().unwrap();
+    assert!(claims.iter().any(|c| c["key"] == "seen[k]" && c["overtaken"] == true && c["waited_ms"].as_f64().unwrap() > 100.0), "{claims:?}");
+    assert!(claims.iter().any(|c| c["key"] == "seen[b]" && c["overtaken"] == false), "{claims:?}");
+}
+
+/// Past `claim_wait_ms`, a run waiting for a held key is turned away as busy (503), naming the key.
+#[test]
+fn busy_after_claim_wait() {
+    let (host, hits) = counting_server();
+    let state = claims_state("[limits]\nclaim_wait_ms = 50");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
+        std::thread::sleep(Duration::from_millis(100));
+        let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!(a.0, 200, "{a:?}");
+    assert_eq!(b.0, 503, "{b:?}");
+    assert!(b.1.contains("busy") && b.1.contains("seen[k6]"), "{}", b.1);
+    assert!(b.2 < Duration::from_millis(300), "turned away after its wait: {:?}", b.2);
+    assert_eq!(hits_of(&hits, "/slow"), 1);
+    let entries = log_entries(&state, &slug);
+    let busy = entries.iter().find(|e| e["status"] == 503).unwrap();
+    assert!(busy["error"].as_str().unwrap().contains("seen[k6]"), "{busy}");
+}
+
+/// A run that parks lets go of its claims: the next run on its key waits for nothing.
+#[test]
+fn a_parked_run_releases_its_claims() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let parked = data_call(&state, &slug, "POST", "/hold/k7", "");
+    assert_eq!(parked.0, 200, "{parked:?}");
+    assert!(state.deployments.lock().unwrap()[&slug].state.as_ref().unwrap().claims.held().is_empty(), "released at park");
+    let next = data_call(&state, &slug, "POST", "/go/k7", "");
+    assert_eq!(next.0, 200, "{next:?}");
+    assert_eq!(hits_of(&hits, "/slow"), 1);
+    let entries = log_entries(&state, &slug);
+    let go = entries.iter().find(|e| e["route"] == "POST /go/:k").unwrap();
+    assert!(go["claims"][0]["waited_ms"].as_f64().unwrap() < 50.0, "{go}");
+    assert_eq!(go["retries"], serde_json::Value::Null, "{go}");
 }

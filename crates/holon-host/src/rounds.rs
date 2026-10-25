@@ -44,6 +44,8 @@ pub struct Limits {
     pub max_response_bytes: usize,
     pub max_header_bytes: usize,
     pub max_redirects: u32,
+    /// How long a run may wait, in all, for keys other runs hold (claims, `Waits::claim`).
+    pub claim_wait: Duration,
 }
 
 impl Limits {
@@ -65,6 +67,7 @@ impl Limits {
             max_response_bytes: 10 * 1024 * 1024,
             max_header_bytes: 64 * 1024,
             max_redirects: 10,
+            claim_wait: Duration::from_secs(10),
         }
     }
 
@@ -80,6 +83,7 @@ impl Limits {
             max_response_bytes: 100 * 1024 * 1024,
             max_header_bytes: 256 * 1024,
             max_redirects: 20,
+            claim_wait: Duration::from_secs(60),
         }
     }
 }
@@ -117,6 +121,11 @@ pub enum RunError {
     RequestBudget { max: usize },
     /// It ran past its wall-clock budget.
     TimeBudget { budget: Duration },
+    /// What it read changed before it could claim it: the host runs it again from the new state,
+    /// nothing having been sent (`Waits::claim`).
+    Overtaken,
+    /// A key it read is held by another run for longer than it may wait.
+    Busy { key: String },
 }
 
 impl RunError {
@@ -124,6 +133,8 @@ impl RunError {
         match self {
             RunError::RequestBudget { max } => format!("the run needed more than {max} outbound requests"),
             RunError::TimeBudget { budget } => format!("the run took longer than {budget:?}"),
+            RunError::Overtaken => "what the run read changed before it could call out; it ran again".to_string(),
+            RunError::Busy { key } => format!("busy: {key} is held by another run"),
         }
     }
 }
@@ -147,6 +158,17 @@ pub struct Waiting {
     pub expires: u64,
 }
 
+/// A host's answer when a run is about to send its first outbound requests (`Waits::claim`,
+/// `docs/L4s/key-claims-L4.md`): the keys it read that it may write are now held for it until it
+/// commits, or what it read changed under it and it must run again (nothing having been sent), or
+/// a key is held by another run for longer than it may wait.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Claim {
+    Held,
+    Overtaken,
+    Busy { key: String },
+}
+
 /// What a durable run has been delivered, and its tokens.
 pub trait Waits {
     /// The event delivered to waiting point `name`, if one has been.
@@ -158,6 +180,12 @@ pub trait Waits {
     /// default). A host keeps what it answered, to check the run against at commit and replay.
     fn read(&mut self, _path: &[u32], _request: &Value) -> Option<Value> {
         None
+    }
+    /// Called before a round's requests are sent: the host claims, for this run, every key it has
+    /// read that it may write, re-checking those reads against the live state first. The default
+    /// holds nothing and checks nothing (a run with no state, or a host without claims).
+    fn claim(&mut self) -> Claim {
+        Claim::Held
     }
 }
 
@@ -228,6 +256,13 @@ pub fn run_rounds(
         let Some(left) = limits.run_budget.checked_sub(started.elapsed()).filter(|d| !d.is_zero()) else {
             return fail(rounds, RunError::TimeBudget { budget: limits.run_budget });
         };
+        // Before anything is sent, the keys this run read and may write are its until it
+        // commits; a read that changed meanwhile ends the attempt with nothing sent.
+        match waits.claim() {
+            Claim::Held => {}
+            Claim::Overtaken => return fail(rounds, RunError::Overtaken),
+            Claim::Busy { key } => return fail(rounds, RunError::Busy { key }),
+        }
         // No request may outlast the run.
         let this_round = Limits { request_timeout: limits.request_timeout.min(left), ..limits.clone() };
         let exchanges = perform_all(pending, performer, &this_round, started);

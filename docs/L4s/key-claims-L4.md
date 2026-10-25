@@ -6,7 +6,9 @@
 > **+ `holon-author`** (`check`'s derived note; the sample) · *pre:* `PLATFORM_LAYOUT.md`
 > §4.5.1 (runs side by side, the optimistic commit and its retry) · *inv:* `I7` / `I8` / one
 > evaluator · *effort:* **M** (three inches, with the sample)
-> *Status:* **designed 2026-10-25**, from a race run live against the `charges` flow (§1).
+> *Status:* **designed 2026-10-25**, from a race run live against the `charges` flow (§1); **inch 1
+> built the same day** (the hook, the table, the claim, the commit's wait, `claim_wait_ms`, tests 1
+> to 7). One change from the design: a claim never names a **state cell** (§2, §3).
 > *Pinned:* a claim is **derived, never declared**: nothing in the text, nothing in the manifest,
 > nothing to approve · taken **only when a run is about to send its first outbound request**,
 > never at a read · **per key**, per deployment · **released** at commit, discard or park · a
@@ -45,10 +47,17 @@ Spelled out:
 
 - **Which keys.** The attempt's collection reads so far, as `waits.reads` holds them (`{collection,
   get: key}`), for each collection the grant lets the flow write (`CollectionWrite(name)` in the
-  permit); and each state key the grant lets the flow both read and write (`StateRead(k)` and
-  `StateWrite(k)`), since a stateful run reads every granted cell at its start. A `list` read of a
-  writable collection claims the collection as a whole (§8, F1). A read of a collection the flow
-  never writes claims nothing: the run can't be the writer that overtakes anyone.
+  permit). A `list` read of a writable collection claims the collection as a whole (§8, F1). A
+  read of a collection the flow never writes claims nothing: the run can't be the writer that
+  overtakes anyone. **Never a state cell.** The first draft claimed each state key the flow both
+  reads and writes, and the existing test `a_slow_run_holds_up_no_other_and_retries_without_resending`
+  failed at once: a flow that counts its runs in `state.count` and calls out would claim `count`
+  on every run, and every calling run of the deployment would serialize on it, which is the
+  problem runs side by side was built to end. A cell is one per deployment; a collection key is
+  one per thing (an idempotency key, an order, a post), and serializing on it is the point. A
+  read-decide-call over a state cell (`state.token ?? http.get(…)`) keeps today's behaviour: one
+  call per run, the retry keeping one value. The way to bring cells in, if a flow ever needs it,
+  is §8 F5.
 - **When.** In `run_rounds`, after a round has settled with requests pending and before
   `perform_all` sends them: the first time, and again after any later round that made new reads.
   Never at a read, and never for a run that sends nothing: the `likes` path (read, add, write,
@@ -63,8 +72,9 @@ Spelled out:
      for run 4's claim reads run 4's record before it can call anyone.
   3. Holds until the run's outcome: commit, discard, or park.
 - **Commit respects claims.** A run that commits a write to a key another run holds waits for that
-  claim first (bounded the same way), without the state mutex, then takes the mutex, checks its
-  reads, and commits. So a claimed key is not changed under its claimer by a lock-free run either:
+  claim first (bounded the same way; past the bound it commits anyway and the host logs that it
+  did, since the claimer's own commit check still protects the store), without the state mutex,
+  then takes the mutex, checks its reads, and commits. So a claimed key is not changed under its claimer by a lock-free run either:
   the claimer's own commit check is a safety net, not the mechanism. Two runs that both call out
   on one key therefore serialize on that key and nowhere else.
 - **No deadlock.** A run waits only while holding nothing: when a later round needs a key that
@@ -129,7 +139,7 @@ read (every read-modify-write run serializes, and the fast path pays for the slo
 Deployment.state:  Arc<Mutex<State>>                      as today
 Deployment.claims: Arc<(Mutex<BTreeMap<ClaimKey, RunId>>, Condvar)>   new, beside it
 
-ClaimKey = Collection { name, key } | CollectionAll { name } | StateCell { key }
+ClaimKey = Item { collection, key } | Collection(name)
 ```
 
 - The table is cloned out of the deployments map like `state` is, and never held across a run.
@@ -215,6 +225,12 @@ and an entry without `claims` verifies as before.
 - **F4. Shared stores across deployments** (§4.5.1's "left for later") would need the table to
   live with the store, not the deployment. Nothing here precludes it; the key already names the
   collection.
+- **F5. State cells, by dependency.** A cell could be claimed only when a pending request
+  *depends* on its read: a data path from `store_read` to the request's inputs, or the request
+  inside a branch (`guard`, `coalesce`) whose deciding input does. That is a static property of
+  the unit, computable once, and it would leave the counter-and-call shape unclaimed while
+  claiming `state.token ?? http.get(…)`. Not built: no sample needs it, and the analysis has to be
+  right through holons and the functions of `map` and `fold` before it can be trusted.
 
 ## 9. The sample, and what it must show
 
@@ -257,7 +273,7 @@ counts hits:
 
 | Inch | What | Done when |
 |---|---|---|
-| 1 | `holon-host`: the `claim` hook in `Waits`, `RunError::Overtaken` / `Busy`, `NoWaits` answers `Held`; `holon`: the table, the claim, re-validation, release; `fire_with_state` retries on `Overtaken`; `commit` waits for foreign claims; `claim_wait_ms` | tests 1 to 7 |
+| 1 ✅ | `holon-host`: the `claim` hook in `Waits`, `RunError::Overtaken` / `Busy`, `NoWaits` answers `Held`; `holon`: the table (`claims.rs`, beside the state in `StateCell`), the claim, re-validation, release; `fire_with_state` retries on `Overtaken`; `commit` waits for foreign claims; `claim_wait_ms`; the log's `claims` | tests 1 to 7 (in `tests.rs`, from the flow text through `holon_author::agent::plan`, against a local server that counts hits) |
 | 2 | The log's `claims`, `explain`'s lines, `runs`' columns; `check`'s derived line | test 8; the race in §1, rerun, reads as §5 shows |
 | 3 | The sample `idempotent` with its entry, run live (the race), deployed by e2e | test 9; `samples.test.ts` builds it; `fmt` leaves it |
 

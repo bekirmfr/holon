@@ -148,9 +148,18 @@ pub(crate) struct RunWaits {
     pub(crate) collections: Option<collections::Readable>,
     /// The collection reads it made, each once, with what each answered.
     pub(crate) reads: Vec<collections::Read>,
+    /// The keys this attempt holds (claims.rs), and what it needs to claim more; none for a run
+    /// without state, a resumed part, or the attempt that runs holding the state's lock.
+    pub(crate) claiming: Option<claims::Claiming>,
 }
 
 impl Waits for RunWaits {
+    fn claim(&mut self) -> holon_host::Claim {
+        match self.claiming.as_mut() {
+            Some(c) => c.claim(&self.reads),
+            None => holon_host::Claim::Held,
+        }
+    }
     fn read(&mut self, path: &[u32], request: &Value) -> Option<Value> {
         // A round evaluates again what an earlier one did: the same read, the same answer.
         if let Some(seen) = self.reads.iter().find(|r| r.path == path && &r.request == request) {
@@ -468,7 +477,7 @@ pub(crate) fn resume_parked(
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
-    let run = fire_with_state(root, &inputs, &resolver, store, state.as_deref(), &sourced, &permit, false, &secrets, &mut waits, Some(resumed));
+    let run = fire_with_state(root, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &secrets, &mut waits, Some(resumed));
 
     let mut entry = run_entry("resume", started, &sourced, &run);
     if !record.version.is_empty() {

@@ -132,7 +132,7 @@ pub(crate) fn handle_get_collection(state: &AppState, slug: &str, name: &str, re
     let (root, redactor) = {
         let table = state.deployments.lock().unwrap();
         let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
-        let live = dep.state.as_ref().and_then(|s| match s.lock().unwrap().get(&cell) {
+        let live = dep.state.as_ref().and_then(|s| match s.state.lock().unwrap().get(&cell) {
             Some(Value::Text(hex)) => parse_hash(hex),
             _ => None,
         });

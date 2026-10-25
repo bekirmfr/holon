@@ -62,7 +62,7 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
     let mut records: Vec<DeploymentRecord> = Vec::new();
     for (mut record, state) in snapshot {
         if let Some(arc) = state {
-            match arc.lock().unwrap().save(&mut values) {
+            match arc.state.lock().unwrap().save(&mut values) {
                 Ok(refs) => record.state_refs = Some(refs.iter().map(|(k, h)| (k.clone(), to_hex(h))).collect()),
                 Err(e) => {
                     // Writing the record without its state would lose the state at the next
@@ -167,11 +167,11 @@ pub(crate) fn load_deployments(
                     .ok_or_else(|| format!("deployment {slug:?} in {path:?}: a state reference is not a hash"))?;
                 let state = State::load(&refs, &values)
                     .map_err(|e| format!("deployment {slug:?} in {path:?}: its state can't be loaded from the store: {e:?}"))?;
-                Some(Arc::new(Mutex::new(state)))
+                Some(Arc::new(claims::StateCell::new(state)))
             }
             // A file from before state was kept by reference: move its values into the store.
-            (None, Some(inline)) => Some(Arc::new(Mutex::new(migrate_inline(slug, path, inline, &mut values)?))),
-            (None, None) if derives_state(caps.iter()) => Some(Arc::new(Mutex::new(State::new()))),
+            (None, Some(inline)) => Some(Arc::new(claims::StateCell::new(migrate_inline(slug, path, inline, &mut values)?))),
+            (None, None) if derives_state(caps.iter()) => Some(Arc::new(claims::StateCell::new(State::new()))),
             (None, None) => None,
         };
         let mut sessions = record.sessions;

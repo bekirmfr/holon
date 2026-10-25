@@ -117,6 +117,10 @@ pub struct LogEntry {
     /// How many times it ran again because what it read changed before it could commit.
     #[serde(skip_serializing_if = "is_zero")]
     pub retries: u32,
+    /// The keys it claimed before calling out (`docs/L4s/key-claims-L4.md`): how long each waited
+    /// for another run, and whether holding it showed what it read had changed (then it ran again).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claims: Vec<LoggedClaim>,
     /// Who sent the request over the control plane (`holon mcp`'s `call`, `token:claude`, or
     /// `local:ada (agent)`; the editor's request tester), when it came that way: a request on the
     /// deployment's own port names nobody.
@@ -126,6 +130,15 @@ pub struct LogEntry {
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
+}
+
+/// One key a run claimed before calling out.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct LoggedClaim {
+    /// `charges[k2]`, or `charges[*]` for a listing.
+    pub key: String,
+    pub waited_ms: f64,
+    pub overtaken: bool,
 }
 
 /// One collection read in a run.
@@ -510,6 +523,7 @@ mod tests {
             events: BTreeMap::new(),
             reads: vec![],
             retries: 0,
+            claims: vec![],
             by: None,
         }
     }

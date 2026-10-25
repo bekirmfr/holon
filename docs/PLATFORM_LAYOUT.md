@@ -202,6 +202,7 @@ Host defaults follow what the systems a flow talks to already expect:
 | Response header size | 64 KiB | 256 KiB | Above common server limits (8–16 KiB per line), well below abuse. |
 | Longest wait at one `await` (`max_await_seconds`) ✅ | 30 days | 90 days | A month covers the usual waits (Stripe retries a webhook for 3 days; approvals and invoices run to weeks); 90 days is core's longest `expires`. |
 | Runs waiting at once, per deployment (`max_waiting_runs`) ✅ | 10,000 | 100,000 | Bounds what one deployment keeps on disk and lists; the old fixed cap is the default. |
+| Wait for a key another run holds (`claim_wait_ms`) ✅ | 10 s | 60 s | A claim (`docs/L4s/key-claims-L4.md`) lasts one run, so the default need only exceed a run's budget to make "busy" mean contention, not slowness. |
 
 A request that breaks a limit doesn't fail the run: its node gets a response record
 `{status: 0, error: "timeout" | "too_large" | "blocked_host" | ...}`, and the flow decides. Breaking
@@ -509,6 +510,10 @@ collection apply key by key to the live one, so writes to different keys merge. 
 changed runs again from the new state (`retries` in its log entry), its outbound requests
 answered from its own record rather than sent twice; after four tries it runs holding the lock,
 so a busy key can't starve it. A resumed durable run stays pinned to the state it started from.
+A run about to send its first outbound request first **claims** the collection keys it read and
+may write, re-checking those reads, and holds them until it commits, so two runs that would call
+out over one key do so one at a time and the second reads what the first wrote before it can call
+anyone (`docs/L4s/key-claims-L4.md`; a run that sends nothing claims nothing).
 Tested: 24 concurrent increments lose none; a run waiting on a slow call no longer holds up the
 next; live, 200 notes from 20 concurrent clients all land and page back in order.
 

@@ -148,6 +148,7 @@ mod access;
 mod accounts;
 mod activity;
 mod auth;
+mod claims;
 mod oidc;
 mod collections;
 mod data;
@@ -322,7 +323,7 @@ impl AppState {
 type Listeners = BTreeMap<String, (u16, dataplane::Stop)>;
 
 /// One deployment's keyed state, shared between its fires and persistence (see `Deployment::state`).
-type DeploymentState = Arc<Mutex<State>>;
+type DeploymentState = Arc<claims::StateCell>;
 
 /// A registered deployment. `triggers` is derived **once**, at deploy time, from the unit's
 /// own capability closure (`capabilities()`) — safe to cache rather than re-derive on every

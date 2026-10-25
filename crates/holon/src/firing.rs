@@ -88,6 +88,8 @@ pub(crate) struct FiredRun {
     pub(crate) reads: Vec<collections::Read>,
     /// How many times it ran again because what it read changed before it could commit.
     pub(crate) retries: u32,
+    /// The keys it claimed before calling out (claims.rs), over every attempt.
+    pub(crate) claims: Vec<claims::ClaimRecord>,
 }
 
 /// How many times a run is tried without holding its state's lock before it runs holding it.
@@ -98,6 +100,8 @@ struct Attempt {
     run: FiredRun,
     /// What it started from (and validates against at commit).
     start: Option<State>,
+    /// It found what it read changed as it claimed it: run it again, nothing was sent.
+    overtaken: bool,
 }
 
 // Everything a run is held to arrives here, so it takes them all.
@@ -107,7 +111,7 @@ pub(crate) fn fire_with_state(
     inputs: &[Option<Value>],
     resolver: &impl Resolver,
     store: &SharedStore,
-    state: Option<&Mutex<State>>,
+    state: Option<&Arc<claims::StateCell>>,
     extra_sourced: &[(Capability, Value)],
     permit: &Permit,
     clock: bool,
@@ -115,48 +119,66 @@ pub(crate) fn fire_with_state(
     waits: &mut RunWaits,
     resumed: Option<Resumed>,
 ) -> FiredRun {
-    let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, waits: &mut RunWaits| {
-        run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior)
+    let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, waits: &mut RunWaits, claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>)>| {
+        run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior, claim)
     };
+    let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     // A resumed run is the same run it started as: pinned to the state it first read, run once,
     // its writes landing on the live state when it finishes.
     if let Some(r) = resumed {
-        let a = attempt(state.map(|_| r.state_before), &r.nonce, r.prior, waits);
+        let a = attempt(state.map(|_| r.state_before), &r.nonce, r.prior, waits, None);
         if let Some(cell) = state {
-            commit(&mut cell.lock().unwrap(), store, &a.run.performed);
+            commit(&mut cell.state.lock().unwrap(), store, &a.run.performed);
         }
         return a.run;
     }
     let nonce = new_nonce();
     let Some(cell) = state else {
-        return attempt(None, &nonce, Vec::new(), waits).run;
+        return attempt(None, &nonce, Vec::new(), waits, None).run;
     };
     // Optimistic: run on a copy, no lock held, so runs of one deployment proceed side by side;
     // then commit only if everything it could have read is still as it found it. Otherwise run
     // again from the state as it now is: the requests it already made are answered from its own
-    // record (`prior`), not sent again, and nothing it did is kept but its answer.
+    // record (`prior`), not sent again, and nothing it did is kept but its answer. A run about to
+    // call out first claims the keys it read and may write (claims.rs): one that finds them changed
+    // as it claims them runs again having sent nothing, and its commit never lands under another
+    // run's claim.
     let mut prior = Vec::new();
+    let mut records = Vec::new();
     for retries in 0..OPTIMISTIC_ATTEMPTS {
         waits.tokens.clear();
         // Copied in its own statement: a lock taken inside the call's arguments would be held
         // until the call returns, the whole run long.
-        let start = cell.lock().unwrap().clone();
-        let mut a = attempt(Some(start), &nonce, prior, waits);
-        let mut live = cell.lock().unwrap();
-        if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store) {
-            commit(&mut live, store, &a.run.performed);
-            a.run.retries = retries;
-            return a.run;
+        let start = cell.state.lock().unwrap().clone();
+        let mut a = attempt(Some(start), &nonce, prior, waits, Some((cell, records)));
+        if !a.overtaken {
+            let written = claims::written_keys(&a.run.performed);
+            if !cell.claims.wait_free(&written, &a.run.run_id, std::time::Instant::now() + limits.claim_wait) {
+                eprintln!("holon: run {} commits over a key another run still holds (claim_wait passed)", a.run.run_id);
+            }
+            let mut live = cell.state.lock().unwrap();
+            if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store) {
+                commit(&mut live, store, &a.run.performed);
+                a.run.retries = retries;
+                waits.claiming = None;
+                return a.run;
+            }
         }
-        drop(live);
+        waits.claiming = None;
         prior = a.run.rounds;
+        records = a.run.claims;
     }
-    // Contended that long: run once more holding the lock, so it can't be overtaken again.
+    // Contended that long: run once more holding the lock, so it can't be overtaken again. It
+    // claims nothing (it owns everything), once every claim before it is let go.
     waits.tokens.clear();
-    let mut live = cell.lock().unwrap();
-    let mut a = attempt(Some(live.clone()), &nonce, prior, waits);
+    if !cell.claims.wait_until_empty(std::time::Instant::now() + limits.claim_wait) {
+        eprintln!("holon: a run runs holding the state while a key is still claimed (claim_wait passed)");
+    }
+    let mut live = cell.state.lock().unwrap();
+    let mut a = attempt(Some(live.clone()), &nonce, prior, waits, None);
     commit(&mut live, store, &a.run.performed);
     a.run.retries = OPTIMISTIC_ATTEMPTS;
+    a.run.claims = records;
     a.run
 }
 
@@ -213,6 +235,7 @@ fn run_attempt(
     waits: &mut RunWaits,
     nonce: &[u8; 16],
     prior: Vec<Round>,
+    claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>)>,
 ) -> Attempt {
     let state_before = start.as_ref().map(State::values).unwrap_or_default();
     let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce);
@@ -249,7 +272,20 @@ fn run_attempt(
     let mut timer = recorder::Timer::new();
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
+    // What this attempt will hold before it sends anything: the keys it reads that it may write.
+    waits.claiming = claim.map(|(cell, records)| {
+        claims::Claiming::new(
+            Arc::clone(cell),
+            store.clone(),
+            permit.collections_written(),
+            permit.collections_read(),
+            to_hex(&run_id),
+            limits.claim_wait,
+            records,
+        )
+    });
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &permit.outbound, limits, &mut timer, waits, &prior);
+    let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, which would put it on disk and in every later snapshot.
     host.performed.retain(|(cap, payload)| {
@@ -281,8 +317,9 @@ fn run_attempt(
         start_state: start.clone(),
         reads: std::mem::take(&mut waits.reads),
         retries: 0,
+        claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
     };
-    Attempt { run, start }
+    Attempt { run, start, overtaken }
 }
 
 /// 128 bits from the operating system's secure generator.
@@ -418,6 +455,11 @@ pub(crate) fn run_entry(
         parked: vec![],
         events: BTreeMap::new(),
         retries: run.retries,
+        claims: run
+            .claims
+            .iter()
+            .map(|c| recorder::LoggedClaim { key: c.key.to_string(), waited_ms: c.waited.as_secs_f64() * 1000.0, overtaken: c.overtaken })
+            .collect(),
         by: None,
         reads: run
             .reads
@@ -449,6 +491,7 @@ impl FiredRun {
             start_state: None,
             reads: vec![],
             retries: 0,
+            claims: vec![],
         }
     }
 }

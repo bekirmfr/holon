@@ -111,7 +111,7 @@ fn serve_flow(
         &resolver,
         &http,
         |endpoint, route, req, sourced| {
-            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, store, state.as_deref(), sourced, &permit, false, &secrets, &mut waits, None);
+            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
             let unit = hash_unit(endpoint).unwrap_or([0; 32]);
             parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
             let mut entry = run_entry("request", started, sourced, &run);
@@ -124,6 +124,11 @@ fn serve_flow(
     );
     if let Err(e) = &parked {
         answer = data::DataResponse::json_error(503, e);
+    }
+    // A run that waited as long as it may for a key another run holds is turned away, not
+    // answered from nothing: its client may try again.
+    if let Some(busy) = ran.as_ref().and_then(|e| e.error.as_deref()).filter(|e| e.starts_with("busy:")) {
+        answer = data::DataResponse::json_error(503, busy);
     }
     record_trigger(deployments, slug, answer.status >= 500);
     // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.

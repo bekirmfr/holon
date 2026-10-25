@@ -202,7 +202,7 @@ pub(crate) fn handle_post_deploy(
         let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
         let state = match carried {
             Some(arc) => Some(arc),
-            None if is_state => Some(Arc::new(Mutex::new(State::new()))),
+            None if is_state => Some(Arc::new(claims::StateCell::new(State::new()))),
             None => None,
         };
         deployments.insert(
@@ -468,7 +468,7 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
     match deployments.get(slug) {
         Some(dep) => match &dep.state {
             Some(arc) => {
-                let storage = arc.lock().unwrap();
+                let storage = arc.state.lock().unwrap();
                 let state = storage.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
                 let mut reply = serde_json::to_value(StateBody { slug: slug.to_string(), state, root: to_hex(&storage.root()) })
                     .unwrap_or_default();
@@ -608,7 +608,7 @@ pub(crate) fn handle_post_trigger(
     let started = started_now();
     let mut waits = RunWaits::default();
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
-    let run = fire_with_state(root_unit, &[], &resolver, store, state.as_deref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
+    let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
 
     record_trigger(deployments, slug, false);
     let mut entry = run_entry("trigger", started, &extra_sourced, &run);
@@ -760,7 +760,7 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
             "pause" => dep.life.pause(),
             "stop" => {
                 // The snapshot keeps references, so its values go into the store now.
-                let refs = match live.as_ref().map(|arc| arc.lock().unwrap().save(&mut values)).transpose() {
+                let refs = match live.as_ref().map(|arc| arc.state.lock().unwrap().save(&mut values)).transpose() {
                     Ok(refs) => refs,
                     Err(e) => return err(500, format!("the state couldn't be stored: {e:?}")),
                 };
@@ -768,7 +768,7 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
             }
             _ => dep.life.run(from, now).map(|start_from| {
                 if let (Some(arc), Some(_)) = (&live, start_from) {
-                    *arc.lock().unwrap() = restored.unwrap_or_default();
+                    *arc.state.lock().unwrap() = restored.unwrap_or_default();
                 }
                 // A clock deployment fires on its next pass once running again.
                 if dep.interval_seconds.is_some() {
