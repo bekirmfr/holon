@@ -417,6 +417,24 @@ test("calc's match answers the chosen arm or 400 when it has no value, and view 
   }
   await skipped.filter({ hasText: "subtract" }).locator(".hl-node__title").click();
   await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("not run: the guard after it didn't take this branch");
+
+  // The text shows the run too (docs/L4s/text-graph-link-L4.md): the node picked on the canvas
+  // marked, the values of the arms not chosen dimmed (their patterns ran), the values sent
+  // beside `a` and `b`, the step marked, and the cursor picks the node under it.
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  const text = page.getByRole("region", { name: "Text" });
+  await expect(text.locator(".hl-text__mark")).toHaveText("a - b");
+  await expect(text.locator(".hl-text__dim")).toHaveText(["a + b", "a - b", "a * b"]);
+  const values = text.locator(".hl-text__value");
+  await expect(values.first()).toHaveText("1");
+  await expect(values.nth(1)).toHaveText("0");
+  await page.getByTitle("step forward one node").click();
+  await expect(text.locator(".hl-text__step")).toHaveCount(1);
+  await text.locator(".cm-line", { hasText: '"div" -> a / b' }).click();
+  await page.keyboard.press("End");
+  await expect(text.locator(".hl-text__mark")).toHaveText("a / b");
+  await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("divide");
+  await page.screenshot({ path: "test-results/text-run.png" });
 });
 
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {

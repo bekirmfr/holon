@@ -2,6 +2,8 @@
 
 A flow's text beside its canvas in the web editor: type it and the canvas follows, move the
 canvas and the text follows, with the same mistakes, hover, completion and format as `holon lsp`.
+Linked by line here; by each node's range, in view mode too and with the run, since
+docs/L4s/text-graph-link-L4.md.
 Written 2026-10-24, before the code; built the same day (`editor/src/TextPane.tsx`,
 `useTextPane.ts`, `textSync.ts`). Where the build differs from the plan, the decision says so.
 

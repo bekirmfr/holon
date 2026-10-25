@@ -1006,14 +1006,22 @@ pub fn describe_item(item: &str) -> String {
     holon_author::describe::describe_item(item)
 }
 
-/// `.holon` text, in either form, as a flow document: `{name, doc, names, lines}` (each
-/// top-level node's name in the text, and the line it is written on, by id). Throws the first
-/// mistake, as `line:col: message`.
+/// `.holon` text, in either form, as a flow document: `{name, doc, names, lines, spans}` (each
+/// top-level node's name in the text, the line it is written on, and the range it is written
+/// over as `[from, to]` UTF-16 offsets, by id; docs/L4s/text-graph-link-L4.md). Throws the
+/// first mistake, as `line:col: message`.
 #[wasm_bindgen]
 pub fn compile_holon(source: &str) -> Result<JsValue, JsError> {
     let compiled = lang::compile(source).map_err(|e| JsError::new(&e.to_string()))?;
     let lines: std::collections::BTreeMap<&String, u32> = compiled.spans.iter().map(|(id, s)| (id, s.start.line)).collect();
-    to_js(&serde_json::json!({ "name": compiled.name, "doc": compiled.doc, "names": compiled.names, "lines": lines }))
+    let spans = spans_of(source, &compiled.spans);
+    to_js(&serde_json::json!({ "name": compiled.name, "doc": compiled.doc, "names": compiled.names, "lines": lines, "spans": spans }))
+}
+
+/// Each node's range in `source`, as the editor counts it: `[from, to]` in UTF-16 offsets.
+fn spans_of(source: &str, spans: &std::collections::BTreeMap<String, lang::ast::Span>) -> std::collections::BTreeMap<String, [usize; 2]> {
+    let at = Offsets::new(source);
+    spans.iter().map(|(id, s)| (id.clone(), [at.offset(s.start), at.offset(s.end)])).collect()
 }
 
 // ── The text pane (docs/L4s/text-pane-L4.md) ────────────────────────────────────────────────
@@ -1585,6 +1593,27 @@ mod native_tests {
         assert_eq!(at.offset(p(2, 99)), 7 + "x = \"😀→\" + y\r".encode_utf16().count(), "past the end is the end");
         for (line, col) in [(1, 1), (1, 4), (2, 6), (2, 7), (2, 8), (2, 12), (3, 1), (3, 2)] {
             assert_eq!(at.pos(at.offset(p(line, col))), p(line, col), "{line}:{col}");
+        }
+    }
+
+    /// Each node's range, in UTF-16 offsets past an emoji, is the text it is written as; an
+    /// argument's range is inside its call's; every range is inside the text.
+    #[test]
+    fn node_spans_are_utf16_ranges_that_nest() {
+        let text = "flow f\nport 8199\n\nroute POST /x (req) {\n  respond { said: \"😀 hi\", body_base64: base64(uppercase(req.body)) }\n}\n";
+        let compiled = lang::compile(text).unwrap();
+        let spans = spans_of(text, &compiled.spans);
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let written = |r: &[usize; 2]| String::from_utf16(&units[r[0]..r[1]]).unwrap();
+        for (id, r) in &spans {
+            assert!(r[0] <= r[1] && r[1] <= units.len(), "{id}: {r:?}");
+        }
+        let find = |s: &str| spans.values().find(|r| written(r) == s).copied().unwrap_or_else(|| panic!("no node written as {s:?}: {:?}", spans.values().map(written).collect::<Vec<_>>()));
+        let call = find("base64(uppercase(req.body))");
+        let arg = find("uppercase(req.body)");
+        assert!(call[0] <= arg[0] && arg[1] <= call[1], "{call:?} holds {arg:?}");
+        for node in &compiled.doc.nodes {
+            assert!(spans.contains_key(&node.id), "{} has a range", node.id);
         }
     }
 }

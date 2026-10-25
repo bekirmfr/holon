@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **The text and the canvas, linked by expression.** The cursor in a flow's text picks the node
+  under it (`base64` in `base64(uppercase(req.body))`, not the whole line), and a node picked on
+  the canvas marks the expression it is written as. It works in view mode too, where the text
+  also shows the run: what didn't run is dimmed (the values of a `match`'s arms not chosen), the
+  step is marked as you step, and the values of what you named are written beside it. On a
+  window 1600px wide or more, the text pane is open by default.
+
 ## 0.1.0-rc.17
 
 **Run `holon migrate` where you used to start `holon serve`.** A server keeps its state in

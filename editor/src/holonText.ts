@@ -22,12 +22,18 @@ export class HolonTextError extends Error {
   }
 }
 
+/** Where a node is written in a text: UTF-16 offsets, as CodeMirror counts them. */
+export type TextRange = { from: number; to: number };
+
 /** `.holon` text as a flow document (and its name); its holons' units are put into `ev`. Errors
  *  say the line and column. `names`: each top-level node's name in the text, by its id in the
  *  document (a binding's, or a `node` statement's); `lines`: the line (1-based) each is written
- *  on. */
-export function compileHolon(text: string, ev: Evaluator): { name: string | null; doc: FlowDocument; names: Map<string, string>; lines: Map<string, number> } {
-  let compiled: { name: string | null; doc: FlowDocument; names: Record<string, string>; lines?: Record<string, number> };
+ *  on; `spans`: the range each is written over (docs/L4s/text-graph-link-L4.md). */
+export function compileHolon(
+  text: string,
+  ev: Evaluator,
+): { name: string | null; doc: FlowDocument; names: Map<string, string>; lines: Map<string, number>; spans: Map<string, TextRange> } {
+  let compiled: { name: string | null; doc: FlowDocument; names: Record<string, string>; lines?: Record<string, number>; spans?: Record<string, [number, number]> };
   try {
     compiled = compile_holon(text);
   } catch (e) {
@@ -36,7 +42,13 @@ export function compileHolon(text: string, ev: Evaluator): { name: string | null
     throw m ? new HolonTextError(Number(m[1]), Number(m[2]), m[3]) : e;
   }
   for (const hex of compiled.doc.units ?? []) ev.insert(fromHex(hex));
-  return { name: compiled.name, doc: compiled.doc, names: new Map(Object.entries(compiled.names)), lines: new Map(Object.entries(compiled.lines ?? {})) };
+  return {
+    name: compiled.name,
+    doc: compiled.doc,
+    names: new Map(Object.entries(compiled.names)),
+    lines: new Map(Object.entries(compiled.lines ?? {})),
+    spans: new Map(Object.entries(compiled.spans ?? {}).map(([id, [from, to]]) => [id, { from, to }])),
+  };
 }
 
 type Printable = Pick<FlowDocument, "nodes" | "edges"> & Partial<FlowDocument>;

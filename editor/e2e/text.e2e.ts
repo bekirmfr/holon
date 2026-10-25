@@ -24,8 +24,16 @@ async function typeText(editor: Locator, page: Page, text: string) {
 
 const nodeNamed = (page: Page, name: string) => page.locator(`.react-flow__node[data-id^="${name}-"]`);
 
+test("a wide window opens a flow with its text beside the canvas", async ({ page }) => {
+  await page.setViewportSize({ width: 1700, height: 900 });
+  await openSample(page, "Hello API");
+  await expect(page.locator(".hl-canvas").getByRole("button", { name: "text on" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Text" }).locator(".cm-content")).toContainText("flow hello-api");
+});
+
 test("the flow's text drives its canvas, and the canvas its text", async ({ page, request, adminToken }) => {
   await openSample(page, "Hello API");
+  // Below 1600px wide (the tests' 1280) the text opens on asking (docs/L4s/text-graph-link-L4.md).
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
   const pane = page.getByRole("region", { name: "Text" });
   const editor = pane.locator(".cm-content");
@@ -49,9 +57,10 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await expect(nodes).toHaveCount(before + 1);
   expect(await nodeNamed(page, "request").getAttribute("style")).toBe(requestAt);
 
-  // A node selected on the canvas marks its line.
+  // A node selected on the canvas marks its line, and the range it is written over.
   await nodeNamed(page, "uppercase").click();
   await expect(pane.locator(".hl-text__picked")).toContainText("uppercase(");
+  await expect(pane.locator(".hl-text__mark")).toHaveText('uppercase("Hello, {req.params.name}")');
 
   // Completion: after `req.`, the request's parts.
   await editor.click();

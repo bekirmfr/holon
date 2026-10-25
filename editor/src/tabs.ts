@@ -56,7 +56,16 @@ export type TextState = {
   typed: boolean;
 };
 
-export const NO_TEXT: TextState = { open: false, value: null, key: "", synced: null, typed: false };
+/** How wide a window opens a tab with its text beside the canvas: below it, the pane would leave
+ *  the canvas too narrow to work on, so it opens on asking (docs/L4s/text-graph-link-L4.md). */
+export const TEXT_OPEN_WIDTH = 1600;
+const roomForText = () => typeof window !== "undefined" && window.innerWidth >= TEXT_OPEN_WIDTH;
+
+/** A tab's text before any: open by default where there is room (text is the easier way in), the
+ *  toggle closes it. */
+export function noText(): TextState {
+  return { open: roomForText(), value: null, key: "", synced: null, typed: false };
+}
 
 /** What the text stands for: the canvas's structure, its settings and its name. */
 export const syncKeyOf = (ns: { id: string; data: unknown }[], es: Edge[], settings: FlowSettings, name: string | null) =>
@@ -112,7 +121,7 @@ export function blankMeta(name: string | null): FlowMeta {
     selectedRun: null,
     step: null,
     inspectNode: null,
-    text: NO_TEXT,
+    text: noText(),
   };
 }
 
@@ -188,7 +197,7 @@ export function tabFromDocument(name: string | null, doc: FlowDocument, saved: b
   }
   const server = settingsOf(doc.server);
   // The text it was saved with, as typed: it stands for this canvas.
-  const text: TextState = doc.source ? { open: false, value: doc.source, key: syncKeyOf(ns, es, server, name), synced: doc.source, typed: true } : NO_TEXT;
+  const text: TextState = doc.source ? { open: roomForText(), value: doc.source, key: syncKeyOf(ns, es, server, name), synced: doc.source, typed: true } : noText();
   // A loaded flow's node ids carry the counters they were minted with: the next id must
   // start past all of them, or a drop would mint a colliding one.
   let max = -1;

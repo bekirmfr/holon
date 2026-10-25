@@ -2,7 +2,9 @@
 // answer is the language's, through the bridge (holonText.ts → holon-author's editing.rs, as
 // `holon lsp` gives them): the colours, each mistake where `holon check` says it is, hover,
 // completion, and Format as `holon fmt` writes. What the text does to the canvas is App's
-// (useTextPane.ts); this is the editor.
+// (useTextPane.ts); this is the editor. It also shows what the canvas links to it
+// (docs/L4s/text-graph-link-L4.md): the ranges of the nodes picked there, and in view mode the
+// run: what didn't run dimmed, the step marked, values in notes beside what made them.
 
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Annotation, Compartment, EditorState, RangeSetBuilder, StateEffect, StateField, Transaction } from "@codemirror/state";
@@ -10,6 +12,7 @@ import {
   Decoration,
   EditorView,
   ViewPlugin,
+  WidgetType,
   drawSelection,
   highlightActiveLine,
   hoverTooltip,
@@ -21,7 +24,7 @@ import {
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { autocompletion, completionKeymap, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { linter, lintGutter } from "@codemirror/lint";
-import { textColours, textCompletions, textFormatted, textHover, textMistakes } from "./holonText";
+import { textColours, textCompletions, textFormatted, textHover, textMistakes, type TextRange } from "./holonText";
 
 /** A change that came from outside the pane (the canvas, a tab switch): not the person typing. */
 const outside = Annotation.define<boolean>();
@@ -86,20 +89,60 @@ const colours = ViewPlugin.fromClass(
   { decorations: (v) => v.decorations },
 );
 
-/** The lines of what is selected on the canvas. */
-const setPicked = StateEffect.define<number[]>();
-const picked = StateField.define<DecorationSet>({
+/** A value beside the expression that made it, as the wire labels write it: not text, so it
+ *  can't be selected, copied or saved. */
+export type TextNote = { at: number; text: string; none: boolean };
+
+class NoteWidget extends WidgetType {
+  constructor(
+    readonly text: string,
+    readonly none: boolean,
+  ) {
+    super();
+  }
+  eq(other: NoteWidget) {
+    return other.text === this.text && other.none === this.none;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = this.none ? "hl-text__value hl-text__value--none" : "hl-text__value";
+    el.textContent = this.text;
+    return el;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+/** What the canvas links to the text: the ranges of the nodes picked there (their lines marked
+ *  in the gutter's colour too), and in view mode the run. */
+export type TextLinked = { marks: TextRange[]; dims: TextRange[]; step: TextRange | null; notes: TextNote[] };
+const NOTHING_LINKED: TextLinked = { marks: [], dims: [], step: null, notes: [] };
+
+const PICKED_LINE = Decoration.line({ class: "hl-text__picked" });
+const MARK = Decoration.mark({ class: "hl-text__mark" });
+const DIM = Decoration.mark({ class: "hl-text__dim" });
+const STEP = Decoration.mark({ class: "hl-text__step" });
+
+const setLinked = StateEffect.define<TextLinked>();
+const linked = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(d, tr) {
     for (const e of tr.effects) {
-      if (!e.is(setPicked)) continue;
-      const b = new RangeSetBuilder<Decoration>();
-      for (const l of [...new Set(e.value)].sort((x, y) => x - y)) {
-        if (l < 1 || l > tr.state.doc.lines) continue;
-        const line = tr.state.doc.line(l);
-        b.add(line.from, line.from, Decoration.line({ class: "hl-text__picked" }));
+      if (!e.is(setLinked)) continue;
+      const doc = tr.state.doc;
+      const fits = (r: TextRange) => r.from >= 0 && r.to <= doc.length && r.to > r.from;
+      const ds = [];
+      for (const r of e.value.marks.filter(fits)) {
+        ds.push(MARK.range(r.from, r.to));
+        for (let l = doc.lineAt(r.from).number; l <= doc.lineAt(r.to).number; l++) ds.push(PICKED_LINE.range(doc.line(l).from));
       }
-      return b.finish();
+      for (const r of e.value.dims.filter(fits)) ds.push(DIM.range(r.from, r.to));
+      if (e.value.step && fits(e.value.step)) ds.push(STEP.range(e.value.step.from, e.value.step.to));
+      for (const n of e.value.notes) {
+        if (n.at >= 0 && n.at <= doc.length) ds.push(Decoration.widget({ widget: new NoteWidget(n.text, n.none), side: 1 }).range(n.at));
+      }
+      return Decoration.set(ds, true);
     }
     return d.map(tr.changes);
   },
@@ -199,8 +242,8 @@ export function TextPane({
   text,
   readOnly,
   onEdit,
-  lines,
-  onCursorLine,
+  linked: link = NOTHING_LINKED,
+  onCursor,
   status,
   width,
   onWidth,
@@ -212,10 +255,10 @@ export function TextPane({
   /** Each change the person makes, with the whole text; `formatted` when it is Format's (the
    *  canonical form, nothing half typed in it). */
   onEdit: (text: string, formatted: boolean) => void;
-  /** The lines of what is selected on the canvas, marked. */
-  lines: number[];
-  /** The line the cursor moved to, by the person. */
-  onCursorLine: (line: number) => void;
+  /** What the canvas links to the text: the ranges of what is picked there, and the run. */
+  linked?: TextLinked;
+  /** Where the cursor moved to, by the person (an offset). */
+  onCursor: (offset: number) => void;
   /** A line above the text: what the canvas shows, what a change cost. */
   status: string;
   width: number;
@@ -225,8 +268,8 @@ export function TextPane({
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const editable = useRef(new Compartment());
-  const handlers = useRef({ onEdit, onCursorLine });
-  handlers.current = { onEdit, onCursorLine };
+  const handlers = useRef({ onEdit, onCursor });
+  handlers.current = { onEdit, onCursor };
   const [formatError, setFormatError] = useState("");
 
   useEffect(() => {
@@ -241,18 +284,20 @@ export function TextPane({
           highlightActiveLine(),
           lintGutter(),
           colours,
-          picked,
+          // After the colours: a later source's marks wrap an earlier's, so each range is one element.
+          linked,
           mistakes,
           hover,
           autocompletion({ override: [complete], icons: false }),
           keymap.of([{ key: "Shift-Alt-f", run: (view) => (setFormatError(format(view) ? "" : "it has a mistake: fix it, then format"), true) }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]),
-          editable.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
+          // Read only still takes a cursor: in view mode it picks the node under it.
+          editable.current.of(EditorState.readOnly.of(readOnly)),
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !u.transactions.some((t) => t.annotation(outside))) {
               setFormatError("");
               handlers.current.onEdit(u.state.doc.toString(), u.transactions.some((t) => t.isUserEvent("format")));
             }
-            if (u.selectionSet && u.view.hasFocus && !u.docChanged) handlers.current.onCursorLine(u.state.doc.lineAt(u.state.selection.main.head).number);
+            if (u.selectionSet && u.view.hasFocus && !u.docChanged) handlers.current.onCursor(u.state.selection.main.head);
           }),
           theme,
           EditorView.contentAttributes.of({ "aria-label": "the flow as text" }),
@@ -278,12 +323,19 @@ export function TextPane({
   }, [text]);
 
   useEffect(() => {
-    view.current?.dispatch({ effects: editable.current.reconfigure([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]) });
+    view.current?.dispatch({ effects: editable.current.reconfigure(EditorState.readOnly.of(readOnly)) });
   }, [readOnly]);
 
+  // After the text: a text replaced takes the ranges that go with it.
+  const shownStep = useRef<string>("");
   useEffect(() => {
-    view.current?.dispatch({ effects: setPicked.of(lines) });
-  }, [lines]);
+    const v = view.current;
+    if (!v) return;
+    const at = link.step ? `${link.step.from}:${link.step.to}` : "";
+    const scroll = at !== "" && at !== shownStep.current ? [EditorView.scrollIntoView(link.step!.from, { y: "center" })] : [];
+    shownStep.current = at;
+    v.dispatch({ effects: [setLinked.of(link), ...scroll] });
+  }, [link, text]);
 
   // Dragging the pane's left edge sets its width.
   const onEdge = (e: ReactPointerEvent<HTMLDivElement>) => {

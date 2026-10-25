@@ -4,13 +4,20 @@
 // changes nothing in the text: a position is not part of the program. The text as typed is kept
 // with the tab (FlowMeta's `text`) and saved with the flow while it stands for the canvas, so its
 // comments survive; a canvas change that drops comments says so, and undoing it brings them back.
+//
+// The two are linked by the range each node is written over (docs/L4s/text-graph-link-L4.md): the
+// cursor picks the node under it, a node picked on the canvas marks its range, in view mode too,
+// where the text also shows the run: what didn't run dimmed, the step marked, values in notes.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Edge } from "@xyflow/react";
-import type { Evaluator } from "./holon";
+import type { Evaluator, WValue } from "./holon";
 import type { FlowSettings } from "./DeployBar";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
-import { compileHolon, printHolon } from "./holonText";
+import type { TextLinked, TextNote } from "./TextPane";
+import { valueChip } from "./diagnostics";
+import { compileHolon, printHolon, type TextRange } from "./holonText";
+import { dimmed, pickAt } from "./textLink";
 import { carryOver, commentCount, syncedFromCanvas, type Graph, type Synced } from "./textSync";
 import { settingsOf, syncKeyOf, type FlowMeta, type TextState } from "./tabs";
 
@@ -19,6 +26,18 @@ const WIDTH_KEY = "holon.textWidth";
 const PAUSE_MS = 300;
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** The selected run, as view mode replayed it: the nodes in the order they ran, what each made,
+ *  and the step shown. */
+export type TextRun = { order: string[]; traces: Map<string, { outputs: (WValue | null)[] }>; step: number | null };
+
+/** A text's ranges and names, by the canvas node each stands for. A node inside a holon's body
+ *  stands for none: it is linked through its holon's call. */
+type Link = { spans: Map<string, TextRange>; names: Map<string, string> };
+function linkOf(spans: Map<string, TextRange>, names: Map<string, string>, toCanvas: Map<string, string>): Link {
+  const by = <T,>(m: Map<string, T>) => new Map([...m].flatMap(([t, v]) => (toCanvas.has(t) ? [[toCanvas.get(t)!, v] as const] : [])));
+  return { spans: by(spans), names: by(names) };
+}
 
 export function useTextPane({
   flow,
@@ -32,6 +51,8 @@ export function useTextPane({
   ev,
   idRef,
   viewing,
+  run,
+  onPick,
 }: {
   flow: FlowMeta;
   setFlow: (update: (m: FlowMeta) => FlowMeta) => void;
@@ -45,6 +66,10 @@ export function useTextPane({
   ev: Evaluator;
   idRef: MutableRefObject<number>;
   viewing: boolean;
+  /** In view mode, the run shown; null without one. */
+  run: TextRun | null;
+  /** In view mode, the node the cursor picked (for the side pane). */
+  onPick: (id: string) => void;
 }) {
   const text = flow.text;
   const setText = useCallback((update: (t: TextState) => TextState) => setFlow((m) => ({ ...m, text: update(m.text) })), [setFlow]);
@@ -82,7 +107,7 @@ export function useTextPane({
     if (typedTexts.current.size > 100) typedTexts.current.delete(typedTexts.current.keys().next().value!);
   };
   // The compiled text that stands for the canvas, and which canvas node each of its nodes is.
-  const synced = useRef<{ key: string; synced: Synced; lines: Map<string, number> } | null>(null);
+  const synced = useRef<{ key: string; synced: Synced; lines: Map<string, number>; spans: Map<string, TextRange> } | null>(null);
 
   /** The canvas as a document to print or match. */
   const canvasDoc = () => ({ nodes: live.current.nodes as unknown[], edges: live.current.edges as unknown[], server: now.current.flow.settings });
@@ -94,7 +119,7 @@ export function useTextPane({
     const base = f.text.key === k && f.text.synced !== null ? f.text.synced : printHolon(f.name, canvasDoc(), ev);
     const c = compileHolon(base, ev);
     const canvas: Graph = { nodes: live.current.nodes, edges: live.current.edges };
-    synced.current = { key: k, synced: syncedFromCanvas(canvas, { nodes: c.doc.nodes, edges: c.doc.edges } as Graph, c.names), lines: c.lines };
+    synced.current = { key: k, synced: syncedFromCanvas(canvas, { nodes: c.doc.nodes, edges: c.doc.edges } as Graph, c.names), lines: c.lines, spans: c.spans };
     return synced.current;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ev]);
@@ -156,7 +181,7 @@ export function useTextPane({
       const requirements = { ...unsaid, ...(optional && optional.length > 0 ? { optional } : {}) };
       const settings: FlowSettings = { port: said.port, interval: said.interval, ...(Object.keys(requirements).length > 0 ? { requirements } : {}), ...(said.browsers ? { browsers: said.browsers } : {}) };
       const k2 = syncKeyOf(ns, out.edges, settings, f.name);
-      synced.current = { key: k2, synced: { ...next, toCanvas: out.toCanvas }, lines: compiled.lines };
+      synced.current = { key: k2, synced: { ...next, toCanvas: out.toCanvas }, lines: compiled.lines, spans: compiled.spans };
       remember(k2, typed);
       setStatus("");
       if (k2 === k) {
@@ -195,38 +220,75 @@ export function useTextPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewing, text.open, canvasKey, flow.name, ev]);
 
-  // The lines of what is selected on the canvas, in the text as shown (while it stands for it).
-  const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id).join(" ");
-  const lines = useMemo(() => {
-    if (!text.open || viewing || selectedIds === "" || text.key !== key || text.value !== text.synced) return [];
+  // The text shown, linked to the canvas: while editing, while it stands for the canvas (not
+  // half typed, nor with a mistake); in view mode, the deployed version's text compiled and
+  // matched to its canvas as an edit text is (a printed text compiles to the same graph).
+  const editLink = useMemo((): Link | null => {
+    if (!text.open || viewing || text.key !== key || text.value !== text.synced) return null;
     try {
       const s = syncedNow();
-      const toText = new Map([...s.synced.toCanvas].map(([t, c]) => [c, t]));
-      return selectedIds.split(" ").flatMap((id) => {
-        const l = s.lines.get(toText.get(id) ?? "");
-        return l === undefined ? [] : [l];
-      });
+      return linkOf(s.spans, s.synced.names, s.synced.toCanvas);
     } catch {
-      return [];
+      return null;
     }
-  }, [text.open, viewing, selectedIds, text.key, text.value, text.synced, key, syncedNow]);
+  }, [text.open, viewing, text.key, text.value, text.synced, key, syncedNow]);
+  const viewLink = useMemo((): Link | null => {
+    if (viewText === null) return null;
+    try {
+      const c = compileHolon(viewText, ev);
+      const s = syncedFromCanvas({ nodes, edges }, { nodes: c.doc.nodes, edges: c.doc.edges } as Graph, c.names);
+      return linkOf(c.spans, c.names, s.toCanvas);
+    } catch {
+      return null;
+    }
+    // The text is printed from this canvas: they change together.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewText, ev]);
+  const link = viewing ? viewLink : editLink;
 
-  // The cursor on a line selects the nodes written on it.
-  const onCursorLine = useCallback(
-    (line: number) => {
-      const { flow: f, key: k } = now.current;
-      if (f.text.key !== k || f.text.value !== f.text.synced) return;
-      let s: ReturnType<typeof syncedNow>;
-      try {
-        s = syncedNow();
-      } catch {
+  // What is picked on the canvas (in view mode, the node in the side pane), and the run, as
+  // ranges of the text.
+  const selectedIds = viewing ? (flow.inspectNode ?? "") : nodes.filter((n) => n.selected).map((n) => n.id).join(" ");
+  const linked = useMemo((): TextLinked | undefined => {
+    if (!link) return undefined;
+    const rangeOf = (id: string) => link.spans.get(id);
+    const marks = selectedIds === "" ? [] : selectedIds.split(" ").flatMap((id) => rangeOf(id) ?? []);
+    if (!viewing || !run) return { marks, dims: [], step: null, notes: [] };
+    const ran = new Set(run.order);
+    const atStep = run.step === null ? undefined : run.order[run.step];
+    // Notes for what is named (one value each: a route's `req` is a whole request), the node at
+    // the step and the one picked: not every node.
+    const named = [...link.names.keys()].filter((id) => run.traces.get(id)?.outputs.length === 1);
+    const noted = new Set([...named, ...(atStep ? [atStep] : []), ...(flow.inspectNode ? [flow.inspectNode] : [])]);
+    const notes: TextNote[] = [...noted].flatMap((id) => {
+      const r = rangeOf(id);
+      const outputs = run.traces.get(id)?.outputs;
+      // A node with no outputs (a write, say) has no value to note.
+      if (!r || !ran.has(id) || !outputs || outputs.length === 0) return [];
+      const ports = nodes.find((n) => n.id === id)?.data.outputs ?? [];
+      const said = outputs.length === 1 ? valueChip(outputs[0] ?? null) : outputs.map((v, i) => `${ports[i]?.name ?? i}: ${valueChip(v ?? null)}`).join("  ");
+      return [{ at: r.to, text: said, none: outputs.every((v) => v === null) }];
+    });
+    return { marks, dims: dimmed(link.spans, (id) => ran.has(id)), step: (atStep && rangeOf(atStep)) || null, notes };
+  }, [link, selectedIds, viewing, run, flow.inspectNode, nodes]);
+
+  // The cursor picks the node under it: selected on the canvas, or in view mode shown in the
+  // side pane (of several written as one, the outermost that ran: lowering makes it last, as the
+  // `equals` of a match arm's `"add"` comes after its const).
+  const onCursor = useCallback(
+    (offset: number) => {
+      if (!link) return;
+      const ids = pickAt(link.spans, offset);
+      if (ids.length === 0) return;
+      if (viewing) {
+        const ran = ids.filter((id) => run?.order.includes(id));
+        onPick(ran[ran.length - 1] ?? ids[ids.length - 1]);
         return;
       }
-      const ids = new Set([...s.lines].filter(([, l]) => l === line).map(([t]) => s.synced.toCanvas.get(t)).filter((c): c is string => c !== undefined));
-      if (ids.size === 0) return;
-      setNodes((ns) => ns.map((n) => (Boolean(n.selected) === ids.has(n.id) ? n : { ...n, selected: ids.has(n.id) })));
+      const picked = new Set(ids);
+      setNodes((ns) => ns.map((n) => (Boolean(n.selected) === picked.has(n.id) ? n : { ...n, selected: picked.has(n.id) })));
     },
-    [syncedNow, setNodes],
+    [link, viewing, run, onPick, setNodes],
   );
 
   const toggle = useCallback(() => setText((t) => ({ ...t, open: !t.open })), [setText]);
@@ -238,8 +300,8 @@ export function useTextPane({
       text: viewing ? (viewText ?? "") : (text.value ?? ""),
       readOnly: viewing,
       onEdit,
-      lines,
-      onCursorLine,
+      linked,
+      onCursor,
       status: viewing ? "" : status,
       width,
       onWidth: setWidth,

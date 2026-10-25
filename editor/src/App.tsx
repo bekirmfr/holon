@@ -663,8 +663,11 @@ function Canvas({
 
   const decoratedEdges = viewing ? view.viewEdges : edges;
 
-  // The flow's text beside the canvas (useTextPane.ts, TextPane.tsx).
-  const textPane = useTextPane({ flow, setFlow, nodes, edges, canvasKey, live, setNodes, setEdges, ev, idRef, viewing: viewing !== null });
+  // The flow's text beside the canvas (useTextPane.ts, TextPane.tsx), and in view mode the run
+  // shown in it.
+  const replayed = view.replayed;
+  const textRun = useMemo(() => (replayed ? { order: replayed.order, traces: replayed.traces, step: flow.step } : null), [replayed, flow.step]);
+  const textPane = useTextPane({ flow, setFlow, nodes, edges, canvasKey, live, setNodes, setEdges, ev, idRef, viewing: viewing !== null, run: textRun, onPick: view.pickNode });
 
   // How many placed nodes are currently selected — React Flow's own selection state
   // (shift-click / drag-box), already live for delete, now also gating the "group" button

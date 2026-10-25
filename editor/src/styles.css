@@ -164,6 +164,13 @@ body {
 .hl-text__status { padding: 5px 10px; font-size: 11.5px; color: #e0c36f; background: #2a2a1488; border-bottom: 1px solid var(--line-soft); }
 .hl-text__editor { flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .hl-text__picked { background: #6fd3e01a; box-shadow: inset 2px 0 0 #6fd3e0; }
+/* What the canvas links to the text (docs/L4s/text-graph-link-L4.md): a picked node's range, what
+   a run didn't run, the step, and a value beside what made it (the wire labels' colours). */
+.hl-text__mark { background: #6fd3e02e; border-radius: 2px; }
+.hl-text__dim { opacity: 0.38; }
+.hl-text__step { background: #e0c36f2e; box-shadow: 0 1px 0 #e0c36f; border-radius: 2px; }
+.hl-text__value { margin-left: 8px; padding: 0 5px; border-radius: 4px; background: #0b1527; border: 1px solid #1f3352; color: #bfe8c2; font-size: 11px; user-select: none; }
+.hl-text__value--none { color: #7e8ea8; }
 .hl-text__said { max-width: 460px; padding: 6px 10px; font-size: 12px; line-height: 1.45; }
 .hl-text__said p { margin: 4px 0; }
 .hl-text__said pre { margin: 4px 0; font-family: var(--mono); font-size: 11.5px; color: #82aaff; white-space: pre-wrap; }
