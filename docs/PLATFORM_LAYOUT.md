@@ -294,7 +294,9 @@ only the editor.
 - **Named folders** ✅ (`holon/src/folders.rs`, slice 1 of `docs/L4s/named-folders-L4.md`): files
   a flow reads and writes on the host, in folders an admin binds by name (`--folders`, its own
   file, owner-only; `GET`/`POST /admin/folders`, `DELETE /admin/folders/<name>`; `holon folder`),
-  each read-only or read-write, its reads kept in the log as text or by hash. The server's own
+  each read-only or read-write, its reads kept in the log as text or by hash, for the whole
+  server or for one deployment (`--for SLUG`; a deployment's own binding of a name comes
+  first). The server's own
   files, and any folder holding them, can't be bound. A flow asks `FileRead("inbox")` /
   `FileWrite("reports")`; a deploy is refused until they are bound as it needs. A file's name is
   checked before it reaches the OS (no `..`, root, drive, `:` or reserved name) and its real
@@ -302,9 +304,10 @@ only the editor.
   answered as the run finds the folder, recorded with their path like a collection's, and checked
   again before the run commits; text only, 1 MiB a file and 64 MiB a run. Writes are effects,
   applied at commit: written beside the file, synced and renamed over it. The log keeps a read's
-  text up to 4 KiB, a bigger one in the content store by hash (exported as the export's `blobs`),
-  and a write as `{name, size, hash}`; a node output carrying a text it keeps by hash is left out
-  of the timeline. `holon verify --files DIR` answers reads a folder kept only by hash. A run
+  text up to 4 KiB, a bigger one in the content store by hash (exported as the export's `blobs`,
+  up to `--max-files-bytes`, or none with `--without-files`), and a write as `{name, size,
+  hash}`; a node output carrying a text it keeps by hash is left out of the timeline. `holon
+  verify --files DIR` answers reads a folder kept only by hash. A run
   whose read fails answers 500 and performs nothing. Slice 2 (`holon/src/ranges.rs`): a file of
   any size by handle (`{folder, name, size, hash, modified}`, its bytes hashed, none kept) and
   copied by handle at commit, streamed beside the target and renamed over it, refused if the file

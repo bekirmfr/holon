@@ -400,8 +400,9 @@ struct Deployment {
     /// Its secrets (the store's vault for its slug): runs read the ones it was granted, and
     /// everything it logs or answers has their values redacted.
     secrets: Vault,
-    /// The folders bound on this server (folders.rs): runs read and write the ones it was granted.
-    folders: Arc<folders::Folders>,
+    /// The folders bound on this server, as this deployment sees them (folders.rs): runs read and
+    /// write the ones it was granted.
+    folders: Arc<folders::Scoped>,
     /// Its runs waiting for an event, by run id (durable.rs). Persisted; kept across redeploys,
     /// each pinned to the unit it started on.
     parked: BTreeMap<String, ParkedRun>,
@@ -902,7 +903,7 @@ fn serve(args: Vec<String>) {
     let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     for (slug, dep) in initial_deployments.iter_mut() {
         dep.secrets = secrets.vault(slug);
-        dep.folders = Arc::clone(&folders);
+        dep.folders = Arc::new(folders::Scoped::new(Arc::clone(&folders), slug));
     }
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));

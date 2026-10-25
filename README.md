@@ -131,7 +131,9 @@ runs.json` checks it anywhere, offline: the
 chain is unbroken, each unit is what its hash says, and every run, run again from its log entry
 (the same request, state, clock, random, outbound answers and collection and file reads, through
 the same core), produces what the log says it did. `--head <hex>` checks a head a witness holds is
-in it; `--files <folder>` gives the files runs read from a folder whose log keeps only hashes.
+in it; `--files <folder>` gives the files runs read from a folder whose log keeps only hashes
+(an export carries those files' texts unless `holon export --without-files`, or past
+`--max-files-bytes 10M`, leaves them out: those runs then check only with `--files`).
 A run that used a secret or a resume token can't be run again (the log never holds their
 values), and is counted, not failed. The `ledger` sample is one to try it on.
 Flows read and write files only in folders an admin binds to a name (`folder inbox` in a flow):
@@ -139,7 +141,8 @@ Flows read and write files only in folders an admin binds to a name (`folder inb
 ```sh
 holon folder add inbox ~/drop --read-only    # flows may read it, not write it
 holon folder add reports ~/reports           # read and write; --keep hash: the log keeps hashes
-holon folder list                            # holon folder remove NAME unbinds one
+holon folder add inbox ~/acme --for acme     # deployment acme sees this folder as inbox
+holon folder list                            # holon folder remove NAME [--for SLUG] unbinds one
 ```
 
 or the editor's admin page. A flow names the folder, never a path, and a file's name never leaves

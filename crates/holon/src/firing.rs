@@ -207,7 +207,7 @@ fn still_as_read(
     reads: &[collections::Read],
     permit: &Permit,
     store: &SharedStore,
-    folders: Option<&Arc<folders::Folders>>,
+    folders: Option<&Arc<folders::Scoped>>,
 ) -> bool {
     let cells: BTreeSet<&String> = start.iter().chain(live.iter()).map(|(k, _)| k).collect();
     let cells_unchanged = cells
@@ -230,7 +230,7 @@ fn still_as_read(
 /// Apply a run's writes to the live state: each state write, then each collection put and delete,
 /// in the order the run made them; then each file written or deleted, in its order. What didn't
 /// land, and why: a file that couldn't be written (the others still are).
-fn commit(live: &mut State, store: &SharedStore, folders: Option<&folders::Folders>, performed: &[(Capability, Value)]) -> Vec<String> {
+fn commit(live: &mut State, store: &SharedStore, folders: Option<&folders::Scoped>, performed: &[(Capability, Value)]) -> Vec<String> {
     for (cap, payload) in performed {
         if let Capability::StateWrite(key) = cap {
             if !is_storable(payload) {

@@ -404,8 +404,8 @@ route GET /reports (req) {
 ```
 
 `folder inbox` names a folder on the host; an admin binds the name to a real folder
-(`holon folder add inbox /srv/drop --read-only`, or the editor's admin page), and a flow never
-sees the path. A folder reads and writes as a collection does, by file name: `inbox[name]` is
+(`holon folder add inbox /srv/drop --read-only`, `--for <slug>` for one deployment only, or the
+editor's admin page), and a flow never sees the path. A folder reads and writes as a collection does, by file name: `inbox[name]` is
 `file_read{folder: inbox}`, the file's text as the run began (no value if there is none);
 `reports[name] = text` is `file_write`, the whole file written when the run finishes;
 `delete reports[name]` is `file_delete`; `reports.list(…)` is `file_list`, a record of file name

@@ -59,7 +59,7 @@ export function AdminPage({ me }: { me: string }) {
   const [issuer, setIssuer] = useState("");
   const [clientId, setClientId] = useState("");
   const [folders, setFolders] = useState<FolderEntry[]>([]);
-  const [folderDraft, setFolderDraft] = useState<FolderEntry>({ name: "", path: "", access: "read-write", keep: "bytes" });
+  const [folderDraft, setFolderDraft] = useState<FolderEntry>({ name: "", path: "", access: "read-write", keep: "bytes", deployment: null });
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
@@ -264,23 +264,26 @@ export function AdminPage({ me }: { me: string }) {
       <div style={head}>folders</div>
       <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 6, lineHeight: 1.45 }}>
         Files flows read and write on this server&apos;s machine. A flow names a folder (<code>folder inbox</code>), never a path: bind each name to a real folder here.
-        Read only: flows may read it, not write it. Reads kept by hash: the run log keeps a hash of what each run read, not its text.
+        Read only: flows may read it, not write it. Reads kept by hash: the run log keeps a hash of what each run read, not its text. For one deployment: that
+        deployment sees this folder by the name, whatever the server&apos;s is, and no other deployment sees it.
       </div>
       {folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>none</div>}
       {folders.map((f) => (
-        <div key={f.name} style={row}>
+        <div key={`${f.deployment ?? ""}/${f.name}`} style={row}>
           <span style={{ color: "#6fd3e0", minWidth: 90 }}>{f.name}</span>
           <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{f.path}</span>
           <span style={{ color: "#7e8ea8", fontSize: 11 }}>
             {f.access === "read" ? "read only" : "read and write"}
             {f.keep === "hash" ? " · reads kept by hash" : ""}
+            {f.deployment ? ` · for ${f.deployment} only` : ""}
           </span>
           <button
             style={small}
             title="unbind the name: the files stay where they are"
             onClick={async () => {
-              if (await dialog.confirm(`Unbind the folder "${f.name}"? Its files stay where they are; deployments that use it can't read or write it until it is bound again.`, "Unbind"))
-                act(() => unbindFolder(f.name));
+              const whose = f.deployment ? ` for ${f.deployment}` : "";
+              if (await dialog.confirm(`Unbind the folder "${f.name}"${whose}? Its files stay where they are; deployments that use it can't read or write it until it is bound again.`, "Unbind"))
+                act(() => unbindFolder(f.name, f.deployment));
             }}
           >
             ×
@@ -292,8 +295,8 @@ export function AdminPage({ me }: { me: string }) {
         onSubmit={(e) => {
           e.preventDefault();
           act(async () => {
-            await bindFolder({ ...folderDraft, name: folderDraft.name.trim(), path: folderDraft.path.trim() });
-            setFolderDraft({ ...folderDraft, name: "", path: "" });
+            await bindFolder({ ...folderDraft, name: folderDraft.name.trim(), path: folderDraft.path.trim(), deployment: folderDraft.deployment?.trim() || null });
+            setFolderDraft({ ...folderDraft, name: "", path: "", deployment: null });
           });
         }}
       >
@@ -313,6 +316,13 @@ export function AdminPage({ me }: { me: string }) {
           <option value="bytes">log keeps what was read</option>
           <option value="hash">log keeps a hash</option>
         </select>
+        <input
+          aria-label="for one deployment"
+          placeholder="for one deployment (empty: all)"
+          value={folderDraft.deployment ?? ""}
+          onChange={(e) => setFolderDraft({ ...folderDraft, deployment: e.target.value })}
+          style={input}
+        />
         <button type="submit" style={primary} disabled={!folderDraft.name.trim() || !folderDraft.path.trim()}>
           bind folder
         </button>

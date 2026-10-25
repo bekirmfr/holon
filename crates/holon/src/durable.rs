@@ -146,8 +146,8 @@ pub(crate) struct RunWaits {
     pub(crate) events: BTreeMap<String, Value>,
     /// The collections this run may read, as it found them (collections.rs); none outside a run.
     pub(crate) collections: Option<collections::Readable>,
-    /// The folders bound on this server (folders.rs); none outside a run.
-    pub(crate) folders: Option<Arc<folders::Folders>>,
+    /// The folders the deployment sees (folders.rs); none outside a run.
+    pub(crate) folders: Option<Arc<folders::Scoped>>,
     /// The folders this run may read, and how much it has read (folders.rs); none outside a run.
     pub(crate) files: Option<folders::Readable>,
     /// The collection and file reads it made, each once, with what each answered.

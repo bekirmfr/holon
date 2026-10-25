@@ -3751,6 +3751,17 @@ fn a_flow_reads_and_writes_bound_folders_and_its_runs_verify() {
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
     assert!(preview["refused"].as_str().unwrap_or("").contains("holon folder add inbox"), "{preview}");
 
+    // Bound for another deployment only: still not this one's. The admin API lists it as that
+    // deployment's, and unbinds it there.
+    let theirs = serde_json::json!({ "name": "inbox", "path": inbox.display().to_string(), "access": "read", "deployment": "other" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&theirs).unwrap())).status_code, 200);
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    assert!(preview["refused"].as_str().unwrap_or("").contains("--for inbox-report"), "{preview}");
+    let listed = body_json(route(&state, &req("GET", "/admin/folders", vec![])));
+    assert_eq!(listed[0]["deployment"], "other", "{listed}");
+    assert_eq!(route(&state, &req("DELETE", "/admin/folders/inbox", vec![])).status_code, 404, "not the server's");
+    assert_eq!(route(&state, &req("DELETE", "/admin/folders/inbox?deployment=other", vec![])).status_code, 204);
+
     let bind = |name: &str, path: &Path, access: &str, keep: &str| {
         let body = serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access, "keep": keep });
         route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap()))
@@ -3801,6 +3812,24 @@ fn a_flow_reads_and_writes_bound_folders_and_its_runs_verify() {
     let report = verify::check(&first, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 5, "{:?}", report.reruns);
+    assert_eq!(first.files_left_out, None);
+
+    // Asked for less: the big file's text stays out, the export says so, and the run that read it
+    // checks only with the file given.
+    let smaller = |query: &str| -> verify::Export {
+        serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export?{query}"), vec![])))).unwrap()
+    };
+    for query in ["without_files=1", "max_files_bytes=100"] {
+        let lean = smaller(query);
+        assert!(lean.blobs.is_empty(), "{query}");
+        assert_eq!(lean.files_left_out, Some(verify::LeftOut { files: 1, bytes: big.len() as u64 }), "{query}");
+        let without = verify::check(&lean, None, &BTreeMap::new());
+        assert!(without.ok() && without.reruns.iter().any(|(_, r)| matches!(r, verify::Rerun::Skipped(why) if why.contains("left it out"))), "{query}");
+        let with = verify::check(&lean, None, &folders::files_in(&inbox).unwrap());
+        assert_eq!(with.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), "{query}");
+    }
+    assert_eq!(smaller(&format!("max_files_bytes={}", big.len())).blobs.len(), 1, "a budget it fits in");
+    assert_eq!(route(&state, &req("GET", &format!("/deployments/{slug}/export?max_files_bytes=lots"), vec![])).status_code, 400);
 
     // A folder that keeps hashes: the run checks only with the file given.
     assert_eq!(bind("inbox", &inbox, "read", "hash").status_code, 200);

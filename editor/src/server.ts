@@ -121,12 +121,14 @@ export const createToken = async (label: string, role: Role) => asJson<{ token: 
 export async function revokeToken(id: string): Promise<void> {
   await asJson<void>(await api(`${BASE}/admin/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }));
 }
-/** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here. */
-export type FolderEntry = { name: string; path: string; access: "read" | "read-write"; keep: "bytes" | "hash" };
+/** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here;
+ *  for the whole server (`deployment` null), or for that deployment only. */
+export type FolderEntry = { name: string; path: string; access: "read" | "read-write"; keep: "bytes" | "hash"; deployment: string | null };
 export const listFolders = async () => asJson<FolderEntry[]>(await api(`${BASE}/admin/folders`));
 export const bindFolder = async (f: FolderEntry) => asJson<FolderEntry>(await post(`${BASE}/admin/folders`, f));
-export async function unbindFolder(name: string): Promise<void> {
-  await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}`, { method: "DELETE" }));
+export async function unbindFolder(name: string, deployment: string | null): Promise<void> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
 }
 export const getOidcSettings = async () => (await asJson<{ settings: OidcSettings | null }>(await api(`${BASE}/admin/oidc`))).settings;
 export async function setOidcSettings(settings: OidcSettings | null): Promise<void> {

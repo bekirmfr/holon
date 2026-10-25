@@ -213,12 +213,15 @@ hash).
 
    **Built** (`crates/holon/src/folders.rs`, the `inbox-report` sample). As designed, with these
    differences: a file is text up to 1 MiB, a run reads 64 MiB at most, and a read's text is in
-   the log up to 4 KiB (past that, in the content store by hash); `--max-files-bytes` and
-   `--without-files` aren't built (the export ships every blob its runs reference); a run whose
+   the log up to 4 KiB (past that, in the content store by hash); `holon export
+   --max-files-bytes N` keeps the blobs to N bytes in all (oldest run first) and
+   `--without-files` ships none, the export saying how many it left out (`files_left_out`); a run whose
    read fails answers 500 ("its run log says why") and performs nothing; a node output carrying
    a text the log keeps by hash is left out of the run's timeline, and a write effect in the
-   run's outputs is logged as `{name, size, hash}`, as it is performed. Folders are global to the
-   server (no per-deployment binding yet).
+   run's outputs is logged as `{name, size, hash}`, as it is performed. A name is bound for the
+   whole server or for one deployment (`holon folder add NAME PATH --for SLUG`, `deployment` in
+   `POST /admin/folders`): a deployment sees its own binding of a name first, then the server's,
+   and no other deployment sees its own.
 2. **Handles and ranges.** `.file`, copy by handle, `.lines`, `.slice` with bao-checked ranges.
 
    **Built** (`crates/holon/src/ranges.rs`, the `log-archive` sample). The proof isn't the bao

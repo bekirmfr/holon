@@ -120,7 +120,8 @@ pub(crate) fn handle_post_deploy(
     // without asking, and everything else must be acknowledged. A redeploy asks only for what
     // the previous grant didn't already cover.
     let manifest = Manifest::new(caps.iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
-    if let Some(why) = policy.refuses(&manifest).or_else(|| folders.refuses(&manifest)) {
+    let seen = Arc::new(folders::Scoped::new(Arc::clone(folders), &body.slug));
+    if let Some(why) = policy.refuses(&manifest).or_else(|| seen.refuses(&manifest)) {
         return err(400, format!("this host can't grant that: {why}"));
     }
     let previous = deployments.lock().unwrap().get(&body.slug).map(|d| d.grant.clone());
@@ -223,7 +224,7 @@ pub(crate) fn handle_post_deploy(
                 attention: None,
                 listen_error: None,
                 secrets: secrets.vault(&body.slug),
-                folders: Arc::clone(folders),
+                folders: seen,
                 parked,
                 unit: unit_hash,
                 triggers: triggers.clone(),
@@ -287,7 +288,7 @@ pub(crate) fn handle_post_deploy_preview(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     policy: &Policy,
     secrets: &SecretStore,
-    folders: &folders::Folders,
+    folders: &Arc<folders::Folders>,
     request: &Request,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -321,7 +322,7 @@ pub(crate) fn handle_post_deploy_preview(
         "refused": policy.refuses(&manifest).or_else(|| {
             let permit = Permit::new(unit_hash, &Grant::for_manifest(&manifest, 0, "preview"), policy);
             durable::refuses_waits(root_unit, &resolver, &permit)
-        }).or_else(|| folders.refuses(&manifest)),
+        }).or_else(|| folders::Scoped::new(Arc::clone(folders), &body.slug).refuses(&manifest)),
         // Secrets it reads that aren't set yet: it deploys, but those nodes stay empty until set.
         "missing_secrets": manifest
             .capabilities

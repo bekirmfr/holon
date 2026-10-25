@@ -35,10 +35,32 @@ pub(crate) struct Export {
     /// content store (hex): checked against the file's hash, so it can't stand in for another.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) blobs: BTreeMap<String, String>,
+    /// What of those texts it doesn't hold, when it was asked for less (`--max-files-bytes`,
+    /// `--without-files`): runs that read them check only with the files given (`--files`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) files_left_out: Option<LeftOut>,
 }
 
-/// `GET /deployments/<slug>/export` — the deployment's runs, and the units they ran, as one file.
-pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
+/// The texts of files an export left out: how many, and how big in all.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct LeftOut {
+    pub(crate) files: u64,
+    pub(crate) bytes: u64,
+}
+
+/// `GET /deployments/<slug>/export` — the deployment's runs, and the units they ran, as one file;
+/// with the texts of the files they read that their log keeps by hash, up to `?max_files_bytes=N`
+/// in all (oldest run first), or none with `?without_files=1`.
+pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
+    let budget = if request.get_param("without_files").is_some_and(|v| v != "0" && v != "false") {
+        0
+    } else {
+        match request.get_param("max_files_bytes").map(|v| v.parse::<u64>()) {
+            None => u64::MAX,
+            Some(Ok(n)) => n,
+            Some(Err(_)) => return err(400, "max_files_bytes is a number of bytes"),
+        }
+    };
     let (lines, head) = match deployments.lock().unwrap().get(slug) {
         Some(dep) => (dep.log.lines(), dep.log.head().to_string()),
         None => return err(404, format!("no deployment {slug:?}")),
@@ -46,10 +68,19 @@ pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMa
     let mut units = BTreeMap::new();
     let entries: Vec<LogEntry> = lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()).collect();
     let mut blobs = BTreeMap::new();
+    let (mut held, mut left_out) = (0u64, LeftOut { files: 0, bytes: 0 });
+    let mut seen = BTreeSet::new();
     for blob in entries.iter().flat_map(|e| &e.reads).filter_map(|r| r.file.as_ref()?.blob.as_ref()) {
-        let Some(h) = parse_hash(blob) else { continue };
+        let Some(h) = parse_hash(blob).filter(|_| seen.insert(blob.clone())) else { continue };
         match store.0.lock().unwrap().get_value(&h) {
             Ok(Some(Value::Text(text))) => {
+                let size = text.len() as u64;
+                if held.saturating_add(size) > budget {
+                    left_out.files += 1;
+                    left_out.bytes += size;
+                    continue;
+                }
+                held += size;
                 blobs.insert(blob.clone(), text);
             }
             Ok(_) => {}
@@ -72,7 +103,8 @@ pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMa
             units.insert(key, hex_of(&bytes));
         }
     }
-    let export = Export { export: FORMAT.into(), deployment: slug.into(), head, lines, units, blobs };
+    let files_left_out = (left_out.files > 0).then_some(left_out);
+    let export = Export { export: FORMAT.into(), deployment: slug.into(), head, lines, units, blobs, files_left_out };
     Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{slug}-runs.json\""))
 }
 
@@ -223,7 +255,7 @@ impl Texts<'_> {
                 Err(e) => Err(Rerun::Skipped(format!("it read {}, and {} can't be read as text: {e}", what(), path.display()))),
             },
             None => Err(Rerun::Skipped(format!(
-                "it read {}, whose text the export doesn't hold (its folder keeps hashes): give it with --files",
+                "it read {}, whose text the export doesn't hold (its folder keeps hashes, or the export left it out): give it with --files",
                 what()
             ))),
         }
@@ -251,7 +283,7 @@ impl Texts<'_> {
         }
         let Some(path) = self.files.get(&file.hash) else {
             return Err(Rerun::Skipped(format!(
-                "it read part of {}, whose text the export doesn't hold (its folder keeps hashes): give the file with --files",
+                "it read part of {}, whose text the export doesn't hold (its folder keeps hashes, or the export left it out): give the file with --files",
                 what(read)
             )));
         };
@@ -599,12 +631,14 @@ fn list<T: std::fmt::Display>(items: &[T]) -> String {
     shown.join(", ") + if items.len() > 10 { ", …" } else { "" }
 }
 
-/// `holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME]`: fetch a deployment's runs from a server, as
-/// the editor's "export runs" does, and write them where `holon verify` reads them. The server
-/// and sign-in come from the one this user runs here (local.rs), or `--server` and `HOLON_TOKEN`.
+/// `holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME] [--max-files-bytes N |
+/// --without-files]`: fetch a deployment's runs from a server, as the editor's "export runs" does,
+/// and write them where `holon verify` reads them. The server and sign-in come from the one this
+/// user runs here (local.rs), or `--server` and `HOLON_TOKEN`.
 pub(crate) fn export(args: &[String]) -> i32 {
     let mut slug = None;
     let mut server = None;
+    let mut files: Option<String> = None;
     let (mut to, mut name, mut out) = (None, None, None);
     let mut args = args.iter();
     while let Some(a) = args.next() {
@@ -612,6 +646,14 @@ pub(crate) fn export(args: &[String]) -> i32 {
             "--server" => server = args.next().cloned(),
             "--to" => to = args.next().cloned(),
             "--as" => name = args.next().cloned(),
+            "--without-files" => files = Some("without_files=1".into()),
+            "--max-files-bytes" => match args.next().and_then(|v| budget_of(v)) {
+                Some(n) => files = Some(format!("max_files_bytes={n}")),
+                None => {
+                    eprintln!("holon export: --max-files-bytes takes a size: 1048576, 64K, 10M or 2G");
+                    return 2;
+                }
+            },
             // The whole path at once, as rc.7 and rc.8 took it.
             "-o" | "--out" => out = args.next().cloned(),
             "--help" | "-h" => {
@@ -644,7 +686,7 @@ pub(crate) fn export(args: &[String]) -> i32 {
         }
     };
     let server = target.server.as_str();
-    let url = format!("{server}/deployments/{slug}/export");
+    let url = format!("{server}/deployments/{slug}/export{}", files.map_or(String::new(), |q| format!("?{q}")));
     let mut request = ureq::get(&url).timeout(Duration::from_secs(120));
     if let Some(token) = &target.token {
         request = request.set("Authorization", &format!("Bearer {token}"));
@@ -696,8 +738,26 @@ pub(crate) fn export(args: &[String]) -> i32 {
     let path = std::path::absolute(&out).unwrap_or(out).display().to_string();
     let arg = if path.contains(' ') { format!("\"{path}\"") } else { path.clone() };
     println!("wrote {path}: {} runs of {slug:?}, head {head}", export.lines.len());
+    if let Some(l) = &export.files_left_out {
+        let s = if l.files == 1 { "" } else { "s" };
+        println!("left out the text of {} file{s} its runs read ({} bytes): holon verify --files <folder> checks those runs", l.files, l.bytes);
+    }
     println!("check it anywhere: holon verify {arg}");
     0
+}
+
+/// A size as `--max-files-bytes` takes it: bytes, or with K, M or G (KiB, MiB, GiB), a B after it
+/// optional.
+fn budget_of(v: &str) -> Option<u64> {
+    let v = v.trim().to_ascii_uppercase();
+    let v = v.strip_suffix('B').unwrap_or(&v);
+    let (digits, unit) = match v.char_indices().last()? {
+        (i, 'K') => (&v[..i], 1u64 << 10),
+        (i, 'M') => (&v[..i], 1 << 20),
+        (i, 'G') => (&v[..i], 1 << 30),
+        _ => (v, 1),
+    };
+    digits.parse::<u64>().ok()?.checked_mul(unit)
 }
 
 /// Where `holon export` writes: `--to` (a folder, default here) and `--as` (a name, default
@@ -721,9 +781,26 @@ pub(crate) fn export_path(slug: &str, to: Option<&str>, name: Option<&str>, out:
 }
 
 const EXPORT_USAGE: &str = "usage: holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME]
+                    [--max-files-bytes N | --without-files]
 
   Writes a deployment's runs (its run log, exactly as written, and every unit they ran) to a file
   for holon verify: NAME (default <slug>-runs.json) in FOLDER (default this one, made if it
   isn't there). From the holon serve you run on this machine,
   signed in as you; with several running, --server <port> picks one. A server elsewhere:
-  --server <URL> (or HOLON_SERVER), signed in with an API token in HOLON_TOKEN.";
+  --server <URL> (or HOLON_SERVER), signed in with an API token in HOLON_TOKEN.
+
+  With the runs come the texts of the files they read that their log keeps by hash (a big file,
+  or part of one). --max-files-bytes N (64K, 10M, 2G) ships them up to N bytes in all, the oldest
+  runs' first; --without-files ships none. It says what it left out: holon verify checks those
+  runs with --files, the folder of the originals.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_files_budget_is_bytes_or_k_m_g() {
+        assert_eq!([budget_of("1048576"), budget_of("64K"), budget_of("10m"), budget_of("2GB"), budget_of("0")], [Some(1 << 20), Some(64 << 10), Some(10 << 20), Some(2 << 30), Some(0)]);
+        assert_eq!([budget_of("lots"), budget_of("-1"), budget_of("K"), budget_of("99999999999G")], [None; 4]);
+    }
+}

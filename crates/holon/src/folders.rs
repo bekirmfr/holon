@@ -3,8 +3,9 @@
 //! - **Bound by an admin.** A folder is a name an admin binds to a real folder on this machine
 //!   (`--folders`, owner-only; `/admin/folders`, `holon folder`), with the most it allows (read, or
 //!   read and write) and what its reads keep in the log (the bytes, or a hash). A flow names
-//!   `inbox`; it never sees a path. The server's own data can never be bound, nor a folder holding
-//!   it.
+//!   `inbox`; it never sees a path. A binding is for the whole server, or for one deployment: a
+//!   deployment's own binding of a name is the one it sees ([`Scoped`]), and no other deployment
+//!   sees it. The server's own data can never be bound, nor a folder holding it.
 //! - **Confined.** A file's name is a relative path inside the folder, checked before it reaches
 //!   the operating system (no `..`, no drive or root, no `:`, no reserved Windows names), and the
 //!   file it opens must still be inside the folder once links are followed.
@@ -77,7 +78,18 @@ pub(crate) struct Folders {
     file: Option<PathBuf>,
     /// The server's own files and folders: never bound, nor anything holding them.
     forbidden: Vec<PathBuf>,
-    bound: RwLock<BTreeMap<String, Folder>>,
+    bound: RwLock<Bound>,
+}
+
+/// Every binding: the server's, by name, and each deployment's own, by its slug then name. On
+/// disk, the server's are the file's top level (as before there were any of a deployment's) and a
+/// deployment's are under `@deployments`, which no folder name can be.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct Bound {
+    #[serde(rename = "@deployments", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) deployments: BTreeMap<String, BTreeMap<String, Folder>>,
+    #[serde(flatten)]
+    pub(crate) server: BTreeMap<String, Folder>,
 }
 
 impl std::fmt::Debug for Folders {
@@ -110,7 +122,7 @@ fn canonical(path: &Path) -> std::io::Result<PathBuf> {
 impl Folders {
     /// No folders, kept nowhere: the tests, and a server told `--folders :memory:`.
     pub(crate) fn memory() -> Folders {
-        Folders { file: None, forbidden: Vec::new(), bound: RwLock::new(BTreeMap::new()) }
+        Folders { file: None, forbidden: Vec::new(), bound: RwLock::new(Bound::default()) }
     }
 
     /// The folders bound in `file` (none yet if it doesn't exist), refusing ever to bind one of
@@ -123,25 +135,31 @@ impl Folders {
         let path = PathBuf::from(file);
         let bound = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{file} isn't a folders file: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Bound::default(),
             Err(e) => return Err(format!("can't read {file}: {e}")),
         };
         Ok(Folders { file: Some(path), forbidden, bound: RwLock::new(bound) })
     }
 
-    /// Every folder bound, by name.
-    pub(crate) fn all(&self) -> BTreeMap<String, Folder> {
+    /// Every folder bound: the server's, and each deployment's.
+    pub(crate) fn all(&self) -> Bound {
         self.bound.read().unwrap().clone()
     }
 
-    pub(crate) fn get(&self, name: &str) -> Option<Folder> {
-        self.bound.read().unwrap().get(name).cloned()
+    /// The folder deployment `deployment` sees as `name`: its own binding, else the server's.
+    pub(crate) fn resolve(&self, deployment: &str, name: &str) -> Option<Folder> {
+        let bound = self.bound.read().unwrap();
+        bound.deployments.get(deployment).and_then(|d| d.get(name)).or_else(|| bound.server.get(name)).cloned()
     }
 
-    /// Bind `name` to the folder at `path` (which must exist), replacing any binding before.
-    pub(crate) fn bind(&self, name: &str, path: &str, access: FolderAccess, keep: Keep) -> Result<Folder, String> {
+    /// Bind `name` to the folder at `path` (which must exist), for the whole server or for one
+    /// deployment (`for_deployment`, its slug), replacing any binding of it there before.
+    pub(crate) fn bind(&self, name: &str, path: &str, access: FolderAccess, keep: Keep, for_deployment: Option<&str>) -> Result<Folder, String> {
         if !is_folder_name(name) {
             return Err(format!("{name:?} isn't a folder name: letters, digits, - and _, up to 64"));
+        }
+        if let Some(slug) = for_deployment.filter(|s| !is_folder_name(s)) {
+            return Err(format!("{slug:?} isn't a deployment's name"));
         }
         let given = PathBuf::from(path.trim());
         if !given.is_absolute() {
@@ -157,34 +175,71 @@ impl Folders {
         let folder = Folder { path: at, access, keep };
         let mut bound = self.bound.write().unwrap();
         let mut next = bound.clone();
-        next.insert(name.to_string(), folder.clone());
+        match for_deployment {
+            Some(slug) => next.deployments.entry(slug.to_string()).or_default().insert(name.to_string(), folder.clone()),
+            None => next.server.insert(name.to_string(), folder.clone()),
+        };
         self.save(&next)?;
         *bound = next;
         Ok(folder)
     }
 
-    /// Unbind `name`: whether it was bound. Its files stay where they are.
-    pub(crate) fn unbind(&self, name: &str) -> Result<bool, String> {
+    /// Unbind `name`, the server's or one deployment's: whether it was bound. Its files stay where
+    /// they are.
+    pub(crate) fn unbind(&self, name: &str, for_deployment: Option<&str>) -> Result<bool, String> {
         let mut bound = self.bound.write().unwrap();
-        if !bound.contains_key(name) {
+        let mut next = bound.clone();
+        let removed = match for_deployment {
+            Some(slug) => {
+                let removed = next.deployments.get_mut(slug).and_then(|d| d.remove(name)).is_some();
+                if next.deployments.get(slug).is_some_and(BTreeMap::is_empty) {
+                    next.deployments.remove(slug);
+                }
+                removed
+            }
+            None => next.server.remove(name).is_some(),
+        };
+        if !removed {
             return Ok(false);
         }
-        let mut next = bound.clone();
-        next.remove(name);
         self.save(&next)?;
         *bound = next;
         Ok(true)
     }
 
-    fn save(&self, bound: &BTreeMap<String, Folder>) -> Result<(), String> {
+    fn save(&self, bound: &Bound) -> Result<(), String> {
         let Some(file) = &self.file else { return Ok(()) };
         let bytes = serde_json::to_vec_pretty(bound).map_err(|e| e.to_string())?;
         crate::sealing::write_private(file, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
     }
+}
+
+/// The folders one deployment sees, by name: those bound for it, else the server's. What its runs
+/// read, write and copy through, and what its deploy is checked against.
+#[derive(Debug)]
+pub(crate) struct Scoped {
+    pub(crate) all: Arc<Folders>,
+    /// Its slug.
+    pub(crate) deployment: String,
+}
+
+impl Scoped {
+    pub(crate) fn new(all: Arc<Folders>, deployment: &str) -> Scoped {
+        Scoped { all, deployment: deployment.to_string() }
+    }
+
+    /// No folders at all: a deployment read from disk until the server's are opened.
+    pub(crate) fn memory() -> Scoped {
+        Scoped::new(Arc::new(Folders::memory()), "")
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Option<Folder> {
+        self.all.resolve(&self.deployment, name)
+    }
 
     /// The folder bound to `name`, or why there is none.
     fn folder(&self, name: &str) -> Result<Folder, String> {
-        self.get(name).ok_or_else(|| format!("the folder {name:?} isn't bound on this server: an admin binds it (holon folder add {name} <path>)"))
+        self.get(name).ok_or_else(|| unbound(name, &self.deployment))
     }
 
     /// File `file` of folder `name`, opened, and its metadata: none if there is no such file.
@@ -331,7 +386,7 @@ impl Folders {
                 _ => continue,
             };
             match self.get(name) {
-                None => return Some(format!("the folder {name:?} isn't bound on this server: an admin binds it (holon folder add {name} <path>)")),
+                None => return Some(unbound(name, &self.deployment)),
                 Some(f) if writes && f.access != FolderAccess::ReadWrite => {
                     return Some(format!("the folder {name:?} is bound read-only on this server, and this flow writes it"));
                 }
@@ -401,6 +456,11 @@ fn land(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<(), String>
         let _ = std::fs::remove_file(&tmp);
     }
     landed
+}
+
+/// Why a deployment can't use the folder `name`: it isn't bound for it, nor for the server.
+fn unbound(name: &str, deployment: &str) -> String {
+    format!("the folder {name:?} isn't bound on this server: an admin binds it (holon folder add {name} <path>, or with --for {deployment} for this deployment only)")
 }
 
 /// Why `name` can't name a file in a folder, if it can't: a relative path, `/` between folders,
@@ -508,19 +568,31 @@ fn walk(dir: &Path, under: &str, names: &mut Vec<String>) -> Result<(), String> 
     Ok(())
 }
 
-/// A binding as the admin panel and `holon folder list` show it.
-fn shown(name: &str, f: &Folder) -> serde_json::Value {
-    serde_json::json!({ "name": name, "path": f.path.display().to_string(), "access": f.access, "keep": f.keep })
+/// A binding as the admin panel and `holon folder list` show it: `deployment` is the slug it is
+/// bound for, or null for the whole server.
+fn shown(name: &str, deployment: Option<&str>, f: &Folder) -> serde_json::Value {
+    serde_json::json!({ "name": name, "deployment": deployment, "path": f.path.display().to_string(), "access": f.access, "keep": f.keep })
 }
 
-/// `/admin/folders` (list, bind) and `/admin/folders/<name>` (unbind), or None for any other path.
-/// Only an admin gets this far (access.rs); what they do goes in the activity log.
+/// What a binding is called in the activity log: its name, and the deployment it is for.
+fn labelled(name: &str, deployment: Option<&str>) -> String {
+    deployment.map_or_else(|| name.to_string(), |d| format!("{name} (for {d})"))
+}
+
+/// `/admin/folders` (list, bind) and `/admin/folders/<name>` (unbind; `?deployment=<slug>` for a
+/// deployment's own), or None for any other path. Only an admin gets this far (access.rs); what
+/// they do goes in the activity log.
 pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
     let url = request.url();
     let method = request.method();
     if url == "/admin/folders" {
         return Some(match method {
-            "GET" => Response::json(&state.folders.all().iter().map(|(n, f)| shown(n, f)).collect::<Vec<_>>()),
+            "GET" => {
+                let all = state.folders.all();
+                let server = all.server.iter().map(|(n, f)| shown(n, None, f));
+                let own = all.deployments.iter().flat_map(|(d, folders)| folders.iter().map(move |(n, f)| shown(n, Some(d), f)));
+                Response::json(&server.chain(own).collect::<Vec<_>>())
+            }
             "POST" => {
                 #[derive(Deserialize)]
                 struct Bind {
@@ -530,16 +602,24 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     access: FolderAccess,
                     #[serde(default)]
                     keep: Keep,
+                    /// The deployment it is bound for; none: the whole server.
+                    #[serde(default)]
+                    deployment: Option<String>,
                 }
                 fn read_write() -> FolderAccess {
                     FolderAccess::ReadWrite
                 }
                 let bind = read_body(request)
-                    .and_then(|b| serde_json::from_slice::<Bind>(&b).map_err(|e| err(400, format!("invalid body: {e}"))));
-                match bind.and_then(|b| state.folders.bind(&b.name, &b.path, b.access, b.keep).map(|f| (b.name, f)).map_err(|e| err(400, e))) {
-                    Ok((name, folder)) => {
-                        state.activity.record("bound the folder", &name, Some(by));
-                        Response::json(&shown(&name, &folder))
+                    .and_then(|b| serde_json::from_slice::<Bind>(&b).map_err(|e| err(400, format!("invalid body: {e}"))))
+                    .map(|b| Bind { deployment: b.deployment.filter(|d| !d.trim().is_empty()), ..b });
+                let bound = bind.and_then(|b| {
+                    let folder = state.folders.bind(&b.name, &b.path, b.access, b.keep, b.deployment.as_deref()).map_err(|e| err(400, e))?;
+                    Ok((b, folder))
+                });
+                match bound {
+                    Ok((b, folder)) => {
+                        state.activity.record("bound the folder", &labelled(&b.name, b.deployment.as_deref()), Some(by));
+                        Response::json(&shown(&b.name, b.deployment.as_deref(), &folder))
                     }
                     Err(e) => e,
                 }
@@ -548,14 +628,17 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
         });
     }
     let name = url.strip_prefix("/admin/folders/")?;
-    Some(match (method, state.folders.unbind(name)) {
-        ("DELETE", Ok(true)) => {
-            state.activity.record("unbound the folder", name, Some(by));
+    let deployment = request.get_param("deployment").filter(|d| !d.is_empty());
+    if method != "DELETE" {
+        return Some(Response::empty_404());
+    }
+    Some(match state.folders.unbind(name, deployment.as_deref()) {
+        Ok(true) => {
+            state.activity.record("unbound the folder", &labelled(name, deployment.as_deref()), Some(by));
             Response::empty_204()
         }
-        ("DELETE", Ok(false)) => err(404, format!("no folder {name:?} is bound")),
-        ("DELETE", Err(e)) => err(500, e),
-        _ => Response::empty_404(),
+        Ok(false) => err(404, format!("no folder {name:?} is bound{}", deployment.map_or(String::new(), |d| format!(" for {d}")))),
+        Err(e) => err(500, e),
     })
 }
 
@@ -563,12 +646,14 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
 /// unbind the folders of the server this user runs here (or `--server`), as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
     let mut server = None;
+    let mut for_deployment: Option<String> = None;
     let (mut read_only, mut keep) = (false, Keep::Bytes);
     let mut words = Vec::new();
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
+            "--for" => for_deployment = args.next().cloned(),
             "--read-only" => read_only = true,
             "--keep" => match args.next().map(String::as_str) {
                 Some("bytes") => keep = Keep::Bytes,
@@ -595,10 +680,13 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             // The path as the server's machine sees it: this one, for the server this user runs.
             let path = std::path::absolute(path).map_or_else(|_| path.to_string(), |p| p.display().to_string());
             let access = if read_only { FolderAccess::Read } else { FolderAccess::ReadWrite };
-            let body = serde_json::json!({ "name": name, "path": path, "access": access, "keep": keep });
+            let body = serde_json::json!({ "name": name, "path": path, "access": access, "keep": keep, "deployment": for_deployment });
             ("POST", "/admin/folders".to_string(), Some(body))
         }
-        ["remove", name] => ("DELETE", format!("/admin/folders/{name}"), None),
+        ["remove", name] => {
+            let only = for_deployment.as_ref().map_or(String::new(), |d| format!("?deployment={d}"));
+            ("DELETE", format!("/admin/folders/{name}{only}"), None)
+        }
         _ => {
             eprintln!("{FOLDER_USAGE}");
             return 2;
@@ -639,7 +727,8 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let line = |f: &serde_json::Value| {
         let access = if f["access"] == "read" { "read only" } else { "read and write" };
         let keep = if f["keep"] == "hash" { ", reads kept by hash" } else { "" };
-        format!("{}  {}  ({access}{keep})", f["name"].as_str().unwrap_or(""), f["path"].as_str().unwrap_or(""))
+        let only = f["deployment"].as_str().map_or(String::new(), |d| format!(", for {d} only"));
+        format!("{}  {}  ({access}{keep}{only})", f["name"].as_str().unwrap_or(""), f["path"].as_str().unwrap_or(""))
     };
     match words[0] {
         "list" => {
@@ -652,18 +741,24 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             }
         }
         "add" => println!("bound {}", line(&serde_json::from_str(&answer).unwrap_or_default())),
-        _ => println!("unbound {}: its files stay where they are", words[1]),
+        _ => println!(
+            "unbound {}{}: its files stay where they are",
+            words[1],
+            for_deployment.as_ref().map_or(String::new(), |d| format!(" (for {d})"))
+        ),
     }
     0
 }
 
-const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep hash]
+const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep hash] [--for SLUG]
        holon folder list
-       holon folder remove NAME
+       holon folder remove NAME [--for SLUG]
        (each takes --server PORT|URL)
 
   Binds a name a flow uses (folder inbox) to a real folder on the server's machine, for an admin.
   A flow reads and writes files only in the folders it names, and only by name: never a path.
+  --for SLUG binds it for that deployment only: it sees that folder as NAME, whatever the
+  server's NAME is, and no other deployment sees it.
   --read-only: flows may read it, not write it. --keep hash: the run log keeps a hash of what
   each run read, not its text (holon verify --files then supplies the files). Removing a binding
   leaves the files where they are; deployments that use it stop until it is bound again.";
@@ -702,7 +797,7 @@ pub(crate) fn range_answer(lines: bool, text: &str) -> Value {
 
 /// The folders one run reads: which it may, and how much it has read so far.
 pub(crate) struct Readable {
-    pub(crate) folders: Arc<Folders>,
+    pub(crate) folders: Arc<Scoped>,
     pub(crate) granted: BTreeSet<String>,
     pub(crate) store: SharedStore,
     pub(crate) read_bytes: u64,
@@ -816,7 +911,7 @@ pub(crate) fn copied_from(payload: &Value) -> Option<&str> {
 
 /// Apply a performed `FileWrite(name)`: a write's `{name, text}`, a copy's `{name, from}` (a
 /// handle), or a delete's name.
-pub(crate) fn apply(folders: &Folders, name: &str, payload: &Value) -> Result<(), String> {
+pub(crate) fn apply(folders: &Scoped, name: &str, payload: &Value) -> Result<(), String> {
     match payload {
         Value::Record(file) if file.contains_key("from") => {
             let (Some(Value::Text(file)), Some(Value::Record(from))) = (file.get("name"), file.get("from")) else {
@@ -914,14 +1009,15 @@ mod tests {
     #[test]
     fn a_bound_folder_reads_writes_lists_and_deletes_and_nothing_leaves_it() {
         let data = temp("data");
-        let folders = Folders::open(":memory:", std::slice::from_ref(&data)).unwrap();
+        let all = Arc::new(Folders::open(":memory:", std::slice::from_ref(&data)).unwrap());
+        let folders = Scoped::new(Arc::clone(&all), "app");
         let inbox = temp("inbox");
-        assert!(folders.bind("inbox", "relative/path", FolderAccess::Read, Keep::Bytes).unwrap_err().contains("absolute"));
-        assert!(folders.bind("inbox", data.to_str().unwrap(), FolderAccess::Read, Keep::Bytes).unwrap_err().contains("own data"));
-        assert!(folders.bind("all", data.parent().unwrap().to_str().unwrap(), FolderAccess::Read, Keep::Bytes).unwrap_err().contains("holds"));
-        folders.bind("inbox", inbox.to_str().unwrap(), FolderAccess::Read, Keep::Bytes).unwrap();
+        assert!(all.bind("inbox", "relative/path", FolderAccess::Read, Keep::Bytes, None).unwrap_err().contains("absolute"));
+        assert!(all.bind("inbox", data.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None).unwrap_err().contains("own data"));
+        assert!(all.bind("all", data.parent().unwrap().to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None).unwrap_err().contains("holds"));
+        all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None).unwrap();
         let out = temp("out");
-        folders.bind("out", out.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Hash).unwrap();
+        all.bind("out", out.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Hash, None).unwrap();
 
         std::fs::create_dir_all(inbox.join("2026")).unwrap();
         std::fs::write(inbox.join("2026/a.csv"), "x,1\ny,2\n").unwrap();
@@ -971,6 +1067,40 @@ mod tests {
     }
 
     #[test]
+    fn a_deployment_sees_its_own_binding_of_a_name_and_no_one_else_does() {
+        let (shared, own) = (temp("shared"), temp("own"));
+        let file = std::env::temp_dir().join(format!("holon-folders-{}-{}.json", std::process::id(), rand::random::<u32>()));
+        let all = Arc::new(Folders::open(file.to_str().unwrap(), &[]).unwrap());
+        all.bind("inbox", shared.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None).unwrap();
+        all.bind("inbox", own.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Hash, Some("billing")).unwrap();
+        assert!(all.bind("inbox", own.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, Some("../x")).is_err(), "a slug is a name");
+        let (billing, other) = (Scoped::new(Arc::clone(&all), "billing"), Scoped::new(Arc::clone(&all), "other"));
+        assert_eq!(billing.get("inbox").unwrap().path, own);
+        assert_eq!(other.get("inbox").unwrap().path, shared, "the server's, for everyone else");
+        billing.write("inbox", "a.txt", "mine").unwrap();
+        assert!(other.write("inbox", "a.txt", "no").unwrap_err().contains("read-only"));
+        assert_eq!(other.read("inbox", "a.txt", MAX_FILE_BYTES).unwrap(), None, "nor does it see billing's files");
+
+        // Kept as the file was before (the server's at the top), a deployment's beside them.
+        let on_disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert!(on_disk["inbox"]["path"].is_string() && on_disk["@deployments"]["billing"]["inbox"]["path"].is_string(), "{on_disk}");
+        let again = Folders::open(file.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(again.all(), all.all());
+
+        assert!(all.unbind("inbox", Some("billing")).unwrap());
+        assert!(!all.unbind("inbox", Some("billing")).unwrap());
+        assert_eq!(billing.get("inbox").unwrap().path, shared, "unbound: the server's again");
+        assert!(all.all().deployments.is_empty());
+        let only_billing = Arc::new(Folders::memory());
+        only_billing.bind("logs", own.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, Some("billing")).unwrap();
+        assert!(Scoped::new(only_billing, "other").read("logs", "a.txt", 10).unwrap_err().contains("--for other"));
+        for d in [shared, own] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[test]
     fn a_link_out_of_the_folder_is_never_followed() {
         let inbox = temp("links");
         let outside = temp("outside");
@@ -980,8 +1110,8 @@ mod tests {
         #[cfg(windows)]
         let linked = std::os::windows::fs::symlink_dir(&outside, inbox.join("out")).is_ok();
         if linked {
-            let folders = Folders::memory();
-            folders.bind("inbox", inbox.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes).unwrap();
+            let folders = Scoped::memory();
+            folders.all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, None).unwrap();
             assert!(folders.read("inbox", "out/secret.txt", MAX_FILE_BYTES).unwrap_err().contains("outside"));
             assert!(folders.write("inbox", "out/x.txt", "x").unwrap_err().contains("outside"));
             assert!(folders.list("inbox", "", None, 10).unwrap().is_empty(), "a listing doesn't follow the link");
