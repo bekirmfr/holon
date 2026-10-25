@@ -246,7 +246,7 @@ impl<'a> Lowerer<'a> {
         // Holons and js nodes nobody placed are still defined (and checked).
         let mut names: Vec<(String, Span)> = self.defs.iter().map(|(n, d)| (n.clone(), d.name.span)).collect();
         names.extend(self.js_defs.iter().map(|(n, d)| (n.clone(), d.name.span)));
-        names.sort_by(|a, b| (a.1.start.line, a.1.start.col).cmp(&(b.1.start.line, b.1.start.col)));
+        names.sort_by_key(|a| (a.1.start.line, a.1.start.col));
         for (name, span) in names {
             if !self.holons.contains_key(&name) {
                 self.holon(&name, span)?;
