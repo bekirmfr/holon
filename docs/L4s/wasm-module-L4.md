@@ -4,7 +4,9 @@
 > `holon-module`** (the engine) **+ `holon-host` / `holon-wasm`** (wiring) · *pre:* none; the
 > language (`docs/LANGUAGE.md`) gains a `module` statement after · *inv:* `I1` / `I2` / `I5` /
 > `I6` / `I8` · *effort:* **L** (four inches, about two weeks)
-> *Status:* **designed, deliberately not built** (2026-10-24). §7 says what triggers the build.
+> *Status:* **designed 2026-10-24; trigger met 2026-10-25** (§7's first trigger, twice in one session:
+> an interpreter and a game's rules, `js-node-L4.md` §0). To build, in the inches of §7, then the
+> `js` statement on top (`js-node-L4.md`).
 > *Pinned:* a module is a **unit body**, not a primitive with a blob param · **no imports** ·
 > **fuel and memory as frozen params** · engine **out of core**, behind a `Resolver` hook.
 
@@ -165,7 +167,7 @@ Not built on 2026-10-24, on purpose:
   grow, that pressure is useful; it produced `as_text` and `coalesce` in one day.
 - It adds weight: an engine in the editor's bundle, a crate, a body kind in every inspector.
 
-**Build when either happens:**
+**Build when either happens** (the first did, on 2026-10-25: `js-node-L4.md` §0 names both cases):
 
 1. An agent or a person writing a flow hits something the 70 leaves and holons cannot express in
    a sane number of nodes, **twice**, and neither case is a candidate for one small pure leaf
