@@ -193,10 +193,20 @@ pub fn utc(secs: u64) -> String {
 /// Each canvas node's recorded outputs in the run's last round, and which nodes ran at all, by
 /// node id: the run's step paths read through the document's `trace` (the editor's
 /// `nodeOutputs`, replay.ts).
-/// What a run recorded, by the node of the text it belongs to: each node's outputs, the nodes
-/// that ran, the nodes of this run's part of the flow, and, for a node under which a module gave
-/// nothing, why (the engine's words, kept beside the module's own step, one level deeper).
-fn recorded(document: &Value, entry: &Value) -> (HashMap<String, Vec<Value>>, HashSet<String>, HashSet<String>, HashMap<String, String>) {
+/// What a run recorded, by the node of the text it belongs to.
+struct Recorded {
+    /// Each node's outputs.
+    values: HashMap<String, Vec<Value>>,
+    /// The nodes that ran.
+    ran: HashSet<String>,
+    /// The nodes of this run's part of the flow (its route's, or the whole flow's).
+    part: HashSet<String>,
+    /// For a node under which a module gave nothing, why: the engine's words, kept beside the
+    /// module's own step, one level deeper.
+    reasons: HashMap<String, String>,
+}
+
+fn recorded(document: &Value, entry: &Value) -> Recorded {
     let request = entry.get("kind").and_then(Value::as_str) == Some("request");
     let key = if request { entry.get("route").and_then(Value::as_str).unwrap_or("") } else { "*" };
     let map: Vec<String> = document.pointer(&format!("/trace/{}", key.replace('~', "~0").replace('/', "~1"))).and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
@@ -229,7 +239,7 @@ fn recorded(document: &Value, entry: &Value) -> (HashMap<String, Vec<Value>>, Ha
             reasons.entry(id.clone()).or_insert_with(|| reason.to_string());
         }
     }
-    (values, ran, part, reasons)
+    Recorded { values, ran, part, reasons }
 }
 
 /// The error a js engine's step answered with, when its one output is the engine's record
@@ -259,7 +269,7 @@ fn body_position(message: &str) -> String {
         return format!("{head} (the body's line {l}, col {c})");
     }
     if let Some((head, tail)) = first.split_once(" at line ") {
-        return format!("{head} (the body's line {})", tail.replace(", col ", ", col "));
+        return format!("{head} (the body's line {tail})");
     }
     first.to_string()
 }
@@ -285,7 +295,7 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
     let (text, lines) = print_lines(Some(name), &doc, &mut MapResolver::new(), &Names::new(), &bindings)?;
     // `part`: the nodes this run is made of (its route's, or the whole flow's); the rest of the
     // text is shown without values.
-    let (values, ran, part, reasons) = recorded(document, entry);
+    let Recorded { values, ran, part, reasons } = recorded(document, entry);
     let has = |id: &str| values.get(id).is_some_and(|o| o.iter().any(|v| !v.is_null()));
     let by_id: HashMap<&str, &crate::canvas::Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     let mut feeds: HashMap<&str, Vec<&str>> = HashMap::new();

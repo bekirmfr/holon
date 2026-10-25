@@ -99,7 +99,7 @@ mod tests {
         let entry = entry_of(&unit, &hash).unwrap();
         assert_eq!((entry.engine.as_str(), entry.params.len()), (JS_ENGINE, 2));
         let mut store = MapResolver::new();
-        assert_eq!(restore_modules(&[entry.clone()], &mut store), None);
+        assert_eq!(restore_modules(std::slice::from_ref(&entry), &mut store), None);
         assert_eq!(store.resolve(&hash_unit(&unit).unwrap()).map(|u| u.params.clone()), Some(unit.params.clone()));
         // Another budget under the same hash: refused, named; an unknown engine: named.
         let mut wrong = entry.clone();
