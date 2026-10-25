@@ -1,7 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.18
 
+Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.17 keep running.
+
+- **JavaScript as one node** (docs/L4s/js-node-L4.md, `docs/LANGUAGE.md` §5.8a). `js name =
+  (inputs) -> outputs { body }` is a top-level definition beside `holon`, for the one
+  computation the vocabulary can't spell. It runs on a JavaScript engine (Boa) that is itself a
+  module: a fresh realm per call, no clock, no randomness, no timers and no network, so the same
+  call gives the same answer. Budgets default to 200M instructions and 16 MiB per call (`fuel N`,
+  `memory N` change them). `fmt` writes the statement back with its body as typed. Not yet: a
+  body that throws, doesn't parse or runs out of fuel makes the node absent, but `explain`
+  doesn't show the engine's message, and `holon check` doesn't parse the body. The engine
+  rides in the editor's bundle, which grows from 1.9 MB to 6 MB.
+- **Modules run** (docs/L4s/wasm-module-L4.md). Everywhere a flow runs (a request, a clock run, a
+  resumed durable run, a deploy's first run, `holon verify`'s rerun, and design mode in the
+  editor), a module runs under its budget. A deploy's manifest carries the budgets as
+  `Limit(module_fuel=…)` and `Limit(module_memory=…)`, `holon check` says "run code it carries"
+  with them, and the policy holds them to ceilings (`[ceilings]` raises them).
+- **A new sample, `nearest`**: a dictionary that answers the closest word to a query by edit
+  distance, the one computation a `js` node does while the flow around it stores, routes and
+  answers.
 - **The text and the canvas, linked by expression.** The cursor in a flow's text picks the node
   under it (`base64` in `base64(uppercase(req.body))`, not the whole line), and a node picked on
   the canvas marks the expression it is written as. It works in view mode too, where the text
