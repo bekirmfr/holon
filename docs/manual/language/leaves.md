@@ -475,7 +475,7 @@ Whether two values are the same.
 
 Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder).
 
-[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`clock`](#clock) · [`random`](#random) · [`ingress`](#ingress) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`egress`](#egress)
+[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`clock`](#clock) · [`random`](#random) · [`ingress`](#ingress) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`egress`](#egress)
 
 ### `http_request`
 
@@ -528,10 +528,10 @@ A secret's value, by the name set on the node, from the deployment's secrets (se
 ### `file_arrival`
 
 ```
-file_arrival() -> out: Record  {folder: files}
+file_arrival() -> out: Record  {folder: files, on: new, matching}
 ```
 
-The handle of the new file in a folder that started the run: {folder, name, size, hash, modified}. A flow with one runs once for each file that arrives there (and settles), not on requests.
+The file in a folder that started the run: its handle {folder, name, size, hash, modified, event}, event new or changed; for a file deleted (on: deleted), as last seen, without a hash. A flow with one runs once for each file that arrives there and settles (or, on: deleted, is removed), its name matching the glob matching if set, not on requests.
 
 ### `await`
 
@@ -660,6 +660,22 @@ file_copy(name: Text, from: Record) -> out: Effect  {folder: files}
 ```
 
 Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.
+
+### `file_create`
+
+```
+file_create(name: Text, text: Text) -> out: Effect  {folder: files}
+```
+
+Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
+
+### `file_create_copy`
+
+```
+file_create_copy(name: Text, from: Record) -> out: Effect  {folder: files}
+```
+
+Copies the file a handle names into this folder as name when the run finishes, only if no file has that name then: it never replaces one.
 
 ### `egress`
 

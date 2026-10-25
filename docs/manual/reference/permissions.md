@@ -23,7 +23,7 @@ the editor show).
 | `CollectionWrite("c")` | put and delete items of its collection "c" | `c[k] = …`, `delete c[k]` |
 | `FileRead("f")` | read files in the folder "f" | `f[name]`, `f.list`, `f.file`, `f.lines`, `f.slice`, or copying a file from `f` |
 | `FileWrite("f")` | write, copy into and delete files in the folder "f" | `f[name] = …`, `delete f[name]`, `f.copy(…)` |
-| `FileArrival("f")` | run on each new file in the folder "f", and pass it on | `on file f` |
+| `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on file f` |
 | `Await("e")` | wait for an event "e" and continue later | `await e` |
 
 A flow's trigger is one of them: `NetworkIngress` for a flow with routes, `FileArrival` for one

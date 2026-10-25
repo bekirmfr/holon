@@ -127,7 +127,7 @@ sent = http.put("httpbin.org", "/put",
 receipts["{ingress.name}.json"] = json({ file: ingress.name, size: ingress.size, status: sent.status })
 ```
 
-It asks to "run on each new file in the folder "drop", and pass it on": that is its trigger.
+It asks to "run on each file new, changed or removed in the folder "drop" (as its on file lines say), and pass it on": that is its trigger.
 
 - A file is new once it stops changing: the server looks at the folder every second, and a file
   with the same size and time at two looks in a row starts a run.
