@@ -947,6 +947,7 @@ name = "holon-author"
 version = "0.1.0"
 dependencies = [
  "holon-core",
+ "holon-module",
  "serde",
  "serde_json",
 ]

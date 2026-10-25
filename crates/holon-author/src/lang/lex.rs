@@ -18,6 +18,12 @@ pub enum Tok {
     Duration(f64),
     /// A string: `text` is what is between the quotes, escapes kept for the parser.
     Str,
+    /// A number with a scale: `50M`, `16MB`, `2K`. The number it means.
+    Scaled(f64),
+    /// A `js` node's body: `text` is the JavaScript between the braces, verbatim (the braces
+    /// themselves are the token's span). The lexer reads it as JavaScript, not as Holon: a `}` in
+    /// a string, a template or a comment doesn't end it.
+    JsBody,
     Newline,
     Eof,
     LParen,
@@ -86,6 +92,8 @@ struct Lexer {
     i: usize,
     pos: Pos,
     out: Vec<Token>,
+    /// A `js` statement's header is being read: its next `{` opens a JavaScript body.
+    js_pending: bool,
 }
 
 impl Lexer {
@@ -141,8 +149,20 @@ impl Lexer {
                     while self.peek(0).is_some_and(is_ident_char) {
                         s.push(self.bump());
                     }
+                    // `js name = …` at the start of a statement: its block is JavaScript.
+                    let at_start = matches!(self.out.last(), Some(Token { tok: Tok::Newline, .. }) | None);
+                    if s == "js" && at_start {
+                        let mut k = 0;
+                        while self.peek(k).is_some_and(|c| c == ' ' || c == '\t') {
+                            k += 1;
+                        }
+                        if k > 0 && self.peek(k).is_some_and(is_ident_start) {
+                            self.js_pending = true;
+                        }
+                    }
                     self.push(Tok::Ident, s, start);
                 }
+                '{' if self.js_pending => self.js_body(start)?,
                 _ => self.punct(start)?,
             }
         }
@@ -216,6 +236,116 @@ impl Lexer {
         }
     }
 
+    /// A `js` body: from the `{` to its matching `}`, read as JavaScript (strings, template
+    /// literals with their `${…}` parts, line and block comments), kept verbatim.
+    fn js_body(&mut self, start: Pos) -> Result<(), LexError> {
+        self.bump(); // the opening brace
+        self.js_pending = false;
+        let mut body = String::new();
+        let mut depth = 1usize;
+        // Template literals nest: each `${` opens a brace level that a `}` closes back into text.
+        let mut templates: Vec<usize> = Vec::new();
+        loop {
+            let Some(c) = self.peek(0) else { return self.err(start, "the js body isn't closed: a } is missing") };
+            match c {
+                '}' if templates.last() == Some(&depth) => {
+                    // The end of a `${…}` part: back into the template's text.
+                    templates.pop();
+                    depth -= 1;
+                    body.push(self.bump());
+                    self.js_template(start, &mut body, &mut templates, &mut depth)?;
+                }
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        self.bump();
+                        self.push(Tok::JsBody, body, start);
+                        return Ok(());
+                    }
+                    body.push(self.bump());
+                }
+                '{' => {
+                    depth += 1;
+                    body.push(self.bump());
+                }
+                '\'' | '"' => {
+                    let quote = self.bump();
+                    body.push(quote);
+                    loop {
+                        match self.peek(0) {
+                            None | Some('\n') => return self.err(start, "a string in the js body isn't closed"),
+                            Some('\\') => {
+                                body.push(self.bump());
+                                if self.peek(0).is_some() {
+                                    body.push(self.bump());
+                                }
+                            }
+                            Some(c) if c == quote => {
+                                body.push(self.bump());
+                                break;
+                            }
+                            Some(_) => body.push(self.bump()),
+                        }
+                    }
+                }
+                '`' => {
+                    body.push(self.bump());
+                    self.js_template(start, &mut body, &mut templates, &mut depth)?;
+                }
+                '/' if self.peek(1) == Some('/') => {
+                    while self.peek(0).is_some_and(|c| c != '\n') {
+                        body.push(self.bump());
+                    }
+                }
+                '/' if self.peek(1) == Some('*') => {
+                    body.push(self.bump());
+                    body.push(self.bump());
+                    loop {
+                        match self.peek(0) {
+                            None => return self.err(start, "a comment in the js body isn't closed"),
+                            Some('*') if self.peek(1) == Some('/') => {
+                                body.push(self.bump());
+                                body.push(self.bump());
+                                break;
+                            }
+                            Some(_) => body.push(self.bump()),
+                        }
+                    }
+                }
+                _ => body.push(self.bump()),
+            }
+        }
+    }
+
+    /// The text of a template literal after its opening backtick (or after a `}` that ended a
+    /// part), up to its closing backtick or the next `${`, which opens a part the body reads as
+    /// code until the `}` at this depth.
+    fn js_template(&mut self, start: Pos, body: &mut String, templates: &mut Vec<usize>, depth: &mut usize) -> Result<(), LexError> {
+        loop {
+            match self.peek(0) {
+                None => return self.err(start, "a template literal in the js body isn't closed"),
+                Some('\\') => {
+                    body.push(self.bump());
+                    if self.peek(0).is_some() {
+                        body.push(self.bump());
+                    }
+                }
+                Some('`') => {
+                    body.push(self.bump());
+                    return Ok(());
+                }
+                Some('$') if self.peek(1) == Some('{') => {
+                    body.push(self.bump());
+                    body.push(self.bump());
+                    *depth += 1;
+                    templates.push(*depth);
+                    return Ok(());
+                }
+                Some(_) => body.push(self.bump()),
+            }
+        }
+    }
+
     fn number(&mut self, start: Pos) -> Result<(), LexError> {
         // A unit's hash, as the wiring form writes it bare (`fn: 0068ce…`): a word, not a number.
         let hex = (0..64).all(|k| self.peek(k).is_some_and(|c| matches!(c, '0'..='9' | 'a'..='f')));
@@ -245,6 +375,25 @@ impl Lexer {
                 while self.peek(0).is_some_and(|c| c.is_ascii_digit()) {
                     s.push(self.bump());
                 }
+            }
+        }
+        // A scale makes it a budget: `50M`, `2K`, `16MB`, `1GB`.
+        if let Some(scale) = self.peek(0).filter(|c| matches!(c, 'K' | 'M' | 'G')) {
+            let bytes = self.peek(1) == Some('B');
+            let after = if bytes { 2 } else { 1 };
+            if !self.peek(after).is_some_and(is_ident_char) {
+                let n: f64 = s.parse().map_err(|_| LexError { pos: start, message: format!("{s} is not a number") })?;
+                let per = match scale {
+                    'K' => 1_000.0,
+                    'M' => 1_000_000.0,
+                    _ => 1_000_000_000.0,
+                };
+                let per = if bytes { per / 1_000.0 * 1_024.0 * (if scale == 'K' { 1.0 } else if scale == 'M' { 1_024.0 / 1_000.0 } else { 1_024.0 * 1_024.0 / 1_000_000.0 }) } else { per };
+                for _ in 0..after {
+                    s.push(self.bump());
+                }
+                self.push(Tok::Scaled(n * per), s, start);
+                return Ok(());
             }
         }
         // A unit makes it a duration; any other letter is a mistake.
@@ -324,7 +473,7 @@ impl Lexer {
 /// The tokens of `src`, the first at `start` (so a string's `{…}` part lexes with the columns of
 /// the string it sits in).
 pub fn lex_from(src: &str, start: Pos) -> Result<Vec<Token>, LexError> {
-    Lexer { chars: src.chars().collect(), i: 0, pos: start, out: Vec::new() }.run()
+    Lexer { chars: src.chars().collect(), i: 0, pos: start, out: Vec::new(), js_pending: false }.run()
 }
 
 /// The tokens of a whole text.

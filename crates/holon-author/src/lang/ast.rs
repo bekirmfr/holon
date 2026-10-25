@@ -68,8 +68,33 @@ pub enum Consent {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
     Holon(HolonDef),
+    Js(JsDef),
     Route(RouteDef),
     Stmt(Stmt),
+}
+
+/// `js name = (inputs) -> outputs [fuel N] [memory N] { body }`: a node whose body is JavaScript,
+/// run by the engine module (docs/L4s/js-node-L4.md §2). Placed by name like a holon.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JsDef {
+    pub name: Name,
+    pub inputs: Vec<PortDecl>,
+    pub outputs: Vec<PortDecl>,
+    pub fuel: Option<Budget>,
+    pub memory: Option<Budget>,
+    /// The JavaScript between the braces, verbatim.
+    pub body: String,
+    /// The braces' span.
+    pub body_span: Span,
+    pub span: Span,
+}
+
+/// A budget as written: `50M`, `16MB`, `10000000`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Budget {
+    pub value: u64,
+    pub text: String,
+    pub span: Span,
 }
 
 /// `holon name(inputs) -> outputs { body }`, in either form.

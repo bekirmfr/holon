@@ -39,6 +39,16 @@ use wasmi::{Config, Engine as Wasmi, Linker, Module, ResourceLimiter, Store, Tra
 /// `engine(source: Text, args: List<Any>) -> (result: Record)`. The `js` statement places it.
 pub const JS_ENGINE: &[u8] = include_bytes!("../../../fixtures/modules/js-engine/js-engine.wasm");
 
+/// A `js` node's fuel when its text names none. Measured (tests/js_engine.rs, `what_a_call_costs`):
+/// a fresh realm and a compiled one-line function cost about 15M instructions under the
+/// interpreter, an edit-distance search over eight words 41M, a loop of a hundred thousand
+/// iterations 271M. So the module default (10M) can never run a body, and 200M runs real
+/// request-sized work with room; a heavier body says `fuel 500M`, up to the host's ceiling.
+pub const JS_DEFAULT_FUEL: u64 = 200_000_000;
+/// A `js` node's memory when its text names none: the module default (16 MiB). A realm ends
+/// at about 2 MiB.
+pub const JS_DEFAULT_MEMORY: u64 = holon_core::DEFAULT_MODULE_MEMORY;
+
 /// Why a module didn't answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunError {
@@ -73,6 +83,13 @@ impl std::fmt::Display for RunError {
 }
 
 impl std::error::Error for RunError {}
+
+/// What a call cost: the fuel it burned, and the linear memory it ended with (bytes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cost {
+    pub fuel: u64,
+    pub memory: u64,
+}
 
 /// The memory budget, as `wasmi` asks it on every `memory.grow`: refuses past the limit, and
 /// remembers that it did so the failure that follows can be named.
@@ -133,6 +150,12 @@ impl Engine {
 
     /// Run `bytes` on `inputs` under `limits`: one output per element of the list it answers.
     pub fn run(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, RunError> {
+        self.run_measured(bytes, limits, inputs).map(|(outs, _)| outs)
+    }
+
+    /// [`run`](Self::run), and what the call cost: the fuel it burned and the memory it ended
+    /// with, in bytes. What a run records beside a module's outputs, and how a budget is chosen.
+    pub fn run_measured(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<(Vec<Option<Value>>, Cost), RunError> {
         validate_module(bytes).map_err(RunError::NotAModule)?;
         let module = self.compile(bytes)?;
 
@@ -183,8 +206,9 @@ impl Engine {
             // without the memory it wanted, so the budget is the failure to name.
             return Err(RunError::OutOfMemory { memory: limits.memory });
         }
+        let cost = Cost { fuel: limits.fuel.saturating_sub(store.get_fuel().unwrap_or(0)), memory: memory.size(&store) * 65_536 };
         match decode_value(&out).map_err(|e| RunError::BadOutput(format!("{e:?}")))? {
-            Value::List(items) => Ok(items.into_iter().map(present).collect()),
+            Value::List(items) => Ok((items.into_iter().map(present).collect(), cost)),
             other => Err(RunError::BadOutput(format!("a {:?}, not a list", other.ty()))),
         }
     }

@@ -9,6 +9,9 @@ publish = false
 # Pure, like core: no I/O, so the editor runs it in wasm (holon-wasm) and the command line and
 # server natively, the same code.
 holon-core = { path = "../holon-core" }
+# The JavaScript engine module's bytes: the `js` statement places that unit (docs/L4s/js-node-L4.md
+# §3), so lowering needs it wherever lowering runs. Pure like core: an engine, no I/O.
+holon-module = { path = "../holon-module" }
 serde = { version = "1", features = ["derive"] }
 # A flow document's fields that only the editor reads pass through as JSON, and the text
 # format quotes as JSON.

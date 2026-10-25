@@ -323,6 +323,34 @@ impl FlowBuilder {
         Ok(Holon { name: name.into(), hash, inputs, outputs })
     }
 
+    /// Place the JavaScript engine module (docs/L4s/js-node-L4.md §4) under `fuel` and `memory`
+    /// (the defaults when not given): a module unit stored here, placed as a node with its
+    /// interface, `engine(source: Text, args: List<Any>) -> (result: Record)`. Answers its id.
+    pub fn place_js_engine(&mut self, fuel: Option<u64>, memory: Option<u64>) -> Result<String, String> {
+        use holon_core::{Param, Port, Type, Unit, FUEL_PARAM, MEMORY_PARAM};
+        use holon_module::{JS_DEFAULT_FUEL, JS_DEFAULT_MEMORY};
+        let (fuel, memory) = (fuel.unwrap_or(JS_DEFAULT_FUEL), memory.unwrap_or(JS_DEFAULT_MEMORY));
+        let unit = Unit {
+            body: UnitBody::Module { bytes: holon_module::JS_ENGINE.to_vec() },
+            params: vec![Param::frozen(FUEL_PARAM, fuel.to_string()), Param::frozen(MEMORY_PARAM, memory.to_string())],
+            inputs: vec![Port { name: "source".into(), ty: Type::Text }, Port { name: "args".into(), ty: Type::list_any() }],
+            outputs: vec![Port { name: "result".into(), ty: Type::Record }],
+        };
+        let hash = self.store.insert(unit).map_err(|e| format!("the js engine doesn't store: {e:?}"))?;
+        let hex = crate::to_hex(&hash);
+        let data = NodeData::new(
+            "js",
+            PlacedBody::Module { hash: hex },
+            vec![WPort { name: "source".into(), ty: WType::Text }, WPort { name: "args".into(), ty: WType::List(Box::new(WType::Any)) }],
+            vec![WPort { name: "result".into(), ty: WType::Record }],
+            vec![WParam::frozen(FUEL_PARAM, &fuel.to_string()), WParam::frozen(MEMORY_PARAM, &memory.to_string())],
+        );
+        let id = self.next_id("js");
+        let position = self.next_spot();
+        self.frame().nodes.push(Node::placed(&id, position, data));
+        Ok(id)
+    }
+
     /// Place a holon as a node, wired by its port names like any other.
     pub fn place(&mut self, holon: &Holon, at: Option<Position>) -> String {
         let position = at.unwrap_or_else(|| self.next_spot());

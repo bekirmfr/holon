@@ -50,8 +50,9 @@ fn err<T>(pos: Pos, message: impl Into<String>) -> R<T> {
 /// A token as an error message names it.
 fn describe(t: &Token) -> String {
     match t.tok {
-        Tok::Ident | Tok::Number | Tok::Duration(_) => format!("\"{}\"", t.text),
+        Tok::Ident | Tok::Number | Tok::Duration(_) | Tok::Scaled(_) => format!("\"{}\"", t.text),
         Tok::Str => format!("\"\\\"{}\\\"\"", t.text),
+        Tok::JsBody => "a js body".into(),
         Tok::Newline => "the end of the line".into(),
         Tok::Eof => "the end of the text".into(),
         _ => format!("\"{}\"", t.text),
@@ -278,6 +279,7 @@ impl Parser {
                         file.headers.push(h);
                     }
                     "holon" => file.items.push(Item::Holon(self.holon()?)),
+                    "js" if self.peek_at(1).tok == Tok::Ident => file.items.push(Item::Js(self.js()?)),
                     "route" => file.items.push(Item::Route(self.route()?)),
                     _ => file.items.push(Item::Stmt(self.stmt()?)),
                 },
@@ -370,6 +372,39 @@ impl Parser {
         let outputs = if self.eat(&Tok::LParen) { self.ports()? } else { vec![self.port()?] };
         let (body, end) = self.block()?;
         Ok(HolonDef { name, inputs, outputs, body, span: head.span.to(end) })
+    }
+
+    /// `js name = (inputs) -> outputs [fuel N] [memory N] { body }`.
+    fn js(&mut self) -> R<JsDef> {
+        let head = self.next();
+        let name = self.raw_name("the js node's name")?;
+        self.expect(&Tok::Eq, "\"=\" and the js node's inputs in parentheses")?;
+        self.expect(&Tok::LParen, "\"(\" and the js node's inputs")?;
+        let inputs = self.ports()?;
+        self.expect(&Tok::Arrow, "\"->\" and the js node's outputs")?;
+        let outputs = if self.eat(&Tok::LParen) { self.ports()? } else { vec![self.port()?] };
+        let (mut fuel, mut memory) = (None, None);
+        while self.is(&Tok::Ident) && matches!(self.peek().text.as_str(), "fuel" | "memory") {
+            let which = self.next();
+            let t = self.peek().clone();
+            let value = match t.tok {
+                Tok::Number => t.text.parse::<f64>().ok(),
+                Tok::Scaled(n) => Some(n),
+                _ => None,
+            };
+            let Some(value) = value.filter(|v| *v >= 1.0 && v.fract() == 0.0) else {
+                return err(t.span.start, format!("{} takes a positive whole number (50M, 16MB, 10000000), found {}", which.text, describe(&t)));
+            };
+            self.next();
+            let budget = Budget { value: value as u64, text: t.text.clone(), span: t.span };
+            let slot = if which.text == "fuel" { &mut fuel } else { &mut memory };
+            if slot.is_some() {
+                return err(which.span.start, format!("{} is given twice", which.text));
+            }
+            *slot = Some(budget);
+        }
+        let body = self.expect(&Tok::JsBody, "\"{\" and the JavaScript body")?;
+        Ok(JsDef { name, inputs, outputs, fuel, memory, body: body.text.clone(), body_span: body.span, span: head.span.to(body.span) })
     }
 
     /// Ports up to and including the closing parenthesis (the opening one already taken).

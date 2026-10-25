@@ -165,3 +165,24 @@ fn the_same_call_answers_the_same_bytes() {
     let b = Engine::new().run(ENGINE, &ModuleLimits { fuel: 2_000_000_000, memory: 64 << 20 }, &[Some(t("(x) => ({ x, keys: Object.keys({ b: 1, a: 2 }) })")), Some(Value::List(vec![n(1.5)]))]).unwrap();
     assert_eq!(a, b);
 }
+
+/// What a call costs, printed: how the `js` defaults were chosen (run with --no-capture).
+#[test]
+fn what_a_call_costs() {
+    let big = ModuleLimits { fuel: 4_000_000_000, memory: 256 << 20 };
+    let engine = Engine::new();
+    let measure = |label: &str, src: &str, args: Vec<Value>| {
+        let (_, cost) = engine.run_measured(ENGINE, &big, &[Some(t(src)), Some(Value::List(args))]).unwrap();
+        println!("{label}: fuel {} memory {} bytes", cost.fuel, cost.memory);
+        cost
+    };
+    let trivial = measure("trivial", "(s) => s.toUpperCase() + '!'", vec![t("hi")]);
+    let words: Vec<Value> = ["kitten", "sitting", "mitten", "written", "bitten", "fitting", "knitting", "smitten"].iter().map(|w| t(w)).collect();
+    let heavy = measure(
+        "levenshtein over 8 words",
+        "(word, candidates) => { const dist = (a, b) => { const d = Array.from({ length: a.length + 1 }, (_, i) => [i]); for (let j = 1; j <= b.length; j++) d[0][j] = j; for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[a.length][b.length]; }; let best = { match: undefined, distance: Infinity }; for (const c of candidates) { const k = dist(word, c); if (k < best.distance) best = { match: c, distance: k }; } return best; }",
+        vec![t("kittne"), Value::List(words)],
+    );
+    let loop_1e5 = measure("a loop of 100k", "() => { let s = 0; for (let i = 0; i < 100000; i++) s += i; return s }", vec![]);
+    assert!(trivial.fuel > 0 && heavy.fuel > trivial.fuel && loop_1e5.fuel > heavy.fuel);
+}

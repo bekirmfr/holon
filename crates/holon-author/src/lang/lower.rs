@@ -68,7 +68,7 @@ pub fn lower(file: &File) -> R<Lowered> {
 
 /// Words a binding may not take: the keywords and nouns of the language, and the wiring form's.
 const RESERVED: &[&str] = &[
-    "flow", "port", "every", "browsers", "optional", "collection", "holon", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
+    "flow", "port", "every", "browsers", "optional", "collection", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
@@ -153,6 +153,8 @@ impl Frame {
 struct Lowerer<'a> {
     b: FlowBuilder,
     defs: HashMap<String, &'a HolonDef>,
+    /// `js` nodes by name: lowered like holons (`holon`), placed like holons (`place`).
+    js_defs: HashMap<String, &'a JsDef>,
     holons: HashMap<String, Holon>,
     in_progress: HashSet<String>,
     collections: HashSet<String>,
@@ -170,10 +172,12 @@ struct Lowerer<'a> {
 impl<'a> Lowerer<'a> {
     fn new(file: &'a File) -> Lowerer<'a> {
         let defs = file.items.iter().filter_map(|i| if let Item::Holon(h) = i { Some((h.name.text.clone(), h)) } else { None }).collect();
+        let js_defs = file.items.iter().filter_map(|i| if let Item::Js(j) = i { Some((j.name.text.clone(), j)) } else { None }).collect();
         let collections = file.headers.iter().filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         Lowerer {
             b: FlowBuilder::new(),
             defs,
+            js_defs,
             holons: HashMap::new(),
             in_progress: HashSet::new(),
             collections,
@@ -186,6 +190,12 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Whether `n` names a holon or a `js` node: either is placed by name, and neither may be
+    /// shadowed.
+    fn is_def(&self, n: &str) -> bool {
+        self.defs.contains_key(n) || self.js_defs.contains_key(n)
+    }
+
     fn frame(&mut self) -> &mut Frame {
         self.frames.last_mut().expect("a frame")
     }
@@ -195,13 +205,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn run(mut self, file: &'a File) -> R<Lowered> {
-        // Holons twice defined.
+        // Holons and js nodes twice defined (or one of each under a name).
         let mut seen = HashSet::new();
         for i in &file.items {
-            if let Item::Holon(h) = i
-                && !seen.insert(h.name.text.as_str())
-            {
-                return err(h.name.span, format!("there is a holon \"{}\" already", h.name.text));
+            let name = match i {
+                Item::Holon(h) => &h.name,
+                Item::Js(j) => &j.name,
+                _ => continue,
+            };
+            if !seen.insert(name.text.as_str()) {
+                return err(name.span, format!("there is a holon \"{}\" already", name.text));
             }
         }
         let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_)));
@@ -230,11 +243,12 @@ impl<'a> Lowerer<'a> {
                 self.route(r)?;
             }
         }
-        // Holons nobody placed are still defined (and checked).
-        let names: Vec<String> = self.defs.keys().cloned().collect();
-        for name in names {
+        // Holons and js nodes nobody placed are still defined (and checked).
+        let mut names: Vec<(String, Span)> = self.defs.iter().map(|(n, d)| (n.clone(), d.name.span)).collect();
+        names.extend(self.js_defs.iter().map(|(n, d)| (n.clone(), d.name.span)));
+        names.sort_by(|a, b| (a.1.start.line, a.1.start.col).cmp(&(b.1.start.line, b.1.start.col)));
+        for (name, span) in names {
             if !self.holons.contains_key(&name) {
-                let span = self.defs[&name].name.span;
                 self.holon(&name, span)?;
             }
         }
@@ -369,7 +383,7 @@ impl<'a> Lowerer<'a> {
         if self.collections.contains(n) {
             return err(name.span, format!("\"{n}\" is a collection; a binding may not shadow it"));
         }
-        if self.defs.contains_key(n) {
+        if self.is_def(n) {
             return err(name.span, format!("\"{n}\" is a holon; a binding may not shadow it"));
         }
         if self.cur().env.contains_key(n) {
@@ -446,7 +460,7 @@ impl<'a> Lowerer<'a> {
                 if self.cur().env.contains_key(&name.text) {
                     return err(name.span, format!("there is a node \"{}\" already", name.text));
                 }
-                let id = if self.defs.contains_key(&of.text) {
+                let id = if self.is_def(&of.text) {
                     if !params.is_empty() {
                         return err(of.span, format!("the holon \"{}\" takes no params", of.text));
                     }
@@ -610,7 +624,7 @@ impl<'a> Lowerer<'a> {
 
     fn check_name_free(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.collections.contains(n) || self.defs.contains_key(n) {
+        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.collections.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name"));
         }
         Ok(())
@@ -621,7 +635,7 @@ impl<'a> Lowerer<'a> {
     /// collection or a holon.
     fn check_port_name(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.collections.contains(n) || self.defs.contains_key(n) {
+        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.collections.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
         }
         Ok(())
@@ -633,6 +647,9 @@ impl<'a> Lowerer<'a> {
             return Ok(h.clone());
         }
         let Some(def) = self.defs.get(name).copied() else {
+            if let Some(js) = self.js_defs.get(name).copied() {
+                return self.js_node(js);
+            }
             return err(at, format!("no holon \"{name}\""));
         };
         if !self.in_progress.insert(name.to_string()) {
@@ -713,6 +730,75 @@ impl<'a> Lowerer<'a> {
             wiring_in.sort_by_key(|(port, _, _)| inputs.iter().position(|p| p.name == *port));
             self.b.end_holon_exact(name, &inputs, &outputs, &wiring_in, &wiring_out).or_else(|e| err(def.name.span, e))?
         };
+        self.holons.insert(name.to_string(), holon.clone());
+        Ok(holon)
+    }
+
+    /// A `js` node (docs/L4s/js-node-L4.md §3): a composite the printer can read back, over the
+    /// engine module placed by hash. The source the engine compiles is `(inputs) => { body }`,
+    /// assembled here from the declared names, so ports and source can't disagree; the arguments
+    /// travel as one list; the engine's `{ value }` is read by `field`, once more per output when
+    /// there are several. A budget instantiates the engine under it (its params), so the same
+    /// body under two budgets is two units.
+    fn js_node(&mut self, def: &'a JsDef) -> R<Holon> {
+        let name = def.name.text.as_str();
+        for p in def.inputs.iter().chain(&def.outputs) {
+            self.check_port_name(&p.name)?;
+        }
+        let mut seen = HashSet::new();
+        for p in def.inputs.iter().chain(&def.outputs) {
+            if !seen.insert(p.name.text.as_str()) {
+                return err(p.name.span, format!("the port \"{}\" is declared twice", p.name.text));
+            }
+        }
+        if def.body.trim().is_empty() {
+            return err(def.body_span, "the js body is empty: return something");
+        }
+        self.b.begin_holon(name);
+        let params: Vec<&str> = def.inputs.iter().map(|p| p.name.text.as_str()).collect();
+        let source = format!("({}) => {{{}}}", params.join(", "), def.body);
+        let src = self.b.node("const", &[("value".into(), source), ("type".into(), "Text".into())], None).or_else(|e| err(def.span, e))?;
+        // The arguments as one list: `list` for two or more, `cons` onto an empty list for one,
+        // the empty list itself for none (`list` fails closed on a missing input).
+        let empty = || [("value".to_string(), "[]".to_string()), ("type".to_string(), "Json".to_string())];
+        let (args, arg_ports): (String, Vec<String>) = match def.inputs.len() {
+            0 => (self.b.node("const", &empty(), None).or_else(|e| err(def.span, e))?, vec![]),
+            1 => {
+                let none = self.b.node("const", &empty(), None).or_else(|e| err(def.span, e))?;
+                let cons = self.b.node("cons", &[], None).or_else(|e| err(def.span, e))?;
+                self.b.wire(&none, "out", &cons, "list").or_else(|e| err(def.span, e))?;
+                (cons, vec!["item".into()])
+            }
+            n => {
+                let list = self.b.node("list", &[], None).or_else(|e| err(def.span, e))?;
+                self.b.arity(&list, n).or_else(|e| err(def.span, e))?;
+                let ports = self.b.data(&list).map(|d| d.inputs.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
+                (list, ports)
+            }
+        };
+        let (fuel, memory) = (def.fuel.as_ref().map(|b| b.value), def.memory.as_ref().map(|b| b.value));
+        let engine = self.b.place_js_engine(fuel, memory).or_else(|e| err(def.span, e))?;
+        self.b.wire(&src, "out", &engine, "source").or_else(|e| err(def.span, e))?;
+        self.b.wire(&args, "out", &engine, "args").or_else(|e| err(def.span, e))?;
+        let value = self.b.node("field", &[("name".into(), "value".into())], None).or_else(|e| err(def.span, e))?;
+        self.b.wire(&engine, "result", &value, "record").or_else(|e| err(def.span, e))?;
+        let mut wiring_out: Vec<(String, String, String)> = Vec::new();
+        if def.outputs.len() == 1 {
+            wiring_out.push((value.clone(), "out".into(), def.outputs[0].name.text.clone()));
+        } else {
+            for p in &def.outputs {
+                let f = self.b.node("field", &[("name".into(), p.name.text.clone())], None).or_else(|e| err(def.span, e))?;
+                self.b.wire(&value, "out", &f, "record").or_else(|e| err(def.span, e))?;
+                wiring_out.push((f, "out".into(), p.name.text.clone()));
+            }
+        }
+        let wiring_in: Vec<(String, String, String)> = def.inputs.iter().zip(&arg_ports).map(|(p, port)| (p.name.text.clone(), args.clone(), port.clone())).collect();
+        let inputs: Vec<HolonPort> = def.inputs.iter().map(|p| HolonPort { name: p.name.text.clone(), unit: None }).collect();
+        let outputs: Vec<HolonPort> = def.outputs.iter().map(|p| HolonPort { name: p.name.text.clone(), unit: None }).collect();
+        for id in [&src, &args, &engine, &value] {
+            self.spans.insert(id.clone(), def.span);
+        }
+        let holon = self.b.end_holon_exact(name, &inputs, &outputs, &wiring_in, &wiring_out).or_else(|e| err(def.name.span, e))?;
         self.holons.insert(name.to_string(), holon.clone());
         Ok(holon)
     }
@@ -940,7 +1026,7 @@ impl<'a> Lowerer<'a> {
             self.frame().env.insert(n.to_string(), Val::In(n.to_string()));
             return Ok(Val::In(n.to_string()));
         }
-        if self.defs.contains_key(n) {
+        if self.is_def(n) {
             return err(span, format!("\"{n}\" is a holon: call it, {n}(…)"));
         }
         if self.collections.contains(n) {
@@ -1093,7 +1179,7 @@ impl<'a> Lowerer<'a> {
 
     fn call(&mut self, callee: &Name, args: &'a [Arg], span: Span) -> R<Val> {
         let name = alias(&callee.text);
-        if self.defs.contains_key(&callee.text) {
+        if self.is_def(&callee.text) {
             return self.place(callee, args, span);
         }
         if self.cur().env.contains_key(&callee.text) {
@@ -1281,7 +1367,7 @@ impl<'a> Lowerer<'a> {
     /// the values a function captured from around it.
     fn fn_param(&mut self, e: &'a Expr) -> R<(String, usize, Vec<Val>)> {
         match &e.kind {
-            ExprKind::Name(n) if self.defs.contains_key(n) => {
+            ExprKind::Name(n) if self.is_def(n) => {
                 let h = self.holon(n, e.span)?;
                 Ok((h.hash, h.inputs.len(), vec![]))
             }

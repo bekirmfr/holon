@@ -27,7 +27,7 @@ use crate::wire::{WParam, WPort, WType};
 
 /// The words a binding may not take, as lower.rs holds them.
 const RESERVED: &[&str] = &[
-    "flow", "port", "every", "browsers", "optional", "collection", "holon", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
+    "flow", "port", "every", "browsers", "optional", "collection", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
@@ -496,6 +496,9 @@ impl<'s> Printer<'s> {
     fn holon_block(&mut self, hash: &str, hname: &str, shown_in: &[String], shown_out: &[String]) -> Result<Vec<Line>, String> {
         let (_, unit) = resolve(self.store, hash)?;
         let unit = unit.clone();
+        if let Some(lines) = self.js_block(&unit, hname, shown_in, shown_out)? {
+            return Ok(lines);
+        }
         let ports = |ps: &[holon_core::Port]| ps.iter().map(WPort::from_core).collect::<Vec<_>>();
         let target = Node::placed(
             "@holon",
@@ -578,6 +581,68 @@ impl<'s> Printer<'s> {
         }
         lines.push(("}".into(), vec![]));
         Ok(lines)
+    }
+
+    /// A `js` node, read back from its shape (docs/LANGUAGE.md, docs/L4s/js-node-L4.md §3): a
+    /// composite whose children hold one module (the engine) and the `const` feeding its source.
+    /// The parameter names are the unit's inputs, the outputs its outputs, the body is the const's
+    /// text between the `) => {` the lowering wrote and its last brace, the budgets the engine's
+    /// params where they differ from the defaults. None for any other composite.
+    fn js_block(&mut self, unit: &holon_core::Unit, hname: &str, shown_in: &[String], shown_out: &[String]) -> Result<Option<Vec<Line>>, String> {
+        let UnitBody::Composite { children, .. } = &unit.body else { return Ok(None) };
+        let mut engine: Option<&holon_core::Unit> = None;
+        let mut source: Option<String> = None;
+        for c in children {
+            let Some(child) = self.store.resolve(c) else { return Ok(None) };
+            match &child.body {
+                UnitBody::Module { .. } => engine = Some(child),
+                UnitBody::Primitive { name } if name == "const" => {
+                    let is_text = child.params.iter().any(|p| matches!(p, holon_core::Param::Frozen { name, value } if name == "type" && value == "Text"));
+                    if is_text {
+                        source = child.params.iter().find_map(|p| match p {
+                            holon_core::Param::Frozen { name, value } if name == "value" => Some(value.clone()),
+                            _ => None,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (Some(engine), Some(source)) = (engine, source) else { return Ok(None) };
+        let Some(open) = source.find(") => {") else { return Ok(None) };
+        let body = &source[open + ") => {".len()..source.len().saturating_sub(1)];
+        let plain_name = |want: &str, used: &mut HashSet<String>| -> String {
+            let mut base: String = want.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+            if base.is_empty() || base.starts_with(|c: char| c.is_ascii_digit()) {
+                base = format!("p{base}");
+            }
+            let mut name = base.clone();
+            let mut n = 2;
+            while used.contains(&name) || self.reserved(&name) {
+                name = format!("{base}_{n}");
+                n += 1;
+            }
+            used.insert(name.clone());
+            name
+        };
+        let mut used = HashSet::new();
+        let ins: Vec<String> = unit.inputs.iter().enumerate().map(|(k, p)| plain_name(shown_in.get(k).unwrap_or(&p.name), &mut used)).collect();
+        let outs: Vec<String> = unit.outputs.iter().enumerate().map(|(k, p)| plain_name(shown_out.get(k).unwrap_or(&p.name), &mut used)).collect();
+        let budget = |name: &str, default: u64| -> Option<u64> {
+            engine.params.iter().find_map(|p| match p {
+                holon_core::Param::Frozen { name: n, value } if n == name => value.parse::<u64>().ok().filter(|v| *v != default),
+                _ => None,
+            })
+        };
+        let mut budgets = String::new();
+        if let Some(f) = budget(holon_core::FUEL_PARAM, holon_module::JS_DEFAULT_FUEL) {
+            budgets.push_str(&format!(" fuel {f}"));
+        }
+        if let Some(m) = budget(holon_core::MEMORY_PARAM, holon_module::JS_DEFAULT_MEMORY) {
+            budgets.push_str(&format!(" memory {m}"));
+        }
+        let outs_text = if outs.len() == 1 { outs[0].clone() } else { format!("({})", outs.join(", ")) };
+        Ok(Some(vec![(format!("js {hname} = ({}) -> {outs_text}{budgets} {{{body}}}", ins.join(", ")), vec![])]))
     }
 
     /// Nodes and wires as the wiring form writes them (no positions): the fallback. Answers the
@@ -1399,6 +1464,60 @@ mod tests {
 
     fn printed(name: Option<&str>, doc: &FlowDocument, bindings: &BTreeMap<String, String>) -> String {
         print(name, doc, &mut MapResolver::new(), &Names::new(), bindings).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// A `js` node (docs/L4s/js-node-L4.md): its body prints back verbatim, a `}` in a string or a
+    /// template notwithstanding, its budgets only where they differ from the defaults; the printed
+    /// text lowers to the same units; and the node runs, through the engine, as the body says.
+    #[test]
+    fn a_js_node_prints_back_verbatim_lowers_to_the_same_units_and_runs() {
+        let src = "flow f\nport 8201\n\njs score = (estimates, tags) -> (total, weight) fuel 50000000 {\n  // a } in a comment, \"}\" in a string, `}` in a template: none ends the body\n  const total = estimates.reduce((a, b) => a + b, 0);\n  const label = `${tags.length}:${total > 10 ? \"heavy\" : \"light\"}`;\n  return { total, weight: label };\n}\n\njs shout = (s) -> said {\n  return s.toUpperCase() + \"!\";\n}\n\nroute POST /x (req) {\n  s = score(req.json.estimates, req.json.tags)\n  respond { total: s.total, weight: s.weight, said: shout(req.json.title) }\n}\n";
+        let lowered = compile(src).unwrap_or_else(|e| panic!("{e}"));
+        let text = round_trips("f", &lowered.doc, &lowered.names);
+        assert_eq!(text, src, "fmt writes the js node as it was written");
+
+        // The node runs: its unit, from the document, through a resolver with the engine.
+        let mut store = MapResolver::new();
+        for hex in lowered.doc.units.as_deref().unwrap_or_default() {
+            let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+            store.insert(holon_core::decode_preimage(&bytes).unwrap()).unwrap();
+        }
+        let names = lowered.doc.names.clone().unwrap_or_default();
+        let hash_named = |want: &str| holon_core::parse_hash(names.iter().find(|(_, n)| n.as_str() == want).map(|(h, _)| h.as_str()).unwrap()).unwrap();
+        let engine = holon_module::Engine::new();
+        let with = holon_module::WithEngine::new(&store, &engine);
+        let n = |x: f64| holon_core::Value::Number(x);
+        let score = store.resolve(&hash_named("score")).unwrap().clone();
+        assert_eq!(score.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["estimates", "tags"]);
+        assert_eq!(score.outputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["total", "weight"]);
+        let estimates = holon_core::Value::List(vec![n(4.0), n(8.0)]);
+        let tags = holon_core::Value::List(vec![holon_core::Value::Text("a".into())]);
+        let outs = holon_core::eval(&score, &[Some(estimates), Some(tags)], &with);
+        assert_eq!(outs.as_slice(), &[Some(n(12.0)), Some(holon_core::Value::Text("1:heavy".into()))], "{:?}", with.take_failure());
+        let shout = store.resolve(&hash_named("shout")).unwrap().clone();
+        let said = holon_core::eval(&shout, &[Some(holon_core::Value::Text("hi".into()))], &with);
+        assert_eq!(said.as_slice(), &[Some(holon_core::Value::Text("HI!".into()))], "{:?}", with.take_failure());
+        assert_eq!(holon_core::module_limits_of(&shout, &store)[holon_core::FUEL_LIMIT], holon_module::JS_DEFAULT_FUEL, "the js default, not the module's");
+        // Without the engine the node is absent; with a budget too small it is absent and says so.
+        assert_eq!(holon_core::eval(&shout, &[Some(holon_core::Value::Text("hi".into()))], &store).as_slice(), &[None]);
+        assert!(holon_core::module_limits_of(&score, &store)[holon_core::FUEL_LIMIT] == 50_000_000);
+    }
+
+    #[test]
+    fn a_js_node_s_mistakes_are_named_at_their_place() {
+        let error = |src: &str| compile(src).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("compiled: {src}"));
+        assert!(error("flow f\n\njs a = (x) -> y {\n  return x\n").contains("isn't closed"));
+        assert!(error("flow f\n\njs a = (x) -> y {}\nstate.k = a(1)\n").contains("empty"));
+        assert!(error("flow f\n\njs a = (x, x) -> y { return x }\nstate.k = a(1)\n").contains("declared twice"));
+        assert!(error("flow f\n\njs a = (x) -> y fuel 0 { return x }\nstate.k = a(1)\n").contains("positive whole number"));
+        assert!(error("flow f\n\njs a = (x) -> y fuel 1M fuel 2M { return x }\nstate.k = a(1)\n").contains("given twice"));
+        assert!(error("flow f\n\nholon a(x) -> y {\n  y = x\n}\njs a = (x) -> y { return x }\nstate.k = a(1)\n").contains("already"));
+        assert!(error("flow f\n\njs a = (x) -> y { return x }\nroute GET /p (req) {\n  a = 1\n  respond a\n}\n").contains("may not shadow"));
+        // The header's scaled numbers: 50M is 50 000 000, 16MB is 16 MiB.
+        let l = compile("flow f\n\njs a = (x) -> y fuel 50M memory 16MB { return x }\nstate.k = a(1)\n").unwrap();
+        let text = printed(Some("f"), &l.doc, &l.names);
+        assert!(text.contains("js a = (x) -> y fuel 50000000 {"), "{text}");
+        assert!(!text.contains("memory"), "the default memory isn't written: {text}");
     }
 
     /// The round trip of §11: printed, compiled again, the same unit; printed again, the same text.
