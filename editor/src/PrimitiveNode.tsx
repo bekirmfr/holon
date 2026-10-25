@@ -37,7 +37,7 @@ import { nextPortName } from "./ports";
  *  job, deliberately a separate, later inch, not this one's). */
 /** What a canvas node stands for: a catalog primitive, a grouped composite (by hash), or an HTTP
  *  template (`request` / `respond`, see templates.ts), rebuilt from its params like a primitive. */
-export type PlacedBody = { kind: "Primitive" } | { kind: "Composite"; hash: string } | { kind: "Template" };
+export type PlacedBody = { kind: "Primitive" } | { kind: "Composite"; hash: string } | { kind: "Template" } | { kind: "Module"; hash: string };
 
 export type PrimitiveData = {
   name: string;

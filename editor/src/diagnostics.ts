@@ -64,6 +64,7 @@ export function validationErrorNodeIndices(err: WValidationError, wedges: WEdge[
     case "BoundaryInputOutOfRange":
     case "BoundaryOutputOutOfRange":
     case "Cycle":
+    case "Module":
       return [];
   }
   const exhaustive: never = err;

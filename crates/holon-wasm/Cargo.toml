@@ -14,6 +14,9 @@ crate-type = ["cdylib", "rlib"]
 holon-core = { path = "../holon-core" }
 # Authoring (a flow's units, routes and server): pure like core, the same code the command line runs.
 holon-author = { path = "../holon-author" }
+# The same engine the host runs modules with, compiled to wasm32: design mode runs a module for
+# real, under the real budget (docs/L4s/wasm-module-L4.md §5). Pure like core: no I/O.
+holon-module = { path = "../holon-module" }
 wasm-bindgen = "0.2"
 # The JS <-> WASM Value boundary. serde lives HERE, not in holon-core (which stays blake3-only):
 # `WValue` is a bridge-local serde mirror of `core::Value`. serde-wasm-bindgen (not JSON) because

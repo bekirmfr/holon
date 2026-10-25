@@ -25,6 +25,8 @@ holon-core = { path = "../holon-core" }
 # The flow commands (`holon new`, `check`, `show`, `fmt`), through the same code as the editor.
 holon-author = { path = "../holon-author" }
 holon-host = { path = "../holon-host" }
+# The engine for module bodies: a run that places a module computes it here, under its budgets.
+holon-module = { path = "../holon-module" }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

@@ -104,6 +104,8 @@ fn serve_flow(
     let mut ran: Option<LogEntry> = None;
     let mut waits = RunWaits::default();
     let mut parked: Result<Vec<String>, String> = Ok(Vec::new());
+    // A module in the flow runs through the engine; everything else resolves as before.
+    let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let mut answer = data::handle(
         &server,
         &resolver,

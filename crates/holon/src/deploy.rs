@@ -109,7 +109,7 @@ pub(crate) fn handle_post_deploy(
     // what its author declares; policy refuses what it never grants, grants what it grants
     // without asking, and everything else must be acknowledged. A redeploy asks only for what
     // the previous grant didn't already cover.
-    let manifest = Manifest::new(caps.iter(), body.requirements.clone());
+    let manifest = Manifest::new(caps.iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
     if let Some(why) = policy.refuses(&manifest) {
         return err(400, format!("this host can't grant that: {why}"));
     }
@@ -296,7 +296,7 @@ pub(crate) fn handle_post_deploy_preview(
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         return err(404, "no unit stored at that hash — stage or publish it first");
     };
-    let manifest = Manifest::new(capabilities(root_unit, &resolver).iter(), body.requirements);
+    let manifest = Manifest::new(capabilities(root_unit, &resolver).iter(), body.requirements.with_module_limits(root_unit, &resolver));
     let previous = deployments.lock().unwrap().get(&body.slug).map(|d| d.grant.clone());
     let needs = policy.needs_approval(&manifest, previous.as_ref());
     let items = manifest.items();
@@ -427,7 +427,7 @@ pub(crate) fn handle_get_permission_view(
         Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
     };
     let Some(root) = resolver.resolve(&unit) else { return err(500, "deployed unit no longer resolves in the store") };
-    let manifest = Manifest::new(capabilities(root, &resolver).iter(), grant.requirements.clone());
+    let manifest = Manifest::new(capabilities(root, &resolver).iter(), grant.requirements.clone().with_module_limits(root, &resolver));
     Response::json(&serde_json::json!({
         "hash": to_hex(&manifest.hash()),
         "capabilities": manifest.capabilities,
@@ -607,6 +607,7 @@ pub(crate) fn handle_post_trigger(
     ];
     let started = started_now();
     let mut waits = RunWaits::default();
+    let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_deref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
 
     record_trigger(deployments, slug, false);

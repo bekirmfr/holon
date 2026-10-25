@@ -564,7 +564,9 @@ impl Evaluator {
             .map_err(|e| JsError::new(&format!("inputs: {e}")))?;
         let core_inputs: Vec<Option<Value>> =
             winputs.into_iter().map(|o| o.map(WValue::into_core)).collect();
-        let out: Vec<Option<WValue>> = holon_core::eval(&unit, &core_inputs, &self.resolver)
+        // With the engine: a module placed on the canvas runs for real, under its budget.
+        let with_engine = holon_module::WithEngine::new(&self.resolver, holon_module::shared());
+        let out: Vec<Option<WValue>> = holon_core::eval(&unit, &core_inputs, &with_engine)
             .iter()
             .map(|o| o.as_ref().map(WValue::from_core))
             .collect();

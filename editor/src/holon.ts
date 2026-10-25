@@ -62,10 +62,12 @@ export type WPort = { name: string; ty: WType };
  */
 export type WEdge = { from_child: number; from_port: number; to_child: number; to_port: number };
 
-/** What a unit is: a named primitive, or a composite of children (hex hashes) wired together. */
+/** What a unit is: a named primitive, a composite of children (hex hashes) wired together, or a
+ *  WebAssembly module (its binary, as hex): code with ports and no inside. */
 export type WBody =
   | { kind: "Primitive"; name: string }
-  | { kind: "Composite"; children: string[]; edges: WEdge[] };
+  | { kind: "Composite"; children: string[]; edges: WEdge[] }
+  | { kind: "Module"; bytes: string };
 
 /** A complete unit. `params`/`inputs`/`outputs` may be omitted (default empty). */
 export type WUnit = {
@@ -94,7 +96,8 @@ export type WValidationError =
   | { kind: "BoundaryOutputOutOfRange"; edge: number; port: number; message: string }
   | { kind: "DuplicateInputEdge"; to_child: number; to_port: number; message: string }
   | { kind: "Cycle"; message: string }
-  | { kind: "TypeMismatch"; edge: number; src: WType; dst: WType; message: string };
+  | { kind: "TypeMismatch"; edge: number; src: WType; dst: WType; message: string }
+  | { kind: "Module"; message: string };
 
 /** A promotion choice: which inner (child, port) input becomes a boundary input, and what
  *  it's named. Mirrors `core::Promote`. */

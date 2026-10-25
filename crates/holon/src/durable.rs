@@ -467,6 +467,7 @@ pub(crate) fn resume_parked(
     let resolver = materialize_closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();
+    let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root, &inputs, &resolver, store, state.as_deref(), &sourced, &permit, false, &secrets, &mut waits, Some(resumed));
 
     let mut entry = run_entry("resume", started, &sourced, &run);

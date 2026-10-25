@@ -29,8 +29,10 @@ use crate::to_hex;
 
 /// The limits a deployment may ask for, by name, and the unit each is counted in. Durations are
 /// milliseconds (the durable-run wait is in seconds, like the `await` node's `expires`); sizes are
-/// bytes.
-pub(crate) const LIMIT_NAMES: [&str; 12] = [
+/// bytes. The two module limits are what a flow's module bodies may compute and hold per call
+/// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
+/// gets, so the policy has ceilings for them and no `[limits]` entry.
+pub(crate) const LIMIT_NAMES: [&str; 14] = [
     "connect_timeout_ms",
     "request_timeout_ms",
     "run_budget_ms",
@@ -43,7 +45,14 @@ pub(crate) const LIMIT_NAMES: [&str; 12] = [
     "max_redirects",
     "max_await_seconds",
     "max_waiting_runs",
+    holon_core::FUEL_LIMIT,
+    holon_core::MEMORY_LIMIT,
 ];
+
+/// What no module may be granted past: a hundred times the default fuel, sixteen times the
+/// default memory. A flow asking more is refused at deploy, like any limit over its ceiling.
+pub(crate) const MODULE_FUEL_CEILING: u64 = 100 * holon_core::DEFAULT_MODULE_FUEL;
+pub(crate) const MODULE_MEMORY_CEILING: u64 = 16 * holon_core::DEFAULT_MODULE_MEMORY;
 
 /// Limits on durable runs (§4.3): how long one waiting point may wait, and how many runs may wait
 /// at once. The host's, like the request limits; not part of a run (`holon_host::Limits`).
@@ -135,6 +144,20 @@ pub(crate) struct Requirements {
     pub(crate) optional: BTreeSet<String>,
 }
 
+impl Requirements {
+    /// These requirements with the budgets of the modules `root` places (`module_limits_of`):
+    /// a flow with a module asks for `module_fuel` and `module_memory` at the largest its
+    /// modules declare, whether or not its author wrote them, so the person approving sees how
+    /// much it may compute per call and the policy's ceilings hold it.
+    pub(crate) fn with_module_limits(mut self, root: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> Requirements {
+        for (name, n) in holon_core::module_limits_of(root, resolver) {
+            let asked = self.limits.entry(name).or_insert(0);
+            *asked = (*asked).max(n);
+        }
+        self
+    }
+}
+
 /// What a deployment needs: its derived capabilities and its declared requirements.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Manifest {
@@ -217,11 +240,14 @@ pub(crate) struct Policy {
 
 impl Default for Policy {
     fn default() -> Policy {
+        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings());
+        ceilings.insert(holon_core::FUEL_LIMIT.into(), MODULE_FUEL_CEILING);
+        ceilings.insert(holon_core::MEMORY_LIMIT.into(), MODULE_MEMORY_CEILING);
         Policy {
             request: Limits::request_run(),
             clock_run_budget: Limits::clock_run().run_budget,
             durable: DurableLimits::defaults(),
-            ceilings: limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings()),
+            ceilings,
             auto: Vec::new(),
             allow_plain_http: false,
             allow_private_addresses: false,
@@ -271,6 +297,11 @@ impl Policy {
         for name in file.limits.keys().chain(file.ceilings.keys()) {
             if !LIMIT_NAMES.contains(&name.as_str()) {
                 return Err(format!("unknown limit {name:?} (known: {})", LIMIT_NAMES.join(", ")));
+            }
+        }
+        for name in [holon_core::FUEL_LIMIT, holon_core::MEMORY_LIMIT] {
+            if file.limits.contains_key(name) {
+                return Err(format!("{name} is a module's own budget, not a default a run gets: set its [ceilings] entry instead"));
             }
         }
         policy.ceilings.extend(file.ceilings);
@@ -656,6 +687,47 @@ mod tests {
         assert_eq!((p.durable.max_waiting_runs, p.ceilings["max_waiting_runs"]), (500, 1000));
         assert_eq!(Policy::default().durable.max_await_seconds, 30 * 24 * 3600);
         assert!(Policy::parse("[ceilings]\nmax_await_seconds = 86400").unwrap_err().contains("above its ceiling"), "the default month");
+    }
+
+    /// A flow that places a module asks for its budgets as limits, whether or not its author
+    /// wrote them; the policy has ceilings for those and no defaults.
+    #[test]
+    fn a_module_s_budgets_are_limits_with_ceilings_and_no_defaults() {
+        use holon_core::{Edge, MapResolver, Port, Type, UnitBody, BOUNDARY, FUEL_LIMIT, MEMORY_LIMIT};
+        let module = holon_core::Unit {
+            body: UnitBody::Module { bytes: b"\0asm\x01\0\0\0".to_vec() }, // never run here: only its params are read
+            params: vec![holon_core::Param::frozen("fuel", "50000000"), holon_core::Param::frozen("memory", "1048576")],
+            inputs: vec![Port { name: "a".into(), ty: Type::Any }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        };
+        let mut store = MapResolver::new();
+        let h = store.insert(module).unwrap();
+        let root = holon_core::Unit {
+            body: UnitBody::Composite {
+                children: vec![h],
+                edges: vec![Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 }, Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "a".into(), ty: Type::Any }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Any }],
+        };
+        let mut declared = Requirements::default();
+        declared.limits.insert(MEMORY_LIMIT.into(), 4 << 20); // the author asked for more memory than the module declares
+        let req = declared.with_module_limits(&root, &store);
+        assert_eq!(req.limits[FUEL_LIMIT], 50_000_000);
+        assert_eq!(req.limits[MEMORY_LIMIT], 4 << 20, "the larger of the two");
+        let manifest = Manifest::new(std::iter::empty(), req);
+        assert!(manifest.items().contains("Limit(module_fuel=50000000)"), "{:?}", manifest.items());
+        assert_eq!(Policy::default().refuses(&manifest), None);
+
+        // Past the ceiling, refused like any limit; the ceiling is the operator's to raise.
+        let mut greedy = Requirements::default();
+        greedy.limits.insert(FUEL_LIMIT.into(), MODULE_FUEL_CEILING + 1);
+        assert!(Policy::default().refuses(&Manifest::new(std::iter::empty(), greedy.clone())).unwrap().contains("above this host's ceiling"));
+        let raised = Policy::parse(&format!("[ceilings]\n{FUEL_LIMIT} = {}", MODULE_FUEL_CEILING * 2)).unwrap();
+        assert_eq!(raised.refuses(&Manifest::new(std::iter::empty(), greedy)), None);
+        // A default for a module budget makes no sense: a module's budget is its own.
+        assert!(Policy::parse(&format!("[limits]\n{FUEL_LIMIT} = 5")).unwrap_err().contains("module's own budget"));
     }
 
     #[test]

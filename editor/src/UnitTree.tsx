@@ -29,6 +29,10 @@ function buildInspectTree(hash: string, ev: Evaluator): InspectNode {
   if (unit.body.kind === "Primitive") {
     return { hash, name: unit.body.name, isComposite: false, capabilities, kind, children: [] };
   }
+  // A module is code with ports and no inside: a leaf of the tree, named by its hash.
+  if (unit.body.kind === "Module") {
+    return { hash, name: `module ${hash.slice(0, 8)}`, isComposite: false, capabilities, kind, children: [] };
+  }
   return {
     hash,
     name: hash.slice(0, 8),

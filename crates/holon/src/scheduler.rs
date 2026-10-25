@@ -95,6 +95,7 @@ pub(crate) fn fire_one_clock_tick(
     let is_state = state.is_some();
     let started = started_now();
     let mut waits = RunWaits::default();
+    let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_deref(), &extra_sourced, permit, true, secrets, &mut waits, None);
     let mut entry = run_entry("tick", started, &extra_sourced, &run);
     match durable::park_if_waiting(deployments, store, &slug, &unit_hash, "tick", None, &[], &extra_sourced, &run, &waits) {

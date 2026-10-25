@@ -169,14 +169,14 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>) -> Report {
     for (i, (entry, line)) in entries.iter().enumerate() {
         let earlier: Vec<&LogEntry> =
             entries[..i].iter().map(|(e, _)| e).filter(|e| !entry.run_id.is_empty() && e.run_id == entry.run_id).collect();
-        report.reruns.push((entry.seq, rerun(entry, line, &earlier, &resolver)));
+        report.reruns.push((entry.seq, rerun(entry, line, &earlier, &holon_module::WithEngine::new(&resolver, holon_module::shared()))));
     }
     report
 }
 
 /// Run `entry` again from what it records (and what the earlier parts of the same run, `earlier`,
 /// record: a resumed run's outbound answers and reads), and compare.
-fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], resolver: &MapResolver) -> Rerun {
+fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], resolver: &impl holon_core::Resolver) -> Rerun {
     if entry.run_id.is_empty() {
         return Rerun::Skipped("nothing ran: no route took the request".into());
     }
