@@ -479,6 +479,26 @@ fn parse_at(v: &str) -> Result<std::net::SocketAddr, String> {
     v.parse().map_err(|_| format!("{v:?} isn't an address to listen on: give IP:PORT (127.0.0.1:8080, 0.0.0.0:8080, [::1]:8080) or a port"))
 }
 
+/// What `serve` warns when it listens beyond this machine: Holon speaks plain HTTP, and TLS ends
+/// at the operator's ingress in front of it (the manual's guides/public-https.md). None when
+/// both the server and deployed flows' ports stay on loopback.
+fn plain_http_warning(server: std::net::SocketAddr, data_host: std::net::IpAddr) -> Option<String> {
+    let open: Vec<String> = [
+        (!server.ip().is_loopback()).then(|| format!("the server and editor ({server})")),
+        (!data_host.is_loopback()).then(|| format!("deployed flows' ports ({data_host})")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if open.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "holon: warning: {} take plain HTTP from the network. Holon has no TLS of its own: put it behind your ingress or a TLS proxy (the manual: \"A public HTTPS address\"), and keep the hop from there to Holon on this machine or a network you trust.",
+        open.join(" and ")
+    ))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rest = args.get(1..).unwrap_or_default().to_vec();
@@ -974,6 +994,9 @@ fn serve(args: Vec<String>) {
         println!("holon: the editor ({}) at http://{addr}/", source.describe());
     }
     println!("holon: listening on http://{addr} ({gate}; see access.rs)");
+    if let Some(warning) = plain_http_warning(bound, state.data_limits.host) {
+        eprintln!("{warning}");
+    }
     // Commands this user runs on this machine find it, and sign in, from here (local.rs).
     local::publish(bound, &accounts.new_local(&local::user()));
     if state_cell.set(state).is_err() {

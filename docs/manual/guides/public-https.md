@@ -12,8 +12,11 @@ There are two things you might expose, and they are separate:
 
 ## What to know first
 
-- **TLS ends at the proxy.** Holon has no TLS of its own yet. Keep the proxy and Holon on the
-  same machine, or on a private network you trust.
+- **TLS ends in front of Holon.** Holon serves plain HTTP and leaves TLS to what stands in front
+  of it, as most internal services do: your ingress, load balancer or API gateway, or a proxy
+  like Caddy. That layer already has the certificates, and in a cluster a service mesh can
+  encrypt the hop to Holon too. Otherwise keep that hop on the same machine, or on a private
+  network you trust. `holon serve` warns when it listens beyond this machine.
 - **A flow's port has no sign-in.** Anyone who can reach it can call its routes. A flow guards
   itself: a verified signature (`stripe.verify`), or a token compared with `secure_equals` (the
   `guarded-api` sample). Everything else is answered as the flow says.
@@ -106,7 +109,7 @@ Everyone still signs in. Use long passwords, or an identity provider (the admin 
 API tokens with the narrowest role that works.
 
 To reach the server from your network without a proxy, `--at 0.0.0.0:7420` listens on every
-interface, still unencrypted: only on a network you trust.
+interface, still unencrypted (the server warns so): only on a network you trust.
 
 ## Checking it
 

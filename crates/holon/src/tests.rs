@@ -3428,6 +3428,19 @@ fn at_takes_an_address_or_a_port_alone() {
     }
 }
 
+/// Listening beyond this machine warns that it's plain HTTP, naming what is open; loopback doesn't.
+#[test]
+fn listening_beyond_loopback_warns_that_it_is_plain_http() {
+    let local: std::net::IpAddr = [127, 0, 0, 1].into();
+    assert_eq!(plain_http_warning(parse_at("7420").unwrap(), local), None);
+    assert_eq!(plain_http_warning(parse_at("[::1]:7420").unwrap(), "::1".parse().unwrap()), None);
+    let both = plain_http_warning(parse_at("0.0.0.0:7420").unwrap(), [0, 0, 0, 0].into()).unwrap();
+    assert!(both.contains("the server and editor (0.0.0.0:7420) and deployed flows' ports (0.0.0.0)"), "{both}");
+    assert!(both.contains("no TLS of its own"), "{both}");
+    let flows = plain_http_warning(parse_at("7420").unwrap(), [10, 0, 0, 5].into()).unwrap();
+    assert!(flows.contains("deployed flows' ports (10.0.0.5) take") && !flows.contains("editor"), "{flows}");
+}
+
 /// A deployment's runs, exported and checked offline: every run runs again to what its entry
 /// says. A copy re-chained after changing what a run performed still links, but that run no longer
 /// re-runs to its entry; a witnessed head is found only in the copy it came from.

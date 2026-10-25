@@ -136,9 +136,9 @@ minute; a value that can't be read is kept for five minutes at most.
 ## Deployed flows' servers
 
 Each deployed server flow listens on its own port, on `--data-host` (127.0.0.1 unless told
-otherwise). It speaks HTTP/1.1, without TLS; put HTTPS in front
-([A public HTTPS address](../guides/public-https.md)). It has no sign-in: a flow guards its own
-routes.
+otherwise). It speaks HTTP/1.1, without TLS: HTTPS ends at your ingress or proxy in front of it
+([A public HTTPS address](../guides/public-https.md)). `holon serve` warns as it starts when the
+server or these ports listen beyond loopback. It has no sign-in: a flow guards its own routes.
 
 | Case | Answer |
 |---|---|
