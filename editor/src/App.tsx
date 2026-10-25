@@ -4,7 +4,7 @@
 // operations live in canvasOps.ts, its panels in CanvasPanels.tsx, the pages over it in Pages.tsx,
 // and its undo history and deployment table in their hooks.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -72,6 +72,7 @@ import { compileHolon, printHolon, sourceLineOf } from "./holonText";
 import { TextPane } from "./TextPane";
 import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
+import type { ManualAt } from "./ManualPage";
 import { defaultHome, readPrefs, type Prefs } from "./home";
 import { inspectorRun, useViewMode, ViewModePanes } from "./useViewMode";
 import { useCompositeOverlay } from "./useCompositeOverlay";
@@ -81,6 +82,9 @@ import { useTabs } from "./useTabs";
 import { useModeSwitch } from "./useModeSwitch";
 import { useMarketplace } from "./useMarketplace";
 import { MARKET_PREFIX } from "./marketplace";
+
+// The docs tab, with the manual in it: loaded when first opened, not with the editor.
+const ManualPage = lazy(() => import("./ManualPage").then((m) => ({ default: m.ManualPage })));
 
 const nodeTypes = { primitive: PrimitiveNode } as unknown as NodeTypes;
 
@@ -155,6 +159,9 @@ function Canvas({
 
   // The last deploy or deployment error, shown in the toolbar and on the deployed page.
   const [deployError, setDeployError] = useState("");
+  // Where the docs tab is in the manual (null: its index): kept here, so it is where it was when
+  // the tab shows again.
+  const [manualAt, setManualAt] = useState<ManualAt | null>(null);
 
   // New and Open start from a clean slate: no projection, error highlight or inspect panel
   // carried over from the previous flow.
@@ -323,6 +330,20 @@ function Canvas({
       showTab(open, tabFromDocument(sample.name, buildSample(sample, ev), false));
     },
     [tabOf, dialog, showTab, tabFromDocument, byName, variadic, ev],
+  );
+  // A flow's text (imported on the flows page, or a flow in the manual) opens as an unsaved copy
+  // in a tab of its own; why it can't, else null.
+  const openText = useCallback(
+    (text: string): string | null => {
+      try {
+        const { name, doc } = compileHolon(text, ev);
+        showTab(null, tabFromDocument(name, doc, false));
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    },
+    [ev, showTab, tabFromDocument],
   );
 
   const onDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
@@ -853,15 +874,7 @@ function Canvas({
               samples={samples()}
               onOpenSample={onOpenSample}
               holonText={{
-                onImport: (text) => {
-                  try {
-                    const { name, doc } = compileHolon(text, ev);
-                    showTab(null, tabFromDocument(name, doc, false));
-                    return null;
-                  } catch (e) {
-                    return e instanceof Error ? e.message : String(e);
-                  }
-                },
+                onImport: openText,
                 exportOf: async (name) => printHolon(name, (await getFlow(name)).document, ev),
                 textOfSample: (sample) => sample.text,
               }}
@@ -877,12 +890,18 @@ function Canvas({
             />
           )}
           {shown === "admin" && me.role === "admin" && <AdminPage me={me.name} />}
+          {shown === "docs" && (
+            <Suspense fallback={<div style={{ color: "#7e8ea8" }}>loading the manual…</div>}>
+              <ManualPage at={manualAt} onGo={setManualAt} onTry={openText} />
+            </Suspense>
+          )}
           {shown === "welcome" && (
             <WelcomePage
               name={me.name}
               showOnStart={start.prefs.welcome !== false}
               onShowOnStart={(show) => start.onPrefs({ ...start.prefs, welcome: show })}
               onAction={(a) => (a === "new" ? start.onNew() : start.openPage(a === "samples" ? "flows" : a))}
+              onManual={() => start.openPage("docs")}
             />
           )}
           {shown === "home" && (
@@ -1023,6 +1042,9 @@ function Editor({ me }: { me: Me }) {
           </button>
           <button style={menuBtn(page === "deployed")} onClick={() => openPage("deployed")}>
             deployed
+          </button>
+          <button style={menuBtn(page === "docs")} onClick={() => openPage("docs")}>
+            docs
           </button>
           {me.role === "admin" && (
             <button style={menuBtn(page === "admin")} onClick={() => openPage("admin")}>

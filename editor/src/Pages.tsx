@@ -15,7 +15,7 @@ import type { Sample } from "./samples";
  *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
  *  as overlays on top of it. `marketplace` is deliberately absent: deferred, and a menu entry
  *  that can't be picked shouldn't be representable as a page state either. */
-export type AppPage = "canvas" | "flows" | "deployed" | "admin" | "home" | "welcome";
+export type AppPage = "canvas" | "flows" | "deployed" | "admin" | "home" | "welcome" | "docs";
 /** A page shown in a tab of its own: every page but the canvas (whose tabs are the flows'). */
 export type PageTab = Exclude<AppPage, "canvas">;
 

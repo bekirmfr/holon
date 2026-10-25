@@ -13,6 +13,7 @@ export function WelcomePage({
   showOnStart,
   onShowOnStart,
   onAction,
+  onManual,
 }: {
   /** Who is signed in. */
   name: string;
@@ -20,6 +21,8 @@ export function WelcomePage({
   onShowOnStart: (show: boolean) => void;
   /** A step's button: open the samples, start a new flow, the deployed page, the flows page. */
   onAction: (action: NonNullable<Step["action"]>) => void;
+  /** Opens the manual, in the docs tab. */
+  onManual: () => void;
 }) {
   const [open, setOpen] = useState<string | null>(TOPICS[0].title);
   const label = { samples: "open the samples", new: "new flow", deployed: "the deployed page", flows: "the flows page" };
@@ -46,6 +49,12 @@ export function WelcomePage({
       </ol>
 
       <div style={head}>docs</div>
+      <div style={{ marginBottom: 8 }}>
+        The short version, one topic each; the whole of it is in the manual.{" "}
+        <button style={small} onClick={onManual}>
+          the manual
+        </button>
+      </div>
       {TOPICS.map((t) => (
         <section key={t.title} style={{ borderTop: "1px solid #1b2a45" }}>
           <button

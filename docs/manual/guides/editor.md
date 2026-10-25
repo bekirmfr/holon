@@ -17,14 +17,16 @@ and **sign out**.
 
 ## Pages and tabs
 
-The header has **new** (a new flow), **flows**, **deployed** and, for admins, **admin**. Each page
-opens in a tab, before the flow tabs; every tab closes with its ×.
+The header has **new** (a new flow), **flows**, **deployed**, **docs** and, for admins, **admin**.
+Each page opens in a tab, before the flow tabs; every tab closes with its ×.
 
 - **home** is shown when no flow is open. **customize** adds, moves and removes its panes:
   recent flows, deployments, activity, samples, notes and a getting-started checklist. Your panes
   are kept with your account.
 - **welcome** has the steps to start and short docs. Untick **show this on start** to stop it
   opening.
+- **docs** is this manual, its contents beside the page. Its links stay in the tab, and each
+  flow in it has **open in a tab**, which opens the flow as an unsaved copy to try.
 
 A flow tab shows the flow's name, **•** when it has unsaved changes, and whether it is a
 **draft**, **saved** or **deployed**. Closing a tab with changes asks first.
