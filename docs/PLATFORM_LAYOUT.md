@@ -1,64 +1,75 @@
-# Platform layout: one engine, many front doors
+# Platform layout: one engine, one product
 
-**Status:** living plan (since 2026-10-21). What has landed is tracked in §7; §4 is the design for
-what comes next.
-**Goal:** split the codebase into a shared **platform** and thin **packs**, so each front door
-(`holon-hooks` first, then `holon-agents`, `holon-rules`, …) is a pack plus onboarding on top of the
-same engine. Webhooks are the first consumer. Nothing built for them should block the other doors.
+**Status:** living plan (since 2026-10-21; direction changed 2026-10-25). What has landed is
+tracked in §7, and §7's M3 is what comes next; §4 and §5 are the designs the runtime was built to.
+**Goal:** one product (the `holon` command, its editor, and the agent surface) on one engine,
+proven by someone outside doing a real job with it. What it is for is in `README.md`: agents
+propose, Holon shows what they may do, runs only that, and keeps a record of every run.
+
+**What changed on 2026-10-25.** Until then this plan split the work into a shared platform and
+thin **packs**, so that each **front door** (`holon-hooks` first, then `holon-agents`,
+`holon-rules`) would be a pack plus onboarding over the same engine. Both are dropped (§6). A door
+was the same engine with templates, defaults and a tailored view, and what a pack would have
+carried already has a home: reusable building blocks are holons published through the
+`marketplace` sample, and a vertical's starting points are samples and templates. A view tailored
+to one group of users can still come later, when such a group needs what the general one can't
+show; it is not a product of its own.
 
 ---
 
 ## 1. The rule
 
 ```
-packs  ──depend on──►  platform          (never the reverse)
-host   ──depends on──► core              (existing rule, unchanged)
-wasm   ──depends on──► core              (existing rule, unchanged)
+host    ──depends on──► core              (never the reverse: core stays pure)
+module  ──depends on──► core
+author  ──depends on──► core, module
+wasm    ──depends on──► core, module, author   (the editor's bridge; never host)
+holon   ──depends on──► core, host, module, author   (the one command)
 ```
 
-- **Nothing vendor-specific or door-specific goes into the platform.** There is no `stripe`, `slack`
-  or `github` anywhere in a crate.
-- **Packs are data, not code.** A pack is a set of content-addressed units, plus templates, plus a
-  manifest. A new integration should never need a Rust change. The only exception is a primitive
-  that is genuinely inexpressible or too slow as a composite (e.g. HMAC). That goes into core as a
-  **generic** primitive, through the existing admission gate (design §13).
+- **Nothing vendor-specific goes into a crate.** There is no `stripe`, `slack` or `github` in Rust:
+  those live in samples, templates and published holons.
+- **Integrations are content, not code.** A new integration is a flow, a template or a holon
+  published through the marketplace, and should never need a Rust change. The only exception is a
+  primitive that is genuinely inexpressible or too slow as a composite (e.g. HMAC). That goes into
+  core as a **generic** primitive, through the existing admission gate (design §13). A computation
+  the vocabulary can't spell, and that needs no capability, can be a `js` node instead.
 
-The second rule keeps the genesis trust root small and frozen. It also makes the marketplace idea
-come back for free: packs are just published units.
+The second rule keeps the genesis trust root small and frozen.
 
 ---
 
-## 2. Target layout
+## 2. Layout (as it stands, 2026-10-25)
 
 ```
 crates/
-  holon-core      pure language: values (+ Record), types, hashing, eval, primitives, validate
-  holon-host      runtime: Host, fire, effect loop, state, stores, recorder/replay, manifests and permissions
-  holon-market    PARKED: registry, memo, shared cache, reputation, fork (moved out of host)
-  holon-wasm      bridge (unchanged role)
-  holon-server    lib + bin, split into modules:
-                    control/   editor API (units, flows, deploy) on 127.0.0.1:7420
-                    data/      the user's servers: listeners on declared ports, routing
-                    persist/   atomic JSON persistence
-                    scheduler/ clock ticks
-  holon-pack      CLI: build a pack dir → hashed unit bundle + manifest; load into a store
-packs/
-  auth/           shared building blocks: signature verify, bearer/basic checks, secret refs
-  http/           shared: request/response helpers, JSON body parse, status helpers
-  hooks/          door 1: stripe/github/slack units + 3–5 templates + manifest
-  (agents/, rules/ … later)
-editor/src/
-  canvas/  flows/  deploy/  test-request/  replay/  doors/
+  holon-core      pure language: values, types, hashing, eval, the primitive catalog, validation,
+                  declaration units; the marketplace's pure parts (memo, fork, inspect, advisory)
+  holon-host      runtime: Host, fire, rounds, state, stores; registry, memo, shared cache (parked)
+  holon-module    WebAssembly module bodies on wasmi, with fuel and memory budgets; the JavaScript engine
+  holon-author    the language (lang/: lex, parse, lower, print), building and editing flows, samples,
+                  templates, describe, the agent surface's tools
+  holon-wasm      the editor's bridge: core, the language and modules, compiled to wasm
+  holon           the one command: serve (control plane, data plane, scheduler, durable runs,
+                  permissions, secrets, folders, accounts), new, check, show, fmt, export, verify, folder,
+                  mcp, lsp, update, migrate, uninstall; the editor is embedded in it
+editor/           the web editor (React over holon-wasm): canvas, text pane, view mode, flows,
+                  deployments, admin
+editors/vscode/   the VS Code extension (a client of holon lsp)
+fixtures/modules/ module sources and builds (js-engine)
 ```
 
-### Why `holon-host` keeps its name
-Renaming it to `holon-runtime` would touch every import and every doc for no functional gain. Moving
-the **marketplace** pieces out of it gives the same clarity: host becomes "the runtime", and
-`holon-market` holds everything parked.
+`holon-server` became the `holon` crate (one command, `holon serve`), and the marketplace pieces
+were never moved into a `holon-market` crate: the pure ones stay in core, the registry and shared
+cache in host, unused by the product. A `holon-pack` tool and `packs/` were never built (§6). §3
+below is the record of the moves that got here (M0 and M1).
 
 ---
 
-## 3. What moves where (current → target)
+## 3. What moved where (M0 and M1, done)
+
+Kept as the record. The "Target" column was the plan at the time; §2 is what was built, and the
+`holon-market` and `doors/` targets were dropped.
 
 ### holon-core (stays; additions only)
 | Today | Target |
@@ -98,7 +109,7 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 **Two planes, two security postures:**
 - **Control plane** (`127.0.0.1:7420`, or where `holon serve --at` says): editor-only, localhost, hardened against CSRF and DNS rebinding.
 - **Data plane** (user-declared ports): public-facing by intent. It does no CORS magic; each endpoint's
-  own logic plus `packs/auth` decides who is allowed.
+  own logic decides who is allowed (sample: `guarded-api`).
 
 ### editor/src
 | Today | Target |
@@ -107,7 +118,7 @@ the **marketplace** pieces out of it gives the same clarity: host becomes "the r
 | (new) | `test-request/`: build a request record, eval the endpoint locally via wasm, show the response |
 | (new) | `samples.ts` ✅ (the samples themselves are holon-author's `samples.rs` since the move to Rust): one sample flow per capability (hello API, notes API with state, Stripe → Slack, a clock heartbeat, a durable order approval, fetch-and-reshape, signing), opened from the flows page as an unsaved copy, built from the live catalog and derived through core in `samples.test.ts`. Every new feature ships with a sample that shows it (`CLAUDE.md`). |
 | (new) | `replay/`: request log list → open one in the canvas with recorded sourced values → step and inspect |
-| (new) | `doors/`: one config per door (title, palette sections, templates, first-run flow). The door is selected by route or subdomain. |
+| (new) | ~~`doors/`: one config per door~~ dropped 2026-10-25 (§6). |
 | `holon.ts`, `server.ts`, `diagnostics.ts` | stay. `holon.ts` gains the Record type, `server.ts` gains the request-log API. |
 
 ---
@@ -589,27 +600,27 @@ effect loop). It can be tested in the editor with no server running.
 
 ---
 
-## 6. A pack, concretely
+## 6. Packs and front doors: dropped (2026-10-25)
 
-```
-packs/hooks/
-  pack.toml            name, version, door = "hooks", requires = ["auth", "http"]
-  units/
-    stripe_verify.holon     composite: split + fold + hmac_sha256 + secure_equals (a template today, crates/holon-author/src/templates.rs)
-    github_event.holon      composite: json_parse + field + select
-    slack_post.holon        composite: record + json_stringify + http_request
-  templates/
-    stripe-to-slack.flow.json
-    github-push-check.flow.json
-    form-to-email.flow.json
-  onboarding.md
-```
+The plan was a `packs/` directory (`auth`, `http`, `hooks`, later `agents` and `rules`), each a
+bundle of hashed units, templates and a manifest built by a `holon-pack` tool, and a front door per
+vertical: an editor config (`doors/`) with its own title, palette, templates and first run. None of
+it was built, and it is no longer the plan:
 
-- `holon-pack build packs/hooks` turns each unit source into its canonical preimage, hashes it, and
-  writes a bundle plus a manifest of `{name → hash, capabilities}`.
-- A template references units **by hash**, so an integration never changes underneath a user.
-- The manifest's capability summary is what a door shows before install ("this pack can make
-  outbound HTTP requests").
+- **A door was the same product dressed for one audience.** Under each one sat the same engine,
+  editor and agent surface; what differed was templates, defaults and a tailored view. That is
+  presentation, worth building only when a group of users needs a view the general one can't
+  show (a webhook event inbox over the run log, say), and then as a view in the one editor.
+- **What a pack would carry already has a home.** Reusable building blocks are holons, published
+  and placed by hash through the `marketplace` sample (a flow built with Holon); starting points
+  for a kind of job are samples (`stripe-to-slack`, `sign-payload`, `issue-links`, `idempotent`,
+  `guarded-api`, …) and templates (`stripe_verify`). A pack format would add a second way to ship
+  the same units, and a tool to maintain, for nothing a user would notice.
+- **Agents are how flows get written; jobs are what they are for.** The agent surface works for
+  every kind of job, so the vertical knowledge belongs where an agent and a person find it:
+  samples, templates and docs.
+
+What the doors were for (a first user, a concrete job, a bar for done) is M3 in §7.
 
 ---
 
@@ -620,8 +631,8 @@ packs/hooks/
 | **M0 harden** | variadic leaves fail closed on absent inputs (`and`/`or`/`list`) ✅, eval edge bounds (out of range → None) ✅, `factorial` `checked_mul` ✅, `compare` default op ✅ | no panic on Effect in state ✅, List/Sum read-back ✅, atomic `FileStore` ✅ | **redeploy keeps state** ✅, atomic persist + refuse to start on parse error ✅, no disk I/O or per-deployment locks under the table lock ✅, Host check / required Content-Type / body cap ✅, split `main.rs` ✅ | reopen-flow fix (save composite preimages) ✅, clear projection on New/Open/edit ✅, undo flushes the pending debounce ✅, unsaved-changes and delete confirmations ✅ (in-app dialogs), split `App.tsx` ✅ | — | nothing in the editor can crash the server, lose a flow, or wipe state; see §7a. **Met** |
 | **M1 API** | Record + record kit ✅ (+ keyed `lookup`/`insert`/`remove`, `find`, list `extend`), declaration units ✅ (§5; `:name` or `{name}` params), JSON ✅ (depth limit in `json_parse`; size bounded by the 8 MiB body cap), `instantiate` follows `fn` params ✅ | — | `data/` listener on a maintained HTTP stack (§7b) ✅: `hyper` on `tokio`, with timeouts, a body cap and a connection cap | test-request panel ✅; request/respond nodes and routes derived from the canvas ✅; a missing value answers 404 ✅ | `http` | a todo CRUD built visually works with `curl`. **Met** |
 | **M2 effects + replay** | `http_request` ✅, hashes/HMAC ✅ (`sha256`, `hmac_sha256`, `hex`, `base64`, `secure_equals`), Effects refused by `Any`-typed sink payloads ✅ | effect loop ✅, `Performer` ✅, `Recorder` ✅ (flow log per deployment: request, state read, sourced values, outputs, per-node timings), secrets ✅, durable runs ✅ | request-log API ✅ (`GET /deployments/<slug>/log`); run / pause / stop with a state snapshot per session ✅ | `replay/` ✅ (view mode: live log, step through a run in the order it ran, timeline, flow state per step, component inspector; a failed run is traced to the node where it started, with why, and the path to the answer drawn; a run's data never changes the flow's layout: values are chips beside each output, pinned in full on a click, shown on a wire on hover, or switched off) | `auth` | Stripe → Slack works live, and a failure is replayed, fixed and redeployed in under 5 min. **Met (2026-10-22), with an echo service standing in for Slack** (see the status below) |
-| **M3 door 1** | — | (consent at load moved to M2, §4.2.1) | single binary / Docker | `doors/hooks` | `hooks` + templates | someone else ships a webhook |
-| later | — | — | `market` feature | — | — | `holon-market` returns as pack distribution |
+| **M3 first outside job** (was "door 1") | — | — | one binary ✅ (`holon`, with installers and `holon update`); a recipe for a public HTTPS address | what the job's friction asks for | — (packs dropped, §6) | someone else does a real job with Holon, through an agent, against real services: see M3 below. **0.1.0 when met** |
+| later | — | — | — | a view tailored to a group of users, when one needs it | — | the marketplace grows when people share holons |
 
 **Status (2026-10-22).** M0 and M1 are done. M2's replay half
 landed early (the recorder came with view mode); its effects half, and durable runs, are built (§4):
@@ -646,8 +657,55 @@ The run found two real bugs, both fixed with regression tests: an `http_request`
 was absent (the check upstream had failed) still went out, bodiless; and a replay recomputed a
 node fed a secret from its placeholder, so the signature check replayed as failing when it had
 passed. The flow log now keeps each node's outputs (redacted), and replay shows those for such a
-node. Left for M3: the `hooks` pack (`stripe_verify` is an editor template today, not a published
-unit), and a run against Stripe and Slack themselves (`stripe listen`, a real incoming webhook).
+node. Left for M3: a run against Stripe and Slack themselves (`stripe listen`, a real incoming
+webhook).
+
+**Status (2026-10-25).** M0 to M2 are met, and the product around them has grown since (releases
+0.1.0-rc.1 to rc.21, each in `CHANGELOG.md`):
+
+- **One command**, `holon`, installed and updated from a release, its state in `~/.holon`
+  (`holon migrate` moves an older layout), the editor embedded in it.
+- **The language** (`docs/LANGUAGE.md`, all eight steps of its §12): flows as text, `check`,
+  `show`, `fmt`, `new --sample`, and the editor's text pane, linked to the canvas by expression
+  and showing a run in view mode.
+- **The agent surface**: `holon mcp` (write, check, deploy, call and explain a flow) and
+  `holon mcp setup` for every major agent host; `holon lsp` and a VS Code extension for people.
+- **What flows can do**, each grown from friction agents met writing flows: collections, `match`,
+  lazy choices, holons, key claims (one outbound call per key), `respond` with headers, WebAssembly
+  modules and JavaScript as one node, named folders on the host; 25 samples, each deployed by the
+  end-to-end tests.
+- **What a run leaves**: a hash-chained record per deployment, `holon export` and `holon verify`
+  to check it offline, `explain`, and replay in the editor.
+
+What hasn't happened: nobody but the author has used it, and no flow has run against real Stripe
+or Slack.
+
+### M3: the first outside job
+
+The test of the product is one job, done by someone else, end to end. The job is the one M2
+rehearsed, now for real: **an agent writes a flow that takes Stripe's events into Slack, a person
+approves what it may do, and a failure is found and fixed from the run record.** It exercises
+everything Holon is for: the agent proposes, `check` and the approval show what it may do (one
+host, two secrets, the clock), the host runs only that, and the record answers "what happened to
+that event?".
+
+Done when:
+
+1. **Real services.** A flow takes real Stripe events (test mode: `stripe listen`, or an endpoint
+   registered with Stripe) and posts to a real Slack incoming webhook. A failing event is replayed,
+   fixed and redeployed.
+2. **Reachable.** A deployed flow can be given a public HTTPS address by following the docs (a
+   reverse proxy or a tunnel in front of the data plane), since a webhook has to be reachable.
+3. **Someone else.** A person who isn't the author installs a release, sets up their agent with
+   `holon mcp setup`, and has it write, check and deploy a flow for this job or one of their own.
+   They approve it from the "it may:" list and answer a question about a run from view mode or
+   `explain`, with the docs and without help in person.
+4. **Written down** (`docs/JOURNAL.md`): the time to their first deployed flow, whether the agent's
+   first draft passed `holon check`, each place they got stuck, and whether the approval or a
+   replay changed a decision. Each place they got stuck is fixed, or listed here as next.
+
+**0.1.0 is cut when M3 is met.** Until then, the next piece of work is chosen by what stands
+between here and M3: a feature no step above needs waits.
 
 ### 7a. Review findings, triaged against this direction
 The 2026-10-21 project review is sorted by what matters for a **single-user backend builder with a
@@ -696,7 +754,7 @@ public data plane**, not for an open marketplace.
   before `http_request` exists.
 - Consent isn't re-checked at load. Now part of the permissions design (§4.2.1), built with M2.
 
-**Deferred: these only matter when running other people's units (they return with `holon-market`).**
+**Deferred: these only matter when running other people's units (they return when the marketplace does).**
 - Exponential closure walks (`collect_caps`, `refork`, `instantiate`, `eval` on doubling DAGs).
 - The decoder accepts non-canonical bytes, so `encode(decode(b)) ≠ b`.
 - `refork` silently does a partial fork when a re-hash fails.
@@ -734,7 +792,9 @@ keeps `rouille`, so its future-incompatibility warnings remain until it moves to
 ---
 
 ## 8. What this deliberately does *not* do
-- No per-door crates (`holon-hooks` as Rust code). Doors are packs plus editor config.
-- No marketplace work before M3. `holon-market` compiles but is not developed.
-- No `holon-auth` product. Auth is a shared pack used by every door.
-- No tensor/ML work. That is a possible later door, not part of the platform now.
+- No packs, no `holon-pack` tool, no front doors per vertical (§6). One product; a view tailored
+  to a group of users only when they need one, inside the one editor.
+- No per-vertical crates (`holon-hooks`, `holon-auth` as Rust code). Vendor knowledge is content.
+- No marketplace work beyond the `marketplace` sample before M3 is met. The registry, memo and
+  shared cache compile but are not developed.
+- No tensor/ML work.

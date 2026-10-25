@@ -146,7 +146,7 @@ leaves, never from the words.
 |---|---|
 | `while`, recursion, unbounded iteration | Totality. `map` and `fold` over a list are the only iteration, bounded by the list; `range(n)` makes a list to count over, of at most 10000 |
 | User-defined types, generics | The checker is wire-time compatibility over nine types. A type system is a different project |
-| Modules, imports, packages | Reuse across files is the marketplace's job (a published holon placed by hash), not a `use` statement. Revisit when packs exist |
+| Modules, imports, packages | Reuse across files is the marketplace's job (a published holon placed by hash), not a `use` statement (the `marketplace` sample). Revisit when people share holons across flows |
 | `+` on texts | An operator lowers to one node, and most values are `Any`, so `+` could not choose between `add` and `concat`. Interpolation is the natural spelling; `concat(a, b)` the explicit one |
 | Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (a binding), so the canvas shows what was written |
 | Null | Absence is not a value. `none()` is the optional's empty arm; "nothing" is the evaluator's absent slot (§6.3) |

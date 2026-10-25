@@ -7,8 +7,9 @@ Current:
 
 - `../README.md`: what Holon is for, installing and running it.
 - `../CLAUDE.md`: how work is done here (samples for every feature, commits).
-- `PLATFORM_LAYOUT.md`: the current plan: crates, permissions (manifest, policy, grant, permit),
-  effects that answer, runs that last, and what has landed (§7).
+- `PLATFORM_LAYOUT.md`: the current plan: one product, the crates, permissions (manifest, policy,
+  grant, permit), effects that answer, runs that last, what has landed, and what comes next
+  (§7: M3, the first outside job, and the bar for 0.1.0).
 - `COMPOSABLE_VM_DESIGN.md` §2–§7 and §13: the core model, its invariants and the primitive set.
   Its vision sections are historical; its banner says which.
 - `REFERENCES.md`: the prior art each mechanism was ported from, and where Holon departs from it.
