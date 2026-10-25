@@ -27,7 +27,12 @@ async function deploy(page: Page, by = 1000): Promise<number | null> {
   if (port) await portField.fill(String(port));
   await settings.getByRole("button", { name: "done" }).click();
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).click();
+  // Wait for the server's answer to the deploy, which comes once the flow listens on its port
+  // (http.rs syncs the listeners first). The tab's "deployed" can't say so: it shows as soon as a
+  // deployment of that name exists, so on a redeploy that moves the port it is there at once.
+  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
   await page.getByRole("dialog").getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
+  expect((await deployed).status()).toBe(200);
   await expect(page.locator(".hl-tab--active")).toContainText("deployed");
   return port;
 }
