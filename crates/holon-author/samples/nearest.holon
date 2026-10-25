@@ -1,0 +1,27 @@
+flow nearest
+port 8117
+collection words
+
+js closest = (word, candidates) -> (best, distance) {
+  const dist = (a, b) => {
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++)
+      for (let j = 1; j <= b.length; j++)
+        d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[a.length][b.length];
+  };
+  let found = { best: undefined, distance: Infinity };
+  for (const c of candidates) { const k = dist(word, c); if (k < found.distance) found = { best: c, distance: k }; }
+  return found;
+}
+
+route POST /words (req) {
+  words[req.body] = { added_at: now }
+  respond { added: req.body }, status: 201
+}
+
+route GET /nearest/:word (req) {
+  found = closest(req.params.word, keys(words.list()))
+  respond { query: req.params.word, best: found.best, distance: found.distance }
+}

@@ -5,8 +5,8 @@
 > `wasm-module-L4.md` already pins) · *pre:* `wasm-module-L4.md` inches 1 to 3 (the module body,
 > the engine hook, the host and bridge wiring) · *inv:* `I1` / `I2` / `I5` / `I6` / `I7` / `I8` ·
 > *effort:* **M** (three inches after the module unit exists, about a week)
-> *Status:* **designed 2026-10-25, not built.** The trigger in `wasm-module-L4.md` §7 was met the
-> same day (§0).
+> *Status:* **built 2026-10-25** (the engine module, the statement, the sample `nearest`); what
+> §7 still owes is listed there. The trigger in `wasm-module-L4.md` §7 was met the same day (§0).
 > *Pinned:* a `js` node is a **composite over one pinned engine module and its source as a
 > `const`**, never a new body kind · the engine is a module like any other, **no imports** · the
 > engine's realm is **fresh per call**, with **no clock, no randomness, no I/O** · source crosses
@@ -78,8 +78,13 @@ js nearest = (word: Text, candidates: List) -> Text fuel 50M {
 - Ports as a holon declares them: names, optional types, one output or a parenthesised list.
   Port names are the JavaScript parameter names and, for several outputs, the keys of the object
   the body returns. A single output is the value the body returns.
-- `fuel N` and `memory N` after the ports, optional, with the module defaults (10M instructions,
-  16 MiB). Suffixes `K` and `M` as the lexer already reads durations; `MB` on memory.
+- `fuel N` and `memory N` after the ports, optional. The defaults are a js node's own, measured
+  (`holon-module/tests/js_engine.rs`, `what_a_call_costs`): a fresh realm and a compiled one-line
+  function cost about 15M instructions under the interpreter, an edit-distance search over eight
+  words 41M, a loop of a hundred thousand 271M; so a js node defaults to **200M** fuel
+  (`JS_DEFAULT_FUEL`), not the module's 10M, which could never run a body, and to the module's
+  16 MiB. `K`, `M`, `G` scale a number (`50M`), `KB`, `MB`, `GB` a size (`16MB`); `fmt` writes
+  the number out.
 - The body is JavaScript source between the braces, taken verbatim: the lexer finds the matching
   close brace by counting braces outside JavaScript strings, template literals and comments, so
   a `}` in a string does not end the node. Nothing inside is parsed as Holon; nothing inside is
@@ -183,9 +188,14 @@ ready-made, so it is also a build:
   `clock_time_get` and `random_get` failing, `proc_exit` trapping) so the import section is
   empty. Smaller and faster; a C build in the pipeline.
 
-Default: **Boa first**, because the build is the same kind as everything else in the repository
-and the engine is then one `cargo build --target wasm32-unknown-unknown` away from a checkout;
-QuickJS when a sample shows Boa's size or speed is the problem. Either way the rule is one test:
+Decided and built: **Boa 0.22** (`fixtures/modules/js-engine/`, 3.2 MB), because the build is the
+same kind as everything else in the repository and the engine is one
+`cargo build --target wasm32-unknown-unknown` away from a checkout. Two things the build taught:
+`getrandom` 0.4 refuses the target without a backend, so the custom one answers a fixed sequence;
+and Boa's own clock reads the system clock, which the target hasn't (a panic, found through the
+module's `last_panic` export), so the realm gets Boa's `FixedClock` at the epoch. The import
+section is empty, as core's validation reads. QuickJS stays the alternative when a sample shows
+Boa's size or speed is the problem. Either way the rule is one test:
 **the engine module's import section is empty**, checked by core's own validation
 (`wasm-module-L4.md` §3.1) when the module is added to the store, so an engine that quietly gained
 an import cannot be shipped. A WASI build run under stubs the *host* provides is refused: that is
@@ -246,10 +256,11 @@ out of fuel (50M)".
   the remedy is small nodes, which the samples model.
 - **The editor** shows a `js` node as a holon-shaped node with its ports, an ⓘ saying it is
   code (engine, size, budgets, hash), the source read-only in view mode and editable in the text
-  pane. Design mode runs it for real: `holon-wasm` does not bundle the engine (it is megabytes,
-  and most flows never place one); the editor fetches the engine module's bytes from the server's
-  store by hash the first time a flow needs them, and keeps them. Without a server, a `js` node
-  in design mode is absent with the reason "no engine", honest as the `run_module` default is.
+  pane. Design mode runs it for real. *Deviation, built:* the engine's bytes ride in
+  `holon-author` (through `holon-module`), so they are in the bridge's bundle (6 MB, from 1.9),
+  rather than fetched by hash: lowering must store the engine unit wherever a text is compiled,
+  the text pane included, and a unit that isn't in the store can't be placed. Fetching by hash
+  would need the lowering to pin a hash it can't verify; revisit if the bundle hurts.
 - **`holon show`** prints a `js` node as its statement header and the body's line count.
 
 ## 8. The other languages, in a sentence each
@@ -311,6 +322,16 @@ collection, the clock, requests, and the two default limits. An empty dictionary
 
 ## 10. Build order
 
+*Done 2026-10-25:* inches 1 and 2 as written, and of inch 3 the approval wording (`check`, the
+agent's `deploy` and the server's manifest say the budgets), `holon show`, the sample `nearest`
+(registered, built by `samples.test.ts`, deployed and called live: `kittne` → `kitten` at 2,
+`smitten` → `mitten` at 1, `explain` showing the js statement with its values). *Owed:* `check`
+compiling the body once for a syntax error at its line (today a body's mistakes surface at run,
+as the engine's error, which `explain` can't yet show because the host doesn't record
+`WithEngine::take_failure` beside the run: that record is the next inch); the editor's ⓘ for a
+module node; the sentence for design doc §13; §14 of `docs/LANGUAGE.md`.
+
+
 After `wasm-module-L4.md` inches 1 to 3 (the module body and tag, validation, `Pure`, the
 `run_module` hook; `holon-module` on `wasmi` with the ABI and budgets; host and bridge wiring and
 the limits in the manifest), each inch with its tests, a live check and a commit:
@@ -345,8 +366,15 @@ the limits in the manifest), each inch with its tests, a live check and a commit
 
 ## 12. Open forks
 
-- **F1. Engine.** Boa by default (§4); QuickJS with linked WASI stubs if size or speed demands.
-  Decided by the sample's numbers in inch 1, recorded here.
+- **F1. Engine.** *Decided (2026-10-25):* Boa 0.22 (§4). QuickJS with linked WASI stubs if size
+  or speed demands; the numbers to beat are in §2.
+- **F6. Compiling a body to a module at deploy.** An ahead-of-time JavaScript-to-wasm compiler
+  (Porffor is the serious one) would make the `js` statement another way of producing a
+  `module` unit, with the compiled bytes as identity and a pinned compiler's hash in the
+  document: no double interpretation, nothing to change in core. Not until a compiler covers
+  the language a body may use, since a fallback to the interpreter would give one statement two
+  semantics. Until then, the engine caches compiled modules per process; caching Boa's own
+  bytecode per source hash is the cheaper step if startup cost shows.
 - **F2. Several outputs: object or array.** An object keyed by port name (chosen: readable, and
   a missing key is one absent port, not a shifted list). Revisit only if a body ever needs
   positional outputs.

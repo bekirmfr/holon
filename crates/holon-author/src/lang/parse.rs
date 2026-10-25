@@ -1557,6 +1557,11 @@ mod tests {
         assert!(parse(commands::STARTER).is_ok());
         for (name, src) in texts {
             let new = parse(&src).unwrap_or_else(|e| panic!("{name}: {e}\n{src}"));
+            // A js node is written as its statement in either form (the netlist has no spelling
+            // for its engine), and the old parser predates it: it reads everything else.
+            if new.items.iter().any(|i| matches!(i, Item::Js(_))) {
+                continue;
+            }
             let old = text::parse(&src).unwrap_or_else(|e| panic!("{name}: old parser: {e}"));
             let top: Vec<&Stmt> = new.items.iter().filter_map(|i| if let Item::Stmt(s) = i { Some(s) } else { None }).collect();
             let top: Vec<Stmt> = top.into_iter().cloned().collect();

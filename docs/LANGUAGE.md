@@ -76,6 +76,7 @@ same graph are the same unit.
 | Operators | Arithmetic and comparison on numbers, logic, `??` (fallback), `.` (field or output), `[ ]` (lookup), `when` (guard), `if … then … else …` (guard plus fallback), `match x { … }` (a choice by value) | §5.6, §6.5 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
 | Functions for `map`/`fold` | A holon by name, or a lambda `fn(a, b) -> …`; a name it uses from around it becomes an input of its own | §5.9 |
+| js nodes | `js name = (inputs) -> outputs [fuel N] [memory N] { JavaScript }`: a body in JavaScript as one node, run by an engine that is a WebAssembly module with no imports, under a budget; placed like a holon | §5.8a |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
 | Routes | `route METHOD /path (req) [resumes name] { … }`; `respond` is a statement wired to the request implicitly | §5.11 |
 | Flows without routes | The top-level statements are the one unit | §5.12 |
@@ -401,7 +402,7 @@ around it reaches it as an input after the item (§5.9).
 - **Encoding:** UTF-8. Lines end in `\n` or `\r\n`.
 - **Comments:** `#` to end of line. `fmt` keeps a comment on the line it was written on, moving it
   with that statement.
-- **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `holon` `route`
+- **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `holon` `js` `route`
   `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`, and the
   wiring form's `node` `at` `in` `out` `interval`. Keywords are valid after a dot (`req.in`) and
   as record keys (`{ in: 1 }`).
@@ -645,6 +646,41 @@ name is clearer and is what `fmt` prints.
 Holons are defined at the top level and are visible to the whole file, in any order, so a holon
 may use one defined below it. They may not be nested in text; a holon placed inside another is
 the nesting.
+
+### 5.8a js nodes
+
+```
+js score = (estimates, tags) -> (total, weight) fuel 50M {
+  const total = estimates.reduce((a, b) => a + b, 0);
+  return { total, weight: total > 10 ? "heavy" : "light" };
+}
+```
+
+A `js` node is a holon whose body is JavaScript (`docs/L4s/js-node-L4.md`). Defined at the top
+level like a holon, visible to the whole file, placed by name like one (`score(a, b)`,
+`score(a, b).weight`, `fn: score`), and lowered to a composite the printer reads back: a `const`
+holding `(estimates, tags) => { body }` (assembled from the declared names, so ports and source
+can't disagree), the arguments as one list, the engine module placed by hash under its budgets,
+and a `field` per output. The engine is Boa compiled to a WebAssembly module with **no imports**
+(`fixtures/modules/js-engine/`): the body can reach no clock, randomness, network or storage,
+which is why a `js` node adds nothing to what a flow may do; what it adds is two limits, its
+`fuel` (instructions per call, 200M when not written) and `memory` (16 MiB), which the deploy asks
+for and the host's policy caps. `50M`, `2K`, `16MB` are numbers with a scale; `fmt` writes them
+out.
+
+The body is read as JavaScript, not as Holon: a `}` in a string, a template literal or a comment
+doesn't end it, and nothing in it is interpolated or renamed, so the source is part of the unit's
+identity, verbatim (P3 stops at the brace). A body sees only its arguments: `undefined` for an
+absent value inside a list, every core value as its JavaScript counterpart (§5 of the L4). It
+returns one value (one output) or an object keyed by the output names (several); `undefined` or
+`null` is an absent output, an exception or a syntax error is an absent output with the message
+recorded, and a `Map`, a `Date`, a function or a Promise can't cross and is an error naming its
+kind. Each call is a fresh realm: nothing survives between calls, so two equal calls are equal and
+a run replays. A body that never ends runs out of fuel and is absent.
+
+Output names are port names, so a keyword can't be one (`match` is `best` in the `nearest`
+sample). The sample `nearest` shows a js node doing the one computation the vocabulary can't
+spell, an edit-distance search, with the flow around it storing, routing and answering.
 
 ### 5.9 Functions for `map` and `fold`
 
@@ -1150,5 +1186,7 @@ Decided ones are kept, with the decision, for a reader who wonders why.
 ## 14. What this document does not decide
 
 The MCP server and its tools (decided in `docs/L4s/agent-surface-L4.md`), the export and
-verifier for run logs, the sandboxed WebAssembly primitive, and the marketplace's `use`. Each
-depends on this language existing and none changes it.
+verifier for run logs, and the marketplace's `use`. Each depends on this language existing and
+none changes it. The sandboxed WebAssembly module is decided and built (`docs/L4s/wasm-module-L4.md`);
+the language's spelling for one is the `js` node of §5.8a, and a `module` statement placing a
+module by hash waits for a second module.

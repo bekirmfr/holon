@@ -1,0 +1,2 @@
+# The build goes beside this crate; js-engine.wasm, its product, is committed.
+target/

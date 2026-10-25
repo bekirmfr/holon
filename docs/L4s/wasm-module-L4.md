@@ -4,9 +4,12 @@
 > `holon-module`** (the engine) **+ `holon-host` / `holon-wasm`** (wiring) · *pre:* none; the
 > language (`docs/LANGUAGE.md`) gains a `module` statement after · *inv:* `I1` / `I2` / `I5` /
 > `I6` / `I8` · *effort:* **L** (four inches, about two weeks)
-> *Status:* **designed 2026-10-24; trigger met 2026-10-25** (§7's first trigger, twice in one session:
-> an interpreter and a game's rules, `js-node-L4.md` §0). To build, in the inches of §7, then the
-> `js` statement on top (`js-node-L4.md`).
+> *Status:* **built 2026-10-25**, in the inches of §7 (the body, `module.rs`, the `run_module` hook;
+> `holon-module` on `wasmi`; the server, the verifier and the bridge wired, the budgets in the
+> manifest and the policy's ceilings), the day its trigger was met (§7's first, twice in one
+> session: an interpreter and a game's rules, `js-node-L4.md` §0). The `module` statement and
+> `holon module add` of §6 are not built: the first module is the JavaScript engine, placed by the
+> `js` statement (`js-node-L4.md`), and a module by hash in the text waits for a second one.
 > *Pinned:* a module is a **unit body**, not a primitive with a blob param · **no imports** ·
 > **fuel and memory as frozen params** · engine **out of core**, behind a `Resolver` hook.
 

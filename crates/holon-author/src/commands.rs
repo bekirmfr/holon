@@ -116,15 +116,21 @@ pub fn check(file: &str, source: &str) -> Report {
         out.push(format!("a server on :{}", if port.is_empty() { "?" } else { port }));
         out.extend(server.endpoints.iter().map(|e| format!("  {} {}", e.method, e.path)));
     }
-    let (caps, mut problems) = match unit {
+    let (caps, modules, mut problems) = match unit {
         Ok((hash, caps)) => {
             out.push(format!("unit {hash}"));
-            (caps, vec![])
+            // A module (a js node) computes only, so it adds no capability; what it may consume
+            // per call is a limit the deploy asks for, said here as the approval will say it.
+            let modules = holon_core::parse_hash(&hash).and_then(|h| store.resolve(&h)).map(|root| holon_core::module_limits_of(root, &store)).unwrap_or_default();
+            (caps, modules, vec![])
         }
-        Err(e) => (vec![], vec![e]),
+        Err(e) => (vec![], Default::default(), vec![e]),
     };
-    out.push(if caps.is_empty() { "it only computes: it reads and changes nothing outside" } else { "it may:" }.into());
+    out.push(if caps.is_empty() && modules.is_empty() { "it only computes: it reads and changes nothing outside" } else { "it may:" }.into());
     out.extend(caps.iter().map(|c| format!("  {}", describe_item(c))));
+    if let (Some(fuel), Some(memory)) = (modules.get(holon_core::FUEL_LIMIT), modules.get(holon_core::MEMORY_LIMIT)) {
+        out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
+    }
     problems.splice(0..0, server.errors);
     // The flow has no unit because of its routes' errors: each said once.
     let mut seen = std::collections::BTreeSet::new();

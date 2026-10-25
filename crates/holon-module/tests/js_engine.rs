@@ -166,8 +166,10 @@ fn the_same_call_answers_the_same_bytes() {
     assert_eq!(a, b);
 }
 
-/// What a call costs, printed: how the `js` defaults were chosen (run with --no-capture).
+/// What a call costs, printed: how the `js` defaults were chosen. Half a minute under the debug
+/// interpreter, so it runs on request: `cargo test -p holon-module --test js_engine -- --ignored --no-capture`.
 #[test]
+#[ignore = "a measurement, not a check: run it to revisit the js defaults"]
 fn what_a_call_costs() {
     let big = ModuleLimits { fuel: 4_000_000_000, memory: 256 << 20 };
     let engine = Engine::new();

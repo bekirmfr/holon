@@ -517,6 +517,16 @@ impl Printer<'_> {
         self.holon_names.insert(hash.into(), hname.clone());
         let (_, unit) = resolve(self.store, hash)?;
         let unit = unit.clone();
+        // A js node has no netlist spelling (its engine is a module, not a leaf): it is written
+        // as its statement, which any file may hold.
+        if crate::lang::print::is_js_node(self.store, &unit) {
+            let d_ins = unique(unit.inputs.iter().enumerate().map(|(k, u)| shown_in.get(k).cloned().unwrap_or_else(|| u.name.clone())).collect());
+            let d_outs = unique(unit.outputs.iter().enumerate().map(|(k, u)| shown_out.get(k).cloned().unwrap_or_else(|| u.name.clone())).collect());
+            if let Some(stmt) = crate::lang::print::js_statement(self.store, &unit, &hname, &d_ins, &d_outs) {
+                self.blocks.push(stmt);
+                return Ok(hname);
+            }
+        }
         let ports = |ps: &[holon_core::Port]| ps.iter().map(WPort::from_core).collect::<Vec<_>>();
         // Open it as the expand view does, its boundary named as the unit names it.
         let target = Node::placed(

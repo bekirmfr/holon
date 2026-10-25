@@ -298,6 +298,62 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     Ok((format!("{}\n", text.join("\n").trim_end()), lines))
 }
 
+/// Whether `unit` is a `js` node's composite: one child is a module (the engine), another the
+/// `const` holding its source.
+pub(crate) fn is_js_node(store: &MapResolver, unit: &holon_core::Unit) -> bool {
+    js_parts(store, unit).is_some()
+}
+
+/// A `js` node's engine unit and source text, when `unit` is one.
+fn js_parts<'s>(store: &'s MapResolver, unit: &holon_core::Unit) -> Option<(&'s holon_core::Unit, String)> {
+    let UnitBody::Composite { children, .. } = &unit.body else { return None };
+    let mut engine: Option<&holon_core::Unit> = None;
+    let mut source: Option<String> = None;
+    for c in children {
+        let child = store.resolve(c)?;
+        match &child.body {
+            UnitBody::Module { .. } => engine = Some(child),
+            UnitBody::Primitive { name } if name == "const" => {
+                let is_text = child.params.iter().any(|p| matches!(p, holon_core::Param::Frozen { name, value } if name == "type" && value == "Text"));
+                if is_text {
+                    source = child.params.iter().find_map(|p| match p {
+                        holon_core::Param::Frozen { name, value } if name == "value" => Some(value.clone()),
+                        _ => None,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    let (engine, source) = (engine?, source?);
+    source.contains(") => {").then_some((engine, source))
+}
+
+/// The `js` statement `unit` was written as, under `hname` with its ports named `ins` and
+/// `outs`: the body verbatim (between the `) => {` the lowering wrote and the last brace), the
+/// budgets only where they differ from a js node's defaults. None when `unit` isn't a js node.
+/// Both printers write a js node this way: the netlist form has no spelling for the engine.
+pub(crate) fn js_statement(store: &MapResolver, unit: &holon_core::Unit, hname: &str, ins: &[String], outs: &[String]) -> Option<String> {
+    let (engine, source) = js_parts(store, unit)?;
+    let open = source.find(") => {")?;
+    let body = &source[open + ") => {".len()..source.len().saturating_sub(1)];
+    let budget = |name: &str, default: u64| -> Option<u64> {
+        engine.params.iter().find_map(|p| match p {
+            holon_core::Param::Frozen { name: n, value } if n == name => value.parse::<u64>().ok().filter(|v| *v != default),
+            _ => None,
+        })
+    };
+    let mut budgets = String::new();
+    if let Some(f) = budget(holon_core::FUEL_PARAM, holon_module::JS_DEFAULT_FUEL) {
+        budgets.push_str(&format!(" fuel {f}"));
+    }
+    if let Some(m) = budget(holon_core::MEMORY_PARAM, holon_module::JS_DEFAULT_MEMORY) {
+        budgets.push_str(&format!(" memory {m}"));
+    }
+    let outs_text = if outs.len() == 1 { outs[0].clone() } else { format!("({})", outs.join(", ")) };
+    Some(format!("js {hname} = ({}) -> {outs_text}{budgets} {{{body}}}", ins.join(", ")))
+}
+
 /// Whether the expression form can spell `nodes` as wired: every input a node needs is wired
 /// (the lowering refuses one left out), and nothing but a route's request has a hidden input.
 fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, request: Option<&str>) -> bool {
@@ -589,28 +645,9 @@ impl<'s> Printer<'s> {
     /// text between the `) => {` the lowering wrote and its last brace, the budgets the engine's
     /// params where they differ from the defaults. None for any other composite.
     fn js_block(&mut self, unit: &holon_core::Unit, hname: &str, shown_in: &[String], shown_out: &[String]) -> Result<Option<Vec<Line>>, String> {
-        let UnitBody::Composite { children, .. } = &unit.body else { return Ok(None) };
-        let mut engine: Option<&holon_core::Unit> = None;
-        let mut source: Option<String> = None;
-        for c in children {
-            let Some(child) = self.store.resolve(c) else { return Ok(None) };
-            match &child.body {
-                UnitBody::Module { .. } => engine = Some(child),
-                UnitBody::Primitive { name } if name == "const" => {
-                    let is_text = child.params.iter().any(|p| matches!(p, holon_core::Param::Frozen { name, value } if name == "type" && value == "Text"));
-                    if is_text {
-                        source = child.params.iter().find_map(|p| match p {
-                            holon_core::Param::Frozen { name, value } if name == "value" => Some(value.clone()),
-                            _ => None,
-                        });
-                    }
-                }
-                _ => {}
-            }
+        if !is_js_node(self.store, unit) {
+            return Ok(None);
         }
-        let (Some(engine), Some(source)) = (engine, source) else { return Ok(None) };
-        let Some(open) = source.find(") => {") else { return Ok(None) };
-        let body = &source[open + ") => {".len()..source.len().saturating_sub(1)];
         let plain_name = |want: &str, used: &mut HashSet<String>| -> String {
             let mut base: String = want.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
             if base.is_empty() || base.starts_with(|c: char| c.is_ascii_digit()) {
@@ -628,21 +665,7 @@ impl<'s> Printer<'s> {
         let mut used = HashSet::new();
         let ins: Vec<String> = unit.inputs.iter().enumerate().map(|(k, p)| plain_name(shown_in.get(k).unwrap_or(&p.name), &mut used)).collect();
         let outs: Vec<String> = unit.outputs.iter().enumerate().map(|(k, p)| plain_name(shown_out.get(k).unwrap_or(&p.name), &mut used)).collect();
-        let budget = |name: &str, default: u64| -> Option<u64> {
-            engine.params.iter().find_map(|p| match p {
-                holon_core::Param::Frozen { name: n, value } if n == name => value.parse::<u64>().ok().filter(|v| *v != default),
-                _ => None,
-            })
-        };
-        let mut budgets = String::new();
-        if let Some(f) = budget(holon_core::FUEL_PARAM, holon_module::JS_DEFAULT_FUEL) {
-            budgets.push_str(&format!(" fuel {f}"));
-        }
-        if let Some(m) = budget(holon_core::MEMORY_PARAM, holon_module::JS_DEFAULT_MEMORY) {
-            budgets.push_str(&format!(" memory {m}"));
-        }
-        let outs_text = if outs.len() == 1 { outs[0].clone() } else { format!("({})", outs.join(", ")) };
-        Ok(Some(vec![(format!("js {hname} = ({}) -> {outs_text}{budgets} {{{body}}}", ins.join(", ")), vec![])]))
+        Ok(js_statement(self.store, unit, hname, &ins, &outs).map(|text| vec![(text, vec![])]))
     }
 
     /// Nodes and wires as the wiring form writes them (no positions): the fallback. Answers the

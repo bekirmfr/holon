@@ -129,7 +129,7 @@ static SAMPLES: &[Sample] = &[
         // Without the receipt key it still answers, the receipt "unsigned": revoking it doesn't pause it.
         optional: &[RECEIPT_KEY],
         browsers: None,
-        try_it: r#"curl -H "Authorization: Bearer <api_token>" http://127.0.0.1:8109/me answers a receipt; without it, or after the token is rotated, 401; revoke receipt_key and it answers "unsigned""#,
+        try_it: r#"curl -H "Authorization: Bearer <api_token>" http://127.0.0.1:8117/me answers a receipt; without it, or after the token is rotated, 401; revoke receipt_key and it answers "unsigned""#,
         text: include_str!("../samples/guarded-api.holon"),
     },
     Sample {
@@ -326,6 +326,19 @@ static SAMPLES: &[Sample] = &[
         browsers: Some("*"),
         try_it: "set it as the editor's marketplace (flows page), publish a saved flow without routes from the flows page, and place it from the palette's marketplace; GET http://127.0.0.1:8120/listings lists them",
         text: include_str!("../samples/marketplace.holon"),
+    },
+    Sample {
+        name: "nearest",
+        title: "Nearest word (a js node)",
+        description: "Keep a dictionary of words and answer the closest one to a query by edit distance: the one dense computation is a js node, JavaScript run as a module with no imports under a fuel budget; the flow around it stores, routes and answers.",
+        shows: &["js node", "module", "collections", "keys", "field"],
+        port: Some("8117"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "curl -X POST --data-binary kitten http://127.0.0.1:8117/words, then sitting and mitten; curl http://127.0.0.1:8117/nearest/kittne answers { best: \"kitten\", distance: 2 }; a word nobody added yet answers 404",
+        text: include_str!("../samples/nearest.holon"),
     },
 ];
 
