@@ -106,8 +106,9 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   expect((await request.post(`${SERVER}/deployments/from-claude/stop`, { data: {}, headers: asAgent })).status()).toBe(403);
   expect((await request.delete(`${SERVER}/flows/from-claude`, { headers: asAgent })).status()).toBe(403);
 
-  // cy, signed in elsewhere, is disabled: her next step finds her signed out, and she can't
-  // sign in again.
+  // cy, signed in elsewhere, is disabled: her next step finds her signed out (or the editor's own
+  // poll of the deployments, every few seconds, does first: a 401 there signs her out too, so the
+  // button she would click may already be gone), and she can't sign in again.
   const cy = await someoneElse(browser);
   await cy.goto(EDITOR);
   await fill(cy, "name", "cy");
@@ -117,7 +118,7 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   const cyRow = ada.locator("div", { has: ada.getByLabel("cy's role") }).last();
   await cyRow.getByRole("button", { name: "disable" }).click();
   await expect(cyRow).toContainText("· disabled");
-  await cy.getByRole("button", { name: "deployed", exact: true }).click();
+  await cy.getByRole("button", { name: "deployed", exact: true }).click({ timeout: 5_000 }).catch(() => {});
   await expect(cy.getByRole("form", { name: "sign in" })).toBeVisible();
   await fill(cy, "name", "cy");
   await fill(cy, "password", PASSWORD);
