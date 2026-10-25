@@ -1,6 +1,50 @@
 # Changelog
 
-## 0.1.0-rc.21
+## 0.1.0-rc.22
+
+Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.21 keep running.
+A js node is now spelled `holon f(a) -> b js { … }`; the old `js f = (a) -> b { … }` is an error
+that names the new form, and lowers to the same unit.
+
+- **Named folders** (docs/L4s/named-folders-L4.md): files on the host that a flow reads and writes by
+  name, as a collection's items, never seeing a path. A flow declares `folder inbox` and asks
+  `FileRead("inbox")` or `FileWrite("reports")`; only an admin binds the name to a real folder,
+  read-only or read-write, for the whole server or for one deployment (`holon serve --folders`,
+  `holon folder add|list|remove`, the admin page). The server's own data can't be bound, a file
+  name is checked before it reaches the OS, and its real path must stay inside the folder.
+  - Reads are recorded and checked again before the run commits; writes, copies and deletes land
+    when it finishes, written beside the file and renamed over it. A run whose read fails, or
+    whose write doesn't land, answers 500 and performs nothing.
+  - Files of any size: a handle (`logs.file(n)`: name, size, hash), a copy by handle, host to host
+    (`archive[n] = h`), and ranges (`logs.lines(n, from: -20, limit: 20)`, `logs.slice(n, offset,
+    length)`), kept in the log with what proves them part of the file's hash, so `holon verify`
+    checks them without it.
+  - What runs read is kept by content, in chunks, as long as a folder's `--keep` says (`bytes`,
+    `hash`, `bytes for 30d`), and swept after (`holon folder sweep`); a folder may be capped
+    (`--cap 10M`). `holon export --max-files-bytes N` or `--without-files` makes a smaller export,
+    and `holon verify --files DIR` answers the reads it left out.
+  - Create-only writes: `reports.create(n, text)` and `reports.create_copy(n, h)` never replace a
+    file; a taken name fails the run.
+  - A deployment's file limits, granted like its others: `inline_file_bytes` (1 MiB),
+    `max_file_read_bytes` (64 MiB), `max_file_write_bytes` (1 GiB) and `max_files_per_run`
+    (1,000). The error names the limit a run passed.
+- **Runs on files.** `on file drop` runs a flow once for each file that arrives in a folder, once
+  it stops changing, its handle the run's `ingress`; `deleted` runs on files removed, `matching
+  "*.csv"` on some names, and a flow may have several lines, for several folders. The watcher
+  acts on the OS's change notices and walks every folder every 30 s anyway. Files there at the
+  deploy, and files a flow's own runs wrote or deleted, start nothing; files that arrive while
+  it is down or paused run when it is back. `http.put(host, path, file: h)` sends a file as a
+  request's body, streamed from the folder and checked against its hash, never through the flow.
+- **Five new samples**: `inbox-report`, `log-archive`, `journal`, `drop-box` and `file-audit` for
+  folders and runs on files.
+- **`every` makes the clock a flow's trigger**: a flow on an interval that never reads `now` (a
+  heartbeat that only counts) deploys and runs on the clock, where it couldn't deploy before.
+- **The manual** (docs/manual): getting started, the concepts, a tour of the language and its
+  reference, a generated page of every leaf, guides and reference pages. The editor has it in a
+  docs tab, where each flow in it opens as an unsaved copy.
+- A sample opened from the flows page deploys with its text, so its runs are explained by the
+  names the text gives them; view mode's run pane resizes by dragging its top edge; the admin
+  page says which list is empty.
 
 Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.20 keep running.
 
