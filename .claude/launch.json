@@ -4,7 +4,7 @@
     {
       "name": "holon-server",
       "runtimeExecutable": "cargo",
-      "runtimeArgs": ["run", "-p", "holon", "--", "serve", "--store", ".holon/dev/store", "--deployments", ".holon/dev/deployments.json", "--flows", ".holon/dev/flows.json", "--secrets", ".holon/dev/secrets.json", "--dotenv", ".holon/dev/.env", "--host-key", ".holon/dev/host.key", "--accounts", ".holon/dev/accounts.json"],
+      "runtimeArgs": ["run", "-p", "holon", "--", "serve", "--store", ".holon/dev/store", "--deployments", ".holon/dev/deployments.json", "--flows", ".holon/dev/flows.json", "--secrets", ".holon/dev/secrets.json", "--dotenv", ".holon/dev/.env", "--host-key", ".holon/dev/host.key", "--accounts", ".holon/dev/accounts.json", "--policy", ".holon/dev/holon.toml"],
       "port": 7420
     },
     {

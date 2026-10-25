@@ -84,22 +84,32 @@ holon version            # this build's version
 holon update --check     # is there a newer release?
 holon update             # install it over this one (--to 0.1.0 for a given version)
 holon uninstall          # remove the program, its PATH entry and install receipt
+holon migrate            # move what an older release left elsewhere into ~/.holon
 ```
 
 A pre-release build follows pre-releases; a full release, only full releases (`--pre` to include
 them). `update` works on copies the install scripts put in place (they leave a receipt saying
 where); a copy unpacked by hand is replaced by hand. `uninstall` keeps the server's data;
-`uninstall --purge` removes the data folder too (`--data DIR`, else `HOLON_DATA`, else
-`~/.holon/data`) and its secrets key. It asks first; `--yes` skips that.
+`uninstall --purge` removes all of `~/.holon` too: the data folder (`--data DIR`, else
+`HOLON_DATA`, else `~/.holon/data`), its secrets key, run files, tokens and the list of agent
+hosts set up. It asks first; `--yes` skips that.
+
+Everything holon keeps is in one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), or
+`HOLON_HOME` when set: `bin/` the program, `data/` the server's state (the one folder to back
+up), `keys/` secrets keys where there's no OS key store, `run/` a file per running server,
+`tokens.json` and `mcp-hosts.toml`. Releases before 0.1.0-rc.17 kept a server's state as
+`.holon-*` files in the folder it was started from; `holon migrate` (run there, or with
+`--from DIR`) moves them into `~/.holon/data`, and `holon serve` says so when it sees them.
 
 ## Running
 
 ```sh
-holon serve --data ~/.holon/data
+holon serve
 ```
 
 Then open http://127.0.0.1:7420. The first time, the server prints a one-time setup code: enter
-it in the editor to create the admin. `--data` keeps all of the server's state in one folder.
+it in the editor to create the admin. It keeps all of its state in `~/.holon/data`, wherever it
+is started from; `--data DIR` (or `HOLON_DATA`) puts it in another folder.
 Each deployment keeps its newest 500 runs; `--keep-runs N` (or `HOLON_KEEP_RUNS`) sets how many.
 
 `--export-heads URL` (or `HOLON_EXPORT_HEADS`) sends each run's head, the hash its log chains up

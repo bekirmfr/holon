@@ -35,18 +35,27 @@ pub(crate) fn home() -> Option<PathBuf> {
     std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
+/// The one folder holon keeps everything in (docs/L4s/holon-home-L4.md): `HOLON_HOME`, else
+/// `~/.holon`. The program, the server's data, keys, run files and tokens are all below it.
+pub(crate) fn holon_home() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("HOLON_HOME").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(d));
+    }
+    home().map(|h| h.join(".holon"))
+}
+
 /// Where run files are kept: `HOLON_RUN_DIR`, else `~/.holon/run`.
 pub(crate) fn dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("HOLON_RUN_DIR").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(d));
     }
-    home().map(|h| h.join(".holon").join("run"))
+    holon_home().map(|h| h.join("run"))
 }
 
 /// Where the tokens for servers elsewhere are kept: `~/.holon/tokens.json`, each server's URL to
 /// its token, readable only by this user.
 pub(crate) fn tokens_file() -> Option<PathBuf> {
-    home().map(|h| h.join(".holon").join("tokens.json"))
+    holon_home().map(|h| h.join("tokens.json"))
 }
 
 fn tokens_in(file: &Path) -> std::collections::BTreeMap<String, String> {
@@ -105,6 +114,13 @@ pub(crate) fn publish(bound: std::net::SocketAddr, token: &str) -> Option<PathBu
             None
         }
     }
+}
+
+/// The servers on this machine that may still be running: a run file whose server answers, or
+/// one that can't be told stale (something answered, or nothing could be asked).
+pub(crate) fn live_servers() -> Vec<String> {
+    let Some(dir) = dir() else { return Vec::new() };
+    run_files(&dir).into_iter().filter(|(_, f)| answers(&f.server) != Some(false)).map(|(_, f)| f.server).collect()
 }
 
 /// Every run file there is, with where it is.

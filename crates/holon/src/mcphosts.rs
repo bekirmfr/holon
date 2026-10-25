@@ -66,6 +66,8 @@ impl Host {
 /// Where hosts keep their settings on this machine.
 pub(crate) struct Places {
     pub(crate) home: PathBuf,
+    /// Holon's own folder (`~/.holon`, or `HOLON_HOME`), where the custom hosts are kept.
+    pub(crate) holon: PathBuf,
     /// Applications' settings: `%APPDATA%` on Windows, `~/Library/Application Support` on macOS,
     /// `$XDG_CONFIG_HOME` (or `~/.config`) elsewhere.
     pub(crate) app: PathBuf,
@@ -92,7 +94,8 @@ impl Places {
             xdg.clone()
         };
         let vars = MOVED_BY.iter().filter_map(|k| var(k).map(|v| (*k, v))).collect();
-        Ok(Places { home, app, xdg, windows: cfg!(windows), vars })
+        let holon = local::holon_home().unwrap_or_else(|| home.join(".holon"));
+        Ok(Places { home, holon, app, xdg, windows: cfg!(windows), vars })
     }
 }
 
@@ -207,7 +210,7 @@ pub(crate) fn builtin(p: &Places) -> Vec<Host> {
 
 /// Where custom hosts are kept: `~/.holon/mcp-hosts.toml`.
 fn custom_file(p: &Places) -> PathBuf {
-    p.home.join(".holon").join("mcp-hosts.toml")
+    p.holon.join("mcp-hosts.toml")
 }
 
 /// The custom hosts in `file`, each as like the host it names.
@@ -855,7 +858,7 @@ mod tests {
     fn places(windows: bool) -> Places {
         let home = PathBuf::from(if windows { r"C:\Users\ada" } else { "/home/ada" });
         let app = if windows { home.join(r"AppData\Roaming") } else { home.join(".config") };
-        Places { xdg: home.join(".config"), home, app, windows, vars: BTreeMap::new() }
+        Places { xdg: home.join(".config"), holon: home.join(".holon"), home, app, windows, vars: BTreeMap::new() }
     }
 
     fn host(name: &str) -> Host {

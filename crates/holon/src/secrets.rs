@@ -77,10 +77,13 @@ struct SecretsFile {
     format: u32,
     cipher: String,
     key_check: String,
+    /// The id the key is kept under (format 3): the file finds its key wherever it is moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key_id: Option<String>,
     deployments: BTreeMap<String, BTreeMap<String, Vec<Stored>>>,
 }
 
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
 
 #[derive(Default)]
 struct Slug {
@@ -187,6 +190,8 @@ impl Audit {
 /// Every deployment's secrets, by slug. A slug may have secrets before it is first deployed.
 pub(crate) struct SecretStore {
     path: String,
+    /// What the file records its key is kept under.
+    key_id: String,
     sealer: Sealer,
     sources: Sources,
     audit: Audit,
@@ -203,6 +208,7 @@ impl SecretStore {
     pub(crate) fn memory() -> SecretStore {
         SecretStore {
             path: ":memory:".into(),
+            key_id: String::new(),
             sealer: Sealer::ephemeral(),
             sources: Sources::none(),
             audit: Audit { path: None, kept: Mutex::new(Vec::new()) },
@@ -244,7 +250,7 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            return Ok(SecretStore { path: path.into(), sealer: Sealer::new(&master), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) });
+            return Ok(SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Sealer::new(&master), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) });
         };
         if parsed.get("format").is_none() {
             // Plain values, from before sealing: seal them under a key (kept from now on).
@@ -254,7 +260,7 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            let store = SecretStore { path: path.into(), sealer: Sealer::new(&master), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
+            let store = SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Sealer::new(&master), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
             let count: usize = plain.values().map(|names| names.len()).sum();
             for (slug, names) in plain {
                 for (name, value) in names {
@@ -271,9 +277,12 @@ impl SecretStore {
             return Ok(store);
         }
         let file: SecretsFile = serde_json::from_value(parsed).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
-        if file.format != FORMAT {
+        // Format 2 is format 3 without its key's id: that was the path's, and is recorded now.
+        if file.format != FORMAT && file.format != 2 {
             return Err(format!("{path:?} is secrets format {}, this server reads {FORMAT}", file.format));
         }
+        let upgrade = file.format == 2;
+        let key_id = file.key_id.clone().unwrap_or_else(|| crate::sealing::path_key_id(path));
         let has_secrets = file.deployments.values().any(|names| !names.is_empty());
         let master = match key.read()? {
             Some(k) => k,
@@ -288,7 +297,7 @@ impl SecretStore {
         if has_secrets && sealer.check() != file.key_check {
             return Err(format!("{key} holds a different key from the one that sealed {path:?}"));
         }
-        let store = SecretStore { path: path.into(), sealer, sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
+        let store = SecretStore { path: path.into(), key_id, sealer, sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
         {
             let mut slugs = store.slugs.lock().unwrap();
             for (slug, secrets) in file.deployments {
@@ -296,6 +305,9 @@ impl SecretStore {
                 entry.secrets = secrets;
                 store.resolve(&slug, entry);
             }
+        }
+        if upgrade {
+            store.persist()?;
         }
         Ok(store)
     }
@@ -542,6 +554,7 @@ impl SecretStore {
             format: FORMAT,
             cipher: "AES-256-GCM".into(),
             key_check: self.sealer.check().into(),
+            key_id: Some(self.key_id.clone()),
             deployments: self
                 .slugs
                 .lock()
@@ -754,8 +767,32 @@ mod tests {
         let store = SecretStore::open(&path, &key, Sources::none()).unwrap();
         assert_eq!(*store.vault("sign-payload").lock().unwrap().current["signing_key"], "sample-signing-key-42");
         let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(on_disk.contains("\"format\": 2") && !on_disk.contains("sample-signing"), "{on_disk}");
+        assert!(on_disk.contains("\"format\": 3") && !on_disk.contains("sample-signing"), "{on_disk}");
+        assert!(on_disk.contains(&format!("\"key_id\": \"{}\"", crate::sealing::path_key_id(&path))), "a new store records its path's id: {on_disk}");
         assert_eq!(SecretStore::open(&path, &key, Sources::none()).unwrap().list("sign-payload")[0].version, 1);
+    }
+
+    #[test]
+    fn a_format_2_file_records_its_paths_key_id_and_a_moved_file_still_names_its_key() {
+        let (path, key) = temp("travel");
+        SecretStore::open(&path, &key, Sources::none()).unwrap().set("api", "k", "travelling-value", None).unwrap();
+        let id = crate::sealing::path_key_id(&path);
+        // As a release before key ids wrote it: format 2, no key_id.
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["format"] = 2.into();
+        v.as_object_mut().unwrap().remove("key_id");
+        std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+        SecretStore::open(&path, &key, Sources::none()).unwrap();
+        let on_disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!((on_disk["format"].as_u64(), on_disk["key_id"].as_str()), (Some(3), Some(id.as_str())), "upgraded on open");
+        // Moved elsewhere, it names the same key, and that key opens it.
+        let moved = std::path::Path::new(&path).with_file_name("elsewhere.json").to_string_lossy().into_owned();
+        std::fs::rename(&path, &moved).unwrap();
+        assert_ne!(crate::sealing::path_key_id(&moved), id);
+        assert_eq!(crate::sealing::key_id(&moved), id);
+        let store = SecretStore::open(&moved, &key, Sources::none()).unwrap();
+        assert_eq!(*store.vault("api").lock().unwrap().current["k"], "travelling-value");
+        assert!(SecretStore::open(&moved, &KeySource::File(std::path::Path::new(&moved).with_file_name("other.key")), Sources::none()).is_err(), "a key that isn't its own is refused");
     }
 
     #[test]

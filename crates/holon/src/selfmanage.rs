@@ -136,7 +136,14 @@ fn uninstall(args: &[String]) -> Result<(), String> {
         }
     }
     let home = home_dir();
-    let data_dir = data_dir.or_else(|| home.as_ref().map(|h| h.join(".holon").join("data")));
+    let holon_home = crate::local::holon_home();
+    let data_dir = data_dir.or_else(|| holon_home.as_ref().map(|h| h.join("data")));
+    // With --purge, the rest of ~/.holon goes too: keys, run files, tokens, the MCP host list.
+    let rest: Vec<PathBuf> = holon_home
+        .iter()
+        .flat_map(|h| ["keys", "run", "tokens.json", "mcp-hosts.toml"].map(|n| h.join(n)))
+        .filter(|p| p.exists())
+        .collect();
 
     let exe = this_exe()?;
     let bin = exe.parent().ok_or("this executable has no folder")?.to_path_buf();
@@ -160,6 +167,9 @@ fn uninstall(args: &[String]) -> Result<(), String> {
         match &data {
             Some(d) => plan.push(format!("ALL of holon's data in {} (flows, deployments, runs, secrets, accounts) and its secrets key", d.display())),
             None => return Err("--purge: no data folder found; name it with --data DIR".into()),
+        }
+        for p in &rest {
+            plan.push(format!("{}", p.display()));
         }
     }
     println!("holon uninstall will remove:");
@@ -194,6 +204,12 @@ fn uninstall(args: &[String]) -> Result<(), String> {
         }
         std::fs::remove_dir_all(d).map_err(|e| format!("could not remove {}: {e}", d.display()))?;
         println!("removed {}", d.display());
+        for p in &rest {
+            let gone = if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) };
+            gone.map_err(|e| format!("could not remove {}: {e}", p.display()))?;
+            println!("removed {}", p.display());
+        }
+        println!("agent hosts set up with `holon mcp setup` keep their entry for it; `holon mcp setup --all --remove` (before this) removes them");
     }
     self_replace::self_delete().map_err(|e| format!("could not remove {}: {e}", exe.display()))?;
     // The folders the installer made, if nothing else is left in them. (On Windows the program
@@ -241,8 +257,7 @@ fn this_exe() -> Result<PathBuf, String> {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+    crate::local::home()
 }
 
 /// What the installer recorded: where it put the program and whether it changed PATH.

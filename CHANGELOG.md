@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+**Run `holon migrate` where you used to start `holon serve`.** A server keeps its state in
+`~/.holon/data` now, wherever it is started from, so one started as before begins empty; the
+old `.holon-*` files are left where they are, and `holon serve` says so when it sees them.
+
+- **Everything in one `~/.holon`** (or `HOLON_HOME`): `data/`, `keys/`, `run/`, `tokens.json`,
+  `mcp-hosts.toml` and `bin/`. `holon serve` needs no `--data`; it prints the folder it uses.
+  `--data`, `HOLON_DATA` and each per-file flag still win.
+- **`holon migrate`** moves what an older release left elsewhere: a server's `.holon-*` files
+  (from the current folder, or `--from DIR`) into `~/.holon/data`, and key files from
+  `~/.config/holon/keys` into `~/.holon/keys`. It says what it will do and asks (`--yes` doesn't
+  ask, `--check` exits 1 when there is something to do), refuses while a server is running,
+  checks that the secrets open with their key before anything moves, and copies and checks
+  before it removes.
+- **A secrets file records which key it uses** (format 3, `key_id`), so a data folder can be
+  moved or restored from a backup and its secrets still open. A format 2 file is upgraded on
+  open, keeping its key where it is.
+- **`uninstall --purge` removes all of `~/.holon`**: data, key, run files, tokens and the list
+  of agent hosts set up.
+
 ## 0.1.0-rc.16
 
 Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.15 keep running.

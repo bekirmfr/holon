@@ -167,6 +167,7 @@ mod lifecycle;
 mod listeners;
 mod local;
 mod lsp;
+mod migrate;
 mod mcp;
 mod mcphosts;
 mod outbound;
@@ -186,7 +187,7 @@ mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -425,13 +426,15 @@ const USAGE: &str = "usage: holon <command>
                                      mistakes as you type, hover, formatting
   version                            this build's version
   update [--check] [--to VERSION]    install the newest release (or see if there is one)
-  uninstall [--purge] [--yes]        remove holon (and with --purge, its data and key)";
+  migrate [--yes] [--check]          move what an older release left elsewhere into ~/.holon
+  uninstall [--purge] [--yes]        remove holon (and with --purge, all of ~/.holon)";
 
 const SERVE_USAGE: &str = "usage: holon serve [options]
 
   --at [IP:]PORT             where the server and editor listen (default 127.0.0.1:7420;
                              a port alone means 127.0.0.1; or HOLON_SERVER_ADDR)
-  --data DIR                 keep everything below in DIR (or HOLON_DATA)
+  --data DIR                 keep everything below in DIR (or HOLON_DATA; default
+                             ~/.holon/data, or HOLON_HOME/data)
   --data-host IP             where deployed flows' own servers listen (default 127.0.0.1)
   --allow-host HOST          a host name it answers to besides localhost (repeatable)
   --allow-origin ORIGIN      an editor origin it answers besides localhost's (repeatable)
@@ -469,6 +472,7 @@ fn main() {
         Some("export") => std::process::exit(verify::export(&rest)),
         Some("mcp") => std::process::exit(mcp::run(&rest)),
         Some("lsp") => std::process::exit(lsp::run(&rest)),
+        Some("migrate") => std::process::exit(migrate::run(&rest)),
         // `version`, `update`, `uninstall`: about this installation, not the server.
         _ => match selfmanage::dispatch(&args) {
             Some(code) => std::process::exit(code),
@@ -494,11 +498,11 @@ fn serve(args: Vec<String>) {
 
     // `--store <dir>` for an on-disk FileStore; `--store :memory:` for an in-process MemStore
     // (nothing persisted across restarts — useful for a quick local session or a test run).
-    // Defaults to a `.holon-store` directory next to wherever the binary is run from.
+    // Defaults to `store` in the data folder (`~/.holon/data`; see below).
     //
     // `--deployments <path>` for where the deployments table is persisted (write-through, on
     // every deploy/delete); `--deployments :memory:` opts out entirely, same convention as
-    // `--store`. Defaults to `.holon-deployments.json` next to wherever the binary is run from.
+    // `--store`. Defaults to `deployments.json` in the data folder.
     //
     // `--emit-test-unit <path>` is a dev-only escape hatch, not a server flag: it writes a
     // trivial unit's canonical preimage bytes to `path` and exits *without* starting the
@@ -778,24 +782,38 @@ fn serve(args: Vec<String>) {
         }
     }
 
-    // With a data folder, whatever wasn't named on its own goes inside it.
-    if let Some(dir) = &data_dir {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!("holon: the data folder {dir:?}: {e}");
+    // Whatever wasn't named on its own goes in the data folder: `--data`, else HOLON_DATA, else
+    // ~/.holon/data (docs/L4s/holon-home-L4.md). The folder it was started from doesn't matter.
+    let dir = match data_dir.map(PathBuf::from).or_else(|| local::holon_home().map(|h| h.join("data"))) {
+        Some(d) => d,
+        None => {
+            eprintln!("holon: no home folder (USERPROFILE or HOME) to keep the server's data in: pass --data DIR");
             std::process::exit(1);
         }
-        let inside = |arg: &mut String, default: &str, name: &str| {
-            if arg == default {
-                *arg = std::path::Path::new(dir).join(name).to_string_lossy().into_owned();
-            }
-        };
-        inside(&mut store_arg, ".holon-store", "store");
-        inside(&mut deployments_arg, ".holon-deployments.json", "deployments.json");
-        inside(&mut flows_arg, ".holon-flows.json", "flows.json");
-        inside(&mut policy_arg, "holon.toml", "holon.toml");
-        inside(&mut secrets_arg, ".holon-secrets.json", "secrets.json");
-        inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
-        inside(&mut host_key_arg, ".holon-host-key", "host.key");
+    };
+    let mut landed = false;
+    let mut inside = |arg: &mut String, default: &str, name: &str| {
+        if arg == default {
+            *arg = dir.join(name).to_string_lossy().into_owned();
+            landed = true;
+        }
+    };
+    inside(&mut store_arg, ".holon-store", "store");
+    inside(&mut deployments_arg, ".holon-deployments.json", "deployments.json");
+    inside(&mut flows_arg, ".holon-flows.json", "flows.json");
+    inside(&mut policy_arg, "holon.toml", "holon.toml");
+    inside(&mut secrets_arg, ".holon-secrets.json", "secrets.json");
+    inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
+    inside(&mut host_key_arg, ".holon-host-key", "host.key");
+    if landed {
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("holon: the data folder {}: {e}", dir.display());
+            std::process::exit(1);
+        }
+        println!("holon: data in {}", dir.display());
+    }
+    if let Some(note) = migrate::left_here() {
+        println!("holon: {note}");
     }
     if let Some(url) = &export_heads {
         // The token stays out of the command line: HOLON_EXPORT_HEADS_TOKEN.

@@ -8,7 +8,9 @@
 //! - The master key lives in the OS key store by default (Credential Manager on Windows, the
 //!   Keychain on macOS), or comes from an environment variable (`env:VAR`: containers, a cloud
 //!   KMS or secret manager injecting it) or a key file (`file:PATH`, owner-only; the default where
-//!   there is no OS key store, kept under the user's config directory, away from the project).
+//!   there is no OS key store, kept in `~/.holon/keys`, beside the data folder, not in it).
+//! - The secrets file records the id its key is kept under (`key_id`), so the file can be moved,
+//!   renamed or restored from a backup and still find its key (docs/L4s/holon-home-L4.md §3).
 //! - The file records a check value derived from the key (never the key), so a wrong key is
 //!   told apart from a damaged file, and neither ever starts the server on an empty store that
 //!   would overwrite the real one.
@@ -74,6 +76,33 @@ pub(crate) fn context(slug: &str, name: &str, version: u32) -> String {
     format!("holon-secret/v2\0{slug}\0{name}\0{version}")
 }
 
+/// The id the key of the secrets file at `secrets_path` is kept under: the one the file records,
+/// else [`path_key_id`], which is what a store records when it is made, and what a file from
+/// before ids were recorded was always keyed by. Two stores made in two places have two keys.
+pub(crate) fn key_id(secrets_path: &str) -> String {
+    std::fs::read(secrets_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v.get("key_id")?.as_str().map(str::to_string))
+        .filter(|id| !id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_else(|| path_key_id(secrets_path))
+}
+
+/// The id from where the secrets file is: a hash of its absolute path.
+pub(crate) fn path_key_id(secrets_path: &str) -> String {
+    let absolute = std::path::absolute(secrets_path).unwrap_or_else(|_| PathBuf::from(secrets_path));
+    blake3::hash(absolute.to_string_lossy().as_bytes()).to_hex()[..16].to_string()
+}
+
+/// Where key files were kept before `~/.holon/keys`: the user's config directory.
+pub(crate) fn old_keys_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()).map(|h| PathBuf::from(h).join(".config")))
+        .map(|c| c.join("holon").join("keys"))
+}
+
 /// A fresh random master key.
 pub(crate) fn new_key() -> MasterKey {
     let mut key = Zeroizing::new([0u8; 32]);
@@ -94,11 +123,10 @@ pub(crate) enum KeySource {
 
 impl KeySource {
     /// `arg` (`os`, `env:VAR` or `file:PATH`), or the default for `secrets_path`: the OS key
-    /// store where there is one, else a key file under the user's config directory.
+    /// store where there is one, else a key file in `~/.holon/keys`. Either is named by the id
+    /// the secrets file records ([`key_id`]).
     pub(crate) fn parse(arg: Option<&str>, secrets_path: &str) -> Result<KeySource, String> {
-        // One key per secrets file: two stores on one machine don't share a key.
-        let absolute = std::path::absolute(secrets_path).unwrap_or_else(|_| PathBuf::from(secrets_path));
-        let id = blake3::hash(absolute.to_string_lossy().as_bytes()).to_hex()[..16].to_string();
+        let id = key_id(secrets_path);
         match arg {
             Some("os") => Ok(KeySource::Os { account: format!("secrets-key-{id}") }),
             Some(a) if a.starts_with("env:") && a.len() > 4 => Ok(KeySource::Env(a[4..].to_string())),
@@ -106,11 +134,13 @@ impl KeySource {
             Some(a) => Err(format!("--secrets-key {a:?}: expected os, env:VAR or file:PATH")),
             None if cfg!(any(windows, target_os = "macos")) => Ok(KeySource::Os { account: format!("secrets-key-{id}") }),
             None => {
-                let config = std::env::var_os("XDG_CONFIG_HOME")
-                    .map(PathBuf::from)
-                    .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+                let keys = crate::local::holon_home()
+                    .map(|h| h.join("keys"))
                     .ok_or("no OS key store here, and no HOME to keep a key file under: pass --secrets-key env:VAR or file:PATH")?;
-                Ok(KeySource::File(config.join("holon").join("keys").join(format!("{id}.key"))))
+                let file = keys.join(format!("{id}.key"));
+                // One kept where releases before 0.1.0-rc.17 put it, until `holon migrate` moves it.
+                let old = old_keys_dir().map(|d| d.join(format!("{id}.key"))).filter(|o| !file.exists() && o.exists());
+                Ok(KeySource::File(old.unwrap_or(file)))
             }
         }
     }

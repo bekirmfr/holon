@@ -366,8 +366,11 @@ only the editor.
     browser that reaches it. Releases build it in (`npm run build` in editor/, then
     `cargo build --release -p holon-server --features embed-editor`): one file to install;
     `--editor DIR` serves a folder instead, for working on the editor. The built editor calls the
-    server it is served from. `--data DIR` (or `HOLON_DATA`) keeps all the server's state in one
-    folder: store, flows, deployments, secrets, accounts, host key, policy.
+    server it is served from. All the server's state is in one folder, `~/.holon/data` (or
+    `HOLON_HOME/data`; `--data DIR` or `HOLON_DATA` names another): store, flows, deployments,
+    secrets, accounts, host key, policy. Its secrets key is beside it in `~/.holon/keys` (or the
+    OS key store), named by the id the secrets file records, so the folder can move
+    (docs/L4s/holon-home-L4.md).
   - **Web pages from other sites** ✅ (⚙ "web pages from"; listeners.rs): a deployment says
     which origins may call its routes (`*`, or `https://…`), none by default. For those the data
     plane answers the browser's preflight and adds `Access-Control-Allow-Origin`; the deploy
