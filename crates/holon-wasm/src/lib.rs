@@ -1831,7 +1831,7 @@ mod wasm_tests {
     fn primitive_catalog_crosses_js_boundary() {
         let js = primitive_catalog().unwrap();
         let cat: Vec<WUnit> = serde_wasm_bindgen::from_value(js).unwrap();
-        assert_eq!(cat.len(), 70);
+        assert_eq!(cat.len(), 71);
         assert!(cat
             .iter()
             .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));
