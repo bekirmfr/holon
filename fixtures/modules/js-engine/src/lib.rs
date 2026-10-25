@@ -139,10 +139,12 @@ fn call(input: &[u8]) -> Result<Option<Value>, String> {
         Some(Value::Text(s)) => s,
         _ => return Err("the first input must be the source, as text".into()),
     };
+    // The source alone, no arguments: compile it and say whether it is a function, nothing run.
+    // How `check` finds a body's syntax errors before any run does.
     let args = match items.next() {
-        Some(Value::List(a)) => a,
-        Some(other) => vec![other],
-        None => vec![],
+        Some(Value::List(a)) => Some(a),
+        Some(other) => Some(vec![other]),
+        None => None,
     };
 
     // A frozen clock at the epoch: Boa's own would read the system clock, which this target
@@ -157,6 +159,7 @@ fn call(input: &[u8]) -> Result<Option<Value>, String> {
     let wrapped = format!("({source})");
     let function = context.eval(Source::from_bytes(wrapped.as_bytes())).map_err(|e| e.to_string())?;
     let Some(callable) = function.as_callable() else { return Err("the source isn't a function".into()) };
+    let Some(args) = args else { return Ok(Some(Value::Boolean(true))) };
 
     let js_args: Vec<JsValue> = args.into_iter().map(|a| to_js(a, &mut context)).collect::<Result<_, _>>()?;
     let returned = callable.call(&JsValue::undefined(), &js_args, &mut context).map_err(|e| e.to_string())?;

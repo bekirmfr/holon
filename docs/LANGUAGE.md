@@ -673,10 +673,12 @@ doesn't end it, and nothing in it is interpolated or renamed, so the source is p
 identity, verbatim (P3 stops at the brace). A body sees only its arguments: `undefined` for an
 absent value inside a list, every core value as its JavaScript counterpart (§5 of the L4). It
 returns one value (one output) or an object keyed by the output names (several); `undefined` or
-`null` is an absent output, an exception or a syntax error is an absent output with the message
-recorded, and a `Map`, a `Date`, a function or a Promise can't cross and is an error naming its
-kind. Each call is a fresh realm: nothing survives between calls, so two equal calls are equal and
-a run replays. A body that never ends runs out of fuel and is absent.
+`null` is an absent output, an exception is an absent output whose reason the run records and
+`explain` says under the statement ("closest gave nothing: TypeError: …"), and a `Map`, a `Date`,
+a function or a Promise can't cross and is an error naming its kind. A syntax error is caught
+earlier: `check` compiles each body once (nothing is run) and says the mistake at its line in the
+file. Each call is a fresh realm: nothing survives between calls, so two equal calls are equal
+and a run replays. A body that never ends runs out of fuel and is absent, with that reason.
 
 Output names are port names, so a keyword can't be one (`match` is `best` in the `nearest`
 sample). The sample `nearest` shows a js node doing the one computation the vocabulary can't

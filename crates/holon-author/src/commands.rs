@@ -135,9 +135,45 @@ pub fn check(file: &str, source: &str) -> Report {
     // The flow has no unit because of its routes' errors: each said once.
     let mut seen = std::collections::BTreeSet::new();
     problems.retain(|p| seen.insert(p.clone()));
-    let err: Vec<String> = problems.iter().map(|p| format!("{file}: {p}")).collect();
+    let mut err: Vec<String> = problems.iter().map(|p| format!("{file}: {p}")).collect();
+    err.extend(js_mistakes(file, source));
     let code = if err.is_empty() { 0 } else { 1 };
     Report { out, err, code }
+}
+
+/// Each js body compiled once by the engine, without running it (docs/L4s/js-node-L4.md §7): a
+/// mistake said at its line in the file, with the line and a caret, as any other mistake is. The
+/// engine counts lines in the source it was given, whose line 1 is the statement's header line
+/// (the body follows the `{` there), so a line of the body is that many lines down the file.
+fn js_mistakes(file: &str, source: &str) -> Vec<String> {
+    let Ok(parsed) = lang::parse(source) else { return vec![] };
+    let mut err = Vec::new();
+    for item in &parsed.items {
+        let lang::ast::Item::Js(def) = item else { continue };
+        let Err(message) = holon_module::compile_js(&lang::lower::js_source(def)) else { continue };
+        let prefix = lang::lower::js_source(def).find(") => {").map_or(0, |i| i as u32 + ") => {".len() as u32);
+        let (line, col) = match js_position(&message) {
+            Some((l, c)) if l <= 1 => (def.body_span.start.line, def.body_span.start.col + c.saturating_sub(prefix)),
+            Some((l, c)) => (def.body_span.start.line + l - 1, c),
+            None => (def.name.span.start.line, def.name.span.start.col),
+        };
+        // The engine's own position (in the source it was given) goes: the file's is said instead.
+        let message = message.split(" at line ").next().unwrap_or(&message).split(" (unknown at ").next().unwrap_or(&message).trim_end_matches(" (native)");
+        err.push(format!("{file}:{line}:{col}: js \"{}\": {message}", def.name.text));
+        if let Some(text) = source.lines().nth(line.saturating_sub(1) as usize) {
+            err.push(format!("  {text}"));
+            err.push(format!("  {}^", " ".repeat(col.max(1) as usize - 1)));
+        }
+    }
+    err
+}
+
+/// Where the engine places a mistake in the source it compiled: `… at line L, col C` (a syntax
+/// error) or `(… at :L:C)` (a runtime error's frame).
+fn js_position(message: &str) -> Option<(u32, u32)> {
+    let rest = message.split(" at line ").nth(1).or_else(|| message.split(" at :").nth(1))?;
+    let mut numbers = rest.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty());
+    Some((numbers.next()?.parse().ok()?, numbers.next()?.parse().ok()?))
 }
 
 /// `holon show`: an outline, each node by its name in the text, with its params and what feeds it.
@@ -279,6 +315,28 @@ mod tests {
     use super::*;
 
     const HELLO: &str = "flow hello-api\nport 8101\n\nnode req   = request { method: GET, path: \"/hello/:name\" }\nnode name  = field { name: name }\nnode hi    = const { value: \"Hello, \", type: Text }\nnode greet = concat\nnode res   = respond { status: \"200\", missing: \"404\" }\n\nreq.params  -> name.record\nhi.out      -> greet.a\nname.out    -> greet.b\nreq.request -> res.request\ngreet.out   -> res.body\n";
+
+    /// Each js body is compiled once by the engine: a syntax error is a mistake at its line in the
+    /// file, with the line and a caret like any other; a body that compiles passes, whatever it
+    /// would do at run time (that is the run's to say, and explain's).
+    #[test]
+    fn check_compiles_each_js_body_and_says_a_mistake_at_its_line() {
+        let src = "flow f\nport 8202\n\njs bad = (a) -> b {\n  const x = ;\n  return x\n}\n\nroute GET /x (req) {\n  respond bad(1)\n}\n";
+        let r = check("f.holon", src);
+        assert_eq!(r.code, 1);
+        assert_eq!(r.err[0], "f.holon:5:13: js \"bad\": SyntaxError: unexpected token ';', primary expression");
+        assert_eq!(r.err[1], "    const x = ;");
+        assert_eq!(r.err[2], format!("  {}^", " ".repeat(12)));
+        assert!(r.out.iter().any(|l| l.starts_with("unit ")), "it still compiles and derives: {:?}", r.out);
+        let fine = check("f.holon", &src.replace("const x = ;", "const x = a.b.c;"));
+        assert_eq!((fine.code, fine.err), (0, vec![]));
+        // On the header line, the column is the file's.
+        let one_line = check("f.holon", "flow f\n\njs bad = (a) -> b { return a + }\nstate.k = bad(1)\n");
+        assert!(one_line.err[0].starts_with("f.holon:3:"), "{:?}", one_line.err);
+        assert_eq!(js_position("SyntaxError: x at line 2, col 13 (native)"), Some((2, 13)));
+        assert_eq!(js_position("TypeError: y (unknown at :3:9)\n    at <main> (unknown at :3:9)"), Some((3, 9)));
+        assert_eq!(js_position("the source isn't a function"), None);
+    }
 
     #[test]
     fn check_says_routes_unit_and_what_it_may_do() {

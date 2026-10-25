@@ -56,6 +56,13 @@ pub struct Lowered {
     pub spans: BTreeMap<String, Span>,
 }
 
+/// The source a `js` node's engine compiles: `(inputs) => { body }`, the declared names and the
+/// body verbatim, so the body's line 1 is the statement's header line in the file.
+pub fn js_source(def: &JsDef) -> String {
+    let params: Vec<&str> = def.inputs.iter().map(|p| p.name.text.as_str()).collect();
+    format!("({}) => {{{}}}", params.join(", "), def.body)
+}
+
 /// Parse and lower a text.
 pub fn compile(src: &str) -> R<Lowered> {
     lower(&parse(src)?)
@@ -755,9 +762,7 @@ impl<'a> Lowerer<'a> {
             return err(def.body_span, "the js body is empty: return something");
         }
         self.b.begin_holon(name);
-        let params: Vec<&str> = def.inputs.iter().map(|p| p.name.text.as_str()).collect();
-        let source = format!("({}) => {{{}}}", params.join(", "), def.body);
-        let src = self.b.node("const", &[("value".into(), source), ("type".into(), "Text".into())], None).or_else(|e| err(def.span, e))?;
+        let src = self.b.node("const", &[("value".into(), js_source(def)), ("type".into(), "Text".into())], None).or_else(|e| err(def.span, e))?;
         // The arguments as one list: `list` for two or more, `cons` onto an empty list for one,
         // the empty list itself for none (`list` fails closed on a missing input).
         let empty = || [("value".to_string(), "[]".to_string()), ("type".to_string(), "Json".to_string())];

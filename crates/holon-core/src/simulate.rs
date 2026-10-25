@@ -108,7 +108,7 @@ impl<R: Resolver> Resolver for Simulated<'_, R> {
         }
     }
 
-    fn run_module(&self, bytes: &[u8], limits: &crate::ModuleLimits, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+    fn run_module(&self, bytes: &[u8], limits: &crate::ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
         self.real.run_module(bytes, limits, inputs)
     }
 }

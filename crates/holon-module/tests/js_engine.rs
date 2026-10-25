@@ -188,3 +188,13 @@ fn what_a_call_costs() {
     let loop_1e5 = measure("a loop of 100k", "() => { let s = 0; for (let i = 0; i < 100000; i++) s += i; return s }", vec![]);
     assert!(trivial.fuel > 0 && heavy.fuel > trivial.fuel && loop_1e5.fuel > heavy.fuel);
 }
+
+/// A call with the source alone compiles it and runs nothing: `check`'s question.
+#[test]
+fn the_source_alone_is_compiled_and_not_run() {
+    assert_eq!(holon_module::compile_js("(a) => { return a + 1 }"), Ok(()));
+    assert_eq!(holon_module::compile_js("(a) => { globalThis.ran = 1; throw new Error('never') }"), Ok(()), "compiled, not run");
+    let e = holon_module::compile_js("(a) => {\n  const x = ;\n  return x\n}").unwrap_err();
+    assert_eq!(e, "SyntaxError: unexpected token ';', primary expression at line 2, col 13 (native)");
+    assert_eq!(holon_module::compile_js("42").unwrap_err(), "the source isn't a function");
+}

@@ -325,11 +325,16 @@ collection, the clock, requests, and the two default limits. An empty dictionary
 *Done 2026-10-25:* inches 1 and 2 as written, and of inch 3 the approval wording (`check`, the
 agent's `deploy` and the server's manifest say the budgets), `holon show`, the sample `nearest`
 (registered, built by `samples.test.ts`, deployed and called live: `kittne` → `kitten` at 2,
-`smitten` → `mitten` at 1, `explain` showing the js statement with its values). *Owed:* `check`
-compiling the body once for a syntax error at its line (today a body's mistakes surface at run,
-as the engine's error, which `explain` can't yet show because the host doesn't record
-`WithEngine::take_failure` beside the run: that record is the next inch); the editor's ⓘ for a
-module node; the sentence for design doc §13; §14 of `docs/LANGUAGE.md`.
+`smitten` → `mitten` at 1, `explain` showing the js statement with its values). *Done the same
+day, the inch after:* `Resolver::run_module` answers the reason it can't (`Err(String)`), `eval`
+tells the observer at the module's path (`Observer::failed`), the server's timer keeps it beside
+the engine's step (`NodeTiming::reason`), and `explain` reads it back to the statement that
+placed the node: "closest gave nothing: out of fuel (200000000 instructions)", or a body's
+`TypeError` as the engine words it. `check` compiles each body once through the engine's
+compile-only call (the source alone, no arguments) and says a syntax error at its line in the
+file with the line and a caret, the engine's own position dropped. *Owed:* the editor's ⓘ for a
+module node; the language server marking a js body's syntax error as `check` does; the sentence
+for design doc §13.
 
 
 After `wasm-module-L4.md` inches 1 to 3 (the module body and tag, validation, `Pure`, the

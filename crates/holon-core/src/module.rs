@@ -398,13 +398,13 @@ mod tests {
         fn resolve(&self, hash: &Hash) -> Option<&Unit> {
             self.0.resolve(hash)
         }
-        fn run_module(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+        fn run_module(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
             assert!(validate_module(bytes).is_ok());
             if limits.fuel < 10 {
-                return None; // "out of fuel"
+                return Err(format!("out of fuel ({} instructions)", limits.fuel));
             }
-            let (Some(Value::Number(a)), Some(Value::Number(b))) = (&inputs[0], &inputs[1]) else { return None };
-            Some(vec![Some(Value::Number(a + b)), Some(Value::List(vec![Value::Number(*a), Value::Number(*b)]))])
+            let (Some(Value::Number(a)), Some(Value::Number(b))) = (&inputs[0], &inputs[1]) else { return Err("not two numbers".into()) };
+            Ok(vec![Some(Value::Number(a + b)), Some(Value::List(vec![Value::Number(*a), Value::Number(*b)]))])
         }
     }
 
@@ -422,6 +422,46 @@ mod tests {
         assert_eq!(eval(&starved, &two(2.0, 3.0), &adder).as_slice(), &[None, None]);
         // A resolver without an engine makes a module absent: the default hook.
         assert_eq!(eval(&unit, &two(2.0, 3.0), &MapResolver::new()).as_slice(), &[None, None]);
+    }
+
+    /// Why a module gave nothing reaches the observer, at the module's path, so a host can keep it
+    /// beside the node and a replay can say it.
+    #[test]
+    fn the_observer_hears_why_a_module_gave_nothing() {
+        struct Heard(Vec<(Vec<u32>, String)>);
+        impl crate::Observer for Heard {
+            fn failed(&mut self, path: &[u32], reason: &str) {
+                self.0.push((path.to_vec(), reason.to_string()));
+            }
+        }
+        let mut store = Adder(MapResolver::new());
+        let starved = module_unit(MINIMAL, vec![Param::frozen("fuel", "1")]);
+        let h = store.0.insert(starved).unwrap();
+        let comp = Unit {
+            body: UnitBody::Composite {
+                children: vec![h],
+                edges: vec![
+                    Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 },
+                    Edge { from_child: BOUNDARY, from_port: 1, to_child: 0, to_port: 1 },
+                    Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "x".into(), ty: Type::Number }, Port { name: "y".into(), ty: Type::Number }],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        };
+        let mut heard = Heard(vec![]);
+        let outs = crate::eval_observed(&comp, &[Some(Value::Number(1.0)), Some(Value::Number(2.0))], &store, &mut heard);
+        assert_eq!(outs.as_slice(), &[None]);
+        assert_eq!(heard.0, vec![(vec![0], "out of fuel (1 instructions)".to_string())]);
+        // Without an engine, the reason is that there is none; an absent input is no failure of
+        // the module's, and says nothing.
+        let mut heard = Heard(vec![]);
+        crate::eval_observed(&comp, &[Some(Value::Number(1.0)), Some(Value::Number(2.0))], &store.0, &mut heard);
+        assert_eq!(heard.0, vec![(vec![0], "this host runs no code".to_string())]);
+        let mut heard = Heard(vec![]);
+        crate::eval_observed(&comp, &[Some(Value::Number(1.0)), None], &store, &mut heard);
+        assert!(heard.0.is_empty());
     }
 
     #[test]

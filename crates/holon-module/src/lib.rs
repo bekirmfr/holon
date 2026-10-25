@@ -275,14 +275,31 @@ impl<R: Resolver> Resolver for WithEngine<'_, R> {
         self.real.resolve(hash)
     }
 
-    fn run_module(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+    fn run_module(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
         match self.engine.run(bytes, limits, inputs) {
-            Ok(outs) => Some(outs),
+            Ok(outs) => Ok(outs),
             Err(e) => {
+                let reason = e.to_string();
                 *self.last.borrow_mut() = Some(e);
-                None
+                Err(reason)
             }
         }
+    }
+}
+
+/// Compile `source` (a function expression) in the JavaScript engine without calling it: fine,
+/// or the mistake as the engine words it (`SyntaxError: … at line L, col C`, the line counted in
+/// the source). How `check` finds a js body's mistakes before a run does. A call with the source
+/// alone, no arguments, is the engine's compile-only form.
+pub fn compile_js(source: &str) -> Result<(), String> {
+    let limits = ModuleLimits { fuel: JS_DEFAULT_FUEL, memory: JS_DEFAULT_MEMORY };
+    let outs = shared().run(JS_ENGINE, &limits, &[Some(Value::Text(source.to_string()))]).map_err(|e| e.to_string())?;
+    match outs.into_iter().next().flatten() {
+        Some(Value::Record(r)) => match r.get("error") {
+            Some(Value::Text(e)) => Err(e.clone()),
+            _ => Ok(()),
+        },
+        other => Err(format!("the engine answered {other:?}, not a record")),
     }
 }
 

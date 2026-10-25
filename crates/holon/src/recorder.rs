@@ -185,6 +185,10 @@ pub struct NodeTiming {
     /// when any of them is larger than [`Timer::MAX_RECORDED_BYTES`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Vec<Option<SValue>>>,
+    /// Why a module at this node gave nothing (the engine's words: out of fuel, a trap, a js
+    /// body's exception), when it did: what `explain` says beside the statement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Times each composite child of a run as core evaluates it (core's `Observer`), down to
@@ -198,6 +202,8 @@ pub struct Timer {
     /// The outputs of the node about to be left (core reports them just before `leave`).
     produced: Option<Vec<Option<SValue>>>,
     pub timeline: Vec<NodeTiming>,
+    /// Why the node being left gave nothing, when a module said so.
+    reason: Option<String>,
 }
 
 impl Timer {
@@ -207,7 +213,7 @@ impl Timer {
     pub const MAX_RECORDED_BYTES: usize = 16 * 1024;
 
     pub fn new() -> Timer {
-        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new() }
+        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None }
     }
 
     fn now_us(&self) -> f64 {
@@ -235,11 +241,17 @@ impl holon_core::Observer for Timer {
             let start_us = self.open.pop().unwrap_or(0.0);
             let end_us = self.now_us();
             let outputs = self.produced.take();
-            self.timeline.push(NodeTiming { path: path.to_vec(), start_us, end_us, round: self.round, outputs });
+            let reason = self.reason.take();
+            self.timeline.push(NodeTiming { path: path.to_vec(), start_us, end_us, round: self.round, outputs, reason });
         }
     }
     fn round(&mut self, n: usize) {
         self.round = n as u32;
+    }
+    fn failed(&mut self, path: &[u32], reason: &str) {
+        if path.len() <= Self::DEPTH {
+            self.reason = Some(reason.to_string());
+        }
     }
 }
 

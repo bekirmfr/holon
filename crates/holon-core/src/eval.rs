@@ -135,6 +135,10 @@ pub trait Observer {
     /// Round `n` is about to be evaluated. Core never calls this; the host's round loop does,
     /// so an observer can tell one round's steps from the next.
     fn round(&mut self, _n: usize) {}
+    /// The module at `path` gave nothing, and this is why (`Resolver::run_module`'s error: out
+    /// of fuel, a trap, a body's exception as the engine words it). Called just before its
+    /// `produced`, so a host can keep the reason beside the node for a replay to show.
+    fn failed(&mut self, _path: &[u32], _reason: &str) {}
 }
 
 /// Observes nothing: what plain [`eval`] uses.
@@ -204,23 +208,35 @@ fn eval_at(
         UnitBody::Composite { children, edges } => {
             eval_composite(children, edges, unit.outputs.len(), inputs, resolver, observer, path)
         }
-        // A module body: the engine behind the resolver runs it (docs/L4s/wasm-module-L4.md §5).
-        UnitBody::Module { bytes } => run_module_outputs(bytes, unit, inputs, resolver).into_iter().map(Slot::of).collect(),
+        // A module body: the engine behind the resolver runs it (docs/L4s/wasm-module-L4.md §5);
+        // when it can't, the observer hears why, at this node.
+        UnitBody::Module { bytes } => {
+            let (outs, reason) = run_module_outputs(bytes, unit, inputs, resolver);
+            if let Some(reason) = reason {
+                observer.failed(path, &reason);
+            }
+            outs.into_iter().map(Slot::of).collect()
+        }
     }
 }
 
 /// A module's outputs, one per declared port: through `Resolver::run_module`, under the budgets
-/// its params give. Strict like any leaf: an absent input, a bad budget, no engine, a trap, or a
-/// budget run out each make every output absent. Shared with the eager oracle (`eager.rs`).
-pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> Vec<Option<Value>> {
+/// its params give. Strict like any leaf: an absent input or a bad budget makes every output
+/// absent, silently (as any leaf's missing input would); the engine's refusal (no engine, a
+/// trap, a budget run out, a body's error) makes them absent with the reason. Shared with the
+/// eager oracle (`eager.rs`).
+pub(crate) fn run_module_outputs(bytes: &[u8], unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> (Vec<Option<Value>>, Option<String>) {
     let n = unit.outputs.len();
     if inputs.len() != unit.inputs.len() || inputs.iter().any(Option::is_none) {
-        return vec![None; n];
+        return (vec![None; n], None);
     }
-    let Ok(limits) = crate::module::module_limits(&unit.params) else { return vec![None; n] };
+    let limits = match crate::module::module_limits(&unit.params) {
+        Ok(l) => l,
+        Err(e) => return (vec![None; n], Some(e.to_string())),
+    };
     match resolver.run_module(bytes, &limits, inputs) {
-        Some(outs) => (0..n).map(|i| outs.get(i).cloned().flatten()).collect(),
-        None => vec![None; n],
+        Ok(outs) => ((0..n).map(|i| outs.get(i).cloned().flatten()).collect(), None),
+        Err(reason) => (vec![None; n], Some(reason)),
     }
 }
 

@@ -193,7 +193,10 @@ pub fn utc(secs: u64) -> String {
 /// Each canvas node's recorded outputs in the run's last round, and which nodes ran at all, by
 /// node id: the run's step paths read through the document's `trace` (the editor's
 /// `nodeOutputs`, replay.ts).
-fn recorded(document: &Value, entry: &Value) -> (HashMap<String, Vec<Value>>, HashSet<String>, HashSet<String>) {
+/// What a run recorded, by the node of the text it belongs to: each node's outputs, the nodes
+/// that ran, the nodes of this run's part of the flow, and, for a node under which a module gave
+/// nothing, why (the engine's words, kept beside the module's own step, one level deeper).
+fn recorded(document: &Value, entry: &Value) -> (HashMap<String, Vec<Value>>, HashSet<String>, HashSet<String>, HashMap<String, String>) {
     let request = entry.get("kind").and_then(Value::as_str) == Some("request");
     let key = if request { entry.get("route").and_then(Value::as_str).unwrap_or("") } else { "*" };
     let map: Vec<String> = document.pointer(&format!("/trace/{}", key.replace('~', "~0").replace('/', "~1"))).and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
@@ -201,20 +204,64 @@ fn recorded(document: &Value, entry: &Value) -> (HashMap<String, Vec<Value>>, Ha
     let timeline = entry.get("timeline").and_then(Value::as_array).cloned().unwrap_or_default();
     let round = |t: &Value| t.get("round").and_then(Value::as_u64).unwrap_or(0);
     let last = timeline.iter().map(round).max().unwrap_or(0);
-    let (mut values, mut ran) = (HashMap::new(), HashSet::new());
+    let (mut values, mut ran, mut reasons) = (HashMap::new(), HashSet::new(), HashMap::new());
     let part: HashSet<String> = map.iter().cloned().collect();
     for t in timeline.iter().filter(|t| round(t) == last) {
         let path: Vec<u64> = t.get("path").and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
-        if path.len() != depth || (depth == 2 && path[0] != 0) {
+        if path.len() < depth || (depth == 2 && path[0] != 0) {
             continue;
         }
         let Some(id) = map.get(path[depth - 1] as usize) else { continue };
+        if path.len() > depth {
+            // A step inside the node (a js node's engine): only why it gave nothing is of interest
+            // here. The engine's own failure (out of fuel, a trap) is the step's `reason`; a body's
+            // exception is the engine's answer, `{ error }`, recorded as the step's output.
+            if let Some(reason) = t.get("reason").and_then(Value::as_str).map(str::to_string).or_else(|| engine_error(t)) {
+                reasons.entry(id.clone()).or_insert(reason);
+            }
+            continue;
+        }
         ran.insert(id.clone());
         if let Some(outputs) = t.get("outputs").and_then(Value::as_array) {
             values.insert(id.clone(), outputs.clone());
         }
+        if let Some(reason) = t.get("reason").and_then(Value::as_str) {
+            reasons.entry(id.clone()).or_insert_with(|| reason.to_string());
+        }
     }
-    (values, ran, part)
+    (values, ran, part, reasons)
+}
+
+/// The error a js engine's step answered with, when its one output is the engine's record
+/// (`{ error }`, or `{ value }` with no error): a body's exception, as the engine worded it.
+fn engine_error(step: &Value) -> Option<String> {
+    let outputs = step.get("outputs")?.as_array()?;
+    let [record] = outputs.as_slice() else { return None };
+    if record.get("type")?.as_str()? != "Record" {
+        return None;
+    }
+    let fields = record.get("value")?.as_array()?;
+    let keys: Vec<&str> = fields.iter().filter_map(|kv| kv.get(0)?.as_str()).collect();
+    if !keys.iter().all(|k| *k == "error" || *k == "value") {
+        return None;
+    }
+    let error = fields.iter().find(|kv| kv.get(0).and_then(Value::as_str) == Some("error"))?;
+    Some(body_position(error.get(1)?.get("value")?.as_str()?))
+}
+
+/// The engine's position in a message, said as the body's: Boa writes `at line L, col C (native)`
+/// for a syntax error and `(unknown at :L:C)` for a frame, both counted in the source the engine
+/// was given, whose line 1 is the js statement's header line.
+fn body_position(message: &str) -> String {
+    let first = message.lines().next().unwrap_or(message).trim_end_matches(" (native)");
+    if let Some((head, tail)) = first.split_once(" (unknown at :") {
+        let (l, c) = tail.trim_end_matches(')').split_once(':').unwrap_or((tail, ""));
+        return format!("{head} (the body's line {l}, col {c})");
+    }
+    if let Some((head, tail)) = first.split_once(" at line ") {
+        return format!("{head} (the body's line {})", tail.replace(", col ", ", col "));
+    }
+    first.to_string()
 }
 
 /// A node as a sentence names it: its leaf, and its one telling param (`field "author"`).
@@ -238,7 +285,7 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
     let (text, lines) = print_lines(Some(name), &doc, &mut MapResolver::new(), &Names::new(), &bindings)?;
     // `part`: the nodes this run is made of (its route's, or the whole flow's); the rest of the
     // text is shown without values.
-    let (values, ran, part) = recorded(document, entry);
+    let (values, ran, part, reasons) = recorded(document, entry);
     let has = |id: &str| values.get(id).is_some_and(|o| o.iter().any(|v| !v.is_null()));
     let by_id: HashMap<&str, &crate::canvas::Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     let mut feeds: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -266,7 +313,10 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
             stack.extend(from.iter().filter(|f| !has(f)));
         }
         match found.and_then(|n| by_id.get(n)) {
-            Some(n) if ran.contains(&n.id) => format!("nothing: {} gave nothing", node_name(n)),
+            Some(n) if ran.contains(&n.id) => match reasons.get(n.id.as_str()) {
+                Some(why) => format!("nothing: {} gave nothing: {why}", node_name(n)),
+                None => format!("nothing: {} gave nothing", node_name(n)),
+            },
             Some(n) => format!("nothing: {} didn't run", node_name(n)),
             None => "nothing".into(),
         }
@@ -311,10 +361,19 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
         let mut roots: Vec<&str> = ids.iter().copied().filter(|id| !doc.edges.iter().any(|w| w.source == *id && here.contains(w.target.as_str()))).collect();
         roots.sort_by_key(|id| doc.nodes.iter().position(|n| n.id == *id));
         let indent = line.len() - line.trim_start().len();
-        for id in roots {
+        for id in &roots {
             let note = annotate(id);
             if !note.is_empty() {
                 out.push(format!("{:>width$}  {}  ⇒ {note}", "", " ".repeat(indent)));
+            }
+        }
+        // A node inlined into the statement (a js call inside `respond { … }`) that gave nothing
+        // for a recorded reason: said too, since the root's own value hides it.
+        for id in ids.iter().filter(|id| !roots.contains(id)) {
+            if let (Some(why), Some(node)) = (reasons.get(*id), by_id.get(id))
+                && !has(id)
+            {
+                out.push(format!("{:>width$}  {}  ⇒ {} gave nothing: {why}", "", " ".repeat(indent), node_name(node)));
             }
         }
     }
@@ -540,6 +599,43 @@ mod tests {
         assert_eq!(text_of("slugs", &document).unwrap(), text, "the text as saved");
         document["source"] = json!("flow slugs\nroute GET /a (req) {\n  respond nope\n}\n");
         assert_eq!(text_of("slugs", &document).unwrap(), printed, "a saved text that doesn't compile gives way to the canvas");
+    }
+
+    /// A js node that gave nothing says why, in the engine's words, under the statement that
+    /// placed it: the reason rides one level deeper in the timeline (the engine's own step) and
+    /// is read back to the node of the text.
+    #[test]
+    fn explain_says_why_a_js_node_gave_nothing() {
+        let p = plan(samples::sample("nearest").unwrap().text).unwrap();
+        let trace: Vec<String> = serde_json::from_value(p.document["trace"]["GET /nearest/:word"].clone()).unwrap();
+        let nodes = p.document["nodes"].as_array().unwrap();
+        let js_id = nodes.iter().find(|n| n["data"]["name"] == "closest").unwrap()["id"].as_str().unwrap();
+        let i = trace.iter().position(|t| t == js_id).unwrap();
+        // Every node of the route produced something but the js node, whose engine ran out of fuel.
+        let mut timeline: Vec<Value> = trace
+            .iter()
+            .enumerate()
+            .map(|(k, _)| {
+                let outputs = if k == i { json!([null, null]) } else { json!([{ "type": "Text", "value": "x" }]) };
+                json!({ "path": [0, k], "round": 0, "start_us": 0.0, "end_us": 1.0, "outputs": outputs })
+            })
+            .collect();
+        timeline.push(json!({ "path": [0, i, 2], "round": 0, "start_us": 0.0, "end_us": 1.0, "reason": "out of fuel (200000000 instructions)" }));
+        let entry = json!({ "seq": 7, "kind": "request", "route": "GET /nearest/:word", "method": "GET", "url": "/nearest/kittne", "status": 404, "duration_ms": 3.0, "at_ms": 1_792_845_653_000u64, "timeline": timeline });
+        let text = explain("nearest", &p.document, &entry).unwrap();
+        assert!(text.contains("⇒ nothing: closest gave nothing: out of fuel (200000000 instructions)"), "{text}");
+        // A body's exception is the engine's answer, `{ error }`, kept as the engine step's output.
+        let mut threw = entry.clone();
+        threw["timeline"].as_array_mut().unwrap().pop();
+        threw["timeline"].as_array_mut().unwrap().push(json!({ "path": [0, i, 2], "round": 0, "start_us": 0.0, "end_us": 1.0,
+            "outputs": [{ "type": "Record", "value": [["error", { "type": "Text", "value": "TypeError: cannot convert 'null' or 'undefined' to object" }]] }] }));
+        let text = explain("nearest", &p.document, &threw).unwrap();
+        assert!(text.contains("⇒ nothing: closest gave nothing: TypeError: cannot convert 'null' or 'undefined' to object"), "{text}");
+        // Without a reason recorded, the statement says only that it gave nothing.
+        let mut plain = entry.clone();
+        plain["timeline"].as_array_mut().unwrap().pop();
+        let text = explain("nearest", &p.document, &plain).unwrap();
+        assert!(text.contains("⇒ nothing: closest gave nothing\n"), "{text}");
     }
 
     #[test]
