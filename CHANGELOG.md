@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.0-rc.19
+
+Flows deployed with rc.18 keep running. A flow with a `js` node redeploys as a new version
+(the engine module was rebuilt for `check`), with nothing new to approve; a flow saved by rc.18
+opens as before and saves smaller.
+
+- **A js node that gives nothing says why.** `explain` names the engine's reason under the
+  statement that placed the node: a body's exception as the engine words it ("`deep` gave
+  nothing: TypeError: cannot convert 'null' or 'undefined' to object (the body's line 2, col
+  19)"), or the engine's own failure ("out of fuel (200000000 instructions)"), for a node bound
+  by name or inlined into `respond { … }`. The run records it beside the engine's step.
+- **`holon check` compiles each js body** once, running nothing, and says a syntax error at its
+  line in the file with the line and a caret, like any other mistake. A body that compiles passes;
+  what it does at run time is the run's to say.
+- **A flow document carries a module by engine and params, not by its binary.** The js engine's
+  preimage is 3.2 MB (6.5 MB as hex) and each budget made another copy in every saved flow,
+  deploy body and deployment entry; a flow with two budgets could not deploy at all (the control
+  plane's 8 MiB body limit). A document now lists `{hash, engine, params}` under `modules`,
+  rebuilt on open from the engine the build carries and checked by hash; a deployment entry for
+  the `nearest` sample is 21 KB instead of 6.5 MB, and two budgets deploy.
+- **Measured** (docs/L4s/js-node-L4.md F6): on a release build a trivial js body costs 6 ms, the
+  `nearest` search 20 ms, a request through the deployed sample 50 to 60 ms more than one
+  without a js node; a debug build is eighty times slower.
+
 ## 0.1.0-rc.18
 
 Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.17 keep running.
