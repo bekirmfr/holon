@@ -340,6 +340,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "curl -X POST --data-binary kitten http://127.0.0.1:8117/words, then sitting and mitten; curl http://127.0.0.1:8117/nearest/kittne answers { best: \"kitten\", distance: 2 }; a word nobody added yet answers 404",
         text: include_str!("../samples/nearest.holon"),
     },
+    Sample {
+        name: "tally",
+        title: "Tally a CSV (a js node parsing text)",
+        description: "Post a CSV and get a glance at each column: the kind, min, max and mean of a number column, the distinct values and the top three of a text column. Parsing text into structure is a js node's work; the flow stores the last summary in its state and answers it.",
+        shows: &["js node", "state", "multi-output", "records and lists out of JavaScript"],
+        port: Some("8119"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "printf 'city,temp\nOslo,4\nRome,19\nOslo,6\n' | curl -s -X POST --data-binary @- http://127.0.0.1:8119/tally answers rows 3 and two columns (city: text, 2 distinct; temp: number, 4 to 19, mean 9.67); curl http://127.0.0.1:8119/tally/last repeats it with when",
+        text: include_str!("../samples/tally.holon"),
+    },
 ];
 
 #[cfg(test)]
