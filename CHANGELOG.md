@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.17
 
 **Run `holon migrate` where you used to start `holon serve`.** A server keeps its state in
 `~/.holon/data` now, wherever it is started from, so one started as before begins empty; the
@@ -20,6 +20,9 @@ old `.holon-*` files are left where they are, and `holon serve` says so when it 
   open, keeping its key where it is.
 - **`uninstall --purge` removes all of `~/.holon`**: data, key, run files, tokens and the list
   of agent hosts set up.
+- **A module is a unit** (docs/L4s/wasm-module-L4.md), underneath only: a WebAssembly body with
+  no imports, admitted by its exports and budgets. No host runs one yet, so nothing a flow does
+  changes, and no unit already encoded is hashed differently.
 
 ## 0.1.0-rc.16
 
