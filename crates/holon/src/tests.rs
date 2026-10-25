@@ -3491,6 +3491,62 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A run that computes with a secret (here, signing the body under it) can't be computed again
+/// from its entry: the log holds a placeholder, never the value. What the log kept for that node
+/// stands in, and the rest of the run is checked against it: the entry with its answer rewritten
+/// (and the line chained again) differs; one rewritten everywhere, that node's own output too,
+/// passes, since what the node produced is taken from the log. The report says how many nodes.
+#[test]
+fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() {
+    let state = claims_state("");
+    let value = "whsec_test_123456";
+    let set = req("POST", "/deployments/signer/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let text = "flow signer\nport 18199\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    assert_eq!(slug, "signer");
+    let (status, signature, _) = data_call(&state, &slug, "POST", "/sign", "hello");
+    assert_eq!(status, 200);
+    let real = holon_core::primitives::compute("hmac_sha256", &[&Value::Text(value.into()), &Value::Text("hello".into())], &[Param::frozen("encoding", "hex")]);
+    assert_eq!(real, Some(Value::Text(signature.clone())), "the run signed with the secret's value");
+
+    // Exported, the run checks: the log holds the secret's placeholder, so the signing node's
+    // recorded output stands in, and the answer built from it is the one logged.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/signer/export", vec![])))).unwrap();
+    assert_eq!(export.lines.len(), 1);
+    assert!(!export.lines[0].contains(value), "the log never holds the value");
+    assert!(export.lines[0].contains(&signature), "it holds the signature the run answered");
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+    assert_eq!(report.given, BTreeMap::from([(0, 1)]), "one node stood in for: the signing");
+    assert!(verify::describe(&report, None).contains("1 run: 0 checked given what the log kept for 1 node fed a secret"), "{}", verify::describe(&report, None));
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+
+    let forged_signature: String = signature.chars().rev().collect();
+    assert_ne!(forged_signature, signature);
+    let rechained = |line: String| {
+        let head = recorder::line_hash(&line);
+        (verify::Export { lines: vec![line], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() }, head)
+    };
+    // Someone with the data folder rewrites the answer the run gave, and chains the line again:
+    // the signing node's recorded output still gives the real signature, so the run differs.
+    let mut v: serde_json::Value = serde_json::from_str(&export.lines[0]).unwrap();
+    let outputs = v["outputs"].to_string().replace(&signature, &forged_signature);
+    assert_ne!(outputs, v["outputs"].to_string());
+    v["outputs"] = serde_json::from_str(&outputs).unwrap();
+    let (forged, head) = rechained(serde_json::to_string(&v).unwrap());
+    let report = verify::check(&forged, Some(&head), &BTreeMap::new());
+    assert!(report.breaks.is_empty(), "re-chained, it links");
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Differs("its outputs".into()))], "{}", verify::describe(&report, None));
+    assert!(!report.ok(), "the forged export fails: {}", verify::describe(&report, None));
+    // Rewritten everywhere, the signing node's own recorded output too, it passes: what a node
+    // fed a secret produced is taken from the log, not checked. That is the trust that remains.
+    let (forged, head) = rechained(export.lines[0].replace(&signature, &forged_signature));
+    let report = verify::check(&forged, Some(&head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+    assert_eq!(report.given, BTreeMap::from([(0, 1)]));
+}
+
 // ── key claims: a key read before a call is held until the run commits ───────────────────────
 // (docs/L4s/key-claims-L4.md §10)
 
