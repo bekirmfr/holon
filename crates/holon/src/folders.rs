@@ -12,7 +12,9 @@
 //! - **Reads** are answered on the spot, as text, from the folder as the run found it, only for
 //!   folders the deployment was granted, and each is kept (with its node's path), as a collection
 //!   read is: the log shows it, replay answers from it, and a run is checked against it before it
-//!   commits. A big file's text goes to the content store, and the log holds its hash.
+//!   commits. A big file's text goes to the blob store (blobs.rs: by content, in chunks), and the
+//!   log holds its hash; a folder may keep those texts for a while (`keep: bytes for 30d`), and
+//!   a sweep removes the ones no kept run refers to ([`sweep`]).
 //! - **Big files never enter a run whole.** A handle (`inbox.file(n)`) is a file's name, size and
 //!   hash, without its bytes; a copy by handle streams them host to host when the run commits. A
 //!   range (`lines`, `slice`) reads only its bytes, and the log keeps with them the hashes that
@@ -20,6 +22,7 @@
 //! - **Writes** (a file's whole text, a copy, or a delete) are effects, applied when the run
 //!   commits: written beside the file and renamed over it, so a reader never sees half of one. The
 //!   log holds what was written by its hash and size, never its text: `holon verify` runs it again.
+//!   A folder may cap its size: a write that would take it past its cap doesn't land.
 
 use std::io::{Read as _, Seek as _, Write as _};
 use std::sync::RwLock;
@@ -38,14 +41,95 @@ pub(crate) enum FolderAccess {
     ReadWrite,
 }
 
-/// What a folder's reads keep in the run log: the bytes (a run is checkable anywhere, later), or
-/// only their hash (what was read is provable; it runs again when the file is supplied).
+/// What a folder's reads keep in the run log: the bytes (a run is checkable anywhere, later), the
+/// bytes for a while and then only their hash, or only their hash (what was read is provable; it
+/// runs again when the file is supplied). Written `bytes`, `bytes for 30d` and `hash`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
+#[serde(try_from = "String", into = "String")]
 pub(crate) enum Keep {
     #[default]
     Bytes,
+    /// The bytes, for this many seconds after the run.
+    BytesFor(u64),
     Hash,
+}
+
+impl Keep {
+    /// Whether a read's bytes are kept at all (for a while, or for good).
+    pub(crate) fn keeps_bytes(self) -> bool {
+        self != Keep::Hash
+    }
+
+    /// How long after a run its reads' bytes are kept, in milliseconds: none for good.
+    pub(crate) fn window_ms(self) -> Option<u64> {
+        match self {
+            Keep::Bytes => None,
+            Keep::BytesFor(secs) => Some(secs.saturating_mul(1000)),
+            Keep::Hash => Some(0),
+        }
+    }
+}
+
+impl TryFrom<String> for Keep {
+    type Error = String;
+    /// `bytes`, `hash`, or `bytes for <n><s|m|h|d>` (or just `<n><s|m|h|d>`).
+    fn try_from(s: String) -> Result<Keep, String> {
+        match s.trim() {
+            "bytes" => Ok(Keep::Bytes),
+            "hash" => Ok(Keep::Hash),
+            other => {
+                let span = other.strip_prefix("bytes for ").unwrap_or(other).trim();
+                seconds_of(span)
+                    .map(Keep::BytesFor)
+                    .ok_or_else(|| format!("keep is bytes, hash, or bytes for a while (bytes for 30d; s, m, h or d), not {s:?}"))
+            }
+        }
+    }
+}
+
+impl From<Keep> for String {
+    fn from(k: Keep) -> String {
+        match k {
+            Keep::Bytes => "bytes".into(),
+            Keep::Hash => "hash".into(),
+            Keep::BytesFor(secs) => format!("bytes for {}", span_text(secs)),
+        }
+    }
+}
+
+/// A while, as `30d`, `12h`, `90m` or `45s`: in seconds (at least one, at most a hundred years).
+fn seconds_of(span: &str) -> Option<u64> {
+    let unit = match span.chars().last()? {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        _ => return None,
+    };
+    let n: u64 = span[..span.len() - 1].parse().ok()?;
+    Some(n.checked_mul(unit)?).filter(|&s| s > 0 && s <= 100 * 365 * 86_400)
+}
+
+/// A while in seconds, in the largest unit that says it exactly.
+fn span_text(secs: u64) -> String {
+    match secs {
+        s if s % 86_400 == 0 => format!("{}d", s / 86_400),
+        s if s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
+/// A size in bytes as people read it: `512 bytes`, `64 KiB`, `9.8 MiB`.
+pub(crate) fn size_text(bytes: u64) -> String {
+    const UNITS: [(u64, &str); 3] = [(1 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")];
+    for (size, unit) in UNITS {
+        if bytes >= size {
+            let n = bytes as f64 / size as f64;
+            return if n.fract() == 0.0 || n >= 100.0 { format!("{n:.0} {unit}") } else { format!("{n:.1} {unit}") };
+        }
+    }
+    format!("{bytes} bytes")
 }
 
 /// One bound folder.
@@ -56,6 +140,9 @@ pub(crate) struct Folder {
     pub(crate) access: FolderAccess,
     #[serde(default)]
     pub(crate) keep: Keep,
+    /// The most bytes its files may hold in all, if it is capped: a write past it doesn't land.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cap: Option<u64>,
 }
 
 /// The largest file a run reads as text.
@@ -69,6 +156,9 @@ const MAX_WALK: usize = 100_000;
 /// What the error of a run whose file read failed starts with: such a run answers 500, not what
 /// it computed from nothing.
 pub(crate) const READ_FAILED: &str = "a file read failed: ";
+/// What the error of a run whose file write didn't land starts with (a folder past its cap, a
+/// copy whose source changed): such a run answers 500, not what it said it did.
+pub(crate) const WRITE_FAILED: &str = "not every write landed: ";
 /// What the host's own temporary files start with: never a flow's.
 const TMP_PREFIX: &str = ".holon-tmp-";
 
@@ -79,6 +169,8 @@ pub(crate) struct Folders {
     /// The server's own files and folders: never bound, nor anything holding them.
     forbidden: Vec<PathBuf>,
     bound: RwLock<Bound>,
+    /// The texts of the files runs read, kept for their logs (blobs.rs).
+    pub(crate) blobs: blobs::Blobs,
 }
 
 /// Every binding: the server's, by name, and each deployment's own, by its slug then name. On
@@ -122,7 +214,12 @@ fn canonical(path: &Path) -> std::io::Result<PathBuf> {
 impl Folders {
     /// No folders, kept nowhere: the tests, and a server told `--folders :memory:`.
     pub(crate) fn memory() -> Folders {
-        Folders { file: None, forbidden: Vec::new(), bound: RwLock::new(Bound::default()) }
+        Folders { file: None, forbidden: Vec::new(), bound: RwLock::new(Bound::default()), blobs: blobs::Blobs::memory() }
+    }
+
+    /// The same folders, the texts their runs read kept in `blobs` (`<store>/blobs/`).
+    pub(crate) fn with_blobs(self, blobs: blobs::Blobs) -> Folders {
+        Folders { blobs, ..self }
     }
 
     /// The folders bound in `file` (none yet if it doesn't exist), refusing ever to bind one of
@@ -138,7 +235,11 @@ impl Folders {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Bound::default(),
             Err(e) => return Err(format!("can't read {file}: {e}")),
         };
-        Ok(Folders { file: Some(path), forbidden, bound: RwLock::new(bound) })
+        Ok(Folders { file: Some(path), forbidden, ..Folders::memory() }.with_bound(bound))
+    }
+
+    fn with_bound(self, bound: Bound) -> Folders {
+        Folders { bound: RwLock::new(bound), ..self }
     }
 
     /// Every folder bound: the server's, and each deployment's.
@@ -152,9 +253,10 @@ impl Folders {
         bound.deployments.get(deployment).and_then(|d| d.get(name)).or_else(|| bound.server.get(name)).cloned()
     }
 
-    /// Bind `name` to the folder at `path` (which must exist), for the whole server or for one
-    /// deployment (`for_deployment`, its slug), replacing any binding of it there before.
-    pub(crate) fn bind(&self, name: &str, path: &str, access: FolderAccess, keep: Keep, for_deployment: Option<&str>) -> Result<Folder, String> {
+    /// Bind `name` to the folder at `path` (which must exist), capped at `cap` bytes if given, for
+    /// the whole server or for one deployment (`for_deployment`, its slug), replacing any binding of
+    /// it there before.
+    pub(crate) fn bind(&self, name: &str, path: &str, access: FolderAccess, keep: Keep, cap: Option<u64>, for_deployment: Option<&str>) -> Result<Folder, String> {
         if !is_folder_name(name) {
             return Err(format!("{name:?} isn't a folder name: letters, digits, - and _, up to 64"));
         }
@@ -172,7 +274,10 @@ impl Folders {
         if let Some(own) = self.forbidden.iter().find(|f| f.starts_with(&at) || at.starts_with(f)) {
             return Err(format!("{} can't be bound: it is, or holds, this server's own data ({})", at.display(), own.display()));
         }
-        let folder = Folder { path: at, access, keep };
+        if cap == Some(0) {
+            return Err("a folder's cap is a size above nothing (10M, say)".into());
+        }
+        let folder = Folder { path: at, access, keep, cap };
         let mut bound = self.bound.write().unwrap();
         let mut next = bound.clone();
         match for_deployment {
@@ -333,6 +438,7 @@ impl Scoped {
     pub(crate) fn write(&self, name: &str, file: &str, text: &str) -> Result<(), String> {
         let folder = self.writable(name)?;
         let path = for_writing(&folder.path, file)?;
+        fits(name, &folder, &path, text.len() as u64).map_err(|e| format!("{name}/{file} not written: {e}"))?;
         land(&path, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(|e| format!("{name}/{file} not written: {e}"))
     }
 
@@ -340,10 +446,11 @@ impl Scoped {
     /// and renamed over it: refused if its bytes no longer hash to `hash` (the handle the run read).
     pub(crate) fn copy(&self, name: &str, file: &str, from: &str, from_file: &str, hash: &str) -> Result<(), String> {
         let folder = self.writable(name)?;
-        let Some((mut src, _)) = self.open_file(from, from_file)? else {
+        let Some((mut src, meta)) = self.open_file(from, from_file)? else {
             return Err(format!("{from}/{from_file} isn't there any more: not copied to {name}/{file}"));
         };
         let path = for_writing(&folder.path, file)?;
+        fits(name, &folder, &path, meta.len()).map_err(|e| format!("{name}/{file} not copied: {e}"))?;
         land(&path, |f| {
             let mut hasher = blake3::Hasher::new();
             let mut block = vec![0u8; 64 * 1024];
@@ -456,6 +563,42 @@ fn land(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<(), String>
         let _ = std::fs::remove_file(&tmp);
     }
     landed
+}
+
+/// Whether folder `name` has room for `size` bytes as the file at `path` (replacing what is there),
+/// if it is capped: refused past its cap, saying how full it is.
+fn fits(name: &str, folder: &Folder, path: &Path, size: u64) -> Result<(), String> {
+    let Some(cap) = folder.cap else { return Ok(()) };
+    let held = usage(&folder.path)?;
+    let replaced = std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_file).map_or(0, |m| m.len());
+    let after = held.saturating_sub(replaced).saturating_add(size);
+    if after > cap {
+        return Err(format!(
+            "the folder {name:?} is capped at {}: it holds {}, and this would make it {}",
+            size_text(cap),
+            size_text(held),
+            size_text(after)
+        ));
+    }
+    Ok(())
+}
+
+/// The bytes of every file under `dir`, links not followed.
+fn usage(dir: &Path) -> Result<u64, String> {
+    let mut total = 0u64;
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        let entries = std::fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                dirs.push(entry.path());
+            } else if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// Why a deployment can't use the folder `name`: it isn't bound for it, nor for the server.
@@ -571,7 +714,7 @@ fn walk(dir: &Path, under: &str, names: &mut Vec<String>) -> Result<(), String> 
 /// A binding as the admin panel and `holon folder list` show it: `deployment` is the slug it is
 /// bound for, or null for the whole server.
 fn shown(name: &str, deployment: Option<&str>, f: &Folder) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "path": f.path.display().to_string(), "access": f.access, "keep": f.keep })
+    serde_json::json!({ "name": name, "deployment": deployment, "path": f.path.display().to_string(), "access": f.access, "keep": f.keep, "cap": f.cap })
 }
 
 /// What a binding is called in the activity log: its name, and the deployment it is for.
@@ -602,6 +745,9 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     access: FolderAccess,
                     #[serde(default)]
                     keep: Keep,
+                    /// Its cap: bytes, or a size (`10M`); none: uncapped.
+                    #[serde(default)]
+                    cap: Option<serde_json::Value>,
                     /// The deployment it is bound for; none: the whole server.
                     #[serde(default)]
                     deployment: Option<String>,
@@ -613,7 +759,14 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     .and_then(|b| serde_json::from_slice::<Bind>(&b).map_err(|e| err(400, format!("invalid body: {e}"))))
                     .map(|b| Bind { deployment: b.deployment.filter(|d| !d.trim().is_empty()), ..b });
                 let bound = bind.and_then(|b| {
-                    let folder = state.folders.bind(&b.name, &b.path, b.access, b.keep, b.deployment.as_deref()).map_err(|e| err(400, e))?;
+                    let cap = match &b.cap {
+                        None | Some(serde_json::Value::Null) => None,
+                        Some(serde_json::Value::Number(n)) => Some(n.as_u64().ok_or_else(|| err(400, "a cap is a whole number of bytes, or a size (10M)"))?),
+                        Some(serde_json::Value::String(s)) if s.trim().is_empty() => None,
+                        Some(serde_json::Value::String(s)) => Some(verify::budget_of(s).ok_or_else(|| err(400, format!("a cap is a size (1048576, 64K, 10M or 2G), not {s:?}")))?),
+                        Some(_) => return Err(err(400, "a cap is a whole number of bytes, or a size (10M)")),
+                    };
+                    let folder = state.folders.bind(&b.name, &b.path, b.access, b.keep, cap, b.deployment.as_deref()).map_err(|e| err(400, e))?;
                     Ok((b, folder))
                 });
                 match bound {
@@ -625,6 +778,19 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                 }
             }
             _ => Response::empty_404(),
+        });
+    }
+    if url == "/admin/folders/sweep" && method == "POST" {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        return Some(match sweep(&state.folders, &state.deployments, now, SWEEP_SPARES_MS) {
+            Ok(s) => {
+                if s.texts > 0 || s.chunks > 0 {
+                    state.activity.record("swept file texts", &format!("{} texts, {} freed", s.texts, size_text(s.bytes)), Some(by));
+                }
+                let held = state.folders.blobs.held();
+                Response::json(&serde_json::json!({ "texts": s.texts, "chunks": s.chunks, "bytes": s.bytes, "kept": { "texts": held.texts, "chunks": held.chunks, "bytes": held.bytes } }))
+            }
+            Err(e) => err(500, e),
         });
     }
     let name = url.strip_prefix("/admin/folders/")?;
@@ -642,12 +808,13 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
     })
 }
 
-/// `holon folder add NAME PATH [--read-only] [--keep hash] | list | remove NAME`: bind, show and
-/// unbind the folders of the server this user runs here (or `--server`), as an admin.
+/// `holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] | list | remove NAME |
+/// sweep`: bind, show and unbind the folders of the server this user runs here (or `--server`),
+/// and sweep the texts their runs read that no kept run refers to, as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
     let mut server = None;
     let mut for_deployment: Option<String> = None;
-    let (mut read_only, mut keep) = (false, Keep::Bytes);
+    let (mut read_only, mut keep, mut cap) = (false, Keep::Bytes, None);
     let mut words = Vec::new();
     let mut args = args.iter();
     while let Some(a) = args.next() {
@@ -655,11 +822,17 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             "--server" => server = args.next().cloned(),
             "--for" => for_deployment = args.next().cloned(),
             "--read-only" => read_only = true,
-            "--keep" => match args.next().map(String::as_str) {
-                Some("bytes") => keep = Keep::Bytes,
-                Some("hash") => keep = Keep::Hash,
-                other => {
-                    eprintln!("holon folder: --keep takes bytes or hash, not {other:?}");
+            "--keep" => match args.next().map(|k| Keep::try_from(k.clone())) {
+                Some(Ok(k)) => keep = k,
+                _ => {
+                    eprintln!("holon folder: --keep takes bytes, hash, or how long to keep the bytes (30d, 12h; s, m, h or d)");
+                    return 2;
+                }
+            },
+            "--cap" => match args.next().and_then(|v| verify::budget_of(v)) {
+                Some(n) if n > 0 => cap = Some(n),
+                _ => {
+                    eprintln!("holon folder: --cap takes a size: 1048576, 64K, 10M or 2G");
                     return 2;
                 }
             },
@@ -680,9 +853,10 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             // The path as the server's machine sees it: this one, for the server this user runs.
             let path = std::path::absolute(path).map_or_else(|_| path.to_string(), |p| p.display().to_string());
             let access = if read_only { FolderAccess::Read } else { FolderAccess::ReadWrite };
-            let body = serde_json::json!({ "name": name, "path": path, "access": access, "keep": keep, "deployment": for_deployment });
+            let body = serde_json::json!({ "name": name, "path": path, "access": access, "keep": keep, "cap": cap, "deployment": for_deployment });
             ("POST", "/admin/folders".to_string(), Some(body))
         }
+        ["sweep"] => ("POST", "/admin/folders/sweep".to_string(), Some(serde_json::json!({}))),
         ["remove", name] => {
             let only = for_deployment.as_ref().map_or(String::new(), |d| format!("?deployment={d}"));
             ("DELETE", format!("/admin/folders/{name}{only}"), None)
@@ -726,9 +900,14 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     };
     let line = |f: &serde_json::Value| {
         let access = if f["access"] == "read" { "read only" } else { "read and write" };
-        let keep = if f["keep"] == "hash" { ", reads kept by hash" } else { "" };
+        let keep = match f["keep"].as_str() {
+            Some("hash") => ", reads kept by hash".to_string(),
+            Some(k) if k.starts_with("bytes for ") => format!(", reads kept {}, then by hash", &k["bytes for ".len()..]),
+            _ => String::new(),
+        };
+        let cap = f["cap"].as_u64().map_or(String::new(), |c| format!(", capped at {}", size_text(c)));
         let only = f["deployment"].as_str().map_or(String::new(), |d| format!(", for {d} only"));
-        format!("{}  {}  ({access}{keep}{only})", f["name"].as_str().unwrap_or(""), f["path"].as_str().unwrap_or(""))
+        format!("{}  {}  ({access}{keep}{cap}{only})", f["name"].as_str().unwrap_or(""), f["path"].as_str().unwrap_or(""))
     };
     match words[0] {
         "list" => {
@@ -741,6 +920,17 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             }
         }
         "add" => println!("bound {}", line(&serde_json::from_str(&answer).unwrap_or_default())),
+        "sweep" => {
+            let s: serde_json::Value = serde_json::from_str(&answer).unwrap_or_default();
+            let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
+            println!(
+                "swept {} file texts no kept run refers to ({} freed); it keeps {} ({})",
+                n(&s["texts"]),
+                size_text(n(&s["bytes"])),
+                n(&s["kept"]["texts"]),
+                size_text(n(&s["kept"]["bytes"]))
+            );
+        }
         _ => println!(
             "unbound {}{}: its files stay where they are",
             words[1],
@@ -750,9 +940,10 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep hash] [--for SLUG]
+const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--for SLUG]
        holon folder list
        holon folder remove NAME [--for SLUG]
+       holon folder sweep
        (each takes --server PORT|URL)
 
   Binds a name a flow uses (folder inbox) to a real folder on the server's machine, for an admin.
@@ -760,8 +951,12 @@ const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--k
   --for SLUG binds it for that deployment only: it sees that folder as NAME, whatever the
   server's NAME is, and no other deployment sees it.
   --read-only: flows may read it, not write it. --keep hash: the run log keeps a hash of what
-  each run read, not its text (holon verify --files then supplies the files). Removing a binding
-  leaves the files where they are; deployments that use it stop until it is bound again.";
+  each run read, not its text (holon verify --files then supplies the files); --keep 30d keeps
+  the text for 30 days (s, m, h or d), then only its hash. --cap 10M: a write that would take the
+  folder's files past 10 MiB in all doesn't land. Removing a binding leaves the files where they
+  are; deployments that use it stop until it is bound again.
+  sweep removes now the texts runs read that no kept run refers to (the server does it every 10
+  minutes).";
 
 /// What a run's read of a file kept: its hash and size, and where its text is if not in the log.
 #[derive(Clone, Debug, PartialEq)]
@@ -771,7 +966,7 @@ pub(crate) struct Seen {
     pub(crate) size: u64,
     /// Whether the text read (the file's, or a range's) is in the log entry itself.
     pub(crate) inline: bool,
-    /// The text's value hash in the content store (hex), when kept there.
+    /// What names the text in the blob store (the BLAKE3 of the text, hex), when kept there.
     pub(crate) blob: Option<String>,
     /// For part of a file (lines, a slice): where it is, and what proves it part of the file.
     pub(crate) range: Option<Ranged>,
@@ -799,7 +994,6 @@ pub(crate) fn range_answer(lines: bool, text: &str) -> Value {
 pub(crate) struct Readable {
     pub(crate) folders: Arc<Scoped>,
     pub(crate) granted: BTreeSet<String>,
-    pub(crate) store: SharedStore,
     pub(crate) read_bytes: u64,
 }
 
@@ -820,7 +1014,7 @@ impl Readable {
     /// The answer to `request` (`{folder, read}`, `{folder, list}`, `{folder, handle}`, `{folder,
     /// lines}` or `{folder, slice}`), and for a read of text, what it saw: an error fails the run (a
     /// folder not granted or not bound, a name that leaves it, a file too big or not text). With
-    /// `keep`, a big text is put in the content store, and a range is proved part of its file; without
+    /// `keep`, a big text is put in the blob store, and a range is proved part of its file; without
     /// (checking a run before it commits), only what it answers is read.
     pub(crate) fn answer(&mut self, request: &Value, keep: bool) -> Result<(Option<Value>, Option<Seen>), String> {
         let Value::Record(r) = request else { return Ok((None, None)) };
@@ -854,15 +1048,14 @@ impl Readable {
             if !keep {
                 return Ok((Some(answer), None));
             }
-            let kept = self.folders.get(name).map_or(Keep::Bytes, |f| f.keep);
-            let inline = kept == Keep::Bytes && text.len() as u64 <= LOG_INLINE_BYTES;
-            let blob = if kept == Keep::Bytes && !inline {
-                let hash = self.store.0.lock().unwrap().put_value(&Value::Text(text.clone())).map_err(|e| format!("{name}/{file} can't be kept: {e:?}"))?;
-                Some(to_hex(&hash))
+            let kept = self.folders.get(name).map_or(Keep::Bytes, |f| f.keep).keeps_bytes();
+            let inline = kept && text.len() as u64 <= LOG_INLINE_BYTES;
+            let blob = if kept && !inline {
+                Some(self.folders.all.blobs.put(text.as_bytes()).map_err(|e| format!("{name}/{file} can't be kept: {e}"))?)
             } else {
                 None
             };
-            let proved = kept == Keep::Bytes;
+            let proved = kept;
             let range = Ranged {
                 start,
                 end,
@@ -880,15 +1073,14 @@ impl Readable {
             let hash = blake3::hash(&bytes).to_hex().to_string();
             let size = bytes.len() as u64;
             let text = String::from_utf8(bytes).map_err(|_| format!("{name}/{file} isn't text (UTF-8)"))?;
-            let kept = self.folders.get(name).map_or(Keep::Bytes, |f| f.keep);
-            let inline = kept == Keep::Bytes && size <= LOG_INLINE_BYTES;
-            let value = Value::Text(text);
-            let blob = if keep && kept == Keep::Bytes && !inline {
-                let hash = self.store.0.lock().unwrap().put_value(&value).map_err(|e| format!("{name}/{file} can't be kept: {e:?}"))?;
-                Some(to_hex(&hash))
+            let kept = self.folders.get(name).map_or(Keep::Bytes, |f| f.keep).keeps_bytes();
+            let inline = kept && size <= LOG_INLINE_BYTES;
+            let blob = if keep && kept && !inline {
+                Some(self.folders.all.blobs.put(text.as_bytes()).map_err(|e| format!("{name}/{file} can't be kept: {e}"))?)
             } else {
                 None
             };
+            let value = Value::Text(text);
             return Ok((Some(value), Some(Seen { hash, size, inline, blob, range: None })));
         }
         let Some(Value::Record(list)) = r.get("list") else { return Ok((None, None)) };
@@ -899,6 +1091,55 @@ impl Readable {
         let files = self.folders.list(name, text(list, "prefix").unwrap_or(""), text(list, "after"), limit)?;
         Ok((Some(Value::Record(files)), None))
     }
+}
+
+/// The text a log entry's `blob` names: from the blob store, or, for a log from before it, the
+/// content store (where a read's text was kept by its value hash). None if it is no longer kept.
+pub(crate) fn kept_text(folders: &Folders, store: &SharedStore, blob: &str) -> Result<Option<String>, String> {
+    if let Some(bytes) = folders.blobs.get(blob)? {
+        return String::from_utf8(bytes).map(Some).map_err(|_| format!("the kept text {blob} isn't text"));
+    }
+    let Some(hash) = parse_hash(blob) else { return Ok(None) };
+    match store.0.lock().unwrap().get_value(&hash) {
+        Ok(Some(Value::Text(text))) => Ok(Some(text)),
+        Ok(_) => Ok(None),
+        Err(e) => Err(format!("store error: {e:?}")),
+    }
+}
+
+/// How often the server sweeps the texts no kept run refers to.
+pub(crate) const SWEEP_EVERY: Duration = Duration::from_secs(10 * 60);
+/// How new a text a sweep spares, whoever refers to it: a run that has just kept one logs it when
+/// it finishes.
+pub(crate) const SWEEP_SPARES_MS: u64 = 5 * 60 * 1000;
+
+/// Remove from the blob store every text (and the chunks only it used) that no run a deployment's
+/// log keeps refers to within its folder's window (`keep: bytes for 30d`; a folder now kept by
+/// hash keeps none; one no longer bound keeps them all), except those kept in the last
+/// `spare_ms`. A run whose text is swept stays provable by its hash; `holon verify` then runs it
+/// again only with the file given.
+pub(crate) fn sweep(folders: &Folders, deployments: &Mutex<BTreeMap<String, Deployment>>, now_ms: u64, spare_ms: u64) -> Result<blobs::Swept, String> {
+    let logs: Vec<(String, Vec<String>)> = deployments.lock().unwrap().iter().map(|(slug, d)| (slug.clone(), d.log.lines())).collect();
+    let mut live = BTreeSet::new();
+    for (slug, lines) in &logs {
+        for entry in lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()) {
+            for read in &entry.reads {
+                let Some(blob) = read.file.as_ref().and_then(|f| f.blob.as_ref()) else { continue };
+                let folder = match &read.request {
+                    SValue::Record(pairs) => pairs.iter().find(|(k, _)| k == "folder").and_then(|(_, v)| match v {
+                        SValue::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                let window = folder.and_then(|n| folders.resolve(slug, n)).and_then(|f| f.keep.window_ms());
+                if window.is_none_or(|w| entry.at_ms.saturating_add(w) > now_ms) {
+                    live.insert(blob.clone());
+                }
+            }
+        }
+    }
+    folders.blobs.sweep(&live, now_ms.saturating_sub(spare_ms))
 }
 
 /// The folder a copy's handle names, for a performed `FileWrite` that is a copy (`{name, from}`):
@@ -1012,12 +1253,12 @@ mod tests {
         let all = Arc::new(Folders::open(":memory:", std::slice::from_ref(&data)).unwrap());
         let folders = Scoped::new(Arc::clone(&all), "app");
         let inbox = temp("inbox");
-        assert!(all.bind("inbox", "relative/path", FolderAccess::Read, Keep::Bytes, None).unwrap_err().contains("absolute"));
-        assert!(all.bind("inbox", data.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None).unwrap_err().contains("own data"));
-        assert!(all.bind("all", data.parent().unwrap().to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None).unwrap_err().contains("holds"));
-        all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None).unwrap();
+        assert!(all.bind("inbox", "relative/path", FolderAccess::Read, Keep::Bytes, None, None).unwrap_err().contains("absolute"));
+        assert!(all.bind("inbox", data.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, None).unwrap_err().contains("own data"));
+        assert!(all.bind("all", data.parent().unwrap().to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, None).unwrap_err().contains("holds"));
+        all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, None).unwrap();
         let out = temp("out");
-        all.bind("out", out.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Hash, None).unwrap();
+        all.bind("out", out.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Hash, None, None).unwrap();
 
         std::fs::create_dir_all(inbox.join("2026")).unwrap();
         std::fs::write(inbox.join("2026/a.csv"), "x,1\ny,2\n").unwrap();
@@ -1071,9 +1312,9 @@ mod tests {
         let (shared, own) = (temp("shared"), temp("own"));
         let file = std::env::temp_dir().join(format!("holon-folders-{}-{}.json", std::process::id(), rand::random::<u32>()));
         let all = Arc::new(Folders::open(file.to_str().unwrap(), &[]).unwrap());
-        all.bind("inbox", shared.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None).unwrap();
-        all.bind("inbox", own.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Hash, Some("billing")).unwrap();
-        assert!(all.bind("inbox", own.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, Some("../x")).is_err(), "a slug is a name");
+        all.bind("inbox", shared.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, None).unwrap();
+        all.bind("inbox", own.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Hash, None, Some("billing")).unwrap();
+        assert!(all.bind("inbox", own.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, Some("../x")).is_err(), "a slug is a name");
         let (billing, other) = (Scoped::new(Arc::clone(&all), "billing"), Scoped::new(Arc::clone(&all), "other"));
         assert_eq!(billing.get("inbox").unwrap().path, own);
         assert_eq!(other.get("inbox").unwrap().path, shared, "the server's, for everyone else");
@@ -1092,7 +1333,7 @@ mod tests {
         assert_eq!(billing.get("inbox").unwrap().path, shared, "unbound: the server's again");
         assert!(all.all().deployments.is_empty());
         let only_billing = Arc::new(Folders::memory());
-        only_billing.bind("logs", own.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, Some("billing")).unwrap();
+        only_billing.bind("logs", own.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, Some("billing")).unwrap();
         assert!(Scoped::new(only_billing, "other").read("logs", "a.txt", 10).unwrap_err().contains("--for other"));
         for d in [shared, own] {
             let _ = std::fs::remove_dir_all(d);
@@ -1111,12 +1352,55 @@ mod tests {
         let linked = std::os::windows::fs::symlink_dir(&outside, inbox.join("out")).is_ok();
         if linked {
             let folders = Scoped::memory();
-            folders.all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, None).unwrap();
+            folders.all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, None, None).unwrap();
             assert!(folders.read("inbox", "out/secret.txt", MAX_FILE_BYTES).unwrap_err().contains("outside"));
             assert!(folders.write("inbox", "out/x.txt", "x").unwrap_err().contains("outside"));
             assert!(folders.list("inbox", "", None, 10).unwrap().is_empty(), "a listing doesn't follow the link");
         }
         let _ = std::fs::remove_dir_all(inbox);
         let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn keep_is_bytes_hash_or_bytes_for_a_while() {
+        let keep = |s: &str| Keep::try_from(s.to_string());
+        assert_eq!(keep("bytes"), Ok(Keep::Bytes));
+        assert_eq!(keep("hash"), Ok(Keep::Hash));
+        assert_eq!(keep("bytes for 30d"), Ok(Keep::BytesFor(30 * 86_400)));
+        assert_eq!(keep("12h"), Ok(Keep::BytesFor(12 * 3600)), "the short form --keep takes");
+        for bad in ["bytes for", "bytes for 0d", "30", "30w", "bytes for -1d", "forever"] {
+            assert!(keep(bad).is_err(), "{bad}");
+        }
+        for k in [Keep::Bytes, Keep::Hash, Keep::BytesFor(86_400 * 7), Keep::BytesFor(5400), Keep::BytesFor(45)] {
+            let text = serde_json::to_string(&k).unwrap();
+            assert_eq!(serde_json::from_str::<Keep>(&text).unwrap(), k, "{text}");
+        }
+        assert_eq!(String::from(Keep::BytesFor(5400)), "bytes for 90m");
+        assert_eq!((Keep::Bytes.window_ms(), Keep::Hash.window_ms(), Keep::BytesFor(2).window_ms()), (None, Some(0), Some(2000)));
+        assert_eq!((size_text(512), size_text(64 * 1024), size_text(10 << 20), size_text(1536 << 10)), ("512 bytes".into(), "64 KiB".into(), "10 MiB".into(), "1.5 MiB".into()));
+        // A folders file from before windows and caps reads as it did.
+        let old: Folder = serde_json::from_str(r#"{"path": "/srv/x", "access": "read", "keep": "bytes"}"#).unwrap();
+        assert_eq!((old.keep, old.cap), (Keep::Bytes, None));
+    }
+
+    #[test]
+    fn a_capped_folder_takes_a_write_or_a_copy_only_while_it_fits() {
+        let (logs, archive) = (temp("cap-logs"), temp("cap-archive"));
+        std::fs::write(logs.join("app.log"), "x".repeat(600)).unwrap();
+        let folders = Scoped::memory();
+        folders.all.bind("logs", logs.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, None).unwrap();
+        folders.all.bind("archive", archive.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, Some(1000), None).unwrap();
+        let hash = blake3::hash("x".repeat(600).as_bytes()).to_hex().to_string();
+        folders.copy("archive", "a.log", "logs", "app.log", &hash).unwrap();
+        let full = folders.copy("archive", "b.log", "logs", "app.log", &hash).unwrap_err();
+        assert!(full.contains("capped at 1000 bytes") && full.contains("it holds 600 bytes"), "{full}");
+        assert!(!archive.join("b.log").exists());
+        folders.write("archive", "a.log", &"y".repeat(1000)).unwrap();
+        assert!(folders.write("archive", "a.log", &"y".repeat(1001)).unwrap_err().contains("capped"), "replacing a file counts only the new one");
+        folders.write("archive", "notes/n.txt", "").unwrap();
+        assert!(folders.write("archive", "notes/m.txt", "z").unwrap_err().contains("capped"), "files in folders under it count too");
+        for d in [logs, archive] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }

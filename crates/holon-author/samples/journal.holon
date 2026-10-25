@@ -1,0 +1,18 @@
+flow journal
+port 8125
+folder journal
+
+route POST /journal/:page (req) {
+  name = "{req.params.page}.txt"
+  before = journal[name] ?? ""
+  journal[name] = "{before}{req.body}\n"
+  respond { page: name, added: req.body }
+}
+
+route GET /journal/:page (req) {
+  respond journal["{req.params.page}.txt"], headers: { "content-type": "text/plain; charset=utf-8" }
+}
+
+route GET /journal (req) {
+  respond journal.list()
+}

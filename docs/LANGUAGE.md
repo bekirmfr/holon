@@ -412,8 +412,9 @@ editor's admin page), and a flow never sees the path. A folder reads and writes 
 to `{size, hash, modified}`. A name is a path inside the folder (`2026/10/a.csv`) and never leaves
 it. Reading asks `FileRead("inbox")`, writing and deleting `FileWrite("reports")`, and a deploy is
 refused until each folder it needs is bound, and bound read-write where it writes. The run log
-keeps what a run read (or only its hash, for a folder bound with `--keep hash`) and what it wrote
-by its hash. Design: `docs/L4s/named-folders-L4.md`.
+keeps what a run read (or only its hash, for a folder bound with `--keep hash`; for a while, then
+its hash, with `--keep 7d`) and what it wrote by its hash; a folder bound with `--cap 10M` takes
+no write past that (the `journal` sample). Design: `docs/L4s/named-folders-L4.md`.
 
 ### log-archive: big files, by handle and by range
 

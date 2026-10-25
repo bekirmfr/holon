@@ -81,16 +81,23 @@ if (!fresh) {
     body: JSON.stringify({ code: SETUP_CODE, name: "e2e", password: "e2e-password-0123" }),
   });
   if (!res.ok) console.error(`e2e server: setting up its admin failed: ${await res.text()}`);
-  // The inbox-report and log-archive samples' folders, bound as an admin binds them: the ones
-  // they only read, read-only.
+  // The inbox-report, log-archive and journal samples' folders, bound as an admin binds them: the
+  // ones they only read, read-only; the journal's texts kept a week, the folder capped at 64 KiB.
   const { token } = res.ok ? await res.json() : {};
   rmSync(folders, { recursive: true, force: true });
-  for (const [name, access] of [["inbox", "read"], ["reports", "read-write"], ["logs", "read"], ["archive", "read-write"]]) {
+  const bindings = [
+    { name: "inbox", access: "read" },
+    { name: "reports", access: "read-write" },
+    { name: "logs", access: "read" },
+    { name: "archive", access: "read-write" },
+    { name: "journal", access: "read-write", keep: "bytes for 7d", cap: "64K" },
+  ];
+  for (const { name, ...binding } of bindings) {
     mkdirSync(join(folders, name), { recursive: true });
     const bound = await fetch(`${base}/admin/folders`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ name, path: join(folders, name), access }),
+      body: JSON.stringify({ name, path: join(folders, name), ...binding }),
     });
     if (!bound.ok) console.error(`e2e server: binding the folder ${name} failed: ${await bound.text()}`);
   }

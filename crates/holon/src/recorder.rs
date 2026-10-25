@@ -163,8 +163,10 @@ pub struct LoggedFile {
     /// BLAKE3 of its bytes (hex).
     pub hash: String,
     pub size: u64,
-    /// Its text's value hash in the content store (hex), when the folder keeps bytes and the text
-    /// isn't in the entry: the whole file's, or the range's.
+    /// What names its text in the blob store (blobs.rs: the BLAKE3 of the text, hex; in a log from
+    /// before it, the text's value hash in the content store), when the folder keeps bytes and the
+    /// text isn't in the entry: the whole file's, or the range's. A sweep may remove the text once
+    /// no kept run refers to it within the folder's window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob: Option<String>,
     /// For part of a file (`lines`, `slice`): where it is and what proves it part of the file. The

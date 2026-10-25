@@ -326,6 +326,11 @@ only the editor.
   `lines` (from the start or the end) or a `slice`, up to 1 MiB. A range's bytes enter the run and
   the log alone, with the BLAKE3 chaining values of every other subtree of the file and the bytes
   around it to whole chunks, so `holon verify` proves them part of the file's hash without it.
+  Slice 3 (`holon/src/blobs.rs`): those texts kept in their own store (`<store>/blobs/`) by
+  their BLAKE3, in content-defined chunks (16 to 256 KiB), so a file that grows adds its new
+  chunks; `keep: bytes for 30d` and a sweep every 10 minutes (`holon folder sweep`) of the texts
+  no kept run refers to in its folder's window; a folder's cap (`--cap 10M`), checked as each
+  write lands: one past it doesn't, and the run answers 500.
 - **Secrets** ✅ (`holon-server/src/secrets.rs`): a per-deployment secret store on the server
   (`--secrets`, its own file, owner-only), written over the control plane
   (`POST`/`DELETE /deployments/<slug>/secrets/<name>`), never returned by it (`GET` lists names,

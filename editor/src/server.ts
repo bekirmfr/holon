@@ -122,10 +122,21 @@ export async function revokeToken(id: string): Promise<void> {
   await asJson<void>(await api(`${BASE}/admin/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }));
 }
 /** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here;
- *  for the whole server (`deployment` null), or for that deployment only. */
-export type FolderEntry = { name: string; path: string; access: "read" | "read-write"; keep: "bytes" | "hash"; deployment: string | null };
+ *  for the whole server (`deployment` null), or for that deployment only. What its reads keep in
+ *  the run log (`bytes for 7d`: the bytes for a week, then a hash), and the most its files may
+ *  hold in all, in bytes (`cap`, null: uncapped). */
+export type FolderEntry = {
+  name: string;
+  path: string;
+  access: "read" | "read-write";
+  keep: "bytes" | "hash" | `bytes for ${string}`;
+  cap: number | null;
+  deployment: string | null;
+};
+/** A folder to bind: its cap as bytes or a size (`10M`). */
+export type FolderBinding = Omit<FolderEntry, "cap"> & { cap: number | string | null };
 export const listFolders = async () => asJson<FolderEntry[]>(await api(`${BASE}/admin/folders`));
-export const bindFolder = async (f: FolderEntry) => asJson<FolderEntry>(await post(`${BASE}/admin/folders`, f));
+export const bindFolder = async (f: FolderBinding) => asJson<FolderEntry>(await post(`${BASE}/admin/folders`, f));
 export async function unbindFolder(name: string, deployment: string | null): Promise<void> {
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));

@@ -194,7 +194,7 @@ pub(crate) fn fire_with_state(
 /// What a run whose writes didn't all land says: the run happened, and these didn't.
 fn not_all_written(run: &mut FiredRun, failed: Vec<String>) {
     if !failed.is_empty() && run.error.is_none() {
-        run.error = Some(format!("not every write landed: {}", failed.join("; ")));
+        run.error = Some(format!("{}{}", folders::WRITE_FAILED, failed.join("; ")));
     }
 }
 
@@ -218,7 +218,7 @@ fn still_as_read(
         return false;
     }
     let now = collections::Readable { store: store.clone(), roots: collections::roots(live), granted: permit.collections_read() };
-    let mut files = folders.map(|f| folders::Readable { folders: Arc::clone(f), granted: permit.folders_read(), store: store.clone(), read_bytes: 0 });
+    let mut files = folders.map(|f| folders::Readable { folders: Arc::clone(f), granted: permit.folders_read(), read_bytes: 0 });
     reads.iter().all(|r| {
         if !matches!(&r.request, Value::Record(q) if q.contains_key("folder")) {
             return now.answer(&r.request) == r.answer;
@@ -292,12 +292,7 @@ fn run_attempt(
     });
     // Its folders, for the reads it was granted: read as it finds them.
     waits.failed = None;
-    waits.files = waits.folders.as_ref().map(|f| folders::Readable {
-        folders: Arc::clone(f),
-        granted: permit.folders_read(),
-        store: store.clone(),
-        read_bytes: 0,
-    });
+    waits.files = waits.folders.as_ref().map(|f| folders::Readable { folders: Arc::clone(f), granted: permit.folders_read(), read_bytes: 0 });
 
     // Only the state keys the deployment was granted are read.
     let mut sourced: Vec<(Capability, Value)> = match start.as_ref() {

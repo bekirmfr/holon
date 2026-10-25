@@ -148,6 +148,7 @@ mod access;
 mod accounts;
 mod activity;
 mod auth;
+mod blobs;
 mod claims;
 mod oidc;
 mod collections;
@@ -898,7 +899,9 @@ fn serve(args: Vec<String>) {
         .map(PathBuf::from)
         .collect();
     own.extend(local::holon_home());
-    let folders = Arc::new(folders::Folders::open(&folders_arg, &own).unwrap_or_else(|e| refuse_to_start(e)));
+    let folders = folders::Folders::open(&folders_arg, &own).unwrap_or_else(|e| refuse_to_start(e));
+    // The texts of files runs read are kept beside the content store (blobs.rs).
+    let folders = Arc::new(if store_arg == ":memory:" { folders } else { folders.with_blobs(blobs::Blobs::at(Path::new(&store_arg).join("blobs"))) });
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));
     let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     for (slug, dep) in initial_deployments.iter_mut() {
@@ -908,6 +911,23 @@ fn serve(args: Vec<String>) {
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
+    {
+        // The texts of files no kept run refers to any more are swept (folders.rs).
+        let (folders, deployments) = (Arc::clone(&folders), Arc::clone(&deployments));
+        std::thread::spawn(move || {
+            loop {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+                match folders::sweep(&folders, &deployments, now, folders::SWEEP_SPARES_MS) {
+                    Ok(s) if s.texts > 0 || s.chunks > 0 => {
+                        println!("holon: swept {} file texts no kept run refers to ({} freed)", s.texts, folders::size_text(s.bytes));
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("holon: sweeping file texts: {e}"),
+                }
+                std::thread::sleep(folders::SWEEP_EVERY);
+            }
+        });
+    }
     let port = bound.port();
     // Everyone signs in (access.rs); a new server first needs its admin, set up with the code
     // it prints here.

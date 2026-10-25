@@ -235,6 +235,24 @@ hash).
    `reports[n] = h` lowers to a copy when `h` is a handle read in the same flow, else
    `reports.copy(n, h)`.
 3. **Storage.** Chunking and dedup across files, `keep: bytes for <d>` and the sweep, folder caps.
+
+   **Built** (`crates/holon/src/blobs.rs`, the `journal` sample). The blob store is its own,
+   `<store>/blobs/`, not the content store's values (a sweep must never remove a value a
+   deployment's state holds): a text is filed under the BLAKE3 of its bytes (for a whole file,
+   the file's hash), as a small file naming its chunks, each chunk under `chunks/` by its hash;
+   every read checks each chunk and the whole. Chunks are content-defined (a gear hash with
+   FastCDC's normalized masks) from 16 KiB to 256 KiB, 64 KiB on average, not ~1 MiB from
+   4 MiB: a run reads 1 MiB at most, so a blob is never bigger. `keep` is `bytes`, `hash` or
+   `bytes for 30d` (`--keep 30d`; s, m, h or d). The sweep runs every 10 minutes (and on
+   `holon folder sweep`, `POST /admin/folders/sweep`): a text is live while a run its
+   deployment's log keeps refers to it within its folder's window (a folder now kept by hash
+   keeps none; one no longer bound keeps them all), and one put in the last 5 minutes is
+   spared, as is any chunk a live text names; a trimmed log entry's texts go the same way.
+   An export counts what is gone (`files_not_kept`), and verify skips those runs, saying so.
+   A cap (`--cap 10M`) is checked as each write or copy lands, against the folder's files then:
+   a write past it doesn't land, and a run whose file write didn't land now answers 500 (its
+   log says why). Logs from before keep naming their texts by value hash in the content store,
+   and are still answered from there.
 4. **Triggers.** `on file inbox` (a run per new file), and handles as `http` bodies.
 
 ## 12. Forks, surfaced

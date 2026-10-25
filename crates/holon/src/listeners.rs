@@ -135,6 +135,10 @@ fn serve_flow(
     if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(folders::READ_FAILED)) {
         answer = data::DataResponse::json_error(500, "a file this flow reads couldn't be read: its run log says why");
     }
+    // One whose file write didn't land (a folder past its cap, say) didn't do what it answered.
+    if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(folders::WRITE_FAILED)) {
+        answer = data::DataResponse::json_error(500, "a file this flow writes couldn't be written: its run log says why");
+    }
     record_trigger(deployments, slug, answer.status >= 500);
     // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.
     let mut entry = ran.unwrap_or_else(|| run_entry("request", started, &sourced, &FiredRun::nothing()));

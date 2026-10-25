@@ -20,6 +20,7 @@ import {
   setOidcSettings,
   unbindFolder,
   type AccountEntry,
+  type FolderBinding,
   type FolderEntry,
   type OidcSettings,
   type Role,
@@ -45,6 +46,20 @@ const row: CSSProperties = { display: "flex", alignItems: "center", gap: 8, padd
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** The link someone opens to set their password. */
 const linkFor = (token: string) => `${location.origin}${location.pathname}?invite=${encodeURIComponent(token)}`;
+/** A size in bytes as people read it (folders.rs's `size_text`): `512 bytes`, `64 KiB`, `1.5 MiB`. */
+function sizeText(bytes: number): string {
+  for (const [size, unit] of [
+    [2 ** 30, "GiB"],
+    [2 ** 20, "MiB"],
+    [2 ** 10, "KiB"],
+  ] as const) {
+    if (bytes >= size) {
+      const n = bytes / size;
+      return Number.isInteger(n) || n >= 100 ? `${n.toFixed(0)} ${unit}` : `${n.toFixed(1)} ${unit}`;
+    }
+  }
+  return `${bytes} bytes`;
+}
 
 export function AdminPage({ me }: { me: string }) {
   const dialog = useDialog();
@@ -59,7 +74,9 @@ export function AdminPage({ me }: { me: string }) {
   const [issuer, setIssuer] = useState("");
   const [clientId, setClientId] = useState("");
   const [folders, setFolders] = useState<FolderEntry[]>([]);
-  const [folderDraft, setFolderDraft] = useState<FolderEntry>({ name: "", path: "", access: "read-write", keep: "bytes", deployment: null });
+  const [folderDraft, setFolderDraft] = useState<FolderBinding>({ name: "", path: "", access: "read-write", keep: "bytes", cap: null, deployment: null });
+  // How long a folder keeps what runs read, when it keeps it for a while ("7d").
+  const [keepFor, setKeepFor] = useState("");
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
@@ -264,8 +281,9 @@ export function AdminPage({ me }: { me: string }) {
       <div style={head}>folders</div>
       <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 6, lineHeight: 1.45 }}>
         Files flows read and write on this server&apos;s machine. A flow names a folder (<code>folder inbox</code>), never a path: bind each name to a real folder here.
-        Read only: flows may read it, not write it. Reads kept by hash: the run log keeps a hash of what each run read, not its text. For one deployment: that
-        deployment sees this folder by the name, whatever the server&apos;s is, and no other deployment sees it.
+        Read only: flows may read it, not write it. Reads kept by hash: the run log keeps a hash of what each run read, not its text; for a while (7d, 12h):
+        its text for that long, then only its hash. A cap (10M): a write that would take the folder&apos;s files past it doesn&apos;t land. For one deployment:
+        that deployment sees this folder by the name, whatever the server&apos;s is, and no other deployment sees it.
       </div>
       {folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>none</div>}
       {folders.map((f) => (
@@ -274,7 +292,8 @@ export function AdminPage({ me }: { me: string }) {
           <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{f.path}</span>
           <span style={{ color: "#7e8ea8", fontSize: 11 }}>
             {f.access === "read" ? "read only" : "read and write"}
-            {f.keep === "hash" ? " · reads kept by hash" : ""}
+            {f.keep === "hash" ? " · reads kept by hash" : f.keep.startsWith("bytes for ") ? ` · reads kept ${f.keep.slice("bytes for ".length)}, then by hash` : ""}
+            {f.cap != null ? ` · capped at ${sizeText(f.cap)}` : ""}
             {f.deployment ? ` · for ${f.deployment} only` : ""}
           </span>
           <button
@@ -295,8 +314,10 @@ export function AdminPage({ me }: { me: string }) {
         onSubmit={(e) => {
           e.preventDefault();
           act(async () => {
-            await bindFolder({ ...folderDraft, name: folderDraft.name.trim(), path: folderDraft.path.trim(), deployment: folderDraft.deployment?.trim() || null });
-            setFolderDraft({ ...folderDraft, name: "", path: "", deployment: null });
+            const keep = folderDraft.keep === "bytes for " ? `bytes for ${keepFor.trim()}` : folderDraft.keep;
+            const cap = typeof folderDraft.cap === "string" ? folderDraft.cap.trim() || null : folderDraft.cap;
+            await bindFolder({ ...folderDraft, name: folderDraft.name.trim(), path: folderDraft.path.trim(), keep: keep as FolderEntry["keep"], cap, deployment: folderDraft.deployment?.trim() || null });
+            setFolderDraft({ ...folderDraft, name: "", path: "", cap: null, deployment: null });
           });
         }}
       >
@@ -314,8 +335,19 @@ export function AdminPage({ me }: { me: string }) {
         </select>
         <select aria-label="what the log keeps" value={folderDraft.keep} onChange={(e) => setFolderDraft({ ...folderDraft, keep: e.target.value as FolderEntry["keep"] })} style={input}>
           <option value="bytes">log keeps what was read</option>
+          <option value="bytes for ">log keeps what was read, for a while</option>
           <option value="hash">log keeps a hash</option>
         </select>
+        {folderDraft.keep === "bytes for " && (
+          <input aria-label="keep for how long" placeholder="for how long (7d, 12h)" value={keepFor} onChange={(e) => setKeepFor(e.target.value)} style={{ ...input, width: 130 }} />
+        )}
+        <input
+          aria-label="folder cap"
+          placeholder="cap (10M; empty: none)"
+          value={folderDraft.cap ?? ""}
+          onChange={(e) => setFolderDraft({ ...folderDraft, cap: e.target.value })}
+          style={{ ...input, width: 150 }}
+        />
         <input
           aria-label="for one deployment"
           placeholder="for one deployment (empty: all)"
@@ -323,7 +355,11 @@ export function AdminPage({ me }: { me: string }) {
           onChange={(e) => setFolderDraft({ ...folderDraft, deployment: e.target.value })}
           style={input}
         />
-        <button type="submit" style={primary} disabled={!folderDraft.name.trim() || !folderDraft.path.trim()}>
+        <button
+          type="submit"
+          style={primary}
+          disabled={!folderDraft.name.trim() || !folderDraft.path.trim() || (folderDraft.keep === "bytes for " && !keepFor.trim())}
+        >
           bind folder
         </button>
       </form>

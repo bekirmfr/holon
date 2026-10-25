@@ -39,6 +39,14 @@ pub(crate) struct Export {
     /// `--without-files`): runs that read them check only with the files given (`--files`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) files_left_out: Option<LeftOut>,
+    /// How many of those texts the server no longer keeps (its folder's `keep: bytes for <d>` went
+    /// by, and they were swept): runs that read them check only with the files given.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) files_not_kept: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// The texts of files an export left out: how many, and how big in all.
@@ -51,7 +59,13 @@ pub(crate) struct LeftOut {
 /// `GET /deployments/<slug>/export` — the deployment's runs, and the units they ran, as one file;
 /// with the texts of the files they read that their log keeps by hash, up to `?max_files_bytes=N`
 /// in all (oldest run first), or none with `?without_files=1`.
-pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
+pub(crate) fn handle_get_export(
+    store: &SharedStore,
+    folders: &folders::Folders,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    request: &Request,
+) -> Response {
     let budget = if request.get_param("without_files").is_some_and(|v| v != "0" && v != "false") {
         0
     } else {
@@ -68,12 +82,14 @@ pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMa
     let mut units = BTreeMap::new();
     let entries: Vec<LogEntry> = lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()).collect();
     let mut blobs = BTreeMap::new();
-    let (mut held, mut left_out) = (0u64, LeftOut { files: 0, bytes: 0 });
+    let (mut held, mut left_out, mut not_kept) = (0u64, LeftOut { files: 0, bytes: 0 }, 0u64);
     let mut seen = BTreeSet::new();
     for blob in entries.iter().flat_map(|e| &e.reads).filter_map(|r| r.file.as_ref()?.blob.as_ref()) {
-        let Some(h) = parse_hash(blob).filter(|_| seen.insert(blob.clone())) else { continue };
-        match store.0.lock().unwrap().get_value(&h) {
-            Ok(Some(Value::Text(text))) => {
+        if !seen.insert(blob.clone()) {
+            continue;
+        }
+        match folders::kept_text(folders, store, blob) {
+            Ok(Some(text)) => {
                 let size = text.len() as u64;
                 if held.saturating_add(size) > budget {
                     left_out.files += 1;
@@ -83,8 +99,8 @@ pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMa
                 held += size;
                 blobs.insert(blob.clone(), text);
             }
-            Ok(_) => {}
-            Err(e) => return err(500, format!("store error: {e:?}")),
+            Ok(None) => not_kept += 1,
+            Err(e) => return err(500, e),
         }
     }
     let mut queue: Vec<Hash> = entries.iter().filter_map(|e| parse_hash(&e.unit)).collect();
@@ -104,7 +120,7 @@ pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMa
         }
     }
     let files_left_out = (left_out.files > 0).then_some(left_out);
-    let export = Export { export: FORMAT.into(), deployment: slug.into(), head, lines, units, blobs, files_left_out };
+    let export = Export { export: FORMAT.into(), deployment: slug.into(), head, lines, units, blobs, files_left_out, files_not_kept: not_kept };
     Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{slug}-runs.json\""))
 }
 
@@ -255,7 +271,7 @@ impl Texts<'_> {
                 Err(e) => Err(Rerun::Skipped(format!("it read {}, and {} can't be read as text: {e}", what(), path.display()))),
             },
             None => Err(Rerun::Skipped(format!(
-                "it read {}, whose text the export doesn't hold (its folder keeps hashes, or the export left it out): give it with --files",
+                "it read {}, whose text the export doesn't hold (its folder keeps hashes, the server no longer keeps it, or the export left it out): give it with --files",
                 what()
             ))),
         }
@@ -283,7 +299,7 @@ impl Texts<'_> {
         }
         let Some(path) = self.files.get(&file.hash) else {
             return Err(Rerun::Skipped(format!(
-                "it read part of {}, whose text the export doesn't hold (its folder keeps hashes, or the export left it out): give the file with --files",
+                "it read part of {}, whose text the export doesn't hold (its folder keeps hashes, the server no longer keeps it, or the export left it out): give the file with --files",
                 what(read)
             )));
         };
@@ -742,13 +758,18 @@ pub(crate) fn export(args: &[String]) -> i32 {
         let s = if l.files == 1 { "" } else { "s" };
         println!("left out the text of {} file{s} its runs read ({} bytes): holon verify --files <folder> checks those runs", l.files, l.bytes);
     }
+    if export.files_not_kept > 0 {
+        let n = export.files_not_kept;
+        let s = if n == 1 { "" } else { "s" };
+        println!("the server no longer keeps the text of {n} file{s} its runs read (swept after their folder's keep): holon verify --files <folder> checks those runs");
+    }
     println!("check it anywhere: holon verify {arg}");
     0
 }
 
 /// A size as `--max-files-bytes` takes it: bytes, or with K, M or G (KiB, MiB, GiB), a B after it
 /// optional.
-fn budget_of(v: &str) -> Option<u64> {
+pub(crate) fn budget_of(v: &str) -> Option<u64> {
     let v = v.trim().to_ascii_uppercase();
     let v = v.strip_suffix('B').unwrap_or(&v);
     let (digits, unit) = match v.char_indices().last()? {

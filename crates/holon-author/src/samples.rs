@@ -409,6 +409,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "first bind the folders (an admin): holon folder add logs ~/holon-logs --read-only and holon folder add archive ~/holon-archive; put any app.log in the logs folder; then curl http://127.0.0.1:8124/logs/app.log/tail answers its last 20 lines, curl http://127.0.0.1:8124/logs/app.log/head its first 256 bytes, curl -s -X POST -H 'content-type: application/json' -d '{\"name\":\"app.log\"}' http://127.0.0.1:8124/archive copies it into the archive under its hash, and curl http://127.0.0.1:8124/archive lists the archive",
         text: include_str!("../samples/log-archive.holon"),
     },
+    Sample {
+        name: "journal",
+        title: "Journal (a folder kept for a while, and capped)",
+        description: "Appends each line posted to a page, a text file in a folder on the host, and serves the page. Every run reads the page whole, so the run log keeps what it read: past 4 KiB in the blob store, by content and in chunks, so a page that grows by a line adds a chunk, not a copy. The admin decides how long those texts are kept (keep: bytes for 7d, then only their hash) and how big the folder may get (a cap: a write past it doesn't land, and the run answers 500 saying so).",
+        shows: &["named folders", "read then write", "kept for a while", "folder caps"],
+        port: Some("8125"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folder (an admin): holon folder add journal ~/holon-journal --keep 7d --cap 10M; then curl -s -X POST -d 'first line' http://127.0.0.1:8125/journal/today and curl -s -X POST -d 'second line' http://127.0.0.1:8125/journal/today append to today.txt, curl http://127.0.0.1:8125/journal/today shows both lines, and curl http://127.0.0.1:8125/journal lists the pages; holon folder sweep removes now the texts no run kept within 7 days refers to",
+        text: include_str!("../samples/journal.holon"),
+    },
 ];
 
 #[cfg(test)]

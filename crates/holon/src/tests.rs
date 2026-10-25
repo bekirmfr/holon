@@ -3918,3 +3918,74 @@ fn a_big_file_is_read_by_range_and_copied_by_handle_and_its_runs_verify() {
     assert_eq!(outputs["performed"], serde_json::json!([]), "and the host refused it: {outputs}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The journal sample: each run reads its page whole, so its log keeps the page's text, in the
+/// blob store by content and in chunks; the folder keeps those texts for its window (a sweep
+/// removes them after), and its cap stops a write that would take it past it.
+#[test]
+fn a_journal_keeps_what_its_runs_read_in_chunks_for_a_while_and_stays_under_its_cap() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-journal-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bind = |keep: &str, cap: serde_json::Value| {
+        let body = serde_json::json!({ "name": "journal", "path": dir.display().to_string(), "access": "read-write", "keep": keep, "cap": cap });
+        route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap()))
+    };
+    assert_eq!(bind("bytes for 7d", serde_json::json!("1M")).status_code, 200);
+    let listed = body_json(route(&state, &req("GET", "/admin/folders", vec![])));
+    assert_eq!((listed[0]["keep"].as_str(), listed[0]["cap"].as_u64()), (Some("bytes for 7d"), Some(1 << 20)), "{listed}");
+    assert_eq!(bind("bytes for a week", serde_json::json!(null)).status_code, 400);
+    assert_eq!(bind("bytes", serde_json::json!("lots")).status_code, 400);
+    assert_eq!(bind("bytes", serde_json::json!(0)).status_code, 400);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/journal.holon"), "");
+
+    // A page already long: each run reads it whole, and keeps its text by content, in chunks.
+    let page: String = (0..8_000).map(|i| format!("{i:05} an entry of the journal, written that day\n")).collect();
+    std::fs::write(dir.join("today.txt"), &page).unwrap();
+    let (status, body, _) = data_call(&state, &slug, "POST", "/journal/today", "one more line");
+    assert_eq!(status, 200, "{body}");
+    let first = state.folders.blobs.held();
+    assert_eq!((first.texts, first.bytes), (1, page.len() as u64), "the page as the run read it");
+    assert_eq!(data_call(&state, &slug, "POST", "/journal/today", "and another").0, 200);
+    let (status, shown, _) = data_call(&state, &slug, "GET", "/journal/today", "");
+    assert_eq!((status, shown.as_str()), (200, format!("{page}one more line\nand another\n").as_str()));
+    let second = state.folders.blobs.held();
+    assert_eq!(second.texts, 3, "the page before each run, and as the GET read it");
+    let added = second.bytes - first.bytes;
+    assert!(added < page.len() as u64 / 2, "a page grown by a line adds its last chunks, not a copy: {added} bytes");
+    let read = &log_entries(&state, &slug)[0]["reads"][0]["file"];
+    assert_eq!(read["blob"].as_str(), read["hash"].as_str(), "a whole file's text is named by its hash: {read}");
+
+    // Its runs verify from the export, which carries those texts.
+    let export = || -> verify::Export { serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap() };
+    let report = verify::check(&export(), None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+
+    // Within the folder's window, a sweep keeps them; past it, it removes them, and the runs that
+    // read them check only with the files given.
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    assert_eq!(folders::sweep(&state.folders, &state.deployments, now + 60_000, 0).unwrap().texts, 0, "in its 7 days");
+    assert_eq!(bind("bytes for 1m", serde_json::json!("1M")).status_code, 200);
+    assert_eq!(folders::sweep(&state.folders, &state.deployments, now + 1_000, 0).unwrap().texts, 0, "in its minute");
+    let swept = folders::sweep(&state.folders, &state.deployments, now + 120_000, 0).unwrap();
+    assert_eq!((swept.texts, state.folders.blobs.held()), (3, blobs::Held::default()));
+    let gone = export();
+    assert_eq!((gone.files_not_kept, gone.blobs.len()), (3, 0));
+    let report = verify::check(&gone, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().any(|(_, r)| matches!(r, verify::Rerun::Skipped(why) if why.contains("no longer keeps"))), "{:?}", report.reruns);
+
+    // Capped just above what it holds: a line that fits lands, one that doesn't answers 500, the
+    // page as it was, and the run's log says why.
+    let held = std::fs::metadata(dir.join("today.txt")).unwrap().len();
+    assert_eq!(bind("bytes", serde_json::json!(held + 10)).status_code, 200);
+    assert_eq!(data_call(&state, &slug, "POST", "/journal/today", "short").0, 200);
+    let (status, body, _) = data_call(&state, &slug, "POST", "/journal/today", "a line too long for what is left");
+    assert_eq!(status, 500, "{body}");
+    assert!(body.contains("couldn't be written"), "{body}");
+    assert!(std::fs::read_to_string(dir.join("today.txt")).unwrap().ends_with("and another\nshort\n"));
+    let entries = log_entries(&state, &slug);
+    let why = entries.last().unwrap()["error"].as_str().unwrap().to_string();
+    assert!(why.contains("capped at") && why.contains("today.txt not written"), "{why}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

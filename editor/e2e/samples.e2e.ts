@@ -539,6 +539,41 @@ test("log-archive reads the last lines of a log too big to read whole and archiv
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("journal appends to a page in a capped folder, a write past its cap answers 500, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const day = `day-${Date.now()}`;
+  await openSample(page, "Journal (a folder kept for a while, and capped)");
+  const port = await deploy(page);
+  for (const line of ["first line", "second line"]) {
+    expect((await request.post(`http://127.0.0.1:${port}/journal/${day}`, { data: line, headers: { "content-type": "text/plain" } })).status()).toBe(200);
+  }
+  const shown = await request.get(`http://127.0.0.1:${port}/journal/${day}`);
+  expect(await shown.text()).toBe("first line\nsecond line\n");
+  await viewNewestRun(page);
+
+  // The folder is capped at 64 KiB: a page that would take it past that isn't written.
+  const full = `full-${Date.now()}`;
+  writeFileSync(join(FOLDERS, "journal", `${full}.txt`), "x".repeat(60 * 1024));
+  const past = await request.post(`http://127.0.0.1:${port}/journal/${full}`, { data: "y".repeat(8 * 1024), headers: { "content-type": "text/plain" } });
+  expect(past.status()).toBe(500);
+  expect(await past.text()).toContain("couldn't be written");
+  expect(readFileSync(join(FOLDERS, "journal", `${full}.txt`), "utf8")).toBe("x".repeat(60 * 1024));
+
+  // Its texts are kept a week: a sweep now removes none a run refers to, and the runs verify.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  expect(execFileSync(holon, ["folder", "sweep", "--server", SERVER], { encoding: "utf8", env })).toContain("swept 0 file texts");
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "journal.json");
+  execFileSync(holon, ["export", "journal", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const { mkdtempSync } = await import("node:fs");

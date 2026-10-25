@@ -147,7 +147,7 @@ grants, starts, stops, deletes or sets a secret.
 | Repeat | `map` and `fold` over lists, `range` | `quote`, `tickets` |
 | Reuse | holons: a flow placed as one node | `slugs` |
 | Compute what the vocabulary can't | a `js` holon: JavaScript with no imports, under a fuel budget | `nearest`, `tally` |
-| Read and write files | named folders an admin binds (`folder inbox`) | `inbox-report`, `log-archive` |
+| Read and write files | named folders an admin binds (`folder inbox`) | `inbox-report`, `log-archive`, `journal` |
 
 ## Samples
 
@@ -175,6 +175,7 @@ opens from the editor's flows page, and is deployed by the end-to-end tests.
 | `guestbook` | a web page served by the flow, rendered by a `js` holon |
 | `nearest`, `tally` | `js` holons: edit distance, parsing a CSV |
 | `inbox-report`, `log-archive` | files in named folders; big files by range, proved by hash |
+| `journal` | a folder whose reads are kept a week and whose size is capped |
 | `ledger` | every run checked again offline by `holon verify` |
 | `witness` | a witness for another server's run heads, run as a flow |
 | `marketplace` | a marketplace for holons, built as a flow |
@@ -301,11 +302,16 @@ values) and is counted, not failed. A server elsewhere takes `--server URL` and 
 holon folder add inbox ~/drop --read-only    # flows may read it, not write it
 holon folder add reports ~/reports           # read and write; --keep hash: the log keeps hashes
 holon folder add inbox ~/acme --for acme     # deployment acme sees this folder as inbox
+holon folder add journal ~/journal --keep 7d --cap 10M   # reads kept a week; 10 MiB at most
 holon folder list                            # holon folder remove NAME [--for SLUG] unbinds one
 ```
 
 or from the editor's admin page. A flow names the folder, never a path; the server's own data
-can't be bound; a write lands whole when the run finishes.
+can't be bound; a write lands whole when the run finishes, unless it would take a capped folder
+past its cap (the run then answers 500). A text a run reads past 4 KiB is kept beside the store
+by content, in chunks, so a file that grows adds its new chunks, not a copy; the server sweeps
+the texts no kept run refers to within their folder's `--keep` (`holon folder sweep` does it now).
+`holon export` takes `--max-files-bytes 10M` or `--without-files` to leave those texts out.
 
 **Agents on another machine.** For a server elsewhere, `holon mcp setup HOST --server URL` asks
 for an API token with role `agent` (made on that server's admin page, or given in `HOLON_TOKEN`),
