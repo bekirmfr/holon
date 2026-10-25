@@ -128,7 +128,7 @@ body {
 }
 .hl-canvas--inspector-closed { grid-template-columns: minmax(0, 1fr) 28px; }
 .hl-canvas__flow { position: relative; min-width: 0; min-height: 0; }
-.hl-canvas--viewing { grid-template-rows: minmax(0, 1fr) 34%; }
+.hl-canvas--viewing { grid-template-rows: minmax(0, 1fr) var(--view-height, 34%); }
 .hl-inspector { grid-column: 2; grid-row: 1; border-left: 1px solid var(--line); }
 .hl-inspector__close, .hl-inspector__fold {
   font: inherit; background: transparent; border: none; color: var(--ink-dim); cursor: pointer;
@@ -139,6 +139,8 @@ body {
   writing-mode: vertical-rl; font-size: 11px; letter-spacing: 0.06em; padding: 10px 0; width: 100%;
 }
 .hl-view__bottom { grid-column: 1 / -1; grid-row: 2; border-top: 1px solid var(--line); }
+.hl-view__edge { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 2; }
+.hl-view__edge:hover { background: #6fd3e033; }
 
 /* The flow's text, between the canvas and the Inspector (TextPane.tsx). */
 .hl-canvas--text { grid-template-columns: minmax(0, 1fr) var(--text-width, 420px) min(340px, 30%); }

@@ -4,7 +4,7 @@
 // flow state as of the current step, and the selected node: its params, and the inputs and
 // outputs it had in that run (replayed, replay.ts).
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, getLog, type LogEntry } from "./server";
 import { formatValue } from "./diagnostics";
 import { typeLabel } from "./theme";
@@ -149,7 +149,24 @@ const paneStyle: CSSProperties = {
   flexDirection: "column",
   minWidth: 0,
   minHeight: 0,
+  position: "relative",
 };
+
+const HEIGHT_KEY = "holon.viewHeight";
+
+/** The bottom pane's height, remembered per browser (styles.css `--view-height`; a third of the
+ *  canvas when never dragged). */
+function rememberedHeight(): number | null {
+  try {
+    const h = Number(localStorage.getItem(HEIGHT_KEY));
+    return Number.isFinite(h) && h > 0 ? h : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where the pane's height may go: never so small the tabs vanish, never most of the window. */
+const clampHeight = (h: number) => Math.max(120, Math.min(window.innerHeight * 0.75, h));
 const scroll: CSSProperties = { flex: 1, minHeight: 0, overflow: "auto", padding: 8 };
 
 /** The step controls: back, forward, or the whole run. */
@@ -221,6 +238,40 @@ export function BottomPane({
 }) {
   const { entries, chain, error } = useFlowLog(slug);
   const [tab, setTab] = useState<"log" | "timeline">("log");
+  // The pane's height, dragged by its top edge: set on the canvas grid it is a row of
+  // (`--view-height`, styles.css), so the canvas above takes the rest.
+  const pane = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | null>(rememberedHeight);
+  useEffect(() => {
+    const grid = pane.current?.parentElement;
+    if (!grid) return;
+    if (height === null) grid.style.removeProperty("--view-height");
+    else grid.style.setProperty("--view-height", `${Math.round(height)}px`);
+    return () => {
+      grid.style.removeProperty("--view-height");
+    };
+  }, [height]);
+  const onEdge = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = pane.current?.getBoundingClientRect().height ?? height ?? 240;
+    let last = startH;
+    const move = (m: PointerEvent) => {
+      last = clampHeight(startH + startY - m.clientY);
+      setHeight(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try {
+        localStorage.setItem(HEIGHT_KEY, String(Math.round(last)));
+      } catch {
+        // Not remembered, then.
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   // Live: always show the newest run. A tab coming back with a run selected keeps it (and its
   // step) instead: live starts only when nothing is selected.
   const [live, setLive] = useState(() => selected === null);
@@ -236,7 +287,8 @@ export function BottomPane({
   };
 
   return (
-    <div className="nodrag nowheel hl-view__bottom" style={paneStyle}>
+    <div ref={pane} className="nodrag nowheel hl-view__bottom" style={paneStyle} role="region" aria-label="run">
+      <div className="hl-view__edge" onPointerDown={onEdge} title="drag to resize" />
       <Tabs
         tabs={[
           ["log", "Log"],

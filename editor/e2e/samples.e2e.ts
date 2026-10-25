@@ -88,6 +88,15 @@ test("hello-api answers, and its run replays exactly in view mode", async ({ pag
   expect(answer.status()).toBe(200);
   expect(await answer.text()).toContain("Hello, Ada");
   await viewNewestRun(page);
+  // The bottom pane's top edge drags its height (ViewPanes.tsx), and the canvas above takes the rest.
+  const pane = page.getByRole("region", { name: "run" });
+  const before = (await pane.boundingBox())!.height;
+  const edge = (await pane.locator(".hl-view__edge").boundingBox())!;
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2 - 120, { steps: 6 });
+  await page.mouse.up();
+  expect((await pane.boundingBox())!.height).toBeGreaterThan(before + 80);
   // View mode is read only: no palette.
   await expect(page.locator(".hl-palette")).toHaveCount(0);
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
