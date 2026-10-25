@@ -6,10 +6,10 @@
 // form is written.
 
 import { compile_holon, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes } from "../wasm/holon_wasm.js";
-import { fromHex } from "./flowDoc";
 import { knownNames, restoreDocument } from "./docUnits";
 import type { Evaluator } from "./holon";
 import type { FlowDocument } from "./server";
+import { restoreUnits } from "./docUnits";
 
 /** A text that can't be read or built, and where (1-based line and column) it says why. */
 export class HolonTextError extends Error {
@@ -41,7 +41,7 @@ export function compileHolon(
     const m = /^(\d+):(\d+): ([\s\S]*)$/.exec(message);
     throw m ? new HolonTextError(Number(m[1]), Number(m[2]), m[3]) : e;
   }
-  for (const hex of compiled.doc.units ?? []) ev.insert(fromHex(hex));
+  restoreUnits(compiled.doc, ev);
   return {
     name: compiled.name,
     doc: compiled.doc,

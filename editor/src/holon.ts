@@ -69,6 +69,11 @@ export type WBody =
   | { kind: "Composite"; children: string[]; edges: WEdge[] }
   | { kind: "Module"; bytes: string };
 
+/** A module unit as a flow document carries it (holon-author's modules.rs): by engine and params,
+ *  rebuilt from the engine bytes the bundle has and checked against `hash`, never by its preimage
+ *  (the js engine's is 3.2 MB). */
+export type ModuleEntry = { hash: string; engine: string; params: WParam[] };
+
 /** A complete unit. `params`/`inputs`/`outputs` may be omitted (default empty). */
 export type WUnit = {
   body: WBody;

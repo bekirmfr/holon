@@ -85,6 +85,10 @@ pub struct FlowDocument {
     pub viewport: Option<Viewport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub units: Option<Vec<String>>,
+    /// The module units its composites place, by engine and params rather than by preimage
+    /// (modules.rs): rebuilt from the engine bytes the restoring build has, checked by hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modules: Option<Vec<crate::modules::ModuleEntry>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub names: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -327,24 +331,15 @@ impl FlowBuilder {
     /// (the defaults when not given): a module unit stored here, placed as a node with its
     /// interface, `engine(source: Text, args: List<Any>) -> (result: Record)`. Answers its id.
     pub fn place_js_engine(&mut self, fuel: Option<u64>, memory: Option<u64>) -> Result<String, String> {
-        use holon_core::{Param, Port, Type, Unit, FUEL_PARAM, MEMORY_PARAM};
-        use holon_module::{JS_DEFAULT_FUEL, JS_DEFAULT_MEMORY};
-        let (fuel, memory) = (fuel.unwrap_or(JS_DEFAULT_FUEL), memory.unwrap_or(JS_DEFAULT_MEMORY));
-        let unit = Unit {
-            body: UnitBody::Module { bytes: holon_module::JS_ENGINE.to_vec() },
-            params: vec![Param::frozen(FUEL_PARAM, fuel.to_string()), Param::frozen(MEMORY_PARAM, memory.to_string())],
-            inputs: vec![Port { name: "source".into(), ty: Type::Text }, Port { name: "args".into(), ty: Type::list_any() }],
-            outputs: vec![Port { name: "result".into(), ty: Type::Record }],
-        };
+        let unit = crate::modules::js_engine_unit(fuel, memory);
+        let (inputs, outputs, params) = (
+            unit.inputs.iter().map(WPort::from_core).collect(),
+            unit.outputs.iter().map(WPort::from_core).collect(),
+            unit.params.iter().map(WParam::from_core).collect(),
+        );
         let hash = self.store.insert(unit).map_err(|e| format!("the js engine doesn't store: {e:?}"))?;
         let hex = crate::to_hex(&hash);
-        let data = NodeData::new(
-            "js",
-            PlacedBody::Module { hash: hex },
-            vec![WPort { name: "source".into(), ty: WType::Text }, WPort { name: "args".into(), ty: WType::List(Box::new(WType::Any)) }],
-            vec![WPort { name: "result".into(), ty: WType::Record }],
-            vec![WParam::frozen(FUEL_PARAM, &fuel.to_string()), WParam::frozen(MEMORY_PARAM, &memory.to_string())],
-        );
+        let data = NodeData::new("js", PlacedBody::Module { hash: hex }, inputs, outputs, params);
         let id = self.next_id("js");
         let position = self.next_spot();
         self.frame().nodes.push(Node::placed(&id, position, data));
@@ -368,16 +363,23 @@ impl FlowBuilder {
         }
         let top = self.frames.pop().expect("the flow's own frame");
         let viewport = Some(fit(&top.nodes));
-        let units = closure_of(&self.holons, &self.store)
-            .iter()
-            .filter_map(|h| self.store.resolve(h).and_then(|u| encode_preimage(u).ok()))
-            .map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect())
-            .collect();
+        // The closure as the document carries it: a module of a known engine by engine and
+        // params (modules.rs), everything else as its preimage.
+        let (mut units, mut modules) = (Vec::new(), Vec::new());
+        for h in closure_of(&self.holons, &self.store) {
+            let Some(unit) = self.store.resolve(&h) else { continue };
+            if let Some(entry) = crate::modules::entry_of(unit, &crate::to_hex(&h)) {
+                modules.push(entry);
+            } else if let Ok(bytes) = encode_preimage(unit) {
+                units.push(bytes.iter().map(|b| format!("{b:02x}")).collect());
+            }
+        }
         FlowDocument {
             nodes: top.nodes,
             edges: top.wires,
             viewport,
             units: Some(units),
+            modules: (!modules.is_empty()).then_some(modules),
             names: Some(self.names),
             server: Some(settings),
             extra: Map::new(),

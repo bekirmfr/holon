@@ -33,6 +33,7 @@ pub mod editing;
 pub mod flow;
 pub mod group;
 pub mod lang;
+pub mod modules;
 pub mod routes;
 pub mod samples;
 pub mod templates;

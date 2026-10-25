@@ -536,6 +536,25 @@ impl Evaluator {
         Evaluator { resolver: MapResolver::new() }
     }
 
+    /// Add a module unit of a known engine (`"js"`) under `params` (a JS array of `WParam`): how a
+    /// document's `modules` entry comes back (holon-author's modules.rs), rebuilt from the engine
+    /// bytes this bundle carries rather than from a 6.5 MB preimage. Returns its hash (hex); the
+    /// caller compares it with the entry's.
+    pub fn insert_module(&mut self, engine: &str, params: JsValue) -> Result<String, JsError> {
+        let params: Vec<holon_author::wire::WParam> = serde_wasm_bindgen::from_value(params).map_err(|e| JsError::new(&format!("params: {e}")))?;
+        let unit = holon_author::modules::engine_unit(engine, &params).ok_or_else(|| JsError::new(&format!("no engine \"{engine}\" in this build")))?;
+        let hash = self.resolver.insert(unit).map_err(|e| JsError::new(&format!("insert: {e:?}")))?;
+        Ok(to_hex(&hash))
+    }
+
+    /// The unit `hash` as a document's `modules` entry (`{hash, engine, params}`), when it is a
+    /// module of a known engine; null otherwise. What a saved flow writes instead of the preimage.
+    pub fn module_entry(&self, hash: &str) -> Result<JsValue, JsError> {
+        let unit = self.resolve_hash(hash)?;
+        let entry = holon_author::modules::entry_of(unit, hash);
+        serde_wasm_bindgen::to_value(&entry).map_err(|e| JsError::new(&format!("entry: {e}")))
+    }
+
     /// Add a unit (from its canonical preimage) to the workspace; returns its hash (hex) so JS can
     /// reference it as a child in a composite.
     pub fn insert(&mut self, preimage: &[u8]) -> Result<String, JsError> {

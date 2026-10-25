@@ -640,6 +640,11 @@ pub fn restore(doc: &FlowDocument, store: &mut MapResolver, known: &Names) -> Na
             let _ = store.insert(unit);
         }
     }
+    // Its modules, rebuilt from the engines this build carries (one that doesn't rebuild to its
+    // hash stays out, like a preimage that doesn't decode).
+    if let Some(modules) = &doc.modules {
+        let _ = crate::modules::restore_modules(modules, store);
+    }
     let mut names = known.clone();
     for (hash, name) in doc.names.iter().flatten() {
         if !names.contains_key(hash) && !name.is_empty() && hash.get(..8) != Some(name.as_str()) {

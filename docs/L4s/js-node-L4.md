@@ -139,6 +139,16 @@ outputs:  total, weight
   trade the language made for leaves (the IR is the program, the text is a way to write it), and
   it keeps old files readable by new tools. An author who must pin the engine places the module
   by hash with the `module` statement instead.
+- **A document carries a module by engine and params, not by preimage** (`modules.rs`,
+  2026-10-25). A module's preimage is its whole binary (the js engine's is 3.2 MB, 6.5 MB as hex),
+  and a budget is a param of the module unit, so each distinct budget would be another copy in
+  every saved flow, deploy body and deployment entry; a flow with two budgets exceeded the
+  control plane's 8 MiB body limit. So `FlowDocument.modules` lists `{hash, engine, params}` and
+  `units` holds the rest; whoever restores a document (the editor, `print`, `explain`) rebuilds
+  the unit from the engine bytes its build carries and checks the hash it was told, refusing an
+  entry that rebuilds to another (another engine build) and naming one of an engine it hasn't.
+  The store still holds the bytes once, content-addressed, staged as a preimage (`POST /unit`,
+  3.2 MB) the first time; the document is a few hundred bytes more for each module.
 
 ## 4. The engine module
 

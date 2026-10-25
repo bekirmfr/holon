@@ -9,7 +9,7 @@
 import { flowAsNode } from "./canvasOps";
 import { documentUnits } from "./docUnits";
 import { fromHex } from "./flowDoc";
-import type { Evaluator, WPort, WUnit } from "./holon";
+import type { Evaluator, WPort, WUnit, ModuleEntry } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 
 /** A holon as published. `contains`: every unit in its closure, by hash (for adoption). */
@@ -19,6 +19,8 @@ export type Listing = {
   description: string;
   root: string;
   units: string[];
+  /** Its module units (a js node's engine), by engine and params (docUnits.ts). */
+  modules?: ModuleEntry[];
   contains: string[];
   inputs: WPort[];
   outputs: WPort[];
@@ -93,13 +95,14 @@ export function listingOf(
   if (!placed.ok) return placed.message;
   const body = placed.node.data.body;
   if (body.kind !== "Composite") return `"${name}" isn't a composite`;
-  const { units } = documentUnits([body.hash], ev);
-  const contains = units.map((hex) => ev.insert(fromHex(hex)));
+  const { units, modules } = documentUnits([body.hash], ev);
+  const contains = [...units.map((hex) => ev.insert(fromHex(hex))), ...(modules ?? []).map((m) => ev.insert_module(m.engine, m.params))];
   return {
     name,
     description: about.description,
     root: body.hash,
     units,
+    ...(modules ? { modules } : {}),
     contains,
     inputs: placed.node.data.inputs,
     outputs: placed.node.data.outputs,
@@ -113,7 +116,7 @@ export function listingOf(
 export function placeListing(listing: Listing, ev: Evaluator, id: string, position: { x: number; y: number }): PrimitiveNodeType | string {
   let hashes: string[];
   try {
-    hashes = listing.units.map((hex) => ev.insert(fromHex(hex)));
+    hashes = [...listing.units.map((hex) => ev.insert(fromHex(hex))), ...(listing.modules ?? []).map((m) => ev.insert_module(m.engine, m.params))];
   } catch (e) {
     return `"${listing.name}": its units don't decode: ${e instanceof Error ? e.message : String(e)}`;
   }

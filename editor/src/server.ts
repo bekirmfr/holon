@@ -12,7 +12,7 @@
 import { browsersOf } from "./DeployBar";
 import { signedIn, signOut, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
-import type { WValue } from "./holon";
+import type { WValue, ModuleEntry } from "./holon";
 import type { EndpointDraft } from "./endpoint";
 import type { NodeTiming } from "./replay";
 
@@ -671,6 +671,9 @@ export type FlowDocument = {
   /** Hex preimages of every unit the canvas's composite nodes reference (their whole closure),
    *  inserted back into the Evaluator on open. Absent in flows saved before it existed. */
   units?: string[];
+  /** The module units its composites place (a js node's engine), by engine and params: rebuilt
+   *  on open from the engine the bundle carries (docUnits.ts), checked by hash. */
+  modules?: ModuleEntry[];
   /** What its composites are called, by hash (docUnits.ts): a unit keeps no name, so a holon
    *  inside another would otherwise show as its hash once reopened. Absent in older flows. */
   names?: Record<string, string>;

@@ -1499,12 +1499,15 @@ mod tests {
         let text = round_trips("f", &lowered.doc, &lowered.names);
         assert_eq!(text, src, "fmt writes the js node as it was written");
 
-        // The node runs: its unit, from the document, through a resolver with the engine.
+        // The document carries the engine by entry, not by preimage (modules.rs): two budgets, two
+        // entries, and no unit the size of an engine.
+        let modules = lowered.doc.modules.as_deref().unwrap_or_default();
+        assert_eq!(modules.len(), 2, "{modules:?}");
+        assert!(modules.iter().all(|m| m.engine == "js" && m.params.len() == 2));
+        assert!(lowered.doc.units.as_deref().unwrap_or_default().iter().all(|hex| hex.len() < 100_000), "a module's preimage in units");
+        // The node runs: its unit, from the document restored, through a resolver with the engine.
         let mut store = MapResolver::new();
-        for hex in lowered.doc.units.as_deref().unwrap_or_default() {
-            let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
-            store.insert(holon_core::decode_preimage(&bytes).unwrap()).unwrap();
-        }
+        restore(&lowered.doc, &mut store, &Names::new());
         let names = lowered.doc.names.clone().unwrap_or_default();
         let hash_named = |want: &str| holon_core::parse_hash(names.iter().find(|(_, n)| n.as_str() == want).map(|(h, _)| h.as_str()).unwrap()).unwrap();
         let engine = holon_module::Engine::new();

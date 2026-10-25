@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator, primitive_catalog, primitive_docs } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit, type WValue } from "./holon";
-import { fromHex } from "./flowDoc";
 import { deriveServer, flowAsNode, flowUnitHash } from "./canvasOps";
 import {
   BOUNDARY_IN,
@@ -31,6 +30,7 @@ import { buildSample, samples } from "./samples";
 import { compileHolon } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
+import { restoreUnits } from "./docUnits";
 
 let catalog: Map<string, WUnit>;
 
@@ -50,7 +50,7 @@ function derive(name: string): { caps: string[]; endpoints: number } {
   const edges = doc.edges as Edge[];
   // Derived in a fresh workspace, from what the document carries: as opening it does.
   const ev = new Evaluator();
-  for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
+  restoreUnits(doc, ev);
   // The unit deploying it would deploy (and the flows page derives a saved flow's manifest from).
   const hash = flowUnitHash(nodes, edges, ev, sample.port ?? "8080");
   const endpoints = sample.port ? deriveServer(nodes, edges, ev, sample.port).endpoints.length : 0;

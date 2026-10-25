@@ -7,7 +7,7 @@
 import { build_sample, samples as sampleList } from "../wasm/holon_wasm.js";
 import type { Evaluator } from "./holon";
 import type { FlowDocument } from "./server";
-import { fromHex } from "./flowDoc";
+import { restoreUnits } from "./docUnits";
 
 export type Sample = {
   /** The flow's name when opened (and its deployment's slug once deployed). */
@@ -44,6 +44,6 @@ export function samples(): Sample[] {
  *  into `ev`, and travel in the document (the whole closure), as a saved flow's do. */
 export function buildSample(sample: Sample, ev: Evaluator): FlowDocument {
   const doc = build_sample(sample.name) as FlowDocument;
-  for (const hex of doc.units ?? []) ev.insert(fromHex(hex));
+  restoreUnits(doc, ev);
   return doc;
 }
