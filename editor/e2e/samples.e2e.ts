@@ -52,7 +52,7 @@ async function viewNewestRun(page: Page) {
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
 }
 
-test("every sample opens from the flows page and deploys", async ({ page }) => {
+test("every sample opens from the flows page and deploys", async ({ page, request, adminToken }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "flows", exact: true }).click();
   // The samples, as the flows page lists them.
@@ -65,6 +65,20 @@ test("every sample opens from the flows page and deploys", async ({ page }) => {
       await deploy(page);
     });
   }
+});
+
+test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
+  // On its own port, so the text (which says `port 8115`) still stands for the canvas: a deploy
+  // then carries `source` and `bindings` (useDeployFlow.ts), and a run explains as the text reads
+  // (`name = req.params.name`, not `field_2 = …`). Changing the port under ⚙ is a canvas change
+  // the text doesn't have, so the loop above, on +1000, deploys the canvas alone.
+  await openSample(page, "Cache-aside (a branch not taken)");
+  await deploy(page, 0);
+  const deployed = await request.get(`${SERVER}/deployments/cache-aside/document`, { headers: { Authorization: `Bearer ${adminToken}` } });
+  expect(deployed.status()).toBe(200);
+  const document = (await deployed.json()) as { source?: string; bindings?: Record<string, string> };
+  expect(document.source).toContain("flow cache-aside");
+  expect(Object.values(document.bindings ?? {})).toEqual(expect.arrayContaining(["name", "id"]));
 });
 
 test("hello-api answers, and its run replays exactly in view mode", async ({ page, request }) => {

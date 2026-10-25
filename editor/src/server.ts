@@ -687,6 +687,9 @@ export type FlowDocument = {
   /** The flow's text as its author typed it (the text pane), comments and all, when it stands
    *  for this canvas; absent when it was never typed (the text is the canvas printed). */
   source?: string;
+  /** For a deployed flow: the name the text binds each top-level node to, by node id, so a run
+   *  explains as the text reads (holonText.ts `bindingsOf`; `holon mcp` deploys the same). */
+  bindings?: Record<string, string>;
 };
 
 /** One entry in `GET /flows` — name + freshness only, never the (possibly large) document. */

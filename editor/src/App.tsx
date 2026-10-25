@@ -475,6 +475,7 @@ function Canvas({
     derived,
     flowCapabilities,
     settings,
+    source,
     getViewport,
     ev,
     dialog,

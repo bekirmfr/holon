@@ -65,9 +65,13 @@ pub fn sample(name: &str) -> Option<&'static Sample> {
 }
 
 /// Lay out `sample` on a canvas: the flow document opening it loads, its holons' units (the whole
-/// closure) in it, as a saved flow's are. Its text, lowered.
+/// closure) in it, as a saved flow's are. Its text, lowered, and carried as the document's
+/// `source`, so the text pane opens on it and a deploy keeps its names (`explain` reads a run as
+/// `key = req.headers[...]`, not `lookup_2 = …`).
 pub fn build(sample: &Sample) -> Result<FlowDocument, String> {
-    lang::compile(sample.text).map(|l| l.doc).map_err(|e| format!("sample \"{}\": {e}", sample.name))
+    let mut doc = lang::compile(sample.text).map(|l| l.doc).map_err(|e| format!("sample \"{}\": {e}", sample.name))?;
+    doc.extra.insert("source".into(), serde_json::Value::String(sample.text.to_string()));
+    Ok(doc)
 }
 
 const RECEIPT_KEY: &str = r#"SecretRead("receipt_key")"#;
@@ -398,6 +402,16 @@ mod tests {
             assert!(s.port.is_some() != s.interval.is_some(), "{}: a port or an interval", s.name);
             let doc = build(s).unwrap_or_else(|e| panic!("{e}"));
             assert!(!doc.nodes.is_empty(), "{}", s.name);
+        }
+    }
+
+    /// A sample's document carries its text as `source`: the text pane opens on it, and a deploy
+    /// from the editor keeps the text's names.
+    #[test]
+    fn a_samples_document_carries_its_text() {
+        for s in samples() {
+            let doc = build(s).unwrap();
+            assert_eq!(doc.extra.get("source").and_then(serde_json::Value::as_str), Some(s.text), "{}", s.name);
         }
     }
 

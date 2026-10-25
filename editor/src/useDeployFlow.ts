@@ -8,6 +8,7 @@ import { useCallback, useMemo, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
 import { flowUnitHash, traceOfUnit, type DerivedServer } from "./canvasOps";
 import { documentUnits } from "./docUnits";
+import { bindingsOf } from "./holonText";
 import { isWEncapError } from "./diagnostics";
 import { describeItem, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
@@ -25,6 +26,7 @@ export function useDeployFlow({
   derived,
   flowCapabilities,
   settings,
+  source,
   getViewport,
   ev,
   dialog,
@@ -41,6 +43,9 @@ export function useDeployFlow({
   /** What the flow would ask for, by consent name. */
   flowCapabilities: string[];
   settings: FlowSettings;
+  /** The flow's text as typed, when it stands for the canvas (tabs.ts `sourceToSave`); null when
+   *  the text is only the canvas printed. */
+  source: string | null;
   getViewport: () => Viewport;
   ev: Evaluator;
   dialog: Dialogs;
@@ -145,7 +150,19 @@ export function useDeployFlow({
     try {
       const { nodes: ns, edges: es } = live.current;
       const carried = documentUnits(ns.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])), ev);
-      const document: FlowDocument = { nodes: ns, edges: es, viewport: getViewport(), ...carried, server: settings, trace };
+      // The text and its names ride with the deployment, as they do with a save and with a deploy
+      // from text through `holon mcp`: a run then explains as the text reads.
+      const bindings = source !== null ? bindingsOf(source, { nodes: ns, edges: es }, ev) : null;
+      const document: FlowDocument = {
+        nodes: ns,
+        edges: es,
+        viewport: getViewport(),
+        ...carried,
+        server: settings,
+        trace,
+        ...(source !== null ? { source } : {}),
+        ...(bindings ? { bindings } : {}),
+      };
       await deployUnit(name, hash, ask, interval, document, requirements);
       refreshDeployments();
     } catch (err) {
@@ -153,7 +170,7 @@ export function useDeployFlow({
     } finally {
       setDeployBusy(false);
     }
-  }, [flowName, setFlowName, dialog, derived, settings, live, ev, deployments, refreshDeployments, getViewport, setError]);
+  }, [flowName, setFlowName, dialog, derived, settings, source, live, ev, deployments, refreshDeployments, getViewport, setError]);
 
   const onFlowAction = useCallback(
     (action: "run" | "pause" | "stop") => {

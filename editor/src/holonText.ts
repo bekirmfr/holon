@@ -10,6 +10,7 @@ import { knownNames, restoreDocument } from "./docUnits";
 import type { Evaluator } from "./holon";
 import type { FlowDocument } from "./server";
 import { restoreUnits } from "./docUnits";
+import { sameGraph, type Graph } from "./textSync";
 
 /** A text that can't be read or built, and where (1-based line and column) it says why. */
 export class HolonTextError extends Error {
@@ -29,6 +30,26 @@ export type TextRange = { from: number; to: number };
  *  say the line and column. `names`: each top-level node's name in the text, by its id in the
  *  document (a binding's, or a `node` statement's); `lines`: the line (1-based) each is written
  *  on; `spans`: the range each is written over (docs/L4s/text-graph-link-L4.md). */
+/** The names a text binds, by the id of the canvas node each stands for: what a deploy keeps as
+ *  the document's `bindings`, so a run explains as the text reads (`key = req.headers[…]`, not
+ *  `lookup_2 = …`). Null when the text doesn't compile, or isn't this canvas: then nothing is named
+ *  rather than something misnamed. */
+export function bindingsOf(source: string, canvas: Graph, ev: Evaluator): Record<string, string> | null {
+  let compiled: ReturnType<typeof compileHolon>;
+  try {
+    compiled = compileHolon(source, ev);
+  } catch {
+    return null;
+  }
+  const toCanvas = sameGraph({ nodes: compiled.doc.nodes, edges: compiled.doc.edges } as Graph, canvas);
+  const bindings: Record<string, string> = {};
+  for (const [id, name] of compiled.names) {
+    const on = toCanvas.get(id);
+    if (on !== undefined) bindings[on] = name;
+  }
+  return Object.keys(bindings).length > 0 ? bindings : null;
+}
+
 export function compileHolon(
   text: string,
   ev: Evaluator,

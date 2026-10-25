@@ -27,7 +27,7 @@ import { manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { buildSample, samples } from "./samples";
-import { compileHolon } from "./holonText";
+import { bindingsOf, compileHolon } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
 import { restoreUnits } from "./docUnits";
@@ -395,6 +395,22 @@ node outer = outer-holon
     expect(derive("sign-payload").caps).toEqual(["NetworkIngress", 'SecretRead("signing_key")']);
     expect(derive("likes").caps).toEqual(['CollectionRead("likes")', 'CollectionWrite("likes")', "NetworkIngress"]);
     expect(derive("marketplace").caps).toEqual(["Clock", 'CollectionRead("listings")', 'CollectionWrite("listings")', "NetworkIngress", 'SecretRead("publish_key")']);
+  });
+
+  it("carry their text, whose names land on the canvas's nodes for a deploy", () => {
+    const sample = samples().find((s) => s.name === "idempotent")!;
+    const ev = new Evaluator();
+    const doc = buildSample(sample, ev);
+    // The text pane opens on the text (tabs.ts seeds it from `source`).
+    expect(doc.source).toBe(sample.text);
+    // A deploy names the nodes as the text does (useDeployFlow.ts), by the canvas's own ids.
+    const bindings = bindingsOf(doc.source!, { nodes: doc.nodes as PrimitiveNodeType[], edges: doc.edges as Edge[] }, ev)!;
+    const ids = new Set((doc.nodes as PrimitiveNodeType[]).map((n) => n.id));
+    for (const id of Object.keys(bindings)) expect(ids.has(id)).toBe(true);
+    expect(Object.values(bindings)).toEqual(expect.arrayContaining(["key", "fingerprint", "stored", "prior", "replayed", "mismatch", "processed", "fresh", "result"]));
+    // A text that isn't this canvas names nothing, rather than something wrong.
+    expect(bindingsOf("flow other\nport 1\n\nroute GET /a (req) {\n  x = req.body\n  respond x\n}\n", { nodes: doc.nodes as PrimitiveNodeType[], edges: doc.edges as Edge[] }, ev)).toBeNull();
+    expect(bindingsOf("not a flow", { nodes: doc.nodes as PrimitiveNodeType[], edges: doc.edges as Edge[] }, ev)).toBeNull();
   });
 
   it("are holon-author's, built by name", () => {
