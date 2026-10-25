@@ -236,7 +236,7 @@ export function AdminPage({ me }: { me: string }) {
           </span>
         </div>
       )}
-      {tokens.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>none</div>}
+      {tokens.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no API tokens</div>}
       {tokens.map((t) => (
         <div key={t.id} style={row}>
           <span style={{ color: "#6fd3e0", minWidth: 90 }}>{t.label}</span>
@@ -285,7 +285,7 @@ export function AdminPage({ me }: { me: string }) {
         its text for that long, then only its hash. A cap (10M): a write that would take the folder&apos;s files past it doesn&apos;t land. For one deployment:
         that deployment sees this folder by the name, whatever the server&apos;s is, and no other deployment sees it.
       </div>
-      {folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>none</div>}
+      {folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no folders bound</div>}
       {folders.map((f) => (
         <div key={`${f.deployment ?? ""}/${f.name}`} style={row}>
           <span style={{ color: "#6fd3e0", minWidth: 90 }}>{f.name}</span>

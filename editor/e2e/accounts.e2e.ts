@@ -89,7 +89,7 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   await ada.getByRole("button", { name: "done" }).click();
   await ada.locator("div", { hasText: /^ci/ }).getByRole("button", { name: "revoke" }).first().click();
   await ada.locator('[aria-modal="true"]').getByRole("button", { name: "Revoke" }).click();
-  await expect(ada.getByText("none", { exact: true })).toBeVisible();
+  await expect(ada.getByText("no API tokens", { exact: true })).toBeVisible();
   expect((await request.get(`${SERVER}/flows`, { headers: asCi })).status()).toBe(401);
   // The activity log names who did what.
   await expect(ada.getByText(/made an API token ci · by ada/)).toBeVisible();
