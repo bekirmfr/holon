@@ -130,7 +130,6 @@ pub(crate) fn load_deployments(
                 record.unit
             ));
         };
-        let caps = capabilities(root_unit, &resolver);
         let server = match declaration_of(root_unit) {
             Some("server") => Some(
                 read_server(root_unit, &resolver)
@@ -138,6 +137,8 @@ pub(crate) fn load_deployments(
             ),
             _ => None,
         };
+        // As its deploy derived it: on a schedule, it runs on the clock.
+        let caps = capabilities(root_unit, &resolver).deployed(record.interval_seconds.is_some() && server.is_none());
         let triggers = trigger_labels(
             server.as_ref(),
             caps.contains(Capability::NetworkIngress),

@@ -327,11 +327,17 @@ export async function deleteSecret(slug: string, name: string): Promise<void> {
   if (!res.ok) await asJson(res);
 }
 
-export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements): Promise<DeployPreview> {
+export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements, intervalSeconds?: number): Promise<DeployPreview> {
   const res = await api(`${BASE}/deploy/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ slug, unit: unitHash, ...(requirements !== undefined ? { requirements } : {}) }),
+    // With its schedule, as the deploy will send it: a clock flow runs on the clock.
+    body: JSON.stringify({
+      slug,
+      unit: unitHash,
+      ...(requirements !== undefined ? { requirements } : {}),
+      ...(intervalSeconds !== undefined ? { interval_seconds: intervalSeconds } : {}),
+    }),
   });
   return asJson<DeployPreview>(res);
 }
