@@ -219,7 +219,8 @@ pub struct Completion {
 /// `notes[k]`, `now`, `secret.k`, `await`) or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
     "http_request", "clock", "random", "ingress", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
-    "collection_delete", "file_read", "file_list", "file_write", "file_delete", "egress", "const", "record", "json_parse", "json_stringify",
+    "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "egress",
+    "const", "record", "json_parse", "json_stringify",
 ];
 
 /// The leaves a text calls by name, as it names them: their name, signature and what they do.

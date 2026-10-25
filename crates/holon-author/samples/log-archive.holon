@@ -1,0 +1,22 @@
+flow log-archive
+port 8124
+folder archive
+folder logs
+
+route GET /logs/:name/tail (req) {
+  respond logs.lines(req.params.name, from: -20, limit: 20)
+}
+
+route GET /logs/:name/head (req) {
+  respond logs.slice(req.params.name, offset: 0, length: 256)
+}
+
+route POST /archive (req) {
+  log = logs.file(req.json.name)
+  archive["{log.name}.{log.hash}"] = log
+  respond { archived: "{log.name}.{log.hash}", size: log.size }
+}
+
+route GET /archive (req) {
+  respond archive.list()
+}

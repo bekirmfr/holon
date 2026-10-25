@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, it, expect } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
-import { collectionsAtStep, diagnose, executionOrder, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
+import { collectionsAtStep, diagnose, executionOrder, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
@@ -310,6 +310,27 @@ describe("collection reads in a replay", () => {
     expect(reads.get("s")).toEqual(small);
     const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode, reads);
     expect(traces.get("s")?.outputs).toEqual([small]);
+  });
+
+  it("answer part of a file with the text its range keeps: a slice whole, lines split as the server splits them", () => {
+    const txt = (value: string): WValue => ({ type: "Text", value });
+    const ask = (kind: string, name: string): WValue => ({ type: "Record", value: [["folder", txt("logs")], [kind, { type: "Record", value: [["name", txt(name)]] }]] });
+    const file = (start: number, end: number, text?: string) => ({ hash: "ab".repeat(32), size: 9000, range: { start, end, ...(text === undefined ? {} : { text }) } });
+    const entry = {
+      kind: "tick",
+      route: null,
+      reads: [
+        { path: [0], request: ask("lines", "app.log"), answer: null, file: file(8980, 9000, "x\r\ny\nlast") },
+        { path: [1], request: ask("slice", "app.log"), answer: null, file: file(0, 5, "line ") },
+        { path: [2], request: ask("lines", "big.log"), answer: null, file: file(0, 8000) },
+      ],
+    };
+    const reads = recordedReads(entry, { "*": ["l", "s", "k"] });
+    expect(reads.get("l")).toEqual({ type: "List", value: [txt("x"), txt("y"), txt("last")] });
+    expect(reads.get("s")).toEqual(txt("line "));
+    expect(reads.get("k")).toEqual(txt("‹file:logs/big.log, bytes 0..8000, kept by hash›"));
+    expect(linesOf("a\nb\n")).toEqual(["a", "b"]);
+    expect(linesOf("")).toEqual([]);
   });
 });
 

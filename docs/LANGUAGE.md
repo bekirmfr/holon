@@ -415,6 +415,28 @@ refused until each folder it needs is bound, and bound read-write where it write
 keeps what a run read (or only its hash, for a folder bound with `--keep hash`) and what it wrote
 by its hash. Design: `docs/L4s/named-folders-L4.md`.
 
+### log-archive: big files, by handle and by range
+
+```
+route GET /logs/:name/tail (req) {
+  respond logs.lines(req.params.name, from: -20, limit: 20)
+}
+
+route POST /archive (req) {
+  log = logs.file(req.json.name)
+  archive["{log.name}.{log.hash}"] = log
+  respond { archived: "{log.name}.{log.hash}", size: log.size }
+}
+```
+
+A file of any size never enters a run whole. `logs.file(name)` is a handle,
+`{folder, name, size, hash, modified}`, without the bytes; writing a handle to a folder
+(`archive[n] = log`, or `archive.copy(n, log)`) copies the file host to host when the run finishes,
+and fails if it no longer has the handle's hash. `logs.lines(name, from: i, limit: n)` reads `n`
+lines from line `i` (from the end when negative), and `logs.slice(name, offset: o, length: n)`
+`n` bytes from `o`: only those enter the run, and the log keeps with them the hashes that prove them
+part of the file, so `holon verify` checks the run without it.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -564,6 +586,10 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `delete reports[n]` | `file_delete{folder: reports}(n)` | delete it when the run finishes |
 | `inbox.get(n)`, `reports.put(n, e)`, `reports.delete(n)` | the same three leaves, as expressions | the operation, as a value to name |
 | `inbox.list(prefix: p, after: a, limit: n)` | `file_list{folder: inbox, limit: n}(p, a)` | a page of files, `{size, hash, modified}` by name, in name order |
+| `inbox.file(n)` | `file_handle{folder: inbox}(n)` | a handle: `{folder, name, size, hash, modified}`, no bytes |
+| `inbox.lines(n, from: i, limit: k)` | `file_lines{folder: inbox, limit: k}(n, i)` | `k` lines from line `i` (from the end when negative), without line endings |
+| `inbox.slice(n, offset: o, length: k)` | `file_slice{folder: inbox}(n, o, k)` | `k` bytes from `o` (from the end when negative), as text |
+| `reports[n] = h` (`h` a handle read here), `reports.copy(n, h)` | `file_copy{folder: reports}(n, h)` | copy the file when the run finishes, host to host |
 | `http.get(host, path, headers: h, body: b)` and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host}(path, h, b)` | a call to that host |
 | `stripe.verify(req, secret, now, tolerance: d)` | the `stripe_verify` template | a verified Stripe event |
 | `await paid, expires: 1d` | `await{name: paid, expires: 86400}` | the event, when it arrives |
@@ -575,8 +601,10 @@ Rules the table implies:
 - A collection must be declared in the header before `notes[k]` means a collection; an undeclared
   name followed by `[ ]` is a `lookup` on a record (§5.6). The declaration is a *name*, not a
   permission: `check` still derives `CollectionRead("notes")` from the `collection_get` leaves.
-  A folder the same: `folder inbox`, and `FileRead("inbox")` from `file_read`. A file is text
-  (UTF-8, up to 1 MiB); a read of anything else fails the run, and it writes nothing.
+  A folder the same: `folder inbox`, and `FileRead("inbox")` from `file_read`. A file read whole
+  is text (UTF-8, up to 1 MiB); a read of anything else fails the run, and it writes nothing. A
+  bigger one is read by handle, lines or slice; a copy also asks `FileRead` of the folder its
+  handle names.
 - `http.*`'s host must be a text literal, because the host is the capability the deployment asks
   for; a host from a wire is an error that says so.
 - `state.x` on the right of `=` and on the left are different leaves, read and write, and that is

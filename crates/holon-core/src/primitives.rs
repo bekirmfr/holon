@@ -506,6 +506,18 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             let [Value::Text(name)] = inputs else { return None };
             Some(Value::Effect { sink: format!("file_delete:{folder}"), payload: Box::new(Value::Text(name.clone())) })
         }
+        // A copy by handle: `{name, from: <handle>}`, the bytes copied host to host when the run
+        // finishes. A handle is what `file_handle` answered; the host checks the file it names is
+        // in a folder this deployment reads, and still has the handle's hash.
+        "file_copy" => {
+            let folder = crate::kind::ident(params, "folder")?;
+            let [Value::Text(name), from @ Value::Record(handle)] = inputs else { return None };
+            if contains_effect(from) || !["folder", "name", "hash"].iter().all(|k| matches!(handle.get(*k), Some(Value::Text(_)))) {
+                return None;
+            }
+            let copy = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("from".to_string(), (*from).clone())]));
+            Some(Value::Effect { sink: format!("file_copy:{folder}"), payload: Box::new(copy) })
+        }
 
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
@@ -597,6 +609,60 @@ pub(crate) fn file_list_request(inputs: &[Option<Value>], params: &[Param]) -> O
     Some(Value::Record(asked))
 }
 
+/// What a `file_handle` asks the host: `{folder: <name>, handle: <file name>}`.
+pub(crate) fn file_handle_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let folder = crate::kind::ident(params, "folder")?;
+    let [Some(Value::Text(name))] = inputs else { return None };
+    Some(Value::Record(BTreeMap::from([
+        ("folder".to_string(), Value::Text(folder)),
+        ("handle".to_string(), Value::Text(name.clone())),
+    ])))
+}
+
+/// The most lines one `file_lines` returns.
+pub const MAX_LINES_LIMIT: u64 = 10_000;
+
+/// A whole number, as a range's position or length is.
+fn whole(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(n) if n.is_finite() && n.fract() == 0.0 && n.abs() < 9e15 => Some(*n),
+        _ => None,
+    }
+}
+
+/// What a `file_lines` asks the host: `{folder, lines: {name, from, limit}}`, for up to `limit`
+/// lines (1 to [`MAX_LINES_LIMIT`]) from line `from` (0, the first, when unwired; negative counts
+/// from the end).
+pub(crate) fn file_lines_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let folder = crate::kind::ident(params, "folder")?;
+    let limit: u64 = param(params, "limit")?.parse().ok().filter(|n| (1..=MAX_LINES_LIMIT).contains(n))?;
+    let [Some(Value::Text(name)), from] = inputs else { return None };
+    let from = match from {
+        None => 0.0,
+        Some(v) => whole(v)?,
+    };
+    let lines = BTreeMap::from([
+        ("name".to_string(), Value::Text(name.clone())),
+        ("from".to_string(), Value::Number(from)),
+        ("limit".to_string(), Value::Number(limit as f64)),
+    ]);
+    Some(Value::Record(BTreeMap::from([("folder".to_string(), Value::Text(folder)), ("lines".to_string(), Value::Record(lines))])))
+}
+
+/// What a `file_slice` asks the host: `{folder, slice: {name, offset, length}}`: `length` bytes
+/// (not negative) from byte `offset` (negative counts from the end).
+pub(crate) fn file_slice_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let folder = crate::kind::ident(params, "folder")?;
+    let [Some(Value::Text(name)), Some(offset), Some(length)] = inputs else { return None };
+    let (offset, length) = (whole(offset)?, whole(length).filter(|n| *n >= 0.0)?);
+    let slice = BTreeMap::from([
+        ("name".to_string(), Value::Text(name.clone())),
+        ("offset".to_string(), Value::Number(offset)),
+        ("length".to_string(), Value::Number(length)),
+    ]);
+    Some(Value::Record(BTreeMap::from([("folder".to_string(), Value::Text(folder)), ("slice".to_string(), Value::Record(slice))])))
+}
+
 /// The longest a run may wait at one point: 90 days, in seconds.
 pub const MAX_AWAIT_SECONDS: u64 = 90 * 24 * 3600;
 
@@ -621,7 +687,7 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// `http_request` (headers, body). Inside a composite, such a port that *is* wired holds the
 /// node back while its value is absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
-    matches!(name, "http_request" | "collection_list" | "file_list")
+    matches!(name, "http_request" | "collection_list" | "file_list" | "file_lines")
 }
 
 /// The methods `http_request` sends.
@@ -885,6 +951,26 @@ mod tests {
         assert_eq!(write, Value::Effect { sink: "file_write:inbox".into(), payload: Box::new(file) });
         assert_eq!(compute("file_delete", &[&txt("a.md")], &inbox), Some(Value::Effect { sink: "file_delete:inbox".into(), payload: Box::new(txt("a.md")) }));
         assert_eq!(compute("file_write", &[&txt("a.md"), &num(1.0)], &inbox), None, "a file's text is text");
+
+        let handle = file_handle_request(&[Some(txt("big.log"))], &inbox).unwrap();
+        assert_eq!(handle, Value::Record(BTreeMap::from([("folder".into(), txt("inbox")), ("handle".into(), txt("big.log"))])));
+        let lines = file_lines_request(&[Some(txt("big.log")), Some(num(-100.0))], &[p("folder", "inbox"), p("limit", "100")]).unwrap();
+        let Value::Record(r) = &lines else { panic!() };
+        assert_eq!(r["lines"], Value::Record(BTreeMap::from([("name".into(), txt("big.log")), ("from".into(), num(-100.0)), ("limit".into(), num(100.0))])));
+        let first = file_lines_request(&[Some(txt("big.log")), None], &[p("folder", "inbox"), p("limit", "5")]).unwrap();
+        let Value::Record(r) = &first else { panic!() };
+        assert_eq!(r["lines"], Value::Record(BTreeMap::from([("name".into(), txt("big.log")), ("from".into(), num(0.0)), ("limit".into(), num(5.0))])), "from the first line");
+        assert!(file_lines_request(&[Some(txt("a")), Some(num(1.5))], &[p("folder", "inbox"), p("limit", "5")]).is_none(), "a line is whole");
+        assert!(file_lines_request(&[Some(txt("a")), None], &[p("folder", "inbox"), p("limit", "0")]).is_none());
+        assert!(file_slice_request(&[Some(txt("a")), Some(num(-10.0)), Some(num(10.0))], &inbox).is_some(), "the last 10 bytes");
+        assert!(file_slice_request(&[Some(txt("a")), Some(num(0.0)), Some(num(-1.0))], &inbox).is_none(), "a length isn't negative");
+
+        let h = Value::Record(BTreeMap::from([("folder".into(), txt("inbox")), ("name".into(), txt("big.log")), ("hash".into(), txt("ab")), ("size".into(), num(9.0))]));
+        let copy = compute("file_copy", &[&txt("b.log"), &h], &inbox).unwrap();
+        let payload = Value::Record(BTreeMap::from([("name".into(), txt("b.log")), ("from".into(), h.clone())]));
+        assert_eq!(copy, Value::Effect { sink: "file_copy:inbox".into(), payload: Box::new(payload) });
+        let not_a_handle = Value::Record(BTreeMap::from([("name".into(), txt("big.log"))]));
+        assert_eq!(compute("file_copy", &[&txt("b.log"), &not_a_handle], &inbox), None, "a copy needs a handle");
     }
 
     /// `range(n)` counts from 0 to n-1; a fraction, a negative, a non-number or more than

@@ -12,11 +12,15 @@
 //!   folders the deployment was granted, and each is kept (with its node's path), as a collection
 //!   read is: the log shows it, replay answers from it, and a run is checked against it before it
 //!   commits. A big file's text goes to the content store, and the log holds its hash.
-//! - **Writes** (a file's whole text, or a delete) are effects, applied when the run commits:
-//!   written beside the file and renamed over it, so a reader never sees half of one. The log holds
-//!   what was written by its hash and size, never its text: `holon verify` runs it again.
+//! - **Big files never enter a run whole.** A handle (`inbox.file(n)`) is a file's name, size and
+//!   hash, without its bytes; a copy by handle streams them host to host when the run commits. A
+//!   range (`lines`, `slice`) reads only its bytes, and the log keeps with them the hashes that
+//!   prove them part of the file (ranges.rs), so the run is checkable from that range alone.
+//! - **Writes** (a file's whole text, a copy, or a delete) are effects, applied when the run
+//!   commits: written beside the file and renamed over it, so a reader never sees half of one. The
+//!   log holds what was written by its hash and size, never its text: `holon verify` runs it again.
 
-use std::io::Write as _;
+use std::io::{Read as _, Seek as _, Write as _};
 use std::sync::RwLock;
 
 use rouille::{Request, Response};
@@ -183,18 +187,68 @@ impl Folders {
         self.get(name).ok_or_else(|| format!("the folder {name:?} isn't bound on this server: an admin binds it (holon folder add {name} <path>)"))
     }
 
-    /// The bytes of file `file` in folder `name`: none if there is no such file; refused past `max`.
-    pub(crate) fn read(&self, name: &str, file: &str, max: u64) -> Result<Option<Vec<u8>>, String> {
+    /// File `file` of folder `name`, opened, and its metadata: none if there is no such file.
+    fn open_file(&self, name: &str, file: &str) -> Result<Option<(std::fs::File, std::fs::Metadata)>, String> {
         let folder = self.folder(name)?;
         let Some(path) = existing(&folder.path, file)? else { return Ok(None) };
         let meta = std::fs::metadata(&path).map_err(|e| format!("{name}/{file}: {e}"))?;
         if !meta.is_file() {
             return Ok(None);
         }
+        let f = std::fs::File::open(&path).map_err(|e| format!("{name}/{file} can't be read: {e}"))?;
+        Ok(Some((f, meta)))
+    }
+
+    /// The bytes of file `file` in folder `name`: none if there is no such file; refused past `max`.
+    pub(crate) fn read(&self, name: &str, file: &str, max: u64) -> Result<Option<Vec<u8>>, String> {
+        let Some((f, meta)) = self.open_file(name, file)? else { return Ok(None) };
         if meta.len() > max {
-            return Err(format!("{name}/{file} is {} bytes: more than the {max} a run reads", meta.len()));
+            return Err(format!("{name}/{file} is {} bytes: more than the {max} a run reads; read a handle, lines or a slice of it", meta.len()));
         }
-        std::fs::read(&path).map(Some).map_err(|e| format!("{name}/{file} can't be read: {e}"))
+        let mut bytes = Vec::new();
+        f.take(max + 1).read_to_end(&mut bytes).map_err(|e| format!("{name}/{file} can't be read: {e}"))?;
+        Ok(Some(bytes))
+    }
+
+    /// A handle to file `file` of folder `name`, of any size: `{folder, name, size, hash,
+    /// modified}`, its bytes hashed and nothing kept. None if there is no such file.
+    pub(crate) fn handle(&self, name: &str, file: &str) -> Result<Option<Value>, String> {
+        let Some((mut f, meta)) = self.open_file(name, file)? else { return Ok(None) };
+        let mut hasher = blake3::Hasher::new();
+        let size = std::io::copy(&mut f, &mut hasher).map_err(|e| format!("{name}/{file} can't be read: {e}"))?;
+        Ok(Some(Value::Record(BTreeMap::from([
+            ("folder".to_string(), Value::Text(name.to_string())),
+            ("name".to_string(), Value::Text(file.to_string())),
+            ("size".to_string(), Value::Number(size as f64)),
+            ("hash".to_string(), Value::Text(hasher.finalize().to_hex().to_string())),
+            ("modified".to_string(), Value::Number(modified(&meta) as f64)),
+        ]))))
+    }
+
+    /// Part of file `file` of folder `name` (`span`), up to `max` bytes: none if there is no such
+    /// file. With `prove`, the whole file is hashed and the range comes with what proves it part of
+    /// the file (ranges.rs); without, only the range is read.
+    pub(crate) fn range(&self, name: &str, file: &str, span: Span, max: u64, prove: bool) -> Result<Option<RangeRead>, String> {
+        let Some((mut f, meta)) = self.open_file(name, file)? else { return Ok(None) };
+        let size = meta.len();
+        let e = |e: std::io::Error| format!("{name}/{file} can't be read: {e}");
+        let (start, end) = match span {
+            Span::Lines { from, limit } => ranges::line_span(&mut f, size, from, limit).map_err(e)?,
+            Span::Slice { offset, length } => ranges::slice_span(size, offset, length),
+        };
+        if end - start > max {
+            return Err(format!("{name}/{file}: the {} bytes asked for are more than the {max} a run reads", end - start));
+        }
+        if !prove {
+            let mut bytes = vec![0u8; (end - start) as usize];
+            f.seek(std::io::SeekFrom::Start(start)).and_then(|_| f.read_exact(&mut bytes)).map_err(e)?;
+            return Ok(Some(RangeRead { start, end, size, bytes, hash: String::new(), before: Vec::new(), after: Vec::new(), proof: Vec::new() }));
+        }
+        let (a, b) = ranges::widened(start, end, size);
+        let (hash, mut kept, proof) = ranges::prove(&mut f, size, a, b).map_err(e)?;
+        let after = kept.split_off((end - a) as usize);
+        let bytes = kept.split_off((start - a) as usize);
+        Ok(Some(RangeRead { start, end, size, bytes, hash: hash.to_hex().to_string(), before: kept, after, proof }))
     }
 
     /// Up to `limit` files of folder `name` in name order, by name (a path inside it, `/` between
@@ -210,14 +264,10 @@ impl Folders {
         for n in names {
             let path = folder.path.join(&n);
             let meta = std::fs::metadata(&path).map_err(|e| format!("{name}/{n}: {e}"))?;
-            let modified = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
-            let mut hasher = blake3::Hasher::new();
-            let mut f = std::fs::File::open(&path).map_err(|e| format!("{name}/{n}: {e}"))?;
-            std::io::copy(&mut f, &mut hasher).map_err(|e| format!("{name}/{n}: {e}"))?;
             let item = BTreeMap::from([
                 ("size".to_string(), Value::Number(meta.len() as f64)),
-                ("hash".to_string(), Value::Text(hasher.finalize().to_hex().to_string())),
-                ("modified".to_string(), Value::Number(modified as f64)),
+                ("hash".to_string(), Value::Text(hash_of(&path).map_err(|e| format!("{name}/{n}: {e}"))?)),
+                ("modified".to_string(), Value::Number(modified(&meta) as f64)),
             ]);
             files.insert(n, Value::Record(item));
         }
@@ -228,20 +278,34 @@ impl Folders {
     pub(crate) fn write(&self, name: &str, file: &str, text: &str) -> Result<(), String> {
         let folder = self.writable(name)?;
         let path = for_writing(&folder.path, file)?;
-        let dir = path.parent().ok_or("no folder")?;
-        let tmp = dir.join(format!("{TMP_PREFIX}{}-{}", std::process::id(), rand::random::<u64>()));
-        let written = (|| {
-            let mut f = std::fs::File::create_new(&tmp)?;
-            f.write_all(text.as_bytes())?;
-            f.sync_all()?;
-            drop(f);
-            std::fs::rename(&tmp, &path)
-        })();
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("{name}/{file} not written: {e}"));
-        }
-        Ok(())
+        land(&path, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(|e| format!("{name}/{file} not written: {e}"))
+    }
+
+    /// Copy file `from_file` of folder `from` as file `file` of folder `name`, streamed beside it
+    /// and renamed over it: refused if its bytes no longer hash to `hash` (the handle the run read).
+    pub(crate) fn copy(&self, name: &str, file: &str, from: &str, from_file: &str, hash: &str) -> Result<(), String> {
+        let folder = self.writable(name)?;
+        let Some((mut src, _)) = self.open_file(from, from_file)? else {
+            return Err(format!("{from}/{from_file} isn't there any more: not copied to {name}/{file}"));
+        };
+        let path = for_writing(&folder.path, file)?;
+        land(&path, |f| {
+            let mut hasher = blake3::Hasher::new();
+            let mut block = vec![0u8; 64 * 1024];
+            loop {
+                let n = src.read(&mut block).map_err(|e| e.to_string())?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&block[..n]);
+                f.write_all(&block[..n]).map_err(|e| e.to_string())?;
+            }
+            if hasher.finalize().to_hex().as_str() != hash {
+                return Err(format!("{from}/{from_file} changed since the run read it"));
+            }
+            Ok(())
+        })
+        .map_err(|e| format!("{name}/{file} not copied: {e}"))
     }
 
     /// Delete file `file` of folder `name`; nothing to do if there is none.
@@ -284,6 +348,59 @@ impl Folders {
         }
         Ok(folder)
     }
+}
+
+/// Part of a file a run reads: lines, or bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Span {
+    /// `limit` lines from line `from` (from the end when negative).
+    Lines { from: i64, limit: u64 },
+    /// `length` bytes from `offset` (from the end when negative).
+    Slice { offset: i64, length: u64 },
+}
+
+/// Part of a file, as read: where it is, its bytes, and (when proved) the file's hash, the bytes
+/// around it to whole chunks, and the hashes of the rest of the file (ranges.rs).
+#[derive(Clone, Debug)]
+pub(crate) struct RangeRead {
+    pub(crate) start: u64,
+    pub(crate) end: u64,
+    pub(crate) size: u64,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) hash: String,
+    pub(crate) before: Vec<u8>,
+    pub(crate) after: Vec<u8>,
+    pub(crate) proof: Vec<[u8; 32]>,
+}
+
+/// When a file was last changed, in milliseconds since 1970.
+fn modified(meta: &std::fs::Metadata) -> u64 {
+    meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The BLAKE3 of the file at `path` (hex), read through.
+fn hash_of(path: &Path) -> std::io::Result<String> {
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut std::fs::File::open(path)?, &mut hasher)?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Put a file at `path` whole: `fill` writes it beside it, then it is synced and renamed over
+/// `path`. A failed fill leaves nothing behind.
+fn land(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<(), String>) -> Result<(), String> {
+    let dir = path.parent().ok_or("no folder")?;
+    let tmp = dir.join(format!("{TMP_PREFIX}{}-{}", std::process::id(), rand::random::<u64>()));
+    let landed = (|| {
+        let mut f = std::fs::File::create_new(&tmp).map_err(|e| e.to_string())?;
+        fill(&mut f)?;
+        f.sync_all().map_err(|e| e.to_string())?;
+        drop(f);
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    })();
+    if landed.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    landed
 }
 
 /// Why `name` can't name a file in a folder, if it can't: a relative path, `/` between folders,
@@ -356,22 +473,19 @@ fn for_writing(root: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// The text files under `dir`, by the BLAKE3 of their bytes (hex): what `holon verify --files`
-/// answers a run's file reads from, when its log kept only their hash.
-pub(crate) fn texts_in(dir: &Path) -> Result<BTreeMap<String, String>, String> {
+/// The files under `dir`, by the BLAKE3 of their bytes (hex): what `holon verify --files` answers
+/// a run's file reads from (a whole file, or part of one), when its log kept only their hash.
+pub(crate) fn files_in(dir: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
     let mut names = Vec::new();
     walk(dir, "", &mut names)?;
-    let mut texts = BTreeMap::new();
+    let mut files = BTreeMap::new();
     for name in names {
         let path = dir.join(&name);
-        if std::fs::metadata(&path).map_or(true, |m| m.len() > MAX_FILE_BYTES) {
-            continue;
-        }
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            texts.insert(blake3::hash(text.as_bytes()).to_hex().to_string(), text);
+        if let Ok(hash) = hash_of(&path) {
+            files.insert(hash, path);
         }
     }
-    Ok(texts)
+    Ok(files)
 }
 
 /// Every file under `dir` (as `/`-separated names after `under`) a flow may name. Links are never
@@ -560,10 +674,30 @@ pub(crate) struct Seen {
     /// BLAKE3 of the file's bytes (hex): what `holon verify --files` matches a file by.
     pub(crate) hash: String,
     pub(crate) size: u64,
-    /// Whether the text is in the log entry itself.
+    /// Whether the text read (the file's, or a range's) is in the log entry itself.
     pub(crate) inline: bool,
     /// The text's value hash in the content store (hex), when kept there.
     pub(crate) blob: Option<String>,
+    /// For part of a file (lines, a slice): where it is, and what proves it part of the file.
+    pub(crate) range: Option<Ranged>,
+}
+
+/// Part of a file a run read, as its log keeps it: where it is; its text when the entry holds it
+/// (else by `blob`, or not at all for a folder that keeps hashes); and, when the folder keeps
+/// bytes, the bytes around it to whole chunks and the hashes of the rest of the file (ranges.rs).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Ranged {
+    pub(crate) start: u64,
+    pub(crate) end: u64,
+    pub(crate) text: Option<String>,
+    pub(crate) before: Vec<u8>,
+    pub(crate) after: Vec<u8>,
+    pub(crate) proof: Vec<[u8; 32]>,
+}
+
+/// What a range read answers: a slice's text, or the lines of it.
+pub(crate) fn range_answer(lines: bool, text: &str) -> Value {
+    if lines { Value::List(ranges::lines_of(text).into_iter().map(Value::Text).collect()) } else { Value::Text(text.to_string()) }
 }
 
 /// The folders one run reads: which it may, and how much it has read so far.
@@ -588,14 +722,61 @@ fn text<'v>(r: &'v BTreeMap<String, Value>, k: &str) -> Option<&'v str> {
 }
 
 impl Readable {
-    /// The answer to `request` (`{folder, read}` or `{folder, list}`), and for a read, what it saw:
-    /// an error fails the run (a folder not granted or not bound, a name that leaves it, a file too
-    /// big or not text). With `keep`, a big file's text is put in the content store.
+    /// The answer to `request` (`{folder, read}`, `{folder, list}`, `{folder, handle}`, `{folder,
+    /// lines}` or `{folder, slice}`), and for a read of text, what it saw: an error fails the run (a
+    /// folder not granted or not bound, a name that leaves it, a file too big or not text). With
+    /// `keep`, a big text is put in the content store, and a range is proved part of its file; without
+    /// (checking a run before it commits), only what it answers is read.
     pub(crate) fn answer(&mut self, request: &Value, keep: bool) -> Result<(Option<Value>, Option<Seen>), String> {
         let Value::Record(r) = request else { return Ok((None, None)) };
         let Some(name) = text(r, "folder") else { return Ok((None, None)) };
         if !self.granted.contains(name) {
             return Err(format!("the folder {name:?} isn't granted to this deployment"));
+        }
+        if let Some(file) = text(r, "handle") {
+            return Ok((self.folders.handle(name, file)?, None));
+        }
+        let ranged = match (r.get("lines"), r.get("slice")) {
+            (Some(Value::Record(q)), _) => Some((q, true)),
+            (_, Some(Value::Record(q))) => Some((q, false)),
+            _ => None,
+        };
+        if let Some((q, lines)) = ranged {
+            let whole = |k: &str| match q.get(k) {
+                Some(Value::Number(n)) if n.fract() == 0.0 => Some(*n as i64),
+                _ => None,
+            };
+            let (Some(file), Some(a), Some(b)) = (text(q, "name"), whole(if lines { "from" } else { "offset" }), whole(if lines { "limit" } else { "length" })) else {
+                return Ok((None, None));
+            };
+            let span = if lines { Span::Lines { from: a, limit: b.max(0) as u64 } } else { Span::Slice { offset: a, length: b.max(0) as u64 } };
+            let left = MAX_RUN_READ_BYTES.saturating_sub(self.read_bytes);
+            let Some(read) = self.folders.range(name, file, span, MAX_FILE_BYTES.min(left), keep)? else { return Ok((None, None)) };
+            self.read_bytes += read.bytes.len() as u64;
+            let (start, end) = (read.start, read.end);
+            let text = String::from_utf8(read.bytes).map_err(|_| format!("{name}/{file} bytes {start}..{end} aren't text (UTF-8): read a handle of it"))?;
+            let answer = range_answer(lines, &text);
+            if !keep {
+                return Ok((Some(answer), None));
+            }
+            let kept = self.folders.get(name).map_or(Keep::Bytes, |f| f.keep);
+            let inline = kept == Keep::Bytes && text.len() as u64 <= LOG_INLINE_BYTES;
+            let blob = if kept == Keep::Bytes && !inline {
+                let hash = self.store.0.lock().unwrap().put_value(&Value::Text(text.clone())).map_err(|e| format!("{name}/{file} can't be kept: {e:?}"))?;
+                Some(to_hex(&hash))
+            } else {
+                None
+            };
+            let proved = kept == Keep::Bytes;
+            let range = Ranged {
+                start,
+                end,
+                text: inline.then_some(text),
+                before: if proved { read.before } else { Vec::new() },
+                after: if proved { read.after } else { Vec::new() },
+                proof: if proved { read.proof } else { Vec::new() },
+            };
+            return Ok((Some(answer), Some(Seen { hash: read.hash, size: read.size, inline, blob, range: Some(range) })));
         }
         if let Some(file) = text(r, "read") {
             let left = MAX_RUN_READ_BYTES.saturating_sub(self.read_bytes);
@@ -613,7 +794,7 @@ impl Readable {
             } else {
                 None
             };
-            return Ok((Some(value), Some(Seen { hash, size, inline, blob })));
+            return Ok((Some(value), Some(Seen { hash, size, inline, blob, range: None })));
         }
         let Some(Value::Record(list)) = r.get("list") else { return Ok((None, None)) };
         let limit = match list.get("limit") {
@@ -625,9 +806,27 @@ impl Readable {
     }
 }
 
-/// Apply a performed `FileWrite(name)`: a write's `{name, text}`, or a delete's name.
+/// The folder a copy's handle names, for a performed `FileWrite` that is a copy (`{name, from}`):
+/// a folder the deployment must be granted to read.
+pub(crate) fn copied_from(payload: &Value) -> Option<&str> {
+    let Value::Record(copy) = payload else { return None };
+    let Some(Value::Record(from)) = copy.get("from") else { return None };
+    text(from, "folder")
+}
+
+/// Apply a performed `FileWrite(name)`: a write's `{name, text}`, a copy's `{name, from}` (a
+/// handle), or a delete's name.
 pub(crate) fn apply(folders: &Folders, name: &str, payload: &Value) -> Result<(), String> {
     match payload {
+        Value::Record(file) if file.contains_key("from") => {
+            let (Some(Value::Text(file)), Some(Value::Record(from))) = (file.get("name"), file.get("from")) else {
+                return Err("a copy needs a name and a handle".into());
+            };
+            let (Some(folder), Some(source), Some(hash)) = (text(from, "folder"), text(from, "name"), text(from, "hash")) else {
+                return Err("a copy's handle names a folder, a file and its hash".into());
+            };
+            folders.copy(name, file, folder, source, hash)
+        }
         Value::Record(file) => {
             let (Some(Value::Text(file)), Some(Value::Text(text))) = (file.get("name"), file.get("text")) else {
                 return Err("a write needs a name and a text".into());
@@ -746,6 +945,21 @@ mod tests {
         folders.delete("out", "r/report.md").unwrap();
         folders.delete("out", "r/report.md").unwrap();
         assert!(!out.join("r/report.md").exists());
+
+        // A copy by handle: whole, and only while the file still has the handle's hash.
+        let Some(Value::Record(h)) = folders.handle("inbox", "2026/a.csv").unwrap() else { panic!() };
+        let Some(Value::Text(hash)) = h.get("hash") else { panic!() };
+        assert_eq!((h["size"].clone(), hash.as_str()), (Value::Number(8.0), blake3::hash(b"x,1\ny,2\n").to_hex().as_str()));
+        assert_eq!(folders.handle("inbox", "none.csv").unwrap(), None);
+        folders.copy("out", "copy.csv", "inbox", "2026/a.csv", hash).unwrap();
+        assert_eq!(std::fs::read(out.join("copy.csv")).unwrap(), b"x,1\ny,2\n");
+        std::fs::write(inbox.join("2026/a.csv"), "x,1\ny,3\n").unwrap();
+        assert!(folders.copy("out", "late.csv", "inbox", "2026/a.csv", hash).unwrap_err().contains("changed since"));
+        assert!(!out.join("late.csv").exists() && folders.list("out", "", None, 10).unwrap().len() == 1, "nothing left of it");
+        let tail = folders.range("inbox", "2026/a.csv", Span::Lines { from: -1, limit: 1 }, MAX_FILE_BYTES, true).unwrap().unwrap();
+        assert_eq!((tail.bytes.as_slice(), tail.start, tail.end), (&b"y,3\n"[..], 4, 8));
+        assert!(folders.range("inbox", "2026/a.csv", Span::Slice { offset: 0, length: 8 }, 3, true).unwrap_err().contains("more than the 3"));
+        folders.delete("out", "copy.csv").unwrap();
 
         let write = Value::Record(BTreeMap::from([("name".into(), Value::Text("a.md".into())), ("text".into(), Value::Text("hi".into()))]));
         let logged = loggable(&Capability::FileWrite("out".into()), &write);

@@ -81,10 +81,11 @@ if (!fresh) {
     body: JSON.stringify({ code: SETUP_CODE, name: "e2e", password: "e2e-password-0123" }),
   });
   if (!res.ok) console.error(`e2e server: setting up its admin failed: ${await res.text()}`);
-  // The inbox-report sample's folders, bound as an admin binds them: inbox read-only.
+  // The inbox-report and log-archive samples' folders, bound as an admin binds them: the ones
+  // they only read, read-only.
   const { token } = res.ok ? await res.json() : {};
   rmSync(folders, { recursive: true, force: true });
-  for (const [name, access] of [["inbox", "read"], ["reports", "read-write"]]) {
+  for (const [name, access] of [["inbox", "read"], ["reports", "read-write"], ["logs", "read"], ["archive", "read-write"]]) {
     mkdirSync(join(folders, name), { recursive: true });
     const bound = await fetch(`${base}/admin/folders`, {
       method: "POST",

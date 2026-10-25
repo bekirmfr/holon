@@ -98,6 +98,10 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "file_list" => "A record of a folder's files (name, size, hash, modified) in name order, up to limit: those whose name starts with prefix, after the name after (both optional, for paging).",
         "file_write" => "Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.",
         "file_delete" => "Deletes the file name in a folder when the run finishes.",
+        "file_handle" => "A handle to the file name in a folder, of any size, without its bytes: {folder, name, size, hash, modified}; nothing when there is none. Copy it to another folder, or pass it on.",
+        "file_lines" => "Up to limit lines of the file name in a folder, from line from (0 is the first; -100 is the 100th from the end), without their line endings. Only those lines are read into the flow; the log proves them part of the file.",
+        "file_slice" => "length bytes of the file name in a folder from byte offset (from the end when negative), as text. Only those bytes are read into the flow; the log proves them part of the file.",
+        "file_copy" => "Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.",
         "egress" => "Sends its payload out of the flow as a message, when the run finishes.",
         _ => return None,
     })

@@ -220,6 +220,17 @@ hash).
    run's outputs is logged as `{name, size, hash}`, as it is performed. Folders are global to the
    server (no per-deployment binding yet).
 2. **Handles and ranges.** `.file`, copy by handle, `.lines`, `.slice` with bao-checked ranges.
+
+   **Built** (`crates/holon/src/ranges.rs`, the `log-archive` sample). The proof isn't the bao
+   format: it is the BLAKE3 chaining values of each subtree outside the range, in order, with the
+   bytes around it to whole 1 KiB chunks (`blake3::hazmat`), which recomputes the file's hash; the
+   log keeps them with the range (`file.range`: `start`, `end`, `text`, `before`, `after`,
+   `proof`). A range is up to 1 MiB and counts toward the run's 64 MiB; proving it reads the file
+   once. `lines` without a `from` starts at the first; a negative one counts from the end. A copy
+   is checked at commit (the source still hashes to the handle's hash) and refused when the
+   handle's folder isn't one the deployment reads: a handle is a record, and one can be made up.
+   `reports[n] = h` lowers to a copy when `h` is a handle read in the same flow, else
+   `reports.copy(n, h)`.
 3. **Storage.** Chunking and dedup across files, `keep: bytes for <d>` and the sweep, folder caps.
 4. **Triggers.** `on file inbox` (a run per new file), and handles as `http` bodies.
 

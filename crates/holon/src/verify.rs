@@ -136,9 +136,9 @@ impl Report {
 }
 
 /// Check `export`: its chain, its units, and each run, run again. `witnessed`: a head to find in
-/// it (one a witness holds). `files`: texts of files the runs read, by hash (`--files`), for reads
-/// the export keeps only the hash of.
-pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<String, String>) -> Report {
+/// it (one a witness holds). `files`: files the runs read, by hash (`--files`), for reads the
+/// export keeps only the hash of.
+pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<String, PathBuf>) -> Report {
     let mut report = Report { deployment: export.deployment.clone(), ..Report::default() };
 
     // The chain, as the server checks it when it opens a log (recorder.rs).
@@ -196,7 +196,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
 /// export's blobs, or the files given with `--files`.
 struct Texts<'a> {
     blobs: &'a BTreeMap<String, String>,
-    files: &'a BTreeMap<String, String>,
+    files: &'a BTreeMap<String, PathBuf>,
 }
 
 impl Texts<'_> {
@@ -204,20 +204,13 @@ impl Texts<'_> {
     /// `Err`: none here (what the run read), or a blob that isn't the file it says.
     fn answer(&self, read: &recorder::LoggedRead) -> Result<Option<Value>, Rerun> {
         let Some(file) = &read.file else { return Ok(read.answer.clone().map(SValue::into_core)) };
+        if let Some(range) = &file.range {
+            return self.range(read, file, range);
+        }
         if let Some(answer) = &read.answer {
             return Ok(Some(answer.clone().into_core()));
         }
-        let what = || {
-            let r = read.request.clone().into_core();
-            let field = |k: &str| match &r {
-                Value::Record(r) => match r.get(k) {
-                    Some(Value::Text(t)) => t.clone(),
-                    _ => "?".into(),
-                },
-                _ => "?".into(),
-            };
-            format!("{}/{}", field("folder"), field("read"))
-        };
+        let what = || what(read);
         if let Some(text) = file.blob.as_ref().and_then(|b| self.blobs.get(b)) {
             if blake3::hash(text.as_bytes()).to_hex().as_str() != file.hash {
                 return Err(Rerun::Differs(format!("the text kept for {} isn't the file it read", what())));
@@ -225,13 +218,70 @@ impl Texts<'_> {
             return Ok(Some(Value::Text(text.clone())));
         }
         match self.files.get(&file.hash) {
-            Some(text) => Ok(Some(Value::Text(text.clone()))),
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(text) => Ok(Some(Value::Text(text))),
+                Err(e) => Err(Rerun::Skipped(format!("it read {}, and {} can't be read as text: {e}", what(), path.display()))),
+            },
             None => Err(Rerun::Skipped(format!(
                 "it read {}, whose text the export doesn't hold (its folder keeps hashes): give it with --files",
                 what()
             ))),
         }
     }
+
+    /// The answer of a read of part of a file: its text from the entry, the export's blobs or a
+    /// file given with `--files`; proved part of the file it says by its hashes (ranges.rs), or
+    /// taken from the file whole. `Err`: none here, or bytes that aren't that file's.
+    fn range(&self, read: &recorder::LoggedRead, file: &recorder::LoggedFile, range: &recorder::LoggedRange) -> Result<Option<Value>, Rerun> {
+        let lines = matches!(read.request.clone().into_core(), Value::Record(r) if r.contains_key("lines"));
+        let kept = range.text.clone().or_else(|| file.blob.as_ref().and_then(|b| self.blobs.get(b)).cloned());
+        if let Some(text) = kept {
+            let proof: Option<Vec<[u8; 32]>> = range.proof.iter().map(|h| blake3::Hash::from_hex(h).ok().map(|h| *h.as_bytes())).collect();
+            let (Some(before), Some(after), Some(proof)) = (ranges::unhex(&range.before), ranges::unhex(&range.after), proof) else {
+                return Err(Rerun::Differs(format!("the proof kept for {} isn't hex", what(read))));
+            };
+            let bytes = [before.as_slice(), text.as_bytes(), after.as_slice()].concat();
+            let a = range.start.checked_sub(before.len() as u64);
+            let fits = range.end.checked_sub(range.start) == Some(text.len() as u64)
+                && a.and_then(|a| ranges::root_of(file.size, a, &bytes, &proof)).is_some_and(|h| h.to_hex().as_str() == file.hash);
+            if !fits {
+                return Err(Rerun::Differs(format!("bytes {}..{} kept for {} aren't part of the file it read", range.start, range.end, what(read))));
+            }
+            return Ok(Some(folders::range_answer(lines, &text)));
+        }
+        let Some(path) = self.files.get(&file.hash) else {
+            return Err(Rerun::Skipped(format!(
+                "it read part of {}, whose text the export doesn't hold (its folder keeps hashes): give the file with --files",
+                what(read)
+            )));
+        };
+        let mut part = vec![0u8; range.end.saturating_sub(range.start) as usize];
+        let got = std::fs::File::open(path).and_then(|mut f| {
+            use std::io::{Read, Seek};
+            f.seek(std::io::SeekFrom::Start(range.start))?;
+            f.read_exact(&mut part)
+        });
+        match got.map(|_| String::from_utf8(part)) {
+            Ok(Ok(text)) => Ok(Some(folders::range_answer(lines, &text))),
+            _ => Err(Rerun::Skipped(format!("it read part of {}, and {} doesn't have it as text", what(read), path.display()))),
+        }
+    }
+}
+
+/// The file a logged read read, as `folder/name`.
+fn what(read: &recorder::LoggedRead) -> String {
+    let Value::Record(r) = read.request.clone().into_core() else { return "?".into() };
+    let name = |v: Option<&Value>| match v {
+        Some(Value::Text(t)) => Some(t.clone()),
+        Some(Value::Record(q)) => match q.get("name") {
+            Some(Value::Text(t)) => Some(t.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let folder = name(r.get("folder")).unwrap_or_else(|| "?".into());
+    let file = name(r.get("read")).or_else(|| name(r.get("lines"))).or_else(|| name(r.get("slice"))).unwrap_or_else(|| "?".into());
+    format!("{folder}/{file}")
 }
 
 /// Run `entry` again from what it records (and what the earlier parts of the same run, `earlier`,
@@ -453,7 +503,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
         eprintln!("holon verify: {file} isn't a run export this holon reads ({:?}, not {FORMAT:?})", export.export);
         return 2;
     }
-    let files = match dir.as_deref().map(|d| folders::texts_in(Path::new(d))) {
+    let files = match dir.as_deref().map(|d| folders::files_in(Path::new(d))) {
         None => BTreeMap::new(),
         Some(Ok(files)) => files,
         Some(Err(e)) => {
@@ -471,8 +521,8 @@ const USAGE: &str = "usage: holon verify <export.json> [--head <hex>] [--files D
   Checks a deployment's runs, exported from GET /deployments/<slug>/export: that its run log's
   hash chain is unbroken, that every unit is what its hash says, and that every run, run again
   from its log entry, produces what the log says it did. --head checks that a head a witness
-  holds is in the export, so no run up to it was changed or removed. --files gives the text of
-  files the runs read whose folder keeps only their hashes: each is found by its hash, wherever
+  holds is in the export, so no run up to it was changed or removed. --files gives the files the
+  runs read (whole, or part of) whose folder keeps only their hashes: each is found by its hash, wherever
   it is under DIR. Exits 0 when it all checks.";
 
 /// What a report says, in a few lines.

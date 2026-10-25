@@ -343,10 +343,18 @@ fn run_attempt(
         host.performed.clear();
     }
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
-    // carrying a secret's value, which would put it on disk and in every later snapshot.
+    // carrying a secret's value, which would put it on disk and in every later snapshot, and a copy
+    // from a folder the deployment doesn't read (a handle is only a record: one can be made up).
+    let reads_folders = permit.folders_read();
     host.performed.retain(|(cap, payload)| {
         if !permit.allows(cap) {
             eprintln!("holon: refused {cap:?}: not granted to this deployment");
+            return false;
+        }
+        if let Some(from) = folders::copied_from(payload).filter(|f| !reads_folders.contains(*f))
+            && matches!(cap, Capability::FileWrite(_))
+        {
+            eprintln!("holon: refused {cap:?}: a copy from the folder {from:?}, which this deployment doesn't read");
             return false;
         }
         if let Capability::StateWrite(key) | Capability::CollectionWrite(key) = cap
@@ -481,10 +489,16 @@ fn without_kept_files(timeline: &[recorder::NodeTiming], reads: &[collections::R
         Some(Value::Text(t)) => Some(t.as_str()),
         _ => None,
     });
+    // A range's lines, as a node carries them: the list whole.
+    let lines = reads.iter().filter(|r| r.file.as_ref().is_some_and(|f| !f.inline)).filter_map(|r| match &r.answer {
+        Some(v @ Value::List(l)) if !l.is_empty() => serde_json::to_string(&SValue::from_core(v)).ok(),
+        _ => None,
+    });
     let kept: Vec<String> = read
         .chain(folders::written_texts(performed))
         .filter(|t| !t.is_empty())
         .filter_map(|t| serde_json::to_string(t).ok().map(|q| q[1..q.len() - 1].to_string()))
+        .chain(lines)
         .collect();
     let mut timeline = timeline.to_vec();
     if kept.is_empty() {
@@ -554,9 +568,22 @@ pub(crate) fn run_entry(
             .map(|r| recorder::LoggedRead {
                 path: r.path.clone(),
                 request: SValue::from_core(&r.request),
-                // A file's text past the inline size is kept by its hash, not in the entry.
-                answer: r.answer.as_ref().filter(|_| r.file.as_ref().is_none_or(|f| f.inline)).map(SValue::from_core),
-                file: r.file.as_ref().map(|f| recorder::LoggedFile { hash: f.hash.clone(), size: f.size, blob: f.blob.clone() }),
+                // A file's text past the inline size is kept by its hash, not in the entry; a range's
+                // answer is its text (or the lines of it), kept with the range.
+                answer: r.answer.as_ref().filter(|_| r.file.as_ref().is_none_or(|f| f.inline && f.range.is_none())).map(SValue::from_core),
+                file: r.file.as_ref().map(|f| recorder::LoggedFile {
+                    hash: f.hash.clone(),
+                    size: f.size,
+                    blob: f.blob.clone(),
+                    range: f.range.as_ref().map(|g| recorder::LoggedRange {
+                        start: g.start,
+                        end: g.end,
+                        text: g.text.clone(),
+                        before: ranges::hex(&g.before),
+                        after: ranges::hex(&g.after),
+                        proof: g.proof.iter().map(|cv| ranges::hex(cv)).collect(),
+                    }),
+                }),
             })
             .collect(),
     }

@@ -144,7 +144,9 @@ holon folder list                            # holon folder remove NAME unbinds 
 
 or the editor's admin page. A flow names the folder, never a path, and a file's name never leaves
 it; the server's own data can't be bound. A write lands whole when the run finishes. The
-`inbox-report` sample reads a CSV from one folder and writes a report to another. Design:
+`inbox-report` sample reads a CSV from one folder and writes a report to another; `log-archive`
+serves the last lines of a log of any size (only those lines enter the run, and its log proves
+them part of the file) and copies it to an archive by handle. Design:
 `docs/L4s/named-folders-L4.md`.
 
 `holon serve --at 8080` listens on another port (`--at 0.0.0.0:8080` on every interface);

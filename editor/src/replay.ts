@@ -288,13 +288,25 @@ export function recordedResponses(exchanges: NodeExchange[]): Map<string, WValue
   return out;
 }
 
+/** The lines of a span of a file, without their line endings, as the server reads them
+ *  (ranges.rs `lines_of`). */
+export function linesOf(text: string): string[] {
+  return (text.match(/[^\n]*\n|[^\n]+$/g) ?? []).map((line) => line.replace(/\r?\n$/, ""));
+}
+
 /** What each collection or file read (`collection_get`, `collection_list`, `file_read`,
- *  `file_list`) was answered, by canvas node, from the run's record: replay answers them from
- *  here, as the run found the collection or folder. A read that found nothing is left out, and
- *  replays as nothing; a file the log keeps by hash replays as a placeholder naming it, as a
- *  secret does, and what it feeds shows what the run recorded. */
+ *  `file_list`, `file_handle`, `file_lines`, `file_slice`) was answered, by canvas node, from the
+ *  run's record: replay answers them from here, as the run found the collection or folder. A read
+ *  that found nothing is left out, and replays as nothing; part of a file answers with the text
+ *  the log keeps with its range (or the lines of it); a file or a range the log keeps by hash
+ *  replays as a placeholder naming it, as a secret does, and what it feeds shows what the run
+ *  recorded. */
 export function recordedReads(
-  entry: { kind: string; route: string | null; reads?: { path: number[]; request?: WValue; answer: WValue | null; file?: { hash: string; size: number } }[] },
+  entry: {
+    kind: string;
+    route: string | null;
+    reads?: { path: number[]; request?: WValue; answer: WValue | null; file?: { hash: string; size: number; range?: { start: number; end: number; text?: string } } }[];
+  },
   trace: Record<string, string[]> | undefined,
 ): Map<string, WValue> {
   const out = new Map<string, WValue>();
@@ -304,8 +316,16 @@ export function recordedReads(
   for (const r of entry.reads ?? []) {
     const id = at(r.path);
     if (!id) continue;
-    if (r.answer !== null) out.set(id, r.answer);
-    else if (r.file) out.set(id, { type: "Text", value: `‹file:${text(field(r.request, "folder"))}/${text(field(r.request, "read"))}, ${r.file.size} bytes, kept by hash›` });
+    const folder = text(field(r.request, "folder"));
+    const range = r.file?.range;
+    if (range) {
+      const lines = field(r.request, "lines");
+      const name = text(field(lines ?? field(r.request, "slice"), "name"));
+      if (range.text === undefined) out.set(id, { type: "Text", value: `‹file:${folder}/${name}, bytes ${range.start}..${range.end}, kept by hash›` });
+      else if (lines) out.set(id, { type: "List", value: linesOf(range.text).map((value): WValue => ({ type: "Text", value })) });
+      else out.set(id, { type: "Text", value: range.text });
+    } else if (r.answer !== null) out.set(id, r.answer);
+    else if (r.file) out.set(id, { type: "Text", value: `‹file:${folder}/${text(field(r.request, "read"))}, ${r.file.size} bytes, kept by hash›` });
   }
   return out;
 }
@@ -476,7 +496,7 @@ export function replay(
     if (primitive && name === "resume_token") return { inputs, outputs: [{ type: "Text", value: `‹token:${param("await")}›` }] };
     // The editor never has a secret's value: a placeholder stands in, as the log shows it.
     if (primitive && name === "secret") return { inputs, outputs: [{ type: "Text", value: `‹secret:${param("name")}›` }] };
-    if (primitive && ["http_request", "collection_get", "collection_list", "file_read", "file_list"].includes(name)) {
+    if (primitive && ["http_request", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
       // Answered from the record, never the network, the store or the disk: a replay is offline
       // and exact, and shows the collection or folder as the run found it, whatever it holds now.
       return { inputs, outputs: [responses.get(id) ?? null] };
@@ -614,6 +634,9 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "collection_get":
       return `no item "${textOf(a) ?? "?"}" in the collection "${p("collection")}"`;
     case "file_read":
+    case "file_handle":
+    case "file_lines":
+    case "file_slice":
       return `no file "${textOf(a) ?? "?"}" in the folder "${p("folder")}"`;
     case "find":
       return `no item whose "${p("name")}" matches`;

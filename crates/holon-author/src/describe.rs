@@ -23,7 +23,7 @@ pub fn describe_item(item: &str) -> String {
         ("CollectionRead", |a| format!("read items of its collection \"{a}\"")),
         ("CollectionWrite", |a| format!("put and delete items of its collection \"{a}\"")),
         ("FileRead", |a| format!("read files in the folder \"{a}\"")),
-        ("FileWrite", |a| format!("write and delete files in the folder \"{a}\"")),
+        ("FileWrite", |a| format!("write, copy into and delete files in the folder \"{a}\"")),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
         ("Await", |a| format!("wait for an event \"{a}\" and continue later")),

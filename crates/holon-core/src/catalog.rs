@@ -52,8 +52,10 @@ pub const GENESIS: &[&str] = &[
     "store_read", "store_write",
     // collections: keyed items, read by key or in order, put and deleted (4)
     "collection_get", "collection_list", "collection_put", "collection_delete",
-    // named folders: files read by name or listed, written and deleted (4)
+    // named folders: files read by name or listed, written and deleted (4); a file's handle, its
+    // lines and a slice of it, and a copy by handle (4)
     "file_read", "file_list", "file_write", "file_delete",
+    "file_handle", "file_lines", "file_slice", "file_copy",
     // sink — performed (1)
     "egress",
 ];
@@ -268,6 +270,17 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         ),
         "file_write" => prim(vec![port("name", Text), port("text", Text)], vec![Param::frozen("folder", "files")], Effect),
         "file_delete" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Effect),
+        // A file of any size without its bytes: a handle `{folder, name, size, hash, modified}`, to
+        // pass on or copy. Part of one: `limit` lines from line `from` (from the end when
+        // negative), or `length` bytes from `offset`, as text.
+        "file_handle" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Type::Record),
+        "file_lines" => prim(
+            vec![port("name", Text), port("from", Number)],
+            vec![Param::frozen("folder", "files"), Param::frozen("limit", "100")],
+            Type::List(Box::new(Text)),
+        ),
+        "file_slice" => prim(vec![port("name", Text), port("offset", Number), port("length", Number)], vec![Param::frozen("folder", "files")], Text),
+        "file_copy" => prim(vec![port("name", Text), port("from", Type::Record)], vec![Param::frozen("folder", "files")], Effect),
 
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
@@ -303,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_75_leaves() {
+    fn genesis_has_79_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -313,8 +326,9 @@ mod tests {
         // hex, base64, secure_equals), split, the collection kit (get, list, put, delete), and
         // as_text (the language's string interpolation) and coalesce (its `??` and `if … else`
         // with a fallback on a wire), both for docs/LANGUAGE.md, range, and the named-folder kit
-        // (file_read, file_list, file_write, file_delete).
-        assert_eq!(GENESIS.len(), 75);
+        // (file_read, file_list, file_write, file_delete, file_handle, file_lines, file_slice,
+        // file_copy).
+        assert_eq!(GENESIS.len(), 79);
     }
 
     #[test]

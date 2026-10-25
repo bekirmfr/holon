@@ -396,6 +396,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "first bind the folders (an admin): holon folder add inbox ~/holon-inbox --read-only and holon folder add reports ~/holon-reports; put sales.csv (region,amount / north,10 / south,32) in the inbox; then curl -s -X POST -H 'content-type: application/json' -d '{\"name\":\"sales.csv\"}' http://127.0.0.1:8123/report answers rows 2, curl http://127.0.0.1:8123/reports/sales.csv.md shows the report (amount: 42), and curl http://127.0.0.1:8123/reports lists it",
         text: include_str!("../samples/inbox-report.holon"),
     },
+    Sample {
+        name: "log-archive",
+        title: "Log archive (big files, by handle and by range)",
+        description: "Serves the last lines and the first bytes of a log of any size, and archives a log to another folder host to host. Only the lines or bytes asked for enter the flow, and the run log keeps with them the hashes that prove them part of the file, so holon verify checks the run without the file. Archiving reads a handle (name, size, hash), never the bytes: the copy streams them when the run finishes, and fails if the log changed since it was read.",
+        shows: &["named folders", "file handles", "copy by handle", "lines and slices", "range proofs"],
+        port: Some("8124"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folders (an admin): holon folder add logs ~/holon-logs --read-only and holon folder add archive ~/holon-archive; put any app.log in the logs folder; then curl http://127.0.0.1:8124/logs/app.log/tail answers its last 20 lines, curl http://127.0.0.1:8124/logs/app.log/head its first 256 bytes, curl -s -X POST -H 'content-type: application/json' -d '{\"name\":\"app.log\"}' http://127.0.0.1:8124/archive copies it into the archive under its hash, and curl http://127.0.0.1:8124/archive lists the archive",
+        text: include_str!("../samples/log-archive.holon"),
+    },
 ];
 
 #[cfg(test)]

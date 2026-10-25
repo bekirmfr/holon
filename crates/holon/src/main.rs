@@ -175,6 +175,7 @@ mod mcphosts;
 mod outbound;
 mod permissions;
 mod persist;
+mod ranges;
 mod recorder;
 mod scheduler;
 mod sealing;

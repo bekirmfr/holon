@@ -1461,7 +1461,7 @@ fn check_wunit_roundtrip() {
 fn check_primitive_catalog() {
     let cat = catalog_wunits();
     // The §13a count crosses the mirror intact.
-    assert_eq!(cat.len(), 75);
+    assert_eq!(cat.len(), 79);
     // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
     let add = cat
         .iter()

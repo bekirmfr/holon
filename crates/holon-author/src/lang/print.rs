@@ -374,7 +374,7 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
             let optional = n.data.body == PlacedBody::Primitive
                 && matches!(
                     (n.data.name.as_str(), p.name.as_str()),
-                    ("http_request", "headers" | "body") | ("collection_list" | "file_list", "prefix" | "after")
+                    ("http_request", "headers" | "body") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
                 );
             optional || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
         })
@@ -1050,6 +1050,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 "collection_list" => "page".into(),
                 "file_read" => "text".into(),
                 "file_list" => "files".into(),
+                "file_handle" => "file".into(),
+                "file_lines" => "lines".into(),
+                "file_slice" => "part".into(),
                 "http_request" => "response".into(),
                 "stripe_verify" => "verified".into(),
                 "clock" => "t".into(),
@@ -1073,6 +1076,14 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         self.used.insert(name.clone());
         self.bound.insert(node.id.clone(), name.clone());
         name
+    }
+
+    /// Whether `node`'s `from` is a file's handle, straight from `file_handle`.
+    fn copies_a_handle(&self, node: &Node) -> bool {
+        match self.g.incoming.get(&(node.id.clone(), "from".to_string())) {
+            Some(Src::Node { id, .. }) => self.g.node(id).data.name == "file_handle",
+            _ => false,
+        }
     }
 
     /// The value on `node`'s `input`, as text with its precedence, or `None` when unwired.
@@ -1217,6 +1228,31 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "file_delete" if plain(node.param("folder")) => {
                 let name = self.required(node, "name")?;
                 atom(format!("{}.delete({name})", node.param("folder")))
+            }
+            "file_handle" if plain(node.param("folder")) => {
+                let name = self.required(node, "name")?;
+                atom(format!("{}.file({name})", node.param("folder")))
+            }
+            "file_lines" if plain(node.param("folder")) => {
+                let mut args = vec![self.required(node, "name")?];
+                if let Some((t, _)) = self.arg(node, "from")? {
+                    args.push(format!("from: {t}"));
+                }
+                if node.param("limit") != "100" {
+                    args.push(format!("limit: {}", param_value(node.param("limit"))));
+                }
+                atom(format!("{}.lines({})", node.param("folder"), args.join(", ")))
+            }
+            "file_slice" if plain(node.param("folder")) => {
+                let name = self.required(node, "name")?;
+                let offset = self.required(node, "offset")?;
+                let length = self.required(node, "length")?;
+                atom(format!("{}.slice({name}, offset: {offset}, length: {length})", node.param("folder")))
+            }
+            "file_copy" if plain(node.param("folder")) => {
+                let name = self.required(node, "name")?;
+                let from = self.required(node, "from")?;
+                atom(format!("{}.copy({name}, {from})", node.param("folder")))
             }
             "collection_list" | "file_list" if plain(node.param(if d.name == "file_list" { "folder" } else { "collection" })) => {
                 let mut args = Vec::new();
@@ -1524,6 +1560,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 Ok(format!("{}[{name}] = {text}", node.param("folder")))
             }
             "file_delete" if plain(node.param("folder")) => Ok(format!("delete {}[{}]", node.param("folder"), self.required(node, "name")?)),
+            // A copy reads as a write when what it copies is a handle read here (the text lowers it
+            // back to a copy), else as the method.
+            "file_copy" if plain(node.param("folder")) && self.copies_a_handle(node) => {
+                let name = self.required(node, "name")?;
+                let from = self.required(node, "from")?;
+                Ok(format!("{}[{name}] = {from}", node.param("folder")))
+            }
             _ => Ok(self.render(node, "")?.0),
         }
     }

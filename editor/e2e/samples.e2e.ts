@@ -503,6 +503,42 @@ test("inbox-report reads a file from a bound folder and writes its report to ano
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("log-archive reads the last lines of a log too big to read whole and archives it by handle, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const name = `app-${Date.now()}.log`;
+  const log = Array.from({ length: 60_000 }, (_, i) => `line ${i} of a log too big to read whole\n`).join("");
+  writeFileSync(join(FOLDERS, "logs", name), log);
+  await openSample(page, "Log archive (big files, by handle and by range)");
+  const port = await deploy(page);
+  const tail = await request.get(`http://127.0.0.1:${port}/logs/${name}/tail`);
+  expect(tail.status()).toBe(200);
+  const last: string[] = await tail.json();
+  expect([last.length, last[19]]).toEqual([20, "line 59999 of a log too big to read whole"]);
+  await viewNewestRun(page);
+  // Copied host to host by its handle: the bytes never entered the run.
+  const archived = await request.post(`http://127.0.0.1:${port}/archive`, { data: { name } });
+  expect(archived.status()).toBe(200);
+  const answer: { archived: string; size: number } = await archived.json();
+  expect(answer.size).toBe(log.length);
+  expect(readFileSync(join(FOLDERS, "archive", answer.archived), "utf8")).toBe(log);
+  expect(Object.keys(await (await request.get(`http://127.0.0.1:${port}/archive`)).json())).toContain(answer.archived);
+
+  // Its runs check offline from the lines they read, proved part of the log by its hashes.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "log-archive.json");
+  execFileSync(holon, ["export", "log-archive", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  const exported = readFileSync(out, "utf8");
+  expect(exported).toContain("line 59999 ");
+  expect(exported).not.toContain("line 30000 ");
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("re-ran 3 runs: each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const { mkdtempSync } = await import("node:fs");

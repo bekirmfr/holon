@@ -92,7 +92,7 @@ fn alias(name: &str) -> &str {
 /// Inputs a node works without, left unwired (routes.rs `is_optional_input`, core's
 /// `has_optional_ports`).
 fn is_optional(leaf: &str, input: &str) -> bool {
-    matches!((leaf, input), ("http_request", "headers" | "body") | ("collection_list" | "file_list", "prefix" | "after"))
+    matches!((leaf, input), ("http_request", "headers" | "body") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
 }
 
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
@@ -485,7 +485,13 @@ impl<'a> Lowerer<'a> {
                 let k = self.expr(key)?;
                 let v = self.expr(value)?;
                 let named = [(store.param.into(), collection.text.clone())];
-                let w = self.node_with(store.put, &named, &[(store.key, k), (store.value, v)], s.span)?;
+                // A file's handle written to a folder is a copy: its bytes go host to host.
+                let handle = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| d.name == "file_handle"));
+                let w = if store.kind == "folder" && handle {
+                    self.node_with("file_copy", &named, &[("name", k), ("from", v)], s.span)?
+                } else {
+                    self.node_with(store.put, &named, &[(store.key, k), (store.value, v)], s.span)?
+                };
                 self.effect(w, s.span)
             }
             StmtKind::Delete { collection, key } => {
@@ -784,6 +790,7 @@ impl<'a> Lowerer<'a> {
                     "collection_put" => "put",
                     "collection_delete" => "delete",
                     "file_write" => "written",
+                    "file_copy" => "copied",
                     "file_delete" => "deleted",
                     "store_write" => "write",
                     "egress" => "sent",
@@ -1318,11 +1325,18 @@ impl<'a> Lowerer<'a> {
                 self.unit_call("store_write", &inputs, &params, &[("key".to_string(), key)], &args[1..], span)
             }
             c if let Some(store) = self.store(c) => {
+                let folder = store.kind == "folder";
                 let leaf_name = match method.text.as_str() {
                     "get" => store.get,
                     "put" => store.put,
                     "delete" => store.delete,
                     "list" => store.list,
+                    // A folder's files without their bytes, and parts of them.
+                    "file" if folder => "file_handle",
+                    "lines" if folder => "file_lines",
+                    "slice" if folder => "file_slice",
+                    "copy" if folder => "file_copy",
+                    other if folder => return err(method.span, format!("a folder has no \"{other}\": get, put, delete, list, file, lines, slice or copy")),
                     other => return err(method.span, format!("a {} has no \"{other}\": get, put, delete or list", store.kind)),
                 };
                 let (inputs, params) = leaf(leaf_name);
@@ -1792,8 +1806,24 @@ pub(crate) mod tests {
         assert_eq!([folder("file_read"), folder("file_list"), folder("file_write"), folder("file_delete")], ["inbox", "inbox", "out", "out"]);
         assert_eq!(error("folder inbox\nx = inbox"), (2, 5, "\"inbox\" is a folder: read it as inbox[name] or inbox.list(…)".into()));
         assert_eq!(error("folder inbox\ninbox = 1"), (2, 1, "\"inbox\" is a folder; a binding may not shadow it".into()));
-        assert_eq!(error("folder inbox\nx = inbox.copy(\"a\")"), (2, 11, "a folder has no \"copy\": get, put, delete or list".into()));
+        assert_eq!(error("folder inbox\nx = inbox.move(\"a\")"), (2, 11, "a folder has no \"move\": get, put, delete, list, file, lines, slice or copy".into()));
+        assert_eq!(error("collection notes\nx = notes.file(\"a\")"), (2, 11, "a collection has no \"file\": get, put, delete or list".into()));
         assert_eq!(error("folder = 1"), (1, 8, "expected the folder's name, found \"=\"".into()));
+    }
+
+    #[test]
+    fn folders_hand_out_handles_lines_and_slices_and_copy_by_handle() {
+        let d = compiled(
+            "folder logs\nfolder archive\nh = logs.file(\"app.log\")\nlast = logs.lines(\"app.log\", from: -10, limit: 10)\nstart = logs.slice(\"app.log\", offset: 0, length: 64)\narchive[\"app.log\"] = h\narchive.copy(\"b.log\", h)\narchive[\"c.log\"] = start\n",
+        )
+        .doc;
+        let mut got = leaves(&d);
+        got.retain(|l| l != "const" && l != "neg" && l != "sub");
+        assert_eq!(got, ["file_handle", "file_lines", "file_slice", "file_copy", "file_copy", "file_write"], "a handle written is a copy; a text, a write");
+        let lines = d.nodes.iter().find(|n| n.data.name == "file_lines").unwrap();
+        assert_eq!((lines.param("folder"), lines.param("limit")), ("logs", "10"));
+        let first = compiled("folder logs\nl = logs.lines(\"a\")\n").doc;
+        assert!(first.nodes.iter().any(|n| n.data.name == "file_lines"), "from the first line: from is optional");
     }
 
     #[test]

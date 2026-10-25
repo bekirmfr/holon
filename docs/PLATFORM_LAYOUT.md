@@ -305,7 +305,13 @@ only the editor.
   text up to 4 KiB, a bigger one in the content store by hash (exported as the export's `blobs`),
   and a write as `{name, size, hash}`; a node output carrying a text it keeps by hash is left out
   of the timeline. `holon verify --files DIR` answers reads a folder kept only by hash. A run
-  whose read fails answers 500 and performs nothing.
+  whose read fails answers 500 and performs nothing. Slice 2 (`holon/src/ranges.rs`): a file of
+  any size by handle (`{folder, name, size, hash, modified}`, its bytes hashed, none kept) and
+  copied by handle at commit, streamed beside the target and renamed over it, refused if the file
+  no longer has the handle's hash or its folder isn't one the deployment reads; and part of one,
+  `lines` (from the start or the end) or a `slice`, up to 1 MiB. A range's bytes enter the run and
+  the log alone, with the BLAKE3 chaining values of every other subtree of the file and the bytes
+  around it to whole chunks, so `holon verify` proves them part of the file's hash without it.
 - **Secrets** ✅ (`holon-server/src/secrets.rs`): a per-deployment secret store on the server
   (`--secrets`, its own file, owner-only), written over the control plane
   (`POST`/`DELETE /deployments/<slug>/secrets/<name>`), never returned by it (`GET` lists names,

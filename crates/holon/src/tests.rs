@@ -3810,7 +3810,82 @@ fn a_flow_reads_and_writes_bound_folders_and_its_runs_verify() {
     let without = verify::check(&kept, None, &BTreeMap::new());
     assert!(without.ok(), "{}", verify::describe(&without, None));
     assert!(matches!(&without.reruns.last().unwrap().1, verify::Rerun::Skipped(why) if why.contains("--files")), "{:?}", without.reruns.last());
-    let with = verify::check(&kept, None, &folders::texts_in(&inbox).unwrap());
+    let with = verify::check(&kept, None, &folders::files_in(&inbox).unwrap());
     assert_eq!(with.reruns.last().unwrap(), &(last, verify::Rerun::Matched), "{}", verify::describe(&with, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file too big to read whole is read by handle and by range: its last lines and first bytes
+/// enter the run, nothing else, and the log proves them part of the file by its hashes, so the
+/// runs check offline without it. A copy by handle streams the file host to host.
+#[test]
+fn a_big_file_is_read_by_range_and_copied_by_handle_and_its_runs_verify() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-ranges-flow-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (logs, archive) = (dir.join("logs"), dir.join("archive"));
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::create_dir_all(&archive).unwrap();
+    let big: String = (0..60_000).map(|i| format!("line {i} of a log too big to read whole\n")).collect();
+    assert!(big.len() as u64 > folders::MAX_FILE_BYTES);
+    std::fs::write(logs.join("app.log"), &big).unwrap();
+    let bind = |name: &str, path: &Path, access: &str, keep: &str| {
+        let body = serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access, "keep": keep });
+        route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code
+    };
+    assert_eq!(bind("logs", &logs, "read", "bytes"), 200);
+    assert_eq!(bind("archive", &archive, "read-write", "bytes"), 200);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/log-archive.holon"), "");
+
+    let (status, tail, _) = data_call(&state, &slug, "GET", "/logs/app.log/tail", "");
+    assert_eq!(status, 200, "{tail}");
+    let tail: Vec<String> = serde_json::from_str(&tail).unwrap();
+    assert_eq!((tail.len(), tail[0].as_str(), tail[19].as_str()), (20, "line 59980 of a log too big to read whole", "line 59999 of a log too big to read whole"));
+    let (status, head, _) = data_call(&state, &slug, "GET", "/logs/app.log/head", "");
+    assert_eq!((status, head.as_str()), (200, &big[..256]));
+    assert_eq!(data_call(&state, &slug, "GET", "/logs/none.log/tail", "").0, 404, "no such file: no value");
+
+    let (status, body, _) = data_call(&state, &slug, "POST", "/archive", r#"{"name":"app.log"}"#);
+    assert_eq!(status, 200, "{body}");
+    let hash = blake3::hash(big.as_bytes()).to_hex().to_string();
+    let answered: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((answered["archived"].as_str().unwrap(), answered["size"].as_f64().unwrap()), (format!("app.log.{hash}").as_str(), big.len() as f64));
+    assert_eq!(std::fs::read_to_string(archive.join(format!("app.log.{hash}"))).unwrap(), big, "copied whole, host to host");
+    let (_, listed, _) = data_call(&state, &slug, "GET", "/archive", "");
+    assert!(listed.contains(&hash), "{listed}");
+
+    // The log holds the lines and bytes read, with what proves them part of the file; no more.
+    let entries = log_entries(&state, &slug);
+    let log = serde_json::to_string(&entries).unwrap();
+    assert!(!log.contains("line 30000 "), "the rest of the file isn't in the log");
+    let tail_read = &entries.iter().find(|e| e["route"] == "GET /logs/:name/tail").unwrap()["reads"][0]["file"];
+    assert_eq!((tail_read["hash"].as_str(), tail_read["size"].as_u64()), (Some(hash.as_str()), Some(big.len() as u64)), "{tail_read}");
+    assert!(tail_read["range"]["text"].as_str().unwrap().ends_with("line 59999 of a log too big to read whole\n"), "{tail_read}");
+    assert!(!tail_read["range"]["proof"].as_array().unwrap().is_empty(), "{tail_read}");
+    let copied = &entries.iter().find(|e| e["route"] == "POST /archive").unwrap()["performed"];
+    assert!(copied.to_string().contains("FileWrite") && copied.to_string().contains(&hash), "a copy is logged by the handle it copied: {copied}");
+
+    let export = || -> verify::Export { serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap() };
+    let report = verify::check(&export(), None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 5, "{:?}", report.reruns);
+
+    // A folder that keeps hashes: a range checks only with the file given, read at its place.
+    assert_eq!(bind("logs", &logs, "read", "hash"), 200);
+    assert_eq!(data_call(&state, &slug, "GET", "/logs/app.log/tail", "").0, 200);
+    let kept = export();
+    let last = kept.lines.len() as u64 - 1;
+    let without = verify::check(&kept, None, &BTreeMap::new());
+    assert!(matches!(&without.reruns.last().unwrap().1, verify::Rerun::Skipped(why) if why.contains("--files")), "{:?}", without.reruns.last());
+    let with = verify::check(&kept, None, &folders::files_in(&logs).unwrap());
+    assert_eq!(with.reruns.last().unwrap(), &(last, verify::Rerun::Matched), "{}", verify::describe(&with, None));
+
+    // A handle is only a record: one made up, naming a folder this flow doesn't read, copies nothing.
+    let forged = "flow forge\nport 8199\nfolder archive\n\nroute POST /c (req) {\n  archive.copy(\"stolen.log\", { folder: \"logs\", name: \"app.log\", hash: req.json.hash })\n  respond 1\n}\n";
+    let forge = deploy_text(&state, forged, "");
+    assert_eq!(data_call(&state, &forge, "POST", "/c", &format!(r#"{{"hash":"{hash}"}}"#)).0, 200);
+    assert!(!archive.join("stolen.log").exists(), "a copy from a folder it doesn't read is refused");
+    let outputs = log_entries(&state, &forge).last().unwrap().clone();
+    assert!(outputs["outputs"].to_string().contains("file_copy:archive"), "the flow made the copy: {outputs}");
+    assert_eq!(outputs["performed"], serde_json::json!([]), "and the host refused it: {outputs}");
     let _ = std::fs::remove_dir_all(&dir);
 }

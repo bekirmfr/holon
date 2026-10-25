@@ -164,9 +164,32 @@ pub struct LoggedFile {
     pub hash: String,
     pub size: u64,
     /// Its text's value hash in the content store (hex), when the folder keeps bytes and the text
-    /// isn't in the entry.
+    /// isn't in the entry: the whole file's, or the range's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob: Option<String>,
+    /// For part of a file (`lines`, `slice`): where it is and what proves it part of the file. The
+    /// read's answer is then not in the entry: it is the range's text, or its lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<LoggedRange>,
+}
+
+/// Part of a file a run read (ranges.rs): bytes `start..end` of the file whose hash is
+/// [`LoggedFile::hash`]. When its folder keeps bytes, the bytes around it to whole BLAKE3 chunks
+/// (hex) and the chaining values of every other subtree of the file (hex) tie it to that hash, so
+/// `holon verify` checks it without the file.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct LoggedRange {
+    pub start: u64,
+    pub end: u64,
+    /// Its text, when the entry holds it (else by [`LoggedFile::blob`], or not at all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub before: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub after: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proof: Vec<String>,
 }
 
 /// The requests performed after one round, to answer the next.

@@ -104,7 +104,8 @@ pub enum Capability {
     Clock,
     /// Receives inbound data / requests.
     NetworkIngress,
-    /// Reads files of the named folder: `file_read`, `file_list`. Answered by the host from the
+    /// Reads files of the named folder: `file_read`, `file_list`, `file_handle`, `file_lines`,
+    /// `file_slice`. Answered by the host from the
     /// folder an admin bound to that name (`docs/L4s/named-folders-L4.md`).
     FileRead(String),
     /// Reads a secret / credential (a security-sensitive read).
@@ -132,7 +133,8 @@ pub enum Capability {
     /// Makes an HTTP request to the named host (`host` or `host:port`) and gets its answer:
     /// `http_request`. Per host, so consent names where a flow may call, not just "the network".
     HttpRequest(String),
-    /// Writes and deletes files of the named folder: `file_write`, `file_delete`, committed when
+    /// Writes, copies into and deletes files of the named folder: `file_write`, `file_copy`,
+    /// `file_delete`, committed when
     /// the run finishes.
     FileWrite(String),
     /// Starts a process / job.
@@ -273,8 +275,8 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A named folder: files read as the run found them, written and deleted when it finishes.
         // The folder is a frozen param, so the capability names it exactly; the host binds the
         // name to a real folder.
-        "file_read" | "file_list" => vec![FileRead(ident(params, "folder")?)],
-        "file_write" | "file_delete" => vec![FileWrite(ident(params, "folder")?)],
+        "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice" => vec![FileRead(ident(params, "folder")?)],
+        "file_write" | "file_copy" | "file_delete" => vec![FileWrite(ident(params, "folder")?)],
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
@@ -583,6 +585,10 @@ mod tests {
         for (leaf, cap, kind) in [
             ("file_read", Capability::FileRead("inbox".into()), Kind::Driver),
             ("file_list", Capability::FileRead("inbox".into()), Kind::Driver),
+            ("file_handle", Capability::FileRead("inbox".into()), Kind::Driver),
+            ("file_lines", Capability::FileRead("inbox".into()), Kind::Driver),
+            ("file_slice", Capability::FileRead("inbox".into()), Kind::Driver),
+            ("file_copy", Capability::FileWrite("inbox".into()), Kind::Sink),
             ("file_write", Capability::FileWrite("inbox".into()), Kind::Sink),
             ("file_delete", Capability::FileWrite("inbox".into()), Kind::Sink),
         ] {
