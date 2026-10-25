@@ -81,7 +81,7 @@ if (!fresh) {
     body: JSON.stringify({ code: SETUP_CODE, name: "e2e", password: "e2e-password-0123" }),
   });
   if (!res.ok) console.error(`e2e server: setting up its admin failed: ${await res.text()}`);
-  // The inbox-report, log-archive, journal, drop-box and file-audit samples' folders, bound as an admin binds
+  // The inbox-report, log-archive, journal, shared-ledger, drop-box and file-audit samples' folders, bound as an admin binds
   // them: the ones they only read, read-only; the journal's texts kept a week, the folder capped at
   // 64 KiB.
   const { token } = res.ok ? await res.json() : {};
@@ -92,6 +92,7 @@ if (!fresh) {
     { name: "logs", access: "read" },
     { name: "archive", access: "read-write" },
     { name: "journal", access: "read-write", keep: "bytes for 7d", cap: "64K" },
+    { name: "ledger", access: "read-write" },
     { name: "drop", access: "read" },
     { name: "receipts", access: "read-write" },
     { name: "outbox", access: "read" },

@@ -146,6 +146,10 @@ pub(crate) struct Folder {
     /// The most bytes its files may hold in all, if it is capped: a write past it doesn't land.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cap: Option<u64>,
+    /// Bound by several servers (a share): a commit's lock on it is also an OS lock on a file in
+    /// it, so their runs exclude each other too (locks.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) shared: bool,
 }
 
 /// The largest file a run reads as text, without asking for more (`inline_file_bytes`).
@@ -173,6 +177,8 @@ pub(crate) struct Folders {
     bound: RwLock<Bound>,
     /// The texts of the files runs read, kept for their logs (blobs.rs).
     pub(crate) blobs: blobs::Blobs,
+    /// The commit locks on its folders, every deployment's runs in one table (locks.rs).
+    pub(crate) locks: locks::Locks,
 }
 
 /// Every binding: the server's, by name, and each deployment's own, by its slug then name. On
@@ -216,7 +222,13 @@ pub(crate) fn canonical(path: &Path) -> std::io::Result<PathBuf> {
 impl Folders {
     /// No folders, kept nowhere: the tests, and a server told `--folders :memory:`.
     pub(crate) fn memory() -> Folders {
-        Folders { file: None, forbidden: Vec::new(), bound: RwLock::new(Bound::default()), blobs: blobs::Blobs::memory() }
+        Folders {
+            file: None,
+            forbidden: Vec::new(),
+            bound: RwLock::new(Bound::default()),
+            blobs: blobs::Blobs::memory(),
+            locks: locks::Locks::default(),
+        }
     }
 
     /// The same folders, the texts their runs read kept in `blobs` (`<store>/blobs/`).
@@ -258,7 +270,23 @@ impl Folders {
     /// Bind `name` to the folder at `path` (which must exist), capped at `cap` bytes if given, for
     /// the whole server or for one deployment (`for_deployment`, its slug), replacing any binding of
     /// it there before.
+    #[cfg(test)]
     pub(crate) fn bind(&self, name: &str, path: &str, access: FolderAccess, keep: Keep, cap: Option<u64>, for_deployment: Option<&str>) -> Result<Folder, String> {
+        self.bind_as(name, path, access, keep, cap, false, for_deployment)
+    }
+
+    /// As [`bind`](Self::bind), saying whether other servers bind it too (`shared`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_as(
+        &self,
+        name: &str,
+        path: &str,
+        access: FolderAccess,
+        keep: Keep,
+        cap: Option<u64>,
+        shared: bool,
+        for_deployment: Option<&str>,
+    ) -> Result<Folder, String> {
         if !is_folder_name(name) {
             return Err(format!("{name:?} isn't a folder name: letters, digits, - and _, up to 64"));
         }
@@ -279,7 +307,7 @@ impl Folders {
         if cap == Some(0) {
             return Err("a folder's cap is a size above nothing (10M, say)".into());
         }
-        let folder = Folder { path: at, access, keep, cap };
+        let folder = Folder { path: at, access, keep, cap, shared };
         let mut bound = self.bound.write().unwrap();
         let mut next = bound.clone();
         match for_deployment {
@@ -502,43 +530,58 @@ impl Scoped {
     }
 
     /// Write `text` as file `file` of folder `name`, whole: beside it first, then renamed over it.
+    #[cfg(test)]
     pub(crate) fn write(&self, name: &str, file: &str, text: &str) -> Result<(), String> {
         self.write_as(name, file, text, false)
     }
 
     /// As [`write`](Self::write), but only where no file has the name: never a replace.
+    #[cfg(test)]
     pub(crate) fn create(&self, name: &str, file: &str, text: &str) -> Result<(), String> {
         self.write_as(name, file, text, true)
     }
 
+    #[cfg(test)]
     fn write_as(&self, name: &str, file: &str, text: &str, create: bool) -> Result<(), String> {
+        self.ready_write(name, file, text, create)?.land(self)
+    }
+
+    /// A write of `text` as file `file` of folder `name`, made ready: its bytes beside the file.
+    fn ready_write(&self, name: &str, file: &str, text: &str, create: bool) -> Result<Ready, String> {
         let folder = self.writable(name)?;
         let path = for_writing(&folder.path, file)?;
-        fits(name, &folder, &path, text.len() as u64).map_err(|e| format!("{name}/{file} not written: {e}"))?;
-        land(&path, create, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(|e| format!("{name}/{file} not written: {e}"))?;
-        self.note_landed(name, file, &path);
-        Ok(())
+        let why = |e: String| format!("{name}/{file} not written: {e}");
+        let beside = fill_beside(&path, create, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(why)?;
+        Ok(Ready { name: name.into(), file: file.into(), path, beside, size: text.len() as u64, create, verb: "written" })
     }
 
     /// Copy file `from_file` of folder `from` as file `file` of folder `name`, streamed beside it
     /// and renamed over it: refused if its bytes no longer hash to `hash` (the handle the run read).
+    #[cfg(test)]
     pub(crate) fn copy(&self, name: &str, file: &str, from: &str, from_file: &str, hash: &str) -> Result<(), String> {
         self.copy_as(name, file, from, from_file, hash, false)
     }
 
     /// As [`copy`](Self::copy), but only where no file has the name: never a replace.
+    #[cfg(test)]
     pub(crate) fn create_copy(&self, name: &str, file: &str, from: &str, from_file: &str, hash: &str) -> Result<(), String> {
         self.copy_as(name, file, from, from_file, hash, true)
     }
 
+    #[cfg(test)]
     fn copy_as(&self, name: &str, file: &str, from: &str, from_file: &str, hash: &str, create: bool) -> Result<(), String> {
+        self.ready_copy(name, file, from, from_file, hash, create)?.land(self)
+    }
+
+    /// A copy of file `from_file` of folder `from` as file `file` of folder `name`, made ready: its
+    /// bytes streamed beside the file, refused if they no longer hash to `hash`.
+    fn ready_copy(&self, name: &str, file: &str, from: &str, from_file: &str, hash: &str, create: bool) -> Result<Ready, String> {
         let folder = self.writable(name)?;
         let Some((mut src, meta)) = self.open_file(from, from_file)? else {
             return Err(format!("{from}/{from_file} isn't there any more: not copied to {name}/{file}"));
         };
         let path = for_writing(&folder.path, file)?;
-        fits(name, &folder, &path, meta.len()).map_err(|e| format!("{name}/{file} not copied: {e}"))?;
-        land(&path, create, |f| {
+        let beside = fill_beside(&path, create, |f| {
             let mut hasher = blake3::Hasher::new();
             let mut block = vec![0u8; 64 * 1024];
             loop {
@@ -555,8 +598,7 @@ impl Scoped {
             Ok(())
         })
         .map_err(|e| format!("{name}/{file} not copied: {e}"))?;
-        self.note_landed(name, file, &path);
-        Ok(())
+        Ok(Ready { name: name.into(), file: file.into(), path, beside, size: meta.len(), create, verb: "copied" })
     }
 
     /// Delete file `file` of folder `name`; nothing to do if there is none.
@@ -596,6 +638,85 @@ impl Scoped {
             }
         }
         None
+    }
+
+    /// The commit locks a run's commit takes on its folders' files: shared on each file it read,
+    /// exclusive on each it writes, and on their folders by intent; shared on a folder it listed
+    /// (a file created there would change the listing). By real path, so two names for one folder
+    /// are one lock. A folder several servers bind (`shared`) has its lock file in it, so the
+    /// others wait too.
+    pub(crate) fn commit_locks(&self, reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<locks::Wanted> {
+        use locks::Mode::*;
+        let mut wanted = Vec::new();
+        for read in reads {
+            let Value::Record(q) = &read.request else { continue };
+            let Some(folder) = text(q, "folder") else { continue };
+            let file = ["read", "handle"].iter().find_map(|k| text(q, k)).or_else(|| {
+                ["lines", "slice"].iter().find_map(|k| match q.get(*k) {
+                    Some(Value::Record(span)) => text(span, "name"),
+                    _ => None,
+                })
+            });
+            match file {
+                Some(file) => wanted.extend(self.file_locks(folder, file, IntentShared, Shared)),
+                None => wanted.extend(self.lock_of(folder, Shared)),
+            }
+        }
+        for (cap, payload) in performed {
+            let Capability::FileWrite(folder) = cap else { continue };
+            let file = match payload {
+                Value::Text(name) => Some(name.as_str()),
+                Value::Record(file) => text(file, "name"),
+                _ => None,
+            };
+            match file {
+                Some(file) => wanted.extend(self.file_locks(folder, file, IntentExclusive, Exclusive)),
+                None => wanted.extend(self.lock_of(folder, Exclusive)),
+            }
+        }
+        wanted
+    }
+
+    /// The locks a run takes for its whole length when it is run holding its deployment's state
+    /// (the last try): on every folder it may read (shared) or write (exclusive), whole, since
+    /// which files it touches isn't known before it runs; so no run of another deployment
+    /// changes them under it either.
+    pub(crate) fn run_locks(&self, read: &BTreeSet<String>, written: &BTreeSet<String>) -> Vec<locks::Wanted> {
+        let read = read.iter().map(|n| (n, locks::Mode::Shared));
+        let written = written.iter().map(|n| (n, locks::Mode::Exclusive));
+        read.chain(written).filter_map(|(name, mode)| self.lock_of(name, mode)).collect()
+    }
+
+    /// The lock on the folder this deployment sees as `name`, by its real path; none if it isn't
+    /// bound.
+    fn lock_of(&self, name: &str, mode: locks::Mode) -> Option<locks::Wanted> {
+        let folder = self.get(name)?;
+        Some(locks::Wanted {
+            address: format!("folder:{}", folder.path.display()),
+            label: format!("the folder {name:?}"),
+            mode,
+            file: folder.shared.then(|| folder.path.join(locks::LOCK_FILE)),
+        })
+    }
+
+    /// The locks on file `file` of folder `name`: the folder's by `intent`, and the file's as
+    /// `mode`, by its name in the folder and, when that is a link, by the file it leads to too,
+    /// so one reached by two names is one lock. Lowercased, as Windows and macOS compare names:
+    /// on a system that doesn't, two names that differ only in case share a lock, which only ever
+    /// makes a commit wait.
+    fn file_locks(&self, name: &str, file: &str, intent: locks::Mode, mode: locks::Mode) -> Vec<locks::Wanted> {
+        let Some(folder) = self.lock_of(name, intent) else { return Vec::new() };
+        let Some(bound) = self.get(name) else { return Vec::new() };
+        let entry = bound.path.join(file.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let label = format!("the file {file:?} of the folder {name:?}");
+        let at = |path: &Path| locks::Wanted { address: format!("file:{}", path.display()).to_lowercase(), label: label.clone(), mode, file: None };
+        let mut wanted = vec![folder, at(&entry)];
+        if let Ok(target) = canonical(&entry).map(|t| at(&t))
+            && target.address != wanted[1].address
+        {
+            wanted.push(target);
+        }
+        wanted
     }
 
     fn writable(&self, name: &str) -> Result<Folder, String> {
@@ -642,34 +763,70 @@ fn hash_of(path: &Path) -> std::io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Put a file at `path` whole: `fill` writes it beside it, then it is synced and renamed over
-/// `path`; with `create`, linked to `path` instead, which fails if a file has that name by then
-/// (whoever put it there), so nothing is replaced. A failed fill leaves nothing behind.
-fn land(path: &Path, create: bool, fill: impl FnOnce(&mut std::fs::File) -> Result<(), String>) -> Result<(), String> {
-    let dir = path.parent().ok_or("no folder")?;
-    let tmp = dir.join(format!("{TMP_PREFIX}{}-{}", std::process::id(), rand::random::<u64>()));
-    let landed = (|| {
-        if create && std::fs::symlink_metadata(path).is_ok() {
-            return Err(EXISTS.to_string());
-        }
-        let mut f = std::fs::File::create_new(&tmp).map_err(|e| e.to_string())?;
-        fill(&mut f)?;
-        f.sync_all().map_err(|e| e.to_string())?;
-        drop(f);
-        if !create {
-            return std::fs::rename(&tmp, path).map_err(|e| e.to_string());
-        }
-        let linked = std::fs::hard_link(&tmp, path).map_err(|e| match e.kind() {
-            std::io::ErrorKind::AlreadyExists => EXISTS.to_string(),
-            _ => format!("{e} (a create-only write links the file into place)"),
-        });
-        let _ = std::fs::remove_file(&tmp);
-        linked
-    })();
-    if landed.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+/// A file's bytes, written beside where it goes and synced: what [`Ready::land`] puts in place.
+/// Removed when dropped, if it wasn't (a run that commits nothing, a write that fails).
+#[derive(Debug)]
+struct Beside(PathBuf);
+
+impl Drop for Beside {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
-    landed
+}
+
+/// Write a file that goes at `path` beside it: `fill` writes it, then it is synced. With
+/// `create`, refused already if a file has that name (it is asked again as it lands). A failed
+/// fill leaves nothing behind.
+fn fill_beside(path: &Path, create: bool, fill: impl FnOnce(&mut std::fs::File) -> Result<(), String>) -> Result<Beside, String> {
+    if create && std::fs::symlink_metadata(path).is_ok() {
+        return Err(EXISTS.to_string());
+    }
+    let dir = path.parent().ok_or("no folder")?;
+    let beside = Beside(dir.join(format!("{TMP_PREFIX}{}-{}", std::process::id(), rand::random::<u64>())));
+    let mut f = std::fs::File::create_new(&beside.0).map_err(|e| e.to_string())?;
+    fill(&mut f)?;
+    f.sync_all().map_err(|e| e.to_string())?;
+    Ok(beside)
+}
+
+/// Put the file written `beside` at `path`: renamed over it; with `create`, linked to `path`
+/// instead, which fails if a file has that name by then (whoever put it there), so nothing is
+/// replaced.
+fn put(beside: Beside, path: &Path, create: bool) -> Result<(), String> {
+    if !create {
+        return std::fs::rename(&beside.0, path).map_err(|e| e.to_string());
+    }
+    std::fs::hard_link(&beside.0, path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => EXISTS.to_string(),
+        _ => format!("{e} (a create-only write links the file into place)"),
+    })
+}
+
+/// A write or a copy made ready before its run commits: its bytes are beside the file, so what
+/// is left for the commit, under its locks, is the folder's cap and a rename (or a link).
+#[derive(Debug)]
+pub(crate) struct Ready {
+    name: String,
+    file: String,
+    path: PathBuf,
+    beside: Beside,
+    size: u64,
+    create: bool,
+    /// What the error says it wasn't: written, or copied.
+    verb: &'static str,
+}
+
+impl Ready {
+    /// Put it in place, within the folder's cap as it now is.
+    fn land(self, folders: &Scoped) -> Result<(), String> {
+        let Ready { name, file, path, beside, size, create, verb } = self;
+        let why = |e: String| format!("{name}/{file} not {verb}: {e}");
+        let folder = folders.writable(&name)?;
+        fits(&name, &folder, &path, size).map_err(why)?;
+        put(beside, &path, create).map_err(why)?;
+        folders.note_landed(&name, &file, &path);
+        Ok(())
+    }
 }
 
 /// Why a create-only write didn't land.
@@ -701,6 +858,10 @@ fn usage(dir: &Path) -> Result<u64, String> {
         let entries = std::fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
         for entry in entries.flatten() {
             let Ok(meta) = entry.metadata() else { continue };
+            // The server's own files (a write beside its name, the lock file) aren't the folder's.
+            if entry.file_name().to_string_lossy().starts_with(TMP_PREFIX) {
+                continue;
+            }
             if meta.is_dir() {
                 dirs.push(entry.path());
             } else if meta.is_file() {
@@ -824,7 +985,7 @@ fn walk(dir: &Path, under: &str, names: &mut Vec<String>) -> Result<(), String> 
 /// A binding as the admin panel and `holon folder list` show it: `deployment` is the slug it is
 /// bound for, or null for the whole server.
 fn shown(name: &str, deployment: Option<&str>, f: &Folder) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "path": f.path.display().to_string(), "access": f.access, "keep": f.keep, "cap": f.cap })
+    serde_json::json!({ "name": name, "deployment": deployment, "path": f.path.display().to_string(), "access": f.access, "keep": f.keep, "cap": f.cap, "shared": f.shared })
 }
 
 /// What a binding is called in the activity log: its name, and the deployment it is for.
@@ -861,6 +1022,9 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     /// The deployment it is bound for; none: the whole server.
                     #[serde(default)]
                     deployment: Option<String>,
+                    /// Other servers bind it too.
+                    #[serde(default)]
+                    shared: bool,
                 }
                 fn read_write() -> FolderAccess {
                     FolderAccess::ReadWrite
@@ -876,7 +1040,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                         Some(serde_json::Value::String(s)) => Some(verify::budget_of(s).ok_or_else(|| err(400, format!("a cap is a size (1048576, 64K, 10M or 2G), not {s:?}")))?),
                         Some(_) => return Err(err(400, "a cap is a whole number of bytes, or a size (10M)")),
                     };
-                    let folder = state.folders.bind(&b.name, &b.path, b.access, b.keep, cap, b.deployment.as_deref()).map_err(|e| err(400, e))?;
+                    let folder = state.folders.bind_as(&b.name, &b.path, b.access, b.keep, cap, b.shared, b.deployment.as_deref()).map_err(|e| err(400, e))?;
                     Ok((b, folder))
                 });
                 match bound {
@@ -921,13 +1085,13 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
     })
 }
 
-/// `holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] | list | remove NAME |
+/// `holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] | list | remove NAME |
 /// sweep`: bind, show and unbind the folders of the server this user runs here (or `--server`),
 /// and sweep the texts their runs read that no kept run refers to, as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
     let mut server = None;
     let mut for_deployment: Option<String> = None;
-    let (mut read_only, mut keep, mut cap) = (false, Keep::Bytes, None);
+    let (mut read_only, mut keep, mut cap, mut shared) = (false, Keep::Bytes, None, false);
     let mut words = Vec::new();
     let mut args = args.iter();
     while let Some(a) = args.next() {
@@ -935,6 +1099,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             "--server" => server = args.next().cloned(),
             "--for" => for_deployment = args.next().cloned(),
             "--read-only" => read_only = true,
+            "--shared" => shared = true,
             "--keep" => match args.next().map(|k| Keep::try_from(k.clone())) {
                 Some(Ok(k)) => keep = k,
                 _ => {
@@ -966,7 +1131,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             // The path as the server's machine sees it: this one, for the server this user runs.
             let path = std::path::absolute(path).map_or_else(|_| path.to_string(), |p| p.display().to_string());
             let access = if read_only { FolderAccess::Read } else { FolderAccess::ReadWrite };
-            let body = serde_json::json!({ "name": name, "path": path, "access": access, "keep": keep, "cap": cap, "deployment": for_deployment });
+            let body = serde_json::json!({ "name": name, "path": path, "access": access, "keep": keep, "cap": cap, "shared": shared, "deployment": for_deployment });
             ("POST", "/admin/folders".to_string(), Some(body))
         }
         ["sweep"] => ("POST", "/admin/folders/sweep".to_string(), Some(serde_json::json!({}))),
@@ -979,37 +1144,9 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let target = match local::target(server.as_deref()) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("holon folder: {e}");
-            return 1;
-        }
-    };
-    let server = target.server.as_str();
-    let mut request = ureq::request(method, &format!("{server}{path}")).timeout(Duration::from_secs(30));
-    if let Some(token) = &target.token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
-    }
-    let answered = match &body {
-        Some(body) => request.set("Content-Type", "application/json").send_string(&body.to_string()),
-        None => request.call(),
-    };
-    let answer = match answered {
-        Ok(r) => r.into_string().unwrap_or_default(),
-        Err(ureq::Error::Status(code, r)) => {
-            let body = r.into_string().unwrap_or_default();
-            let why = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v["error"].as_str().map(str::to_string))
-                .unwrap_or_else(|| body.trim().to_string());
-            eprintln!("holon folder: {server} answered {code}: {why}");
-            return 1;
-        }
-        Err(e) => {
-            eprintln!("holon folder: can't reach {server}: {e}");
-            return 1;
-        }
+    let (server, answer) = match local::admin_call("holon folder", server.as_deref(), method, &path, body.as_ref()) {
+        Ok(a) => a,
+        Err(code) => return code,
     };
     let line = |f: &serde_json::Value| {
         let access = if f["access"] == "read" { "read only" } else { "read and write" };
@@ -1053,7 +1190,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--for SLUG]
+const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] [--for SLUG]
        holon folder list
        holon folder remove NAME [--for SLUG]
        holon folder sweep
@@ -1066,8 +1203,10 @@ const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--k
   --read-only: flows may read it, not write it. --keep hash: the run log keeps a hash of what
   each run read, not its text (holon verify --files then supplies the files); --keep 30d keeps
   the text for 30 days (s, m, h or d), then only its hash. --cap 10M: a write that would take the
-  folder's files past 10 MiB in all doesn't land. Removing a binding leaves the files where they
-  are; deployments that use it stop until it is bound again.
+  folder's files past 10 MiB in all doesn't land. --shared: other servers bind it too (a network
+  share): a run's commit also locks a file in it, .holon-tmp-commit.lock, so their runs never
+  write over each other's. Removing a binding leaves the files where they are; deployments that
+  use it stop until it is bound again.
   sweep removes now the texts runs read that no kept run refers to (the server does it every 10
   minutes).";
 
@@ -1394,9 +1533,39 @@ pub(crate) fn copied_from(payload: &Value) -> Option<&str> {
     text(from, "folder")
 }
 
-/// Apply a performed `FileWrite(name)`: a write's `{name, text}`, a copy's `{name, from}` (a
-/// handle), or a delete's name.
-pub(crate) fn apply(folders: &Scoped, name: &str, payload: &Value) -> Result<(), String> {
+/// A run's file writes, copies and deletes (each performed `FileWrite(name)`), made ready before
+/// it commits, in its order: what [`Staged::land`] puts in place under the commit's locks.
+#[derive(Debug)]
+pub(crate) struct Staged {
+    folders: Option<Arc<Scoped>>,
+    steps: Vec<Step>,
+}
+
+#[derive(Debug)]
+enum Step {
+    Land(Ready),
+    Delete { name: String, file: String },
+    /// One that can't land, and why (a bad name, a copy whose source changed).
+    Failed(String),
+}
+
+/// Make ready a run's file writes: a write's `{name, text}` and a copy's `{name, from}` (a handle)
+/// are written beside their files; a delete's name waits for the commit.
+pub(crate) fn stage(folders: Option<&Arc<Scoped>>, performed: &[(Capability, Value)]) -> Staged {
+    let steps = performed
+        .iter()
+        .filter_map(|(cap, payload)| match cap {
+            Capability::FileWrite(name) => Some(match folders {
+                Some(f) => step_of(f, name, payload).unwrap_or_else(Step::Failed),
+                None => Step::Failed("no folders on this server".into()),
+            }),
+            _ => None,
+        })
+        .collect();
+    Staged { folders: folders.cloned(), steps }
+}
+
+fn step_of(folders: &Scoped, name: &str, payload: &Value) -> Result<Step, String> {
     match payload {
         Value::Record(file) if file.contains_key("from") => {
             let (Some(Value::Text(file)), Some(Value::Record(from))) = (file.get("name"), file.get("from")) else {
@@ -1405,24 +1574,35 @@ pub(crate) fn apply(folders: &Scoped, name: &str, payload: &Value) -> Result<(),
             let (Some(folder), Some(source), Some(hash)) = (text(from, "folder"), text(from, "name"), text(from, "hash")) else {
                 return Err("a copy's handle names a folder, a file and its hash".into());
             };
-            if creates(payload) {
-                folders.create_copy(name, file, folder, source, hash)
-            } else {
-                folders.copy(name, file, folder, source, hash)
-            }
+            folders.ready_copy(name, file, folder, source, hash, creates(payload)).map(Step::Land)
         }
         Value::Record(file) => {
             let (Some(Value::Text(file)), Some(Value::Text(text))) = (file.get("name"), file.get("text")) else {
                 return Err("a write needs a name and a text".into());
             };
-            if creates(payload) {
-                folders.create(name, file, text)
-            } else {
-                folders.write(name, file, text)
+            folders.ready_write(name, file, text, creates(payload)).map(Step::Land)
+        }
+        Value::Text(file) => Ok(Step::Delete { name: name.into(), file: file.clone() }),
+        _ => Err("not a write or a delete".into()),
+    }
+}
+
+impl Staged {
+    /// Put each in place, in the run's order: what didn't land, and why (the others still do).
+    pub(crate) fn land(self) -> Vec<String> {
+        let mut failed = Vec::new();
+        for step in self.steps {
+            let done = match (step, self.folders.as_deref()) {
+                (Step::Failed(e), _) => Err(e),
+                (_, None) => Err("no folders on this server".into()),
+                (Step::Land(ready), Some(f)) => ready.land(f),
+                (Step::Delete { name, file }, Some(f)) => f.delete(&name, &file),
+            };
+            if let Err(e) = done {
+                failed.push(e);
             }
         }
-        Value::Text(file) => folders.delete(name, file),
-        _ => Err("not a write or a delete".into()),
+        failed
     }
 }
 
@@ -1603,6 +1783,36 @@ mod tests {
             let _ = std::fs::remove_dir_all(d);
         }
         let _ = std::fs::remove_file(file);
+    }
+
+    #[test]
+    fn commits_lock_the_files_they_touch_and_a_listing_its_folder() {
+        let dir = temp("commit-locks");
+        let folders = Scoped::memory();
+        for name in ["inbox", "alias"] {
+            folders.all.bind(name, dir.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, None, None).unwrap();
+        }
+        let asked = |folder: &str, key: &str, file: &str| collections::Read {
+            path: vec![],
+            request: Value::Record(BTreeMap::from([("folder".to_string(), Value::Text(folder.into())), (key.to_string(), Value::Text(file.into()))])),
+            answer: None,
+            file: None,
+        };
+        let write = |folder: &str, file: &str| {
+            let payload = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(file.into())), ("text".to_string(), Value::Text("x".into()))]));
+            (Capability::FileWrite(folder.into()), payload)
+        };
+        let take = |reads: &[collections::Read], performed: &[(Capability, Value)]| {
+            folders.all.locks.take(folders.commit_locks(reads, performed), std::time::Instant::now() + Duration::from_millis(30))
+        };
+        let read_b = take(&[asked("inbox", "read", "b.txt")], &[]).unwrap();
+        let write_a = take(&[], &[write("alias", "a.txt")]).expect("a write of a.txt doesn't wait for a read of b.txt");
+        assert!(take(&[], &[write("alias", "B.TXT")]).unwrap_err().contains("\"B.TXT\""), "one file by two folder names, in any case");
+        assert!(take(&[asked("inbox", "list", "")], &[]).unwrap_err().contains("the folder \"inbox\""), "a listing waits for a writer in its folder");
+        drop(write_a);
+        assert!(take(&[asked("inbox", "list", "")], &[]).is_ok(), "and shares it with readers");
+        drop(read_b);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

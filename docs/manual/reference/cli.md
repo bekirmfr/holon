@@ -146,7 +146,7 @@ it can't read.
 ## `holon folder`
 
 ```
-holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--for SLUG]
+holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] [--for SLUG]
 holon folder list
 holon folder remove NAME [--for SLUG]
 holon folder sweep
@@ -161,6 +161,7 @@ takes `--server PORT|URL`. See [Files on the host](../guides/files.md).
 | `--keep hash` | the run log keeps a hash of what runs read, not the text |
 | `--keep 30d` | the text for 30 days (`s`, `m`, `h`, `d`), then its hash |
 | `--cap 10M` | no write takes the folder past 10 MiB |
+| `--shared` | other servers bind it too: a commit also locks `.holon-tmp-commit.lock` in it |
 | `--for SLUG` | for that deployment only |
 
 `sweep` removes, now, the file texts no kept run refers to (the server does it every ten

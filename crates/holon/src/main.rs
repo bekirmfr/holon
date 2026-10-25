@@ -169,6 +169,7 @@ mod folders;
 mod http;
 mod lifecycle;
 mod listeners;
+mod locks;
 mod local;
 mod lsp;
 mod migrate;

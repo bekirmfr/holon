@@ -1,6 +1,8 @@
 # Databases: SQL and documents as host resources, and how runs share what they write (L4)
 
-**Status:** design, before any code. Written 2026-10-25, against `main` at 6ee0c58. Builds on
+**Status:** slice 1 built (2026-10-26): commit locks per file, with intent locks on the folder
+(`locks.rs`, §7.1; sample `shared-ledger`). Slices 2 to 7 are design. Written 2026-10-25, against
+`main` at 6ee0c58. Builds on
 [host resources](host-resources-L4.md) (also design only: resources the host defines, their
 addresses and timeline) and [key claims](key-claims-L4.md) (built: `claims.rs`).
 
@@ -320,8 +322,14 @@ every deployment that writes it or checked a read of it:
 - **Per kind:**
   - a database: **its own transaction** is the lock (`begin immediate` on SQLite; `for share`
     re-reads and the writes' row locks on Postgres and MySQL);
-  - a folder, one server: a lock per resource in the server (a table beside `Folders`);
-  - a folder several servers bind (a share): also an OS lock on a lock file in it;
+  - a folder, one server: a lock per **file** in the server (a table beside `Folders`, by the
+    file's real path), shared for a file the run read and exclusive for one it writes, with the
+    folder held by intent (hierarchical locking: `locks.rs`). A run that writes `a.txt` never
+    waits for one that read `b.txt`. A listing holds the folder itself, shared, since a file
+    created under its prefix would change it; so does the last try (it can't know before it runs
+    which files it touches), for its whole run;
+  - a folder several servers bind (a share): also an OS lock on a lock file in it, whole-folder
+    (an OS lock is on a whole file: a reader of any file shares it, a writer of any holds it);
   - a deployment's own state and collections: the state lock, as today.
 - **Several resources:** taken in resource-id order, after the state lock, so two commits can't
   deadlock.

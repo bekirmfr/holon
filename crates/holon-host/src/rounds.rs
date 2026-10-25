@@ -46,6 +46,9 @@ pub struct Limits {
     pub max_redirects: u32,
     /// How long a run may wait, in all, for keys other runs hold (claims, `Waits::claim`).
     pub claim_wait: Duration,
+    /// How long a run's commit may wait for the commit locks on the shared resources it read or
+    /// writes, which other runs' commits hold for milliseconds.
+    pub commit_wait: Duration,
 }
 
 impl Limits {
@@ -68,6 +71,7 @@ impl Limits {
             max_header_bytes: 64 * 1024,
             max_redirects: 10,
             claim_wait: Duration::from_secs(10),
+            commit_wait: Duration::from_secs(2),
         }
     }
 
@@ -84,6 +88,7 @@ impl Limits {
             max_header_bytes: 256 * 1024,
             max_redirects: 20,
             claim_wait: Duration::from_secs(60),
+            commit_wait: Duration::from_secs(30),
         }
     }
 }

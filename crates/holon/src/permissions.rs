@@ -32,10 +32,11 @@ use crate::to_hex;
 /// bytes. The two module limits are what a flow's module bodies may compute and hold per call
 /// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
 /// gets, so the policy has ceilings for them and no `[limits]` entry.
-pub(crate) const LIMIT_NAMES: [&str; 19] = [
+pub(crate) const LIMIT_NAMES: [&str; 20] = [
     "connect_timeout_ms",
     "request_timeout_ms",
     "claim_wait_ms",
+    "commit_wait_ms",
     "run_budget_ms",
     "clock_run_budget_ms",
     "max_requests",
@@ -115,6 +116,7 @@ fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &Durable
         ("connect_timeout_ms".into(), ms(request.connect_timeout)),
         ("request_timeout_ms".into(), ms(request.request_timeout)),
         ("claim_wait_ms".into(), ms(request.claim_wait)),
+        ("commit_wait_ms".into(), ms(request.commit_wait)),
         ("run_budget_ms".into(), ms(request.run_budget)),
         ("clock_run_budget_ms".into(), ms(clock_budget)),
         ("max_requests".into(), request.max_requests as u64),
@@ -159,6 +161,7 @@ fn numbers_to_limits(base: &Limits, numbers: &BTreeMap<String, u64>, clock: bool
             "connect_timeout_ms" => l.connect_timeout = Duration::from_millis(n),
             "request_timeout_ms" => l.request_timeout = Duration::from_millis(n),
             "claim_wait_ms" => l.claim_wait = Duration::from_millis(n),
+            "commit_wait_ms" => l.commit_wait = Duration::from_millis(n),
             "run_budget_ms" if !clock => l.run_budget = Duration::from_millis(n),
             "clock_run_budget_ms" if clock => l.run_budget = Duration::from_millis(n),
             "max_requests" => l.max_requests = n as usize,
@@ -717,6 +720,11 @@ impl Permit {
     /// The folders it may read, by name.
     pub(crate) fn folders_read(&self) -> BTreeSet<String> {
         self.named("FileRead")
+    }
+
+    /// The folders it may write, by name.
+    pub(crate) fn folders_written(&self) -> BTreeSet<String> {
+        self.named("FileWrite")
     }
 
     /// The folders whose files it may pass on by handle (copy, or send as a body): the ones it

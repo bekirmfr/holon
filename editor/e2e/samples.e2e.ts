@@ -574,6 +574,33 @@ test("journal appends to a page in a capped folder, a write past its cap answers
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("shared-ledger, deployed twice, loses no line when both append to one file at once", async ({ page, request }) => {
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "Shared ledger (one file, several deployments)");
+  const first = await deploy(page);
+  // A second deployment of the same text, under another name and port, imported as a file.
+  const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "shared-ledger.holon"), "utf8");
+  const copy = join(mkdtempSync(join(tmpdir(), "holon-ledger-")), "shared-ledger-2.holon");
+  writeFileSync(copy, text.replace("flow shared-ledger", "flow shared-ledger-2").replace("port 8140", "port 8141"));
+  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await page.getByLabel("import a .holon file").setInputFiles(copy);
+  await expect(page.locator(".hl-tab--active")).toContainText("shared-ledger-2");
+  const second = await deploy(page);
+  expect(second).not.toBe(first);
+
+  const tag = `e2e-${Date.now()}`;
+  const lines = Array.from({ length: 30 }, (_, i) => `${tag} ${i}`);
+  const answers = await Promise.all(
+    lines.map((line, i) => request.post(`http://127.0.0.1:${i % 2 ? second : first}/lines`, { data: line, headers: { "content-type": "text/plain" } })),
+  );
+  expect(answers.map((a) => a.status())).toEqual(lines.map(() => 200));
+  const kept = (await (await request.get(`http://127.0.0.1:${first}/lines`)).text()).split("\n").filter((l) => l.startsWith(tag));
+  expect(kept.sort()).toEqual([...lines].sort());
+  expect(readFileSync(join(FOLDERS, "ledger", "lines.txt"), "utf8")).toContain(`${tag} 29`);
+});
+
 test("drop-box runs once for a file dropped in its folder, sends it by handle, writes its receipt, and its runs verify", async ({ page, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
   const { existsSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");

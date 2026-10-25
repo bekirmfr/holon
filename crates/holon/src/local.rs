@@ -176,6 +176,40 @@ pub(crate) fn target(given: Option<&str>) -> Result<Target, String> {
     target_from(given.as_deref(), env_token, files, answers, kept)
 }
 
+/// Ask the server this user runs here (or `server`) as its admin, for a command named `who`:
+/// the server, and what it answered; or, said on stderr, the exit code to end with.
+pub(crate) fn admin_call(who: &str, server: Option<&str>, method: &str, path: &str, body: Option<&serde_json::Value>) -> Result<(String, String), i32> {
+    let target = target(server).map_err(|e| {
+        eprintln!("{who}: {e}");
+        1
+    })?;
+    let server = target.server.as_str();
+    let mut request = ureq::request(method, &format!("{server}{path}")).timeout(Duration::from_secs(30));
+    if let Some(token) = &target.token {
+        request = request.set("Authorization", &format!("Bearer {token}"));
+    }
+    let answered = match body {
+        Some(body) => request.set("Content-Type", "application/json").send_string(&body.to_string()),
+        None => request.call(),
+    };
+    match answered {
+        Ok(r) => Ok((server.to_string(), r.into_string().unwrap_or_default())),
+        Err(ureq::Error::Status(code, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            let why = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(str::to_string))
+                .unwrap_or_else(|| body.trim().to_string());
+            eprintln!("{who}: {server} answered {code}: {why}");
+            Err(1)
+        }
+        Err(e) => {
+            eprintln!("{who}: can't reach {server}: {e}");
+            Err(1)
+        }
+    }
+}
+
 /// [`target`], given what it reads: testable without a server.
 fn target_from(
     given: Option<&str>,

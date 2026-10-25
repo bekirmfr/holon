@@ -3761,6 +3761,43 @@ fn a_parked_run_releases_its_claims() {
     assert_eq!(go["retries"], serde_json::Value::Null, "{go}");
 }
 
+/// Two deployments append to one file of a folder bound for the whole server, many runs at once:
+/// every line lands. Each deployment's commit is under its own state lock, so without a commit lock
+/// on the folder both could check the file and both write it, the second over the first
+/// (docs/L4s/databases-L4.md §7.1).
+#[test]
+fn two_deployments_appending_to_one_shared_file_lose_no_line() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-shared-ledger-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({ "name": "ledger", "path": dir.display().to_string(), "access": "read-write" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = include_str!("../../holon-author/samples/shared-ledger.holon");
+    let a = deploy_text(&state, text, "");
+    let b = deploy_text(&state, &text.replace("flow shared-ledger", "flow shared-ledger-2").replace("port 8140", "port 8141"), "");
+
+    let lines: Vec<String> = (0..40).map(|i| format!("line {i}")).collect();
+    std::thread::scope(|s| {
+        for (i, line) in lines.iter().enumerate() {
+            let (state, slug) = (&state, if i % 2 == 0 { &a } else { &b });
+            s.spawn(move || {
+                let (status, said, _) = data_call(state, slug, "POST", "/lines", line);
+                let errors: Vec<serde_json::Value> = log_entries(state, slug).iter().map(|e| e["error"].clone()).filter(|e| !e.is_null()).collect();
+                assert_eq!(status, 200, "{said}, the log says {errors:?}");
+            });
+        }
+    });
+    let written = std::fs::read_to_string(dir.join("lines.txt")).unwrap();
+    let missing: Vec<&String> = lines.iter().filter(|l| !written.lines().any(|w| w == l.as_str())).collect();
+    assert!(missing.is_empty(), "lost {missing:?} of {}:\n{written}", lines.len());
+    assert_eq!(written.lines().count(), lines.len(), "{written}");
+    // Nothing of the server's is left in it: no write beside its name, and no lock file (that is
+    // for a folder other servers bind too).
+    let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(left, ["lines.txt"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A flow reads and writes files in the folders an admin bound, by name: deploying waits for the
 /// binding, a write lands whole when the run commits, a name that leaves its folder fails the run
 /// with nothing written, and the log keeps a write by its hash. The runs check offline: a small

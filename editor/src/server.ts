@@ -131,6 +131,8 @@ export type FolderEntry = {
   access: "read" | "read-write";
   keep: "bytes" | "hash" | `bytes for ${string}`;
   cap: number | null;
+  /** Other servers bind it too (a network share): a commit also locks a file in it. */
+  shared?: boolean;
   deployment: string | null;
 };
 /** A folder to bind: its cap as bytes or a size (`10M`). */

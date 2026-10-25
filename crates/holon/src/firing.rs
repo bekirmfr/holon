@@ -130,8 +130,15 @@ pub(crate) fn fire_with_state(
         let a = attempt(state.map(|_| r.state_before), &r.nonce, r.prior, waits, None);
         let mut run = a.run;
         if let Some(cell) = state {
-            let failed = commit(&mut cell.state.lock().unwrap(), store, waits.folders.as_deref(), &run.performed);
-            not_all_written(&mut run, failed);
+            let staged = folders::stage(waits.folders.as_ref(), &run.performed);
+            let mut live = cell.state.lock().unwrap();
+            match commit_locks(waits.folders.as_deref(), &[], &run.performed, limits) {
+                Ok(_held) => {
+                    let failed = commit(&mut live, store, staged, &run.performed);
+                    not_all_written(&mut run, failed);
+                }
+                Err(resource) => nothing_written(&mut run, &format!("its commit waited for {resource} past commit_wait_ms")),
+            }
         }
         return run;
     }
@@ -159,15 +166,25 @@ pub(crate) fn fire_with_state(
             if !cell.claims.wait_free(&written, &a.run.run_id, std::time::Instant::now() + limits.claim_wait) {
                 eprintln!("holon: run {} commits over a key another run still holds (claim_wait passed)", a.run.run_id);
             }
+            // Its files are written beside their names before any lock is taken: under the locks,
+            // what is left is the check and a rename.
+            let staged = folders::stage(waits.folders.as_ref(), &a.run.performed);
             let mut live = cell.state.lock().unwrap();
-            if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store, waits.folders.as_ref()) {
-                let failed = commit(&mut live, store, waits.folders.as_deref(), &a.run.performed);
-                not_all_written(&mut a.run, failed);
-                a.run.retries = retries;
-                if let Some(c) = waits.claiming.take() {
-                    a.run.claims = c.finish();
+            // The shared resources it read or writes are locked from the check to the last write,
+            // so a run of another deployment can't write them in between. One it can't lock in
+            // time counts as changed: it runs again.
+            match commit_locks(waits.folders.as_deref(), &a.run.reads, &a.run.performed, limits) {
+                Ok(_held) if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store, waits.folders.as_ref()) => {
+                    let failed = commit(&mut live, store, staged, &a.run.performed);
+                    not_all_written(&mut a.run, failed);
+                    a.run.retries = retries;
+                    if let Some(c) = waits.claiming.take() {
+                        a.run.claims = c.finish();
+                    }
+                    return a.run;
                 }
-                return a.run;
+                Ok(_) => {}
+                Err(resource) => eprintln!("holon: run {} waited past commit_wait for {resource}: it runs again", a.run.run_id),
             }
         }
         records = match waits.claiming.take() {
@@ -183,9 +200,28 @@ pub(crate) fn fire_with_state(
         eprintln!("holon: a run runs holding the state while a key is still claimed (claim_wait passed)");
     }
     let mut live = cell.state.lock().unwrap();
+    // Nothing of its own deployment changes under it, but a shared folder can: it holds every
+    // folder it may read or write for its whole length too, as a claim is waited for.
+    let whole_run = waits.folders.as_deref().and_then(|f| {
+        let wanted = f.run_locks(&permit.folders_read(), &permit.folders_written());
+        f.all.locks.take(wanted, std::time::Instant::now() + limits.claim_wait).ok()
+    });
     let mut a = attempt(Some(live.clone()), &nonce, prior, waits, None);
-    let failed = commit(&mut live, store, waits.folders.as_deref(), &a.run.performed);
-    not_all_written(&mut a.run, failed);
+    let staged = folders::stage(waits.folders.as_ref(), &a.run.performed);
+    // Its reads are checked under the folders' locks (taken now, if it couldn't hold them all
+    // along), and one changed fails it: it is the last try.
+    let commit_held = match whole_run {
+        Some(held) => Ok(held),
+        None => commit_locks(waits.folders.as_deref(), &a.run.reads, &a.run.performed, limits),
+    };
+    match commit_held {
+        Ok(_held) if still_as_read(&live, &live, &a.run.reads, permit, store, waits.folders.as_ref()) => {
+            let failed = commit(&mut live, store, staged, &a.run.performed);
+            not_all_written(&mut a.run, failed);
+        }
+        Ok(_) => nothing_written(&mut a.run, "a file it read was changed by another deployment's run as it ran"),
+        Err(resource) => nothing_written(&mut a.run, &format!("its commit waited for {resource} past commit_wait_ms")),
+    }
     a.run.retries = OPTIMISTIC_ATTEMPTS;
     a.run.claims = records;
     a.run
@@ -196,6 +232,29 @@ fn not_all_written(run: &mut FiredRun, failed: Vec<String>) {
     if !failed.is_empty() && run.error.is_none() {
         run.error = Some(format!("{}{}", folders::WRITE_FAILED, failed.join("; ")));
     }
+}
+
+/// What a run that couldn't commit at all says: nothing it did was written, and why.
+fn nothing_written(run: &mut FiredRun, why: &str) {
+    if run.error.is_none() && !run.performed.is_empty() {
+        run.error = Some(format!("{}nothing it did was written: {why}", folders::WRITE_FAILED));
+    }
+}
+
+/// The commit locks on the shared resources a run read or writes (locks.rs), taken in order and
+/// waiting `commit_wait` at most: the error names the one it waited for.
+fn commit_locks(
+    folders: Option<&folders::Scoped>,
+    reads: &[collections::Read],
+    performed: &[(Capability, Value)],
+    limits: &holon_host::Limits,
+) -> Result<Vec<locks::Guard>, String> {
+    let Some(f) = folders else { return Ok(Vec::new()) };
+    let wanted = f.commit_locks(reads, performed);
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    f.all.locks.take(wanted, std::time::Instant::now() + limits.commit_wait)
 }
 
 /// Whether `live` still holds everything a run that started from `start` could have read: each
@@ -228,9 +287,10 @@ fn still_as_read(
 }
 
 /// Apply a run's writes to the live state: each state write, then each collection put and delete,
-/// in the order the run made them; then each file written or deleted, in its order. What didn't
-/// land, and why: a file that couldn't be written (the others still are).
-fn commit(live: &mut State, store: &SharedStore, folders: Option<&folders::Scoped>, performed: &[(Capability, Value)]) -> Vec<String> {
+/// in the order the run made them; then each file written or deleted, in its order (`staged`:
+/// their bytes are beside their names already). What didn't land, and why: a file that couldn't
+/// be written (the others still are).
+fn commit(live: &mut State, store: &SharedStore, staged: folders::Staged, performed: &[(Capability, Value)]) -> Vec<String> {
     for (cap, payload) in performed {
         if let Capability::StateWrite(key) = cap {
             if !is_storable(payload) {
@@ -248,15 +308,9 @@ fn commit(live: &mut State, store: &SharedStore, folders: Option<&folders::Scope
             eprintln!("holon: collection {name:?} not written: {e}");
         }
     }
-    let mut failed = Vec::new();
-    for (cap, payload) in performed {
-        if let Capability::FileWrite(name) = cap {
-            let done = folders.ok_or_else(|| "no folders on this server".to_string()).and_then(|f| folders::apply(f, name, payload));
-            if let Err(e) = done {
-                eprintln!("holon: {e}");
-                failed.push(e);
-            }
-        }
+    let failed = staged.land();
+    for e in &failed {
+        eprintln!("holon: {e}");
     }
     failed
 }

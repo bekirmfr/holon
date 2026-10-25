@@ -75,7 +75,7 @@ export function AdminPage({ me }: { me: string }) {
   const [issuer, setIssuer] = useState("");
   const [clientId, setClientId] = useState("");
   const [folders, setFolders] = useState<FolderEntry[]>([]);
-  const [folderDraft, setFolderDraft] = useState<FolderBinding>({ name: "", path: "", access: "read-write", keep: "bytes", cap: null, deployment: null });
+  const [folderDraft, setFolderDraft] = useState<FolderBinding>({ name: "", path: "", access: "read-write", keep: "bytes", cap: null, shared: false, deployment: null });
   // How long a folder keeps what runs read, when it keeps it for a while ("7d").
   const [keepFor, setKeepFor] = useState("");
   // The "browse…" for the folder's path is open.
@@ -286,7 +286,8 @@ export function AdminPage({ me }: { me: string }) {
         Files flows read and write on this server&apos;s machine. A flow names a folder (<code>folder inbox</code>), never a path: bind each name to a real folder here.
         Read only: flows may read it, not write it. Reads kept by hash: the run log keeps a hash of what each run read, not its text; for a while (7d, 12h):
         its text for that long, then only its hash. A cap (10M): a write that would take the folder&apos;s files past it doesn&apos;t land. For one deployment:
-        that deployment sees this folder by the name, whatever the server&apos;s is, and no other deployment sees it.
+        that deployment sees this folder by the name, whatever the server&apos;s is, and no other deployment sees it. Other servers bind it too (a network share):
+        their runs&apos; commits lock a file in it, so they never write over each other.
       </div>
       {folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no folders bound</div>}
       {folders.map((f) => (
@@ -297,6 +298,7 @@ export function AdminPage({ me }: { me: string }) {
             {f.access === "read" ? "read only" : "read and write"}
             {f.keep === "hash" ? " · reads kept by hash" : f.keep.startsWith("bytes for ") ? ` · reads kept ${f.keep.slice("bytes for ".length)}, then by hash` : ""}
             {f.cap != null ? ` · capped at ${sizeText(f.cap)}` : ""}
+            {f.shared ? " · other servers bind it too" : ""}
             {f.deployment ? ` · for ${f.deployment} only` : ""}
           </span>
           <button
@@ -320,7 +322,7 @@ export function AdminPage({ me }: { me: string }) {
             const keep = folderDraft.keep === "bytes for " ? `bytes for ${keepFor.trim()}` : folderDraft.keep;
             const cap = typeof folderDraft.cap === "string" ? folderDraft.cap.trim() || null : folderDraft.cap;
             await bindFolder({ ...folderDraft, name: folderDraft.name.trim(), path: folderDraft.path.trim(), keep: keep as FolderEntry["keep"], cap, deployment: folderDraft.deployment?.trim() || null });
-            setFolderDraft({ ...folderDraft, name: "", path: "", cap: null, deployment: null });
+            setFolderDraft({ ...folderDraft, name: "", path: "", cap: null, shared: false, deployment: null });
           });
         }}
       >
@@ -354,6 +356,10 @@ export function AdminPage({ me }: { me: string }) {
           onChange={(e) => setFolderDraft({ ...folderDraft, cap: e.target.value })}
           style={{ ...input, width: 150 }}
         />
+        <label style={{ color: "#9fb4d4", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title="a network share other Holon servers bind too: a commit also locks a file in it">
+          <input type="checkbox" checked={folderDraft.shared ?? false} onChange={(e) => setFolderDraft({ ...folderDraft, shared: e.target.checked })} />
+          other servers bind it too
+        </label>
         <input
           aria-label="for one deployment"
           placeholder="for one deployment (empty: all)"
