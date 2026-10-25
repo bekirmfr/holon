@@ -45,9 +45,10 @@ pub(crate) fn is_valid_slug(s: &str) -> bool {
 /// `capabilities(unit, resolver)` (the same closure-union already used for capability-consent
 /// elsewhere in this project) tells us whether the unit needs `Ingress`, `Clock`, both, or
 /// neither — the caller only supplies what genuinely can't be read off the graph
-/// (`interval_seconds`, only when `Clock` is present; nothing tells you "every 3600 seconds"
-/// from structure alone). A unit deriving neither capability is refused — nothing would ever
-/// trigger it. A repeat slug is a redeploy, not an error (the L4's Fork 2): the unit, triggers
+/// (`interval_seconds`: nothing tells you "every 3600 seconds" from structure alone). A unit
+/// without routes deployed with an interval runs on the clock, so `Clock` is in its manifest
+/// whether or not it reads the time (core's `Capabilities::deployed`). A unit with no trigger is
+/// refused — nothing would ever trigger it. A repeat slug is a redeploy, not an error (the L4's Fork 2): the unit, triggers
 /// and schedule are replaced, but the slug's **state is kept** (see the insert below).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_post_deploy(
@@ -96,7 +97,6 @@ pub(crate) fn handle_post_deploy(
         return err(404, "no unit stored at that hash — stage or publish it first");
     };
 
-    let caps = capabilities(root_unit, &resolver);
     // A server declaration is answered on its own port (the data plane), so it needs neither
     // `/trigger` nor a schedule. Its clock/random leaves are sourced per request instead.
     let server = match declaration_of(root_unit) {
@@ -106,6 +106,8 @@ pub(crate) fn handle_post_deploy(
         },
         _ => None,
     };
+    // A flow deployed on a schedule runs on the clock, whether or not it reads the time.
+    let caps = capabilities(root_unit, &resolver).deployed(body.interval_seconds.is_some() && server.is_none());
     let is_ingress = caps.contains(Capability::NetworkIngress);
     let is_clock = caps.contains(Capability::Clock) && server.is_none();
     let arrivals = Arc::new(arrivals::Watch::open(deployments_path, &body.slug, &caps));
@@ -313,7 +315,9 @@ pub(crate) fn handle_post_deploy_preview(
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         return err(404, "no unit stored at that hash — stage or publish it first");
     };
-    let manifest = Manifest::new(capabilities(root_unit, &resolver).iter(), body.requirements.with_module_limits(root_unit, &resolver));
+    // As the deploy will derive it: on a schedule, it runs on the clock.
+    let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
+    let manifest = Manifest::new(capabilities(root_unit, &resolver).deployed(scheduled).iter(), body.requirements.with_module_limits(root_unit, &resolver));
     let previous = deployments.lock().unwrap().get(&body.slug).map(|d| d.grant.clone());
     let needs = policy.needs_approval(&manifest, previous.as_ref());
     let items = manifest.items();
@@ -432,8 +436,8 @@ pub(crate) fn handle_get_permission_view(
     slug: &str,
     which: &str,
 ) -> Response {
-    let (unit, grant, attention) = match deployments.lock().unwrap().get(slug) {
-        Some(d) => (d.unit, d.grant.clone(), d.attention.clone()),
+    let (unit, grant, attention, scheduled) = match deployments.lock().unwrap().get(slug) {
+        Some(d) => (d.unit, d.grant.clone(), d.attention.clone(), d.interval_seconds.is_some()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     if which == "grant" {
@@ -444,7 +448,7 @@ pub(crate) fn handle_get_permission_view(
         Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
     };
     let Some(root) = resolver.resolve(&unit) else { return err(500, "deployed unit no longer resolves in the store") };
-    let manifest = Manifest::new(capabilities(root, &resolver).iter(), grant.requirements.clone().with_module_limits(root, &resolver));
+    let manifest = Manifest::new(capabilities(root, &resolver).deployed(scheduled).iter(), grant.requirements.clone().with_module_limits(root, &resolver));
     Response::json(&serde_json::json!({
         "hash": to_hex(&manifest.hash()),
         "capabilities": manifest.capabilities,

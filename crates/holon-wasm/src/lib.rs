@@ -634,6 +634,14 @@ impl Evaluator {
         Ok(holon_core::capabilities(unit, &self.resolver).iter().map(|c| holon_core::consent_name(&c)).collect())
     }
 
+    /// The same, as a flow deploys: `scheduled` (an interval, and no routes) adds the clock it
+    /// runs on, whether or not it reads the time (core's `Capabilities::deployed`, the rule the
+    /// server deploys and grants by).
+    pub fn deployed_capability_names(&self, hash: &str, scheduled: bool) -> Result<Vec<String>, JsError> {
+        let unit = self.resolve_hash(hash)?;
+        Ok(holon_core::capabilities(unit, &self.resolver).deployed(scheduled).iter().map(|c| holon_core::consent_name(&c)).collect())
+    }
+
     /// The coarse kind-set of a unit's whole closure, by hash — core's `effects_of`, the fixed
     /// projection of `capabilities` above. Exposed as its own method rather than left for the
     /// editor to derive from `capabilities`, so `Capability::kind()`'s projection table stays
@@ -1699,6 +1707,17 @@ mod wasm_tests {
             ).into_vec(),
             vec![Some(Value::Number(5.0))],
         );
+    }
+
+    // A flow deployed on a schedule runs on the clock: the editor asks core, as the server does,
+    // so a clock flow that never reads the time still shows and asks for its trigger.
+    #[wasm_bindgen_test]
+    fn deployed_capabilities_cross_js_boundary() {
+        let mut ev = Evaluator::new();
+        let hex = ev.insert(&encode_preimage(&binop("add")).unwrap()).unwrap();
+        assert_eq!(ev.capability_names(&hex).unwrap(), Vec::<String>::new());
+        assert_eq!(ev.deployed_capability_names(&hex, false).unwrap(), Vec::<String>::new());
+        assert_eq!(ev.deployed_capability_names(&hex, true).unwrap(), vec!["Clock".to_string()]);
     }
 
     // get_unit (P4.3.1, expand-to-inspect's actual primitive): a hash already resolved in this

@@ -56,7 +56,7 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     } else {
         server.trace.clone()
     };
-    let mut may: Vec<String> = capabilities(&root, &store).iter().map(|c| consent_name(&c)).collect();
+    let mut may: Vec<String> = capabilities(&root, &store).deployed(commands::scheduled(&c, &server)).iter().map(|c| consent_name(&c)).collect();
     // A module (a js node) adds no capability; its budgets are limits the deploy asks for, and
     // the person approving sees them (the server merges them into the manifest the same way).
     may.extend(holon_core::module_limits_of(&root, &store).iter().map(|(name, n)| format!("Limit({name}={n})")));
