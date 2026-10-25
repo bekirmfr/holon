@@ -162,6 +162,14 @@ pub fn run_line(entry: &Value) -> String {
     if let Some(ms) = entry.get("duration_ms").and_then(Value::as_f64) {
         line.push_str(&format!(", {ms:.1} ms"));
     }
+    // A run that ran again, or waited for a key another run held (docs/L4s/key-claims-L4.md).
+    if let Some(n) = entry.get("retries").and_then(Value::as_u64).filter(|n| *n > 0) {
+        line.push_str(&format!(", retried ×{n}"));
+    }
+    let waited: f64 = entry.get("claims").and_then(Value::as_array).into_iter().flatten().filter_map(|c| c.get("waited_ms").and_then(Value::as_f64)).sum();
+    if waited >= 1.0 {
+        line.push_str(&format!(", waited {waited:.0} ms for a key"));
+    }
     if let Some(at) = entry.get("at_ms").and_then(Value::as_u64) {
         line.push_str(&format!(", at {}", utc(at / 1000)));
     }
@@ -206,11 +214,75 @@ struct Recorded {
     reasons: HashMap<String, String>,
 }
 
-fn recorded(document: &Value, entry: &Value) -> Recorded {
+/// The document's trace for this run's part (its route's, or the whole flow's): the node id at
+/// each step index, and how deep in a step's path that index sits (a route's steps are `[0, k]`).
+fn run_trace(document: &Value, entry: &Value) -> (Vec<String>, usize) {
     let request = entry.get("kind").and_then(Value::as_str) == Some("request");
     let key = if request { entry.get("route").and_then(Value::as_str).unwrap_or("") } else { "*" };
     let map: Vec<String> = document.pointer(&format!("/trace/{}", key.replace('~', "~0").replace('/', "~1"))).and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
-    let depth = if request { 2 } else { 1 };
+    (map, if request { 2 } else { 1 })
+}
+
+/// The node a recorded step path (`[0, k]`) belongs to.
+fn node_of_path(map: &[String], depth: usize, path: &[u64]) -> Option<String> {
+    if path.len() < depth || (depth == 2 && path[0] != 0) {
+        return None;
+    }
+    map.get(path[depth - 1] as usize).cloned()
+}
+
+/// The claims a run took (`docs/L4s/key-claims-L4.md`), each as a sentence, by the text line of
+/// the read it protects; the ones no read of the text explains (a listing) under line 0.
+fn claim_notes(document: &Value, entry: &Value, lines: &BTreeMap<String, u32>) -> BTreeMap<u32, Vec<String>> {
+    let (map, depth) = run_trace(document, entry);
+    let text_field = |record: &Value, name: &str| -> Option<String> {
+        record.get("value")?.as_array()?.iter().find(|kv| kv.get(0).and_then(Value::as_str) == Some(name))?.get(1)?.get("value")?.as_str().map(str::to_string)
+    };
+    // Each read's key (`seen[k2]`, or `seen[*]` for a listing) and the line of its node.
+    let reads: Vec<(String, Option<u32>)> = entry
+        .get("reads")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let request = r.get("request")?;
+            let collection = text_field(request, "collection")?;
+            let key = match text_field(request, "get") {
+                Some(k) => format!("{collection}[{k}]"),
+                None => format!("{collection}[*]"),
+            };
+            let path: Vec<u64> = r.get("path").and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+            let line = node_of_path(&map, depth, &path).and_then(|id| lines.get(&id).copied());
+            Some((key, line))
+        })
+        .collect();
+    let busy = entry.get("error").and_then(Value::as_str).is_some_and(|e| e.starts_with("busy:"));
+    let retries = entry.get("retries").and_then(Value::as_u64).unwrap_or(0);
+    let mut notes: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    let mut retry = 0;
+    for c in entry.get("claims").and_then(Value::as_array).into_iter().flatten() {
+        let key = c.get("key").and_then(Value::as_str).unwrap_or("?");
+        let waited = c.get("waited_ms").and_then(Value::as_f64).unwrap_or(0.0);
+        let overtaken = c.get("overtaken").and_then(Value::as_bool).unwrap_or(false);
+        let held = c.get("held_ms").and_then(Value::as_f64);
+        let line = reads.iter().find(|(k, _)| k == key).and_then(|(_, l)| *l).unwrap_or(0);
+        let note = if overtaken {
+            retry += 1;
+            format!("claimed {key} before calling out: waited {waited:.0} ms for another run, then found what it read had changed and ran again from there (retry {retry} of {retries}), having sent nothing")
+        } else if let Some(held) = held {
+            format!("claimed {key} before calling out: waited {waited:.0} ms, held it {held:.0} ms until it was done")
+        } else if busy {
+            format!("waited {waited:.0} ms for {key}, held by another run, and was turned away as busy")
+        } else {
+            format!("waited {waited:.0} ms for {key}, held by another run")
+        };
+        notes.entry(line).or_default().push(note);
+    }
+    notes
+}
+
+fn recorded(document: &Value, entry: &Value) -> Recorded {
+    let (map, depth) = run_trace(document, entry);
     let timeline = entry.get("timeline").and_then(Value::as_array).cloned().unwrap_or_default();
     let round = |t: &Value| t.get("round").and_then(Value::as_u64).unwrap_or(0);
     let last = timeline.iter().map(round).max().unwrap_or(0);
@@ -306,6 +378,7 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
     for (id, line) in &lines {
         on_line.entry(*line).or_default().push(id.as_str());
     }
+    let mut claims = claim_notes(document, entry, &lines);
     // Why a node has no value: the first node upstream that gave nothing though everything
     // feeding it had a value.
     let origin = |id: &str| -> String {
@@ -386,8 +459,14 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
                 out.push(format!("{:>width$}  {}  ⇒ {} gave nothing: {why}", "", " ".repeat(indent), node_name(node)));
             }
         }
+        for note in claims.remove(&n).unwrap_or_default() {
+            out.push(format!("{:>width$}  {}  {note}", "", " ".repeat(indent)));
+        }
     }
     out.push(String::new());
+    for note in claims.into_values().flatten() {
+        out.push(note);
+    }
     if let Some(body) = entry.get("response_body").and_then(Value::as_str) {
         let body: String = if body.chars().count() > 400 { format!("{}…", body.chars().take(400).collect::<String>()) } else { body.to_string() };
         out.push(format!("answered {}: {body}", entry.get("status").and_then(Value::as_u64).map(|s| s.to_string()).unwrap_or_default()));
@@ -655,6 +734,40 @@ mod tests {
         let mut on_its_port = entry.clone();
         on_its_port.as_object_mut().unwrap().remove("by");
         assert!(!run_line(&on_its_port).contains("sent by"));
+    }
+
+    /// A run that ran again, or waited for a key another run held, says so on its line.
+    #[test]
+    fn a_runs_line_says_it_retried_and_waited() {
+        let entry = json!({ "seq": 5, "kind": "request", "method": "POST", "url": "/charges", "status": 200, "duration_ms": 696.1, "at_ms": 1_792_845_653_000u64,
+            "retries": 1, "claims": [{ "key": "charges[k2]", "waited_ms": 681.4, "overtaken": true }, { "key": "charges[k2]", "waited_ms": 0.2, "overtaken": false, "held_ms": 2.0 }] });
+        assert_eq!(run_line(&entry), "run 5: POST /charges → 200, 696.1 ms, retried ×1, waited 682 ms for a key, at 2026-10-24 12:40:53 UTC");
+        let quiet = json!({ "seq": 4, "kind": "request", "method": "POST", "url": "/charges", "status": 200, "duration_ms": 677.7, "claims": [{ "key": "charges[k2]", "waited_ms": 0.1, "overtaken": false, "held_ms": 676.0 }] });
+        assert_eq!(run_line(&quiet), "run 4: POST /charges → 200, 677.7 ms");
+    }
+
+    /// The claims a run took are said under the statement that made the read they protect: the
+    /// run that waited and ran again, and the run that held the key while it called out.
+    #[test]
+    fn explain_says_what_a_run_claimed_under_its_read() {
+        let p = plan(samples::sample("cache-aside").unwrap().text).unwrap();
+        let trace: Vec<String> = serde_json::from_value(p.document["trace"]["GET /id/:name"].clone()).unwrap();
+        let nodes = p.document["nodes"].as_array().unwrap();
+        let read_id = nodes.iter().find(|n| n["data"]["name"] == "collection_get").unwrap()["id"].as_str().unwrap();
+        let k = trace.iter().position(|t| t == read_id).unwrap();
+        let read = json!({ "path": [0, k], "request": { "type": "Record", "value": [["collection", { "type": "Text", "value": "ids" }], ["get", { "type": "Text", "value": "ada" }]] }, "answer": null });
+        let waited = json!({ "seq": 5, "kind": "request", "route": "GET /id/:name", "method": "GET", "url": "/id/ada", "status": 200, "duration_ms": 696.1, "retries": 1,
+            "reads": [read], "claims": [{ "key": "ids[ada]", "waited_ms": 681.4, "overtaken": true }, { "key": "ids[ada]", "waited_ms": 0.2, "overtaken": false, "held_ms": 2.0 }] });
+        let text = explain("cache-aside", &p.document, &waited).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let at = lines.iter().position(|l| l.contains("id = ids[name] ??")).unwrap_or_else(|| panic!("{text}"));
+        let under: Vec<&str> = lines[at + 1..].iter().take_while(|l| !l.trim_start().starts_with(|c: char| c.is_ascii_digit())).copied().collect();
+        assert!(under.iter().any(|l| l.trim() == "claimed ids[ada] before calling out: waited 681 ms for another run, then found what it read had changed and ran again from there (retry 1 of 1), having sent nothing"), "{text}");
+        assert!(under.iter().any(|l| l.trim() == "claimed ids[ada] before calling out: waited 0 ms, held it 2 ms until it was done"), "{text}");
+        let busy = json!({ "seq": 6, "kind": "request", "route": "GET /id/:name", "method": "GET", "url": "/id/ada", "status": 503, "duration_ms": 50.3, "error": "busy: ids[ada] is held by another run",
+            "reads": [read], "claims": [{ "key": "ids[ada]", "waited_ms": 50.0, "overtaken": false }] });
+        let text = explain("cache-aside", &p.document, &busy).unwrap();
+        assert!(text.contains("waited 50 ms for ids[ada], held by another run, and was turned away as busy"), "{text}");
     }
 
     #[test]

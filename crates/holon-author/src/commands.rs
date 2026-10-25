@@ -91,6 +91,26 @@ fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(Strin
     (server, unit)
 }
 
+/// What the host does around a run that the manifest doesn't say (`docs/L4s/key-claims-L4.md`
+/// §3): a flow that calls out and both reads and writes a collection holds the keys it read in it
+/// from its first outbound request until it commits. Derived from the capabilities, as the host
+/// derives the claim; nothing to approve, so it is said apart from "it may".
+pub(crate) fn while_it_runs(caps: &[String]) -> Vec<String> {
+    if !caps.iter().any(|c| c.starts_with("HttpRequest(")) {
+        return vec![];
+    }
+    let named = |kind: &str| -> Vec<String> {
+        caps.iter().filter_map(|c| c.strip_prefix(kind)?.strip_prefix("(\"")?.strip_suffix("\")").map(str::to_string)).collect()
+    };
+    let written = named("CollectionWrite");
+    let both: Vec<String> = named("CollectionRead").into_iter().filter(|n| written.contains(n)).collect();
+    if both.is_empty() {
+        return vec![];
+    }
+    let quoted: Vec<String> = both.iter().map(|n| format!("\"{n}\"")).collect();
+    vec!["while it runs:".into(), format!("  holds the keys it reads in {} from its first outbound call until it commits, so two runs on one key call out once", quoted.join(" and "))]
+}
+
 /// What `check` finds wrong with a text that compiles: its server's mistakes, and why it has no
 /// unit.
 pub(crate) fn problems(c: &Lowered, store: &mut MapResolver) -> Vec<String> {
@@ -131,6 +151,7 @@ pub fn check(file: &str, source: &str) -> Report {
     if let (Some(fuel), Some(memory)) = (modules.get(holon_core::FUEL_LIMIT), modules.get(holon_core::MEMORY_LIMIT)) {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }
+    out.extend(while_it_runs(&caps));
     problems.splice(0..0, server.errors);
     // The flow has no unit because of its routes' errors: each said once.
     let mut seen = std::collections::BTreeSet::new();
@@ -183,12 +204,15 @@ pub fn show(file: &str, source: &str) -> Report {
         Ok(c) => c,
         Err(r) => return r,
     };
-    let server = derive_server(&c.doc.nodes, &c.doc.edges, &mut store, port_of(&c));
+    let (server, unit) = derive(&c, &mut store);
     let port = port_of(&c);
     let mut out = vec![format!("{}{}", c.name.as_deref().unwrap_or(file), if port.is_empty() { String::new() } else { format!("  (a server on :{port})") })];
     if !server.endpoints.is_empty() {
         out.push("  routes".into());
         out.extend(server.endpoints.iter().map(|e| format!("    {} {}", e.method, e.path)));
+    }
+    if let Ok((_, caps)) = &unit {
+        out.extend(while_it_runs(caps).iter().map(|l| format!("  {l}")));
     }
     out.push("  nodes".into());
     let name_of = |id: &str| c.names.get(id).cloned().unwrap_or_else(|| id.to_string());
@@ -346,6 +370,24 @@ mod tests {
         assert_eq!(r.out[1..3], ["a server on :8101", "  GET /hello/:name"]);
         assert!(r.out[3].starts_with("unit "));
         assert_eq!(r.out[4..], ["it may:", "  receive requests"]);
+    }
+
+    /// A flow that calls out and both reads and writes a collection is told, apart from what it
+    /// may do, that the host holds the keys it read from its first call until it commits
+    /// (docs/L4s/key-claims-L4.md §3, test 8); one that doesn't call out, or only reads, isn't.
+    #[test]
+    fn check_names_the_held_keys() {
+        let r = check("cache-aside.holon", crate::samples::sample("cache-aside").unwrap().text);
+        assert_eq!(r.code, 0, "{r:?}");
+        let at = r.out.iter().position(|l| l == "while it runs:").unwrap_or_else(|| panic!("{:?}", r.out));
+        assert_eq!(r.out[at + 1], "  holds the keys it reads in \"ids\" from its first outbound call until it commits, so two runs on one key call out once");
+        assert!(r.out[..at].iter().any(|l| l.starts_with("  call https://")), "said after what it may do: {:?}", r.out);
+        let shown = show("cache-aside.holon", crate::samples::sample("cache-aside").unwrap().text);
+        assert!(shown.out.iter().any(|l| l == "  while it runs:"), "{:?}", shown.out);
+        for name in ["likes", "basket", "fetch-json"] {
+            let r = check(name, crate::samples::sample(name).unwrap().text);
+            assert!(!r.out.iter().any(|l| l.contains("while it runs")), "{name}: {:?}", r.out);
+        }
     }
 
     #[test]

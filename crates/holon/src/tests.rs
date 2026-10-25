@@ -3588,7 +3588,9 @@ fn a_racing_pair_on_one_key_calls_out_once() {
     let claims = second["claims"].as_array().unwrap();
     assert!(claims.iter().any(|c| c["key"] == "seen[k2]" && c["waited_ms"].as_f64().unwrap() > 100.0 && c["overtaken"] == true), "{claims:?}");
     let first = entries.iter().find(|e| e["retries"] != 1).unwrap();
-    assert_eq!(first["claims"][0], serde_json::json!({ "key": "seen[k2]", "waited_ms": first["claims"][0]["waited_ms"], "overtaken": false }));
+    let held = &first["claims"][0];
+    assert_eq!((held["key"].as_str(), held["overtaken"].as_bool()), (Some("seen[k2]"), Some(false)), "{held}");
+    assert!(held["waited_ms"].as_f64().unwrap() < 50.0 && held["held_ms"].as_f64().unwrap() > 300.0, "held through its slow call: {held}");
 }
 
 /// Two keys never wait for each other: both call out, side by side.

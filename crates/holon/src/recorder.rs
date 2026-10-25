@@ -139,6 +139,9 @@ pub struct LoggedClaim {
     pub key: String,
     pub waited_ms: f64,
     pub overtaken: bool,
+    /// How long it was held, from taken to let go; none for a key the run never held (busy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_ms: Option<f64>,
 }
 
 /// One collection read in a run.

@@ -8,7 +8,9 @@
 > evaluator · *effort:* **M** (three inches, with the sample)
 > *Status:* **designed 2026-10-25**, from a race run live against the `charges` flow (§1); **inch 1
 > built the same day** (the hook, the table, the claim, the commit's wait, `claim_wait_ms`, tests 1
-> to 7). One change from the design: a claim never names a **state cell** (§2, §3).
+> to 7); **inch 2 the same day** (the log's `held_ms`, `explain`'s notes, `runs`' columns, `check`'s and
+> `show`'s *while it runs*, test 8). One change from the design: a claim never names a **state cell**
+> (§2, §3).
 > *Pinned:* a claim is **derived, never declared**: nothing in the text, nothing in the manifest,
 > nothing to approve · taken **only when a run is about to send its first outbound request**,
 > never at a read · **per key**, per deployment · **released** at commit, discard or park · a
@@ -119,12 +121,16 @@ the manifest, in a part headed *while it runs* rather than *it may*:
 
 ```
 while it runs:
-  holds the keys it read in "charges" from its first outbound call until it commits
+  holds the keys it reads in "charges" from its first outbound call until it commits, so two runs on one key call out once
 ```
 
-The line is derived from the same two facts (a `http_request` reachable from a `collection_get`
-of a written collection, or from a read of a written state key); a flow with no such path prints
-nothing. It is information, not a permission, and the deploy dialog does not ask about it.
+The line is derived from the capabilities alone, as the claim itself is: a flow with an
+`HttpRequest` and both `CollectionRead` and `CollectionWrite` of one collection prints it, named
+for each such collection; any other flow prints nothing (`commands::while_it_runs`). It says
+exactly what the host does, no more: the host claims every read of a written collection before
+the first call, whether or not the call depends on it, so a line derived from a dependency
+analysis would promise less than happens. It is information, not a permission, and the deploy
+dialog does not ask about it.
 
 Refused along the way: a `lock`/`claim` header or leaf (opt-in correctness; and a leaf would be an
 effect performed mid-run, the one thing `I7` forbids); a manifest item (nothing to approve;
@@ -161,26 +167,33 @@ ClaimKey = Item { collection, key } | Collection(name)
 
 ## 5. Seeing it: the log, `explain` and `runs`
 
-A log entry gains `claims`, absent when none were taken:
+A log entry gains `claims`, absent when none were taken, one record per key per attempt:
 
 ```json
-"claims": [{ "key": "charges[k2]", "waited_ms": 681, "held_ms": 2, "overtaken": true }]
+"claims": [{ "key": "charges[k2]", "waited_ms": 681.4, "overtaken": true, "held_ms": 0.1 },
+           { "key": "charges[k2]", "waited_ms": 0.2, "overtaken": false, "held_ms": 2.0 }]
 ```
 
-`explain` prints it with the statement that made the read it protects, and the retry it caused:
+`held_ms` is from taken to let go (absent for a key the run never held: a busy wait). `explain`
+prints each under the statement that made the read it protects (matched by key through the
+entry's `reads`; a listing's claim, which no one statement owns, goes with the run's closing
+lines):
 
 ```
  8    stored = charges[key]
         ⇒ { id: "4ef256af9fcb", … }
-        claimed charges[k2] before calling out: waited 681 ms for run 4, then found it
-        written and ran again from there (retry 1 of 1); sent nothing on the first try
+        claimed charges[k2] before calling out: waited 681 ms for another run, then found what it
+        read had changed and ran again from there (retry 1 of 1), having sent nothing
+        claimed charges[k2] before calling out: waited 0 ms, held it 2 ms until it was done
 ```
 
-and on the run that held it: `claimed charges[k2] before calling out: held 678 ms`.
+and on the run that held it: `claimed charges[k2] before calling out: waited 0 ms, held it 678 ms
+until it was done`; on one turned away: `waited 50 ms for charges[k2], held by another run, and was
+turned away as busy`.
 
-`runs` adds `retried ×1` and `waited 681 ms` to a line that has them, which is also what the race
-in §1 needed and the log alone gave: a reader of two same-key runs can tell from the list that
-one waited for the other.
+`runs` adds `retried ×1` and `waited 681 ms for a key` to a line that has them (a wait under a
+millisecond is not mentioned), which is also what the race in §1 needed and the log alone gave: a
+reader of two same-key runs can tell from the list that one waited for the other.
 
 Replay and `holon verify` are untouched: a claim changes when a run runs, never what it computes,
 and an entry without `claims` verifies as before.
@@ -274,7 +287,7 @@ counts hits:
 | Inch | What | Done when |
 |---|---|---|
 | 1 ✅ | `holon-host`: the `claim` hook in `Waits`, `RunError::Overtaken` / `Busy`, `NoWaits` answers `Held`; `holon`: the table (`claims.rs`, beside the state in `StateCell`), the claim, re-validation, release; `fire_with_state` retries on `Overtaken`; `commit` waits for foreign claims; `claim_wait_ms`; the log's `claims` | tests 1 to 7 (in `tests.rs`, from the flow text through `holon_author::agent::plan`, against a local server that counts hits) |
-| 2 | The log's `claims`, `explain`'s lines, `runs`' columns; `check`'s derived line | test 8; the race in §1, rerun, reads as §5 shows |
+| 2 ✅ | The log's `held_ms`, `explain`'s notes, `runs`' columns; `check`'s and `show`'s derived line | test 8 (`check_names_the_held_keys`), `a_runs_line_says_it_retried_and_waited`, `explain_says_what_a_run_claimed_under_its_read`; the race in §1 reruns live with inch 3's sample |
 | 3 | The sample `idempotent` with its entry, run live (the race), deployed by e2e | test 9; `samples.test.ts` builds it; `fmt` leaves it |
 
 ## 12. Invariant check

@@ -154,6 +154,15 @@ pub(crate) struct ClaimRecord {
     /// The run found what it read changed once it held the key (or let go to wait for it), and ran
     /// again from the new state, having sent nothing on this attempt.
     pub(crate) overtaken: bool,
+    /// When it was taken (or given up on), and how long it was held: none for a key never held.
+    pub(crate) taken: Instant,
+    pub(crate) held: Option<Duration>,
+}
+
+impl ClaimRecord {
+    fn new(key: ClaimKey, waited: Duration, overtaken: bool) -> ClaimRecord {
+        ClaimRecord { key, waited, overtaken, taken: Instant::now(), held: None }
+    }
 }
 
 /// One attempt's claiming: what it holds, and what it needs to decide the next claim.
@@ -227,7 +236,7 @@ impl Claiming {
             match self.cell.claims.acquire(&new, &self.run, self.deadline) {
                 Ok(_) => {}
                 Err(key) => {
-                    self.records.push(ClaimRecord { key: key.clone(), waited: started.elapsed(), overtaken: false });
+                    self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), false));
                     return Claim::Busy { key: key.to_string() };
                 }
             }
@@ -235,16 +244,16 @@ impl Claiming {
             // Holding some and needing one another run holds: let go, wait for it, run again.
             self.release_all();
             let free = self.cell.claims.wait_free(std::slice::from_ref(&key), &self.run, self.deadline);
-            self.records.push(ClaimRecord { key: key.clone(), waited: started.elapsed(), overtaken: free });
+            self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), free));
             return if free { Claim::Overtaken } else { Claim::Busy { key: key.to_string() } };
         }
         let waited = started.elapsed();
         self.held.extend(new.iter().cloned());
         if self.still_as_read(&new, reads) {
-            self.records.extend(new.into_iter().map(|key| ClaimRecord { key, waited, overtaken: false }));
+            self.records.extend(new.into_iter().map(|key| ClaimRecord::new(key, waited, false)));
             Claim::Held
         } else {
-            self.records.extend(new.into_iter().map(|key| ClaimRecord { key, waited, overtaken: true }));
+            self.records.extend(new.into_iter().map(|key| ClaimRecord::new(key, waited, true)));
             self.release_all();
             Claim::Overtaken
         }
@@ -253,8 +262,17 @@ impl Claiming {
     fn release_all(&mut self) {
         if !self.held.is_empty() {
             self.cell.claims.release(&self.held, &self.run);
+            for r in self.records.iter_mut().filter(|r| r.held.is_none() && self.held.contains(&r.key)) {
+                r.held = Some(r.taken.elapsed());
+            }
             self.held.clear();
         }
+    }
+
+    /// Let go of everything and hand back the records, each held key's time now known.
+    pub(crate) fn finish(mut self) -> Vec<ClaimRecord> {
+        self.release_all();
+        std::mem::take(&mut self.records)
     }
 }
 

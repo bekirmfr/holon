@@ -160,13 +160,17 @@ pub(crate) fn fire_with_state(
             if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store) {
                 commit(&mut live, store, &a.run.performed);
                 a.run.retries = retries;
-                waits.claiming = None;
+                if let Some(c) = waits.claiming.take() {
+                    a.run.claims = c.finish();
+                }
                 return a.run;
             }
         }
-        waits.claiming = None;
+        records = match waits.claiming.take() {
+            Some(c) => c.finish(),
+            None => a.run.claims,
+        };
         prior = a.run.rounds;
-        records = a.run.claims;
     }
     // Contended that long: run once more holding the lock, so it can't be overtaken again. It
     // claims nothing (it owns everything), once every claim before it is let go.
@@ -458,7 +462,12 @@ pub(crate) fn run_entry(
         claims: run
             .claims
             .iter()
-            .map(|c| recorder::LoggedClaim { key: c.key.to_string(), waited_ms: c.waited.as_secs_f64() * 1000.0, overtaken: c.overtaken })
+            .map(|c| recorder::LoggedClaim {
+                key: c.key.to_string(),
+                waited_ms: c.waited.as_secs_f64() * 1000.0,
+                overtaken: c.overtaken,
+                held_ms: c.held.map(|d| d.as_secs_f64() * 1000.0),
+            })
             .collect(),
         by: None,
         reads: run
