@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.0-rc.21
+
+Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.20 keep running.
+
+- **`respond` takes `headers:`**, a record of response headers: `respond page, headers: {
+  "content-type": "text/html; charset=utf-8" }` answers a page instead of JSON, and `respond "",
+  headers: { location: "/" }, status: 303` redirects. It is a third input on the template only
+  when a flow asks for it, so a respond without it is the unit it always was (docs/LANGUAGE.md
+  §5.11).
+- **A new sample, `guestbook`**: a web page served by the flow itself. A js node renders the
+  guestbook as HTML from the entries in a collection, with the clock wired in to say how long ago
+  each was signed and what people type escaped; another parses the posted form; the flow stores a
+  signature and redirects back to the page, or answers 400 to an incomplete form. Signed through
+  a real browser, the page came back with the new entry.
+- **Three things a js body may hold, fixed.** A regex literal: the lexer knows a `/` where a value
+  can't be starts one, so the quotes in `/[&<>"']/g` no longer open a string. A port called after
+  a leaf (`clock`): the printer keeps it as written, where it came back renamed and the body broke.
+  A `#` in JavaScript (a CSS colour): `fmt`'s comment pass leaves a js body alone, where it
+  re-inserted the rest of the line as a comment.
+- The e2e suite no longer trips over a disabled account that the editor's own poll signed out
+  before the test's next step, which is what failed rc.20's CI run (its release built fine).
+
 ## 0.1.0-rc.20
 
 Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.19 keep running.
