@@ -181,6 +181,9 @@ fn eval_at(
         // A collection read: the host answers it from the collection as the run found it.
         UnitBody::Primitive { name } if name == "collection_get" => ask(primitives::collection_get_request(inputs, &unit.params), observer, path),
         UnitBody::Primitive { name } if name == "collection_list" => ask(primitives::collection_list_request(inputs, &unit.params), observer, path),
+        // A file read: the host answers it from the folder bound to the name, as the run found it.
+        UnitBody::Primitive { name } if name == "file_read" => ask(primitives::file_read_request(inputs, &unit.params), observer, path),
+        UnitBody::Primitive { name } if name == "file_list" => ask(primitives::file_list_request(inputs, &unit.params), observer, path),
         UnitBody::Primitive { name } if name == "resume_token" => ask(primitives::resume_token_request(&unit.params), observer, path),
         // `coalesce` is the one leaf whose meaning is about absence: the first input that
         // arrived. The generic arm below would give the same answer today (it gathers present

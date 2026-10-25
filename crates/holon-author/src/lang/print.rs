@@ -27,7 +27,7 @@ use crate::wire::{WParam, WPort, WType};
 
 /// The words a binding may not take, as lower.rs holds them.
 const RESERVED: &[&str] = &[
-    "flow", "port", "every", "browsers", "optional", "collection", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
+    "flow", "port", "every", "browsers", "optional", "collection", "folder", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
@@ -218,6 +218,8 @@ pub struct Printer<'s> {
     taken: HashSet<String>,
     blocks: Vec<Vec<Line>>,
     collections: BTreeSet<String>,
+    /// Every folder any leaf names (`folder inbox`).
+    folders: BTreeSet<String>,
     holon_defs: HashSet<String>,
 }
 
@@ -245,6 +247,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         taken: HashSet::new(),
         blocks: vec![],
         collections: BTreeSet::new(),
+        folders: BTreeSet::new(),
         holon_defs: HashSet::new(),
     };
     p.collect_collections(&doc.nodes)?;
@@ -270,6 +273,9 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     }
     for c in &p.collections {
         out.push(header(format!("collection {c}")));
+    }
+    for f in &p.folders {
+        out.push(header(format!("folder {f}")));
     }
     let body = p.flow_body(doc)?;
     let blocks = std::mem::take(&mut p.blocks);
@@ -366,7 +372,10 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
         }
         n.data.inputs.iter().all(|p| {
             let optional = n.data.body == PlacedBody::Primitive
-                && matches!((n.data.name.as_str(), p.name.as_str()), ("http_request", "headers" | "body") | ("collection_list", "prefix" | "after"));
+                && matches!(
+                    (n.data.name.as_str(), p.name.as_str()),
+                    ("http_request", "headers" | "body") | ("collection_list" | "file_list", "prefix" | "after")
+                );
             optional || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
         })
     })
@@ -384,20 +393,37 @@ fn consent(o: &str) -> String {
 }
 
 impl<'s> Printer<'s> {
-    /// Every collection any leaf names, the holons' leaves included.
+    /// Every collection and folder any leaf names, the holons' leaves included.
     fn collect_collections(&mut self, nodes: &[Node]) -> Result<(), String> {
-        fn walk(store: &MapResolver, hash: &holon_core::Hash, seen: &mut HashSet<holon_core::Hash>, out: &mut BTreeSet<String>) {
+        /// The param naming what a leaf reads or writes: a collection's, or a folder's.
+        fn named_by(leaf: &str) -> Option<&'static str> {
+            if leaf.starts_with("collection_") {
+                Some("collection")
+            } else if leaf.starts_with("file_") {
+                Some("folder")
+            } else {
+                None
+            }
+        }
+        type Found = (BTreeSet<String>, BTreeSet<String>);
+        fn found(out: &mut Found, param: &str, name: String) {
+            if !name.is_empty() {
+                if param == "collection" { &mut out.0 } else { &mut out.1 }.insert(name);
+            }
+        }
+        fn walk(store: &MapResolver, hash: &holon_core::Hash, seen: &mut HashSet<holon_core::Hash>, out: &mut Found) {
             if !seen.insert(*hash) {
                 return;
             }
             let Some(unit) = store.resolve(hash) else { return };
             match &unit.body {
-                UnitBody::Primitive { name } if name.starts_with("collection_") => {
+                UnitBody::Primitive { name } if named_by(name).is_some() => {
+                    let param = named_by(name).expect("checked");
                     if let Some(c) = unit.params.iter().find_map(|p| match p {
-                        holon_core::Param::Frozen { name, value } if name == "collection" => Some(value.clone()),
+                        holon_core::Param::Frozen { name, value } if name == param => Some(value.clone()),
                         _ => None,
                     }) {
-                        out.insert(c);
+                        found(out, param, c);
                     }
                 }
                 UnitBody::Composite { children, .. } => {
@@ -409,21 +435,21 @@ impl<'s> Printer<'s> {
             }
         }
         let mut seen = HashSet::new();
+        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders));
         for n in nodes {
             match &n.data.body {
-                PlacedBody::Primitive if n.data.name.starts_with("collection_") => {
-                    let c = n.param("collection");
-                    if !c.is_empty() {
-                        self.collections.insert(c.to_string());
-                    }
+                PlacedBody::Primitive if named_by(&n.data.name).is_some() => {
+                    let param = named_by(&n.data.name).expect("checked");
+                    found(&mut out, param, n.param(param).to_string());
                 }
                 PlacedBody::Composite { hash } => {
                     let (h, _) = resolve(self.store, hash)?;
-                    walk(self.store, &h, &mut seen, &mut self.collections);
+                    walk(self.store, &h, &mut seen, &mut out);
                 }
                 _ => {}
             }
         }
+        (self.collections, self.folders) = out;
         Ok(())
     }
 
@@ -494,7 +520,11 @@ impl<'s> Printer<'s> {
 
     fn request_name(&self, request: &Node) -> String {
         let n = self.bindings.get(&request.id).cloned().unwrap_or_else(|| "req".into());
-        if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) { n } else { "req".into() }
+        if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) && !self.folders.contains(&n) {
+            n
+        } else {
+            "req".into()
+        }
     }
 
     /// A name for a holon, by hash, taken once, from the document's names or made up; the holon's
@@ -543,7 +573,7 @@ impl<'s> Printer<'s> {
     }
 
     fn reserved(&self, n: &str) -> bool {
-        RESERVED.contains(&n) || interface_of(n).is_some() || templates::is_template(n) || self.collections.contains(n)
+        RESERVED.contains(&n) || interface_of(n).is_some() || templates::is_template(n) || self.collections.contains(n) || self.folders.contains(n)
     }
 
     /// `holon name(inputs) -> (outputs) { body }`, the body as the expand view opens it: the
@@ -1018,6 +1048,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 "await" => node.param("name").to_string(),
                 "collection_get" => "item".into(),
                 "collection_list" => "page".into(),
+                "file_read" => "text".into(),
+                "file_list" => "files".into(),
                 "http_request" => "response".into(),
                 "stripe_verify" => "verified".into(),
                 "clock" => "t".into(),
@@ -1173,7 +1205,20 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let key = self.required(node, "key")?;
                 atom(format!("{}.delete({key})", node.param("collection")))
             }
-            "collection_list" if plain(node.param("collection")) => {
+            "file_read" if plain(node.param("folder")) => {
+                let name = self.required(node, "name")?;
+                atom(format!("{}[{name}]", node.param("folder")))
+            }
+            "file_write" if plain(node.param("folder")) => {
+                let name = self.required(node, "name")?;
+                let text = self.required(node, "text")?;
+                atom(format!("{}.put({name}, {text})", node.param("folder")))
+            }
+            "file_delete" if plain(node.param("folder")) => {
+                let name = self.required(node, "name")?;
+                atom(format!("{}.delete({name})", node.param("folder")))
+            }
+            "collection_list" | "file_list" if plain(node.param(if d.name == "file_list" { "folder" } else { "collection" })) => {
                 let mut args = Vec::new();
                 for input in ["prefix", "after"] {
                     if let Some((t, _)) = self.arg(node, input)? {
@@ -1183,7 +1228,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 if node.param("limit") != "100" {
                     args.push(format!("limit: {}", param_value(node.param("limit"))));
                 }
-                atom(format!("{}.list({})", node.param("collection"), args.join(", ")))
+                let of = node.param(if d.name == "file_list" { "folder" } else { "collection" });
+                atom(format!("{of}.list({})", args.join(", ")))
             }
             "store_write" if plain(node.param("key")) => {
                 let value = self.required(node, "value")?;
@@ -1472,6 +1518,12 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 Ok(format!("{}[{key}] = {value}", node.param("collection")))
             }
             "collection_delete" if plain(node.param("collection")) => Ok(format!("delete {}[{}]", node.param("collection"), self.required(node, "key")?)),
+            "file_write" if plain(node.param("folder")) => {
+                let name = self.required(node, "name")?;
+                let text = self.required(node, "text")?;
+                Ok(format!("{}[{name}] = {text}", node.param("folder")))
+            }
+            "file_delete" if plain(node.param("folder")) => Ok(format!("delete {}[{}]", node.param("folder"), self.required(node, "name")?)),
             _ => Ok(self.render(node, "")?.0),
         }
     }

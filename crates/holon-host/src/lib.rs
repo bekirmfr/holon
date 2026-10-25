@@ -94,10 +94,11 @@ pub fn fire_observed(
 /// question a different way.
 fn parse_sink(sink: &str) -> (String, Vec<Param>) {
     match sink.split_once(':') {
-        // A collection's writes name the collection; a state write, its key.
+        // A collection's writes name the collection, a folder's the folder; a state write, its key.
         Some((name, collection)) if name.starts_with("collection_") => {
             (name.to_string(), vec![Param::frozen("collection", collection)])
         }
+        Some((name, folder)) if name.starts_with("file_") => (name.to_string(), vec![Param::frozen("folder", folder)]),
         Some((name, key)) => (name.to_string(), vec![Param::frozen("key", key)]),
         None => (sink.to_string(), Vec::new()),
     }

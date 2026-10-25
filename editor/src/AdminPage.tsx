@@ -1,13 +1,16 @@
 // The admin panel (admins only; holon-server's auth.rs): the people who use this server, the API
-// tokens scripts use, signing in through an identity provider, and what was done, by whom.
+// tokens scripts use, signing in through an identity provider, the folders flows read and write
+// (folders.rs), and what was done, by whom.
 // Adding someone gives a one-time link for them to set their password; resetting gives a new
 // one. The server refuses any change that would leave no admin.
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import {
   changeAccount,
+  bindFolder,
   createToken,
   getOidcSettings,
+  listFolders,
   inviteAccount,
   listAccounts,
   listTokens,
@@ -15,7 +18,9 @@ import {
   resetAccount,
   revokeToken,
   setOidcSettings,
+  unbindFolder,
   type AccountEntry,
+  type FolderEntry,
   type OidcSettings,
   type Role,
   type TokenEntry,
@@ -53,11 +58,14 @@ export function AdminPage({ me }: { me: string }) {
   const [tokenDraft, setTokenDraft] = useState({ label: "", role: "editor" as Role });
   const [issuer, setIssuer] = useState("");
   const [clientId, setClientId] = useState("");
+  const [folders, setFolders] = useState<FolderEntry[]>([]);
+  const [folderDraft, setFolderDraft] = useState<FolderEntry>({ name: "", path: "", access: "read-write", keep: "bytes" });
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
     listAccounts().then(setPeople).catch((e: unknown) => setMsg(messageOf(e)));
     listTokens().then(setTokens).catch((e: unknown) => setMsg(messageOf(e)));
+    listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
     getOidcSettings()
       .then((s) => {
         setOidc(s);
@@ -250,6 +258,63 @@ export function AdminPage({ me }: { me: string }) {
         </select>
         <button type="submit" style={primary} disabled={!tokenDraft.label.trim()}>
           make token
+        </button>
+      </form>
+
+      <div style={head}>folders</div>
+      <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 6, lineHeight: 1.45 }}>
+        Files flows read and write on this server&apos;s machine. A flow names a folder (<code>folder inbox</code>), never a path: bind each name to a real folder here.
+        Read only: flows may read it, not write it. Reads kept by hash: the run log keeps a hash of what each run read, not its text.
+      </div>
+      {folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>none</div>}
+      {folders.map((f) => (
+        <div key={f.name} style={row}>
+          <span style={{ color: "#6fd3e0", minWidth: 90 }}>{f.name}</span>
+          <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{f.path}</span>
+          <span style={{ color: "#7e8ea8", fontSize: 11 }}>
+            {f.access === "read" ? "read only" : "read and write"}
+            {f.keep === "hash" ? " · reads kept by hash" : ""}
+          </span>
+          <button
+            style={small}
+            title="unbind the name: the files stay where they are"
+            onClick={async () => {
+              if (await dialog.confirm(`Unbind the folder "${f.name}"? Its files stay where they are; deployments that use it can't read or write it until it is bound again.`, "Unbind"))
+                act(() => unbindFolder(f.name));
+            }}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <form
+        style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          act(async () => {
+            await bindFolder({ ...folderDraft, name: folderDraft.name.trim(), path: folderDraft.path.trim() });
+            setFolderDraft({ ...folderDraft, name: "", path: "" });
+          });
+        }}
+      >
+        <input aria-label="folder name" placeholder="name (inbox)" value={folderDraft.name} onChange={(e) => setFolderDraft({ ...folderDraft, name: e.target.value })} style={input} />
+        <input
+          aria-label="folder path"
+          placeholder="the whole path on this server's machine"
+          value={folderDraft.path}
+          onChange={(e) => setFolderDraft({ ...folderDraft, path: e.target.value })}
+          style={{ ...input, flex: 1, minWidth: 220 }}
+        />
+        <select aria-label="folder access" value={folderDraft.access} onChange={(e) => setFolderDraft({ ...folderDraft, access: e.target.value as FolderEntry["access"] })} style={input}>
+          <option value="read-write">read and write</option>
+          <option value="read">read only</option>
+        </select>
+        <select aria-label="what the log keeps" value={folderDraft.keep} onChange={(e) => setFolderDraft({ ...folderDraft, keep: e.target.value as FolderEntry["keep"] })} style={input}>
+          <option value="bytes">log keeps what was read</option>
+          <option value="hash">log keeps a hash</option>
+        </select>
+        <button type="submit" style={primary} disabled={!folderDraft.name.trim() || !folderDraft.path.trim()}>
+          bind folder
         </button>
       </form>
 

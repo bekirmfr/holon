@@ -149,7 +149,24 @@ pub struct LoggedClaim {
 pub struct LoggedRead {
     pub path: Vec<u32>,
     pub request: SValue,
+    /// What it answered; for a file read kept by hash (`file`), none: its text is elsewhere.
     pub answer: Option<SValue>,
+    /// For a file read (folders.rs): the file's hash and size, and its text's place in the content
+    /// store when it isn't in `answer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<LoggedFile>,
+}
+
+/// A file a run read, as its log entry keeps it: what `holon verify` checks a supplied file by.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct LoggedFile {
+    /// BLAKE3 of its bytes (hex).
+    pub hash: String,
+    pub size: u64,
+    /// Its text's value hash in the content store (hex), when the folder keeps bytes and the text
+    /// isn't in the entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob: Option<String>,
 }
 
 /// The requests performed after one round, to answer the next.

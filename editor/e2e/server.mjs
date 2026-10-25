@@ -9,7 +9,7 @@
 // through the stand-in identity provider (mock-oidc.mjs) once its admin panel says to.
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,8 +49,12 @@ const server = spawn(
   { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "" } },
 );
 
+// The folders the main one binds for flows to read and write (folders.rs): outside its data, as an
+// admin binds them; fixtures.ts names them.
+const folders = join(tmpdir(), `holon-e2e-folders-${port}`);
 const cleanUp = () => {
   rmSync(dir, { recursive: true, force: true });
+  rmSync(folders, { recursive: true, force: true });
   rmSync(join(runDir, `${port}.json`), { force: true });
 };
 const stop = () => {
@@ -77,4 +81,16 @@ if (!fresh) {
     body: JSON.stringify({ code: SETUP_CODE, name: "e2e", password: "e2e-password-0123" }),
   });
   if (!res.ok) console.error(`e2e server: setting up its admin failed: ${await res.text()}`);
+  // The inbox-report sample's folders, bound as an admin binds them: inbox read-only.
+  const { token } = res.ok ? await res.json() : {};
+  rmSync(folders, { recursive: true, force: true });
+  for (const [name, access] of [["inbox", "read"], ["reports", "read-write"]]) {
+    mkdirSync(join(folders, name), { recursive: true });
+    const bound = await fetch(`${base}/admin/folders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name, path: join(folders, name), access }),
+    });
+    if (!bound.ok) console.error(`e2e server: binding the folder ${name} failed: ${await bound.text()}`);
+  }
 }

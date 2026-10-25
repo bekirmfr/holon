@@ -492,6 +492,21 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             Some(Value::Effect { sink: format!("collection_delete:{name}"), payload: Box::new(Value::Text(key.clone())) })
         }
 
+        // A named folder's writes: `{name, text}` to write the file, the name to delete it, each an
+        // effect the host commits when the run finishes. The folder rides in the sink name, as a
+        // collection's does. Which names are allowed is the host's to check (it knows the folder).
+        "file_write" => {
+            let folder = crate::kind::ident(params, "folder")?;
+            let [Value::Text(name), Value::Text(text)] = inputs else { return None };
+            let file = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("text".to_string(), Value::Text(text.clone()))]));
+            Some(Value::Effect { sink: format!("file_write:{folder}"), payload: Box::new(file) })
+        }
+        "file_delete" => {
+            let folder = crate::kind::ident(params, "folder")?;
+            let [Value::Text(name)] = inputs else { return None };
+            Some(Value::Effect { sink: format!("file_delete:{folder}"), payload: Box::new(Value::Text(name.clone())) })
+        }
+
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
 }
@@ -561,6 +576,27 @@ pub(crate) fn collection_list_request(inputs: &[Option<Value>], params: &[Param]
     ])))
 }
 
+/// What a `file_read` asks the host: `{folder: <name>, read: <file name>}`.
+pub(crate) fn file_read_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let folder = crate::kind::ident(params, "folder")?;
+    let [Some(Value::Text(name))] = inputs else { return None };
+    Some(Value::Record(BTreeMap::from([
+        ("folder".to_string(), Value::Text(folder)),
+        ("read".to_string(), Value::Text(name.clone())),
+    ])))
+}
+
+/// What a `file_list` asks the host: `{folder: <name>, list: {prefix, after?, limit}}`, as
+/// [`collection_list_request`] asks for items, here for files by name.
+pub(crate) fn file_list_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let folder = crate::kind::ident(params, "folder")?;
+    let renamed: Vec<Param> = params.iter().map(|p| if p.name() == "folder" { Param::frozen("collection", &folder) } else { p.clone() }).collect();
+    let Value::Record(mut asked) = collection_list_request(inputs, &renamed)? else { return None };
+    asked.remove("collection");
+    asked.insert("folder".to_string(), Value::Text(folder));
+    Some(Value::Record(asked))
+}
+
 /// The longest a run may wait at one point: 90 days, in seconds.
 pub const MAX_AWAIT_SECONDS: u64 = 90 * 24 * 3600;
 
@@ -585,7 +621,7 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// `http_request` (headers, body). Inside a composite, such a port that *is* wired holds the
 /// node back while its value is absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
-    matches!(name, "http_request" | "collection_list")
+    matches!(name, "http_request" | "collection_list" | "file_list")
 }
 
 /// The methods `http_request` sends.
@@ -828,6 +864,27 @@ mod tests {
         let effect = Value::Effect { sink: "egress".into(), payload: Box::new(txt("x")) };
         assert_eq!(compute("collection_put", &[&txt("k"), &effect], &items), None, "an effect is not data");
         assert_eq!(compute("collection_put", &[&num(1.0), &txt("v")], &items), None);
+    }
+
+    #[test]
+    fn file_reads_ask_the_host_and_writes_construct_effects() {
+        let inbox = [p("folder", "inbox")];
+        let read = file_read_request(&[Some(txt("2026/a.csv"))], &inbox).unwrap();
+        assert_eq!(read, Value::Record(BTreeMap::from([("folder".into(), txt("inbox")), ("read".into(), txt("2026/a.csv"))])));
+        assert_eq!(file_read_request(&[Some(num(1.0))], &inbox), None, "names are text");
+        let list = file_list_request(&[Some(txt("2026/")), None], &[p("folder", "inbox"), p("limit", "20")]).unwrap();
+        let Value::Record(r) = &list else { panic!() };
+        assert_eq!(r.keys().collect::<Vec<_>>(), ["folder", "list"]);
+        let Value::Record(l) = &r["list"] else { panic!() };
+        assert_eq!((l["prefix"].clone(), l.get("after"), l["limit"].clone()), (txt("2026/"), None, num(20.0)));
+        assert!(file_list_request(&[None, None], &[p("folder", "inbox"), p("limit", "0")]).is_none());
+        assert!(file_list_request(&[None, None], &[p("folder", "../x"), p("limit", "5")]).is_none(), "a folder is a name");
+
+        let write = compute("file_write", &[&txt("a.md"), &txt("# total")], &inbox).unwrap();
+        let file = Value::Record(BTreeMap::from([("name".into(), txt("a.md")), ("text".into(), txt("# total"))]));
+        assert_eq!(write, Value::Effect { sink: "file_write:inbox".into(), payload: Box::new(file) });
+        assert_eq!(compute("file_delete", &[&txt("a.md")], &inbox), Some(Value::Effect { sink: "file_delete:inbox".into(), payload: Box::new(txt("a.md")) }));
+        assert_eq!(compute("file_write", &[&txt("a.md"), &num(1.0)], &inbox), None, "a file's text is text");
     }
 
     /// `range(n)` counts from 0 to n-1; a fraction, a negative, a non-number or more than

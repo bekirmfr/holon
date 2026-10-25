@@ -85,7 +85,7 @@ A folder reads like a collection, so nothing new to learn:
 | Written | Lowers to | Reads as |
 |---|---|---|
 | `inbox[name]` | `file_read{folder: inbox}(name)` | the file's text, as the run began (absent if none) |
-| `inbox.list(prefix: p, after: a, limit: n)` | `file_list{folder: inbox, limit: n}(p, a)` | a page of `{name, size, hash, modified}`, in name order |
+| `inbox.list(prefix: p, after: a, limit: n)` | `file_list{folder: inbox, limit: n}(p, a)` | a page of files in name order: a record of name to `{size, hash, modified}`, as a collection's listing is of key to item |
 | `inbox.file(name)` | `file_handle{folder: inbox}(name)` | a handle (§4): the file without its bytes |
 | `inbox.lines(name, from: i, limit: n)` | `file_lines{folder: inbox, limit: n}(name, i)` | lines `i..i+n` |
 | `inbox.slice(name, offset: o, length: n)` | `file_slice{folder: inbox}(name, o, n)` | those bytes, as text |
@@ -210,6 +210,15 @@ hash).
    the read-then-write check; reads logged inline or by blob (no chunking yet: a blob is one
    file); writes logged by hash; verify and export with blobs and `--files`; `keep: bytes|hash`;
    the sample. Small files only (`inline_file_bytes`).
+
+   **Built** (`crates/holon/src/folders.rs`, the `inbox-report` sample). As designed, with these
+   differences: a file is text up to 1 MiB, a run reads 64 MiB at most, and a read's text is in
+   the log up to 4 KiB (past that, in the content store by hash); `--max-files-bytes` and
+   `--without-files` aren't built (the export ships every blob its runs reference); a run whose
+   read fails answers 500 ("its run log says why") and performs nothing; a node output carrying
+   a text the log keeps by hash is left out of the run's timeline, and a write effect in the
+   run's outputs is logged as `{name, size, hash}`, as it is performed. Folders are global to the
+   server (no per-deployment binding yet).
 2. **Handles and ranges.** `.file`, copy by handle, `.lines`, `.slice` with bao-checked ranges.
 3. **Storage.** Chunking and dedup across files, `keep: bytes for <d>` and the sweep, folder caps.
 4. **Triggers.** `on file inbox` (a run per new file), and handles as `http` bodies.

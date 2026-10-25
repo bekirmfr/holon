@@ -104,8 +104,9 @@ pub enum Capability {
     Clock,
     /// Receives inbound data / requests.
     NetworkIngress,
-    /// Reads external file state.
-    FileRead,
+    /// Reads files of the named folder: `file_read`, `file_list`. Answered by the host from the
+    /// folder an admin bound to that name (`docs/L4s/named-folders-L4.md`).
+    FileRead(String),
     /// Reads a secret / credential (a security-sensitive read).
     SecretAccess,
     /// Reads the named secret from the deployment's secret store: `secret`. Per name, so
@@ -131,8 +132,9 @@ pub enum Capability {
     /// Makes an HTTP request to the named host (`host` or `host:port`) and gets its answer:
     /// `http_request`. Per host, so consent names where a flow may call, not just "the network".
     HttpRequest(String),
-    /// Writes / deletes files.
-    FileWrite,
+    /// Writes and deletes files of the named folder: `file_write`, `file_delete`, committed when
+    /// the run finishes.
+    FileWrite(String),
     /// Starts a process / job.
     Spawn,
 }
@@ -158,9 +160,9 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | FileWrite | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | FileWrite(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -175,7 +177,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_)
+            Clock | NetworkIngress | FileRead(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_)
         )
     }
 }
@@ -268,6 +270,11 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // is a frozen param, so the capability names it exactly.
         "collection_get" | "collection_list" => vec![CollectionRead(ident(params, "collection")?)],
         "collection_put" | "collection_delete" => vec![CollectionWrite(ident(params, "collection")?)],
+        // A named folder: files read as the run found them, written and deleted when it finishes.
+        // The folder is a frozen param, so the capability names it exactly; the host binds the
+        // name to a real folder.
+        "file_read" | "file_list" => vec![FileRead(ident(params, "folder")?)],
+        "file_write" | "file_delete" => vec![FileWrite(ident(params, "folder")?)],
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
@@ -449,7 +456,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
     for c in [
         Clock,
         NetworkIngress,
-        FileRead,
+        FileRead(SATURATED_STATE_KEY.to_string()),
         SecretAccess,
         SecretRead(SATURATED_STATE_KEY.to_string()),
         Await(SATURATED_STATE_KEY.to_string()),
@@ -460,7 +467,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         CollectionWrite(SATURATED_STATE_KEY.to_string()),
         NetworkEgress,
         HttpRequest(SATURATED_STATE_KEY.to_string()),
-        FileWrite,
+        FileWrite(SATURATED_STATE_KEY.to_string()),
         Spawn,
     ] {
         acc.insert(c);
@@ -568,6 +575,22 @@ mod tests {
         for leaf in ["store_read", "store_write"] {
             assert!(capabilities_of(leaf, &[Param::frozen("key", "#collection:notes")]).is_none(), "{leaf}");
         }
+    }
+
+    #[test]
+    fn folders_are_read_and_written_by_name() {
+        let named = |n: &str| [Param::frozen("folder", n)];
+        for (leaf, cap, kind) in [
+            ("file_read", Capability::FileRead("inbox".into()), Kind::Driver),
+            ("file_list", Capability::FileRead("inbox".into()), Kind::Driver),
+            ("file_write", Capability::FileWrite("inbox".into()), Kind::Sink),
+            ("file_delete", Capability::FileWrite("inbox".into()), Kind::Sink),
+        ] {
+            assert_eq!(capabilities_of(leaf, &named("inbox")).unwrap().iter().collect::<Vec<_>>(), vec![cap.clone()], "{leaf}");
+            assert_eq!(cap.kind(), kind);
+            assert!(capabilities_of(leaf, &named(r"C:\drop")).is_none(), "{leaf}: a folder is a name, never a path");
+        }
+        assert!(Capability::FileRead("x".into()).is_sourced() && !Capability::FileWrite("x".into()).is_sourced());
     }
 
     #[test]
@@ -771,11 +794,11 @@ mod tests {
     fn is_sourced_splits_input_from_output() {
         use Capability::*;
         // sourced (input-side): drivers and the state *read*
-        for c in [Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead("var1".to_string())] {
+        for c in [Clock, NetworkIngress, FileRead("inbox".to_string()), SecretAccess, Random, StateRead("var1".to_string())] {
             assert!(c.is_sourced(), "{c:?} should be sourced");
         }
         // performed (output-side): sinks and the state *write*
-        for c in [NetworkEgress, FileWrite, Spawn, StateWrite("var1".to_string())] {
+        for c in [NetworkEgress, FileWrite("reports".to_string()), Spawn, StateWrite("var1".to_string())] {
             assert!(!c.is_sourced(), "{c:?} should be performed");
         }
     }
@@ -801,8 +824,9 @@ mod tests {
     fn capability_kind_is_never_pure() {
         use Capability::*;
         for cap in [
-            Clock, NetworkIngress, FileRead, SecretAccess, Random, StateRead("var1".to_string()),
-            StateWrite("var1".to_string()), NetworkEgress, HttpRequest("api.example.com".to_string()), FileWrite, Spawn,
+            Clock, NetworkIngress, FileRead("inbox".to_string()), SecretAccess, Random, StateRead("var1".to_string()),
+            StateWrite("var1".to_string()), NetworkEgress, HttpRequest("api.example.com".to_string()),
+            FileWrite("reports".to_string()), Spawn,
         ] {
             assert_ne!(cap.kind(), Kind::Pure, "{cap:?} must project to an effect");
         }
@@ -910,6 +934,7 @@ mod tests {
         assert_eq!(caps.len(), 15); // every capability — fail closed
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
+        assert!(caps.contains(Capability::FileWrite("<unknown>".to_string())), "any folder");
     }
 
     #[test]

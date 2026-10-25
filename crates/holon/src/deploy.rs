@@ -8,7 +8,16 @@ use crate::*;
 /// already gives, rather than the `Capabilities` type itself, so this needs no new import.
 pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool {
     caps.any(|c| {
-        matches!(c, Capability::StateRead(_) | Capability::StateWrite(_) | Capability::CollectionRead(_) | Capability::CollectionWrite(_))
+        // A folder's reads are checked, and its writes committed, as a collection's are.
+        matches!(
+            c,
+            Capability::StateRead(_)
+                | Capability::StateWrite(_)
+                | Capability::CollectionRead(_)
+                | Capability::CollectionWrite(_)
+                | Capability::FileRead(_)
+                | Capability::FileWrite(_)
+        )
     })
 }
 
@@ -47,6 +56,7 @@ pub(crate) fn handle_post_deploy(
     deployments_path: &str,
     policy: &Policy,
     secrets: &SecretStore,
+    folders: &Arc<folders::Folders>,
     request: &Request,
     // Who deployed it (access.rs), kept with the deployment.
     by: Option<&str>,
@@ -110,7 +120,7 @@ pub(crate) fn handle_post_deploy(
     // without asking, and everything else must be acknowledged. A redeploy asks only for what
     // the previous grant didn't already cover.
     let manifest = Manifest::new(caps.iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
-    if let Some(why) = policy.refuses(&manifest) {
+    if let Some(why) = policy.refuses(&manifest).or_else(|| folders.refuses(&manifest)) {
         return err(400, format!("this host can't grant that: {why}"));
     }
     let previous = deployments.lock().unwrap().get(&body.slug).map(|d| d.grant.clone());
@@ -213,6 +223,7 @@ pub(crate) fn handle_post_deploy(
                 attention: None,
                 listen_error: None,
                 secrets: secrets.vault(&body.slug),
+                folders: Arc::clone(folders),
                 parked,
                 unit: unit_hash,
                 triggers: triggers.clone(),
@@ -276,6 +287,7 @@ pub(crate) fn handle_post_deploy_preview(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     policy: &Policy,
     secrets: &SecretStore,
+    folders: &folders::Folders,
     request: &Request,
 ) -> Response {
     let bytes = match read_body(request) {
@@ -309,7 +321,7 @@ pub(crate) fn handle_post_deploy_preview(
         "refused": policy.refuses(&manifest).or_else(|| {
             let permit = Permit::new(unit_hash, &Grant::for_manifest(&manifest, 0, "preview"), policy);
             durable::refuses_waits(root_unit, &resolver, &permit)
-        }),
+        }).or_else(|| folders.refuses(&manifest)),
         // Secrets it reads that aren't set yet: it deploys, but those nodes stay empty until set.
         "missing_secrets": manifest
             .capabilities
@@ -565,7 +577,7 @@ pub(crate) fn handle_post_trigger(
     slug: &str,
     request: &Request,
 ) -> Response {
-    let (unit_hash, state, permit, vault) = {
+    let (unit_hash, state, permit, vault, folders) = {
         let deployments = deployments.lock().unwrap();
         match deployments.get(slug) {
             Some(dep) if dep.life.status != Status::Running => {
@@ -574,7 +586,7 @@ pub(crate) fn handle_post_trigger(
             Some(dep) if dep.server.is_some() => {
                 return err(400, "this deployment is an HTTP server: send requests to its own port");
             }
-            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets)),
+            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders)),
             None => return Response::empty_404(),
         }
     };
@@ -606,7 +618,7 @@ pub(crate) fn handle_post_trigger(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let mut waits = RunWaits::default();
+    let mut waits = RunWaits { folders: Some(folders), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
 

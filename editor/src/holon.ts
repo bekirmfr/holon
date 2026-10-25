@@ -175,7 +175,7 @@ export type WValue =
 export type WCapability =
   | "Clock"
   | "NetworkIngress"
-  | "FileRead"
+  | { FileRead: string }
   | "SecretAccess"
   | { SecretRead: string }
   | { Await: string }
@@ -186,7 +186,7 @@ export type WCapability =
   | { CollectionWrite: string }
   | "NetworkEgress"
   | { HttpRequest: string }
-  | "FileWrite"
+  | { FileWrite: string }
   | "Spawn";
 
 /** The coarse effect bucket a unit belongs to. Mirrors `core::Kind` via the bridge's `WKind` —

@@ -163,6 +163,7 @@ mod heads;
 mod jsonedit;
 mod flowcmd;
 mod flows;
+mod folders;
 mod http;
 mod lifecycle;
 mod listeners;
@@ -306,6 +307,8 @@ struct AppState {
     /// Every deployment's secrets (`--secrets`, secrets.rs): written over the control plane,
     /// never returned.
     secrets: Arc<SecretStore>,
+    /// The folders an admin bound (`--folders`, folders.rs): flows read and write them by name.
+    folders: Arc<folders::Folders>,
     /// What was done on the control plane, by whom (activity.rs).
     activity: activity::Activity,
     /// The editor, served at `/` (editor.rs): built in, or a folder; none without either.
@@ -396,6 +399,8 @@ struct Deployment {
     /// Its secrets (the store's vault for its slug): runs read the ones it was granted, and
     /// everything it logs or answers has their values redacted.
     secrets: Vault,
+    /// The folders bound on this server (folders.rs): runs read and write the ones it was granted.
+    folders: Arc<folders::Folders>,
     /// Its runs waiting for an event, by run id (durable.rs). Persisted; kept across redeploys,
     /// each pinned to the unit it started on.
     parked: BTreeMap<String, ParkedRun>,
@@ -420,6 +425,8 @@ const USAGE: &str = "usage: holon <command>
   fmt <file>                         rewrite a flow in the canonical form
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
+                                     (--files DIR: files they read that the log keeps by hash)
+  folder add|list|remove             bind a name flows use to a folder on this machine (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
   mcp setup [HOST…|--all]            add holon mcp to an agent host's settings (mcp hosts: which)
@@ -443,6 +450,7 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
   --export-heads URL         send each run's head to a witness (or HOLON_EXPORT_HEADS; its
                              token in HOLON_EXPORT_HEADS_TOKEN)
   --secrets PATH             the secrets file
+  --folders PATH             the named folders an admin bound (holon folder --help)
   --secrets-key os|env:VAR|file:PATH
                              where the secrets file's key is kept (default: the OS key store)
   --new-secrets-key          print a fresh key for --secrets-key env:VAR, and exit
@@ -471,6 +479,7 @@ fn main() {
         Some(cmd @ ("new" | "check" | "show" | "fmt")) => std::process::exit(flowcmd::run(cmd, &rest)),
         Some("verify") => std::process::exit(verify::run(&rest)),
         Some("export") => std::process::exit(verify::export(&rest)),
+        Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("mcp") => std::process::exit(mcp::run(&rest)),
         Some("lsp") => std::process::exit(lsp::run(&rest)),
         Some("migrate") => std::process::exit(migrate::run(&rest)),
@@ -530,6 +539,7 @@ fn serve(args: Vec<String>) {
     let mut flows_arg = ".holon-flows.json".to_string();
     let mut policy_arg = "holon.toml".to_string();
     let mut secrets_arg = ".holon-secrets.json".to_string();
+    let mut folders_arg = ".holon-folders.json".to_string();
     let mut secrets_key_arg: Option<String> = None;
     let mut dotenv_arg: Option<String> = None;
     let mut accounts_arg = ".holon-accounts.json".to_string();
@@ -584,6 +594,10 @@ fn serve(args: Vec<String>) {
         } else if a == "--secrets" {
             if let Some(v) = args.next() {
                 secrets_arg = v;
+            }
+        } else if a == "--folders" {
+            if let Some(v) = args.next() {
+                folders_arg = v;
             }
         } else if a == "--secrets-key" {
             // Where the secrets file's master key is kept: `os` (the OS key store, the default
@@ -804,6 +818,7 @@ fn serve(args: Vec<String>) {
     inside(&mut flows_arg, ".holon-flows.json", "flows.json");
     inside(&mut policy_arg, "holon.toml", "holon.toml");
     inside(&mut secrets_arg, ".holon-secrets.json", "secrets.json");
+    inside(&mut folders_arg, ".holon-folders.json", "folders.json");
     inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
     inside(&mut host_key_arg, ".holon-host-key", "host.key");
     if landed {
@@ -874,10 +889,19 @@ fn serve(args: Vec<String>) {
             }
         });
     }
+    // The folders an admin bound (folders.rs): never the server's own files, nor what holds them.
+    let mut own: Vec<PathBuf> = [&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &accounts_arg, &host_key_arg]
+        .into_iter()
+        .filter(|p| p.as_str() != ":memory:")
+        .map(PathBuf::from)
+        .collect();
+    own.extend(local::holon_home());
+    let folders = Arc::new(folders::Folders::open(&folders_arg, &own).unwrap_or_else(|e| refuse_to_start(e)));
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));
     let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     for (slug, dep) in initial_deployments.iter_mut() {
         dep.secrets = secrets.vault(slug);
+        dep.folders = Arc::clone(&folders);
     }
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
@@ -905,6 +929,7 @@ fn serve(args: Vec<String>) {
         policy: std::sync::RwLock::new(policy),
         policy_path: policy_arg,
         secrets,
+        folders,
         activity,
         access,
         editor: editor::Source::pick(editor_dir.map(std::path::PathBuf::from)),

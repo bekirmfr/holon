@@ -5,7 +5,7 @@
 // developer's deployments on the samples' ports are left alone.
 
 import type { Page } from "@playwright/test";
-import { expect, RUN_DIR, SERVER, test } from "./fixtures";
+import { expect, FOLDERS, RUN_DIR, SERVER, test } from "./fixtures";
 
 /** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. */
 async function openSample(page: Page, title: string) {
@@ -463,6 +463,44 @@ test("calc's match answers the chosen arm or 400 when it has no value, and view 
   await expect(text.locator(".hl-text__mark")).toHaveText("a / b");
   await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("divide");
   await page.screenshot({ path: "test-results/text-run.png" });
+});
+
+test("inbox-report reads a file from a bound folder and writes its report to another, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const name = `sales-${Date.now()}.csv`;
+  writeFileSync(join(FOLDERS, "inbox", name), "region,amount\nnorth,10\nsouth,32\n");
+  await openSample(page, "Inbox report (files in folders on the host)");
+  const port = await deploy(page);
+  const made = await request.post(`http://127.0.0.1:${port}/report`, { data: { name } });
+  expect(made.status()).toBe(200);
+  expect(await made.json()).toEqual({ rows: 2, report: `${name}.md` });
+  await viewNewestRun(page);
+  // Written whole when the run finished, in the real folder; served and listed by the flow.
+  const written = readFileSync(join(FOLDERS, "reports", `${name}.md`), "utf8");
+  expect(written).toContain("| amount | 42 |");
+  expect(await (await request.get(`http://127.0.0.1:${port}/reports/${name}.md`)).text()).toBe(written);
+  expect(Object.keys(await (await request.get(`http://127.0.0.1:${port}/reports`)).json())).toContain(`${name}.md`);
+  // No such file: no value. A name that leaves its folder: the run fails, writing nothing.
+  expect((await request.post(`http://127.0.0.1:${port}/report`, { data: { name: "none.csv" } })).status()).toBe(404);
+  expect((await request.post(`http://127.0.0.1:${port}/report`, { data: { name: "../reports/x.csv" } })).status()).toBe(500);
+
+  // Its runs check offline: the file it read is in the log, what it wrote by its hash.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "inbox-report.json");
+  execFileSync(holon, ["export", "inbox-report", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  // A run that wrote the report keeps it by its hash (one that served it read it, and keeps that).
+  const lines: { route?: string; performed: unknown; outputs: unknown }[] = JSON.parse(readFileSync(out, "utf8")).lines.map((l: string) => JSON.parse(l));
+  const wrote = JSON.stringify(lines.filter((e) => e.route === "POST /report").map((e) => [e.performed, e.outputs]));
+  expect(wrote).toContain("FileWrite");
+  expect(wrote).not.toContain("| amount |");
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
+  expect(verified).toContain("it failed: a file read failed:");
+  expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {

@@ -51,6 +51,8 @@ pub(crate) struct Read {
     pub(crate) path: Vec<u32>,
     pub(crate) request: Value,
     pub(crate) answer: Option<Value>,
+    /// For a file read (folders.rs): its hash and size, and where its text is kept.
+    pub(crate) file: Option<folders::Seen>,
 }
 
 fn text<'v>(r: &'v BTreeMap<String, Value>, k: &str) -> Option<&'v str> {

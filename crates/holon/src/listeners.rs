@@ -65,8 +65,8 @@ fn serve_flow(
         .lock()
         .unwrap()
         .get(slug)
-        .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit), Arc::clone(&d.secrets)));
-    let Some((unit_hash, state, Some(server), status, permit, secrets)) = found else {
+        .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders)));
+    let Some((unit_hash, state, Some(server), status, permit, secrets, folders)) = found else {
         return DataResponse::json_error(503, &format!("{slug:?} is not deployed as a server"));
     };
     if status != Status::Running {
@@ -102,7 +102,7 @@ fn serve_flow(
     }
 
     let mut ran: Option<LogEntry> = None;
-    let mut waits = RunWaits::default();
+    let mut waits = RunWaits { folders: Some(folders), ..Default::default() };
     let mut parked: Result<Vec<String>, String> = Ok(Vec::new());
     // A module in the flow runs through the engine; everything else resolves as before.
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
@@ -129,6 +129,11 @@ fn serve_flow(
     // answered from nothing: its client may try again.
     if let Some(busy) = ran.as_ref().and_then(|e| e.error.as_deref()).filter(|e| e.starts_with("busy:")) {
         answer = data::DataResponse::json_error(503, busy);
+    }
+    // One whose file read failed (a name that leaves its folder, a file too big or not text) did
+    // nothing: it says so, not "not found". Why is in the run log, not told to the caller.
+    if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(folders::READ_FAILED)) {
+        answer = data::DataResponse::json_error(500, "a file this flow reads couldn't be read: its run log says why");
     }
     record_trigger(deployments, slug, answer.status >= 500);
     // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.

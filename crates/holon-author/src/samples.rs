@@ -383,6 +383,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "open http://127.0.0.1:8122/ in a browser and sign it; or curl -s -d 'name=Ada&note=Hello' http://127.0.0.1:8122/sign -o /dev/null -w '%{http_code}' answers 303, and curl http://127.0.0.1:8122/ shows the entry",
         text: include_str!("../samples/guestbook.holon"),
     },
+    Sample {
+        name: "inbox-report",
+        title: "Inbox report (files in folders on the host)",
+        description: "Reads a CSV from a folder on the host, counts its rows and totals its number columns in a js node, and writes a Markdown report to another folder; lists and serves the reports. The flow names its folders (inbox, reports), never a path: an admin binds each to a real folder, read-only or read-write, and deploying asks for each use. A write lands whole when the run finishes; the run log keeps what was read and a hash of what was written.",
+        shows: &["named folders", "file reads and writes", "js node", "listing files"],
+        port: Some("8123"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folders (an admin): holon folder add inbox ~/holon-inbox --read-only and holon folder add reports ~/holon-reports; put sales.csv (region,amount / north,10 / south,32) in the inbox; then curl -s -X POST -H 'content-type: application/json' -d '{\"name\":\"sales.csv\"}' http://127.0.0.1:8123/report answers rows 2, curl http://127.0.0.1:8123/reports/sales.csv.md shows the report (amount: 42), and curl http://127.0.0.1:8123/reports lists it",
+        text: include_str!("../samples/inbox-report.holon"),
+    },
 ];
 
 #[cfg(test)]

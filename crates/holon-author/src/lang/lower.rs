@@ -75,7 +75,7 @@ pub fn lower(file: &File) -> R<Lowered> {
 
 /// Words a binding may not take: the keywords and nouns of the language, and the wiring form's.
 const RESERVED: &[&str] = &[
-    "flow", "port", "every", "browsers", "optional", "collection", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
+    "flow", "port", "every", "browsers", "optional", "collection", "folder", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
@@ -92,8 +92,47 @@ fn alias(name: &str) -> &str {
 /// Inputs a node works without, left unwired (routes.rs `is_optional_input`, core's
 /// `has_optional_ports`).
 fn is_optional(leaf: &str, input: &str) -> bool {
-    matches!((leaf, input), ("http_request", "headers" | "body") | ("collection_list", "prefix" | "after"))
+    matches!((leaf, input), ("http_request", "headers" | "body") | ("collection_list" | "file_list", "prefix" | "after"))
 }
+
+/// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
+/// `get`, `c[k] = v` writes with `put`, `delete c[k]` with `delete`; `c.list(…)` with `list`.
+struct Store {
+    /// What it is, as an error says it: "collection", "folder".
+    kind: &'static str,
+    /// The frozen param that names it.
+    param: &'static str,
+    get: &'static str,
+    put: &'static str,
+    delete: &'static str,
+    list: &'static str,
+    /// Its leaves' inputs: what names an item, and what is written.
+    key: &'static str,
+    value: &'static str,
+}
+
+const COLLECTION: Store = Store {
+    kind: "collection",
+    param: "collection",
+    get: "collection_get",
+    put: "collection_put",
+    delete: "collection_delete",
+    list: "collection_list",
+    key: "key",
+    value: "value",
+};
+
+/// A folder an admin binds on the host (`docs/L4s/named-folders-L4.md`): files by name, as text.
+const FOLDER: Store = Store {
+    kind: "folder",
+    param: "folder",
+    get: "file_read",
+    put: "file_write",
+    delete: "file_delete",
+    list: "file_list",
+    key: "name",
+    value: "text",
+};
 
 /// A number as a param's text: whole numbers without a fraction.
 fn number_text(n: f64) -> String {
@@ -165,6 +204,8 @@ struct Lowerer<'a> {
     holons: HashMap<String, Holon>,
     in_progress: HashSet<String>,
     collections: HashSet<String>,
+    /// The folders the header declares (`folder inbox`): read and written like collections.
+    folders: HashSet<String>,
     /// Top-level bindings of literals in a flow with routes: lowered afresh in each route.
     consts: HashMap<String, &'a Expr>,
     frames: Vec<Frame>,
@@ -181,6 +222,7 @@ impl<'a> Lowerer<'a> {
         let defs = file.items.iter().filter_map(|i| if let Item::Holon(h) = i { Some((h.name.text.clone(), h)) } else { None }).collect();
         let js_defs = file.items.iter().filter_map(|i| if let Item::Js(j) = i { Some((j.name.text.clone(), j)) } else { None }).collect();
         let collections = file.headers.iter().filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.clone()) } else { None }).collect();
+        let folders = file.headers.iter().filter_map(|h| if let HeaderKind::Folder(f) = &h.kind { Some(f.clone()) } else { None }).collect();
         Lowerer {
             b: FlowBuilder::new(),
             defs,
@@ -188,6 +230,7 @@ impl<'a> Lowerer<'a> {
             holons: HashMap::new(),
             in_progress: HashSet::new(),
             collections,
+            folders,
             consts: HashMap::new(),
             frames: vec![],
             names: BTreeMap::new(),
@@ -296,7 +339,7 @@ impl<'a> Lowerer<'a> {
                     Consent::Named { name, arg: Some(a) } => format!("{name}({a:?})"),
                     Consent::Named { name, arg: None } => name.clone(),
                 }),
-                HeaderKind::Flow(_) | HeaderKind::Collection(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) => {}
             }
         }
         if !optional.is_empty() {
@@ -387,8 +430,8 @@ impl<'a> Lowerer<'a> {
         if RESERVED.contains(&n) {
             return err(name.span, format!("\"{n}\" is a keyword; a binding may not shadow it"));
         }
-        if self.collections.contains(n) {
-            return err(name.span, format!("\"{n}\" is a collection; a binding may not shadow it"));
+        if let Some(s) = self.store(n) {
+            return err(name.span, format!("\"{n}\" is a {}; a binding may not shadow it", s.kind));
         }
         if self.is_def(n) {
             return err(name.span, format!("\"{n}\" is a holon; a binding may not shadow it"));
@@ -438,16 +481,17 @@ impl<'a> Lowerer<'a> {
                 self.effect(w, s.span)
             }
             StmtKind::CollectionWrite { collection, key, value } => {
-                self.check_collection(collection)?;
+                let store = self.check_collection(collection)?;
                 let k = self.expr(key)?;
                 let v = self.expr(value)?;
-                let w = self.node_with("collection_put", &[("collection".into(), collection.text.clone())], &[("key", k), ("value", v)], s.span)?;
+                let named = [(store.param.into(), collection.text.clone())];
+                let w = self.node_with(store.put, &named, &[(store.key, k), (store.value, v)], s.span)?;
                 self.effect(w, s.span)
             }
             StmtKind::Delete { collection, key } => {
-                self.check_collection(collection)?;
+                let store = self.check_collection(collection)?;
                 let k = self.expr(key)?;
-                let w = self.node_with("collection_delete", &[("collection".into(), collection.text.clone())], &[("key", k)], s.span)?;
+                let w = self.node_with(store.delete, &[(store.param.into(), collection.text.clone())], &[(store.key, k)], s.span)?;
                 self.effect(w, s.span)
             }
             StmtKind::Respond(args) => self.respond(args, s.span),
@@ -514,11 +558,22 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn check_collection(&self, name: &Name) -> R<()> {
-        if self.collections.contains(&name.text) {
-            Ok(())
+    /// The collection or folder `name` is, or why it is neither.
+    fn check_collection(&self, name: &Name) -> R<&'static Store> {
+        match self.store(&name.text) {
+            Some(s) => Ok(s),
+            None => err(name.span, format!("\"{}\" is not a declared collection (add `collection {}` to the header)", name.text, name.text)),
+        }
+    }
+
+    /// Whether `n` is a declared collection or folder, and which.
+    fn store(&self, n: &str) -> Option<&'static Store> {
+        if self.collections.contains(n) {
+            Some(&COLLECTION)
+        } else if self.folders.contains(n) {
+            Some(&FOLDER)
         } else {
-            err(name.span, format!("\"{}\" is not a declared collection (add `collection {}` to the header)", name.text, name.text))
+            None
         }
     }
 
@@ -642,7 +697,7 @@ impl<'a> Lowerer<'a> {
 
     fn check_name_free(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.collections.contains(n) || self.is_def(n) {
+        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name"));
         }
         Ok(())
@@ -653,7 +708,7 @@ impl<'a> Lowerer<'a> {
     /// collection or a holon.
     fn check_port_name(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.collections.contains(n) || self.is_def(n) {
+        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.store(n).is_some() || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
         }
         Ok(())
@@ -728,6 +783,8 @@ impl<'a> Lowerer<'a> {
                 let base = match leaf.as_str() {
                     "collection_put" => "put",
                     "collection_delete" => "delete",
+                    "file_write" => "written",
+                    "file_delete" => "deleted",
                     "store_write" => "write",
                     "egress" => "sent",
                     _ => "effect",
@@ -959,10 +1016,10 @@ impl<'a> Lowerer<'a> {
             }
             ExprKind::Index { base, key } => {
                 if let ExprKind::Name(c) = &base.kind
-                    && self.collections.contains(c)
+                    && let Some(store) = self.store(c)
                 {
                     let k = self.expr(key)?;
-                    return self.node_with("collection_get", &[("collection".into(), c.clone())], &[("key", k)], e.span);
+                    return self.node_with(store.get, &[(store.param.into(), c.clone())], &[(store.key, k)], e.span);
                 }
                 let r = self.expr(base)?;
                 let k = self.expr(key)?;
@@ -1045,8 +1102,8 @@ impl<'a> Lowerer<'a> {
         if self.is_def(n) {
             return err(span, format!("\"{n}\" is a holon: call it, {n}(…)"));
         }
-        if self.collections.contains(n) {
-            return err(span, format!("\"{n}\" is a collection: read it as {n}[key] or {n}.list(…)"));
+        if let Some(s) = self.store(n) {
+            return err(span, format!("\"{n}\" is a {}: read it as {n}[{}] or {n}.list(…)", s.kind, s.key));
         }
         if interface_of(alias(n)).is_some() || templates::is_template(n) {
             return err(span, format!("\"{n}\" is a leaf: call it, {n}(…)"));
@@ -1260,16 +1317,16 @@ impl<'a> Lowerer<'a> {
                 let (inputs, params) = leaf("store_write");
                 self.unit_call("store_write", &inputs, &params, &[("key".to_string(), key)], &args[1..], span)
             }
-            c if self.collections.contains(c) => {
+            c if let Some(store) = self.store(c) => {
                 let leaf_name = match method.text.as_str() {
-                    "get" => "collection_get",
-                    "put" => "collection_put",
-                    "delete" => "collection_delete",
-                    "list" => "collection_list",
-                    other => return err(method.span, format!("a collection has no \"{other}\": get, put, delete or list")),
+                    "get" => store.get,
+                    "put" => store.put,
+                    "delete" => store.delete,
+                    "list" => store.list,
+                    other => return err(method.span, format!("a {} has no \"{other}\": get, put, delete or list", store.kind)),
                 };
                 let (inputs, params) = leaf(leaf_name);
-                self.unit_call(leaf_name, &inputs, &params, &[("collection".to_string(), c.to_string())], args, span)
+                self.unit_call(leaf_name, &inputs, &params, &[(store.param.to_string(), c.to_string())], args, span)
             }
             c if ["get", "put", "delete", "list"].contains(&method.text.as_str()) => {
                 err(receiver.span, format!("\"{c}\" is not a declared collection (add `collection {c}` to the header)"))
@@ -1723,6 +1780,20 @@ pub(crate) mod tests {
         // A literal at the top level is placed afresh in each route that uses it.
         let d = compiled("greeting = \"hi\"\nroute GET /a (req) {\n  respond greeting\n}\nroute GET /b (req) {\n  respond greeting\n}\n").doc;
         assert_eq!(leaves(&d), ["request", "const", "respond", "request", "const", "respond"]);
+    }
+
+    #[test]
+    fn folders_read_write_delete_and_list_files_by_name() {
+        let d = compiled("folder inbox\nfolder out\nt = inbox[\"a.csv\"]\nl = inbox.list(prefix: \"2026/\")\nout[\"b.md\"] = t\ndelete out[\"old.md\"]\n").doc;
+        let mut got = leaves(&d);
+        got.retain(|l| l != "const");
+        assert_eq!(got, ["file_read", "file_list", "file_write", "file_delete"]);
+        let folder = |leaf: &str| d.nodes.iter().find(|n| n.data.name == leaf).unwrap().param("folder").to_string();
+        assert_eq!([folder("file_read"), folder("file_list"), folder("file_write"), folder("file_delete")], ["inbox", "inbox", "out", "out"]);
+        assert_eq!(error("folder inbox\nx = inbox"), (2, 5, "\"inbox\" is a folder: read it as inbox[name] or inbox.list(…)".into()));
+        assert_eq!(error("folder inbox\ninbox = 1"), (2, 1, "\"inbox\" is a folder; a binding may not shadow it".into()));
+        assert_eq!(error("folder inbox\nx = inbox.copy(\"a\")"), (2, 11, "a folder has no \"copy\": get, put, delete or list".into()));
+        assert_eq!(error("folder = 1"), (1, 8, "expected the folder's name, found \"=\"".into()));
     }
 
     #[test]

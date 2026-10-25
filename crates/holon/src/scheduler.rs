@@ -94,7 +94,8 @@ pub(crate) fn fire_one_clock_tick(
     ];
     let is_state = state.is_some();
     let started = started_now();
-    let mut waits = RunWaits::default();
+    let folders = deployments.lock().unwrap().get(&slug).map(|d| Arc::clone(&d.folders));
+    let mut waits = RunWaits { folders, ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, permit, true, secrets, &mut waits, None);
     let mut entry = run_entry("tick", started, &extra_sourced, &run);

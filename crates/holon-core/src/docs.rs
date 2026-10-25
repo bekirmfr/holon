@@ -94,6 +94,10 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "collection_list" => "A record of a collection's items, by key, in key order, up to limit: those whose key starts with prefix, after the key after (both optional, for paging).",
         "collection_put" => "Puts value into a collection under key when the run finishes (added, or replaced). Writing it is a permission.",
         "collection_delete" => "Deletes a collection's item under key when the run finishes.",
+        "file_read" => "The text of the file name in a folder, as the run found it; nothing when there is none. The folder is a name an admin binds to a real folder. Reading it is a permission.",
+        "file_list" => "A record of a folder's files (name, size, hash, modified) in name order, up to limit: those whose name starts with prefix, after the name after (both optional, for paging).",
+        "file_write" => "Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.",
+        "file_delete" => "Deletes the file name in a folder when the run finishes.",
         "egress" => "Sends its payload out of the flow as a message, when the run finishes.",
         _ => return None,
     })

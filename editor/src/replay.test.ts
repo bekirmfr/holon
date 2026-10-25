@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, it, expect } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
-import { collectionsAtStep, diagnose, executionOrder, innerSteps, isCollectionCell, itemChanged, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
+import { collectionsAtStep, diagnose, executionOrder, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
@@ -289,6 +289,27 @@ describe("collection reads in a replay", () => {
     const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode, reads);
     expect(traces.get("g")?.outputs).toEqual([note]);
     expect(traces.get("l")?.outputs).toEqual([null]);
+  });
+
+  it("answer a file the log keeps by hash with a placeholder naming it, as a secret's", () => {
+    const nodes = [n("f", "file_read", ["name"], ["out"], [frozen("folder", "inbox")]), n("s", "file_read", ["name"], ["out"], [frozen("folder", "inbox")])];
+    const request = (file: string): WValue => ({ type: "Record", value: [["folder", { type: "Text", value: "inbox" }], ["read", { type: "Text", value: file }]] });
+    const small: WValue = { type: "Text", value: "a,b\n1,2\n" };
+    const entry = {
+      kind: "tick",
+      route: null,
+      reads: [
+        { path: [0], request: request("big.csv"), answer: null, file: { hash: "ab".repeat(32), size: 5104 } },
+        { path: [1], request: request("small.csv"), answer: small, file: { hash: "cd".repeat(32), size: 8 } },
+      ],
+    };
+    const reads = recordedReads(entry, { "*": ["f", "s"] });
+    const kept = reads.get("f")!;
+    expect(kept).toEqual({ type: "Text", value: "‹file:inbox/big.csv, 5104 bytes, kept by hash›" });
+    expect(hasPlaceholder(kept)).toBe(true);
+    expect(reads.get("s")).toEqual(small);
+    const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode, reads);
+    expect(traces.get("s")?.outputs).toEqual([small]);
   });
 });
 

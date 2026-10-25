@@ -31,6 +31,7 @@ pub(crate) fn test_state() -> AppState {
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
+        folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
@@ -855,7 +856,7 @@ fn granted_exceptions_let_a_request_reach_a_local_server() {
 
     // The run checks offline: its request is answered from its own record, not sent again.
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/local/export", vec![])))).unwrap();
-    let report = verify::check(&export, None);
+    let report = verify::check(&export, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)]);
 }
@@ -1446,6 +1447,7 @@ fn deployments_persist_across_a_simulated_restart() {
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
+        folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
@@ -1481,6 +1483,7 @@ fn deployments_persist_across_a_simulated_restart() {
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
+        folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
@@ -2920,6 +2923,7 @@ fn state_persists_across_a_simulated_restart() {
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
             secrets: Arc::new(SecretStore::memory()),
+        folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
@@ -2957,6 +2961,7 @@ fn state_persists_across_a_simulated_restart() {
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: ":none:".to_string(),
         secrets: Arc::new(SecretStore::memory()),
+        folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
@@ -3406,7 +3411,7 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
     }
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/verified/export", vec![])))).unwrap();
     assert_eq!(export.lines.len(), 3);
-    let report = verify::check(&export, Some(&export.head));
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 3);
     assert_eq!(report.witnessed, Some(Some(2)));
@@ -3429,7 +3434,7 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
         forged.lines.push(line);
     }
     forged.head = prev;
-    let report = verify::check(&forged, Some(&export.head));
+    let report = verify::check(&forged, Some(&export.head), &BTreeMap::new());
     assert!(report.breaks.is_empty(), "re-chained, it links");
     assert_eq!(report.reruns[1], (1, verify::Rerun::Differs("the effects it performed".into())));
     assert_eq!(report.witnessed, Some(None), "the witnessed head isn't in the rewritten log");
@@ -3721,4 +3726,91 @@ fn a_parked_run_releases_its_claims() {
     let go = entries.iter().find(|e| e["route"] == "POST /go/:k").unwrap();
     assert!(go["claims"][0]["waited_ms"].as_f64().unwrap() < 50.0, "{go}");
     assert_eq!(go["retries"], serde_json::Value::Null, "{go}");
+}
+
+/// A flow reads and writes files in the folders an admin bound, by name: deploying waits for the
+/// binding, a write lands whole when the run commits, a name that leaves its folder fails the run
+/// with nothing written, and the log keeps a write by its hash. The runs check offline: a small
+/// file's text from the log, a big one's from the export, and a folder that keeps hashes from the
+/// files given (`holon verify --files`).
+#[test]
+fn a_flow_reads_and_writes_bound_folders_and_its_runs_verify() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-folders-flow-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (inbox, reports) = (dir.join("inbox"), dir.join("reports"));
+    std::fs::create_dir_all(&inbox).unwrap();
+    std::fs::create_dir_all(&reports).unwrap();
+    std::fs::write(inbox.join("sales.csv"), "region,amount\nnorth,10\nsouth,32\n").unwrap();
+    let text = include_str!("../../holon-author/samples/inbox-report.holon");
+
+    // Not bound: deploying it is refused, saying which folder and how to bind it.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        route(&state, &req("POST", "/unit", u.clone()));
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    assert!(preview["refused"].as_str().unwrap_or("").contains("holon folder add inbox"), "{preview}");
+
+    let bind = |name: &str, path: &Path, access: &str, keep: &str| {
+        let body = serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access, "keep": keep });
+        route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap()))
+    };
+    assert_eq!(bind("inbox", Path::new("relative/inbox"), "read", "bytes").status_code, 400, "a path is whole");
+    assert_eq!(bind("inbox", &inbox, "read", "bytes").status_code, 200);
+    assert_eq!(bind("reports", &reports, "read", "bytes").status_code, 200);
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    assert!(preview["refused"].as_str().unwrap_or("").contains("read-only"), "it writes reports: {preview}");
+    assert_eq!(bind("reports", &reports, "read-write", "bytes").status_code, 200);
+    let listed = body_json(route(&state, &req("GET", "/admin/folders", vec![])));
+    assert_eq!(listed.as_array().unwrap().len(), 2, "{listed}");
+    let slug = deploy_text(&state, text, "");
+
+    let (status, body, _) = data_call(&state, &slug, "POST", "/report", r#"{"name":"sales.csv"}"#);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["rows"], 2.0);
+    let written = std::fs::read_to_string(reports.join("sales.csv.md")).unwrap();
+    assert!(written.contains("| amount | 42 |"), "{written}");
+    let (status, served, _) = data_call(&state, &slug, "GET", "/reports/sales.csv.md", "");
+    assert_eq!((status, served.as_str()), (200, written.as_str()));
+    let (_, listing, _) = data_call(&state, &slug, "GET", "/reports", "");
+    assert!(listing.contains("sales.csv.md") && listing.contains(&blake3::hash(written.as_bytes()).to_hex().to_string()), "{listing}");
+    assert_eq!(data_call(&state, &slug, "POST", "/report", r#"{"name":"none.csv"}"#).0, 404, "no such file: no value");
+    let (status, said, _) = data_call(&state, &slug, "POST", "/report", r#"{"name":"../reports/sales.csv.md"}"#);
+    assert_eq!(status, 500, "a name that leaves its folder fails the run: {said}");
+    assert!(!said.contains(".."), "the caller isn't told why: {said}");
+    let failed = log_entries(&state, &slug).last().unwrap()["error"].as_str().unwrap().to_string();
+    assert!(failed.starts_with(folders::READ_FAILED) && failed.contains("can't name a file"), "the log says why: {failed}");
+    assert!(!dir.join("reports/sales.csv.md.md").exists() && !dir.join("sales.csv.md.md").exists(), "and writes nothing");
+
+    // A big file's text goes to the content store, not the log line.
+    let big: String = std::iter::once("region,amount\n".to_string()).chain((0..40).map(|i| format!("{}-{i},1\n", "region".repeat(20)))).collect();
+    std::fs::write(inbox.join("big.csv"), &big).unwrap();
+    let (status, body, _) = data_call(&state, &slug, "POST", "/report", r#"{"name":"big.csv"}"#);
+    assert_eq!(status, 200, "{body}");
+
+    let log = serde_json::to_string(&log_entries(&state, &slug)).unwrap();
+    let posted: Vec<serde_json::Value> = log_entries(&state, &slug).into_iter().filter(|e| e["route"] == "POST /report").collect();
+    let performed = serde_json::to_string(&posted.iter().map(|e| &e["performed"]).collect::<Vec<_>>()).unwrap();
+    let outputs = serde_json::to_string(&posted.iter().map(|e| &e["outputs"]).collect::<Vec<_>>()).unwrap();
+    assert!(performed.contains("FileWrite") && performed.contains(&blake3::hash(written.as_bytes()).to_hex().to_string()), "{performed}");
+    assert!(!performed.contains("| amount |") && !outputs.contains("| amount |"), "a write is logged by its hash, never its text");
+    assert!(!log.contains("-39,1"), "a big read isn't in the log, nor in its timeline");
+    let export = || -> verify::Export { serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap() };
+    let first = export();
+    assert!(first.blobs.values().any(|t| t == &big), "the export holds the big file's text");
+    let report = verify::check(&first, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 5, "{:?}", report.reruns);
+
+    // A folder that keeps hashes: the run checks only with the file given.
+    assert_eq!(bind("inbox", &inbox, "read", "hash").status_code, 200);
+    assert_eq!(data_call(&state, &slug, "POST", "/report", r#"{"name":"sales.csv"}"#).0, 200);
+    let kept = export();
+    let last = kept.lines.len() as u64 - 1;
+    let without = verify::check(&kept, None, &BTreeMap::new());
+    assert!(without.ok(), "{}", verify::describe(&without, None));
+    assert!(matches!(&without.reruns.last().unwrap().1, verify::Rerun::Skipped(why) if why.contains("--files")), "{:?}", without.reruns.last());
+    let with = verify::check(&kept, None, &folders::texts_in(&inbox).unwrap());
+    assert_eq!(with.reruns.last().unwrap(), &(last, verify::Rerun::Matched), "{}", verify::describe(&with, None));
+    let _ = std::fs::remove_dir_all(&dir);
 }

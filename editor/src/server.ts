@@ -121,6 +121,13 @@ export const createToken = async (label: string, role: Role) => asJson<{ token: 
 export async function revokeToken(id: string): Promise<void> {
   await asJson<void>(await api(`${BASE}/admin/tokens/${encodeURIComponent(id)}`, { method: "DELETE" }));
 }
+/** A folder an admin bound (holon-server's folders.rs): a name flows use, a real folder here. */
+export type FolderEntry = { name: string; path: string; access: "read" | "read-write"; keep: "bytes" | "hash" };
+export const listFolders = async () => asJson<FolderEntry[]>(await api(`${BASE}/admin/folders`));
+export const bindFolder = async (f: FolderEntry) => asJson<FolderEntry>(await post(`${BASE}/admin/folders`, f));
+export async function unbindFolder(name: string): Promise<void> {
+  await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}`, { method: "DELETE" }));
+}
 export const getOidcSettings = async () => (await asJson<{ settings: OidcSettings | null }>(await api(`${BASE}/admin/oidc`))).settings;
 export async function setOidcSettings(settings: OidcSettings | null): Promise<void> {
   await asJson<void>(await post(`${BASE}/admin/oidc`, { settings }));
@@ -522,7 +529,9 @@ export type LogEntry = {
   /** The outbound requests it made, round by round (absent when none). */
   rounds?: LoggedRound[];
   /** The collection reads it made, by node path, and what each answered (absent when none). */
-  reads?: { path: number[]; request: WValue; answer: WValue | null }[];
+  /** What it read: collection items and files. A file the log keeps by hash has no answer, and
+   *  says so in `file` (its BLAKE3 hash and size, and where its text is kept, if it is). */
+  reads?: { path: number[]; request: WValue; answer: WValue | null; file?: { hash: string; size: number; blob?: string } }[];
   /** How many times it ran again because what it read changed before it could commit. */
   retries?: number;
   /** The run's id, the nonce in it, and the grant it was held to (hex; empty for no run). */

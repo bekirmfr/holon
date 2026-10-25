@@ -68,8 +68,8 @@ same graph are the same unit.
 |---|---|---|
 | What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist today (two leaves, `as_text` and `coalesce`, were added for it) | §1, §6 |
 | What it is not | General-purpose. No loops, recursion, user types, modules, or standard library growth | §2 |
-| The outside world | Nouns: `req`, `secret.name`, `state.key`, `now`, `random`, a declared `collection` used as `notes[key]`, `http.post(host, path, …)`, `await name` | §5.4 |
-| Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`. Method forms (`notes.put(k, v)`) when the effect needs a name | §5.4, §5.10 |
+| The outside world | Nouns: `req`, `secret.name`, `state.key`, `now`, `random`, a declared `collection` used as `notes[key]`, a declared `folder` used as `inbox[name]`, `http.post(host, path, …)`, `await name` | §5.4 |
+| Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the effect needs a name | §5.4, §5.10 |
 | Bindings | One form, `name = expr`, everywhere | §5.2 |
 | Calls | `name(inputs…, named…)`: positional arguments are inputs; a named one is an input when the unit has that port, else a param | §5.3 |
 | Literals | `1`, `"text"`, `true`, `10s`; `"Hello, {name}"` interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` and `list` | §5.5 |
@@ -383,6 +383,38 @@ route GET /batches (req) {
 `now` written twice is two `clock` nodes (§6.2); both read the same instant, the run's start. To
 share one node, bind it: `t = now`.
 
+### inbox-report: folders on the host
+
+```
+flow inbox-report
+port 8123
+folder inbox
+folder reports
+
+route POST /report (req) {
+  name = req.json.name
+  summary = summarize(name, inbox[name])
+  reports["{name}.md"] = summary.report
+  respond { rows: summary.rows, report: "{name}.md" }
+}
+
+route GET /reports (req) {
+  respond reports.list()
+}
+```
+
+`folder inbox` names a folder on the host; an admin binds the name to a real folder
+(`holon folder add inbox /srv/drop --read-only`, or the editor's admin page), and a flow never
+sees the path. A folder reads and writes as a collection does, by file name: `inbox[name]` is
+`file_read{folder: inbox}`, the file's text as the run began (no value if there is none);
+`reports[name] = text` is `file_write`, the whole file written when the run finishes;
+`delete reports[name]` is `file_delete`; `reports.list(…)` is `file_list`, a record of file name
+to `{size, hash, modified}`. A name is a path inside the folder (`2026/10/a.csv`) and never leaves
+it. Reading asks `FileRead("inbox")`, writing and deleting `FileWrite("reports")`, and a deploy is
+refused until each folder it needs is bound, and bound read-write where it writes. The run log
+keeps what a run read (or only its hash, for a folder bound with `--keep hash`) and what it wrote
+by its hash. Design: `docs/L4s/named-folders-L4.md`.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -405,13 +437,13 @@ around it reaches it as an input after the item (§5.9).
 - **Encoding:** UTF-8. Lines end in `\n` or `\r\n`.
 - **Comments:** `#` to end of line. `fmt` keeps a comment on the line it was written on, moving it
   with that statement.
-- **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `holon` `js` (after a
+- **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `folder` `holon` `js` (after a
   holon's outputs) `route`
   `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`, and the
   wiring form's `node` `at` `in` `out` `interval`. Keywords are valid after a dot (`req.in`) and
   as record keys (`{ in: 1 }`).
 - **Nouns:** `req` (the name a route gives its request; any identifier works), `secret`, `state`,
-  `now`, `random`, `ingress`, `http`, `stripe`, and every declared collection. `secret`, `state`,
+  `now`, `random`, `ingress`, `http`, `stripe`, and every declared collection and folder. `secret`, `state`,
   `http` and `stripe` are namespaces: they take a dot. The nouns are reserved like keywords.
 - **Identifiers:** `[A-Za-z_][A-Za-z0-9_]*`. A name that is a catalog leaf, a template, a keyword
   or a noun cannot be bound; the error names the clash. Route paths and consent names have their
@@ -443,11 +475,13 @@ a binary operator or a comma. Semicolons are not used.
 file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
           | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
+          | "folder" ident
 item      = holon | route | statement | wiring        # wiring: the netlist form, §10
 ```
 
 Headers are the flow's deploy settings, exactly as today (`Settings`): `every 10s` is `interval`
 10. `collection notes` declares a name for the body (§5.4); several may be declared, one per line.
+`folder inbox` declares a folder the same way.
 Statements at the top level are the body of a flow without routes (§5.12); with routes, only
 bindings of literals are allowed at the top level (§5.11).
 
@@ -465,8 +499,8 @@ route     = "route" method path "(" ident ")" ("resumes" ident)? block
 method    = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
 statement = ident "=" expr                          # a binding; in a holon, also an output
           | "state" "." ident "=" expr              # a state write
-          | ident "[" expr "]" "=" expr             # a collection write (ident: a collection)
-          | "delete" ident "[" expr "]"             # a collection delete
+          | ident "[" expr "]" "=" expr             # a collection or folder write
+          | "delete" ident "[" expr "]"             # a collection or folder delete
           | "respond" respond_args                  # in a route
           | expr                                    # an effect, §5.10
 ```
@@ -525,6 +559,11 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `delete notes[k]` | `collection_delete{collection: notes}(k)` | delete it when the run finishes |
 | `notes.get(k)`, `notes.put(k, e)`, `notes.delete(k)` | the same three leaves, as expressions | the operation, as a value to name |
 | `notes.list(prefix: p, after: a, limit: n)` | `collection_list{collection: notes, limit: n}(p, a)` | a page of items, in key order |
+| `inbox[n]` (`inbox` a declared folder) | `file_read{folder: inbox}(n)` | the file's text, as the run began |
+| `reports[n] = e` | `file_write{folder: reports}(n, e)` | write the whole file when the run finishes |
+| `delete reports[n]` | `file_delete{folder: reports}(n)` | delete it when the run finishes |
+| `inbox.get(n)`, `reports.put(n, e)`, `reports.delete(n)` | the same three leaves, as expressions | the operation, as a value to name |
+| `inbox.list(prefix: p, after: a, limit: n)` | `file_list{folder: inbox, limit: n}(p, a)` | a page of files, `{size, hash, modified}` by name, in name order |
 | `http.get(host, path, headers: h, body: b)` and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host}(path, h, b)` | a call to that host |
 | `stripe.verify(req, secret, now, tolerance: d)` | the `stripe_verify` template | a verified Stripe event |
 | `await paid, expires: 1d` | `await{name: paid, expires: 86400}` | the event, when it arrives |
@@ -536,6 +575,8 @@ Rules the table implies:
 - A collection must be declared in the header before `notes[k]` means a collection; an undeclared
   name followed by `[ ]` is a `lookup` on a record (§5.6). The declaration is a *name*, not a
   permission: `check` still derives `CollectionRead("notes")` from the `collection_get` leaves.
+  A folder the same: `folder inbox`, and `FileRead("inbox")` from `file_read`. A file is text
+  (UTF-8, up to 1 MiB); a read of anything else fails the run, and it writes nothing.
 - `http.*`'s host must be a text literal, because the host is the capability the deployment asks
   for; a host from a wire is an error that says so.
 - `state.x` on the right of `=` and on the left are different leaves, read and write, and that is

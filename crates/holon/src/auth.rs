@@ -8,7 +8,8 @@
 //! `GET`/`POST /auth/prefs` (what the editor keeps for them: its home tab, the welcome).
 //! Admins: `/admin/users` (list, invite), `/admin/users/<name>` (role, disabled, email; delete),
 //! `/admin/users/<name>/reset`, `/admin/tokens` (list, create), `/admin/tokens/<id>` (revoke),
-//! `/admin/oidc` (read, set, turn off). What an admin does goes in the activity log.
+//! `/admin/oidc` (read, set, turn off), `/admin/folders` (folders.rs). What an admin does goes in
+//! the activity log.
 
 use rouille::{Request, Response};
 use serde::Deserialize;
@@ -41,6 +42,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     let url = request.url();
     if !url.starts_with("/auth/") && !url.starts_with("/admin/") {
         return None;
+    }
+    // The folders an admin binds (folders.rs): a server without accounts has them too.
+    if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or("")) {
+        return Some(response);
     }
     let Some(accounts) = state.access.accounts() else { return Some(err(404, "this server has no accounts")) };
     let by = caller.name.as_deref().unwrap_or("");

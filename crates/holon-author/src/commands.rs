@@ -512,6 +512,13 @@ route POST /t (req) {
     }
 
     #[test]
+    fn fmt_writes_folders_back_as_written() {
+        let text = "flow files\nport 8200\nfolder inbox\nfolder out\n\nroute POST /move (req) {\n  t = inbox[req.json.name]\n  out[\"{req.json.name}.md\"] = \"# {t}\"\n  delete out[\"{req.json.name}.old\"]\n  respond inbox.list(prefix: \"2026/\", limit: 5)\n}\n";
+        assert_eq!(check("files.holon", text).code, 0);
+        assert_eq!(fmt("files.holon", text).unwrap(), text);
+    }
+
+    #[test]
     fn fmt_is_stable_and_every_sample_round_trips_through_new() {
         let once = fmt("hello.holon", HELLO).unwrap();
         assert_eq!(fmt("hello.holon", &once).unwrap(), once);

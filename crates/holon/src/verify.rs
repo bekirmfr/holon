@@ -10,7 +10,8 @@
 //!
 //! Some runs can't be run again, and are counted, not failed: one that used a secret or a resume
 //! token (the log holds a placeholder, never the value), one that failed on a budget (the clock
-//! decided), one no route took (nothing ran).
+//! decided), one no route took (nothing ran), one that read a file whose text neither the export
+//! nor `--files` holds (its folder keeps only hashes).
 
 use crate::*;
 use holon_host::{Exchange, Limits, Performer, Waits};
@@ -30,6 +31,10 @@ pub(crate) struct Export {
     pub(crate) lines: Vec<String>,
     /// Every unit the runs ran, by hash (hex): its canonical bytes (hex).
     pub(crate) units: BTreeMap<String, String>,
+    /// The text of each file a run read that its log entry keeps by hash, by its place in the
+    /// content store (hex): checked against the file's hash, so it can't stand in for another.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) blobs: BTreeMap<String, String>,
 }
 
 /// `GET /deployments/<slug>/export` — the deployment's runs, and the units they ran, as one file.
@@ -39,8 +44,19 @@ pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMa
         None => return err(404, format!("no deployment {slug:?}")),
     };
     let mut units = BTreeMap::new();
-    let mut queue: Vec<Hash> =
-        lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()).filter_map(|e| parse_hash(&e.unit)).collect();
+    let entries: Vec<LogEntry> = lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()).collect();
+    let mut blobs = BTreeMap::new();
+    for blob in entries.iter().flat_map(|e| &e.reads).filter_map(|r| r.file.as_ref()?.blob.as_ref()) {
+        let Some(h) = parse_hash(blob) else { continue };
+        match store.0.lock().unwrap().get_value(&h) {
+            Ok(Some(Value::Text(text))) => {
+                blobs.insert(blob.clone(), text);
+            }
+            Ok(_) => {}
+            Err(e) => return err(500, format!("store error: {e:?}")),
+        }
+    }
+    let mut queue: Vec<Hash> = entries.iter().filter_map(|e| parse_hash(&e.unit)).collect();
     while let Some(h) = queue.pop() {
         let key = to_hex(&h);
         if units.contains_key(&key) {
@@ -56,7 +72,7 @@ pub(crate) fn handle_get_export(store: &SharedStore, deployments: &Mutex<BTreeMa
             units.insert(key, hex_of(&bytes));
         }
     }
-    let export = Export { export: FORMAT.into(), deployment: slug.into(), head, lines, units };
+    let export = Export { export: FORMAT.into(), deployment: slug.into(), head, lines, units, blobs };
     Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{slug}-runs.json\""))
 }
 
@@ -120,8 +136,9 @@ impl Report {
 }
 
 /// Check `export`: its chain, its units, and each run, run again. `witnessed`: a head to find in
-/// it (one a witness holds).
-pub(crate) fn check(export: &Export, witnessed: Option<&str>) -> Report {
+/// it (one a witness holds). `files`: texts of files the runs read, by hash (`--files`), for reads
+/// the export keeps only the hash of.
+pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<String, String>) -> Report {
     let mut report = Report { deployment: export.deployment.clone(), ..Report::default() };
 
     // The chain, as the server checks it when it opens a log (recorder.rs).
@@ -166,17 +183,60 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>) -> Report {
         }
     }
 
+    let texts = Texts { blobs: &export.blobs, files };
     for (i, (entry, line)) in entries.iter().enumerate() {
         let earlier: Vec<&LogEntry> =
             entries[..i].iter().map(|(e, _)| e).filter(|e| !entry.run_id.is_empty() && e.run_id == entry.run_id).collect();
-        report.reruns.push((entry.seq, rerun(entry, line, &earlier, &holon_module::WithEngine::new(&resolver, holon_module::shared()))));
+        report.reruns.push((entry.seq, rerun(entry, line, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()))));
     }
     report
 }
 
+/// Where the text of a file a run read comes from when its log entry keeps only the hash: the
+/// export's blobs, or the files given with `--files`.
+struct Texts<'a> {
+    blobs: &'a BTreeMap<String, String>,
+    files: &'a BTreeMap<String, String>,
+}
+
+impl Texts<'_> {
+    /// The text a logged file read answered: the entry's own, or found by its blob or its hash.
+    /// `Err`: none here (what the run read), or a blob that isn't the file it says.
+    fn answer(&self, read: &recorder::LoggedRead) -> Result<Option<Value>, Rerun> {
+        let Some(file) = &read.file else { return Ok(read.answer.clone().map(SValue::into_core)) };
+        if let Some(answer) = &read.answer {
+            return Ok(Some(answer.clone().into_core()));
+        }
+        let what = || {
+            let r = read.request.clone().into_core();
+            let field = |k: &str| match &r {
+                Value::Record(r) => match r.get(k) {
+                    Some(Value::Text(t)) => t.clone(),
+                    _ => "?".into(),
+                },
+                _ => "?".into(),
+            };
+            format!("{}/{}", field("folder"), field("read"))
+        };
+        if let Some(text) = file.blob.as_ref().and_then(|b| self.blobs.get(b)) {
+            if blake3::hash(text.as_bytes()).to_hex().as_str() != file.hash {
+                return Err(Rerun::Differs(format!("the text kept for {} isn't the file it read", what())));
+            }
+            return Ok(Some(Value::Text(text.clone())));
+        }
+        match self.files.get(&file.hash) {
+            Some(text) => Ok(Some(Value::Text(text.clone()))),
+            None => Err(Rerun::Skipped(format!(
+                "it read {}, whose text the export doesn't hold (its folder keeps hashes): give it with --files",
+                what()
+            ))),
+        }
+    }
+}
+
 /// Run `entry` again from what it records (and what the earlier parts of the same run, `earlier`,
 /// record: a resumed run's outbound answers and reads), and compare.
-fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], resolver: &impl holon_core::Resolver) -> Rerun {
+fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, resolver: &impl holon_core::Resolver) -> Rerun {
     if entry.run_id.is_empty() {
         return Rerun::Skipped("nothing ran: no route took the request".into());
     }
@@ -256,7 +316,11 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], resolver: &impl ho
     let prior: Vec<Round> = earlier.iter().flat_map(|e| &e.rounds).chain(&entry.rounds).map(round_of).collect();
     let mut reads: Vec<(Vec<u32>, Value, Option<Value>)> = Vec::new();
     for read in earlier.iter().flat_map(|e| &e.reads).chain(&entry.reads) {
-        reads.push((read.path.clone(), read.request.clone().into_core(), read.answer.clone().map(SValue::into_core)));
+        let answer = match texts.answer(read) {
+            Ok(answer) => answer,
+            Err(not) => return not,
+        };
+        reads.push((read.path.clone(), read.request.clone().into_core(), answer));
     }
     let mut waits = Logged {
         reads,
@@ -267,14 +331,14 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], resolver: &impl ho
     let mut timer = recorder::Timer::new();
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut timer, &mut waits, &prior);
 
-    let outputs: Vec<Option<SValue>> = outcome.outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect();
+    let outputs: Vec<Option<SValue>> = outcome.outputs.iter().map(|o| o.as_ref().map(|v| SValue::from_core(&folders::loggable_output(v)))).collect();
     if json(&outputs) != json(&entry.outputs) {
         differs.push("its outputs");
     }
     let performed: Vec<PerformedEntry> = host
         .performed
         .iter()
-        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(&folders::loggable(c, p)) })
         .collect();
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
@@ -320,8 +384,8 @@ fn round_of(round: &recorder::LoggedRound) -> Round {
     }
 }
 
-/// Answers a run's waiting points and collection reads from its log entries; its tokens as the
-/// placeholder the log shows.
+/// Answers a run's waiting points, collection reads and file reads from its log entries (a file's
+/// text from the export or `--files`); its tokens as the placeholder the log shows.
 struct Logged {
     reads: Vec<(Vec<u32>, Value, Option<Value>)>,
     events: BTreeMap<String, Value>,
@@ -352,15 +416,17 @@ impl Performer for Offline {
     }
 }
 
-/// `holon verify <export.json> [--head <hex>]`: check an export, say what was found, and exit 0
-/// only if it checks.
+/// `holon verify <export.json> [--head <hex>] [--files DIR]`: check an export, say what was
+/// found, and exit 0 only if it checks.
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file = None;
     let mut head = None;
+    let mut dir = None;
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--head" => head = args.next().cloned(),
+            "--files" => dir = args.next().cloned(),
             "--help" | "-h" => {
                 println!("{USAGE}");
                 return 0;
@@ -387,17 +453,27 @@ pub(crate) fn run(args: &[String]) -> i32 {
         eprintln!("holon verify: {file} isn't a run export this holon reads ({:?}, not {FORMAT:?})", export.export);
         return 2;
     }
-    let report = check(&export, head.as_deref());
+    let files = match dir.as_deref().map(|d| folders::texts_in(Path::new(d))) {
+        None => BTreeMap::new(),
+        Some(Ok(files)) => files,
+        Some(Err(e)) => {
+            eprintln!("holon verify: can't read the files: {e}");
+            return 2;
+        }
+    };
+    let report = check(&export, head.as_deref(), &files);
     print!("{}", describe(&report, head.as_deref()));
     if report.ok() { 0 } else { 1 }
 }
 
-const USAGE: &str = "usage: holon verify <export.json> [--head <hex>]
+const USAGE: &str = "usage: holon verify <export.json> [--head <hex>] [--files DIR]
 
   Checks a deployment's runs, exported from GET /deployments/<slug>/export: that its run log's
   hash chain is unbroken, that every unit is what its hash says, and that every run, run again
   from its log entry, produces what the log says it did. --head checks that a head a witness
-  holds is in the export, so no run up to it was changed or removed. Exits 0 when it all checks.";
+  holds is in the export, so no run up to it was changed or removed. --files gives the text of
+  files the runs read whose folder keeps only their hashes: each is found by its hash, wherever
+  it is under DIR. Exits 0 when it all checks.";
 
 /// What a report says, in a few lines.
 pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {

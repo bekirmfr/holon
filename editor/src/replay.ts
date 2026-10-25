@@ -51,7 +51,7 @@ export function hasPlaceholder(v: WValue | null): boolean {
   if (v === null) return false;
   switch (v.type) {
     case "Text":
-      return v.value.includes("‹secret:") || v.value.includes("‹token:");
+      return v.value.includes("‹secret:") || v.value.includes("‹token:") || v.value.includes("‹file:");
     case "List":
       return v.value.some(hasPlaceholder);
     case "Record":
@@ -288,18 +288,24 @@ export function recordedResponses(exchanges: NodeExchange[]): Map<string, WValue
   return out;
 }
 
-/** What each collection read (`collection_get`, `collection_list`) was answered, by canvas
- *  node, from the run's record: replay answers them from here, as the run found the collection.
- *  A read that found nothing is left out, and replays as nothing. */
+/** What each collection or file read (`collection_get`, `collection_list`, `file_read`,
+ *  `file_list`) was answered, by canvas node, from the run's record: replay answers them from
+ *  here, as the run found the collection or folder. A read that found nothing is left out, and
+ *  replays as nothing; a file the log keeps by hash replays as a placeholder naming it, as a
+ *  secret does, and what it feeds shows what the run recorded. */
 export function recordedReads(
-  entry: { kind: string; route: string | null; reads?: { path: number[]; answer: WValue | null }[] },
+  entry: { kind: string; route: string | null; reads?: { path: number[]; request?: WValue; answer: WValue | null; file?: { hash: string; size: number } }[] },
   trace: Record<string, string[]> | undefined,
 ): Map<string, WValue> {
   const out = new Map<string, WValue>();
   const at = nodeAtPath(entry, trace);
+  const field = (v: WValue | null | undefined, k: string) => (v?.type === "Record" ? (v.value.find(([x]) => x === k)?.[1] ?? null) : null);
+  const text = (v: WValue | null) => (v?.type === "Text" ? v.value : "?");
   for (const r of entry.reads ?? []) {
     const id = at(r.path);
-    if (id && r.answer !== null) out.set(id, r.answer);
+    if (!id) continue;
+    if (r.answer !== null) out.set(id, r.answer);
+    else if (r.file) out.set(id, { type: "Text", value: `‹file:${text(field(r.request, "folder"))}/${text(field(r.request, "read"))}, ${r.file.size} bytes, kept by hash›` });
   }
   return out;
 }
@@ -470,9 +476,9 @@ export function replay(
     if (primitive && name === "resume_token") return { inputs, outputs: [{ type: "Text", value: `‹token:${param("await")}›` }] };
     // The editor never has a secret's value: a placeholder stands in, as the log shows it.
     if (primitive && name === "secret") return { inputs, outputs: [{ type: "Text", value: `‹secret:${param("name")}›` }] };
-    if (primitive && (name === "http_request" || name === "collection_get" || name === "collection_list")) {
-      // Answered from the record, never the network or the store: a replay is offline and
-      // exact, and shows the collection as the run found it, whatever it holds now.
+    if (primitive && ["http_request", "collection_get", "collection_list", "file_read", "file_list"].includes(name)) {
+      // Answered from the record, never the network, the store or the disk: a replay is offline
+      // and exact, and shows the collection or folder as the run found it, whatever it holds now.
       return { inputs, outputs: [responses.get(id) ?? null] };
     }
     if (name === "request" && node.data.body.kind === "Template") {
@@ -607,6 +613,8 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     }
     case "collection_get":
       return `no item "${textOf(a) ?? "?"}" in the collection "${p("collection")}"`;
+    case "file_read":
+      return `no file "${textOf(a) ?? "?"}" in the folder "${p("folder")}"`;
     case "find":
       return `no item whose "${p("name")}" matches`;
     case "get":

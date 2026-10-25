@@ -9,6 +9,9 @@ import { test as base, expect } from "@playwright/test";
 export const SERVER = "http://127.0.0.1:7520";
 /** Where the test servers write their run files (local.rs), never the developer's ~/.holon/run. */
 export const RUN_DIR = join(tmpdir(), "holon-e2e-run");
+/** The folders the main test server binds (server.mjs) for the inbox-report sample: outside its
+ *  data, as an admin binds them. */
+export const FOLDERS = join(tmpdir(), "holon-e2e-folders-7520");
 export const ADMIN = { name: "e2e", password: "e2e-password-0123" };
 
 export const test = base.extend<{ adminToken: string }>({

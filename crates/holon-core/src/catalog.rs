@@ -52,6 +52,8 @@ pub const GENESIS: &[&str] = &[
     "store_read", "store_write",
     // collections: keyed items, read by key or in order, put and deleted (4)
     "collection_get", "collection_list", "collection_put", "collection_delete",
+    // named folders: files read by name or listed, written and deleted (4)
+    "file_read", "file_list", "file_write", "file_delete",
     // sink — performed (1)
     "egress",
 ];
@@ -255,6 +257,18 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "collection_put" => prim(vec![port("key", Text), port("value", Any)], vec![Param::frozen("collection", "items")], Effect),
         "collection_delete" => prim(vec![port("key", Text)], vec![Param::frozen("collection", "items")], Effect),
 
+        // ── named folders ── `folder` (frozen) names which one; the host binds the name to a real
+        // folder. A file is read as text by its name (a path inside the folder); a listing is a
+        // record of up to `limit` files in name order, as a collection's.
+        "file_read" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Text),
+        "file_list" => prim(
+            vec![port("prefix", Text), port("after", Text)],
+            vec![Param::frozen("folder", "files"), Param::frozen("limit", "100")],
+            Type::Record,
+        ),
+        "file_write" => prim(vec![port("name", Text), port("text", Text)], vec![Param::frozen("folder", "files")], Effect),
+        "file_delete" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Effect),
+
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
         // `method` and `host` are frozen (the host is the capability); the path, headers and
@@ -289,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_71_leaves() {
+    fn genesis_has_75_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -298,8 +312,9 @@ mod tests {
         // durable-run pair (await, resume_token), the signature kit (sha256, hmac_sha256,
         // hex, base64, secure_equals), split, the collection kit (get, list, put, delete), and
         // as_text (the language's string interpolation) and coalesce (its `??` and `if … else`
-        // with a fallback on a wire), both for docs/LANGUAGE.md, and range.
-        assert_eq!(GENESIS.len(), 71);
+        // with a fallback on a wire), both for docs/LANGUAGE.md, range, and the named-folder kit
+        // (file_read, file_list, file_write, file_delete).
+        assert_eq!(GENESIS.len(), 75);
     }
 
     #[test]

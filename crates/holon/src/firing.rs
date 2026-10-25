@@ -47,9 +47,10 @@ impl Host for RecordingHost {
 /// A slice, not one pair: `Clock` (the wall clock is always knowable) and `Random` (a fresh
 /// draw is always makeable) are cheap and honest to supply on *every* fire regardless of what
 /// specifically triggered it — a unit combining `ingress` and `random`, say, needs both
-/// available at once. `FileRead`/`SecretAccess` are deliberately never in this list: there is
-/// no addressing mechanism in the wire surface today (a leaf declaring `FileRead` doesn't say
-/// *which* file), so there is nothing honest to supply — a real, separate design question, not
+/// available at once. `SecretAccess` is deliberately never in this list: there is
+/// no addressing mechanism in the wire surface today (a leaf declaring `SecretAccess` doesn't say
+/// *which* secret; `secret` and `file_read` name theirs, and are answered elsewhere), so there is
+/// nothing honest to supply — a real, separate design question, not
 /// something to paper over with a placeholder value.
 ///
 /// Returns every settled output slot, not just one — `fire_sourced` itself now carries
@@ -127,10 +128,12 @@ pub(crate) fn fire_with_state(
     // its writes landing on the live state when it finishes.
     if let Some(r) = resumed {
         let a = attempt(state.map(|_| r.state_before), &r.nonce, r.prior, waits, None);
+        let mut run = a.run;
         if let Some(cell) = state {
-            commit(&mut cell.state.lock().unwrap(), store, &a.run.performed);
+            let failed = commit(&mut cell.state.lock().unwrap(), store, waits.folders.as_deref(), &run.performed);
+            not_all_written(&mut run, failed);
         }
-        return a.run;
+        return run;
     }
     let nonce = new_nonce();
     let Some(cell) = state else {
@@ -157,8 +160,9 @@ pub(crate) fn fire_with_state(
                 eprintln!("holon: run {} commits over a key another run still holds (claim_wait passed)", a.run.run_id);
             }
             let mut live = cell.state.lock().unwrap();
-            if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store) {
-                commit(&mut live, store, &a.run.performed);
+            if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store, waits.folders.as_ref()) {
+                let failed = commit(&mut live, store, waits.folders.as_deref(), &a.run.performed);
+                not_all_written(&mut a.run, failed);
                 a.run.retries = retries;
                 if let Some(c) = waits.claiming.take() {
                     a.run.claims = c.finish();
@@ -180,15 +184,31 @@ pub(crate) fn fire_with_state(
     }
     let mut live = cell.state.lock().unwrap();
     let mut a = attempt(Some(live.clone()), &nonce, prior, waits, None);
-    commit(&mut live, store, &a.run.performed);
+    let failed = commit(&mut live, store, waits.folders.as_deref(), &a.run.performed);
+    not_all_written(&mut a.run, failed);
     a.run.retries = OPTIMISTIC_ATTEMPTS;
     a.run.claims = records;
     a.run
 }
 
+/// What a run whose writes didn't all land says: the run happened, and these didn't.
+fn not_all_written(run: &mut FiredRun, failed: Vec<String>) {
+    if !failed.is_empty() && run.error.is_none() {
+        run.error = Some(format!("not every write landed: {}", failed.join("; ")));
+    }
+}
+
 /// Whether `live` still holds everything a run that started from `start` could have read: each
-/// state cell it was granted (by its hash), and each collection read it made (asked again).
-fn still_as_read(start: &State, live: &State, reads: &[collections::Read], permit: &Permit, store: &SharedStore) -> bool {
+/// state cell it was granted (by its hash), and each collection and file read it made (asked
+/// again; a file as it now is on disk).
+fn still_as_read(
+    start: &State,
+    live: &State,
+    reads: &[collections::Read],
+    permit: &Permit,
+    store: &SharedStore,
+    folders: Option<&Arc<folders::Folders>>,
+) -> bool {
     let cells: BTreeSet<&String> = start.iter().chain(live.iter()).map(|(k, _)| k).collect();
     let cells_unchanged = cells
         .into_iter()
@@ -198,12 +218,19 @@ fn still_as_read(start: &State, live: &State, reads: &[collections::Read], permi
         return false;
     }
     let now = collections::Readable { store: store.clone(), roots: collections::roots(live), granted: permit.collections_read() };
-    reads.iter().all(|r| now.answer(&r.request) == r.answer)
+    let mut files = folders.map(|f| folders::Readable { folders: Arc::clone(f), granted: permit.folders_read(), store: store.clone(), read_bytes: 0 });
+    reads.iter().all(|r| {
+        if !matches!(&r.request, Value::Record(q) if q.contains_key("folder")) {
+            return now.answer(&r.request) == r.answer;
+        }
+        files.as_mut().is_none_or(|files| files.answer(&r.request, false).is_ok_and(|(answer, _)| answer == r.answer))
+    })
 }
 
 /// Apply a run's writes to the live state: each state write, then each collection put and delete,
-/// in the order the run made them.
-fn commit(live: &mut State, store: &SharedStore, performed: &[(Capability, Value)]) {
+/// in the order the run made them; then each file written or deleted, in its order. What didn't
+/// land, and why: a file that couldn't be written (the others still are).
+fn commit(live: &mut State, store: &SharedStore, folders: Option<&folders::Folders>, performed: &[(Capability, Value)]) -> Vec<String> {
     for (cap, payload) in performed {
         if let Capability::StateWrite(key) = cap {
             if !is_storable(payload) {
@@ -221,6 +248,17 @@ fn commit(live: &mut State, store: &SharedStore, performed: &[(Capability, Value
             eprintln!("holon: collection {name:?} not written: {e}");
         }
     }
+    let mut failed = Vec::new();
+    for (cap, payload) in performed {
+        if let Capability::FileWrite(name) = cap {
+            let done = folders.ok_or_else(|| "no folders on this server".to_string()).and_then(|f| folders::apply(f, name, payload));
+            if let Err(e) = done {
+                eprintln!("holon: {e}");
+                failed.push(e);
+            }
+        }
+    }
+    failed
 }
 
 /// One run of `root_unit` from `start`, nothing committed: its outputs, what it would perform
@@ -251,6 +289,14 @@ fn run_attempt(
         store: store.clone(),
         roots: start.as_ref().map(collections::roots).unwrap_or_default(),
         granted: permit.collections_read(),
+    });
+    // Its folders, for the reads it was granted: read as it finds them.
+    waits.failed = None;
+    waits.files = waits.folders.as_ref().map(|f| folders::Readable {
+        folders: Arc::clone(f),
+        granted: permit.folders_read(),
+        store: store.clone(),
+        read_bytes: 0,
     });
 
     // Only the state keys the deployment was granted are read.
@@ -290,6 +336,12 @@ fn run_attempt(
     });
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &permit.outbound, limits, &mut timer, waits, &prior);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
+    // A read that failed (a file too big, or not text; a folder not bound) fails the run: it
+    // performs nothing.
+    let failed_read = waits.failed.take();
+    if failed_read.is_some() {
+        host.performed.clear();
+    }
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, which would put it on disk and in every later snapshot.
     host.performed.retain(|(cap, payload)| {
@@ -312,7 +364,7 @@ fn run_attempt(
         state_before,
         timeline: timer.timeline,
         rounds: outcome.rounds,
-        error: outcome.error.map(|e| e.message()),
+        error: failed_read.map(|e| format!("{}{e}", folders::READ_FAILED)).or(outcome.error.map(|e| e.message())),
         run_id: to_hex(&run_id),
         unit: to_hex(&permit.deployment),
         nonce: hex_bytes(nonce),
@@ -421,6 +473,32 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     }
 }
 
+/// The timeline, with the outputs of each node that carries the text of a file the log keeps by
+/// hash (read, or written past the inline size) left out: that text isn't in the log by another
+/// way.
+fn without_kept_files(timeline: &[recorder::NodeTiming], reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<recorder::NodeTiming> {
+    let read = reads.iter().filter(|r| r.file.as_ref().is_some_and(|f| !f.inline)).filter_map(|r| match &r.answer {
+        Some(Value::Text(t)) => Some(t.as_str()),
+        _ => None,
+    });
+    let kept: Vec<String> = read
+        .chain(folders::written_texts(performed))
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| serde_json::to_string(t).ok().map(|q| q[1..q.len() - 1].to_string()))
+        .collect();
+    let mut timeline = timeline.to_vec();
+    if kept.is_empty() {
+        return timeline;
+    }
+    for node in &mut timeline {
+        let carries = node.outputs.as_ref().and_then(|o| serde_json::to_string(o).ok()).is_some_and(|json| kept.iter().any(|t| json.contains(t.as_str())));
+        if carries {
+            node.outputs = None;
+        }
+    }
+    timeline
+}
+
 /// The parts every log entry shares, from what a run read and produced.
 pub(crate) fn run_entry(
     kind: &'static str,
@@ -442,15 +520,15 @@ pub(crate) fn run_entry(
         request: None,
         sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
         state_before: run.state_before.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
-        outputs: run.outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
+        outputs: run.outputs.iter().map(|o| o.as_ref().map(|v| SValue::from_core(&folders::loggable_output(v)))).collect(),
         performed: run
             .performed
             .iter()
-            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
+            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(&folders::loggable(c, p)) })
             .collect(),
         response_body: None,
         error: run.error.clone(),
-        timeline: run.timeline.clone(),
+        timeline: without_kept_files(&run.timeline, &run.reads, &run.performed),
         rounds: run.rounds.iter().map(recorder::LoggedRound::from_host).collect(),
         run_id: run.run_id.clone(),
         unit: run.unit.clone(),
@@ -476,7 +554,9 @@ pub(crate) fn run_entry(
             .map(|r| recorder::LoggedRead {
                 path: r.path.clone(),
                 request: SValue::from_core(&r.request),
-                answer: r.answer.as_ref().map(SValue::from_core),
+                // A file's text past the inline size is kept by its hash, not in the entry.
+                answer: r.answer.as_ref().filter(|_| r.file.as_ref().is_none_or(|f| f.inline)).map(SValue::from_core),
+                file: r.file.as_ref().map(|f| recorder::LoggedFile { hash: f.hash.clone(), size: f.size, blob: f.blob.clone() }),
             })
             .collect(),
     }

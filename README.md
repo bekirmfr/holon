@@ -129,10 +129,24 @@ elsewhere takes `--server <URL>` and an API token in `HOLON_TOKEN`, or the one `
 --server` kept for it); or `GET /deployments/<slug>/export`. `holon verify
 runs.json` checks it anywhere, offline: the
 chain is unbroken, each unit is what its hash says, and every run, run again from its log entry
-(the same request, state, clock, random, outbound answers and collection reads, through the same
-core), produces what the log says it did. `--head <hex>` checks a head a witness holds is in it.
+(the same request, state, clock, random, outbound answers and collection and file reads, through
+the same core), produces what the log says it did. `--head <hex>` checks a head a witness holds is
+in it; `--files <folder>` gives the files runs read from a folder whose log keeps only hashes.
 A run that used a secret or a resume token can't be run again (the log never holds their
 values), and is counted, not failed. The `ledger` sample is one to try it on.
+Flows read and write files only in folders an admin binds to a name (`folder inbox` in a flow):
+
+```sh
+holon folder add inbox ~/drop --read-only    # flows may read it, not write it
+holon folder add reports ~/reports           # read and write; --keep hash: the log keeps hashes
+holon folder list                            # holon folder remove NAME unbinds one
+```
+
+or the editor's admin page. A flow names the folder, never a path, and a file's name never leaves
+it; the server's own data can't be bound. A write lands whole when the run finishes. The
+`inbox-report` sample reads a CSV from one folder and writes a report to another. Design:
+`docs/L4s/named-folders-L4.md`.
+
 `holon serve --at 8080` listens on another port (`--at 0.0.0.0:8080` on every interface);
 `holon serve --help` lists every option. To reach it from other machines, see `--allow-host` in
 `docs/PLATFORM_LAYOUT.md`, and put HTTPS in front (a reverse proxy).

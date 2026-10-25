@@ -274,7 +274,7 @@ impl Parser {
                 Tok::Eof => return Ok(file),
                 Tok::RBrace => return err(t.span.start, "a } without a block to close"),
                 Tok::Ident => match t.text.as_str() {
-                    "flow" | "port" | "every" | "interval" | "browsers" | "optional" | "collection" => {
+                    "flow" | "port" | "every" | "interval" | "browsers" | "optional" | "collection" | "folder" => {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
@@ -309,6 +309,7 @@ impl Parser {
                 }
             }
             "collection" => HeaderKind::Collection(self.ident("the collection's name")?.text),
+            "folder" => HeaderKind::Folder(self.ident("the folder's name")?.text),
             "optional" => HeaderKind::Optional(self.consent()?),
             _ => {
                 let mut origins = Vec::new();

@@ -72,7 +72,7 @@ describe("sample flows", () => {
       const requests = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.name === "request" && n.data.body.kind === "Template");
       const { caps, endpoints } = derive(s.name);
       expect(endpoints).toBe(requests.length);
-      expect(caps.some((c) => c.includes("FileRead") || c.includes("ProcessSpawn")), `${s.name} saturated: ${caps}`).toBe(false);
+      expect(caps.some((c) => c.includes("<unknown>") || c.includes("Spawn")), `${s.name} saturated: ${caps}`).toBe(false);
       for (const secret of s.secrets ?? []) expect(caps).toContain(`SecretRead("${secret.name}")`);
       // What it can run without is something it uses, and never what starts it.
       for (const item of s.optional ?? []) {

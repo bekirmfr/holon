@@ -56,6 +56,8 @@ pub enum HeaderKind {
     Optional(Consent),
     /// `collection notes`: a name the body may use as `notes[k]`.
     Collection(String),
+    /// `folder inbox`: a folder an admin binds on the host, used as `inbox[name]`.
+    Folder(String),
 }
 
 /// What `optional` names: a secret by its name, or a consent name as the server prints one.

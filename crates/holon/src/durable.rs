@@ -146,8 +146,14 @@ pub(crate) struct RunWaits {
     pub(crate) events: BTreeMap<String, Value>,
     /// The collections this run may read, as it found them (collections.rs); none outside a run.
     pub(crate) collections: Option<collections::Readable>,
-    /// The collection reads it made, each once, with what each answered.
+    /// The folders bound on this server (folders.rs); none outside a run.
+    pub(crate) folders: Option<Arc<folders::Folders>>,
+    /// The folders this run may read, and how much it has read (folders.rs); none outside a run.
+    pub(crate) files: Option<folders::Readable>,
+    /// The collection and file reads it made, each once, with what each answered.
     pub(crate) reads: Vec<collections::Read>,
+    /// Why a read failed the run (a file too big, a folder not bound…), if one did.
+    pub(crate) failed: Option<String>,
     /// The keys this attempt holds (claims.rs), and what it needs to claim more; none for a run
     /// without state, a resumed part, or the attempt that runs holding the state's lock.
     pub(crate) claiming: Option<claims::Claiming>,
@@ -165,8 +171,20 @@ impl Waits for RunWaits {
         if let Some(seen) = self.reads.iter().find(|r| r.path == path && &r.request == request) {
             return seen.answer.clone();
         }
-        let answer = self.collections.as_ref().and_then(|c| c.answer(request));
-        self.reads.push(collections::Read { path: path.to_vec(), request: request.clone(), answer: answer.clone() });
+        let is_file = matches!(request, Value::Record(r) if r.contains_key("folder"));
+        let (answer, file) = if is_file {
+            match self.files.as_mut().map(|f| f.answer(request, true)) {
+                Some(Ok(seen)) => seen,
+                Some(Err(e)) => {
+                    self.failed.get_or_insert(e);
+                    (None, None)
+                }
+                None => (None, None),
+            }
+        } else {
+            (self.collections.as_ref().and_then(|c| c.answer(request)), None)
+        };
+        self.reads.push(collections::Read { path: path.to_vec(), request: request.clone(), answer: answer.clone(), file });
         answer
     }
     fn event(&self, name: &str) -> Option<Value> {
@@ -466,13 +484,14 @@ pub(crate) fn resume_parked(
     name: &str,
     event: Value,
 ) -> Result<(), String> {
-    let (record, state, permit, secrets) = {
+    let (record, state, permit, secrets, folders) = {
         let table = deployments.lock().unwrap();
         let dep = table.get(slug).ok_or("no such deployment")?;
         let record = dep.parked.get(run_id).ok_or("no such waiting run")?.clone();
-        (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets))
+        (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders))
     };
     let Resumption { unit, inputs, sourced, mut waits, resumed } = record.resume(name, event, store)?;
+    waits.folders = Some(folders);
     let resolver = materialize_closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();

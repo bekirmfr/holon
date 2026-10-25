@@ -660,6 +660,11 @@ impl Permit {
     pub(crate) fn collections_written(&self) -> BTreeSet<String> {
         self.named("CollectionWrite")
     }
+
+    /// The folders it may read, by name.
+    pub(crate) fn folders_read(&self) -> BTreeSet<String> {
+        self.named("FileRead")
+    }
 }
 
 #[cfg(test)]

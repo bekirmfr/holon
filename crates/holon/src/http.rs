@@ -172,7 +172,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, request, by, agent, &state.activity);
+        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, &state.folders, request, by, agent, &state.activity);
         sync_listeners(state);
         return response;
     }
@@ -200,7 +200,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy/preview" {
-        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy(), &state.secrets, request);
+        return handle_post_deploy_preview(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, request);
     }
 
     if method == "GET" && url == "/permissions" {

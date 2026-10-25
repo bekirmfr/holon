@@ -16,12 +16,14 @@ pub fn describe_item(item: &str) -> String {
         return format!("give that code up to {} MiB of memory per call", n / (1024 * 1024));
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 9] = [
+    let named: [(&str, Say); 11] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
         ("CollectionRead", |a| format!("read items of its collection \"{a}\"")),
         ("CollectionWrite", |a| format!("put and delete items of its collection \"{a}\"")),
+        ("FileRead", |a| format!("read files in the folder \"{a}\"")),
+        ("FileWrite", |a| format!("write and delete files in the folder \"{a}\"")),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
         ("Await", |a| format!("wait for an event \"{a}\" and continue later")),
@@ -39,8 +41,6 @@ pub fn describe_item(item: &str) -> String {
         "Random" => "use randomness",
         "PrivateAddresses" => "reach private addresses (this machine and its network)",
         "SecretAccess" => "read secrets",
-        "FileRead" => "read files",
-        "FileWrite" => "write files",
         "Spawn" => "start processes",
         other => other,
     }

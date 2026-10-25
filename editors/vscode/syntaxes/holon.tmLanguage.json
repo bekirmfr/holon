@@ -16,7 +16,7 @@
           "captures": { "1": { "name": "keyword.other.flow.holon" }, "2": { "name": "entity.name.namespace.holon" } }
         },
         {
-          "match": "^\\s*(collection)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "^\\s*(collection|folder)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": { "1": { "name": "keyword.other.collection.holon" }, "2": { "name": "variable.other.constant.holon" } }
         },
         {

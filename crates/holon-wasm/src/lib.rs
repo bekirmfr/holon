@@ -131,7 +131,7 @@ impl WValue {
 pub enum WCapability {
     Clock,
     NetworkIngress,
-    FileRead,
+    FileRead(String),
     SecretAccess,
     SecretRead(String),
     Await(String),
@@ -142,7 +142,7 @@ pub enum WCapability {
     CollectionWrite(String),
     NetworkEgress,
     HttpRequest(String),
-    FileWrite,
+    FileWrite(String),
     Spawn,
 }
 
@@ -151,7 +151,7 @@ impl WCapability {
         match c {
             Capability::Clock => WCapability::Clock,
             Capability::NetworkIngress => WCapability::NetworkIngress,
-            Capability::FileRead => WCapability::FileRead,
+            Capability::FileRead(folder) => WCapability::FileRead(folder),
             Capability::SecretAccess => WCapability::SecretAccess,
             Capability::SecretRead(name) => WCapability::SecretRead(name),
             Capability::Await(name) => WCapability::Await(name),
@@ -162,7 +162,7 @@ impl WCapability {
             Capability::CollectionWrite(name) => WCapability::CollectionWrite(name),
             Capability::NetworkEgress => WCapability::NetworkEgress,
             Capability::HttpRequest(host) => WCapability::HttpRequest(host),
-            Capability::FileWrite => WCapability::FileWrite,
+            Capability::FileWrite(folder) => WCapability::FileWrite(folder),
             Capability::Spawn => WCapability::Spawn,
         }
     }
@@ -1461,7 +1461,7 @@ fn check_wunit_roundtrip() {
 fn check_primitive_catalog() {
     let cat = catalog_wunits();
     // The §13a count crosses the mirror intact.
-    assert_eq!(cat.len(), 71);
+    assert_eq!(cat.len(), 75);
     // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
     let add = cat
         .iter()

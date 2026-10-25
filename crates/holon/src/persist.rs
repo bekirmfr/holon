@@ -233,6 +233,7 @@ pub(crate) fn load_deployments(
                 attention: attention.take(),
                 listen_error: None,
                 secrets: Vault::default(),
+                folders: Arc::new(folders::Folders::memory()),
                 parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
                 log,
                 document: record.document,

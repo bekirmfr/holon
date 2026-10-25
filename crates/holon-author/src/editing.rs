@@ -58,6 +58,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("port", "`port <n>`: the port the flow's server answers its routes on."),
     ("every", "`every <duration>`: how often a flow without routes runs (`10s`, `5m`, `1h`, `1d`)."),
     ("collection", "`collection <name>`: a named store of items, used as `name[key]`, `name[key] = v`, `delete name[key]` and `name.list(prefix: p, after: a, limit: 50)`. One permission for each use."),
+    ("folder", "`folder <name>`: files on the host, in a folder an admin binds to the name: `name[file]` reads a file's text, `name[file] = text` writes it when the run finishes, `delete name[file]` deletes it, `name.list(prefix: p, after: a, limit: 50)` lists files. One permission to read, one to write."),
     ("optional", "`optional <permission>`: one the flow can run without. It isn't asked for at deploy; a run without it gets no value where it would have read."),
     ("browsers", "`browsers <origin>, …`: the web pages it answers from other sites (CORS), or `*` for any."),
     ("holon", "`holon name(inputs) -> outputs { … }`: a flow inside a flow, a function placed as one node. One with several outputs is used as `h(…).name`. With `js` after the outputs, its body is JavaScript."),
@@ -65,7 +66,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("route", "`route METHOD /path/:param (req) { … }`: answers requests on the flow's port. Every statement in it uses `req`, directly or through a binding."),
     ("resumes", "`route … (req) resumes name { … }`: the route that resumes a run parked at `await name`, taking its `resume_token`."),
     ("respond", "`respond <body>, status: 201, missing: 400`: the route's answer; `missing:` is the status when the body has no value. `respond 204` answers a status alone."),
-    ("delete", "`delete name[key]`: removes an item from a collection when the run finishes."),
+    ("delete", "`delete name[key]`: removes an item from a collection, or a file from a folder, when the run finishes."),
     ("await", "`await event, expires: 1d`: parks the run until the event arrives; the route that `resumes` it goes on."),
     ("if", "`if c then a else b`: `a` when `c` is true, else `b`. A fallback, not a branch: when `a` has no value, `b`. Only the side it needs runs."),
     ("then", "`if c then a else b`: `a` when `c` is true, else `b`."),
@@ -130,6 +131,7 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     let is = |t: Option<&Token>, tok: Tok| t.is_some_and(|t| t.tok == tok);
     let file = parse(source).ok();
     let collections: Vec<&str> = file.iter().flat_map(|f| &f.headers).filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.as_str()) } else { None }).collect();
+    let folders: Vec<&str> = file.iter().flat_map(|f| &f.headers).filter_map(|h| if let HeaderKind::Folder(f) = &h.kind { Some(f.as_str()) } else { None }).collect();
     let requests: Vec<&str> = file.iter().flat_map(|f| &f.items).filter_map(|item| if let Item::Route(r) = item { Some(r.request.text.as_str()) } else { None }).collect();
     let said = |text: String| Some(Hover { span: token.span, text });
 
@@ -141,6 +143,9 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
         }
         if collections.contains(&head) {
             return said(format!("`{head}.{word}`: on the collection `{head}`. {}", line_of(KEYWORDS, "collection").unwrap_or("")));
+        }
+        if folders.contains(&head) {
+            return said(format!("`{head}.{word}`: on the folder `{head}`. {}", line_of(KEYWORDS, "folder").unwrap_or("")));
         }
         if requests.contains(&head) {
             return said(format!("`{head}.{word}`: part of {REQUEST}"));
@@ -158,6 +163,9 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     }
     if collections.contains(&word) {
         return said(format!("`{word}`: a collection of this flow. {}", line_of(KEYWORDS, "collection").unwrap_or("")));
+    }
+    if folders.contains(&word) {
+        return said(format!("`{word}`: a folder of this flow. {}", line_of(KEYWORDS, "folder").unwrap_or("")));
     }
     if requests.contains(&word) {
         return said(format!("`{word}`: {REQUEST}"));
@@ -211,7 +219,7 @@ pub struct Completion {
 /// `notes[k]`, `now`, `secret.k`, `await`) or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
     "http_request", "clock", "random", "ingress", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
-    "collection_delete", "egress", "const", "record", "json_parse", "json_stringify",
+    "collection_delete", "file_read", "file_list", "file_write", "file_delete", "egress", "const", "record", "json_parse", "json_stringify",
 ];
 
 /// The leaves a text calls by name, as it names them: their name, signature and what they do.
@@ -279,6 +287,7 @@ pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
         found
     };
     let collections = header("collection");
+    let folders = header("folder");
     let holons = header("holon");
     // A noun's keys as used: `secret.k`, `state.k`.
     let keys = |noun: &str| -> Vec<String> {
@@ -319,6 +328,15 @@ pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
             .iter()
             .map(|(m, d)| word(m, Kind::Member, format!("{c}.{d}"), None))
             .collect(),
+            f if folders.iter().any(|k| k == f) => [
+                ("get", "get(name): the file's text, or no value"),
+                ("put", "put(name, text): written when the run finishes"),
+                ("delete", "delete(name): deleted when the run finishes"),
+                ("list", "list(prefix: p, after: a, limit: 50): a page of files, each {size, hash, modified}"),
+            ]
+            .iter()
+            .map(|(m, d)| word(m, Kind::Member, format!("{f}.{d}"), None))
+            .collect(),
             r if requests.iter().any(|q| q == r) => [
                 ("params", "the path's :names"),
                 ("query", "the query string's names"),
@@ -341,6 +359,7 @@ pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
         v.extend(bindings.map(|(_, t)| word(&t.text, Kind::Variable, "a binding of this flow", None)));
         v.extend(requests.iter().map(|r| word(r, Kind::Variable, "a route's request", Some(REQUEST.to_string()))));
         v.extend(collections.iter().map(|c| word(c, Kind::Module, "a collection of this flow", line_of(KEYWORDS, "collection").map(str::to_string))));
+        v.extend(folders.iter().map(|f| word(f, Kind::Module, "a folder of this flow", line_of(KEYWORDS, "folder").map(str::to_string))));
         v.extend(NOUNS.iter().map(|(n, d)| word(n, Kind::Module, "the outside world: one permission", Some(d.to_string()))));
         v.extend(callable().into_iter().map(|(n, sig, doc)| word(&n, Kind::Function, sig, (!doc.is_empty()).then_some(doc))));
         v.extend(KEYWORDS.iter().map(|(k, d)| word(k, Kind::Keyword, "keyword", Some(d.to_string()))));
@@ -446,7 +465,7 @@ impl Colourer {
                 self.mark(start, end, Class::Keyword);
                 i = self.next_word(i, Class::Definition, &['-']);
             }
-            "collection" => {
+            "collection" | "folder" => {
                 self.mark(start, end, Class::Keyword);
                 i = self.next_word(i, Class::Definition, &[]);
             }
