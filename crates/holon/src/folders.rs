@@ -148,10 +148,9 @@ pub(crate) struct Folder {
     pub(crate) cap: Option<u64>,
 }
 
-/// The largest file a run reads as text.
+/// The largest file a run reads as text, without asking for more (`inline_file_bytes`).
+#[cfg(test)]
 pub(crate) const MAX_FILE_BYTES: u64 = 1024 * 1024;
-/// The most a run reads from files, in all.
-pub(crate) const MAX_RUN_READ_BYTES: u64 = 64 * 1024 * 1024;
 /// A read's text up to this size is in its log entry; a bigger one is in the content store, by hash.
 pub(crate) const LOG_INLINE_BYTES: u64 = 4 * 1024;
 /// The most files a listing looks at.
@@ -334,6 +333,8 @@ pub(crate) struct Scoped {
     /// The files its own runs wrote or copied into those, by folder and name, as they landed (size,
     /// modified): one doesn't start a run, unless it changes again.
     landed: Mutex<BTreeMap<(String, String), Signature>>,
+    /// The files its own runs deleted from those, by folder and name: one doesn't start a run.
+    removed: Mutex<BTreeSet<(String, String)>>,
 }
 
 /// A file as a watcher sees it without reading it: its size and when it was modified (ms).
@@ -341,7 +342,13 @@ pub(crate) type Signature = (u64, u64);
 
 impl Scoped {
     pub(crate) fn new(all: Arc<Folders>, deployment: &str) -> Scoped {
-        Scoped { all, deployment: deployment.to_string(), watched: Mutex::new(BTreeSet::new()), landed: Mutex::new(BTreeMap::new()) }
+        Scoped {
+            all,
+            deployment: deployment.to_string(),
+            watched: Mutex::new(BTreeSet::new()),
+            landed: Mutex::new(BTreeMap::new()),
+            removed: Mutex::new(BTreeSet::new()),
+        }
     }
 
     /// Every file of folder `name` a flow may name, by its signature: the folder isn't read.
@@ -365,7 +372,17 @@ impl Scoped {
         if *watched != *folders {
             watched.clone_from(folders);
             self.landed.lock().unwrap().retain(|(name, _), _| folders.contains(name));
+            self.removed.lock().unwrap().retain(|(name, _)| folders.contains(name));
         }
+    }
+
+    /// The files of folder `name` its own runs deleted that are gone from `now` (forgotten); one
+    /// not gone yet is kept for a later look.
+    pub(crate) fn took_own_deletes(&self, name: &str, now: &BTreeMap<String, Signature>) -> BTreeSet<String> {
+        let mut removed = self.removed.lock().unwrap();
+        let gone: BTreeSet<String> = removed.iter().filter(|(f, n)| f == name && !now.contains_key(n)).map(|(_, n)| n.clone()).collect();
+        removed.retain(|(f, n)| f != name || !gone.contains(n));
+        gone
     }
 
     /// Whether file `file` of folder `name`, now `signature`, is as one of this deployment's runs
@@ -486,10 +503,19 @@ impl Scoped {
 
     /// Write `text` as file `file` of folder `name`, whole: beside it first, then renamed over it.
     pub(crate) fn write(&self, name: &str, file: &str, text: &str) -> Result<(), String> {
+        self.write_as(name, file, text, false)
+    }
+
+    /// As [`write`](Self::write), but only where no file has the name: never a replace.
+    pub(crate) fn create(&self, name: &str, file: &str, text: &str) -> Result<(), String> {
+        self.write_as(name, file, text, true)
+    }
+
+    fn write_as(&self, name: &str, file: &str, text: &str, create: bool) -> Result<(), String> {
         let folder = self.writable(name)?;
         let path = for_writing(&folder.path, file)?;
         fits(name, &folder, &path, text.len() as u64).map_err(|e| format!("{name}/{file} not written: {e}"))?;
-        land(&path, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(|e| format!("{name}/{file} not written: {e}"))?;
+        land(&path, create, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(|e| format!("{name}/{file} not written: {e}"))?;
         self.note_landed(name, file, &path);
         Ok(())
     }
@@ -497,13 +523,22 @@ impl Scoped {
     /// Copy file `from_file` of folder `from` as file `file` of folder `name`, streamed beside it
     /// and renamed over it: refused if its bytes no longer hash to `hash` (the handle the run read).
     pub(crate) fn copy(&self, name: &str, file: &str, from: &str, from_file: &str, hash: &str) -> Result<(), String> {
+        self.copy_as(name, file, from, from_file, hash, false)
+    }
+
+    /// As [`copy`](Self::copy), but only where no file has the name: never a replace.
+    pub(crate) fn create_copy(&self, name: &str, file: &str, from: &str, from_file: &str, hash: &str) -> Result<(), String> {
+        self.copy_as(name, file, from, from_file, hash, true)
+    }
+
+    fn copy_as(&self, name: &str, file: &str, from: &str, from_file: &str, hash: &str, create: bool) -> Result<(), String> {
         let folder = self.writable(name)?;
         let Some((mut src, meta)) = self.open_file(from, from_file)? else {
             return Err(format!("{from}/{from_file} isn't there any more: not copied to {name}/{file}"));
         };
         let path = for_writing(&folder.path, file)?;
         fits(name, &folder, &path, meta.len()).map_err(|e| format!("{name}/{file} not copied: {e}"))?;
-        land(&path, |f| {
+        land(&path, create, |f| {
             let mut hasher = blake3::Hasher::new();
             let mut block = vec![0u8; 64 * 1024];
             loop {
@@ -528,7 +563,13 @@ impl Scoped {
     pub(crate) fn delete(&self, name: &str, file: &str) -> Result<(), String> {
         let folder = self.writable(name)?;
         match existing(&folder.path, file)? {
-            Some(path) if path.is_file() => std::fs::remove_file(&path).map_err(|e| format!("{name}/{file} not deleted: {e}")),
+            Some(path) if path.is_file() => {
+                // Noted first, so a watcher that finds it gone knows it was its own.
+                if self.watched.lock().unwrap().contains(name) {
+                    self.removed.lock().unwrap().insert((name.to_string(), file.to_string()));
+                }
+                std::fs::remove_file(&path).map_err(|e| format!("{name}/{file} not deleted: {e}"))
+            }
             _ => Ok(()),
         }
     }
@@ -602,22 +643,37 @@ fn hash_of(path: &Path) -> std::io::Result<String> {
 }
 
 /// Put a file at `path` whole: `fill` writes it beside it, then it is synced and renamed over
-/// `path`. A failed fill leaves nothing behind.
-fn land(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Result<(), String>) -> Result<(), String> {
+/// `path`; with `create`, linked to `path` instead, which fails if a file has that name by then
+/// (whoever put it there), so nothing is replaced. A failed fill leaves nothing behind.
+fn land(path: &Path, create: bool, fill: impl FnOnce(&mut std::fs::File) -> Result<(), String>) -> Result<(), String> {
     let dir = path.parent().ok_or("no folder")?;
     let tmp = dir.join(format!("{TMP_PREFIX}{}-{}", std::process::id(), rand::random::<u64>()));
     let landed = (|| {
+        if create && std::fs::symlink_metadata(path).is_ok() {
+            return Err(EXISTS.to_string());
+        }
         let mut f = std::fs::File::create_new(&tmp).map_err(|e| e.to_string())?;
         fill(&mut f)?;
         f.sync_all().map_err(|e| e.to_string())?;
         drop(f);
-        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+        if !create {
+            return std::fs::rename(&tmp, path).map_err(|e| e.to_string());
+        }
+        let linked = std::fs::hard_link(&tmp, path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => EXISTS.to_string(),
+            _ => format!("{e} (a create-only write links the file into place)"),
+        });
+        let _ = std::fs::remove_file(&tmp);
+        linked
     })();
     if landed.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     landed
 }
+
+/// Why a create-only write didn't land.
+const EXISTS: &str = "a file has that name already (create-only: it isn't replaced)";
 
 /// Whether folder `name` has room for `size` bytes as the file at `path` (replacing what is there),
 /// if it is capped: refused past its cap, saying how full it is.
@@ -1048,12 +1104,16 @@ pub(crate) fn range_answer(lines: bool, text: &str) -> Value {
 pub(crate) struct Readable {
     pub(crate) folders: Arc<Scoped>,
     pub(crate) granted: BTreeSet<String>,
+    /// What the run may read (its deployment's file limits).
+    pub(crate) limits: crate::permissions::FileLimits,
     pub(crate) read_bytes: u64,
+    /// The files it has read, or taken a handle to, so far.
+    pub(crate) files: u64,
 }
 
 impl std::fmt::Debug for Readable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Readable").field("granted", &self.granted).field("read_bytes", &self.read_bytes).finish()
+        f.debug_struct("Readable").field("granted", &self.granted).field("read_bytes", &self.read_bytes).field("files", &self.files).finish()
     }
 }
 
@@ -1135,6 +1195,27 @@ fn text<'v>(r: &'v BTreeMap<String, Value>, k: &str) -> Option<&'v str> {
 }
 
 impl Readable {
+    /// What its deployment lets a run read.
+    pub(crate) fn new(folders: Arc<Scoped>, permit: &Permit) -> Readable {
+        Readable { folders, granted: permit.folders_read(), limits: permit.files.clone(), read_bytes: 0, files: 0 }
+    }
+
+    /// One more file read: refused past `max_files_per_run`.
+    fn one_more_file(&mut self) -> Result<(), String> {
+        self.files += 1;
+        if self.files > self.limits.max_files_per_run {
+            return Err(format!("a run reads at most {} files (max_files_per_run)", self.limits.max_files_per_run));
+        }
+        Ok(())
+    }
+
+    /// The most the next read may take, and the limit that says so: a file's text is at most
+    /// `inline_file_bytes`, and a run's reads `max_file_read_bytes` in all.
+    fn read_limit(&self) -> (u64, &'static str) {
+        let left = self.limits.max_file_read_bytes.saturating_sub(self.read_bytes);
+        if left < self.limits.inline_file_bytes { (left, "max_file_read_bytes") } else { (self.limits.inline_file_bytes, "inline_file_bytes") }
+    }
+
     /// The answer to `request` (`{folder, read}`, `{folder, list}`, `{folder, handle}`, `{folder,
     /// lines}` or `{folder, slice}`), and for a read of text, what it saw: an error fails the run (a
     /// folder not granted or not bound, a name that leaves it, a file too big or not text). With
@@ -1147,6 +1228,7 @@ impl Readable {
             return Err(format!("the folder {name:?} isn't granted to this deployment"));
         }
         if let Some(file) = text(r, "handle") {
+            self.one_more_file()?;
             return Ok((self.folders.handle(name, file)?, None));
         }
         let ranged = match (r.get("lines"), r.get("slice")) {
@@ -1163,8 +1245,9 @@ impl Readable {
                 return Ok((None, None));
             };
             let span = if lines { Span::Lines { from: a, limit: b.max(0) as u64 } } else { Span::Slice { offset: a, length: b.max(0) as u64 } };
-            let left = MAX_RUN_READ_BYTES.saturating_sub(self.read_bytes);
-            let Some(read) = self.folders.range(name, file, span, MAX_FILE_BYTES.min(left), keep)? else { return Ok((None, None)) };
+            self.one_more_file()?;
+            let (max, limit) = self.read_limit();
+            let Some(read) = self.folders.range(name, file, span, max, keep).map_err(|e| past(e, limit))? else { return Ok((None, None)) };
             self.read_bytes += read.bytes.len() as u64;
             let (start, end) = (read.start, read.end);
             let text = String::from_utf8(read.bytes).map_err(|_| format!("{name}/{file} bytes {start}..{end} aren't text (UTF-8): read a handle of it"))?;
@@ -1191,8 +1274,9 @@ impl Readable {
             return Ok((Some(answer), Some(Seen { hash: read.hash, size: read.size, inline, blob, range: Some(range) })));
         }
         if let Some(file) = text(r, "read") {
-            let left = MAX_RUN_READ_BYTES.saturating_sub(self.read_bytes);
-            let Some(bytes) = self.folders.read(name, file, MAX_FILE_BYTES.min(left))? else { return Ok((None, None)) };
+            self.one_more_file()?;
+            let (max, limit) = self.read_limit();
+            let Some(bytes) = self.folders.read(name, file, max).map_err(|e| past(e, limit))? else { return Ok((None, None)) };
             self.read_bytes += bytes.len() as u64;
             let hash = blake3::hash(&bytes).to_hex().to_string();
             let size = bytes.len() as u64;
@@ -1215,6 +1299,39 @@ impl Readable {
         let files = self.folders.list(name, text(list, "prefix").unwrap_or(""), text(list, "after"), limit)?;
         Ok((Some(Value::Record(files)), None))
     }
+}
+
+/// A read refused for its size, saying which limit refused it.
+fn past(e: String, limit: &str) -> String {
+    if e.contains("more than the") { format!("{e} ({limit})") } else { e }
+}
+
+/// Why a run's file writes are past its limits, if they are: what it writes and copies (a copy
+/// is its handle's size), and how many files it touches, the `read` it read included.
+pub(crate) fn past_write_limits(performed: &[(Capability, Value)], read: u64, limits: &crate::permissions::FileLimits) -> Option<String> {
+    let (mut bytes, mut files) = (0u64, read);
+    for (cap, payload) in performed {
+        if !matches!(cap, Capability::FileWrite(_)) {
+            continue;
+        }
+        files += 1;
+        let Value::Record(r) = payload else { continue };
+        bytes = bytes.saturating_add(match (r.get("text"), r.get("from")) {
+            (Some(Value::Text(t)), _) => t.len() as u64,
+            (_, Some(Value::Record(h))) => match h.get("size") {
+                Some(Value::Number(n)) if *n >= 0.0 => *n as u64,
+                _ => 0,
+            },
+            _ => 0,
+        });
+    }
+    if bytes > limits.max_file_write_bytes {
+        return Some(format!("it writes {bytes} bytes to files, more than the {} a run may (max_file_write_bytes)", limits.max_file_write_bytes));
+    }
+    if files > limits.max_files_per_run {
+        return Some(format!("it touches {files} files, more than the {} a run may (max_files_per_run)", limits.max_files_per_run));
+    }
+    None
 }
 
 /// The text a log entry's `blob` names: from the blob store, or, for a log from before it, the
@@ -1285,17 +1402,30 @@ pub(crate) fn apply(folders: &Scoped, name: &str, payload: &Value) -> Result<(),
             let (Some(folder), Some(source), Some(hash)) = (text(from, "folder"), text(from, "name"), text(from, "hash")) else {
                 return Err("a copy's handle names a folder, a file and its hash".into());
             };
-            folders.copy(name, file, folder, source, hash)
+            if creates(payload) {
+                folders.create_copy(name, file, folder, source, hash)
+            } else {
+                folders.copy(name, file, folder, source, hash)
+            }
         }
         Value::Record(file) => {
             let (Some(Value::Text(file)), Some(Value::Text(text))) = (file.get("name"), file.get("text")) else {
                 return Err("a write needs a name and a text".into());
             };
-            folders.write(name, file, text)
+            if creates(payload) {
+                folders.create(name, file, text)
+            } else {
+                folders.write(name, file, text)
+            }
         }
         Value::Text(file) => folders.delete(name, file),
         _ => Err("not a write or a delete".into()),
     }
+}
+
+/// Whether a write's or a copy's payload is create-only (`file_create`, `file_create_copy`).
+fn creates(payload: &Value) -> bool {
+    matches!(payload, Value::Record(r) if r.get("create") == Some(&Value::Boolean(true)))
 }
 
 /// What the log keeps of a performed effect: a file write as `{name, size, hash}`, never its text;
@@ -1307,16 +1437,21 @@ pub(crate) fn loggable(cap: &Capability, payload: &Value) -> Value {
     }
 }
 
-/// A file write's `{name, text}` as `{name, size, hash}`; anything else as it is.
+/// A file write's `{name, text}` as `{name, size, hash}` (and `create`, for a create-only one);
+/// anything else as it is.
 fn by_hash(payload: &Value) -> Value {
     if let Value::Record(file) = payload
         && let (Some(name), Some(Value::Text(text))) = (file.get("name"), file.get("text"))
     {
-        return Value::Record(BTreeMap::from([
+        let mut kept = BTreeMap::from([
             ("name".to_string(), name.clone()),
             ("size".to_string(), Value::Number(text.len() as f64)),
             ("hash".to_string(), Value::Text(blake3::hash(text.as_bytes()).to_hex().to_string())),
-        ]));
+        ]);
+        if creates(payload) {
+            kept.insert("create".to_string(), Value::Boolean(true));
+        }
+        return Value::Record(kept);
     }
     payload.clone()
 }
@@ -1325,7 +1460,9 @@ fn by_hash(payload: &Value) -> Value {
 /// hash, as [`loggable`] keeps the write performed.
 pub(crate) fn loggable_output(v: &Value) -> Value {
     match v {
-        Value::Effect { sink, payload } if sink.starts_with("file_write:") => Value::Effect { sink: sink.clone(), payload: Box::new(by_hash(payload)) },
+        Value::Effect { sink, payload } if sink.starts_with("file_write:") || sink.starts_with("file_create:") => {
+            Value::Effect { sink: sink.clone(), payload: Box::new(by_hash(payload)) }
+        }
         Value::Record(r) => Value::Record(r.iter().map(|(k, v)| (k.clone(), loggable_output(v))).collect()),
         Value::List(l) => Value::List(l.iter().map(loggable_output).collect()),
         Value::Sum { arm, payload } => Value::Sum { arm: *arm, payload: Box::new(loggable_output(payload)) },
@@ -1524,6 +1661,29 @@ mod tests {
         folders.write("archive", "notes/n.txt", "").unwrap();
         assert!(folders.write("archive", "notes/m.txt", "z").unwrap_err().contains("capped"), "files in folders under it count too");
         for d in [logs, archive] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_create_only_write_or_copy_never_replaces_a_file() {
+        let (logs, out) = (temp("create-logs"), temp("create-out"));
+        std::fs::write(logs.join("app.log"), "abc").unwrap();
+        let folders = Scoped::memory();
+        folders.all.bind("logs", logs.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, None).unwrap();
+        folders.all.bind("out", out.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, None, None).unwrap();
+        folders.create("out", "2026/a.json", "first").unwrap();
+        let again = folders.create("out", "2026/a.json", "second").unwrap_err();
+        assert!(again.contains("out/2026/a.json not written") && again.contains("create-only"), "{again}");
+        assert_eq!(std::fs::read_to_string(out.join("2026/a.json")).unwrap(), "first", "the first stays");
+        let hash = blake3::hash(b"abc").to_hex().to_string();
+        folders.create_copy("out", "app.log", "logs", "app.log", &hash).unwrap();
+        assert!(folders.create_copy("out", "app.log", "logs", "app.log", &hash).unwrap_err().contains("create-only"));
+        folders.write("out", "app.log", "replaced").unwrap();
+        assert_eq!(std::fs::read_to_string(out.join("app.log")).unwrap(), "replaced", "a plain write still replaces");
+        let left: Vec<_> = std::fs::read_dir(&out).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(left.iter().all(|n| !n.starts_with(TMP_PREFIX)), "nothing left beside them: {left:?}");
+        for d in [logs, out] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

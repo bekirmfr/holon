@@ -218,7 +218,7 @@ fn still_as_read(
         return false;
     }
     let now = collections::Readable { store: store.clone(), roots: collections::roots(live), granted: permit.collections_read() };
-    let mut files = folders.map(|f| folders::Readable { folders: Arc::clone(f), granted: permit.folders_read(), read_bytes: 0 });
+    let mut files = folders.map(|f| folders::Readable::new(Arc::clone(f), permit));
     reads.iter().all(|r| {
         if !matches!(&r.request, Value::Record(q) if q.contains_key("folder")) {
             return now.answer(&r.request) == r.answer;
@@ -292,7 +292,7 @@ fn run_attempt(
     });
     // Its folders, for the reads it was granted: read as it finds them.
     waits.failed = None;
-    waits.files = waits.folders.as_ref().map(|f| folders::Readable { folders: Arc::clone(f), granted: permit.folders_read(), read_bytes: 0 });
+    waits.files = waits.folders.as_ref().map(|f| folders::Readable::new(Arc::clone(f), permit));
 
     // Only the state keys the deployment was granted are read.
     let mut sourced: Vec<(Capability, Value)> = match start.as_ref() {
@@ -362,6 +362,12 @@ fn run_attempt(
         }
         true
     });
+    // Writes past the run's file limits: it fails before anything it did commits.
+    let files_read = waits.files.as_ref().map_or(0, |f| f.files);
+    let past_limit = failed_read.is_none().then(|| folders::past_write_limits(&host.performed, files_read, &permit.files)).flatten();
+    if past_limit.is_some() {
+        host.performed.clear();
+    }
 
     let run = FiredRun {
         outputs: outcome.outputs,
@@ -369,7 +375,10 @@ fn run_attempt(
         state_before,
         timeline: timer.timeline,
         rounds: outcome.rounds,
-        error: failed_read.map(|e| format!("{}{e}", folders::READ_FAILED)).or(outcome.error.map(|e| e.message())),
+        error: failed_read
+            .map(|e| format!("{}{e}", folders::READ_FAILED))
+            .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
+            .or(outcome.error.map(|e| e.message())),
         run_id: to_hex(&run_id),
         unit: to_hex(&permit.deployment),
         nonce: hex_bytes(nonce),

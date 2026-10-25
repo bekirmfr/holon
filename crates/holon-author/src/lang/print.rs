@@ -220,10 +220,16 @@ pub struct Printer<'s> {
     collections: BTreeSet<String>,
     /// Every folder any leaf names (`folder inbox`).
     folders: BTreeSet<String>,
-    /// The folder whose new files start a run (`on file inbox`), when one does.
-    on_file: Option<String>,
+    /// The `on file` lines, in order, when the flow runs on files: folder, `deleted`, `matching`.
+    on_files: Vec<OnFile>,
+    /// With several lines, each `coalesce` of their `file_arrival`s that is `ingress`, and the
+    /// nodes it is made of.
+    ingress_chains: HashMap<String, Vec<String>>,
     holon_defs: HashSet<String>,
 }
+
+/// An `on file` line: its folder, whether it is for files removed, and its glob (empty: every name).
+type OnFile = (String, bool, String);
 
 /// A line of the text, and the top-level nodes it stands for (a statement's nodes, a route
 /// header's request, a `node` line's node).
@@ -250,17 +256,13 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         blocks: vec![],
         collections: BTreeSet::new(),
         folders: BTreeSet::new(),
-        on_file: None,
+        on_files: Vec::new(),
+        ingress_chains: HashMap::new(),
         holon_defs: HashSet::new(),
     };
     p.collect_collections(&doc.nodes)?;
-    // One folder's new files start the runs: `on file`, and its handle is `ingress`.
-    let arrivals: BTreeSet<&str> = doc.nodes.iter().filter(|n| n.data.name == "file_arrival").map(|n| n.param("folder")).collect();
-    if let [folder] = arrivals.into_iter().collect::<Vec<_>>()[..]
-        && plain(folder)
-    {
-        p.on_file = Some(folder.to_string());
-    }
+    // Files start the runs: `on file` lines, and the file's handle is `ingress`.
+    (p.on_files, p.ingress_chains) = on_file_lines(doc);
     let mut out: Vec<Line> = Vec::new();
     let header = |s: String| (s, vec![]);
     if let Some(name) = name.filter(|n| !n.is_empty()) {
@@ -281,13 +283,20 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
             out.push(header(format!("optional {}", consent(o))));
         }
     }
-    if let Some(f) = &p.on_file {
-        out.push(header(format!("on file {f}")));
+    for (folder, deleted, matching) in &p.on_files {
+        let mut line = format!("on file {folder}");
+        if *deleted {
+            line.push_str(" deleted");
+        }
+        if !matching.is_empty() {
+            line.push_str(&format!(" matching {}", quote(matching)));
+        }
+        out.push(header(line));
     }
     for c in &p.collections {
         out.push(header(format!("collection {c}")));
     }
-    for f in p.folders.iter().filter(|f| p.on_file.as_ref() != Some(*f)) {
+    for f in p.folders.iter().filter(|f| !p.on_files.iter().any(|(on, _, _)| on == *f)) {
         out.push(header(format!("folder {f}")));
     }
     let body = p.flow_body(doc)?;
@@ -1091,11 +1100,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         name
     }
 
-    /// Whether `node`'s `from` is a file's handle, straight from `file_handle` (or the new file that
+    /// Whether `node`'s `from` is a file's handle, straight from `file_handle` (or the file that
     /// started the run).
     fn copies_a_handle(&self, node: &Node) -> bool {
         match self.g.incoming.get(&(node.id.clone(), "from".to_string())) {
-            Some(Src::Node { id, .. }) => ["file_handle", "file_arrival"].contains(&self.g.node(id).data.name.as_str()),
+            Some(Src::Node { id, .. }) => ["file_handle", "file_arrival"].contains(&self.g.node(id).data.name.as_str()) || self.p.ingress_chains.contains_key(id),
             _ => false,
         }
     }
@@ -1202,9 +1211,14 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             },
             "clock" => atom("now".into()),
             "random" => atom("random".into()),
-            "file_arrival" if self.p.on_file.as_deref() == Some(node.param("folder")) => atom("ingress".into()),
+            "file_arrival" if self.p.on_files.len() == 1 && self.p.on_files[0] == on_file_of(node) => atom("ingress".into()),
+            "coalesce" if self.p.ingress_chains.contains_key(&node.id) => {
+                let made_of = self.p.ingress_chains[&node.id].clone();
+                self.touched.extend(made_of);
+                atom("ingress".into())
+            }
             // With `on file`, `ingress` is the file: a request's is spelled as itself.
-            "ingress" if self.p.on_file.is_some() => self.generic(node),
+            "ingress" if !self.p.on_files.is_empty() => self.generic(node),
             "ingress" => atom("ingress".into()),
             "secret" if plain(node.param("name")) => atom(format!("secret.{}", node.param("name"))),
             "store_read" if plain(node.param("key")) => atom(format!("state.{}", node.param("key"))),
@@ -1270,6 +1284,12 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let name = self.required(node, "name")?;
                 let from = self.required(node, "from")?;
                 atom(format!("{}.copy({name}, {from})", node.param("folder")))
+            }
+            "file_create" | "file_create_copy" if plain(node.param("folder")) => {
+                let name = self.required(node, "name")?;
+                let what = self.required(node, if d.name == "file_create" { "text" } else { "from" })?;
+                let method = if d.name == "file_create" { "create" } else { "create_copy" };
+                atom(format!("{}.{method}({name}, {what})", node.param("folder")))
             }
             "collection_list" | "file_list" if plain(node.param(if d.name == "file_list" { "folder" } else { "collection" })) => {
                 let mut args = Vec::new();
@@ -1589,6 +1609,81 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 }
 
+/// The `on file` line a `file_arrival` stands for.
+fn on_file_of(node: &Node) -> OnFile {
+    (node.param("folder").to_string(), node.param("on") == "deleted", node.param("matching").to_string())
+}
+
+/// The `on file` lines of a flow whose `file_arrival`s the text can write as `ingress`, in order,
+/// and with several, the `coalesce` chains that are `ingress`. One line: every `file_arrival` is
+/// it. Several: each `file_arrival` is in a chain over all of them, every chain in the same order
+/// (the lines', as lowering builds them). Otherwise none, and they print as leaves.
+fn on_file_lines(doc: &FlowDocument) -> (Vec<OnFile>, HashMap<String, Vec<String>>) {
+    let none = (Vec::new(), HashMap::new());
+    let arrivals: Vec<&Node> = doc.nodes.iter().filter(|n| n.data.name == "file_arrival").collect();
+    let writable = |n: &Node| {
+        let (on, matching) = (n.param("on"), n.param("matching"));
+        plain(n.param("folder")) && ["", "new", "deleted"].contains(&on) && (matching.is_empty() || holon_core::is_glob(matching))
+    };
+    if arrivals.is_empty() || !arrivals.iter().all(|n| writable(n)) {
+        return none;
+    }
+    let lines: BTreeSet<OnFile> = arrivals.iter().map(|n| on_file_of(n)).collect();
+    if lines.len() == 1 {
+        return (lines.into_iter().collect(), HashMap::new());
+    }
+    let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut incoming: HashMap<(&str, &str), &str> = HashMap::new();
+    let mut uses: HashMap<&str, usize> = HashMap::new();
+    for w in &doc.edges {
+        if let Some(port) = w.target_handle.as_deref() {
+            incoming.insert((w.target.as_str(), port), w.source.as_str());
+        }
+        *uses.entry(w.source.as_str()).or_default() += 1;
+    }
+    // A left-nested `coalesce(coalesce(a, b), c)` of `file_arrival`s, each used only by it: its
+    // `file_arrival`s in order, and every node it is made of.
+    fn chain<'d>(id: &str, by_id: &HashMap<&str, &'d Node>, incoming: &HashMap<(&str, &str), &str>, uses: &HashMap<&str, usize>) -> Option<(Vec<&'d Node>, Vec<String>)> {
+        let n = *by_id.get(id)?;
+        match n.data.name.as_str() {
+            "file_arrival" => Some((vec![n], vec![n.id.clone()])),
+            "coalesce" => {
+                let (a, b) = (*incoming.get(&(id, "a"))?, *by_id.get(incoming.get(&(id, "b"))?)?);
+                if b.data.name != "file_arrival" || uses.get(a) != Some(&1) || uses.get(b.id.as_str()) != Some(&1) {
+                    return None;
+                }
+                let (mut leaves, mut made_of) = chain(a, by_id, incoming, uses)?;
+                leaves.push(b);
+                made_of.push(b.id.clone());
+                made_of.push(n.id.clone());
+                Some((leaves, made_of))
+            }
+            _ => None,
+        }
+    }
+    let mut order: Option<Vec<OnFile>> = None;
+    let mut chains = HashMap::new();
+    let mut covered = HashSet::new();
+    for n in doc.nodes.iter().filter(|n| n.data.name == "coalesce") {
+        let Some((leaves, mut made_of)) = chain(&n.id, &by_id, &incoming, &uses) else { continue };
+        let seq: Vec<OnFile> = leaves.iter().map(|l| on_file_of(l)).collect();
+        // A chain inside a longer one stands for fewer lines: only one over all of them is `ingress`.
+        if seq.len() != lines.len() || seq.iter().collect::<BTreeSet<_>>().len() != seq.len() {
+            continue;
+        }
+        if *order.get_or_insert_with(|| seq.clone()) != seq {
+            return none;
+        }
+        covered.extend(leaves.iter().map(|l| l.id.clone()));
+        made_of.retain(|m| *m != n.id);
+        chains.insert(n.id.clone(), made_of);
+    }
+    match order {
+        Some(order) if arrivals.iter().all(|a| covered.contains(&a.id)) => (order, chains),
+        _ => none,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1723,6 +1818,16 @@ mod tests {
         assert!(text.contains("on file inbox\nfolder sent\n"), "the trigger declares its folder: {text}");
         assert!(!text.contains("folder inbox"), "{text}");
         assert!(text.contains("file: "), "{text}");
+    }
+
+    #[test]
+    fn several_on_file_lines_deletions_and_globs_print_and_round_trip() {
+        let src = "flow sort\non file drop matching \"**/*.csv\"\non file drop deleted\non file inbox\nfolder done\n\nh = ingress\ndone[\"{h.event}-{h.name}\"] = h\ndone.create(\"{ingress.folder}.log\", ingress.name)\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("sort", &l.doc, &l.names);
+        assert!(text.contains("on file drop matching \"**/*.csv\"\non file drop deleted\non file inbox\nfolder done\n"), "{text}");
+        assert!(!text.contains("file_arrival") && !text.contains("coalesce"), "each chain is ingress: {text}");
+        assert!(text.contains(".create("), "{text}");
     }
 
     /// A value used once is written inline, inside an interpolated part too; when it holds a

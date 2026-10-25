@@ -435,6 +435,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "first bind the folders (an admin): holon folder add drop ~/holon-drop --read-only and holon folder add receipts ~/holon-receipts; deploy, then copy any file into ~/holon-drop: within two seconds ~/holon-receipts holds <file>.json with its size, its hash and how many bytes httpbin.org received, and the deployment's log shows the run",
         text: include_str!("../samples/drop-box.holon"),
     },
+    Sample {
+        name: "file-audit",
+        title: "File audit (runs on several folders, removals and some names)",
+        description: "Keeps an audit trail of two folders on the host, one entry per change: a CSV new or changed in the inbox (on file inbox matching \"*.csv\"), any file removed from it (on file inbox deleted), and any file new or changed in the outbox. The run's ingress is the file's handle with its event (new, changed or deleted; a removed file as last seen, without a hash), whichever line started it. Each entry is created, never replaced (audit.create): a write that would replace one fails the run.",
+        shows: &["on file", "several on file lines", "on file deleted", "matching", "create-only writes"],
+        port: None,
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folders (an admin): holon folder add inbox ~/holon-inbox --read-only, holon folder add outbox ~/holon-outbox --read-only and holon folder add audit ~/holon-audit; deploy, then copy a .csv into ~/holon-inbox, delete a file from it, or drop any file into ~/holon-outbox: within two seconds ~/holon-audit/<folder>/ holds an entry for each change; a .txt dropped into the inbox starts nothing",
+        text: include_str!("../samples/file-audit.holon"),
+    },
 ];
 
 #[cfg(test)]

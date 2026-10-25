@@ -213,6 +213,10 @@ Host defaults follow what the systems a flow talks to already expect:
 | Response header size | 64 KiB | 256 KiB | Above common server limits (8–16 KiB per line), well below abuse. |
 | Longest wait at one `await` (`max_await_seconds`) ✅ | 30 days | 90 days | A month covers the usual waits (Stripe retries a webhook for 3 days; approvals and invoices run to weeks); 90 days is core's longest `expires`. |
 | Runs waiting at once, per deployment (`max_waiting_runs`) ✅ | 10,000 | 100,000 | Bounds what one deployment keeps on disk and lists; the old fixed cap is the default. |
+| A file read whole, or a range of one (`inline_file_bytes`) ✅ | 1 MiB | 16 MiB | Its text enters the run and the log; a bigger file is read by handle, lines or slice. |
+| File reads per run (`max_file_read_bytes`) ✅ | 64 MiB | 1 GiB | Bounds what one run holds in memory; a read past it fails the run. |
+| File writes and copies per run (`max_file_write_bytes`) ✅ | 1 GiB | 1 TiB | A copy by handle is how a big file moves; a run past it fails before any write lands. |
+| Files a run reads, writes, copies or deletes (`max_files_per_run`) ✅ | 1,000 | 100,000 | One run is one unit of work; a batch over more files is several runs. |
 | Wait for a key another run holds (`claim_wait_ms`) ✅ | 10 s | 60 s | A claim (`docs/L4s/key-claims-L4.md`) lasts one run, so the default need only exceed a run's budget to make "busy" mean contention, not slowness. |
 
 A request that breaks a limit doesn't fail the run: its node gets a response record
@@ -313,7 +317,8 @@ only the editor.
   checked before it reaches the OS (no `..`, root, drive, `:` or reserved name) and its real
   path must stay in the folder once links are resolved; listings never follow links. Reads are
   answered as the run finds the folder, recorded with their path like a collection's, and checked
-  again before the run commits; text only, 1 MiB a file and 64 MiB a run. Writes are effects,
+  again before the run commits; text only, 1 MiB a file and 64 MiB a run by default (the
+  deployment's `inline_file_bytes` and `max_file_read_bytes`, §4.2). Writes are effects,
   applied at commit: written beside the file, synced and renamed over it. The log keeps a read's
   text up to 4 KiB, a bigger one in the content store by hash (exported as the export's `blobs`,
   up to `--max-files-bytes`, or none with `--without-files`), and a write as `{name, size,
@@ -339,7 +344,14 @@ only the editor.
   it is back; one its own runs wrote doesn't start it. A handle as a request's body
   (`http_upload`, `http.put(host, path, file: h)`) is streamed from the folder by the run's
   performer, checked against the handle's hash before and as it is sent, within the request size
-  limit; its folder must be one the deployment reads or the one that started the run.
+  limit; its folder must be one the deployment reads or the one that started the run. Slice 5
+  (`holon-core/src/triggers.rs`): several `on file` lines, each for files new or changed, or
+  removed (`deleted`), and for the names a glob matches (`matching "*.csv"`); `ingress` carries
+  its `event`. The watcher looks only at folders the OS says changed (the `notify` crate), or with
+  files settling, every second, and walks every one every 30 s. Create-only writes
+  (`reports.create`, `create_copy`) are linked to their name, so they never replace a file; and a
+  deployment's file limits (`inline_file_bytes`, `max_file_read_bytes`, `max_file_write_bytes`,
+  `max_files_per_run`, §4.2) are granted like its others.
 - **Secrets** ✅ (`holon-server/src/secrets.rs`): a per-deployment secret store on the server
   (`--secrets`, its own file, owner-only), written over the control plane
   (`POST`/`DELETE /deployments/<slug>/secrets/<name>`), never returned by it (`GET` lists names,
@@ -686,7 +698,7 @@ webhook).
   `holon mcp setup` for every major agent host; `holon lsp` and a VS Code extension for people.
 - **What flows can do**, each grown from friction agents met writing flows: collections, `match`,
   lazy choices, holons, key claims (one outbound call per key), `respond` with headers, WebAssembly
-  modules and JavaScript as one node, named folders on the host, runs on new files; 27 samples, each deployed by the
+  modules and JavaScript as one node, named folders on the host, runs on files new, changed or removed; 28 samples, each deployed by the
   end-to-end tests.
 - **What a run leaves**: a hash-chained record per deployment, `holon export` and `holon verify`
   to check it offline, `explain`, and replay in the editor.

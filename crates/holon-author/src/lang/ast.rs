@@ -58,9 +58,20 @@ pub enum HeaderKind {
     Collection(String),
     /// `folder inbox`: a folder an admin binds on the host, used as `inbox[name]`.
     Folder(String),
-    /// `on file inbox`: a run for each new file in the folder, which it declares too; the run
-    /// reads the file's handle as `ingress`.
-    OnFile(String),
+    /// `on file inbox`: a run for each file new or changed in the folder (or removed from it,
+    /// `deleted`; only names matching a glob, `matching "*.csv"`), which it declares too; the run
+    /// reads the file's handle as `ingress`. A flow may have several.
+    OnFile(FileOn),
+}
+
+/// One `on file` line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileOn {
+    pub folder: String,
+    /// For files removed from the folder.
+    pub deleted: bool,
+    /// The glob a file's name must match.
+    pub matching: Option<String>,
 }
 
 /// What `optional` names: a secret by its name, or a consent name as the server prints one.

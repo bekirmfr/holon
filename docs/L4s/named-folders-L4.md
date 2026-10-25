@@ -273,6 +273,54 @@ hash).
    the request size limit; the log keeps the request with the handle. A handle's folder, for a
    body or a copy, must be one the deployment reads or the one whose new file started the run
    (that file is handed to it). Mail attachments wait for mail.
+5. **What slices 1 to 4 left.** Create-only writes (§8), the file limits per deployment (§9), and
+   the trigger's own limits: a filter, several folders, deletions, and change notices instead of a
+   walk every second. (Writes in the activity log, §9, are dropped: what runs did to a resource is
+   `host-resources-L4.md`'s timeline.)
+
+   **Built** (`holon-core/src/triggers.rs`, `crates/holon/src/arrivals.rs`, the `file-audit`
+   sample). As designed, with these choices: a copy that must not replace a file is spelled
+   `create_copy` only (`create` with a handle would be a guess about a record's shape, as `body:`
+   isn't); a failed create says "a file has that name already (create-only: it isn't
+   replaced)"; the limits are the host's, like the durable-run ones (`FileLimits`, not part of a
+   run), so a run's reads are checked as it reads and its writes once it has run, before commit,
+   with the files it read counted toward `max_files_per_run`; a file its own run deletes is noted
+   before it is removed, so a look that finds it gone knows it was its own; a folder its lines name
+   for removals only still records new files as seen (without settling), so their removal later
+   runs. The watcher takes the OS's notices per folder path, recursively, and a notice the OS
+   dropped (its queue overflowed) makes the next look a walk of every folder.
+
+   - **Create-only.** `reports.create(name, text)` (`file_create`) and
+     `reports.create_copy(name, h)` for a handle (`file_create_copy`) land only if no file has
+     that name when the run commits. The file is put beside it and then linked to the
+     name, which fails if the name is taken, so nothing is ever replaced, even by a program writing
+     at the same moment; such a write doesn't land, and the run answers 500 as for any write that
+     didn't ("a file has that name already"). The capability is `FileWrite`, as for any write.
+   - **Limits,** asked for and granted like the others (`LIMIT_NAMES`, `holon.toml`'s `[limits]`
+     and `[ceilings]`, the deploy settings): `inline_file_bytes` (the largest file read whole as
+     text, and the largest range; 1 MiB, at most 16 MiB), `max_file_read_bytes` (per run;
+     64 MiB, at most 1 GiB), `max_file_write_bytes` (written and copied, per run; 1 GiB, at most
+     1 TiB: a copy by handle is how a big file moves, so the default doesn't stop one), and
+     `max_files_per_run` (files read, handled, written, copied or deleted; 1000, at most 100,000).
+     A read past one fails the run as it reads; a run whose writes would pass one fails before
+     anything it did commits; either way the error names the limit.
+   - **A filter.** `on file inbox matching "*.csv"`: only files whose name (relative to the
+     folder) matches start runs. `*` and `?` stay inside a folder, `**/` is any number of
+     folders, and letters match either case (a name from Windows and one from Linux alike).
+   - **Several folders.** A flow may have several `on file` lines. Each is a `file_arrival` leaf,
+     and `ingress` is whichever started the run (a `coalesce` of them, in the order written);
+     `ingress.folder` says which. It is granted `FileArrival` for each.
+   - **Deletions.** `on file inbox deleted` runs once for each file removed from the folder (one
+     the deployment had seen settle); `ingress` is the file as last seen: `{folder, name, size,
+     modified}`, no hash (it was never read, and is gone). One its own runs deleted doesn't start
+     it. Every arrival's `ingress` has an `event`: `new`, `changed` or `deleted`.
+   - **Change notices.** The watcher asks the OS to say when a watched folder changes (the
+     `notify` crate: ReadDirectoryChangesW, inotify, FSEvents) and looks only at folders that
+     changed, and at those with files still settling, every second. Every folder is still walked
+     every 30 seconds whatever it was told, and every second when no notice can be set up (a
+     network share, too many watches): notices make it quicker, never the only way it learns.
+     The leaf's `on` and `matching` params are the trigger; the host reads them from the deployed
+     graph, as it reads its capabilities.
 
 ## 12. Forks, surfaced
 

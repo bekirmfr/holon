@@ -608,6 +608,38 @@ test("drop-box runs once for a file dropped in its folder, sends it by handle, w
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("file-audit runs on a csv dropped in the inbox and on a file removed from it, not on other names, and its runs verify", async ({ page, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "File audit (runs on several folders, removals and some names)");
+  await deploy(page);
+  const stamp = Date.now();
+  const entries = () => (existsSync(join(FOLDERS, "audit", "inbox")) ? readdirSync(join(FOLDERS, "audit", "inbox")) : []);
+  writeFileSync(join(FOLDERS, "inbox", `audit-${stamp}.csv`), "a,1\n");
+  writeFileSync(join(FOLDERS, "inbox", `audit-${stamp}.txt`), "not a csv");
+  await expect.poll(() => entries().filter((e) => e.endsWith(`-new-audit-${stamp}.csv.json`)).length, { timeout: 15_000 }).toBe(1);
+  const entry = entries().find((e) => e.endsWith(`-new-audit-${stamp}.csv.json`))!;
+  expect(JSON.parse(readFileSync(join(FOLDERS, "audit", "inbox", entry), "utf8"))).toMatchObject({ event: "new", folder: "inbox", name: `audit-${stamp}.csv`, size: 4 });
+
+  // A file removed: one more entry, as it was last seen.
+  rmSync(join(FOLDERS, "inbox", `audit-${stamp}.txt`));
+  await expect.poll(() => entries().filter((e) => e.endsWith(`-deleted-audit-${stamp}.txt.json`)).length, { timeout: 15_000 }).toBe(1);
+  expect(entries().some((e) => e.endsWith(`-new-audit-${stamp}.txt.json`)), "a .txt dropped in starts nothing").toBe(false);
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await expect(page.locator(".hl-view__bottom")).toContainText(`deleted file audit-${stamp}.txt`);
+  await expect(page.locator(".hl-view__bottom")).not.toContainText("replay differs from the run");
+
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "file-audit.json");
+  execFileSync(holon, ["export", "file-audit", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const { mkdtempSync } = await import("node:fs");

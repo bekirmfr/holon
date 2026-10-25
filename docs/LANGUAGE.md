@@ -465,6 +465,27 @@ checks before and as it sends that they still hash to the handle's hash (else th
 bytes. The handle's folder must be one the deployment reads, or the one whose new file started the
 run.
 
+### file-audit: several folders, removals, some names
+
+```
+flow file-audit
+on file inbox matching "*.csv"
+on file inbox deleted
+on file outbox
+folder audit
+
+f = ingress
+audit.create("{f.folder}/{f.modified}-{f.event}-{f.name}.json", json(f))
+```
+
+Each `on file` line is a trigger: a CSV new or changed in `inbox`, any file removed from it, any
+file new or changed in `outbox`. A file no line is for (a `.txt` dropped in the inbox) is seen, not
+run on. `ingress` says which: its `event` is `new`, `changed` or `deleted`, and a removed file's
+handle is as it was last seen, `{folder, name, size, modified, event}`, without a hash (its bytes
+are gone). A file its own runs deleted from a folder it watches starts nothing. `audit.create(n,
+e)` writes a file that must not exist yet (`file_create`): the run fails, and nothing it did
+lands, rather than replace one; `audit.create_copy(n, h)` is the same for a copy by handle.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -525,15 +546,18 @@ a binary operator or a comma. Semicolons are not used.
 file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
           | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
-          | "folder" ident | "on" "file" ident
+          | "folder" ident | "on" "file" ident ["deleted"] ["matching" string]
 item      = holon | route | statement | wiring        # wiring: the netlist form, §10
 ```
 
 Headers are the flow's deploy settings, exactly as today (`Settings`): `every 10s` is `interval`
 10. `collection notes` declares a name for the body (§5.4); several may be declared, one per line.
 `folder inbox` declares a folder the same way. `on file inbox` declares it too, and makes `ingress`
-the handle of the new file that starts each run (`file_arrival{folder: inbox}`); one per flow, and
-only in a flow without routes.
+the handle of the file that starts each run (`file_arrival{folder: inbox}`); only in a flow
+without routes. `deleted` makes it for files removed from the folder (`on: deleted`), and
+`matching "<glob>"` for the names that match (`*` and `?` within a folder, `**/` any number of
+folders, letters either case). A flow may have several, each a different line: `ingress` is then
+the `coalesce` of their `file_arrival`s in the order written, whichever started the run.
 Statements at the top level are the body of a flow without routes (§5.12); with routes, only
 bindings of literals are allowed at the top level (§5.11).
 
@@ -606,7 +630,8 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `now` | `clock()` | the time the run started |
 | `random` | `random()` | one random number for the run |
 | `ingress` | `ingress()` | what arrived at the deployment |
-| `ingress` (with `on file inbox`) | `file_arrival{folder: inbox}()` | the new file's handle |
+| `ingress` (with `on file inbox`) | `file_arrival{folder: inbox}()` | the handle of the file that started the run, with its `event` |
+| `ingress` (with several `on file` lines) | `coalesce` of their `file_arrival`s, in order (`on: deleted`, `matching: g` as written) | the same, whichever line started it |
 | `notes[k]` (`notes` a declared collection) | `collection_get{collection: notes}(k)` | the item under `k` |
 | `notes[k] = e` | `collection_put{collection: notes}(k, e)` | put it when the run finishes |
 | `delete notes[k]` | `collection_delete{collection: notes}(k)` | delete it when the run finishes |
@@ -621,6 +646,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `inbox.lines(n, from: i, limit: k)` | `file_lines{folder: inbox, limit: k}(n, i)` | `k` lines from line `i` (from the end when negative), without line endings |
 | `inbox.slice(n, offset: o, length: k)` | `file_slice{folder: inbox}(n, o, k)` | `k` bytes from `o` (from the end when negative), as text |
 | `reports[n] = h` (`h` a handle read here, or `ingress` with `on file`), `reports.copy(n, h)` | `file_copy{folder: reports}(n, h)` | copy the file when the run finishes, host to host |
+| `reports.create(n, e)`, `reports.create_copy(n, h)` | `file_create{folder: reports}(n, e)`, `file_create_copy{folder: reports}(n, h)` | the same write or copy, only if there is no such file yet: else the run fails |
 | `http.get(host, path, headers: h, body: b)` and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host}(path, h, b)` | a call to that host |
 | `http.put(host, path, headers: h, file: f)` (`f` a handle), any method | `http_upload{method, host}(path, h, f)` | a call sending the file's bytes, streamed by the server |
 | `stripe.verify(req, secret, now, tolerance: d)` | the `stripe_verify` template | a verified Stripe event |
@@ -634,7 +660,9 @@ Rules the table implies:
   name followed by `[ ]` is a `lookup` on a record (§5.6). The declaration is a *name*, not a
   permission: `check` still derives `CollectionRead("notes")` from the `collection_get` leaves.
   A folder the same: `folder inbox`, and `FileRead("inbox")` from `file_read`. A file read whole
-  is text (UTF-8, up to 1 MiB); a read of anything else fails the run, and it writes nothing. A
+  is text (UTF-8, up to the deployment's `inline_file_bytes`, 1 MiB by default; a run reads 64 MiB
+  in all, `max_file_read_bytes`, writes 1 GiB, `max_file_write_bytes`, and touches 1,000 files,
+  `max_files_per_run`); a read of anything else fails the run, and it writes nothing. A
   bigger one is read by handle, lines or slice; a copy also asks `FileRead` of the folder its
   handle names.
 - `http.*`'s host must be a text literal, because the host is the capability the deployment asks

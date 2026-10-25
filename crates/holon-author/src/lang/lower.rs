@@ -206,8 +206,11 @@ struct Lowerer<'a> {
     collections: HashSet<String>,
     /// The folders the header declares (`folder inbox`): read and written like collections.
     folders: HashSet<String>,
-    /// The folder whose new files start a run (`on file inbox`): `ingress` is the file's handle.
-    on_file: Option<String>,
+    /// The `on file` lines: `ingress` is the handle of the file that started the run.
+    on_files: Vec<FileOn>,
+    /// The `ingress` chains of a flow with several `on file` lines (a `coalesce` of their
+    /// `file_arrival`s): a handle, as each `file_arrival` is.
+    arrivals: HashSet<String>,
     /// Top-level bindings of literals in a flow with routes: lowered afresh in each route.
     consts: HashMap<String, &'a Expr>,
     frames: Vec<Frame>,
@@ -224,12 +227,13 @@ impl<'a> Lowerer<'a> {
         let defs = file.items.iter().filter_map(|i| if let Item::Holon(h) = i { Some((h.name.text.clone(), h)) } else { None }).collect();
         let js_defs = file.items.iter().filter_map(|i| if let Item::Js(j) = i { Some((j.name.text.clone(), j)) } else { None }).collect();
         let collections = file.headers.iter().filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.clone()) } else { None }).collect();
-        let on_file = file.headers.iter().find_map(|h| if let HeaderKind::OnFile(f) = &h.kind { Some(f.clone()) } else { None });
+        let on_files = file.headers.iter().filter_map(|h| if let HeaderKind::OnFile(f) = &h.kind { Some(f.clone()) } else { None }).collect();
         let folders = file
             .headers
             .iter()
             .filter_map(|h| match &h.kind {
-                HeaderKind::Folder(f) | HeaderKind::OnFile(f) => Some(f.clone()),
+                HeaderKind::Folder(f) => Some(f.clone()),
+                HeaderKind::OnFile(f) => Some(f.folder.clone()),
                 _ => None,
             })
             .collect();
@@ -241,7 +245,8 @@ impl<'a> Lowerer<'a> {
             in_progress: HashSet::new(),
             collections,
             folders,
-            on_file,
+            on_files,
+            arrivals: HashSet::new(),
             consts: HashMap::new(),
             frames: vec![],
             names: BTreeMap::new(),
@@ -280,8 +285,16 @@ impl<'a> Lowerer<'a> {
         }
         let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_)));
         let on_file: Vec<&Header> = file.headers.iter().filter(|h| matches!(h.kind, HeaderKind::OnFile(_))).collect();
-        if let Some(second) = on_file.get(1) {
-            return err(second.span, "a flow starts on new files in one folder: one `on file` line");
+        for (i, h) in on_file.iter().enumerate() {
+            let HeaderKind::OnFile(f) = &h.kind else { continue };
+            if let Some(g) = &f.matching
+                && !holon_core::is_glob(g)
+            {
+                return err(h.span, format!("{g:?} isn't a pattern of names: `*` and `?` within a folder, `**/` for any folders, `/` between them"));
+            }
+            if on_file[..i].iter().any(|o| o.kind == h.kind) {
+                return err(h.span, "this `on file` line is written twice");
+            }
         }
         if let (Some(h), true) = (on_file.first(), has_routes) {
             return err(h.span, "a flow with routes runs on requests: `on file` is for a flow without routes, whose runs start with a new file");
@@ -509,7 +522,7 @@ impl<'a> Lowerer<'a> {
                 let v = self.expr(value)?;
                 let named = [(store.param.into(), collection.text.clone())];
                 // A file's handle written to a folder is a copy: its bytes go host to host.
-                let handle = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| d.name == "file_handle" || d.name == "file_arrival"));
+                let handle = self.is_handle(&v);
                 let w = if store.kind == "folder" && handle {
                     self.node_with("file_copy", &named, &[("name", k), ("from", v)], s.span)?
                 } else {
@@ -814,6 +827,7 @@ impl<'a> Lowerer<'a> {
                     "collection_delete" => "delete",
                     "file_write" => "written",
                     "file_copy" => "copied",
+                    "file_create" | "file_create_copy" => "created",
                     "file_delete" => "deleted",
                     "store_write" => "write",
                     "egress" => "sent",
@@ -1140,12 +1154,35 @@ impl<'a> Lowerer<'a> {
     }
 
     /// What arrived at the deployment: a request's or a trigger's payload; in a flow that runs on
-    /// new files, the file's handle.
+    /// files, the file's handle: its `on file` line's `file_arrival`, or with several, whichever
+    /// started the run (a `coalesce` of them, in the order written: only that one has a value).
     fn ingress(&mut self, span: Span) -> R<Val> {
-        match self.on_file.clone() {
-            Some(folder) => self.node("file_arrival", &[("folder".into(), folder)], span),
-            None => self.node("ingress", &[], span),
+        let mut chain: Option<Val> = None;
+        for f in self.on_files.clone() {
+            let mut params = vec![("folder".to_string(), f.folder)];
+            if f.deleted {
+                params.push(("on".into(), "deleted".into()));
+            }
+            if let Some(m) = f.matching {
+                params.push(("matching".into(), m));
+            }
+            let arrival = self.node("file_arrival", &params, span)?;
+            chain = Some(match chain {
+                None => arrival,
+                Some(c) => self.node_with("coalesce", &[], &[("a", c), ("b", arrival)], span)?,
+            });
         }
+        let Some(chain) = chain else { return self.node("ingress", &[], span) };
+        if let Val::Out { id, .. } = &chain {
+            self.arrivals.insert(id.clone());
+        }
+        Ok(chain)
+    }
+
+    /// Whether `v` is a file's handle: one read here (`file_handle`), or the file that started the
+    /// run (`ingress` with `on file`).
+    fn is_handle(&self, v: &Val) -> bool {
+        matches!(v, Val::Out { id, .. } if self.arrivals.contains(id) || self.b.data(id).is_some_and(|d| d.name == "file_handle" || d.name == "file_arrival"))
     }
 
     fn binary(&mut self, op: BinOp, lhs: &'a Expr, rhs: &'a Expr, span: Span) -> R<Val> {
@@ -1376,7 +1413,12 @@ impl<'a> Lowerer<'a> {
                     "lines" if folder => "file_lines",
                     "slice" if folder => "file_slice",
                     "copy" if folder => "file_copy",
-                    other if folder => return err(method.span, format!("a folder has no \"{other}\": get, put, delete, list, file, lines, slice or copy")),
+                    // Writes that never replace a file.
+                    "create" if folder => "file_create",
+                    "create_copy" if folder => "file_create_copy",
+                    other if folder => {
+                        return err(method.span, format!("a folder has no \"{other}\": get, put, delete, list, file, lines, slice, copy, create or create_copy"));
+                    }
                     other => return err(method.span, format!("a {} has no \"{other}\": get, put, delete or list", store.kind)),
                 };
                 let (inputs, params) = leaf(leaf_name);
@@ -1846,7 +1888,7 @@ pub(crate) mod tests {
         assert_eq!([folder("file_read"), folder("file_list"), folder("file_write"), folder("file_delete")], ["inbox", "inbox", "out", "out"]);
         assert_eq!(error("folder inbox\nx = inbox"), (2, 5, "\"inbox\" is a folder: read it as inbox[name] or inbox.list(…)".into()));
         assert_eq!(error("folder inbox\ninbox = 1"), (2, 1, "\"inbox\" is a folder; a binding may not shadow it".into()));
-        assert_eq!(error("folder inbox\nx = inbox.move(\"a\")"), (2, 11, "a folder has no \"move\": get, put, delete, list, file, lines, slice or copy".into()));
+        assert_eq!(error("folder inbox\nx = inbox.move(\"a\")"), (2, 11, "a folder has no \"move\": get, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
         assert_eq!(error("collection notes\nx = notes.file(\"a\")"), (2, 11, "a collection has no \"file\": get, put, delete or list".into()));
         assert_eq!(error("folder = 1"), (1, 8, "expected the folder's name, found \"=\"".into()));
     }
@@ -1878,10 +1920,27 @@ pub(crate) mod tests {
         assert_eq!((upload.param("method"), upload.param("host")), ("PUT", "files.example.com"));
         assert!(leaves(&compiled("x = ingress\n").doc).contains(&"ingress".to_string()), "without on file, ingress is a request's");
         assert_eq!(error("on file inbox\nx = 1\n").2, "`on file` starts a run for each new file, and the run reads it as `ingress`: use `ingress` (its .name, say)");
-        assert!(error("on file a\non file b\nx = ingress\n").2.contains("one `on file` line"));
+        assert!(error("on file a\non file a\nx = ingress\n").2.contains("written twice"));
+        assert!(error("on file a matching \"a**\"\nx = ingress\n").2.contains("isn't a pattern of names"));
         assert!(error("port 8000\non file a\nroute GET /x (req) {\n  respond 1\n}\n").2.contains("for a flow without routes"));
         assert_eq!(error("folder a\nh = a.file(\"x\")\nr = http.put(\"h.example.com\", \"/\", body: \"t\", file: h)\n").2, "a call sends a body or a file, not both");
         assert!(leaves(&compiled("on = 1\nx = on + 1\n").doc).contains(&"add".to_string()), "on is still a name elsewhere");
+    }
+
+    #[test]
+    fn a_flow_on_several_folders_deletions_and_some_names_reads_whichever_file_started_it() {
+        let src = "on file drop matching \"*.csv\"\non file drop deleted\non file inbox\nfolder done\n\ndone[ingress.name] = ingress\n";
+        let d = compiled(src).doc;
+        let arrivals: Vec<(&str, &str, &str)> =
+            d.nodes.iter().filter(|n| n.data.name == "file_arrival").map(|n| (n.param("folder"), n.param("on"), n.param("matching"))).collect();
+        assert_eq!(arrivals.len(), 6, "a chain of the three lines for each use of ingress");
+        assert_eq!(&arrivals[..3], [("drop", "new", "*.csv"), ("drop", "deleted", ""), ("inbox", "new", "")]);
+        assert_eq!(d.nodes.iter().filter(|n| n.data.name == "coalesce").count(), 4, "two for each chain of three");
+        assert!(leaves(&d).contains(&"file_copy".to_string()), "ingress is a handle: written to a folder, it is copied");
+        // Writes that never replace a file.
+        let d = compiled("folder out\nh = out.file(\"a\")\nout.create(\"b.txt\", \"text\")\nout.create_copy(\"c\", h)\n").doc;
+        let got = leaves(&d);
+        assert!(got.contains(&"file_create".to_string()) && got.contains(&"file_create_copy".to_string()), "{got:?}");
     }
 
     #[test]

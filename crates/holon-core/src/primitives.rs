@@ -518,6 +518,16 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             let copy = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("from".to_string(), (*from).clone())]));
             Some(Value::Effect { sink: format!("file_copy:{folder}"), payload: Box::new(copy) })
         }
+        // Create-only: a write's or a copy's payload with `create: true`. The host lands it only
+        // where no file has the name when the run commits, never replacing one.
+        "file_create" | "file_create_copy" => {
+            let folder = crate::kind::ident(params, "folder")?;
+            let like = if name == "file_create" { "file_write" } else { "file_copy" };
+            let Some(Value::Effect { payload, .. }) = compute(like, inputs, params) else { return None };
+            let Value::Record(mut file) = *payload else { return None };
+            file.insert("create".to_string(), Value::Boolean(true));
+            Some(Value::Effect { sink: format!("{name}:{folder}"), payload: Box::new(Value::Record(file)) })
+        }
 
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
@@ -1000,6 +1010,15 @@ mod tests {
         assert_eq!(copy, Value::Effect { sink: "file_copy:inbox".into(), payload: Box::new(payload) });
         let not_a_handle = Value::Record(BTreeMap::from([("name".into(), txt("big.log"))]));
         assert_eq!(compute("file_copy", &[&txt("b.log"), &not_a_handle], &inbox), None, "a copy needs a handle");
+
+        // Create-only: the same payloads, saying so.
+        let create = compute("file_create", &[&txt("a.md"), &txt("# total")], &inbox).unwrap();
+        let file = Value::Record(BTreeMap::from([("name".into(), txt("a.md")), ("text".into(), txt("# total")), ("create".into(), Value::Boolean(true))]));
+        assert_eq!(create, Value::Effect { sink: "file_create:inbox".into(), payload: Box::new(file) });
+        let copy = compute("file_create_copy", &[&txt("b.log"), &h], &inbox).unwrap();
+        let payload = Value::Record(BTreeMap::from([("name".into(), txt("b.log")), ("from".into(), h), ("create".into(), Value::Boolean(true))]));
+        assert_eq!(copy, Value::Effect { sink: "file_create_copy:inbox".into(), payload: Box::new(payload) });
+        assert_eq!(compute("file_create_copy", &[&txt("b.log"), &not_a_handle], &inbox), None, "a copy needs a handle");
     }
 
     /// `range(n)` counts from 0 to n-1; a fraction, a negative, a non-number or more than

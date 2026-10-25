@@ -58,8 +58,8 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("port", "`port <n>`: the port the flow's server answers its routes on."),
     ("every", "`every <duration>`: how often a flow without routes runs (`10s`, `5m`, `1h`, `1d`)."),
     ("collection", "`collection <name>`: a named store of items, used as `name[key]`, `name[key] = v`, `delete name[key]` and `name.list(prefix: p, after: a, limit: 50)`. One permission for each use."),
-    ("folder", "`folder <name>`: files on the host, in a folder an admin binds to the name: `name[file]` reads a file's text, `name[file] = text` writes it when the run finishes, `delete name[file]` deletes it, `name.list(prefix: p, after: a, limit: 50)` lists files. One permission to read, one to write."),
-    ("on", "`on file <folder>`: a run for each new file in the folder (an admin binds it), once the file stops changing; the run reads its handle as `ingress` (`.name`, `.size`, `.hash`), and the folder as `name[file]`."),
+    ("folder", "`folder <name>`: files on the host, in a folder an admin binds to the name: `name[file]` reads a file's text, `name[file] = text` writes it when the run finishes (`name.create(file, text)` only if no file has that name), `delete name[file]` deletes it, `name.list(prefix: p, after: a, limit: 50)` lists files. One permission to read, one to write."),
+    ("on", "`on file <folder>`: a run for each file new or changed in the folder (an admin binds it), once it stops changing; `on file <folder> deleted`, for each file removed; `matching \"*.csv\"` after either, only for names that match. The run reads the file's handle as `ingress` (`.name`, `.size`, `.hash`, `.folder`, `.event`). A flow may have several lines; `ingress` is the file that started the run."),
     ("optional", "`optional <permission>`: one the flow can run without. It isn't asked for at deploy; a run without it gets no value where it would have read."),
     ("browsers", "`browsers <origin>, …`: the web pages it answers from other sites (CORS), or `*` for any."),
     ("holon", "`holon name(inputs) -> outputs { … }`: a flow inside a flow, a function placed as one node. One with several outputs is used as `h(…).name`. With `js` after the outputs, its body is JavaScript."),
@@ -220,7 +220,7 @@ pub struct Completion {
 /// `notes[k]`, `now`, `secret.k`, `await`) or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
     "http_request", "http_upload", "clock", "random", "ingress", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
-    "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "egress",
+    "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "egress",
     "const", "record", "json_parse", "json_stringify",
 ];
 

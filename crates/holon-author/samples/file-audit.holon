@@ -1,0 +1,8 @@
+flow file-audit
+on file inbox matching "*.csv"
+on file inbox deleted
+on file outbox
+folder audit
+
+f = ingress
+audit.create("{f.folder}/{f.modified}-{f.event}-{f.name}.json", json(f))

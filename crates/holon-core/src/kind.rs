@@ -137,7 +137,7 @@ pub enum Capability {
     /// `http_request`. Per host, so consent names where a flow may call, not just "the network".
     HttpRequest(String),
     /// Writes, copies into and deletes files of the named folder: `file_write`, `file_copy`,
-    /// `file_delete`, committed when
+    /// `file_delete`, `file_create`, `file_create_copy`, committed when
     /// the run finishes.
     FileWrite(String),
     /// Starts a process / job.
@@ -289,7 +289,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // The folder is a frozen param, so the capability names it exactly; the host binds the
         // name to a real folder.
         "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice" => vec![FileRead(ident(params, "folder")?)],
-        "file_write" | "file_copy" | "file_delete" => vec![FileWrite(ident(params, "folder")?)],
+        "file_write" | "file_copy" | "file_delete" | "file_create" | "file_create_copy" => vec![FileWrite(ident(params, "folder")?)],
         // A new file in a named folder starts a run: the host watches the folder, and the file's
         // handle is the leaf's value. The folder is a frozen param, so the trigger names it.
         "file_arrival" => vec![FileArrival(ident(params, "folder")?)],
@@ -610,6 +610,8 @@ mod tests {
             ("file_copy", Capability::FileWrite("inbox".into()), Kind::Sink),
             ("file_write", Capability::FileWrite("inbox".into()), Kind::Sink),
             ("file_delete", Capability::FileWrite("inbox".into()), Kind::Sink),
+            ("file_create", Capability::FileWrite("inbox".into()), Kind::Sink),
+            ("file_create_copy", Capability::FileWrite("inbox".into()), Kind::Sink),
         ] {
             assert_eq!(capabilities_of(leaf, &named("inbox")).unwrap().iter().collect::<Vec<_>>(), vec![cap.clone()], "{leaf}");
             assert_eq!(cap.kind(), kind);

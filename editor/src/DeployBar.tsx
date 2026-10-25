@@ -49,6 +49,10 @@ const LIMITS: [string, string][] = [
   ["max_redirects", "redirects"],
   ["max_await_seconds", "longest wait (s)"],
   ["max_waiting_runs", "runs waiting at once"],
+  ["inline_file_bytes", "file read whole (bytes)"],
+  ["max_file_read_bytes", "file reads per run (bytes)"],
+  ["max_file_write_bytes", "file writes per run (bytes)"],
+  ["max_files_per_run", "files per run"],
 ];
 
 /** `requirements` with `limit` set to `text` (blank: back to the host default). */

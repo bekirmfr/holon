@@ -139,7 +139,7 @@ pub(crate) fn load_deployments(
         };
         // As its deploy derived it: on a schedule, it runs on the clock.
         let caps = capabilities(root_unit, &resolver).deployed(record.interval_seconds.is_some() && server.is_none());
-        let arrivals = Arc::new(arrivals::Watch::open(path, slug, &caps));
+        let arrivals = Arc::new(arrivals::Watch::open(path, slug, &caps, holon_core::file_triggers(root_unit, &resolver)));
         let mut triggers = trigger_labels(
             server.as_ref(),
             caps.contains(Capability::NetworkIngress),

@@ -316,7 +316,19 @@ impl Parser {
             "folder" => HeaderKind::Folder(self.ident("the folder's name")?.text),
             "on" => {
                 self.next();
-                HeaderKind::OnFile(self.ident("the folder whose new files start a run")?.text)
+                let folder = self.ident("the folder whose new files start a run")?.text;
+                let deleted = self.is_word("deleted");
+                if deleted {
+                    self.next();
+                }
+                let matching = if self.is_word("matching") {
+                    self.next();
+                    let t = self.expect(&Tok::Str, "the names to start runs for, quoted: \"*.csv\"")?;
+                    Some(self.unescape(&t)?)
+                } else {
+                    None
+                };
+                HeaderKind::OnFile(FileOn { folder, deleted, matching })
             }
             "optional" => HeaderKind::Optional(self.consent()?),
             _ => {

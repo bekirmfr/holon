@@ -3877,6 +3877,43 @@ fn a_flow_reads_and_writes_bound_folders_and_its_runs_verify() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A deployment's file limits: a read past them fails the run as it reads, and a run whose writes
+/// would pass them fails before any lands; each error names the limit.
+#[test]
+fn a_run_past_its_file_limits_fails_and_says_which() {
+    for (limits, route, url, body, limit) in [
+        ("inline_file_bytes = 100", "GET", "/logs/app.log/head", "", "inline_file_bytes"),
+        ("max_file_read_bytes = 200", "GET", "/logs/app.log/head", "", "max_file_read_bytes"),
+        ("max_file_write_bytes = 1000", "POST", "/archive", r#"{"name":"app.log"}"#, "max_file_write_bytes"),
+        ("max_files_per_run = 1", "POST", "/archive", r#"{"name":"app.log"}"#, "max_files_per_run"),
+    ] {
+        let state = claims_state(&format!("[limits]
+{limits}
+"));
+        let dir = std::env::temp_dir().join(format!("holon-file-limits-{}-{}", std::process::id(), rand::random::<u32>()));
+        let (logs, archive) = (dir.join("logs"), dir.join("archive"));
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(logs.join("app.log"), "a line of a log
+".repeat(200)).unwrap();
+        for (name, path, access) in [("logs", &logs, "read"), ("archive", &archive, "read-write")] {
+            let body = serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access });
+            assert_eq!(route_status(&state, &body), 200);
+        }
+        let slug = deploy_text(&state, include_str!("../../holon-author/samples/log-archive.holon"), "");
+        let (status, answer, _) = data_call(&state, &slug, route, url, body);
+        assert_eq!(status, 500, "{limits}: {answer}");
+        let error = log_entries(&state, &slug).last().unwrap()["error"].as_str().unwrap_or_default().to_string();
+        assert!(error.contains(limit), "{limits}: {error}");
+        assert_eq!(std::fs::read_dir(&archive).unwrap().count(), 0, "{limits}: nothing landed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+fn route_status(state: &AppState, body: &serde_json::Value) -> u16 {
+    route(state, &req("POST", "/admin/folders", serde_json::to_vec(body).unwrap())).status_code
+}
+
 /// A file too big to read whole is read by handle and by range: its last lines and first bytes
 /// enter the run, nothing else, and the log proves them part of the file by its hashes, so the
 /// runs check offline without it. A copy by handle streams the file host to host.
@@ -4117,5 +4154,92 @@ fn new_files_start_runs_that_send_them_on_by_handle() {
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     let report = verify::check(&export, None, &BTreeMap::new());
     assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `on file` lines (the file-audit sample): several folders, files removed, and only some names.
+/// Each run's `ingress` says what happened; a name no line is for starts nothing; an entry is
+/// created, never replaced; and the runs verify.
+#[test]
+fn on_file_lines_run_on_several_folders_deletions_and_matching_names() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-file-lines-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (inbox, outbox, audit) = (dir.join("inbox"), dir.join("outbox"), dir.join("audit"));
+    for (name, path, access) in [("inbox", &inbox, "read"), ("outbox", &outbox, "read"), ("audit", &audit, "read-write")] {
+        std::fs::create_dir_all(path).unwrap();
+        assert_eq!(route_status(&state, &serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access })), 200);
+    }
+    std::fs::write(inbox.join("old.txt"), "there before").unwrap();
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/file-audit.holon"), "");
+    let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
+    assert_eq!(triggers, serde_json::json!(["Files inbox", "Files outbox"]));
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    let events = || -> Vec<(String, String, String)> {
+        log_entries(&state, &slug)
+            .iter()
+            .map(|e| {
+                let sourced = e["sourced"].as_array().unwrap();
+                let h = &sourced.iter().find(|p| p[0].as_str().unwrap().starts_with("FileArrival")).unwrap()[1];
+                let fields = h["value"].as_array().unwrap();
+                let t = |k: &str| fields.iter().find(|f| f[0] == k).and_then(|f| f[1]["value"].as_str()).unwrap_or_default().to_string();
+                (t("folder"), t("event"), t("name"))
+            })
+            .collect()
+    };
+
+    std::fs::write(inbox.join("a.csv"), "x,1\n").unwrap();
+    std::fs::write(inbox.join("b.txt"), "not a csv").unwrap();
+    std::fs::write(outbox.join("o.pdf"), "any name").unwrap();
+    look();
+    let s = |a: &str, b: &str, c: &str| (a.to_string(), b.to_string(), c.to_string());
+    assert_eq!(events(), [s("inbox", "new", "a.csv"), s("outbox", "new", "o.pdf")], "b.txt isn't a csv");
+
+    std::fs::write(inbox.join("a.csv"), "x,1\ny,2\n").unwrap();
+    std::fs::remove_file(inbox.join("old.txt")).unwrap();
+    look();
+    assert_eq!(&events()[2..], [s("inbox", "deleted", "old.txt"), s("inbox", "changed", "a.csv")], "removals are for every name");
+    let entries = log_entries(&state, &slug);
+    let deleted = entries[2]["sourced"].to_string();
+    assert!(!deleted.contains("\"hash\""), "a removed file has no hash: {deleted}");
+
+    let written: Vec<String> = ["inbox", "outbox"]
+        .iter()
+        .flat_map(|f| std::fs::read_dir(audit.join(f)).unwrap().map(move |e| format!("{f}/{}", e.unwrap().file_name().to_string_lossy())))
+        .collect();
+    assert_eq!(written.len(), 4, "{written:?}");
+    assert!(written.iter().any(|n| n.starts_with("inbox/") && n.ends_with("-deleted-old.txt.json")), "{written:?}");
+    assert!(written.iter().any(|n| n.starts_with("outbox/") && n.ends_with("-new-o.pdf.json")), "{written:?}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file its own run deletes from a folder it watches for removals starts nothing; one removed
+/// by anyone else does.
+#[test]
+fn a_file_a_run_deletes_starts_no_run() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-own-deletes-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(route_status(&state, &serde_json::json!({ "name": "inbox", "path": dir.display().to_string(), "access": "read-write" })), 200);
+    std::fs::write(dir.join("keep.txt"), "there before").unwrap();
+    let slug = deploy_text(&state, "flow tidy\non file inbox matching \"*.tmp\"\non file inbox deleted\n\ninbox.delete(ingress.name)\n", "");
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    std::fs::write(dir.join("a.tmp"), "scratch").unwrap();
+    look();
+    assert!(!dir.join("a.tmp").exists(), "its run deleted it");
+    look();
+    assert_eq!(log_entries(&state, &slug).len(), 1, "and that starts nothing");
+    std::fs::remove_file(dir.join("keep.txt")).unwrap();
+    look();
+    assert_eq!(log_entries(&state, &slug).len(), 2, "someone else's removal does");
     let _ = std::fs::remove_dir_all(&dir);
 }

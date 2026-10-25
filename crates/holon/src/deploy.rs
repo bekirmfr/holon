@@ -110,7 +110,7 @@ pub(crate) fn handle_post_deploy(
     let caps = capabilities(root_unit, &resolver).deployed(body.interval_seconds.is_some() && server.is_none());
     let is_ingress = caps.contains(Capability::NetworkIngress);
     let is_clock = caps.contains(Capability::Clock) && server.is_none();
-    let arrivals = Arc::new(arrivals::Watch::open(deployments_path, &body.slug, &caps));
+    let arrivals = Arc::new(arrivals::Watch::open(deployments_path, &body.slug, &caps, holon_core::file_triggers(root_unit, &resolver)));
     if !is_ingress && !is_clock && !arrivals.watches() {
         return err(
             400,

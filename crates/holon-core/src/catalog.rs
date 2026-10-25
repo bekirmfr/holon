@@ -57,6 +57,8 @@ pub const GENESIS: &[&str] = &[
     // lines and a slice of it, and a copy by handle (4)
     "file_read", "file_list", "file_write", "file_delete",
     "file_handle", "file_lines", "file_slice", "file_copy",
+    // and a write and a copy that never replace a file (2)
+    "file_create", "file_create_copy",
     // sink — performed (1)
     "egress",
 ];
@@ -231,7 +233,13 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "random" => prim(vec![], vec![], Number),
         "ingress" => prim(vec![], vec![], Any),
         // The handle of the new file that started the run.
-        "file_arrival" => prim(vec![], vec![Param::frozen("folder", "files")], Type::Record),
+        // `on`: `new` (a file new or changed) or `deleted`; `matching`: a glob on its name, empty
+        // for every file. The host reads both from the deployed graph.
+        "file_arrival" => prim(
+            vec![],
+            vec![Param::frozen("folder", "files"), Param::frozen("on", "new"), Param::frozen("matching", "")],
+            Type::Record,
+        ),
         // A named secret from the deployment's secret store (never in the unit: only its name).
         "secret" => prim(vec![], vec![Param::frozen("name", "api_key")], Text),
         // A durable run's waiting point: its event (the request that resumed the run, or
@@ -284,6 +292,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         ),
         "file_slice" => prim(vec![port("name", Text), port("offset", Number), port("length", Number)], vec![Param::frozen("folder", "files")], Text),
         "file_copy" => prim(vec![port("name", Text), port("from", Type::Record)], vec![Param::frozen("folder", "files")], Effect),
+        // As a write and a copy, landing only where no file has the name: never a replace.
+        "file_create" => prim(vec![port("name", Text), port("text", Text)], vec![Param::frozen("folder", "files")], Effect),
+        "file_create_copy" => prim(vec![port("name", Text), port("from", Type::Record)], vec![Param::frozen("folder", "files")], Effect),
 
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
@@ -337,8 +348,8 @@ mod tests {
         // with a fallback on a wire), both for docs/LANGUAGE.md, range, and the named-folder kit
         // (file_read, file_list, file_write, file_delete, file_handle, file_lines, file_slice,
         // file_copy), and a folder's trigger and a file as a request's body (file_arrival,
-        // http_upload).
-        assert_eq!(GENESIS.len(), 81);
+        // http_upload), and the create-only pair (file_create, file_create_copy).
+        assert_eq!(GENESIS.len(), 83);
     }
 
     #[test]

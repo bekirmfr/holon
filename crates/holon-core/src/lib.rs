@@ -45,6 +45,7 @@ mod manifest;
 mod module;
 mod resolve;
 mod simulate;
+mod triggers;
 mod validate;
 mod value;
 mod value_hash;
@@ -79,6 +80,7 @@ pub use module::{
 };
 pub use resolve::{MapResolver, Resolver};
 pub use simulate::{design_eval, mock_of, Simulated};
+pub use triggers::{file_triggers, glob_matches, is_glob, FileTrigger};
 pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;
 pub use json::{parse as parse_json, stringify as stringify_json};

@@ -95,6 +95,18 @@ describe("replay", () => {
     expect(traces.get("g")?.outputs).toEqual([null]);
   });
 
+  it("reads ingress from whichever of several on file lines started the run", () => {
+    const handle: WValue = { type: "Record", value: [["event", { type: "Text", value: "deleted" }], ["name", { type: "Text", value: "a.csv" }]] };
+    const run: ReplayInput = { kind: "file", route: null, request: null, sourced: [['FileArrival("outbox")', handle]], state_before: {} };
+    const lines = [
+      n("i", "file_arrival", [], ["out"], [frozen("folder", "inbox")]),
+      n("o", "file_arrival", [], ["out"], [frozen("folder", "outbox"), frozen("on", "deleted")]),
+      n("c", "coalesce", ["a", "b"], ["out"]),
+    ];
+    const { traces } = replay(lines, [wire("i", "out", "c", "a"), wire("o", "out", "c", "b")], run, evalNode);
+    expect(traces.get("c")?.outputs).toEqual([handle]);
+  });
+
   it("sources clock and a missing state key, and finds no group for an unknown route", () => {
     const tick: ReplayInput = { kind: "tick", route: null, request: null, sourced: [["Clock", num(42)]], state_before: {} };
     const { traces } = replay(

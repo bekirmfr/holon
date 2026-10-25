@@ -32,7 +32,7 @@ use crate::to_hex;
 /// bytes. The two module limits are what a flow's module bodies may compute and hold per call
 /// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
 /// gets, so the policy has ceilings for them and no `[limits]` entry.
-pub(crate) const LIMIT_NAMES: [&str; 15] = [
+pub(crate) const LIMIT_NAMES: [&str; 19] = [
     "connect_timeout_ms",
     "request_timeout_ms",
     "claim_wait_ms",
@@ -46,6 +46,10 @@ pub(crate) const LIMIT_NAMES: [&str; 15] = [
     "max_redirects",
     "max_await_seconds",
     "max_waiting_runs",
+    "inline_file_bytes",
+    "max_file_read_bytes",
+    "max_file_write_bytes",
+    "max_files_per_run",
     holon_core::FUEL_LIMIT,
     holon_core::MEMORY_LIMIT,
 ];
@@ -76,9 +80,36 @@ impl DurableLimits {
     }
 }
 
-/// The limits as numbers by name: the request-run limits, the clock run's budget, and the
-/// durable-run limits.
-fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits) -> BTreeMap<String, u64> {
+/// Limits on a run's files (docs/L4s/named-folders-L4.md §9): the host's, like the durable-run
+/// limits; not part of a run (`holon_host::Limits`). Sizes in bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FileLimits {
+    /// The largest file a run reads whole as text, and the largest range it reads of one.
+    pub(crate) inline_file_bytes: u64,
+    /// What a run reads from files, in all.
+    pub(crate) max_file_read_bytes: u64,
+    /// What a run writes and copies into files, in all.
+    pub(crate) max_file_write_bytes: u64,
+    /// The files a run reads, takes a handle to, writes, copies or deletes.
+    pub(crate) max_files_per_run: u64,
+}
+
+impl FileLimits {
+    /// What a deployment gets without asking: a text up to 1 MiB, 64 MiB read; a gigabyte written,
+    /// since a copy by handle is how a big file moves; a thousand files.
+    pub(crate) fn defaults() -> FileLimits {
+        FileLimits { inline_file_bytes: 1 << 20, max_file_read_bytes: 64 << 20, max_file_write_bytes: 1 << 30, max_files_per_run: 1000 }
+    }
+
+    /// What no grant can exceed.
+    pub(crate) fn ceilings() -> FileLimits {
+        FileLimits { inline_file_bytes: 16 << 20, max_file_read_bytes: 1 << 30, max_file_write_bytes: 1 << 40, max_files_per_run: 100_000 }
+    }
+}
+
+/// The limits as numbers by name: the request-run limits, the clock run's budget, the
+/// durable-run limits, and the file limits.
+fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits, files: &FileLimits) -> BTreeMap<String, u64> {
     let ms = |d: Duration| d.as_millis() as u64;
     BTreeMap::from([
         ("connect_timeout_ms".into(), ms(request.connect_timeout)),
@@ -94,7 +125,22 @@ fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &Durable
         ("max_redirects".into(), request.max_redirects as u64),
         ("max_await_seconds".into(), durable.max_await_seconds),
         ("max_waiting_runs".into(), durable.max_waiting_runs),
+        ("inline_file_bytes".into(), files.inline_file_bytes),
+        ("max_file_read_bytes".into(), files.max_file_read_bytes),
+        ("max_file_write_bytes".into(), files.max_file_write_bytes),
+        ("max_files_per_run".into(), files.max_files_per_run),
     ])
+}
+
+/// `numbers` applied over `base`'s file limits.
+fn numbers_to_files(base: &FileLimits, numbers: &BTreeMap<String, u64>) -> FileLimits {
+    let n = |k: &str, d: u64| numbers.get(k).copied().unwrap_or(d);
+    FileLimits {
+        inline_file_bytes: n("inline_file_bytes", base.inline_file_bytes),
+        max_file_read_bytes: n("max_file_read_bytes", base.max_file_read_bytes),
+        max_file_write_bytes: n("max_file_write_bytes", base.max_file_write_bytes),
+        max_files_per_run: n("max_files_per_run", base.max_files_per_run),
+    }
 }
 
 /// `numbers` applied over `base`'s durable-run limits.
@@ -231,6 +277,8 @@ pub(crate) struct Policy {
     pub(crate) clock_run_budget: Duration,
     /// The durable-run limits a deployment gets without asking.
     pub(crate) durable: DurableLimits,
+    /// The file limits a deployment gets without asking.
+    pub(crate) files: FileLimits,
     /// What no grant can exceed.
     pub(crate) ceilings: BTreeMap<String, u64>,
     /// Items granted without asking: exact (`HttpRequest("hooks.slack.com")`) or a whole kind
@@ -243,13 +291,14 @@ pub(crate) struct Policy {
 
 impl Default for Policy {
     fn default() -> Policy {
-        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings());
+        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings());
         ceilings.insert(holon_core::FUEL_LIMIT.into(), MODULE_FUEL_CEILING);
         ceilings.insert(holon_core::MEMORY_LIMIT.into(), MODULE_MEMORY_CEILING);
         Policy {
             request: Limits::request_run(),
             clock_run_budget: Limits::clock_run().run_budget,
             durable: DurableLimits::defaults(),
+            files: FileLimits::defaults(),
             ceilings,
             auto: Vec::new(),
             allow_plain_http: false,
@@ -318,6 +367,7 @@ impl Policy {
         policy.request = numbers_to_limits(&policy.request, &defaults, false);
         policy.clock_run_budget = Duration::from_millis(defaults["clock_run_budget_ms"]);
         policy.durable = numbers_to_durable(&policy.durable, &defaults);
+        policy.files = numbers_to_files(&policy.files, &defaults);
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
         policy.allow_private_addresses = file.grants.allow_private_addresses;
@@ -326,7 +376,7 @@ impl Policy {
 
     /// The defaults, by name.
     pub(crate) fn defaults(&self) -> BTreeMap<String, u64> {
-        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable)
+        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files)
     }
 
     /// Whether `item` is granted without asking.
@@ -592,6 +642,8 @@ pub(crate) struct Permit {
     pub(crate) clock_limits: Limits,
     /// How long a waiting point may wait, and how many runs may wait at once.
     pub(crate) durable: DurableLimits,
+    /// How much of its files a run may read and write.
+    pub(crate) files: FileLimits,
     pub(crate) outbound: Outbound,
     /// The grant's hash (hex), for the flow log.
     pub(crate) grant: String,
@@ -615,6 +667,7 @@ impl Permit {
         let clock_base = Limits { run_budget: policy.clock_run_budget, ..policy.request.clone() };
         let clock_limits = numbers_to_limits(&clock_base, &clamped, true);
         let durable = numbers_to_durable(&policy.durable, &clamped);
+        let files = numbers_to_files(&policy.files, &clamped);
         let hosts = |items: &BTreeSet<String>| -> BTreeSet<String> {
             items
                 .iter()
@@ -637,7 +690,7 @@ impl Permit {
                 && grant.items.contains("PrivateAddresses")
                 && policy.allow_private_addresses,
         };
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, outbound, grant: to_hex(&grant.hash()) }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, outbound, grant: to_hex(&grant.hash()) }
     }
 
     /// Whether the grant covers this capability.
@@ -711,6 +764,12 @@ mod tests {
         assert_eq!((p.durable.max_waiting_runs, p.ceilings["max_waiting_runs"]), (500, 1000));
         assert_eq!(Policy::default().durable.max_await_seconds, 30 * 24 * 3600);
         assert!(Policy::parse("[ceilings]\nmax_await_seconds = 86400").unwrap_err().contains("above its ceiling"), "the default month");
+
+        // So are the file limits.
+        let p = Policy::parse("[limits]\nmax_files_per_run = 50\n[ceilings]\ninline_file_bytes = 4194304").unwrap();
+        assert_eq!((p.files.max_files_per_run, p.ceilings["inline_file_bytes"]), (50, 4 << 20));
+        assert_eq!(Policy::default().files, FileLimits::defaults());
+        assert!(Policy::parse("[limits]\nmax_file_read_bytes = 2147483648").unwrap_err().contains("above its ceiling"), "past a gigabyte");
     }
 
     /// A flow that places a module asks for its budgets as limits, whether or not its author

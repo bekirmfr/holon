@@ -83,7 +83,7 @@ pub fn describe(name: &str) -> Option<&'static str> {
         // ── outside the run ──
         "http_request" => "Calls the host set on the node (HTTPS) with the method, path, headers and body, and answers {status, headers, body}. Performed by the server between rounds, within the deployment's limits; the host is a permission it asks for. Holds back when a wired input didn't arrive.",
         "http_upload" => "Calls the host set on the node like http_request, with the file a handle names as the body: the server streams its bytes from the folder (one the deployment reads), never through the flow, and fails the call if the file changed since the run read it.",
-        "file_arrival" => "The handle of the new file in a folder that started the run: {folder, name, size, hash, modified}. A flow with one runs once for each file that arrives there (and settles), not on requests.",
+        "file_arrival" => "The file in a folder that started the run: its handle {folder, name, size, hash, modified, event}, event new or changed; for a file deleted (on: deleted), as last seen, without a hash. A flow with one runs once for each file that arrives there and settles (or, on: deleted, is removed), its name matching the glob matching if set, not on requests.",
         "clock" => "The time the run started, in seconds since 1970. The same everywhere in one run, and recorded, so a replay sees it too.",
         "random" => "A random number from 0 up to 1, the same everywhere in one run, and recorded.",
         "ingress" => "What arrived at the deployment (a request's body, a trigger's payload).",
@@ -104,6 +104,8 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "file_lines" => "Up to limit lines of the file name in a folder, from line from (0 is the first; -100 is the 100th from the end), without their line endings. Only those lines are read into the flow; the log proves them part of the file.",
         "file_slice" => "length bytes of the file name in a folder from byte offset (from the end when negative), as text. Only those bytes are read into the flow; the log proves them part of the file.",
         "file_copy" => "Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.",
+        "file_create" => "Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).",
+        "file_create_copy" => "Copies the file a handle names into this folder as name when the run finishes, only if no file has that name then: it never replaces one.",
         "egress" => "Sends its payload out of the flow as a message, when the run finishes.",
         _ => return None,
     })
