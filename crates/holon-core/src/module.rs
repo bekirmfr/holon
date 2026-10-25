@@ -234,12 +234,11 @@ fn read_sections(bytes: &[u8]) -> Result<Sections, ModuleError> {
             }
             SECTION_IMPORT => {
                 let n = p.u32()?;
-                for _ in 0..n {
+                if n > 0 {
                     let module = p.name()?;
                     let field = p.name()?;
                     // The descriptor is skipped: whatever it imports, it imports.
                     s.imports.push(format!("{module}.{field}"));
-                    break;
                 }
                 // Count them all without decoding descriptors: the count is what we report.
                 s.imports.extend(std::iter::repeat_n(String::new(), (n as usize).saturating_sub(s.imports.len())));
