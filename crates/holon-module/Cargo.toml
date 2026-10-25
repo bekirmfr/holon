@@ -1,0 +1,20 @@
+[package]
+name = "holon-module"
+version = "0.1.0"
+edition = "2024"
+description = "The engine for Holon's module bodies: runs a WebAssembly module with no imports under a fuel and memory budget, values crossing in core's own encoding (docs/L4s/wasm-module-L4.md §5)."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# One implementation, compiled twice: native for the host, wasm32 for the editor's bridge. Core's
+# `Resolver::run_module` hook is what this crate fills in; core itself never sees an engine.
+holon-core = { path = "../holon-core" }
+# A pure-Rust interpreter that meters fuel natively and builds for wasm32-unknown-unknown (no JIT,
+# no platform code paths), so the same engine runs everywhere. No `wat` feature: text is for tests.
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "stable", "auto-dispatch"] }
+blake3 = "1"
+# The limiter trait's error type lives in wasmi's core crate and isn't re-exported.
+wasmi_core = { version = "2", default-features = false }
+
+[dev-dependencies]
+wat = "1"

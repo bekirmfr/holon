@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/holon-core", "crates/holon-author", "crates/holon-host", "crates/holon-wasm", "crates/holon"]
+members = ["crates/holon-core", "crates/holon-module", "crates/holon-author", "crates/holon-host", "crates/holon-wasm", "crates/holon"]
 
 # The profile that 'dist' will build with
 [profile.dist]
