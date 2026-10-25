@@ -20,9 +20,9 @@ pub enum Tok {
     Str,
     /// A number with a scale: `50M`, `16MB`, `2K`. The number it means.
     Scaled(f64),
-    /// A `js` node's body: `text` is the JavaScript between the braces, verbatim (the braces
-    /// themselves are the token's span). The lexer reads it as JavaScript, not as Holon: a `}` in
-    /// a string, a template or a comment doesn't end it.
+    /// A js holon's body (`holon f(a) -> b js { … }`): `text` is the JavaScript between the
+    /// braces, verbatim (the braces themselves are the token's span). The lexer reads it as
+    /// JavaScript, not as Holon: a `}` in a string, a template or a comment doesn't end it.
     JsBody,
     Newline,
     Eof,
@@ -92,8 +92,11 @@ struct Lexer {
     i: usize,
     pos: Pos,
     out: Vec<Token>,
-    /// A `js` statement's header is being read: its next `{` opens a JavaScript body.
+    /// A js holon's header has been read to its `js`: its next `{` opens a JavaScript body.
     js_pending: bool,
+    /// A `holon` header is being read: its parenthesis depth, and whether its `->` has come (a
+    /// `js` after the outputs marks the body as JavaScript; one among the ports is a port).
+    holon_head: Option<(i32, bool)>,
 }
 
 impl Lexer {
@@ -124,6 +127,7 @@ impl Lexer {
     fn run(mut self) -> Result<Vec<Token>, LexError> {
         while let Some(c) = self.peek(0) {
             let start = self.pos;
+            let before = self.out.len();
             match c {
                 '#' => {
                     while self.peek(0).is_some_and(|c| c != '\n') {
@@ -149,21 +153,23 @@ impl Lexer {
                     while self.peek(0).is_some_and(is_ident_char) {
                         s.push(self.bump());
                     }
-                    // `js name = …` at the start of a statement: its block is JavaScript.
                     let at_start = matches!(self.out.last(), Some(Token { tok: Tok::Newline, .. }) | None);
-                    if s == "js" && at_start {
-                        let mut k = 0;
-                        while self.peek(k).is_some_and(|c| c == ' ' || c == '\t') {
-                            k += 1;
-                        }
-                        if k > 0 && self.peek(k).is_some_and(is_ident_start) {
-                            self.js_pending = true;
-                        }
+                    if s == "holon" && at_start {
+                        self.holon_head = Some((0, false));
+                    } else if s == "js" && self.js_marks_body() {
+                        // `holon f(a) -> b js { … }`: the block after the outputs is JavaScript.
+                        self.js_pending = true;
+                        self.holon_head = None;
+                    } else if s == "js" && at_start && self.old_js_statement() {
+                        return self.err(start, "a js node is a holon with a js body: write `holon name(inputs) -> outputs js { … }`");
                     }
                     self.push(Tok::Ident, s, start);
                 }
                 '{' if self.js_pending => self.js_body(start)?,
                 _ => self.punct(start)?,
+            }
+            if self.out.len() > before {
+                self.follow_holon_head();
             }
         }
         // A text always ends a statement.
@@ -236,7 +242,51 @@ impl Lexer {
         }
     }
 
-    /// A `js` body: from the `{` to its matching `}`, read as JavaScript (strings, template
+    /// Whether a `js` just read marks a holon's body as JavaScript: in a holon header, after its
+    /// `->` and the outputs (outside their parentheses), followed by a budget or the `{`.
+    fn js_marks_body(&self) -> bool {
+        let Some((0, true)) = self.holon_head else { return false };
+        let after_outputs = matches!(self.out.last().map(|t| &t.tok), Some(Tok::RParen | Tok::Ident | Tok::Str | Tok::Gt));
+        let mut k = 0;
+        while self.peek(k).is_some_and(|c| c == ' ' || c == '\t') {
+            k += 1;
+        }
+        after_outputs && self.peek(k).is_some_and(|c| c == '{' || is_ident_start(c))
+    }
+
+    /// `js name = …` at the start of a statement: the form a js node had before it was a holon.
+    fn old_js_statement(&self) -> bool {
+        let mut k = 0;
+        let skip = |k: &mut usize| {
+            while self.peek(*k).is_some_and(|c| c == ' ' || c == '\t') {
+                *k += 1;
+            }
+        };
+        skip(&mut k);
+        if !self.peek(k).is_some_and(is_ident_start) {
+            return false;
+        }
+        while self.peek(k).is_some_and(is_ident_char) {
+            k += 1;
+        }
+        skip(&mut k);
+        self.peek(k) == Some('=') && self.peek(k + 1) != Some('=')
+    }
+
+    /// Keeps up with a holon header as its tokens come: parentheses, the `->`, and its end at a
+    /// brace (the block of a holon written in Holon) or at the end of the text.
+    fn follow_holon_head(&mut self) {
+        let Some((depth, arrow)) = self.holon_head.as_mut() else { return };
+        match self.out.last().map(|t| &t.tok) {
+            Some(Tok::LParen) => *depth += 1,
+            Some(Tok::RParen) => *depth -= 1,
+            Some(Tok::Arrow) if *depth == 0 => *arrow = true,
+            Some(Tok::LBrace | Tok::RBrace | Tok::Eof) => self.holon_head = None,
+            _ => {}
+        }
+    }
+
+    /// A js body: from the `{` to its matching `}`, read as JavaScript (strings, template
     /// literals with their `${…}` parts, line and block comments), kept verbatim.
     fn js_body(&mut self, start: Pos) -> Result<(), LexError> {
         self.bump(); // the opening brace
@@ -519,7 +569,7 @@ fn regex_may_start(before: &str) -> bool {
 /// The tokens of `src`, the first at `start` (so a string's `{…}` part lexes with the columns of
 /// the string it sits in).
 pub fn lex_from(src: &str, start: Pos) -> Result<Vec<Token>, LexError> {
-    Lexer { chars: src.chars().collect(), i: 0, pos: start, out: Vec::new(), js_pending: false }.run()
+    Lexer { chars: src.chars().collect(), i: 0, pos: start, out: Vec::new(), js_pending: false, holon_head: None }.run()
 }
 
 /// The tokens of a whole text.
@@ -614,11 +664,27 @@ mod tests {
     #[test]
     fn a_js_body_is_read_as_javascript() {
         let body = |src: &str| lex(src).unwrap().into_iter().find(|t| t.tok == Tok::JsBody).map(|t| t.text).unwrap();
-        assert_eq!(body("js f = (a) -> b { return a / 2 }"), " return a / 2 ");
-        assert_eq!(body("js f = (s) -> t { return s.replace(/[&<>\"']}/g, \"x\") }"), " return s.replace(/[&<>\"']}/g, \"x\") ");
-        assert_eq!(body("js f = (s) -> t { const r = /\\/{/; return `${s}}` + '}' // }\n}"), " const r = /\\/{/; return `${s}}` + '}' // }\n");
-        assert_eq!(body("js f = (a, b) -> c { return (a + 1) / (b - 1) }"), " return (a + 1) / (b - 1) ");
-        assert!(lex("js f = (s) -> t { return /[/ }\n").is_err(), "an open regex is a mistake");
+        assert_eq!(body("holon f(a) -> b js { return a / 2 }"), " return a / 2 ");
+        assert_eq!(body("holon f(s) -> t js { return s.replace(/[&<>\"']}/g, \"x\") }"), " return s.replace(/[&<>\"']}/g, \"x\") ");
+        assert_eq!(body("holon f(s) -> t js { const r = /\\/{/; return `${s}}` + '}' // }\n}"), " const r = /\\/{/; return `${s}}` + '}' // }\n");
+        assert_eq!(body("holon f(a, b) -> (c, d) js fuel 50M { return (a + 1) / (b - 1) }"), " return (a + 1) / (b - 1) ");
+        assert_eq!(body("holon f(\n  a: Text,\n  b,\n) -> c: List<Text> js { return [a] }"), " return [a] ");
+        assert!(lex("holon f(s) -> t js { return /[/ }\n").is_err(), "an open regex is a mistake");
+    }
+
+    /// Only a `js` after a holon's outputs marks its body: a port called `js` is a port, and a
+    /// holon written in Holon has a Holon block.
+    #[test]
+    fn js_marks_a_body_only_after_the_outputs() {
+        let has_body = |src: &str| lex(src).unwrap().iter().any(|t| t.tok == Tok::JsBody);
+        assert!(!has_body("holon f(js) -> y {\n  y = js\n}\n"));
+        assert!(!has_body("holon f(a) -> js {\n  js = a\n}\n"));
+        assert!(!has_body("holon f(a) -> (b, js) {\n  b = a\n  js = a\n}\n"));
+        assert!(!has_body("js = 1\n"));
+        // The old statement says how it is written now.
+        let e = lex("js f = (a) -> b { return a }\n").unwrap_err();
+        assert_eq!((e.pos.line, e.pos.col), (1, 1));
+        assert!(e.message.contains("holon name(inputs) -> outputs js"), "{}", e.message);
     }
 
     #[test]

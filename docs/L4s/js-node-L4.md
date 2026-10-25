@@ -7,6 +7,8 @@
 > *effort:* **M** (three inches after the module unit exists, about a week)
 > *Status:* **built 2026-10-25** (the engine module, the statement, the sample `nearest`); what
 > §7 still owes is listed there. The trigger in `wasm-module-L4.md` §7 was met the same day (§0).
+> Respelled the same day as a holon with a js body, `holon f(a) -> b js { … }` (§2): the
+> lowering, and so every unit's hash, is unchanged.
 > *Pinned:* a `js` node is a **composite over one pinned engine module and its source as a
 > `const`**, never a new body kind · the engine is a module like any other, **no imports** · the
 > engine's realm is **fresh per call**, with **no clock, no randomness, no I/O** · source crosses
@@ -63,22 +65,24 @@ never a hole in one.
 ## 2. The statement
 
 ```
-js score = (estimates, tags) -> (total, weight) {
+holon score(estimates, tags) -> (total, weight) js {
   const total = estimates.reduce((a, b) => a + b, 0);
   return { total, weight: total > 10 ? "heavy" : "light" };
 }
 
-js nearest = (word: Text, candidates: List) -> Text fuel 50M {
+holon nearest(word: Text, candidates: List) -> Text js fuel 50M {
   …
 }
 ```
 
-- Top level only, beside `holon`, visible to the whole file in any order. Placed by name like a
-  holon: `s = score(req.json.estimates ?? [], tags)`, `score(…).weight`.
+- Written as a holon whose body is JavaScript: `holon` defines every node, and `js` after the
+  outputs says the body's language (the first spelling, `js score = (a, b) -> c { … }`, said one
+  idea two ways and is now an error that names this one). Top level only, visible to the whole
+  file in any order. Placed by name like any holon: `s = score(req.json.estimates ?? [], tags)`, `score(…).weight`.
 - Ports as a holon declares them: names, optional types, one output or a parenthesised list.
   Port names are the JavaScript parameter names and, for several outputs, the keys of the object
   the body returns. A single output is the value the body returns.
-- `fuel N` and `memory N` after the ports, optional. The defaults are a js node's own, measured
+- `fuel N` and `memory N` after `js`, optional. The defaults are a js node's own, measured
   (`holon-module/tests/js_engine.rs`, `what_a_call_costs`): a fresh realm and a compiled one-line
   function cost about 15M instructions under the interpreter, an edit-distance search over eight
   words 41M, a loop of a hundred thousand 271M; so a js node defaults to **200M** fuel
@@ -97,14 +101,14 @@ js nearest = (word: Text, candidates: List) -> Text fuel 50M {
 - Grammar, added to §5.2 of `docs/LANGUAGE.md`:
 
 ```
-jsnode    = "js" ident "=" "(" ports? ")" "->" outputs budget* jsbody
+holon     = "holon" ident "(" ports? ")" "->" outputs (block | "js" budget* jsbody)
 budget    = "fuel" number | "memory" number
 jsbody    = "{" <JavaScript source, balanced> "}"
 ```
 
 ## 3. Lowering: a composite the printer can read back
 
-`js score = (a, b) -> (total, weight) { body }` lowers to one composite:
+`holon score(a, b) -> (total, weight) js { body }` lowers to one composite:
 
 ```
 inputs:   a, b                                   (the declared ports, declared types)
@@ -305,7 +309,7 @@ flow nearest
 port 8109
 collection words
 
-js closest = (word, candidates) -> (match, distance) {
+holon closest(word, candidates) -> (match, distance) js {
   const dist = (a, b) => {
     const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
     for (let j = 1; j <= b.length; j++) d[0][j] = j;

@@ -76,7 +76,7 @@ same graph are the same unit.
 | Operators | Arithmetic and comparison on numbers, logic, `??` (fallback), `.` (field or output), `[ ]` (lookup), `when` (guard), `if … then … else …` (guard plus fallback), `match x { … }` (a choice by value) | §5.6, §6.5 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
 | Functions for `map`/`fold` | A holon by name, or a lambda `fn(a, b) -> …`; a name it uses from around it becomes an input of its own | §5.9 |
-| js nodes | `js name = (inputs) -> outputs [fuel N] [memory N] { JavaScript }`: a body in JavaScript as one node, run by an engine that is a WebAssembly module with no imports, under a budget; placed like a holon | §5.8a |
+| js holons | `holon name(inputs) -> outputs js [fuel N] [memory N] { JavaScript }`: a holon whose body is JavaScript, run by an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
 | Routes | `route METHOD /path (req) [resumes name] { … }`; `respond` is a statement wired to the request implicitly | §5.11 |
 | Flows without routes | The top-level statements are the one unit | §5.12 |
@@ -405,7 +405,8 @@ around it reaches it as an input after the item (§5.9).
 - **Encoding:** UTF-8. Lines end in `\n` or `\r\n`.
 - **Comments:** `#` to end of line. `fmt` keeps a comment on the line it was written on, moving it
   with that statement.
-- **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `holon` `js` `route`
+- **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `holon` `js` (after a
+  holon's outputs) `route`
   `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`, and the
   wiring form's `node` `at` `in` `out` `interval`. Keywords are valid after a dot (`req.in`) and
   as record keys (`{ in: 1 }`).
@@ -453,7 +454,9 @@ bindings of literals are allowed at the top level (§5.11).
 ### 5.2 Definitions and statements
 
 ```
-holon     = "holon" ident "(" ports? ")" "->" outputs block
+holon     = "holon" ident "(" ports? ")" "->" outputs (block | "js" budget* jsbody)
+budget    = ("fuel" | "memory") number              # a js holon's budgets, §5.8a
+jsbody    = "{" <JavaScript source, balanced> "}"
 ports     = port ("," port)*
 port      = ident (":" type)? (string)?            # the string: the unit's own port name, §10
 outputs   = port | "(" ports ")"
@@ -650,17 +653,20 @@ Holons are defined at the top level and are visible to the whole file, in any or
 may use one defined below it. They may not be nested in text; a holon placed inside another is
 the nesting.
 
-### 5.8a js nodes
+### 5.8a js holons
 
 ```
-js score = (estimates, tags) -> (total, weight) fuel 50M {
+holon score(estimates, tags) -> (total, weight) js fuel 50M {
   const total = estimates.reduce((a, b) => a + b, 0);
   return { total, weight: total > 10 ? "heavy" : "light" };
 }
 ```
 
-A `js` node is a holon whose body is JavaScript (`docs/L4s/js-node-L4.md`). Defined at the top
-level like a holon, visible to the whole file, placed by name like one (`score(a, b)`,
+A holon whose outputs are followed by `js` has a body in JavaScript (`docs/L4s/js-node-L4.md`):
+the one keyword that defines a node is `holon`, and `js` says the language its body is written in.
+Its ports are declared as any holon's (names, optional types, one output or a parenthesised list),
+and `fuel` and `memory` come after `js`. Defined at the top level, visible to the whole file,
+placed by name like any holon (`score(a, b)`,
 `score(a, b).weight`, `fn: score`), and lowered to a composite the printer reads back: a `const`
 holding `(estimates, tags) => { body }` (assembled from the declared names, so ports and source
 can't disagree), the arguments as one list, the engine module placed by hash under its budgets,
@@ -1195,5 +1201,5 @@ Decided ones are kept, with the decision, for a reader who wonders why.
 The MCP server and its tools (decided in `docs/L4s/agent-surface-L4.md`), the export and
 verifier for run logs, and the marketplace's `use`. Each depends on this language existing and
 none changes it. The sandboxed WebAssembly module is decided and built (`docs/L4s/wasm-module-L4.md`);
-the language's spelling for one is the `js` node of §5.8a, and a `module` statement placing a
+the language's spelling for one is the js holon of §5.8a, and a `module` statement placing a
 module by hash waits for a second module.

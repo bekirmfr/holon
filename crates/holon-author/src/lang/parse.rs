@@ -278,8 +278,7 @@ impl Parser {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
-                    "holon" => file.items.push(Item::Holon(self.holon()?)),
-                    "js" if self.peek_at(1).tok == Tok::Ident => file.items.push(Item::Js(self.js()?)),
+                    "holon" => file.items.push(self.holon()?),
                     "route" => file.items.push(Item::Route(self.route()?)),
                     _ => file.items.push(Item::Stmt(self.stmt()?)),
                 },
@@ -363,26 +362,25 @@ impl Parser {
 
     // ── definitions ──────────────────────────────────────────────────────────────────────────
 
-    fn holon(&mut self) -> R<HolonDef> {
+    /// `holon name(inputs) -> outputs { … }`, or with `js [fuel N] [memory N]` after the outputs,
+    /// a holon whose body is JavaScript (docs/L4s/js-node-L4.md §2).
+    fn holon(&mut self) -> R<Item> {
         let head = self.next();
         let name = self.raw_name("the holon's name")?;
         self.expect(&Tok::LParen, "\"(\" and the holon's inputs")?;
         let inputs = self.ports()?;
         self.expect(&Tok::Arrow, "\"->\" and the holon's outputs")?;
         let outputs = if self.eat(&Tok::LParen) { self.ports()? } else { vec![self.port()?] };
+        if self.is(&Tok::Ident) && self.peek().text == "js" {
+            self.next();
+            return Ok(Item::Js(self.js(head.span, name, inputs, outputs)?));
+        }
         let (body, end) = self.block()?;
-        Ok(HolonDef { name, inputs, outputs, body, span: head.span.to(end) })
+        Ok(Item::Holon(HolonDef { name, inputs, outputs, body, span: head.span.to(end) }))
     }
 
-    /// `js name = (inputs) -> outputs [fuel N] [memory N] { body }`.
-    fn js(&mut self) -> R<JsDef> {
-        let head = self.next();
-        let name = self.raw_name("the js node's name")?;
-        self.expect(&Tok::Eq, "\"=\" and the js node's inputs in parentheses")?;
-        self.expect(&Tok::LParen, "\"(\" and the js node's inputs")?;
-        let inputs = self.ports()?;
-        self.expect(&Tok::Arrow, "\"->\" and the js node's outputs")?;
-        let outputs = if self.eat(&Tok::LParen) { self.ports()? } else { vec![self.port()?] };
+    /// A js holon's budgets and body, after its `js`: `[fuel N] [memory N] { JavaScript }`.
+    fn js(&mut self, head: Span, name: Name, inputs: Vec<PortDecl>, outputs: Vec<PortDecl>) -> R<JsDef> {
         let (mut fuel, mut memory) = (None, None);
         while self.is(&Tok::Ident) && matches!(self.peek().text.as_str(), "fuel" | "memory") {
             let which = self.next();
@@ -404,7 +402,7 @@ impl Parser {
             *slot = Some(budget);
         }
         let body = self.expect(&Tok::JsBody, "\"{\" and the JavaScript body")?;
-        Ok(JsDef { name, inputs, outputs, fuel, memory, body: body.text.clone(), body_span: body.span, span: head.span.to(body.span) })
+        Ok(JsDef { name, inputs, outputs, fuel, memory, body: body.text.clone(), body_span: body.span, span: head.to(body.span) })
     }
 
     /// Ports up to and including the closing parenthesis (the opening one already taken).

@@ -329,7 +329,7 @@ fn js_parts<'s>(store: &'s MapResolver, unit: &holon_core::Unit) -> Option<(&'s 
     source.contains(") => {").then_some((engine, source))
 }
 
-/// The `js` statement `unit` was written as, under `hname` with its ports named `ins` and
+/// The js holon `unit` was written as, under `hname` with its ports named `ins` and
 /// `outs`: the body verbatim (between the `) => {` the lowering wrote and the last brace), the
 /// budgets only where they differ from a js node's defaults. None when `unit` isn't a js node.
 /// Both printers write a js node this way: the netlist form has no spelling for the engine.
@@ -351,7 +351,7 @@ pub(crate) fn js_statement(store: &MapResolver, unit: &holon_core::Unit, hname: 
         budgets.push_str(&format!(" memory {m}"));
     }
     let outs_text = if outs.len() == 1 { outs[0].clone() } else { format!("({})", outs.join(", ")) };
-    Some(format!("js {hname} = ({}) -> {outs_text}{budgets} {{{body}}}", ins.join(", ")))
+    Some(format!("holon {hname}({}) -> {outs_text} js{budgets} {{{body}}}", ins.join(", ")))
 }
 
 /// Whether the expression form can spell `nodes` as wired: every input a node needs is wired
@@ -1501,7 +1501,7 @@ mod tests {
     /// text lowers to the same units; and the node runs, through the engine, as the body says.
     #[test]
     fn a_js_node_prints_back_verbatim_lowers_to_the_same_units_and_runs() {
-        let src = "flow f\nport 8201\n\njs score = (estimates, tags) -> (total, weight) fuel 50000000 {\n  // a } in a comment, \"}\" in a string, `}` in a template: none ends the body\n  const total = estimates.reduce((a, b) => a + b, 0);\n  const label = `${tags.length}:${total > 10 ? \"heavy\" : \"light\"}`;\n  return { total, weight: label };\n}\n\njs shout = (s) -> said {\n  return s.toUpperCase() + \"!\";\n}\n\nroute POST /x (req) {\n  s = score(req.json.estimates, req.json.tags)\n  respond { total: s.total, weight: s.weight, said: shout(req.json.title) }\n}\n";
+        let src = "flow f\nport 8201\n\nholon score(estimates, tags) -> (total, weight) js fuel 50000000 {\n  // a } in a comment, \"}\" in a string, `}` in a template: none ends the body\n  const total = estimates.reduce((a, b) => a + b, 0);\n  const label = `${tags.length}:${total > 10 ? \"heavy\" : \"light\"}`;\n  return { total, weight: label };\n}\n\nholon shout(s) -> said js {\n  return s.toUpperCase() + \"!\";\n}\n\nroute POST /x (req) {\n  s = score(req.json.estimates, req.json.tags)\n  respond { total: s.total, weight: s.weight, said: shout(req.json.title) }\n}\n";
         let lowered = compile(src).unwrap_or_else(|e| panic!("{e}"));
         let text = round_trips("f", &lowered.doc, &lowered.names);
         assert_eq!(text, src, "fmt writes the js node as it was written");
@@ -1539,17 +1539,17 @@ mod tests {
     #[test]
     fn a_js_node_s_mistakes_are_named_at_their_place() {
         let error = |src: &str| compile(src).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("compiled: {src}"));
-        assert!(error("flow f\n\njs a = (x) -> y {\n  return x\n").contains("isn't closed"));
-        assert!(error("flow f\n\njs a = (x) -> y {}\nstate.k = a(1)\n").contains("empty"));
-        assert!(error("flow f\n\njs a = (x, x) -> y { return x }\nstate.k = a(1)\n").contains("declared twice"));
-        assert!(error("flow f\n\njs a = (x) -> y fuel 0 { return x }\nstate.k = a(1)\n").contains("positive whole number"));
-        assert!(error("flow f\n\njs a = (x) -> y fuel 1M fuel 2M { return x }\nstate.k = a(1)\n").contains("given twice"));
-        assert!(error("flow f\n\nholon a(x) -> y {\n  y = x\n}\njs a = (x) -> y { return x }\nstate.k = a(1)\n").contains("already"));
-        assert!(error("flow f\n\njs a = (x) -> y { return x }\nroute GET /p (req) {\n  a = 1\n  respond a\n}\n").contains("may not shadow"));
+        assert!(error("flow f\n\nholon a(x) -> y js {\n  return x\n").contains("isn't closed"));
+        assert!(error("flow f\n\nholon a(x) -> y js {}\nstate.k = a(1)\n").contains("empty"));
+        assert!(error("flow f\n\nholon a(x, x) -> y js { return x }\nstate.k = a(1)\n").contains("declared twice"));
+        assert!(error("flow f\n\nholon a(x) -> y js fuel 0 { return x }\nstate.k = a(1)\n").contains("positive whole number"));
+        assert!(error("flow f\n\nholon a(x) -> y js fuel 1M fuel 2M { return x }\nstate.k = a(1)\n").contains("given twice"));
+        assert!(error("flow f\n\nholon a(x) -> y {\n  y = x\n}\nholon a(x) -> y js { return x }\nstate.k = a(1)\n").contains("already"));
+        assert!(error("flow f\n\nholon a(x) -> y js { return x }\nroute GET /p (req) {\n  a = 1\n  respond a\n}\n").contains("may not shadow"));
         // The header's scaled numbers: 50M is 50 000 000, 16MB is 16 MiB.
-        let l = compile("flow f\n\njs a = (x) -> y fuel 50M memory 16MB { return x }\nstate.k = a(1)\n").unwrap();
+        let l = compile("flow f\n\nholon a(x) -> y js fuel 50M memory 16MB { return x }\nstate.k = a(1)\n").unwrap();
         let text = printed(Some("f"), &l.doc, &l.names);
-        assert!(text.contains("js a = (x) -> y fuel 50000000 {"), "{text}");
+        assert!(text.contains("holon a(x) -> y js fuel 50000000 {"), "{text}");
         assert!(!text.contains("memory"), "the default memory isn't written: {text}");
     }
 

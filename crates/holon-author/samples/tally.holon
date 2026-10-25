@@ -1,7 +1,7 @@
 flow tally
 port 8119
 
-js summarize = (csv) -> (rows, columns) {
+holon summarize(csv) -> (rows, columns) js {
   const lines = csv.split(/\r?\n/).filter((line) => line.trim() !== "");
   if (lines.length === 0) throw new Error("the CSV has no header line");
   const cells = (line) => line.split(",").map((cell) => cell.trim());

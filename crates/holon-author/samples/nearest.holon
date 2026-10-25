@@ -2,7 +2,7 @@ flow nearest
 port 8117
 collection words
 
-js closest = (word, candidates) -> (best, distance) {
+holon closest(word, candidates) -> (best, distance) js {
   const dist = (a, b) => {
     const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
     for (let j = 1; j <= b.length; j++) d[0][j] = j;

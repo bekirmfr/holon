@@ -73,8 +73,8 @@ pub enum Item {
     Stmt(Stmt),
 }
 
-/// `js name = (inputs) -> outputs [fuel N] [memory N] { body }`: a node whose body is JavaScript,
-/// run by the engine module (docs/L4s/js-node-L4.md §2). Placed by name like a holon.
+/// `holon name(inputs) -> outputs js [fuel N] [memory N] { body }`: a holon whose body is
+/// JavaScript, run by the engine module (docs/L4s/js-node-L4.md §2). Placed by name like any.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JsDef {
     pub name: Name,

@@ -381,12 +381,12 @@ mod tests {
     /// fmt leaves the body whole, and still puts back the comments around the statement.
     #[test]
     fn fmt_leaves_a_hash_inside_a_js_body_alone() {
-        let src = "flow f\nport 8203\n\n# the page\njs page = (x) -> html {\n  return `<style>a{color:#777}</style>${x}`; // #not a holon comment\n}\n\nroute GET /p (req) {\n  respond page(req.query.x ?? \"y\") # answered\n}\n";
+        let src = "flow f\nport 8203\n\n# the page\nholon page(x) -> html js {\n  return `<style>a{color:#777}</style>${x}`; // #not a holon comment\n}\n\nroute GET /p (req) {\n  respond page(req.query.x ?? \"y\") # answered\n}\n";
         let out = fmt("f.holon", src).unwrap();
         assert_eq!(out, src, "{out}");
         assert_eq!(fmt("f.holon", &out).unwrap(), out, "and again");
         // A body on one line, with a comment after its brace.
-        let one = "flow f\n\njs tag = (x) -> t { return `#${x}` } # a tag\n\nstate.k = tag(1)\n";
+        let one = "flow f\n\nholon tag(x) -> t js { return `#${x}` } # a tag\n\nstate.k = tag(1)\n";
         assert_eq!(fmt("f.holon", one).unwrap(), one);
     }
 
@@ -395,7 +395,7 @@ mod tests {
     /// would do at run time (that is the run's to say, and explain's).
     #[test]
     fn check_compiles_each_js_body_and_says_a_mistake_at_its_line() {
-        let src = "flow f\nport 8202\n\njs bad = (a) -> b {\n  const x = ;\n  return x\n}\n\nroute GET /x (req) {\n  respond bad(1)\n}\n";
+        let src = "flow f\nport 8202\n\nholon bad(a) -> b js {\n  const x = ;\n  return x\n}\n\nroute GET /x (req) {\n  respond bad(1)\n}\n";
         let r = check("f.holon", src);
         assert_eq!(r.code, 1);
         assert_eq!(r.err[0], "f.holon:5:13: js \"bad\": SyntaxError: unexpected token ';', primary expression");
@@ -405,7 +405,7 @@ mod tests {
         let fine = check("f.holon", &src.replace("const x = ;", "const x = a.b.c;"));
         assert_eq!((fine.code, fine.err), (0, vec![]));
         // On the header line, the column is the file's.
-        let one_line = check("f.holon", "flow f\n\njs bad = (a) -> b { return a + }\nstate.k = bad(1)\n");
+        let one_line = check("f.holon", "flow f\n\nholon bad(a) -> b js { return a + }\nstate.k = bad(1)\n");
         assert!(one_line.err[0].starts_with("f.holon:3:"), "{:?}", one_line.err);
         assert_eq!(js_position("SyntaxError: x at line 2, col 13 (native)"), Some((2, 13)));
         assert_eq!(js_position("TypeError: y (unknown at :3:9)\n    at <main> (unknown at :3:9)"), Some((3, 9)));
