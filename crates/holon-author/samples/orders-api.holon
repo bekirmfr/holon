@@ -1,0 +1,21 @@
+flow orders-api
+port 8150
+database shop
+
+route POST /orders (req) {
+  shop.exec("insert into orders (customer, total) values ($1, $2)", req.json.customer, req.json.total)
+  respond { placed: req.json.customer }, status: 201
+}
+
+route GET /orders/:customer (req) {
+  respond shop.query("select id, total, refunded from orders where customer = $1 order by id", req.params.customer)
+}
+
+route GET /order/:id (req) {
+  respond shop.one("select id, customer, total, refunded from orders where id = $1", req.params.id)
+}
+
+route POST /order/:id/refund (req) {
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, expect: 1)
+  respond { refunded: req.params.id }
+}

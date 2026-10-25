@@ -3798,6 +3798,106 @@ fn two_deployments_appending_to_one_shared_file_lose_no_line() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A flow reads and writes a SQLite database an admin bound: deploying waits for the binding (and
+/// for one it can write), its writes land when the run finishes, a statement that doesn't change
+/// the rows it expects lands nothing and answers 409, and its reads are in its log.
+#[test]
+fn a_flow_reads_and_writes_a_bound_database() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-orders-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("shop.db");
+    let text = include_str!("../../holon-author/samples/orders-api.holon");
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        route(&state, &req("POST", "/unit", u.clone()));
+    }
+    let preview = || body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    assert!(preview()["refused"].as_str().unwrap_or("").contains("holon database add shop"), "{}", preview());
+    let bind = |access: &str, schema: Option<&str>| {
+        let body = serde_json::json!({ "name": "shop", "path": file.display().to_string(), "access": access, "schema": schema });
+        route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()))
+    };
+    assert_eq!(bind("read", None).status_code, 400, "no database there, and no schema to make one");
+    let schema = "create table orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0)";
+    assert_eq!(bind("read", Some(schema)).status_code, 200);
+    assert!(preview()["refused"].as_str().unwrap_or("").contains("read-only"), "it writes orders: {}", preview());
+    assert_eq!(bind("read-write", None).status_code, 200);
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/databases", vec![])))[0]["engine"], "sqlite");
+    let slug = deploy_text(&state, text, "");
+
+    assert_eq!(data_call(&state, &slug, "POST", "/orders", r#"{"customer":"ada","total":"12.50"}"#).0, 201);
+    assert_eq!(data_call(&state, &slug, "POST", "/orders", r#"{"customer":"ada","total":7}"#).0, 201);
+    let (status, listed, _) = data_call(&state, &slug, "GET", "/orders/ada", "");
+    assert_eq!(status, 200, "{listed}");
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(listed, serde_json::json!([{ "id": 1, "total": 12.5, "refunded": 0 }, { "id": 2, "total": 7, "refunded": 0 }]));
+    let (status, one, _) = data_call(&state, &slug, "GET", "/order/2", "");
+    assert_eq!((status, serde_json::from_str::<serde_json::Value>(&one).unwrap()["customer"].clone()), (200, serde_json::json!("ada")));
+    assert_eq!(data_call(&state, &slug, "GET", "/order/9", "").0, 404, "no row: nothing to answer");
+
+    // Two refunds of one order at once: one changes the row, the other finds none to change.
+    let statuses: Vec<u16> = std::thread::scope(|s| {
+        let calls: Vec<_> = (0..2).map(|_| s.spawn(|| data_call(&state, &slug, "POST", "/order/1/refund", "").0)).collect();
+        calls.into_iter().map(|c| c.join().unwrap()).collect()
+    });
+    let mut sorted = statuses.clone();
+    sorted.sort();
+    assert_eq!(sorted, [200, 409], "{statuses:?}");
+    let (status, said, _) = data_call(&state, &slug, "POST", "/order/1/refund", "");
+    assert_eq!(status, 409);
+    assert!(said.contains("changed 0 rows, not 1 row"), "{said}");
+    let conn = rusqlite::Connection::open(&file).unwrap();
+    let marked: i64 = conn.query_row("select count(*) from holon_commits", [], |r| r.get(0)).unwrap();
+    assert_eq!(marked, 3, "two orders and one refund, each run marked done once");
+    // Its reads are in the log, as it found them.
+    let entries = log_entries(&state, &slug);
+    let read = entries.iter().find(|e| e["reads"][0]["request"].to_string().contains("\"shop\"")).unwrap_or_else(|| panic!("a logged read: {entries:?}"));
+    assert!(!read["reads"][0]["answer"].is_null(), "{read}");
+    // Every run checks offline, its reads answered from the log: no database at hand.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    // The two refunds that changed no row failed, and say so; every other run matches.
+    let skipped = report.reruns.iter().filter(|(_, r)| matches!(r, verify::Rerun::Skipped(why) if why.contains("changed 0 rows"))).count();
+    assert_eq!((report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), skipped), (entries.len() - 2, 2), "{:?}", report.reruns);
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two deployments that read a row and write it back, at once: none loses another's update. A
+/// run whose row changed between its read and its commit runs again on the row as it now is.
+#[test]
+fn two_deployments_counting_in_one_row_lose_no_count() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-counts-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({
+        "name": "shop",
+        "path": dir.join("counts.db").display().to_string(),
+        "schema": "create table counts (id integer primary key, n integer not null); insert into counts values (1, 0)",
+    });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = "flow counter\nport 8160\ndatabase shop\n\nroute POST /hit/:id (req) {\n  row = shop.one(\"select n from counts where id = $1\", req.params.id)\n  shop.exec(\"update counts set n = $1 where id = $2\", row.n + 1, req.params.id, expect: 1)\n  respond { n: row.n + 1 }\n}\n";
+    let a = deploy_text(&state, text, "");
+    let b = deploy_text(&state, &text.replace("flow counter", "flow counter-2").replace("port 8160", "port 8161"), "");
+    std::thread::scope(|s| {
+        for i in 0..30 {
+            let (state, slug) = (&state, if i % 2 == 0 { &a } else { &b });
+            s.spawn(move || {
+                let (status, said, _) = data_call(state, slug, "POST", "/hit/1", "");
+                let errors: Vec<serde_json::Value> = log_entries(state, slug).iter().map(|e| e["error"].clone()).filter(|e| !e.is_null()).collect();
+                assert_eq!(status, 200, "{said}, the log says {errors:?}");
+            });
+        }
+    });
+    let conn = rusqlite::Connection::open(dir.join("counts.db")).unwrap();
+    let n: i64 = conn.query_row("select n from counts where id = 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 30);
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A flow reads and writes files in the folders an admin bound, by name: deploying waits for the
 /// binding, a write lands whole when the run commits, a name that leaves its folder fails the run
 /// with nothing written, and the log keeps a write by its hash. The runs check offline: a small

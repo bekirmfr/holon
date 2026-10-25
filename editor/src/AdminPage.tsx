@@ -1,15 +1,17 @@
 // The admin panel (admins only; holon-server's auth.rs): the people who use this server, the API
-// tokens scripts use, signing in through an identity provider, the folders flows read and write
-// (folders.rs), and what was done, by whom.
+// tokens scripts use, signing in through an identity provider, the folders and databases flows
+// read and write (folders.rs, databases.rs), and what was done, by whom.
 // Adding someone gives a one-time link for them to set their password; resetting gives a new
 // one. The server refuses any change that would leave no admin.
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import {
   changeAccount,
+  bindDatabase,
   bindFolder,
   createToken,
   getOidcSettings,
+  listDatabases,
   listFolders,
   inviteAccount,
   listAccounts,
@@ -18,8 +20,11 @@ import {
   resetAccount,
   revokeToken,
   setOidcSettings,
+  unbindDatabase,
   unbindFolder,
   type AccountEntry,
+  type DatabaseBinding,
+  type DatabaseEntry,
   type FolderBinding,
   type FolderEntry,
   type OidcSettings,
@@ -80,12 +85,15 @@ export function AdminPage({ me }: { me: string }) {
   const [keepFor, setKeepFor] = useState("");
   // The "browse…" for the folder's path is open.
   const [browsing, setBrowsing] = useState(false);
+  const [databases, setDatabases] = useState<DatabaseEntry[]>([]);
+  const [databaseDraft, setDatabaseDraft] = useState<DatabaseBinding>({ name: "", path: "", access: "read-write", schema: null, deployment: null });
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
     listAccounts().then(setPeople).catch((e: unknown) => setMsg(messageOf(e)));
     listTokens().then(setTokens).catch((e: unknown) => setMsg(messageOf(e)));
     listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
+    listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
     getOidcSettings()
       .then((s) => {
         setOidc(s);
@@ -386,6 +394,82 @@ export function AdminPage({ me }: { me: string }) {
           onClose={() => setBrowsing(false)}
         />
       )}
+
+      <div style={head}>databases</div>
+      <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 6, lineHeight: 1.45 }}>
+        SQLite databases flows read and write on this server&apos;s machine. A flow names a database (<code>database shop</code>), never a path, and is granted
+        each table its SQL reads or writes. A schema (create table …) is run when it is bound, creating the file if there is none; flows run no DDL. Read
+        only: flows may read it, not write it. A writable database gets a table holon_commits, where each run&apos;s commit marks it done.
+      </div>
+      {databases.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no databases bound</div>}
+      {databases.map((d) => (
+        <div key={`${d.deployment ?? ""}/${d.name}`} style={row}>
+          <span style={{ color: "#6fd3e0", minWidth: 90 }}>{d.name}</span>
+          <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{d.path}</span>
+          <span style={{ color: "#7e8ea8", fontSize: 11 }}>
+            {d.engine} · {d.access === "read" ? "read only" : "read and write"}
+            {d.deployment ? ` · for ${d.deployment} only` : ""}
+          </span>
+          <button
+            style={small}
+            title="unbind the name: the database stays where it is"
+            onClick={async () => {
+              const whose = d.deployment ? ` for ${d.deployment}` : "";
+              if (await dialog.confirm(`Unbind the database "${d.name}"${whose}? It stays where it is; deployments that use it can't read or write it until it is bound again.`, "Unbind"))
+                act(() => unbindDatabase(d.name, d.deployment));
+            }}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <form
+        style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          act(async () => {
+            const d = databaseDraft;
+            await bindDatabase({ ...d, name: d.name.trim(), path: d.path.trim(), schema: d.schema?.trim() || null, deployment: d.deployment?.trim() || null });
+            setDatabaseDraft({ ...d, name: "", path: "", schema: null, deployment: null });
+          });
+        }}
+      >
+        <input aria-label="database name" placeholder="name (shop)" value={databaseDraft.name} onChange={(e) => setDatabaseDraft({ ...databaseDraft, name: e.target.value })} style={input} />
+        <input
+          aria-label="database path"
+          placeholder="the SQLite file's whole path on this server's machine"
+          value={databaseDraft.path}
+          onChange={(e) => setDatabaseDraft({ ...databaseDraft, path: e.target.value })}
+          style={{ ...input, flex: 1, minWidth: 220 }}
+        />
+        <select
+          aria-label="database access"
+          value={databaseDraft.access}
+          onChange={(e) => setDatabaseDraft({ ...databaseDraft, access: e.target.value as DatabaseEntry["access"] })}
+          style={input}
+        >
+          <option value="read-write">read and write</option>
+          <option value="read">read only</option>
+        </select>
+        <input
+          aria-label="database for one deployment"
+          placeholder="for one deployment (empty: all)"
+          value={databaseDraft.deployment ?? ""}
+          onChange={(e) => setDatabaseDraft({ ...databaseDraft, deployment: e.target.value })}
+          style={input}
+        />
+        <textarea
+          aria-label="database schema"
+          placeholder="schema, run when it is bound (create table orders (id integer primary key, …)); empty: the file is a database already"
+          value={databaseDraft.schema ?? ""}
+          onChange={(e) => setDatabaseDraft({ ...databaseDraft, schema: e.target.value })}
+          rows={2}
+          style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
+        />
+        <button type="submit" style={primary} disabled={!databaseDraft.name.trim() || !databaseDraft.path.trim()}>
+          bind database
+        </button>
+      </form>
 
       <div style={head}>signing in through an identity provider</div>
       <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 6, lineHeight: 1.45 }}>

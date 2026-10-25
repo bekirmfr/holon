@@ -145,6 +145,8 @@ pub enum WCapability {
     HttpRequest(String),
     FileWrite(String),
     Spawn,
+    DbRead(String),
+    DbWrite(String),
 }
 
 impl WCapability {
@@ -166,6 +168,8 @@ impl WCapability {
             Capability::HttpRequest(host) => WCapability::HttpRequest(host),
             Capability::FileWrite(folder) => WCapability::FileWrite(folder),
             Capability::Spawn => WCapability::Spawn,
+            Capability::DbRead(table) => WCapability::DbRead(table),
+            Capability::DbWrite(table) => WCapability::DbWrite(table),
         }
     }
 }

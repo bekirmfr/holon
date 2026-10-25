@@ -23,6 +23,8 @@ the editor show).
 | `CollectionWrite("c")` | put and delete items of its collection "c" | `c[k] = …`, `delete c[k]` |
 | `FileRead("f")` | read files in the folder "f" | `f[name]`, `f.list`, `f.file`, `f.lines`, `f.slice`, or copying a file from `f` |
 | `FileWrite("f")` | write, copy into and delete files in the folder "f" | `f[name] = …`, `delete f[name]`, `f.copy(…)` |
+| `DbRead("d/t")` | read the table "t" of the database "d" | `d.query("select … from t …")`, `d.one(…)` |
+| `DbWrite("d/t")` | insert, update and delete rows of the table "t" of the database "d" | `d.exec("update t …")` |
 | `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on file f` |
 | `Await("e")` | wait for an event "e" and continue later | `await e` |
 
@@ -62,7 +64,7 @@ can change both columns ([Server configuration](server.md#the-policy)).
 | `run_budget_ms` | time a request's run may take | 25000 | 900000 |
 | `clock_run_budget_ms` | time a clock run, or a run on a new file, may take | 60000 | 900000 |
 | `claim_wait_ms` | time a run waits for a key another run holds | 10000 | 60000 |
-| `commit_wait_ms` | time a run's commit waits for the locks on files (or a folder) another run's commit holds | 2000 | 30000 |
+| `commit_wait_ms` | time a run's commit waits for the locks on files (or a folder, or a database) another run's commit holds | 2000 | 30000 |
 | `max_requests` | outbound requests per run | 50 | 1000 |
 | `per_host_concurrency` | outbound requests to one host at once | 6 | 32 |
 | `max_request_bytes` | an outbound request's size | 10485760 (10 MiB) | 104857600 |
@@ -73,6 +75,10 @@ can change both columns ([Server configuration](server.md#the-policy)).
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
 | `module_fuel` | instructions a js holon may run per call | 200000000 per holon, unless it says | 1000000000 |
 | `module_memory` | memory a js holon may use per call | 16 MiB per holon, unless it says | 256 MiB |
+| `max_db_rows` | rows a run reads from databases | 10000 | 1000000 |
+| `max_db_read_bytes` | bytes a run reads from databases | 16777216 (16 MiB) | 268435456 |
+| `db_statement_ms` | time one SQL statement may take | 5000 | 60000 |
+| `max_db_statements` | SQL statements a run sends, reads and writes | 100 | 10000 |
 
 A run past its time budget fails and performs nothing. An outbound call past a limit doesn't
 fail the run: it answers `{status: 0, error, message}`, with `error` one of `timeout`, `connect`,

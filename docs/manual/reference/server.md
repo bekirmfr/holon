@@ -29,6 +29,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `accounts.json` | accounts, sessions, invites and API tokens (as hashes) | `--accounts` |
 | `secrets.json` | sealed secrets; `secrets.audit.jsonl` beside it, who changed what (never values) | `--secrets` |
 | `folders.json` | the named folders bound | `--folders` |
+| `databases.json` | the named databases bound | `--databases` |
 | `holon.toml` | the policy | `--policy` |
 | `host.key` | the key resume tokens are signed with | `--host-key` |
 
@@ -85,7 +86,7 @@ admin. Until then the server answers everything but setting up with 403.
 |---|---|
 | viewer | read: flows, deployments, logs |
 | editor | everything a viewer may, and save, deploy and approve, run, pause, stop, delete, change grants |
-| admin | everything, and set secrets, bind folders, manage accounts, tokens and sign-in |
+| admin | everything, and set secrets, bind folders and databases, manage accounts, tokens and sign-in |
 | agent | read, check, save flows (never replacing someone else's), deploy what needs no approval, call routes |
 
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the

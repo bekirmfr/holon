@@ -106,6 +106,9 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "file_copy" => "Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.",
         "file_create" => "Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).",
         "file_create_copy" => "Copies the file a handle names into this folder as name when the run finishes, only if no file has that name then: it never replaces one.",
+        "db_query" => "The rows sql selects from a database, as records by column name, as the run found them; params are its $1, $2, …. The database is a name an admin binds. Reading each table it names is a permission.",
+        "db_one" => "The first row sql selects from a database, as a record by column name; nothing when there is none. params are its $1, $2, ….",
+        "db_exec" => "Runs sql (an insert, update or delete) on a database when the run finishes, in one transaction with the run's other writes there; params are its $1, $2, …. With expect, it must change exactly that many rows, or nothing the run did there lands.",
         "egress" => "Sends its payload out of the flow as a message, when the run finishes.",
         _ => return None,
     })

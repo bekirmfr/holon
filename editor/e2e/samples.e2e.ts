@@ -601,6 +601,33 @@ test("shared-ledger, deployed twice, loses no line when both append to one file 
   expect(readFileSync(join(FOLDERS, "ledger", "lines.txt"), "utf8")).toContain(`${tag} 29`);
 });
 
+test("orders-api places, lists and refunds orders in the database an admin bound; a second refund changes no row and answers 409", async ({ page, request }) => {
+  const { join } = await import("node:path");
+  await openSample(page, "Orders API (a database on the host)");
+  const port = await deploy(page);
+  const base = `http://127.0.0.1:${port}`;
+  const customer = `e2e-${Date.now()}`;
+  expect((await request.post(`${base}/orders`, { data: { customer, total: "12.50" } })).status()).toBe(201);
+  const listed = await (await request.get(`${base}/orders/${customer}`)).json();
+  expect(listed).toEqual([{ id: listed[0].id, total: 12.5, refunded: 0 }]);
+  const id = listed[0].id;
+  expect((await request.post(`${base}/order/${id}/refund`)).status()).toBe(200);
+  const again = await request.post(`${base}/order/${id}/refund`);
+  expect(again.status()).toBe(409);
+  expect(await again.text()).toContain("changed 0 rows, not 1 row");
+  expect((await (await request.get(`${base}/order/${id}`)).json()).refunded).toBe(1);
+
+  // The admin page lists the database, and binds another, made by its schema.
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await expect(page.getByText(join(FOLDERS, "shop.db"), { exact: true })).toBeVisible();
+  const scratch = join(FOLDERS, `scratch-${Date.now()}.db`);
+  await page.getByLabel("database name").fill("scratch");
+  await page.getByLabel("database path").fill(scratch);
+  await page.getByLabel("database schema").fill("create table notes (id integer primary key, text text)");
+  await page.getByRole("button", { name: "bind database" }).click();
+  await expect(page.getByText(scratch, { exact: true })).toBeVisible();
+});
+
 test("drop-box runs once for a file dropped in its folder, sends it by handle, writes its receipt, and its runs verify", async ({ page, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
   const { existsSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");

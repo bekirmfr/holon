@@ -135,6 +135,18 @@ fn serve_flow(
     if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(folders::READ_FAILED)) {
         answer = data::DataResponse::json_error(500, "a file this flow reads couldn't be read: its run log says why");
     }
+    // One whose database read failed, or whose writes there didn't land, likewise; one whose
+    // statement didn't change the rows it expects is the data saying no: nothing it did was written.
+    let error = ran.as_ref().and_then(|e| e.error.as_deref());
+    if error.is_some_and(|e| e.starts_with(databases::READ_FAILED)) {
+        answer = data::DataResponse::json_error(500, "a database this flow reads couldn't be read: its run log says why");
+    }
+    if error.is_some_and(|e| e.starts_with(databases::WRITE_FAILED)) {
+        answer = data::DataResponse::json_error(500, "a database this flow writes couldn't be written: its run log says why");
+    }
+    if let Some(unmet) = error.filter(|e| e.starts_with(databases::UNMET)) {
+        answer = data::DataResponse::json_error(409, unmet);
+    }
     // One whose file write didn't land (a folder past its cap, say) didn't do what it answered.
     if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(folders::WRITE_FAILED)) {
         answer = data::DataResponse::json_error(500, "a file this flow writes couldn't be written: its run log says why");

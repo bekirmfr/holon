@@ -51,6 +51,8 @@ mod value;
 mod value_hash;
 
 pub mod primitives;
+/// What a database leaf's SQL reads and writes (docs/L4s/databases-L4.md §4).
+pub mod sql;
 pub use primitives::{MAX_AWAIT_SECONDS, MAX_RANGE};
 
 pub use determinism::is_finite_number;

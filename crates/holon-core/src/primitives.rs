@@ -529,6 +529,22 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             Some(Value::Effect { sink: format!("{name}:{folder}"), payload: Box::new(Value::Record(file)) })
         }
 
+        // A statement to run when the run finishes: `{sql, params, expect}`, `expect` the rows it
+        // must change (absent: any number). The host sends it in the run's commit transaction.
+        "db_exec" => {
+            let database = crate::kind::ident(params, "database")?;
+            let [params_in @ Value::List(_)] = inputs else { return None };
+            if contains_effect(params_in) {
+                return None;
+            }
+            let sql = params.iter().find(|p| p.name() == "sql")?.value()?;
+            let mut exec = BTreeMap::from([("sql".to_string(), Value::Text(sql.to_string())), ("params".to_string(), (*params_in).clone())]);
+            if let Some(n) = crate::kind::expect_of(params)? {
+                exec.insert("expect".to_string(), Value::Number(n as f64));
+            }
+            Some(Value::Effect { sink: format!("db_exec:{database}"), payload: Box::new(Value::Record(exec)) })
+        }
+
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
 }
@@ -617,6 +633,23 @@ pub(crate) fn file_list_request(inputs: &[Option<Value>], params: &[Param]) -> O
     asked.remove("collection");
     asked.insert("folder".to_string(), Value::Text(folder));
     Some(Value::Record(asked))
+}
+
+/// What a `db_query` or `db_one` asks the host: `{database, query: <sql>, params, one}`, `one`
+/// when it answers the first row alone.
+pub(crate) fn db_query_request(inputs: &[Option<Value>], params: &[Param], one: bool) -> Option<Value> {
+    let database = crate::kind::ident(params, "database")?;
+    let sql = params.iter().find(|p| p.name() == "sql")?.value()?;
+    let [Some(list @ Value::List(_))] = inputs else { return None };
+    if contains_effect(list) {
+        return None;
+    }
+    Some(Value::Record(BTreeMap::from([
+        ("database".to_string(), Value::Text(database)),
+        ("query".to_string(), Value::Text(sql.to_string())),
+        ("params".to_string(), list.clone()),
+        ("one".to_string(), Value::Boolean(one)),
+    ])))
 }
 
 /// What a `file_handle` asks the host: `{folder: <name>, handle: <file name>}`.

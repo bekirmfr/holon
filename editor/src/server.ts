@@ -153,6 +153,23 @@ export async function unbindFolder(name: string, deployment: string | null): Pro
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
 }
+/** A database an admin bound (holon-server's databases.rs): a name flows use (`database shop`),
+ *  a SQLite file here; for the whole server (`deployment` null), or for that deployment only. */
+export type DatabaseEntry = {
+  name: string;
+  engine: "sqlite";
+  path: string;
+  access: "read" | "read-write";
+  deployment: string | null;
+};
+/** A database to bind, with the admin's schema to run first (which creates the file if there is none). */
+export type DatabaseBinding = Omit<DatabaseEntry, "engine"> & { schema: string | null };
+export const listDatabases = async () => asJson<DatabaseEntry[]>(await api(`${BASE}/admin/databases`));
+export const bindDatabase = async (d: DatabaseBinding) => asJson<DatabaseEntry>(await post(`${BASE}/admin/databases`, d));
+export async function unbindDatabase(name: string, deployment: string | null): Promise<void> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  await asJson<void>(await api(`${BASE}/admin/databases/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
+}
 export const getOidcSettings = async () => (await asJson<{ settings: OidcSettings | null }>(await api(`${BASE}/admin/oidc`))).settings;
 export async function setOidcSettings(settings: OidcSettings | null): Promise<void> {
   await asJson<void>(await post(`${BASE}/admin/oidc`, { settings }));

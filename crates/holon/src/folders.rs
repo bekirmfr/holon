@@ -177,8 +177,12 @@ pub(crate) struct Folders {
     bound: RwLock<Bound>,
     /// The texts of the files runs read, kept for their logs (blobs.rs).
     pub(crate) blobs: blobs::Blobs,
-    /// The commit locks on its folders, every deployment's runs in one table (locks.rs).
+    /// The commit locks on its folders and databases, every deployment's runs in one table
+    /// (locks.rs).
     pub(crate) locks: locks::Locks,
+    /// The databases bound on this server (databases.rs): the host's other resources a flow
+    /// names, seen through a deployment's [`Scoped`] as its folders are.
+    pub(crate) databases: databases::Databases,
 }
 
 /// Every binding: the server's, by name, and each deployment's own, by its slug then name. On
@@ -228,7 +232,13 @@ impl Folders {
             bound: RwLock::new(Bound::default()),
             blobs: blobs::Blobs::memory(),
             locks: locks::Locks::default(),
+            databases: databases::Databases::memory(),
         }
+    }
+
+    /// The same folders, beside the databases bound in `databases`.
+    pub(crate) fn with_databases(self, databases: databases::Databases) -> Folders {
+        Folders { databases, ..self }
     }
 
     /// The same folders, the texts their runs read kept in `blobs` (`<store>/blobs/`).
@@ -620,6 +630,9 @@ impl Scoped {
     /// isn't bound, or is bound read-only when it writes. A folder it can run without
     /// (`optional`) may be missing.
     pub(crate) fn refuses(&self, manifest: &Manifest) -> Option<String> {
+        if let Some(why) = self.all.databases.refuses(&self.deployment, manifest) {
+            return Some(why);
+        }
         for item in &manifest.capabilities {
             if manifest.requirements.optional.contains(item) {
                 continue;

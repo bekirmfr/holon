@@ -8,7 +8,7 @@ use crate::*;
 /// already gives, rather than the `Capabilities` type itself, so this needs no new import.
 pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool {
     caps.any(|c| {
-        // A folder's reads are checked, and its writes committed, as a collection's are.
+        // A folder's or a database's reads are checked, and its writes committed, as a collection's are.
         matches!(
             c,
             Capability::StateRead(_)
@@ -17,6 +17,8 @@ pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool 
                 | Capability::CollectionWrite(_)
                 | Capability::FileRead(_)
                 | Capability::FileWrite(_)
+                | Capability::DbRead(_)
+                | Capability::DbWrite(_)
         )
     })
 }

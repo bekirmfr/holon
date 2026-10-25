@@ -27,7 +27,7 @@ use crate::wire::{WParam, WPort, WType};
 
 /// The words a binding may not take, as lower.rs holds them.
 const RESERVED: &[&str] = &[
-    "flow", "port", "every", "browsers", "optional", "collection", "folder", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
+    "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
@@ -220,6 +220,8 @@ pub struct Printer<'s> {
     collections: BTreeSet<String>,
     /// Every folder any leaf names (`folder inbox`).
     folders: BTreeSet<String>,
+    /// The databases any leaf names: the header declares them.
+    databases: BTreeSet<String>,
     /// The `on file` lines, in order, when the flow runs on files: folder, `deleted`, `matching`.
     on_files: Vec<OnFile>,
     /// With several lines, each `coalesce` of their `file_arrival`s that is `ingress`, and the
@@ -256,6 +258,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         blocks: vec![],
         collections: BTreeSet::new(),
         folders: BTreeSet::new(),
+        databases: BTreeSet::new(),
         on_files: Vec::new(),
         ingress_chains: HashMap::new(),
         holon_defs: HashSet::new(),
@@ -298,6 +301,9 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     }
     for f in p.folders.iter().filter(|f| !p.on_files.iter().any(|(on, _, _)| on == *f)) {
         out.push(header(format!("folder {f}")));
+    }
+    for d in &p.databases {
+        out.push(header(format!("database {d}")));
     }
     let body = p.flow_body(doc)?;
     let blocks = std::mem::take(&mut p.blocks);
@@ -415,7 +421,7 @@ fn consent(o: &str) -> String {
 }
 
 impl<'s> Printer<'s> {
-    /// Every collection and folder any leaf names, the holons' leaves included.
+    /// Every collection, folder and database any leaf names, the holons' leaves included.
     fn collect_collections(&mut self, nodes: &[Node]) -> Result<(), String> {
         /// The param naming what a leaf reads or writes: a collection's, or a folder's.
         fn named_by(leaf: &str) -> Option<&'static str> {
@@ -423,14 +429,21 @@ impl<'s> Printer<'s> {
                 Some("collection")
             } else if leaf.starts_with("file_") {
                 Some("folder")
+            } else if leaf.starts_with("db_") {
+                Some("database")
             } else {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
             if !name.is_empty() {
-                if param == "collection" { &mut out.0 } else { &mut out.1 }.insert(name);
+                match param {
+                    "collection" => &mut out.0,
+                    "folder" => &mut out.1,
+                    _ => &mut out.2,
+                }
+                .insert(name);
             }
         }
         fn walk(store: &MapResolver, hash: &holon_core::Hash, seen: &mut HashSet<holon_core::Hash>, out: &mut Found) {
@@ -457,7 +470,7 @@ impl<'s> Printer<'s> {
             }
         }
         let mut seen = HashSet::new();
-        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders));
+        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases));
         for n in nodes {
             match &n.data.body {
                 PlacedBody::Primitive if named_by(&n.data.name).is_some() => {
@@ -471,7 +484,7 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders) = out;
+        (self.collections, self.folders, self.databases) = out;
         Ok(())
     }
 
@@ -542,7 +555,7 @@ impl<'s> Printer<'s> {
 
     fn request_name(&self, request: &Node) -> String {
         let n = self.bindings.get(&request.id).cloned().unwrap_or_else(|| "req".into());
-        if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) && !self.folders.contains(&n) {
+        if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) && !self.folders.contains(&n) && !self.databases.contains(&n) {
             n
         } else {
             "req".into()
@@ -595,7 +608,7 @@ impl<'s> Printer<'s> {
     }
 
     fn reserved(&self, n: &str) -> bool {
-        RESERVED.contains(&n) || interface_of(n).is_some() || templates::is_template(n) || self.collections.contains(n) || self.folders.contains(n)
+        RESERVED.contains(&n) || interface_of(n).is_some() || templates::is_template(n) || self.collections.contains(n) || self.folders.contains(n) || self.databases.contains(n)
     }
 
     /// `holon name(inputs) -> (outputs) { body }`, the body as the expand view opens it: the
@@ -1308,6 +1321,18 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let value = self.required(node, "value")?;
                 atom(format!("state.set({}, {value})", node.param("key")))
             }
+            "db_query" | "db_one" | "db_exec" if plain(node.param("database")) => match self.db_values(node)? {
+                Some(values) => {
+                    let method = &d.name["db_".len()..];
+                    let mut args = vec![quote(node.param("sql"))];
+                    args.extend(values);
+                    if !node.param("expect").is_empty() {
+                        args.push(format!("expect: {}", node.param("expect")));
+                    }
+                    atom(format!("{}.{method}({})", node.param("database"), args.join(", ")))
+                }
+                None => self.generic(node),
+            },
             "http_request" | "http_upload" => {
                 let method = node.param("method").to_ascii_lowercase();
                 if !["get", "post", "put", "patch", "delete", "head"].contains(&method.as_str()) {
@@ -1475,6 +1500,42 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     /// `name(inputs…, param: value…)`: inputs positional up to the first unwired one, named after.
+    /// A database call's values, one for each `$n` of its SQL, when they are a list written in
+    /// place (`[]`, one appended to it, or a `list`) and as many as the SQL takes: as the text
+    /// writes them after the SQL. `None`: it prints as the leaf it is.
+    fn db_values(&mut self, node: &Node) -> Result<Option<Vec<String>>, String> {
+        let write = node.data.name == "db_exec";
+        let Ok(tables) = holon_core::sql::tables(node.param("sql"), write) else { return Ok(None) };
+        let empty = |c: &Node| c.param("type") == "Json" && c.param("value") == "[]";
+        let none = self.inline_source(node, "params", "const").filter(|c| empty(c));
+        let one = self.inline_source(node, "params", "append").filter(|a| self.inline_source(a, "list", "const").is_some_and(empty));
+        let several = self.inline_source(node, "params", "list");
+        let given = match (none, one, several) {
+            (Some(_), _, _) => 0,
+            (_, Some(_), _) => 1,
+            (_, _, Some(l)) => l.data.inputs.len(),
+            _ => return Ok(None),
+        };
+        if given != tables.params {
+            return Ok(None);
+        }
+        let mut values = Vec::new();
+        if let Some(c) = none {
+            self.touch(c);
+        } else if let Some(a) = one {
+            let c = self.inline_source(a, "list", "const").expect("checked");
+            self.touch(a);
+            self.touch(c);
+            values.push(self.required(a, "item")?);
+        } else if let Some(l) = several {
+            self.touch(l);
+            for p in &l.data.inputs {
+                values.push(self.required(l, &p.name)?);
+            }
+        }
+        Ok(Some(values))
+    }
+
     fn generic(&mut self, node: &Node) -> Result<(String, u8), String> {
         let inputs: Vec<String> = node.data.inputs.iter().map(|p| p.name.clone()).collect();
         let params = self.p.changed_params(node);

@@ -1,7 +1,7 @@
 # Command line
 
 Everything is one program, `holon`. `holon help` lists the commands; `serve`, `export`,
-`verify`, `folder`, `mcp` and `lsp` say more with `--help`.
+`verify`, `folder`, `database`, `mcp` and `lsp` say more with `--help`.
 
 | Command | |
 |---|---|
@@ -13,6 +13,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon export`](#holon-export) | write a deployment's runs to a file |
 | [`holon verify`](#holon-verify) | check exported runs offline |
 | [`holon folder`](#holon-folder) | bind the folders flows use |
+| [`holon database`](#holon-database) | bind the databases flows use |
 | [`holon mcp`](#holon-mcp) | the tools for agents, and adding them to an agent's host |
 | [`holon lsp`](#holon-lsp) | a language server for editors |
 | [`holon version`, `update`, `uninstall`, `migrate`](#looking-after-the-install) | the install itself |
@@ -111,7 +112,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from |
 | `--editor DIR` | serve the editor from `DIR` instead of the built-in one (or `HOLON_EDITOR`) |
 | `--policy PATH` | the policy file (default `holon.toml` in the data folder) |
-| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:` |
+| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:` |
 
 `HOLON_SETUP_CODE` sets the setup code instead of a random one.
 
@@ -166,6 +167,23 @@ takes `--server PORT|URL`. See [Files on the host](../guides/files.md).
 
 `sweep` removes, now, the file texts no kept run refers to (the server does it every ten
 minutes).
+
+## `holon database`
+
+```
+holon database add NAME PATH [--read-only] [--schema SQL | --schema-file FILE] [--for SLUG]
+holon database list
+holon database remove NAME [--for SLUG]
+```
+
+Binds a name flows use (`database shop`) to a SQLite file on the server's machine. Needs an
+admin; each takes `--server PORT|URL`. See [Databases on the host](../guides/databases.md).
+
+| Option | |
+|---|---|
+| `--schema SQL`, `--schema-file FILE` | run it first, creating the file if there is none |
+| `--read-only` | flows may read it, not write it |
+| `--for SLUG` | for that deployment only |
 
 ## `holon mcp`
 

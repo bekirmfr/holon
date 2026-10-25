@@ -182,7 +182,8 @@ pub trait Waits {
     fn token(&mut self, name: &str) -> String;
     /// The answer to a collection read (`{collection, get}` or `{collection, list}`), from the
     /// collection as the run found it, or a folder read (`{folder, read}` or `{folder, list}`),
-    /// from the folder as the run found it; absent for a missing item or file, or with neither
+    /// from the folder as the run found it, or a database query (`{database, query, params, one}`);
+    /// absent for a missing item or file, or with none of these
     /// (the default). A host keeps what it answered, to check the run against at commit and replay.
     fn read(&mut self, _path: &[u32], _request: &Value) -> Option<Value> {
         None
@@ -365,8 +366,8 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
         if let Some(name) = text_field(request, "resume_token") {
             return Answer::Value(Value::Text(self.waits.token(name)));
         }
-        // A collection or folder read: answered at once, from what the run found.
-        if text_field(request, "collection").is_some() || text_field(request, "folder").is_some() {
+        // A collection, folder or database read: answered at once, from what the run found.
+        if ["collection", "folder", "database"].iter().any(|k| text_field(request, k).is_some()) {
             return self.waits.read(path, request).into();
         }
         let key = (path.to_vec(), request_key(request));

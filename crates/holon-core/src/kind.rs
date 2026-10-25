@@ -142,6 +142,14 @@ pub enum Capability {
     FileWrite(String),
     /// Starts a process / job.
     Spawn,
+    /// Reads rows of a table of a database the host binds: `"shop/orders"`, the database's name
+    /// for the flow, then the table, found in the statement a `db_query`, `db_one` or `db_exec`
+    /// sends (sql.rs). Answered as the run found it, and checked again when it commits
+    /// (`docs/L4s/databases-L4.md`).
+    DbRead(String),
+    /// Inserts, updates or deletes rows of a table of a database the host binds (`db_exec`),
+    /// in one transaction with the run's other writes there, when it finishes.
+    DbWrite(String),
 }
 
 /// The sentinel key `saturate_caps` uses for the fail-closed "this closure touches
@@ -166,7 +174,7 @@ impl Capability {
         use Capability::*;
         match self {
             Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
-            StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) => Kind::State,
+            StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | FileWrite(_) | Spawn => Kind::Sink,
         }
     }
@@ -182,7 +190,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
         )
     }
 }
@@ -293,6 +301,11 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A new file in a named folder starts a run: the host watches the folder, and the file's
         // handle is the leaf's value. The folder is a frozen param, so the trigger names it.
         "file_arrival" => vec![FileArrival(ident(params, "folder")?)],
+        // A database's tables, from the statement the leaf sends: its SQL is a frozen param, so
+        // what it reads and writes is known before it runs (sql.rs). A statement that can't be
+        // followed classifies as nothing, and fails closed.
+        "db_query" | "db_one" => db_tables(params, false)?,
+        "db_exec" => db_tables(params, true)?,
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
@@ -322,6 +335,39 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         _ => return None,
     };
     Some(Capabilities(caps.into_iter().collect()))
+}
+
+/// The tables a database leaf's statement reads and writes, as capabilities naming the database
+/// (its frozen `database` param) and the table: `DbRead("shop/orders")`.
+fn db_tables(params: &[Param], write: bool) -> Option<Vec<Capability>> {
+    let database = ident(params, "database")?;
+    let sql = params.iter().find(|p| p.name() == "sql")?.value()?;
+    let tables = crate::sql::tables(sql, write).ok()?;
+    // The host's own table, where a commit marks a run done: never a flow's.
+    if tables.reads.iter().chain(&tables.writes).any(|t| t.eq_ignore_ascii_case("holon_commits")) {
+        return None;
+    }
+    if write {
+        expect_of(params)?;
+    }
+    // A statement that touches no table asks the database nothing a flow can't compute itself,
+    // and would need no permission: refused.
+    if tables.reads.is_empty() && tables.writes.is_empty() {
+        return None;
+    }
+    let reads = tables.reads.iter().map(|t| Capability::DbRead(format!("{database}/{t}")));
+    let writes = tables.writes.iter().map(|t| Capability::DbWrite(format!("{database}/{t}")));
+    Some(reads.chain(writes).collect())
+}
+
+/// The rows a `db_exec` must change: `Some(None)` for any number (`expect` absent or ""),
+/// `Some(Some(n))` for exactly `n`; `None` (fail closed) for anything but a whole number.
+pub(crate) fn expect_of(params: &[Param]) -> Option<Option<u64>> {
+    match params.iter().find(|p| p.name() == "expect").map(|p| p.value()) {
+        None | Some(Some("")) => Some(None),
+        Some(Some(n)) if !n.is_empty() && n.len() <= 9 && n.bytes().all(|b| b.is_ascii_digit()) => n.parse().ok().map(Some),
+        Some(_) => None,
+    }
 }
 
 /// Read the required `"key"` frozen param for `store_read`/`store_write` — the state
@@ -490,6 +536,8 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         HttpRequest(SATURATED_STATE_KEY.to_string()),
         FileWrite(SATURATED_STATE_KEY.to_string()),
         Spawn,
+        DbRead(SATURATED_STATE_KEY.to_string()),
+        DbWrite(SATURATED_STATE_KEY.to_string()),
     ] {
         acc.insert(c);
     }
@@ -618,6 +666,24 @@ mod tests {
             assert!(capabilities_of(leaf, &named(r"C:\drop")).is_none(), "{leaf}: a folder is a name, never a path");
         }
         assert!(Capability::FileRead("x".into()).is_sourced() && !Capability::FileWrite("x".into()).is_sourced());
+    }
+
+    #[test]
+    fn database_leaves_name_the_tables_their_statement_touches() {
+        let leaf = |sql: &str, expect: &str| [Param::frozen("database", "shop"), Param::frozen("sql", sql), Param::frozen("expect", expect)];
+        let caps = |name: &str, sql: &str, expect: &str| capabilities_of(name, &leaf(sql, expect)).map(|c| c.iter().collect::<Vec<_>>());
+        use Capability::{DbRead, DbWrite};
+        assert_eq!(caps("db_query", "select o.id from orders o join lines l on l.order_id = o.id", ""), Some(vec![DbRead("shop/lines".into()), DbRead("shop/orders".into())]));
+        assert_eq!(caps("db_one", "select total from orders where id = $1", ""), Some(vec![DbRead("shop/orders".into())]));
+        assert_eq!(caps("db_exec", "insert into refunds (id) values ($1)", ""), Some(vec![DbWrite("shop/refunds".into())]));
+        assert_eq!(caps("db_exec", "update stock set n = n - $1 where sku = $2", "1"), Some(vec![DbRead("shop/stock".into()), DbWrite("shop/stock".into())]));
+        assert_eq!(caps("db_exec", "update stock set n = 0", "one"), None, "expect is a whole number");
+        assert_eq!(caps("db_query", "delete from stock", ""), None, "a query reads");
+        assert_eq!(caps("db_exec", "drop table stock", ""), None, "no DDL");
+        assert_eq!(caps("db_query", "select 1", ""), None, "a query reads a table");
+        assert!(capabilities_of("db_query", &[Param::frozen("database", "a/b"), Param::frozen("sql", "select 1")]).is_none(), "a database is a name");
+        assert_eq!(DbRead("x".into()).kind(), Kind::State);
+        assert!(DbRead("x".into()).is_sourced() && !DbWrite("x".into()).is_sourced());
     }
 
     #[test]
@@ -972,7 +1038,7 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 15); // every capability — fail closed
+        assert_eq!(caps.len(), 17); // every capability — fail closed
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
         assert!(caps.contains(Capability::FileWrite("<unknown>".to_string())), "any folder");

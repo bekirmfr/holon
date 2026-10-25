@@ -1,8 +1,10 @@
 # Databases: SQL and documents as host resources, and how runs share what they write (L4)
 
-**Status:** slice 1 built (2026-10-26): commit locks per file, with intent locks on the folder
-(`locks.rs`, §7.1; sample `shared-ledger`). Slices 2 to 7 are design. Written 2026-10-25, against
-`main` at 6ee0c58. Builds on
+**Status:** slices 1 and 2 built (2026-10-26): commit locks per file, with intent locks on the
+folder (`locks.rs`, §7.1), and SQLite databases (`databases.rs`, the `database` header,
+`db_query`/`db_one`/`db_exec`, `DbLimits`, the commit transaction with `holon_commits`; sample
+`orders-api`, guide `docs/manual/guides/databases.md`). A database's reads are logged whole: its
+`keep` (§5) isn't built. Slices 3 to 7 are design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
 [host resources](host-resources-L4.md) (also design only: resources the host defines, their
 addresses and timeline) and [key claims](key-claims-L4.md) (built: `claims.rs`).
 

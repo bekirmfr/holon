@@ -38,6 +38,8 @@ propose, and find out what happened. For how Holon is built, see the design docu
   front of a deployed flow.
 - **[Files on the host](guides/files.md):** named folders: binding them, reading and writing
   files, big files by range.
+- **[Databases on the host](guides/databases.md):** named SQLite databases: binding them with a
+  schema, SQL in quotes and values after it, `expect:`, and runs that touch the same rows.
 - **[Checking runs](guides/checking-runs.md):** exporting a deployment's runs, verifying them
   offline, and witnesses.
 

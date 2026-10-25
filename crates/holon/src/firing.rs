@@ -133,10 +133,16 @@ pub(crate) fn fire_with_state(
             let staged = folders::stage(waits.folders.as_ref(), &run.performed);
             let mut live = cell.state.lock().unwrap();
             match commit_locks(waits.folders.as_deref(), &[], &run.performed, limits) {
-                Ok(_held) => {
-                    let failed = commit(&mut live, store, staged, &run.performed);
-                    not_all_written(&mut run, failed);
-                }
+                // Its databases' writes too, unchecked: a run marked done there applies nothing again.
+                Ok(_held) => match databases::commit(waits.folders.as_deref(), &run.run_id, &[], &run.performed, permit, limits, false, || {
+                    commit(&mut live, store, staged, &run.performed)
+                }) {
+                    databases::Commit::Done(mut failed, db) => {
+                        failed.extend(db);
+                        not_all_written(&mut run, failed);
+                    }
+                    databases::Commit::Again(why) | databases::Commit::Refused(why) => nothing_written(&mut run, &why),
+                },
                 Err(resource) => nothing_written(&mut run, &format!("its commit waited for {resource} past commit_wait_ms")),
             }
         }
@@ -175,13 +181,33 @@ pub(crate) fn fire_with_state(
             // time counts as changed: it runs again.
             match commit_locks(waits.folders.as_deref(), &a.run.reads, &a.run.performed, limits) {
                 Ok(_held) if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store, waits.folders.as_ref()) => {
-                    let failed = commit(&mut live, store, staged, &a.run.performed);
-                    not_all_written(&mut a.run, failed);
-                    a.run.retries = retries;
-                    if let Some(c) = waits.claiming.take() {
-                        a.run.claims = c.finish();
+                    // Its databases' writes first, each in a transaction that checks what it read
+                    // there; the rest lands while those are open.
+                    let landed = databases::commit(waits.folders.as_deref(), &a.run.run_id, &a.run.reads, &a.run.performed, permit, limits, true, || {
+                        commit(&mut live, store, staged, &a.run.performed)
+                    });
+                    let done = match landed {
+                        databases::Commit::Done(mut failed, db) => {
+                            failed.extend(db);
+                            not_all_written(&mut a.run, failed);
+                            true
+                        }
+                        databases::Commit::Refused(why) => {
+                            refused(&mut a.run, &why);
+                            true
+                        }
+                        databases::Commit::Again(why) => {
+                            eprintln!("holon: run {}: {why}: it runs again", a.run.run_id);
+                            false
+                        }
+                    };
+                    if done {
+                        a.run.retries = retries;
+                        if let Some(c) = waits.claiming.take() {
+                            a.run.claims = c.finish();
+                        }
+                        return a.run;
                     }
-                    return a.run;
                 }
                 Ok(_) => {}
                 Err(resource) => eprintln!("holon: run {} waited past commit_wait for {resource}: it runs again", a.run.run_id),
@@ -200,10 +226,11 @@ pub(crate) fn fire_with_state(
         eprintln!("holon: a run runs holding the state while a key is still claimed (claim_wait passed)");
     }
     let mut live = cell.state.lock().unwrap();
-    // Nothing of its own deployment changes under it, but a shared folder can: it holds every
-    // folder it may read or write for its whole length too, as a claim is waited for.
+    // Nothing of its own deployment changes under it, but a shared folder or database can: it holds
+    // every one it may read or write for its whole length too, as a claim is waited for.
     let whole_run = waits.folders.as_deref().and_then(|f| {
-        let wanted = f.run_locks(&permit.folders_read(), &permit.folders_written());
+        let mut wanted = f.run_locks(&permit.folders_read(), &permit.folders_written());
+        wanted.extend(f.all.databases.locks_on(&f.deployment, permit.databases_named()));
         f.all.locks.take(wanted, std::time::Instant::now() + limits.claim_wait).ok()
     });
     let mut a = attempt(Some(live.clone()), &nonce, prior, waits, None);
@@ -216,8 +243,16 @@ pub(crate) fn fire_with_state(
     };
     match commit_held {
         Ok(_held) if still_as_read(&live, &live, &a.run.reads, permit, store, waits.folders.as_ref()) => {
-            let failed = commit(&mut live, store, staged, &a.run.performed);
-            not_all_written(&mut a.run, failed);
+            match databases::commit(waits.folders.as_deref(), &a.run.run_id, &a.run.reads, &a.run.performed, permit, limits, true, || {
+                commit(&mut live, store, staged, &a.run.performed)
+            }) {
+                databases::Commit::Done(mut failed, db) => {
+                    failed.extend(db);
+                    not_all_written(&mut a.run, failed);
+                }
+                databases::Commit::Refused(why) => refused(&mut a.run, &why),
+                databases::Commit::Again(why) => nothing_written(&mut a.run, &why),
+            }
         }
         Ok(_) => nothing_written(&mut a.run, "a file it read was changed by another deployment's run as it ran"),
         Err(resource) => nothing_written(&mut a.run, &format!("its commit waited for {resource} past commit_wait_ms")),
@@ -241,6 +276,22 @@ fn nothing_written(run: &mut FiredRun, why: &str) {
     }
 }
 
+/// What a run whose database commit was refused says: nothing it did was written, and why (an
+/// `expect` the data didn't meet says so first: databases::UNMET).
+fn refused(run: &mut FiredRun, why: &str) {
+    if why.starts_with(databases::UNMET) {
+        if run.error.is_none() {
+            run.error = Some(format!("{why}: nothing it did was written"));
+        }
+    } else if let Some(why) = why.strip_prefix(databases::WRITE_FAILED) {
+        if run.error.is_none() {
+            run.error = Some(format!("{}nothing it did was written: {why}", databases::WRITE_FAILED));
+        }
+    } else {
+        nothing_written(run, why);
+    }
+}
+
 /// The commit locks on the shared resources a run read or writes (locks.rs), taken in order and
 /// waiting `commit_wait` at most: the error names the one it waited for.
 fn commit_locks(
@@ -250,7 +301,8 @@ fn commit_locks(
     limits: &holon_host::Limits,
 ) -> Result<Vec<locks::Guard>, String> {
     let Some(f) = folders else { return Ok(Vec::new()) };
-    let wanted = f.commit_locks(reads, performed);
+    let mut wanted = f.commit_locks(reads, performed);
+    wanted.extend(f.all.databases.commit_locks(&f.deployment, reads, performed));
     if wanted.is_empty() {
         return Ok(Vec::new());
     }
@@ -279,6 +331,10 @@ fn still_as_read(
     let now = collections::Readable { store: store.clone(), roots: collections::roots(live), granted: permit.collections_read() };
     let mut files = folders.map(|f| folders::Readable::new(Arc::clone(f), permit));
     reads.iter().all(|r| {
+        // A database's reads are checked in its own commit transaction (databases.rs).
+        if matches!(&r.request, Value::Record(q) if q.contains_key("database")) {
+            return true;
+        }
         if !matches!(&r.request, Value::Record(q) if q.contains_key("folder")) {
             return now.answer(&r.request) == r.answer;
         }
@@ -347,6 +403,7 @@ fn run_attempt(
     // Its folders, for the reads it was granted: read as it finds them.
     waits.failed = None;
     waits.files = waits.folders.as_ref().map(|f| folders::Readable::new(Arc::clone(f), permit));
+    waits.databases = waits.folders.as_ref().map(|f| databases::Readable::new(Arc::clone(f), permit));
 
     // Only the state keys the deployment was granted are read.
     let mut sourced: Vec<(Capability, Value)> = match start.as_ref() {
@@ -408,7 +465,7 @@ fn run_attempt(
             eprintln!("holon: refused {cap:?}: a copy from the folder {from:?}, which this deployment doesn't read");
             return false;
         }
-        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) = cap
+        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) = cap
             && let Some(name) = secrets::secret_in(payload, secrets)
         {
             eprintln!("holon: refused to store secret {name:?} in {key:?}");
@@ -430,7 +487,6 @@ fn run_attempt(
         timeline: timer.timeline,
         rounds: outcome.rounds,
         error: failed_read
-            .map(|e| format!("{}{e}", folders::READ_FAILED))
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
             .or(outcome.error.map(|e| e.message())),
         run_id: to_hex(&run_id),

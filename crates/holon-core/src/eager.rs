@@ -23,7 +23,7 @@ fn primitive(name: &str, unit: &Unit, inputs: &[Option<Value>], resolver: &impl 
         "fold" => fold(inputs, &unit.params, resolver),
         // The leaves that ask the host: nobody answers here.
         "http_request" | "http_upload" | "await" | "collection_get" | "collection_list" | "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice"
-        | "resume_token" => None,
+        | "db_query" | "db_one" | "resume_token" => None,
         "coalesce" => inputs.iter().flatten().next().cloned(),
         _ => {
             if VARIADIC.contains(&name) && inputs.iter().any(Option::is_none) {

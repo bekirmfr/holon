@@ -47,6 +47,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or("")) {
         return Some(response);
     }
+    // And the databases (databases.rs).
+    if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or("")) {
+        return Some(response);
+    }
     let Some(accounts) = state.access.accounts() else { return Some(err(404, "this server has no accounts")) };
     let by = caller.name.as_deref().unwrap_or("");
     let method = request.method();

@@ -67,11 +67,11 @@ pub fn permission_kind(item: &str, optional: &BTreeSet<String>, trigger: Option<
 }
 
 /// Whether a unit with these capabilities (consent names) reads from outside a run's inputs: the
-/// clock, randomness, a request, a secret, state, a collection, a folder, the network, a waiting
+/// clock, randomness, a request, a secret, state, a collection, a folder, a database, the network, a waiting
 /// point.
 /// Effects it only performs (writes, sends) don't count: they come out as values.
 pub fn reads_from_outside(capabilities: &[String]) -> bool {
-    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "SecretRead", "StateRead", "CollectionRead", "FileRead", "HttpRequest", "Await"];
+    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "SecretRead", "StateRead", "CollectionRead", "FileRead", "DbRead", "HttpRequest", "Await"];
     capabilities.iter().any(|c| SOURCED.contains(&c.split('(').next().unwrap_or("")))
 }
 

@@ -43,6 +43,8 @@ rand = "0.10.2"
 # endpoints a person triggers by clicking a button in the editor, never a stream or a load
 # nothing here needs an async runtime to serve. See the L4's framework-choice note.
 rouille = "3.6"
+# The SQLite databases an admin binds (databases.rs), built in: no library to install.
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 # `holon uninstall` removes its own executable, which Windows won't do directly.
 self-replace = "1"
 serde = { version = "1", features = ["derive"] }

@@ -486,6 +486,44 @@ are gone). A file its own runs deleted from a folder it watches starts nothing. 
 e)` writes a file that must not exist yet (`file_create`): the run fails, and nothing it did
 lands, rather than replace one; `audit.create_copy(n, h)` is the same for a copy by handle.
 
+### orders-api: a database on the host
+
+```
+flow orders-api
+port 8150
+database shop
+
+route POST /orders (req) {
+  shop.exec("insert into orders (customer, total) values ($1, $2)", req.json.customer, req.json.total)
+  respond { placed: req.json.customer }, status: 201
+}
+
+route GET /orders/:customer (req) {
+  respond shop.query("select id, total, refunded from orders where customer = $1 order by id", req.params.customer)
+}
+
+route GET /order/:id (req) {
+  respond shop.one("select id, customer, total, refunded from orders where id = $1", req.params.id)
+}
+
+route POST /order/:id/refund (req) {
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, expect: 1)
+  respond { refunded: req.params.id }
+}
+```
+
+`database shop` names a database on the host; an admin binds the name to a SQLite file, with the
+schema that makes its tables (`holon database add shop ~/shop.db --schema "create table orders
+(…)"`, `--read-only`, `--for <slug>`, or the admin page), and a flow never sees the path or runs
+DDL. `shop.query(sql, v…)` is `db_query{database: shop, sql}(params)`, the rows as the run began;
+`shop.one(…)` is `db_one`, the first row or no value; `shop.exec(…)` is `db_exec`, the statement run
+when the run finishes, and with `expect: n` only if it changes `n` rows, or nothing the run wrote
+lands and the route answers 409. The SQL is a text literal, because its tables are the grant:
+core parses it (`sql.rs`) and `select … from orders` asks `DbRead("shop/orders")`, `update
+orders …` `DbWrite("shop/orders")`; the values after it are `$1`, `$2`, …, as many as it takes.
+The commit re-reads what the run read in the same transaction as its writes, and marks the run
+in the database's `holon_commits`. Design: `docs/L4s/databases-L4.md`.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -647,6 +685,9 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `inbox.slice(n, offset: o, length: k)` | `file_slice{folder: inbox}(n, o, k)` | `k` bytes from `o` (from the end when negative), as text |
 | `reports[n] = h` (`h` a handle read here, or `ingress` with `on file`), `reports.copy(n, h)` | `file_copy{folder: reports}(n, h)` | copy the file when the run finishes, host to host |
 | `reports.create(n, e)`, `reports.create_copy(n, h)` | `file_create{folder: reports}(n, e)`, `file_create_copy{folder: reports}(n, h)` | the same write or copy, only if there is no such file yet: else the run fails |
+| `shop.query(sql, v…)` (`shop` a declared database, `sql` a text literal) | `db_query{database: shop, sql}(list(v…))` | the rows, as the run began |
+| `shop.one(sql, v…)` | `db_one{database: shop, sql}(list(v…))` | the first row, or no value |
+| `shop.exec(sql, v…, expect: n)` | `db_exec{database: shop, sql, expect: n}(list(v…))` | run the statement when the run finishes (only if it changes `n` rows) |
 | `http.get(host, path, headers: h, body: b)` and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host}(path, h, b)` | a call to that host |
 | `http.put(host, path, headers: h, file: f)` (`f` a handle), any method | `http_upload{method, host}(path, h, f)` | a call sending the file's bytes, streamed by the server |
 | `stripe.verify(req, secret, now, tolerance: d)` | the `stripe_verify` template | a verified Stripe event |
@@ -666,7 +707,9 @@ Rules the table implies:
   bigger one is read by handle, lines or slice; a copy also asks `FileRead` of the folder its
   handle names.
 - `http.*`'s host must be a text literal, because the host is the capability the deployment asks
-  for; a host from a wire is an error that says so.
+  for; a host from a wire is an error that says so. A database's SQL the same: its tables are
+  `DbRead("shop/orders")` and `DbWrite("shop/orders")`, a statement that names no table is an
+  error, and so is a count of values that isn't the SQL's `$n`s.
 - `state.x` on the right of `=` and on the left are different leaves, read and write, and that is
   the whole semantics of state in Holon: read at the start, write at the end. The same key may be
   written once per flow (one `store_write` per key), or the error says which two lines collide.

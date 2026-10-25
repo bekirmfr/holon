@@ -54,6 +54,7 @@ else.
 | `every DURATION` | A flow without routes: how often it runs (`every 10s`, `every 1h`). |
 | `collection NAME` | Declares a collection, used as `NAME[key]`. One per line; as many as needed. |
 | `folder NAME` | Declares a named folder on the host, used as `NAME[file]`. |
+| `database NAME` | Declares a named database on the host, used as `NAME.query(sql, …)`. |
 | `on file NAME` | A flow without routes: runs once for each new file in the folder `NAME` (which it declares too). One per flow. |
 | `optional PERMISSION` | A permission the flow can run without (see below). |
 | `browsers ORIGIN, …` | The web origins allowed to call the flow from a browser (CORS), or `*`. |
@@ -70,12 +71,12 @@ what it uses.
 **Identifiers** are `[A-Za-z_][A-Za-z0-9_]*`. A name that is a leaf, a template, a keyword or a noun
 can't be bound; the mistake names the clash.
 
-**Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `folder` `holon` `js` `route`
+**Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `folder` `database` `holon` `js` `route`
 `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`. A keyword
 is fine after a dot (`req.json.in`) and as a record key (`{ in: 1 }`).
 
 **Nouns** are the outside world: `req` (or whatever a route names its request), `secret`, `state`,
-`now`, `random`, `http`, `stripe`, and every declared collection and folder.
+`now`, `random`, `http`, `stripe`, and every declared collection, folder and database.
 
 | Literal | Examples | Notes |
 |---|---|---|
@@ -204,6 +205,9 @@ Each of these is one building block, and each is one thing the flow may do.
 | `dir.slice(name, offset: o, length: n)` | `n` bytes from offset `o`, as text |
 | `dir[name] = handle`, `dir.copy(name, handle)` | copy a file by handle when the run finishes |
 | `ingress` (with `on file NAME`) | the handle of the new file that started the run |
+| `db.query(sql, v1, v2, …)` | the rows of a declared database, a list of records, as the run began; `$1`, `$2`, … in the SQL are the values after it |
+| `db.one(sql, v1, …)` | the first row, or no value when there is none |
+| `db.exec(sql, v1, …)`, `db.exec(sql, …, expect: n)` | run an `insert`, `update` or `delete` when the run finishes; with `expect:`, only if it changes exactly `n` rows, else nothing the run wrote lands and a route answers 409 |
 | `http.get(host, path, headers: h, body: b)` | a request to `host`; also `post`, `put`, `patch`, `delete`, `head`. The answer is `{status, headers, body}` |
 | `http.put(host, path, headers: h, file: handle)` | the same, sending a file as the body, by handle: the server streams its bytes, which never pass through the flow (any method) |
 | `stripe.verify(req, secret, now, tolerance: 5m)` | a verified Stripe webhook; `.event` is the event |
@@ -215,6 +219,9 @@ Rules:
 
 - **A collection or folder must be declared** in the headers (`collection notes`, `folder
   inbox`). Without the declaration, `notes[k]` is a field lookup on a record named `notes`.
+- **A database's SQL must be written as text in the flow,** and name a table: the tables it reads
+  and writes are the permissions the deployment asks for. The values go after it, as many as it
+  has `$n`s. See [Databases on the host](../guides/databases.md).
 - **An `http.*` host must be written as text in the flow.** The host is the permission the
   deployment asks for, so it can't come from a value. The path, headers and body can.
 - **`now` and a secret are the same within a run,** however often they are written.
