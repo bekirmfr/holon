@@ -323,15 +323,21 @@ mod tests {
         assert!(claims.wait_until_empty(soon()));
     }
 
+    /// A run waiting for a key is woken when it is let go, not when its deadline passes: with a
+    /// deadline of ten seconds and the key released after fifty milliseconds, it holds the key
+    /// well within a second. (How long it waited is not asserted: on a loaded machine the waiter
+    /// may not have started by the time the key is released.)
     #[test]
     fn a_waiting_run_is_woken_by_the_release() {
         let claims = std::sync::Arc::new(Claims::default());
         claims.acquire(&[item("c", "k")], "a", Instant::now()).unwrap();
         let waiter = std::sync::Arc::clone(&claims);
-        let t = std::thread::spawn(move || waiter.acquire(&[item("c", "k")], "b", Instant::now() + Duration::from_secs(5)));
+        let started = Instant::now();
+        let t = std::thread::spawn(move || waiter.acquire(&[item("c", "k")], "b", Instant::now() + Duration::from_secs(10)));
         std::thread::sleep(Duration::from_millis(50));
         claims.release(&[item("c", "k")], "a");
         let waited = t.join().unwrap().unwrap();
-        assert!(waited >= Duration::from_millis(40) && waited < Duration::from_secs(2), "{waited:?}");
+        assert!(started.elapsed() < Duration::from_secs(2), "woken by the release, not the deadline: {waited:?}");
+        assert_eq!(claims.held(), vec![item("c", "k")], "held by b now");
     }
 }
