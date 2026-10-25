@@ -6,6 +6,9 @@ the code wins; when they disagree with each other, the first list wins.
 Current:
 
 - `../README.md`: what Holon is for, installing and running it.
+- `manual/`: the user manual: getting started, concepts, the language (a tour, the reference,
+  every leaf), guides and the command line and server reference. A test compiles every flow in it
+  and keeps its page of leaves equal to the catalog.
 - `../CLAUDE.md`: how work is done here (samples for every feature, commits).
 - `PLATFORM_LAYOUT.md`: the current plan: one product, the crates, permissions (manifest, policy,
   grant, permit), effects that answer, runs that last, what has landed, and what comes next

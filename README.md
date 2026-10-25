@@ -334,6 +334,14 @@ Holon is pre-release: 0.1.0 release candidates, each in [`CHANGELOG.md`](CHANGEL
 
 ## Documentation
 
+**[The Holon manual](docs/manual/README.md)**: [getting started](docs/manual/getting-started.md),
+[concepts](docs/manual/concepts.md), [a tour of the language](docs/manual/language/tour.md), the
+[language reference](docs/manual/language/reference.md), guides (the editor, deploying, agents,
+[Stripe to Slack](docs/manual/guides/stripe-to-slack.md), HTTPS, files, checking runs) and the
+[command line](docs/manual/reference/cli.md).
+
+Design documents:
+
 - [`docs/LANGUAGE.md`](docs/LANGUAGE.md): the language, by example and in full.
 - [`docs/PLATFORM_LAYOUT.md`](docs/PLATFORM_LAYOUT.md): the runtime (permissions, effects,
   durable runs, the run record) and the plan.

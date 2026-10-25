@@ -610,6 +610,57 @@ pub(crate) fn leaves() -> Vec<(String, String, &'static str)> {
         .collect()
 }
 
+/// The manual's page of leaves (docs/manual/language/leaves.md): every leaf and template, as
+/// [`leaves`] and the templates describe them. A test keeps the page equal to this.
+pub fn leaves_page() -> String {
+    let all = leaves();
+    let mut out = vec![
+        "# Leaves".to_string(),
+        String::new(),
+        "<!-- Generated from the catalog by holon_author::agent::leaves_page: don't edit it by hand.".into(),
+        "     HOLON_BLESS=1 cargo test -p holon-author --test manual writes it again. -->".into(),
+        String::new(),
+        "Every building block a flow is made of. Each is shown as `name(inputs) -> outputs {params}`:".into(),
+        "call a leaf by its name, with its inputs in order and its parameters by name (see".into(),
+        "[Calls](reference.md#calls)). Many have a shorter written form (`a + b` is `add`, `x ?? y` is".into(),
+        "`coalesce`, `\"{x}\"` is `concat`), and `holon fmt` writes that form; the".into(),
+        "[reference](reference.md) has them all.".into(),
+    ];
+    // A leaf with no capability computes; the rest are where a flow meets the outside world.
+    let store = MapResolver::new();
+    let reaches: HashSet<String> = genesis_units()
+        .iter()
+        .filter_map(|u| match &u.body {
+            UnitBody::Primitive { name } if !capabilities(u, &store).is_empty() => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    let sections = [
+        ("Computing", "These touch nothing outside: given the same inputs, they always give the same output.", false),
+        ("The outside world", "Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder).", true),
+    ];
+    for (title, about, outside) in sections {
+        let these: Vec<_> = all.iter().filter(|(name, ..)| reaches.contains(name) == outside).collect();
+        out.extend([String::new(), format!("## {title}"), String::new(), about.to_string(), String::new()]);
+        out.push(these.iter().map(|(name, ..)| format!("[`{name}`](#{name})")).collect::<Vec<_>>().join(" · "));
+        for (name, sig, doc) in these {
+            out.extend([String::new(), format!("### `{name}`"), String::new(), "```".into(), sig.clone(), "```".into(), String::new(), doc.to_string()]);
+        }
+    }
+    out.extend([
+        String::new(),
+        "## Templates".into(),
+        String::new(),
+        "Templates are written through the language's own forms (a route, `respond`, `stripe.verify`),".into(),
+        "not called by name.".into(),
+    ]);
+    for t in templates::TEMPLATES {
+        out.extend([String::new(), format!("### `{t}`"), String::new(), templates::describe(t).unwrap_or("").to_string()]);
+    }
+    out.push(String::new());
+    out.join("\n")
+}
+
 fn first_sentence(s: &str) -> &str {
     s.find(". ").map(|i| &s[..=i]).unwrap_or(s)
 }
