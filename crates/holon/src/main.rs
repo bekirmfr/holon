@@ -150,6 +150,7 @@ mod activity;
 mod arrivals;
 mod auth;
 mod blobs;
+mod channels;
 mod claims;
 mod oidc;
 mod collections;
@@ -415,6 +416,9 @@ struct Deployment {
     /// Every run, with what it read and produced (recorder.rs): the newest in memory, kept beside
     /// the deployments file so a restart reads them back.
     log: Log,
+    /// Its channels, with their kept packs and subscribers (channels.rs): kept across redeploys,
+    /// rebuilt from the log at load.
+    channels: Arc<channels::Channels>,
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
     /// view mode shows exactly what runs even after the flow is edited. Persisted.
     document: Option<serde_json::Value>,

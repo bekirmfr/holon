@@ -438,6 +438,14 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, res
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
     }
+    // A part that settled waiting: the packs it sent as it parked are what it settled.
+    let progress: Vec<PerformedEntry> = if outcome.waiting.is_empty() { Vec::new() } else { channels::settled_sends(&outcome.outputs) }
+        .iter()
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
+        .collect();
+    if json(&progress) != json(&entry.progress) {
+        differs.push("the packs it sent as it waited");
+    }
     if entry.kind == "request"
         && let Some(status) = entry.status
         && data::respond(outcome.outputs.first().and_then(Option::as_ref)).status != status

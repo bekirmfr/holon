@@ -9,7 +9,7 @@
 // through the stand-in identity provider (mock-oidc.mjs) once its admin panel says to.
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,10 @@ const holonHome = join(dir, "home");
 // CARGO_TARGET_DIR, when set, is where cargo put it (e.g. to build beside a dev server holding
 // target/debug's binary open).
 const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
+// Its policy lets a flow call plain HTTP and private addresses when its deploy asks: the
+// chat-proxy test points the sample at a stand-in upstream on loopback.
+const policy = join(dir, "holon.toml");
+writeFileSync(policy, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n");
 const server = spawn(
   binary,
   [
@@ -45,6 +49,7 @@ const server = spawn(
     "--secrets-key", `file:${join(dir, "secrets.key")}`,
     "--host-key", join(dir, "host.key"),
     "--accounts", join(dir, "accounts.json"),
+    "--policy", policy,
   ],
   { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "", HOLON_NO_FOLDER_DIALOG: "1" } },
 );

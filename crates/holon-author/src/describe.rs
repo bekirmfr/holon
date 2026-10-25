@@ -16,7 +16,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("give that code up to {} MiB of memory per call", n / (1024 * 1024));
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 12] = [
+    let named: [(&str, Say); 14] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -25,6 +25,8 @@ pub fn describe_item(item: &str) -> String {
         ("FileRead", |a| format!("read files in the folder \"{a}\"")),
         ("FileArrival", |a| format!("run on each file new, changed or removed in the folder \"{a}\" (as its on file lines say), and pass it on")),
         ("FileWrite", |a| format!("write, copy into and delete files in the folder \"{a}\"")),
+        ("ChannelSend", |a| format!("send packs on its channel \"{a}\" to whoever subscribes")),
+        ("ChannelRead", |a| format!("let callers subscribe to its channel \"{a}\"")),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
         ("Await", |a| format!("wait for an event \"{a}\" and continue later")),

@@ -1,0 +1,74 @@
+flow chat-proxy
+port 8127
+collection chats
+channel room
+
+holon page(past) -> html js {
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const items = Object.values(past).reverse().slice(0, 10).map((c) => `<li><b>${esc(c.prompt)}</b><br>${esc(c.said)}</li>`);
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>Chat proxy</title>
+<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em auto;padding:0 1em}input{width:70%}#said{white-space:pre-wrap;min-height:3em;border-left:3px solid #ccd;padding-left:1em}</style>
+<h1>Chat proxy</h1>
+<form id="ask"><input name="prompt" placeholder="Ask something" required> <button>Ask</button></form>
+<p id="said"></p>
+<h2>Asked before</h2>
+<ul>${items.join("\n")}</ul>
+<script>
+const out = document.getElementById("said");
+document.getElementById("ask").onsubmit = async (e) => {
+  e.preventDefault();
+  const prompt = e.target.elements.prompt.value;
+  out.textContent = "";
+  const r = await fetch("/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt }) });
+  const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+  let rest = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const lines = (rest + value).split("\\n");
+    rest = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const ev = JSON.parse(line.slice(5));
+      if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") out.textContent += ev.delta.text;
+    }
+  }
+};
+</script>`;
+}
+
+holon answer(events) -> said js {
+  let said = "";
+  for (const line of String(events).split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    let e;
+    try { e = JSON.parse(line.slice(5)); } catch (_) { continue; }
+    if (e.type === "content_block_delta" && e.delta && e.delta.type === "text_delta") said += e.delta.text;
+  }
+  return said;
+}
+
+route GET / (req) {
+  respond page(chats.list()), headers: { "content-type": "text/html; charset=utf-8" }
+}
+
+route POST /chat (req) {
+  prompt = req.json.prompt
+  sent = http.post("api.anthropic.com", "/v1/messages", headers: { "content-type": "application/json", "x-api-key": secret.anthropic_api_key, "anthropic-version": "2026-10-21", "anthropic-beta": "server-side-fallback-2026-07-01" }, body: json({ model: "claude-opus-5-5", max_tokens: 1024, stream: true, fallbacks: "default", output_config: { effort: "low" }, messages: [{ role: "user", content: prompt }] }), stream: true)
+  chats[as_text(now)] = { prompt: prompt, said: answer(sent.body) }
+  respond sent.body, missing: 400, stream: true
+}
+
+route POST /room (req) {
+  prompt = req.json.prompt
+  sent = room.pipe(http.post("api.anthropic.com", "/v1/messages", headers: { "content-type": "application/json", "x-api-key": secret.anthropic_api_key, "anthropic-version": "2026-10-21", "anthropic-beta": "server-side-fallback-2026-07-01" }, body: json({ model: "claude-opus-5-5", max_tokens: 1024, stream: true, fallbacks: "default", output_config: { effort: "low" }, messages: [{ role: "user", content: prompt }] })))
+  said = answer(sent.body)
+  room.send({ prompt: prompt, said: said })
+  respond { prompt: prompt, said: said }, missing: 400
+}
+
+route GET /room/live (req) {
+  respond room.subscribe()
+}

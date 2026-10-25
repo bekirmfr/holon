@@ -529,6 +529,24 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             Some(Value::Effect { sink: format!("{name}:{folder}"), payload: Box::new(Value::Record(file)) })
         }
 
+        // A channel's pack: any value but an effect, sent to its subscribers once the run is over.
+        // The channel rides in the sink name, as a collection's does.
+        "channel_send" => {
+            let channel = crate::kind::ident(params, "channel")?;
+            sink_effect(&format!("channel_send:{channel}"), inputs)
+        }
+        // A subscription: what a route answers with, read by the host from the response (never
+        // performed as a sink). `from` is "new" (packs from now on) or "kept" (the kept ones first).
+        "channel_subscribe" => {
+            let channel = crate::kind::ident(params, "channel")?;
+            let from = param(params, "from").unwrap_or("new");
+            if !["new", "kept"].contains(&from) {
+                return None;
+            }
+            let ask = Value::Record(BTreeMap::from([("channel".to_string(), Value::Text(channel.clone())), ("from".to_string(), Value::Text(from.to_string()))]));
+            Some(Value::Effect { sink: format!("channel_subscribe:{channel}"), payload: Box::new(ask) })
+        }
+
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
 }
@@ -553,7 +571,7 @@ fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
 
 /// The primitives that construct an Effect from a payload input (see [`sink_effect`]).
 pub(crate) fn is_sink(name: &str) -> bool {
-    matches!(name, "egress" | "store_write" | "http_request" | "collection_put")
+    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "collection_put" | "channel_send")
 }
 
 /// The most items one `collection_list` returns.
@@ -697,7 +715,7 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// `http_request` (headers, body). Inside a composite, such a port that *is* wired holds the
 /// node back while its value is absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
-    matches!(name, "http_request" | "http_upload" | "collection_list" | "file_list" | "file_lines")
+    matches!(name, "http_request" | "http_upload" | "http_stream" | "collection_list" | "file_list" | "file_lines")
 }
 
 /// The methods `http_request` sends.
@@ -733,6 +751,18 @@ pub(crate) fn http_request(inputs: &[Option<Value>], params: &[Param]) -> Option
         ("headers".to_string(), Value::Record(headers)),
         ("body".to_string(), Value::Text(body)),
     ])))
+}
+
+/// The request an `http_stream` node makes: an `http_request`'s, marked `stream: true`, which
+/// tells the host to forward its answer to the route's caller as it reads it, or, piped,
+/// `pipe: "updates"`, to that channel's subscribers.
+pub(crate) fn http_stream(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let Value::Record(mut request) = http_request(inputs, params)? else { return None };
+    match params.iter().find(|p| p.name() == "pipe").and_then(|p| p.value()).filter(|v| !v.is_empty()) {
+        Some(channel) => request.insert("pipe".to_string(), Value::Text(channel.to_string())),
+        None => request.insert("stream".to_string(), Value::Boolean(true)),
+    };
+    Some(Value::Record(request))
 }
 
 /// The request an `http_upload` node makes: an `http_request`'s, with `file` in place of `body`:
@@ -939,6 +969,22 @@ mod tests {
         assert_eq!(compute("insert", &[&r, &num(1.0), &num(1.0)], &[]), None);
         assert_eq!(compute("remove", &[&num(1.0), &txt("x")], &[]), None);
         assert_eq!(compute("lookup", &[&r], &[]), None);
+    }
+
+    #[test]
+    fn a_pack_and_a_subscription_are_effects_naming_their_channel() {
+        let updates = [Param::frozen("channel", "updates"), Param::frozen("from", "new")];
+        let rec = |kv: &[(&str, Value)]| Value::Record(kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let pack = rec(&[("new", txt("a ticket"))]);
+        assert_eq!(compute("channel_send", &[&pack], &updates), Some(Value::Effect { sink: "channel_send:updates".into(), payload: Box::new(pack.clone()) }));
+        let effect = compute("channel_send", &[&pack], &updates).unwrap();
+        assert_eq!(compute("channel_send", &[&effect], &updates), None, "an effect is not a pack");
+        let ask = rec(&[("channel", txt("updates")), ("from", txt("new"))]);
+        assert_eq!(compute("channel_subscribe", &[], &updates), Some(Value::Effect { sink: "channel_subscribe:updates".into(), payload: Box::new(ask) }));
+        let kept = [Param::frozen("channel", "updates"), Param::frozen("from", "kept")];
+        assert!(compute("channel_subscribe", &[], &kept).is_some());
+        let odd = [Param::frozen("channel", "updates"), Param::frozen("from", "yesterday")];
+        assert_eq!(compute("channel_subscribe", &[], &odd), None, "from is new or kept");
     }
 
     #[test]

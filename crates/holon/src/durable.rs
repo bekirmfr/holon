@@ -157,6 +157,11 @@ pub(crate) struct RunWaits {
     /// The keys this attempt holds (claims.rs), and what it needs to claim more; none for a run
     /// without state, a resumed part, or the attempt that runs holding the state's lock.
     pub(crate) claiming: Option<claims::Claiming>,
+    /// The route's caller, when the run's reply forwards a streamed call (outbound.rs).
+    pub(crate) forward: Option<outbound::Forwarder>,
+    /// The deployment's channels, which a piped call sends its answer to (channels.rs); none
+    /// outside a run.
+    pub(crate) channels: Option<Arc<channels::Channels>>,
 }
 
 impl Waits for RunWaits {
@@ -485,14 +490,15 @@ pub(crate) fn resume_parked(
     name: &str,
     event: Value,
 ) -> Result<(), String> {
-    let (record, state, permit, secrets, folders) = {
+    let (record, state, permit, secrets, folders, channels) = {
         let table = deployments.lock().unwrap();
         let dep = table.get(slug).ok_or("no such deployment")?;
         let record = dep.parked.get(run_id).ok_or("no such waiting run")?.clone();
-        (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders))
+        (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
     };
     let Resumption { unit, inputs, sourced, mut waits, resumed } = record.resume(name, event, store)?;
     waits.folders = Some(folders);
+    waits.channels = Some(channels);
     let resolver = materialize_closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();

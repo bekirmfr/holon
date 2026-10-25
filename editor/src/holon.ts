@@ -188,6 +188,8 @@ export type WCapability =
   | "NetworkEgress"
   | { HttpRequest: string }
   | { FileWrite: string }
+  | { ChannelSend: string }
+  | { ChannelRead: string }
   | "Spawn";
 
 /** The coarse effect bucket a unit belongs to. Mirrors `core::Kind` via the bridge's `WKind` —

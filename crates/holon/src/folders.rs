@@ -1128,6 +1128,11 @@ pub(crate) struct Sender<'a> {
     pub(crate) folders: Option<Arc<Scoped>>,
     /// The folders it reads, by name.
     pub(crate) granted: BTreeSet<String>,
+    /// The route's caller, for a streamed call's answer (`http_stream`), when the run answers one.
+    pub(crate) forward: Option<&'a outbound::Forwarder>,
+    /// The deployment's channels, for a piped call's answer, and the ones it may send on.
+    pub(crate) channels: Option<Arc<channels::Channels>>,
+    pub(crate) sends: BTreeSet<String>,
 }
 
 /// A file a request sends, as the run's handle names it.
@@ -1173,6 +1178,18 @@ impl FileBody for Sent<'_> {
 impl Performer for Sender<'_> {
     fn perform(&self, request: &Value, limits: &Limits) -> Value {
         let Value::Record(r) = request else { return self.outbound.perform(request, limits) };
+        if r.get("stream") == Some(&Value::Boolean(true)) {
+            return self.outbound.perform_forwarding(request, limits, self.forward.and_then(|f| f.take()));
+        }
+        // Piped: its answer goes to the channel's subscribers as it is read.
+        if let Some(Value::Text(name)) = r.get("pipe") {
+            if !self.sends.contains(name) {
+                return outbound::failure("blocked_channel", format!("this deployment may not send on the channel {name:?}"));
+            }
+            let Some(channels) = &self.channels else { return self.outbound.perform(request, limits) };
+            let pipe = channels::Pipe::new(channels, name);
+            return self.outbound.perform_forwarding(request, limits, Some(&pipe));
+        }
         let Some(Value::Record(file)) = r.get("file") else { return self.outbound.perform(request, limits) };
         let (Some(Value::Text(method)), Some(Value::Text(url)), Some(Value::Record(headers))) = (r.get("method"), r.get("url"), r.get("headers")) else {
             return outbound::failure("bad_request", "a request needs method, url and headers");
@@ -1186,7 +1203,7 @@ impl Performer for Sender<'_> {
         }
         let Some(folders) = &self.folders else { return outbound::failure("blocked_file", "no folders on this server") };
         let sent = Sent { folders, folder, name, size: *size as u64, hash };
-        self.outbound.send(method, url, headers, Body::File(&sent), limits)
+        self.outbound.send(method, url, headers, Body::File(&sent), limits, None)
     }
 }
 

@@ -44,7 +44,7 @@ pub const GENESIS: &[&str] = &[
     "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals",
     // request/response — performed by the host, answered in the next round (2): a request, and
     // one whose body is a file a handle names
-    "http_request", "http_upload",
+    "http_request", "http_upload", "http_stream",
     // drivers — sourced, no compute (5): a new file in a folder starts a run, as a request does
     "clock", "random", "ingress", "secret", "file_arrival",
     // durable runs — answered by the host when an event arrives (2)
@@ -59,6 +59,8 @@ pub const GENESIS: &[&str] = &[
     "file_handle", "file_lines", "file_slice", "file_copy",
     // and a write and a copy that never replace a file (2)
     "file_create", "file_create_copy",
+    // channels: a pack sent when the run is over, and a route's answer that subscribes (2)
+    "channel_send", "channel_subscribe",
     // sink — performed (1)
     "egress",
 ];
@@ -296,6 +298,11 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "file_create" => prim(vec![port("name", Text), port("text", Text)], vec![Param::frozen("folder", "files")], Effect),
         "file_create_copy" => prim(vec![port("name", Text), port("from", Type::Record)], vec![Param::frozen("folder", "files")], Effect),
 
+        // A channel's pack, sent once the run is over; and a subscription to the channel, which
+        // a route answers with (`from`: "new" packs only, or the "kept" ones first).
+        "channel_send" => prim(vec![port("pack", Any)], vec![Param::frozen("channel", "updates")], Effect),
+        "channel_subscribe" => prim(vec![], vec![Param::frozen("channel", "updates"), Param::frozen("from", "new")], Effect),
+
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
         // `method` and `host` are frozen (the host is the capability); the path, headers and
@@ -303,6 +310,14 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "http_request" => prim(
             vec![port("path", Text), port("headers", Type::Record), port("body", Any)],
             vec![Param::frozen("method", "GET"), Param::frozen("host", "example.com")],
+            Type::Record,
+        ),
+        // A request whose answer the host also forwards as it arrives: to the route's caller (a
+        // streamed reply), or, with `pipe` set, to that channel's subscribers. The flow still gets
+        // the whole answer.
+        "http_stream" => prim(
+            vec![port("path", Text), port("headers", Type::Record), port("body", Any)],
+            vec![Param::frozen("method", "POST"), Param::frozen("host", "example.com"), Param::frozen("pipe", "")],
             Type::Record,
         ),
         // A request whose body is the file a handle names, its bytes streamed by the host.
@@ -348,8 +363,9 @@ mod tests {
         // with a fallback on a wire), both for docs/LANGUAGE.md, range, and the named-folder kit
         // (file_read, file_list, file_write, file_delete, file_handle, file_lines, file_slice,
         // file_copy), and a folder's trigger and a file as a request's body (file_arrival,
-        // http_upload), and the create-only pair (file_create, file_create_copy).
-        assert_eq!(GENESIS.len(), 83);
+        // http_upload), and the create-only pair (file_create, file_create_copy), and the
+        // channel pair (channel_send, channel_subscribe), and http_stream.
+        assert_eq!(GENESIS.len(), 86);
     }
 
     #[test]

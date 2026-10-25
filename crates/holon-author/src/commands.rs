@@ -538,6 +538,64 @@ route POST /t (req) {
     }
 
     #[test]
+    fn fmt_writes_channels_back_as_written() {
+        let text = "flow board\nport 8200\nchannel updates\n\nroute POST /t (req) {\n  updates.send({ new: req.json.title })\n  respond { ok: true }, status: 201\n}\n\nroute GET /live (req) {\n  respond updates.subscribe()\n}\n\nroute GET /all (req) {\n  respond updates.subscribe(from: \"kept\"), headers: { \"cache-control\": \"no-store\" }\n}\n";
+        assert_eq!(check("board.holon", text).code, 0, "{:?}", check("board.holon", text).err);
+        assert_eq!(fmt("board.holon", text).unwrap(), text);
+    }
+
+    #[test]
+    fn fmt_writes_a_streamed_reply_back_as_written() {
+        let text = "flow chat\nport 8200\ncollection said\n\nroute POST /ask (req) {\n  sent = http.post(\"api.example.com\", \"/v1/chat\", body: req.json, stream: true)\n  said[as_text(now)] = sent.body\n  respond sent.body, stream: true\n}\n";
+        assert_eq!(check("chat.holon", text).code, 0, "{:?}", check("chat.holon", text).err);
+        assert_eq!(fmt("chat.holon", text).unwrap(), text);
+    }
+
+    #[test]
+    fn a_streamed_call_is_forwarded_where_its_route_answers() {
+        let flow = |route: &str| format!("flow chat\nport 8200\n\nroute POST /ask (req) {{\n{route}\n}}\n");
+        let fails = |route: &str| check("chat.holon", &flow(route)).err.join("\n");
+        assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true)\n  respond sent.status").contains("answer with it, respond sent.body, stream: true"));
+        assert!(fails("  sent = http.post(\"a.com\", \"/x\")\n  respond sent.body, stream: true").contains("only a streamed call's body can be streamed"));
+        assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true)\n  respond sent.body, stream: true, status: 201").contains("takes no status"));
+        assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true, body: 1)\n  respond sent.body, stream: true").contains("stream: comes last"));
+        assert!(fails("  a = http.post(\"a.com\", \"/x\", stream: true)\n  b = http.post(\"a.com\", \"/y\", stream: true)\n  respond { a: a.body, b: b.body }").contains("one streamed call"));
+        assert!(check("chat.holon", "flow chat\nevery 10s\n\nstate.x = http.get(\"a.com\", \"/x\", stream: true).body\n").err.join("\n").contains("a streamed call is a route's"));
+        // stream: false is a plain call.
+        assert_eq!(check("chat.holon", &flow("  sent = http.post(\"a.com\", \"/x\", stream: false)\n  respond sent.body")).code, 0);
+    }
+
+    #[test]
+    fn a_piped_call_goes_to_its_channel_as_it_arrives() {
+        let text = "flow room\nport 8200\ncollection said\nchannel room\n\nroute POST /ask (req) {\n  sent = room.pipe(http.post(\"api.example.com\", \"/v1/chat\", body: req.json))\n  said[as_text(now)] = sent.body\n  respond { ok: true }, status: 202\n}\n";
+        let checked = check("room.holon", text);
+        assert_eq!(checked.code, 0, "{:?}", checked.err);
+        assert_eq!(fmt("room.holon", text).unwrap(), text);
+        // Not a route's: a clock flow may pipe too.
+        assert_eq!(check("room.holon", "flow room\nevery 10s\nchannel room\n\nstate.x = room.pipe(http.get(\"a.com\", \"/x\")).body\n").code, 0);
+        let fails = |line: &str| check("room.holon", &format!("flow room\nport 8200\nchannel room\n\nroute POST /ask (req) {{\n{line}\n  respond {{ ok: true }}, status: 202\n}}\n")).err.join("\n");
+        assert!(fails("  s = room.pipe(http.post(\"a.com\", \"/x\", stream: true))").contains("without stream:"));
+        assert!(fails("  s = room.pipe(1)").contains("only a call's answer can be piped"));
+        assert!(fails("  s = room.pipe()").contains("room.pipe takes one call"));
+        // A piped call isn't the route's reply: it can't be streamed to the caller.
+        let streamed = "flow room\nport 8200\nchannel room\n\nroute POST /ask (req) {\n  sent = room.pipe(http.post(\"a.com\", \"/x\"))\n  respond sent.body, stream: true\n}\n";
+        assert!(check("room.holon", streamed).err.join("\n").contains("only a streamed call's body can be streamed"));
+    }
+
+    #[test]
+    fn a_subscription_is_only_a_routes_answer() {
+        let flow = |route: &str| format!("flow board\nport 8200\nchannel updates\n\nroute GET /live (req) {{\n{route}\n}}\n");
+        let fails = |route: &str| check("board.holon", &flow(route)).err.join("\n");
+        assert!(fails("  s = updates.subscribe()\n  respond s").contains("a subscription is a route's answer: respond updates.subscribe()"));
+        assert!(fails("  respond updates.subscribe(), status: 201").contains("takes no status"));
+        assert!(fails("  respond updates.subscribe(from: \"old\")").contains("from: is \"new\""));
+        assert!(fails("  respond updates").contains("\"updates\" is a channel"));
+        assert!(fails("  respond updates.watch()").contains("a channel has no \"watch\""));
+        assert!(fails("  updates = 1\n  respond 1").contains("a binding may not shadow it"));
+        assert!(check("board.holon", "flow board\nport 8200\n\nroute GET /live (req) {\n  respond updates.subscribe()\n}\n").code != 0);
+    }
+
+    #[test]
     fn fmt_is_stable_and_every_sample_round_trips_through_new() {
         let once = fmt("hello.holon", HELLO).unwrap();
         assert_eq!(fmt("hello.holon", &once).unwrap(), once);

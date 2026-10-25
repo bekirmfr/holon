@@ -82,6 +82,7 @@ pub fn describe(name: &str) -> Option<&'static str> {
 
         // ── outside the run ──
         "http_request" => "Calls the host set on the node (HTTPS) with the method, path, headers and body, and answers {status, headers, body}. Performed by the server between rounds, within the deployment's limits; the host is a permission it asks for. Holds back when a wired input didn't arrive.",
+        "http_stream" => "Calls the host set on the node like http_request, and the server forwards the answer's body to the route's caller as it arrives (a 2xx answer; the reply is 200 with the answer's content type): a model's tokens, say, as they come. With pipe set to a channel's name, the pieces go to that channel's subscribers instead, as they arrive (a shared live transcript). The flow still gets the whole answer, as http_request's.",
         "http_upload" => "Calls the host set on the node like http_request, with the file a handle names as the body: the server streams its bytes from the folder (one the deployment reads), never through the flow, and fails the call if the file changed since the run read it.",
         "file_arrival" => "The file in a folder that started the run: its handle {folder, name, size, hash, modified, event}, event new or changed; for a file deleted (on: deleted), as last seen, without a hash. A flow with one runs once for each file that arrives there and settles (or, on: deleted, is removed), its name matching the glob matching if set, not on requests.",
         "clock" => "The time the run started, in seconds since 1970. The same everywhere in one run, and recorded, so a replay sees it too.",
@@ -106,6 +107,8 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "file_copy" => "Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.",
         "file_create" => "Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).",
         "file_create_copy" => "Copies the file a handle names into this folder as name when the run finishes, only if no file has that name then: it never replaces one.",
+        "channel_send" => "Sends pack on the channel set on the node once the run is over and its writes have landed: every caller subscribed to the channel gets it as a server-sent event. Sending on it is a permission.",
+        "channel_subscribe" => "A subscription to the channel set on the node, for a route to answer with: the caller gets each pack sent on it from then on (from \"kept\": the packs the channel keeps first), as server-sent events. Letting callers subscribe is a permission.",
         "egress" => "Sends its payload out of the flow as a message, when the run finishes.",
         _ => return None,
     })

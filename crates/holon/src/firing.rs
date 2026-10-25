@@ -83,6 +83,8 @@ pub(crate) struct FiredRun {
     pub(crate) grant: String,
     /// The waiting points it settled waiting at: then it performed nothing (durable.rs parks it).
     pub(crate) waiting: Vec<Waiting>,
+    /// For a run that settled waiting: the packs that didn't wait, sent as it parks.
+    pub(crate) progress: Vec<(Capability, Value)>,
     /// The state it started from (the live state, or a resumed run's recorded one).
     pub(crate) start_state: Option<State>,
     /// The collection reads it made, and what each answered.
@@ -330,7 +332,15 @@ fn run_attempt(
         )
     });
     // A file as a request's body is sent from a folder the deployment reads.
-    let sender = folders::Sender { outbound: &permit.outbound, folders: waits.folders.clone(), granted: permit.folders_handed() };
+    let forward = waits.forward.clone();
+    let sender = folders::Sender {
+        outbound: &permit.outbound,
+        folders: waits.folders.clone(),
+        granted: permit.folders_handed(),
+        forward: forward.as_ref(),
+        channels: waits.channels.clone(),
+        sends: permit.channels_sent(),
+    };
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
     // A read that failed (a file too big, or not text; a folder not bound) fails the run: it
@@ -354,19 +364,36 @@ fn run_attempt(
             eprintln!("holon: refused {cap:?}: a copy from the folder {from:?}, which this deployment doesn't read");
             return false;
         }
-        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) = cap
+        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::ChannelSend(key) = cap
             && let Some(name) = secrets::secret_in(payload, secrets)
         {
-            eprintln!("holon: refused to store secret {name:?} in {key:?}");
+            eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
             return false;
         }
-        true
+        // A subscription is a route's answer, read from its response, never performed.
+        !matches!(cap, Capability::ChannelRead(_))
     });
     // Writes past the run's file limits: it fails before anything it did commits.
     let files_read = waits.files.as_ref().map_or(0, |f| f.files);
     let past_limit = failed_read.is_none().then(|| folders::past_write_limits(&host.performed, files_read, &permit.files)).flatten();
-    if past_limit.is_some() {
+    // Packs past the run's channel limits: likewise.
+    let past_packs = (failed_read.is_none() && past_limit.is_none()).then(|| channels::past_pack_limits(&host.performed, &permit.channels)).flatten();
+    if past_limit.is_some() || past_packs.is_some() {
         host.performed.clear();
+    }
+    // A run that settled waiting performs nothing yet, but the packs it settled that didn't wait
+    // go out as it parks, held to the same grant, secrets and limits as any run's.
+    let mut progress = if outcome.waiting.is_empty() || outcome.error.is_some() { Vec::new() } else { channels::settled_sends(&outcome.outputs) };
+    progress.retain(|(cap, payload)| {
+        let sends = permit.allows(cap) && secrets::secret_in(payload, secrets).is_none();
+        if !sends {
+            eprintln!("holon: refused {cap:?} as the run waits: not granted, or carrying a secret");
+        }
+        sends
+    });
+    if let Some(past) = channels::past_pack_limits(&progress, &permit.channels) {
+        eprintln!("holon: the packs a waiting run settled weren't sent: {past}");
+        progress.clear();
     }
 
     let run = FiredRun {
@@ -378,12 +405,14 @@ fn run_attempt(
         error: failed_read
             .map(|e| format!("{}{e}", folders::READ_FAILED))
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
+            .or(past_packs.map(|e| format!("{}{e}", channels::SEND_FAILED)))
             .or(outcome.error.map(|e| e.message())),
         run_id: to_hex(&run_id),
         unit: to_hex(&permit.deployment),
         nonce: hex_bytes(nonce),
         grant: permit.grant.clone(),
         waiting: outcome.waiting,
+        progress,
         start_state: start.clone(),
         reads: std::mem::take(&mut waits.reads),
         retries: 0,
@@ -483,7 +512,13 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
         Redactor::of(&dep.secrets).entry(&mut entry);
         entry.session = dep.life.sessions.last().map_or(0, |s| s.number);
+        // Its packs go out as it is logged: the run is over and its writes have landed, and what
+        // a subscriber gets is what the log holds (channels.rs).
+        let packs = dep.channels.packs_of(&entry, dep.log.next_seq());
         dep.log.push(entry);
+        for (name, pack) in packs {
+            dep.channels.send(&name, pack, &dep.permit.channels);
+        }
     }
 }
 
@@ -555,6 +590,11 @@ pub(crate) fn run_entry(
         nonce: run.nonce.clone(),
         grant: run.grant.clone(),
         parked: vec![],
+        progress: run
+            .progress
+            .iter()
+            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
+            .collect(),
         events: BTreeMap::new(),
         retries: run.retries,
         claims: run
@@ -610,6 +650,7 @@ impl FiredRun {
             nonce: String::new(),
             grant: String::new(),
             waiting: vec![],
+            progress: vec![],
             start_state: None,
             reads: vec![],
             retries: 0,

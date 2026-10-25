@@ -670,6 +670,7 @@ impl Redactor {
         e.state_before.values_mut().for_each(|v| self.svalue(v));
         e.outputs.iter_mut().flatten().for_each(|v| self.svalue(v));
         e.performed.iter_mut().for_each(|p| self.svalue(&mut p.payload));
+        e.progress.iter_mut().for_each(|p| self.svalue(&mut p.payload));
         e.events.values_mut().for_each(|v| self.svalue(v));
         for r in &mut e.reads {
             self.svalue(&mut r.request);

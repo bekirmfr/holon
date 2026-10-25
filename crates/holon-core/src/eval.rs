@@ -178,6 +178,8 @@ fn eval_at(
         UnitBody::Primitive { name } if name == "http_request" => ask(primitives::http_request(inputs, &unit.params), observer, path),
         // One whose body is a file: the host streams it.
         UnitBody::Primitive { name } if name == "http_upload" => ask(primitives::http_upload(inputs, &unit.params), observer, path),
+        // One whose answer the host forwards to the route's caller as it arrives.
+        UnitBody::Primitive { name } if name == "http_stream" => ask(primitives::http_stream(inputs, &unit.params), observer, path),
         // A durable run's waiting point and its token: also the host's to answer.
         UnitBody::Primitive { name } if name == "await" => ask(primitives::await_request(&unit.params), observer, path),
         // A collection read: the host answers it from the collection as the run found it.

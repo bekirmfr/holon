@@ -140,6 +140,12 @@ pub enum Capability {
     /// `file_delete`, `file_create`, `file_create_copy`, committed when
     /// the run finishes.
     FileWrite(String),
+    /// Sends packs on the named channel: `channel_send`, sent to its subscribers once the run is
+    /// over and its writes have landed (`docs/L4s/channels-L4.md`).
+    ChannelSend(String),
+    /// Lets callers subscribe to the named channel: `channel_subscribe`, a route answering with
+    /// the stream of its packs.
+    ChannelRead(String),
     /// Starts a process / job.
     Spawn,
 }
@@ -167,7 +173,7 @@ impl Capability {
         match self {
             Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | FileWrite(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -293,6 +299,10 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A new file in a named folder starts a run: the host watches the folder, and the file's
         // handle is the leaf's value. The folder is a frozen param, so the trigger names it.
         "file_arrival" => vec![FileArrival(ident(params, "folder")?)],
+        // A named channel: packs sent when the run is over, and a route's answer that subscribes
+        // to them. The channel is a frozen param, so the capability names it exactly.
+        "channel_send" => vec![ChannelSend(ident(params, "channel")?)],
+        "channel_subscribe" => vec![ChannelRead(ident(params, "channel")?)],
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
@@ -310,6 +320,12 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // The same request with a file's bytes as its body, streamed by the host from the folder
         // the handle names (one the deployment reads, checked when it is sent).
         "http_upload" => vec![HttpRequest(http_host(params)?)],
+        // A request whose answer the host forwards as it reads it: to the route's caller, or,
+        // piped, to a channel's subscribers, which is sending on that channel too.
+        "http_stream" => match params.iter().find(|p| p.name() == "pipe").and_then(|p| p.value()).filter(|v| !v.is_empty()) {
+            None => vec![HttpRequest(http_host(params)?)],
+            Some(_) => vec![HttpRequest(http_host(params)?), ChannelSend(ident(params, "pipe")?)],
+        },
         // Request/response (P2.5.1): `ingress` is the driver (a request arrives), `egress` carries
         // the reply out. §13 merges the old `email`/`respond` into this one `egress` sink — both
         // were NetworkEgress, and the host dispatches on the *capability*, not the sink name, so the
@@ -489,6 +505,8 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         NetworkEgress,
         HttpRequest(SATURATED_STATE_KEY.to_string()),
         FileWrite(SATURATED_STATE_KEY.to_string()),
+        ChannelSend(SATURATED_STATE_KEY.to_string()),
+        ChannelRead(SATURATED_STATE_KEY.to_string()),
         Spawn,
     ] {
         acc.insert(c);
@@ -972,10 +990,21 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 15); // every capability — fail closed
+        assert_eq!(caps.len(), 17); // every capability — fail closed
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
         assert!(caps.contains(Capability::FileWrite("<unknown>".to_string())), "any folder");
+        assert!(caps.contains(Capability::ChannelSend("<unknown>".to_string())), "any channel");
+    }
+
+    #[test]
+    fn a_channel_names_itself_in_both_capabilities() {
+        let on = |leaf: &str| capabilities_of(leaf, &[Param::frozen("channel", "updates"), Param::frozen("from", "new")]).unwrap();
+        assert!(on("channel_send").contains(Capability::ChannelSend("updates".into())));
+        assert!(on("channel_subscribe").contains(Capability::ChannelRead("updates".into())));
+        assert_eq!(Capability::ChannelSend("x".into()).kind(), Kind::Sink);
+        assert!(!Capability::ChannelRead("x".into()).is_sourced(), "a subscription is the host's to hold, not an input");
+        assert!(capabilities_of("channel_send", &[]).is_none(), "a channel names itself");
     }
 
     #[test]

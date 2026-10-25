@@ -213,6 +213,8 @@ pub(crate) fn handle_post_deploy(
         }
         let document = body.document.clone().or(old_document);
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
+        // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
+        let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
         // Runs waiting keep waiting, each on the unit it started on.
         let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
         let state = match carried {
@@ -247,6 +249,7 @@ pub(crate) fn handle_post_deploy(
                 browsers: body.browsers.clone(),
                 life,
                 log,
+                channels,
                 document,
                 versions,
             },
@@ -532,6 +535,7 @@ pub(crate) fn handle_delete_deployment(
         Some(dep) => {
             dep.log.delete_file();
             dep.arrivals.forget();
+            dep.channels.close();
             persist_deployments(deployments_path, deployments, store);
             Response::json(&deployment_entry(slug, &dep))
         }
@@ -587,7 +591,7 @@ pub(crate) fn handle_post_trigger(
     slug: &str,
     request: &Request,
 ) -> Response {
-    let (unit_hash, state, permit, vault, folders) = {
+    let (unit_hash, state, permit, vault, folders, channels) = {
         let deployments = deployments.lock().unwrap();
         match deployments.get(slug) {
             Some(dep) if dep.life.status != Status::Running => {
@@ -596,7 +600,7 @@ pub(crate) fn handle_post_trigger(
             Some(dep) if dep.server.is_some() => {
                 return err(400, "this deployment is an HTTP server: send requests to its own port");
             }
-            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders)),
+            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels)),
             None => return Response::empty_404(),
         }
     };
@@ -628,7 +632,7 @@ pub(crate) fn handle_post_trigger(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let mut waits = RunWaits { folders: Some(folders), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
 
@@ -800,6 +804,10 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         };
         if let Err(e) = result {
             return err(409, format!("can't {action} {slug:?}: {}", e.message()));
+        }
+        // A paused or stopped deployment answers nobody: its subscribers hear so.
+        if dep.life.status != Status::Running {
+            dep.channels.close();
         }
         // From here on the status is the person's choice, not the grant's.
         dep.grant.paused = false;

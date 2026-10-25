@@ -4285,3 +4285,229 @@ fn a_file_a_run_deletes_starts_no_run() {
     assert_eq!(log_entries(&state, &slug).len(), 2, "someone else's removal does");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A channel through a real socket (`docs/L4s/channels-L4.md`): a subscriber gets each pack a
+/// run sends once the run is over, as an event with its id; one asking for the kept packs, or
+/// reconnecting after an id, gets those first; pausing ends the subscriptions with `closed`.
+#[test]
+fn a_channel_streams_each_runs_packs_to_its_subscribers() {
+    use std::io::{BufRead, BufReader, Write};
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!(
+        "flow board\nport {port}\nchannel updates\n\nroute POST /t (req) {{\n  updates.send({{ new: req.json.title }})\n  respond {{ ok: true }}, status: 201\n}}\n\nroute GET /live (req) {{\n  respond updates.subscribe()\n}}\n\nroute GET /all (req) {{\n  respond updates.subscribe(from: \"kept\")\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, "x");
+    sync_listeners(&state);
+    // A subscriber: the response's headers, then its events, a line at a time.
+    let subscribe = |path: &str, last: Option<&str>| {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let last = last.map(|id| format!("Last-Event-ID: {id}\r\n")).unwrap_or_default();
+        stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n{last}\r\n").as_bytes()).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut head = String::new();
+        while !head.ends_with("\r\n\r\n") {
+            reader.read_line(&mut head).unwrap();
+        }
+        (head, reader)
+    };
+    // The next event's lines (chunk sizes and comments skipped).
+    let next_event = |reader: &mut BufReader<std::net::TcpStream>| {
+        let mut lines = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let line = line.trim_end().to_string();
+            if line.starts_with("id:") || line.starts_with("data:") || line.starts_with("event:") {
+                lines.push(line);
+            } else if line.is_empty() && !lines.is_empty() {
+                return lines;
+            }
+        }
+    };
+    let post = |path: &str, body: &str| raw_http(port, format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+
+    let (head, mut live) = subscribe("/live", None);
+    assert!(head.starts_with("HTTP/1.1 200") && head.contains("content-type: text/event-stream"), "{head}");
+    assert!(post("/t", r#"{"title":"one"}"#).starts_with("HTTP/1.1 201"));
+    let first = next_event(&mut live);
+    let id = first[0].strip_prefix("id: ").unwrap().to_string();
+    assert_eq!(first[1], r#"data: {"new":"one"}"#);
+    assert!(post("/t", r#"{"title":"three"}"#).starts_with("HTTP/1.1 201"));
+    assert_eq!(next_event(&mut live)[1], r#"data: {"new":"three"}"#);
+
+    let (_, mut all) = subscribe("/all", None);
+    assert_eq!(next_event(&mut all)[1], r#"data: {"new":"one"}"#, "the kept ones first");
+    let (_, mut after) = subscribe("/live", Some(&id));
+    assert_eq!(next_event(&mut after)[1], r#"data: {"new":"three"}"#, "the kept ones past the last it saw");
+
+    let entries = log_entries(&state, &slug);
+    assert!(entries.iter().any(|e| e["route"] == "GET /live" && e["status"] == 200), "a subscription is logged as a request");
+
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/pause"), vec![])).status_code, 200);
+    assert_eq!(next_event(&mut live), ["event: closed", "data: {}"]);
+}
+
+/// A durable run's progress (`docs/L4s/channels-L4.md` §8, slice 3): the pack that doesn't wait
+/// goes out as the run parks, the rest when it finishes, and the first never again, though the
+/// resumed part settles it again; the channel rebuilt from the log says the same.
+#[test]
+fn a_waiting_run_sends_what_didnt_wait_as_it_parks() {
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]
+allow_plain_http = true
+allow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!(
+        "flow orders\nport {port}\nchannel orders\n\nroute POST /orders (req) {{\n  respond \"/paid/{{resume_token(paid)}}\"\n  orders.send({{ item: req.json.item, status: \"waiting\" }})\n  paid = await paid, expires: 1d\n  orders.send({{ item: req.json.item, status: \"paid\", via: paid.method }})\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, "x");
+    sync_listeners(&state);
+    let kept = |state: &AppState| -> Vec<String> {
+        let table = state.deployments.lock().unwrap();
+        table[&slug].channels.kept("orders", true).iter().map(|p| format!("{} {}", p.id.unwrap(), p.json)).collect()
+    };
+    let posted = raw_http(port, b"POST /orders HTTP/1.1\r\nHost: x\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"item\":\"book\"}");
+    assert!(posted.starts_with("HTTP/1.1 200"), "{posted}");
+    assert!(posted.contains("content-length:"), "a whole answer says its length: {posted}");
+    let link = posted[posted.find("/paid/").unwrap()..].trim_end_matches(['"', '\r', '\n']).to_string();
+    let parked = kept(&state);
+    assert_eq!(parked.len(), 1, "{parked:?}");
+    assert!(parked[0].ends_with(r#"{"item":"book","status":"waiting"}"#), "{parked:?}");
+
+    let paid = raw_http(port, format!("GET {link} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes());
+    assert!(paid.starts_with("HTTP/1.1 200"), "{paid}");
+    let both = kept(&state);
+    assert_eq!(both.len(), 2, "the waiting one isn't sent again: {both:?}");
+    assert!(both[1].ends_with(r#"{"item":"book","status":"paid","via":"GET"}"#), "{both:?}");
+    let entries = log_entries(&state, &slug);
+    assert!(entries.iter().any(|e| e["progress"].as_array().is_some_and(|p| p.len() == 1)), "the parked part logs what it sent");
+
+    let table = state.deployments.lock().unwrap();
+    let dep = &table[&slug];
+    let rebuilt = channels::Channels::from_log(&dep.log, &dep.permit.channels);
+    let again: Vec<String> = rebuilt.kept("orders", true).iter().map(|p| format!("{} {}", p.id.unwrap(), p.json)).collect();
+    assert_eq!(again, both);
+}
+
+/// A streamed reply through a real socket (`docs/L4s/channels-L4.md` §4): the caller gets the
+/// upstream's first piece while the upstream is still answering (it sends the second only once
+/// the caller has the first), with its content type; the flow still gets the whole answer, which
+/// it stores and logs.
+#[test]
+fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = upstream.local_addr().unwrap().to_string();
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let piece = |s: &str| format!("{:x}\r\n{s}\r\n", s.len());
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        stream.write_all(format!("{head}{}", piece("data: a\n\n")).as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        stream.write_all(format!("{}0\r\n\r\n", piece("data: b\n\n")).as_bytes()).unwrap();
+    });
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!(
+        "flow chat\nport {port}\ncollection said\n\nroute POST /ask (req) {{\n  sent = http.post(\"{host}\", \"/v1\", body: req.json, stream: true)\n  said[\"last\"] = sent.body\n  respond sent.body, stream: true\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, &host);
+    sync_listeners(&state);
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.write_all(b"POST /ask HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut head = String::new();
+    while !head.ends_with("\r\n\r\n") {
+        reader.read_line(&mut head).unwrap();
+    }
+    assert!(head.starts_with("HTTP/1.1 200") && head.contains("content-type: text/event-stream"), "{head}");
+    let mut got = String::new();
+    while !got.contains("data: a") {
+        reader.read_line(&mut got).unwrap();
+    }
+    assert!(!got.contains("data: b"), "the second piece isn't sent yet");
+    seen_tx.send(()).unwrap();
+    let mut rest = String::new();
+    let _ = reader.read_to_string(&mut rest);
+    assert!(rest.contains("data: b") && !rest.contains("event: error"), "{rest}");
+
+    // The flow got the whole answer: logged as the route's response, and stored.
+    let entry = log_entries(&state, &slug).into_iter().find(|e| e["route"] == "POST /ask").unwrap();
+    assert_eq!(entry["status"], 200);
+    assert_eq!(entry["response_body"], "data: a\n\ndata: b\n\n");
+    assert!(entry["performed"].to_string().contains("CollectionWrite"), "the whole answer stored: {entry}");
+}
+
+/// A piped call (`docs/L4s/channels-L4.md` §8, slice 3): its upstream's pieces go to the
+/// channel's subscribers as they arrive, each a text pack without an id (never kept), while the
+/// run goes on; the packs it sends once it is over follow, with ids.
+#[test]
+fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = upstream.local_addr().unwrap().to_string();
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let piece = |s: &str| format!("{:x}\r\n{s}\r\n", s.len());
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        stream.write_all(format!("{head}{}", piece("Rivers run")).as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        stream.write_all(format!("{}0\r\n\r\n", piece(" to the sea.")).as_bytes()).unwrap();
+    });
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!(
+        "flow room\nport {port}\nchannel room\n\nroute POST /ask (req) {{\n  sent = room.pipe(http.post(\"{host}\", \"/v1\", body: req.json))\n  room.send({{ said: sent.body }})\n  respond {{ ok: true }}, status: 202\n}}\n\nroute GET /live (req) {{\n  respond room.subscribe()\n}}\n"
+    );
+    deploy_text(&state, &text, &host);
+    sync_listeners(&state);
+
+    let mut live = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    live.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    live.write_all(b"GET /live HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut live = BufReader::new(live);
+    let mut head = String::new();
+    while !head.ends_with("\r\n\r\n") {
+        live.read_line(&mut head).unwrap();
+    }
+    let next_event = |reader: &mut BufReader<std::net::TcpStream>| {
+        let mut lines = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let line = line.trim_end().to_string();
+            if line.starts_with("id:") || line.starts_with("data:") || line.starts_with("event:") {
+                lines.push(line);
+            } else if line.is_empty() && !lines.is_empty() {
+                return lines;
+            }
+        }
+    };
+    let asked = std::thread::spawn(move || raw_http(port, b"POST /ask HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"));
+    assert_eq!(next_event(&mut live), [r#"data: "Rivers run""#], "the first piece, while the upstream holds the rest");
+    seen_tx.send(()).unwrap();
+    assert_eq!(next_event(&mut live), [r#"data: " to the sea.""#]);
+    let done = next_event(&mut live);
+    assert!(done[0].starts_with("id: "), "{done:?}");
+    assert_eq!(done[1], r#"data: {"said":"Rivers run to the sea."}"#);
+    assert!(asked.join().unwrap().starts_with("HTTP/1.1 202"));
+}
