@@ -9,8 +9,9 @@
 > *Status:* **designed 2026-10-25**, from a race run live against the `charges` flow (§1); **inch 1
 > built the same day** (the hook, the table, the claim, the commit's wait, `claim_wait_ms`, tests 1
 > to 7); **inch 2 the same day** (the log's `held_ms`, `explain`'s notes, `runs`' columns, `check`'s and
-> `show`'s *while it runs*, test 8). One change from the design: a claim never names a **state cell**
-> (§2, §3).
+> `show`'s *while it runs*, test 8); **inch 3 the same day** (the sample `idempotent`, port 8121, its race run
+> live on a repo build: the second run waited 907 ms, retried once and sent nothing). One change from
+> the design: a claim never names a **state cell** (§2, §3).
 > *Pinned:* a claim is **derived, never declared**: nothing in the text, nothing in the manifest,
 > nothing to approve · taken **only when a run is about to send its first outbound request**,
 > never at a read · **per key**, per deployment · **released** at commit, discard or park · a
@@ -247,12 +248,27 @@ and an entry without `claims` verifies as before.
 
 ## 9. The sample, and what it must show
 
-`charges` becomes the sample **`idempotent`** (`crates/holon-author/samples/idempotent.holon`,
-its entry in `samples.rs`): the flow as written in §1's session, with its processor call to
-`httpbin.org`. Its entry says what it shows: *an Idempotency-Key answered once; the same key with a
-different body refused; a key expired after a day; and two identical requests at once, where the
-second waits for the first's claim, reads what it wrote, and sends nothing*. The try-it line is
-the two-curl race, and the commit says the race was run and the log showed one call.
+`charges` is the sample **`idempotent`** (`crates/holon-author/samples/idempotent.holon`, port
+8121, its entry in `samples.rs`): the flow as written in §1's session, with its processor call to
+`httpbin.org`, in the form `fmt` writes. Its entry says what it shows: *an Idempotency-Key answered
+once; the same key with a different body refused; a key expired after a day; and two identical
+requests at once, where the second waits for the first's claim, reads what it wrote, and sends
+nothing*. The try-it line is the two-curl race.
+
+Run live (2026-10-25, a release build of this commit serving on its own port, the sample deployed
+and approved through the control plane, two `curl`s with one fresh key in the same instant):
+
+```
+run 0: POST /charges → 200, 935.6 ms
+run 1: POST /charges → 200, 929.3 ms, retried ×1, waited 907 ms for a key
+run 2: POST /charges → 409, 0.5 ms                                  (the changed body)
+```
+
+Both answered the same id, run 1 with `replayed: true`. `explain` of run 0 says under line 8
+*claimed charges[race1] before calling out: waited 0 ms, held it 935 ms until it was done*, and
+shows the one call to httpbin; of run 1, *waited 907 ms for another run, then found what it read
+had changed and ran again from there (retry 1 of 1), having sent nothing*, and `http.post` as
+*didn't run*. Before inch 1 the same race (§1) sent two.
 
 ## 10. Tests
 
@@ -288,7 +304,7 @@ counts hits:
 |---|---|---|
 | 1 ✅ | `holon-host`: the `claim` hook in `Waits`, `RunError::Overtaken` / `Busy`, `NoWaits` answers `Held`; `holon`: the table (`claims.rs`, beside the state in `StateCell`), the claim, re-validation, release; `fire_with_state` retries on `Overtaken`; `commit` waits for foreign claims; `claim_wait_ms`; the log's `claims` | tests 1 to 7 (in `tests.rs`, from the flow text through `holon_author::agent::plan`, against a local server that counts hits) |
 | 2 ✅ | The log's `held_ms`, `explain`'s notes, `runs`' columns; `check`'s and `show`'s derived line | test 8 (`check_names_the_held_keys`), `a_runs_line_says_it_retried_and_waited`, `explain_says_what_a_run_claimed_under_its_read`; the race in §1 reruns live with inch 3's sample |
-| 3 | The sample `idempotent` with its entry, run live (the race), deployed by e2e | test 9; `samples.test.ts` builds it; `fmt` leaves it |
+| 3 ✅ | The sample `idempotent` with its entry, run live (the race) | `samples.rs`'s tests (built, as `fmt` writes it, routes as the eager evaluator gives) and `samples.test.ts` (36 tests) pass; the race above. Test 9 is the e2e's own pass over every sample (`samples.e2e.ts` deploys each from the flows page), which CI runs |
 
 ## 12. Invariant check
 

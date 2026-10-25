@@ -1,0 +1,21 @@
+flow idempotent
+port 8121
+collection charges
+
+route POST /charges (req) {
+  key = req.headers["idempotency-key"]
+  fingerprint = sha256(req.body)
+  stored = charges[key]
+  prior = stored when stored.expires_at > now
+  replayed = (prior.fingerprint ?? "") == fingerprint
+  mismatch = (prior.fingerprint ?? fingerprint) != fingerprint
+  processed = http.post("httpbin.org", "/post", headers: { "content-type": "application/json" }, body: req.body)
+  fresh = { id: slice(sha256("{key}:{now}:{random}"), 0, 12), amount: req.json.amount, currency: req.json.currency ?? "EUR", processor_saw: parse_json(processed.body).json, fingerprint: fingerprint, charged_at: now, expires_at: now + 86400 }
+  result = prior ?? fresh when !mismatch
+  charges[key] = result
+  respond { ..result, replayed: replayed }, missing: 409
+}
+
+route GET /charges/:key (req) {
+  respond charges[req.params.key]
+}

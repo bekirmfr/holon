@@ -353,6 +353,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "printf 'city,temp\nOslo,4\nRome,19\nOslo,6\n' | curl -s -X POST --data-binary @- http://127.0.0.1:8119/tally answers rows 3 and two columns (city: text, 2 distinct; temp: number, 4 to 19, mean 9.67); curl http://127.0.0.1:8119/tally/last repeats it with when",
         text: include_str!("../samples/tally.holon"),
     },
+    Sample {
+        name: "idempotent",
+        title: "Idempotent charges (one call per key)",
+        description: "Charge once per Idempotency-Key: the same key with the same body answers the first charge again, the same key with a different body is refused (409), a key expires after a day, and the processor is called only when there is no prior charge. Two identical requests at once: the second waits for the first's claim on the key, reads what it wrote, and sends nothing (docs/L4s/key-claims-L4.md).",
+        shows: &["idempotency key", "key claims", "lazy ??", "sha256 fingerprint", "collection", "absence as refusal"],
+        port: Some("8121"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "curl -X POST -H 'Idempotency-Key: k1' -H 'Content-Type: application/json' -d '{\"amount\":42}' http://127.0.0.1:8121/charges twice: the same id, the second replayed: true; send it with amount 43 for a 409; run two at once with a fresh key and `explain` shows the second claimed charges[k2], waited, and sent nothing",
+        text: include_str!("../samples/idempotent.holon"),
+    },
 ];
 
 #[cfg(test)]
