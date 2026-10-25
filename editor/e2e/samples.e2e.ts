@@ -645,10 +645,25 @@ test("the admin page's browse… lists the server's folders, and the one chosen 
   const { join } = await import("node:path");
   await page.goto("/");
   await page.getByRole("button", { name: "admin", exact: true }).click();
+  // The first listing (the home folder) answers only once a path is typed, as on a slow machine:
+  // it mustn't replace what was typed.
+  let release = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  let first = true;
+  await page.route(/\/admin\/folders\/browse/, async (route) => {
+    if (first) {
+      first = false;
+      await held;
+    }
+    await route.continue();
+  });
   await page.getByRole("button", { name: "browse…" }).click();
   // The e2e server shows no OS dialog (HOLON_NO_FOLDER_DIALOG), so the editor lists the folders.
   const picker = page.getByRole("dialog", { name: "choose a folder" });
   await picker.getByLabel("folder to show").fill(FOLDERS);
+  release();
+  await expect(picker.getByRole("button", { name: "home", exact: true })).toBeVisible();
+  await expect(picker.getByLabel("folder to show")).toHaveValue(FOLDERS);
   await picker.getByRole("button", { name: "go", exact: true }).click();
   await picker.getByLabel("folders").getByRole("button", { name: "▸ drop" }).click();
   await expect(picker.getByLabel("folder to show")).toHaveValue(realpathSync.native(join(FOLDERS, "drop")));
