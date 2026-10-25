@@ -8,7 +8,11 @@ it names.
 ## Binding a folder
 
 An admin binds folders from the editor's **admin** page (**folders**), or on the server's
-machine:
+machine. On the admin page, **browse…** next to the path chooses a folder on the server's
+machine: when the editor is open on that machine, the system's own folder dialog opens there;
+from anywhere else, or with **browse here instead**, the editor lists the server's folders to
+click through. `HOLON_NO_FOLDER_DIALOG=1` keeps the system's dialog from opening. On the command
+line:
 
 ```sh
 holon folder add inbox /srv/drop --read-only

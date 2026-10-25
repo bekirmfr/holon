@@ -177,6 +177,7 @@ mod mcphosts;
 mod outbound;
 mod permissions;
 mod persist;
+mod pick;
 mod ranges;
 mod recorder;
 mod scheduler;
@@ -487,6 +488,8 @@ fn main() {
         Some("verify") => std::process::exit(verify::run(&rest)),
         Some("export") => std::process::exit(verify::export(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
+        // Not in the usage: the server runs it for the admin page's "browse…" (pick.rs).
+        Some("pick-folder") => std::process::exit(pick::cli(&rest)),
         Some("mcp") => std::process::exit(mcp::run(&rest)),
         Some("lsp") => std::process::exit(lsp::run(&rest)),
         Some("migrate") => std::process::exit(migrate::run(&rest)),

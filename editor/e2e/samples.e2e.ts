@@ -640,6 +640,26 @@ test("file-audit runs on a csv dropped in the inbox and on a file removed from i
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("the admin page's browse… lists the server's folders, and the one chosen fills the path", async ({ page }) => {
+  const { realpathSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  await page.goto("/");
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("button", { name: "browse…" }).click();
+  // The e2e server shows no OS dialog (HOLON_NO_FOLDER_DIALOG), so the editor lists the folders.
+  const picker = page.getByRole("dialog", { name: "choose a folder" });
+  await picker.getByLabel("folder to show").fill(FOLDERS);
+  await picker.getByRole("button", { name: "go", exact: true }).click();
+  await picker.getByLabel("folders").getByRole("button", { name: "▸ drop" }).click();
+  await expect(picker.getByLabel("folder to show")).toHaveValue(realpathSync.native(join(FOLDERS, "drop")));
+  await picker.getByRole("button", { name: "up", exact: true }).click();
+  await expect(picker.getByLabel("folder to show")).toHaveValue(realpathSync.native(FOLDERS));
+  await picker.getByLabel("folders").getByRole("button", { name: "▸ outbox" }).click();
+  await picker.getByRole("button", { name: "Choose this folder" }).click();
+  await expect(picker).toHaveCount(0);
+  await expect(page.getByLabel("folder path")).toHaveValue(realpathSync.native(join(FOLDERS, "outbox")));
+});
+
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const { mkdtempSync } = await import("node:fs");

@@ -137,6 +137,16 @@ export type FolderEntry = {
 export type FolderBinding = Omit<FolderEntry, "cap"> & { cap: number | string | null };
 export const listFolders = async () => asJson<FolderEntry[]>(await api(`${BASE}/admin/folders`));
 export const bindFolder = async (f: FolderBinding) => asJson<FolderEntry>(await post(`${BASE}/admin/folders`, f));
+/** A folder on the server's machine, as its admin page's "browse…" lists it (pick.rs). */
+export type FolderPlace = { name: string; path: string };
+/** `GET /admin/folders/browse`: a folder's folders (none named: the home folder's), its parent, the
+ *  machine's roots, and whether this editor may open the OS's own folder dialog there. */
+export type FolderListing = { path: string; parent: string | null; folders: FolderPlace[]; more: boolean; roots: FolderPlace[]; native: boolean; native_refused?: string };
+export const browseFolders = async (path?: string) =>
+  asJson<FolderListing>(await api(`${BASE}/admin/folders/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`));
+/** `POST /admin/folders/pick`: the OS's folder dialog, on the server's machine; the folder chosen,
+ *  or null if it was cancelled. */
+export const pickFolder = async (start: string) => asJson<{ path: string | null }>(await post(`${BASE}/admin/folders/pick`, { start }));
 export async function unbindFolder(name: string, deployment: string | null): Promise<void> {
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));

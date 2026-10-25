@@ -205,7 +205,7 @@ fn real(path: &Path) -> PathBuf {
 /// The path with its links resolved, as `fs::canonicalize` gives it, but without Windows'
 /// verbatim prefix on a path with a drive letter: the form people write, and the one every path
 /// here is compared in.
-fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+pub(crate) fn canonical(path: &Path) -> std::io::Result<PathBuf> {
     let p = std::fs::canonicalize(path)?;
     Ok(match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
         Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
@@ -832,9 +832,9 @@ fn labelled(name: &str, deployment: Option<&str>) -> String {
     deployment.map_or_else(|| name.to_string(), |d| format!("{name} (for {d})"))
 }
 
-/// `/admin/folders` (list, bind) and `/admin/folders/<name>` (unbind; `?deployment=<slug>` for a
-/// deployment's own), or None for any other path. Only an admin gets this far (access.rs); what
-/// they do goes in the activity log.
+/// `/admin/folders` (list, bind), `/admin/folders/<name>` (unbind; `?deployment=<slug>` for a
+/// deployment's own), and the admin page's browse and pick (pick.rs), or None for any other path.
+/// Only an admin gets this far (access.rs); what they do goes in the activity log.
 pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
     let url = request.url();
     let method = request.method();
@@ -902,6 +902,9 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
             }
             Err(e) => err(500, e),
         });
+    }
+    if let Some(answer) = crate::pick::route(request) {
+        return Some(answer);
     }
     let name = url.strip_prefix("/admin/folders/")?;
     let deployment = request.get_param("deployment").filter(|d| !d.is_empty());

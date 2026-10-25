@@ -58,11 +58,16 @@ zeroize = "1"
 # Windows, the Keychain on macOS. Elsewhere it comes from a key file or an environment variable.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+# The admin page's "browse…": the OS's own folder dialog, shown by `holon pick-folder` (pick.rs).
+rfd = { version = "0.17", default-features = false }
 
 [target."cfg(windows)".dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+rfd = { version = "0.17", default-features = false }
+# What owns the folder dialog (pick.rs): the handle rfd takes.
+raw-window-handle = "0.6"
 # An owner-only ACL on the secrets file and its key file; a token typed without showing it.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Console", "Win32_System_Memory"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Console", "Win32_System_Memory", "Win32_Storage_FileSystem", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
 # The built editor (editor/dist, from `npm run build` in editor/) compiled into the binary and

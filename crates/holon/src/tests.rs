@@ -3877,6 +3877,35 @@ fn a_flow_reads_and_writes_bound_folders_and_its_runs_verify() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The admin page's "browse…" (pick.rs): a folder's folders for the editor to click through; the
+/// OS's dialog only for a request from the machine itself, never one a proxy forwarded or one
+/// from elsewhere.
+#[test]
+fn an_admin_browses_the_servers_folders_and_only_the_machine_itself_opens_its_dialog() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-browse-route-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(dir.join("inbox")).unwrap();
+    let url = format!("/admin/folders/browse?path={}", dir.display().to_string().replace('\\', "%5C").replace(':', "%3A"));
+    let listed = body_json(route(&state, &req("GET", &url, vec![])));
+    assert_eq!(listed["folders"][0]["name"], "inbox", "{listed}");
+    assert!(listed["roots"].as_array().is_some_and(|r| !r.is_empty()), "{listed}");
+    assert_eq!(route(&state, &req("GET", "/admin/folders/browse?path=not%2Fwhole", vec![])).status_code, 400);
+
+    let pick = |headers: Vec<(String, String)>, from: &str| {
+        let r = Request::fake_http_from(from.parse().unwrap(), "POST", "/admin/folders/pick", [vec![host_header(), ("Content-Type".to_string(), "application/json".to_string())], headers].concat(), b"{}".to_vec());
+        let answer = route(&state, &r);
+        (answer.status_code, body_json(answer)["error"].as_str().unwrap_or_default().to_string())
+    };
+    let (status, why) = pick(vec![("X-Forwarded-For".to_string(), "203.0.113.9".to_string())], "127.0.0.1:5000");
+    assert_eq!((status, why.contains("isn't on the server's machine")), (409, true), "{why}");
+    let (status, why) = pick(vec![], "203.0.113.9:5000");
+    assert_eq!((status, why.contains("isn't on the server's machine")), (409, true), "{why}");
+    let r = Request::fake_http_from("203.0.113.9:5000".parse().unwrap(), "GET", &url, vec![host_header()], vec![]);
+    assert_eq!(body_json(route(&state, &r))["native"], false, "the listing says so too");
+    assert_eq!(route(&state, &req("GET", "/admin/folders/pick", vec![])).status_code, 404);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A deployment's file limits: a read past them fails the run as it reads, and a run whose writes
 /// would pass them fails before any lands; each error names the limit.
 #[test]

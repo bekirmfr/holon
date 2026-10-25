@@ -308,7 +308,10 @@ only the editor.
   (§7b) they run on its blocking pool, so a synchronous client still fits.
 - **Named folders** ✅ (`holon/src/folders.rs`, slice 1 of `docs/L4s/named-folders-L4.md`): files
   a flow reads and writes on the host, in folders an admin binds by name (`--folders`, its own
-  file, owner-only; `GET`/`POST /admin/folders`, `DELETE /admin/folders/<name>`; `holon folder`),
+  file, owner-only; `GET`/`POST /admin/folders`, `DELETE /admin/folders/<name>`; `holon folder`;
+  the admin page's "browse…" lists the server's folders, `GET /admin/folders/browse`, and for a
+  request from the machine itself opens the OS's folder dialog in a child, `POST
+  /admin/folders/pick` running the hidden `holon pick-folder`, `pick.rs`),
   each read-only or read-write, its reads kept in the log as text or by hash, for the whole
   server or for one deployment (`--for SLUG`; a deployment's own binding of a name comes
   first). The server's own

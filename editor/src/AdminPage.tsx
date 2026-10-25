@@ -27,6 +27,7 @@ import {
   type TokenEntry,
 } from "./server";
 import { useDialog } from "./Dialog";
+import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
 
 const ROLES: Role[] = ["viewer", "editor", "admin", "agent"];
@@ -77,6 +78,8 @@ export function AdminPage({ me }: { me: string }) {
   const [folderDraft, setFolderDraft] = useState<FolderBinding>({ name: "", path: "", access: "read-write", keep: "bytes", cap: null, deployment: null });
   // How long a folder keeps what runs read, when it keeps it for a while ("7d").
   const [keepFor, setKeepFor] = useState("");
+  // The "browse…" for the folder's path is open.
+  const [browsing, setBrowsing] = useState(false);
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
@@ -329,6 +332,9 @@ export function AdminPage({ me }: { me: string }) {
           onChange={(e) => setFolderDraft({ ...folderDraft, path: e.target.value })}
           style={{ ...input, flex: 1, minWidth: 220 }}
         />
+        <button type="button" style={small} title="choose the folder on the server's machine" onClick={() => setBrowsing(true)}>
+          browse…
+        </button>
         <select aria-label="folder access" value={folderDraft.access} onChange={(e) => setFolderDraft({ ...folderDraft, access: e.target.value as FolderEntry["access"] })} style={input}>
           <option value="read-write">read and write</option>
           <option value="read">read only</option>
@@ -363,6 +369,17 @@ export function AdminPage({ me }: { me: string }) {
           bind folder
         </button>
       </form>
+      {/* Outside the form: its own buttons and form would submit the binding. */}
+      {browsing && (
+        <FolderPicker
+          start={folderDraft.path}
+          onChoose={(path) => {
+            setFolderDraft((d) => ({ ...d, path }));
+            setBrowsing(false);
+          }}
+          onClose={() => setBrowsing(false)}
+        />
+      )}
 
       <div style={head}>signing in through an identity provider</div>
       <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 6, lineHeight: 1.45 }}>
