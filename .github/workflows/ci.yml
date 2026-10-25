@@ -39,6 +39,8 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: jetli/wasm-pack-action@v0.4.0
       - run: wasm-pack test --node crates/holon-wasm
+        # It downloads wasm-bindgen and wasm-opt; a stalled download fails here, not after 6 h.
+        timeout-minutes: 10
 
   # 4. The editor, against the wasm package built here (it's generated, never committed):
   #    type-checked, and its tests run. Those include every sample flow building from the live
@@ -53,6 +55,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: jetli/wasm-pack-action@v0.4.0
       - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm
+        timeout-minutes: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -81,6 +84,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: jetli/wasm-pack-action@v0.4.0
       - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm
+        timeout-minutes: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
