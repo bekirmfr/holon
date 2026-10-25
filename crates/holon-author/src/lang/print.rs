@@ -653,9 +653,12 @@ impl<'s> Printer<'s> {
             if base.is_empty() || base.starts_with(|c: char| c.is_ascii_digit()) {
                 base = format!("p{base}");
             }
+            // The body refers to these names, so they are kept as they are, a leaf's name included
+            // (the lowering allows a port called after a leaf, as a holon's may be): only a name
+            // that can't be written, or a repeat, is changed.
             let mut name = base.clone();
             let mut n = 2;
-            while used.contains(&name) || self.reserved(&name) {
+            while used.contains(&name) || (RESERVED.contains(&name.as_str()) && name != "in" && name != "out") {
                 name = format!("{base}_{n}");
                 n += 1;
             }
@@ -1439,11 +1442,15 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         self.touched.push(node.id.clone());
         let (status, missing) = (node.param("status"), node.param("missing"));
         let body = self.arg(node, "body")?.map(|(t, _)| t);
+        let headers = if node.param("headers") == "true" { self.arg(node, "headers")?.map(|(t, _)| t) } else { None };
         let mut parts = Vec::new();
         match body {
             Some(b) => parts.push(b),
-            None if status == "204" && missing == "404" => return Ok("respond 204".into()),
+            None if status == "204" && missing == "404" && headers.is_none() => return Ok("respond 204".into()),
             None => parts.push(format!("status: {status}")),
+        }
+        if let Some(h) = headers {
+            parts.push(format!("headers: {h}"));
         }
         if status != "200" && parts.first().is_some_and(|p| !p.starts_with("status:")) {
             parts.push(format!("status: {status}"));

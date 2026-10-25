@@ -86,10 +86,14 @@ js nearest = (word: Text, candidates: List) -> Text fuel 50M {
   16 MiB. `K`, `M`, `G` scale a number (`50M`), `KB`, `MB`, `GB` a size (`16MB`); `fmt` writes
   the number out.
 - The body is JavaScript source between the braces, taken verbatim: the lexer finds the matching
-  close brace by counting braces outside JavaScript strings, template literals and comments, so
-  a `}` in a string does not end the node. Nothing inside is parsed as Holon; nothing inside is
-  interpolated. A `js` body is the one place in the language where the text's content is not
-  structure (P3 does not apply inside it: the source is identity, §3).
+  close brace by counting braces outside JavaScript strings, template literals (their `${…}`
+  parts read as code), comments and regex literals (a `/` where a value can't be, after an
+  operator, an opening bracket or `return`, starts one; after a value it divides), so a `}` or a
+  quote in any of them does not end the node, and `fmt`'s comment pass knows a `#` inside the
+  body is JavaScript. Nothing inside is parsed as Holon; nothing inside is interpolated. A `js`
+  body is the one place in the language where the text's content is not structure (P3 does not
+  apply inside it: the source is identity, §3). The printer keeps the port names as written,
+  since the body refers to them: a port called after a leaf stays so.
 - Grammar, added to §5.2 of `docs/LANGUAGE.md`:
 
 ```

@@ -366,6 +366,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "curl -X POST -H 'Idempotency-Key: k1' -H 'Content-Type: application/json' -d '{\"amount\":42}' http://127.0.0.1:8121/charges twice: the same id, the second replayed: true; send it with amount 43 for a 409; run two at once with a fresh key and `explain` shows the second claimed charges[k2], waited, and sent nothing",
         text: include_str!("../samples/idempotent.holon"),
     },
+    Sample {
+        name: "guestbook",
+        title: "Guestbook (a page from a flow)",
+        description: "A web page served by the flow itself: a js node renders the guestbook as HTML from the entries in a collection, with the clock wired in to say how long ago each was signed; another parses the posted form; the flow stores a signature and redirects back to the page. The response is an envelope: status, headers (content-type: text/html) and body.",
+        shows: &["js node", "HTML response (an envelope with headers)", "forms", "collections", "redirect (303)", "the clock wired into code"],
+        port: Some("8122"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "open http://127.0.0.1:8122/ in a browser and sign it; or curl -s -d 'name=Ada&note=Hello' http://127.0.0.1:8122/sign -o /dev/null -w '%{http_code}' answers 303, and curl http://127.0.0.1:8122/ shows the entry",
+        text: include_str!("../samples/guestbook.holon"),
+    },
 ];
 
 #[cfg(test)]

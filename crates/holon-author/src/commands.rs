@@ -15,6 +15,7 @@ use holon_core::{capabilities, consent_name, MapResolver, Resolver};
 use crate::composites::Names;
 use crate::describe::describe_item;
 use crate::flow::{derive_server, flow_unit, DerivedServer};
+use crate::lang::ast::Pos;
 use crate::lang::{self, Lowered};
 use crate::text;
 use crate::wire::WParam;
@@ -260,6 +261,12 @@ fn split_comment(line: &str) -> (&str, Option<&str>) {
     (line, None)
 }
 
+/// `line` cut before its 1-based character column `col`.
+fn split_at_col(line: &str, col: u32) -> (&str, &str) {
+    let at = line.char_indices().nth((col as usize).saturating_sub(1)).map(|(i, _)| i).unwrap_or(line.len());
+    line.split_at(at)
+}
+
 /// What a line of code says, whatever its spacing: how a statement is found again once printed.
 fn spoken(code: &str) -> String {
     code.chars().filter(|c| !c.is_whitespace()).collect()
@@ -277,11 +284,41 @@ pub(crate) fn with_comments(source: &str, printed: &str) -> String {
         gap: bool,
         after: Option<String>,
     }
+    // A js body is JavaScript, where `#` is text (a colour in a style, a private field): no line
+    // of one holds a Holon comment. On its first line a comment may precede the `{`; on its last,
+    // follow the `}`.
+    let bodies: Vec<(Pos, Pos)> = lang::parse(source).map(|f| f.items.iter().filter_map(|i| if let lang::ast::Item::Js(j) = i { Some((j.body_span.start, j.body_span.end)) } else { None }).collect()).unwrap_or_default();
+    let split = |n: u32, line: &str| -> (String, Option<String>) {
+        for (start, end) in &bodies {
+            if n > start.line && n < end.line {
+                return (line.to_string(), None);
+            }
+            if n == start.line && n == end.line {
+                // The body on one line: a comment only after its `}`.
+                let (head, tail) = split_at_col(line, end.col);
+                let (code, comment) = split_comment(tail);
+                return (format!("{head}{code}"), comment.map(str::to_string));
+            }
+            if n == start.line {
+                let (head, tail) = split_at_col(line, start.col);
+                let (code, comment) = split_comment(head);
+                return if comment.is_some() { (code.to_string(), comment.map(str::to_string)) } else { (format!("{head}{tail}"), None) };
+            }
+            if n == end.line {
+                let (head, tail) = split_at_col(line, end.col);
+                let (code, comment) = split_comment(tail);
+                return (format!("{head}{code}"), comment.map(str::to_string));
+            }
+        }
+        let (code, comment) = split_comment(line);
+        (code.to_string(), comment.map(str::to_string))
+    };
     let mut anchors: Vec<Anchor> = vec![];
     let mut above: Vec<String> = vec![];
     let mut gap = false;
-    for line in source.lines() {
-        let (code, comment) = split_comment(line);
+    for (k, line) in source.lines().enumerate() {
+        let (code, comment) = split(k as u32 + 1, line);
+        let (code, comment) = (code.as_str(), comment.as_deref());
         if code.trim().is_empty() {
             match comment {
                 Some(c) => {
@@ -339,6 +376,19 @@ mod tests {
     use super::*;
 
     const HELLO: &str = "flow hello-api\nport 8101\n\nnode req   = request { method: GET, path: \"/hello/:name\" }\nnode name  = field { name: name }\nnode hi    = const { value: \"Hello, \", type: Text }\nnode greet = concat\nnode res   = respond { status: \"200\", missing: \"404\" }\n\nreq.params  -> name.record\nhi.out      -> greet.a\nname.out    -> greet.b\nreq.request -> res.request\ngreet.out   -> res.body\n";
+
+    /// A `#` inside a js body is JavaScript (a colour, a private field), never a Holon comment:
+    /// fmt leaves the body whole, and still puts back the comments around the statement.
+    #[test]
+    fn fmt_leaves_a_hash_inside_a_js_body_alone() {
+        let src = "flow f\nport 8203\n\n# the page\njs page = (x) -> html {\n  return `<style>a{color:#777}</style>${x}`; // #not a holon comment\n}\n\nroute GET /p (req) {\n  respond page(req.query.x ?? \"y\") # answered\n}\n";
+        let out = fmt("f.holon", src).unwrap();
+        assert_eq!(out, src, "{out}");
+        assert_eq!(fmt("f.holon", &out).unwrap(), out, "and again");
+        // A body on one line, with a comment after its brace.
+        let one = "flow f\n\njs tag = (x) -> t { return `#${x}` } # a tag\n\nstate.k = tag(1)\n";
+        assert_eq!(fmt("f.holon", one).unwrap(), one);
+    }
 
     /// Each js body is compiled once by the engine: a syntax error is a mistake at its line in the
     /// file, with the line and a caret like any other; a body that compiles passes, whatever it

@@ -206,7 +206,10 @@ the leaves. `notes[k]` is `collection_get{collection: notes}`, `notes[k] = v` is
 `delete notes[k]` is `collection_delete`, `notes.list(…)` is `collection_list` with its optional
 inputs named and its `limit` param. `?? ""` is a `default{type: Text, value: ""}` node. The write
 in the PUT route is an Effect nobody reads, so it is exposed and the host performs it when the
-run finishes (§5.10). `respond 204` has no body.
+run finishes (§5.10). `respond 204` has no body. `respond page, headers: { "content-type":
+"text/html; charset=utf-8" }` sets response headers (a record, text values): a page instead of
+JSON, or `headers: { location: "/" }, status: 303` for a redirect; without it, a text body goes
+out as plain text and anything else as JSON (the `guestbook` sample).
 
 ### stripe-to-slack
 
@@ -668,9 +671,11 @@ which is why a `js` node adds nothing to what a flow may do; what it adds is two
 for and the host's policy caps. `50M`, `2K`, `16MB` are numbers with a scale; `fmt` writes them
 out.
 
-The body is read as JavaScript, not as Holon: a `}` in a string, a template literal or a comment
-doesn't end it, and nothing in it is interpolated or renamed, so the source is part of the unit's
-identity, verbatim (P3 stops at the brace). A body sees only its arguments: `undefined` for an
+The body is read as JavaScript, not as Holon: a `}` in a string, a template literal, a comment or
+a regex literal doesn't end it, a `#` in it is JavaScript (a colour, a private field), not a
+comment, and nothing in it is interpolated or renamed, so the source is part of the unit's
+identity, verbatim (P3 stops at the brace). A port may be called after a leaf (`clock`), as a
+holon's may; it may not be a keyword, the wiring form's `at` included, or a collection's name. A body sees only its arguments: `undefined` for an
 absent value inside a list, every core value as its JavaScript counterpart (§5 of the L4). It
 returns one value (one output) or an object keyed by the output names (several); `undefined` or
 `null` is an absent output, an exception is an absent output whose reason the run records and

@@ -7,12 +7,15 @@
 //!   hidden on the canvas: it is fed by the endpoint the route derives into (routes.rs), never by
 //!   a wire. Its outputs are the request's parts: the whole record, path params, query, headers,
 //!   the raw body text, and the body parsed as JSON.
-//! - `respond` (params: status, missing) builds the `{status, body}` envelope the data plane
-//!   sends. It also takes the request (from the request node), which it doesn't read: that wire is
-//!   what makes a route one connected group even when the handler never looks at the request, e.g.
-//!   a listing. Status 204 has no body input. When the body input is absent (a lookup that found
-//!   nothing), it answers its `missing` status instead (404 by default) with `{"error": …}`. A
-//!   respond node without `missing` (placed before it existed) answers nothing, sent as a 500.
+//! - `respond` (params: status, missing, headers) builds the `{status, body}` envelope the data
+//!   plane sends. It also takes the request (from the request node), which it doesn't read: that
+//!   wire is what makes a route one connected group even when the handler never looks at the
+//!   request, e.g. a listing. Status 204 has no body input. With `headers: true` it has a third
+//!   input, a record of response headers (`content-type` for a page, `location` for a redirect),
+//!   put in the envelope as `headers`; without it, the data plane's content type stands. When
+//!   the body input is absent (a lookup that found nothing), it answers its `missing` status
+//!   instead (404 by default) with `{"error": …}`. A respond node without `missing` (placed before
+//!   it existed) answers nothing, sent as a 500.
 //! - `stripe_verify` (param: tolerance, seconds) checks a Stripe webhook's signature, as Stripe's
 //!   own libraries do: the `stripe-signature` header (`t=<unix time>,v1=<hex HMAC>,…`) taken apart
 //!   into a record (split on "," then each piece on "=", folded into a record), the HMAC-SHA256
@@ -89,11 +92,11 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
         },
         "respond" => {
             let no_body = frozen_value(params, "status") == Some("204");
-            Interface {
-                inputs: if no_body { vec![request()] } else { vec![request(), WPort::new("body", Any)] },
-                outputs: vec![WPort::new("response", Record)],
-                hidden_inputs: false,
+            let mut inputs = if no_body { vec![request()] } else { vec![request(), WPort::new("body", Any)] };
+            if frozen_value(params, "headers") == Some("true") {
+                inputs.push(WPort::new("headers", Record));
             }
+            Interface { inputs, outputs: vec![WPort::new("response", Record)], hidden_inputs: false }
         }
         _ => return None,
     })
@@ -104,7 +107,7 @@ pub fn defaults(name: &str) -> Option<Vec<WParam>> {
     let f = WParam::frozen;
     Some(match name {
         "request" => vec![f("method", "GET"), f("path", "/"), f("resume", "")],
-        "respond" => vec![f("status", "200"), f("missing", "404")],
+        "respond" => vec![f("status", "200"), f("missing", "404"), f("headers", "false")],
         "stripe_verify" => vec![f("tolerance", "300")],
         _ => return None,
     })
@@ -327,6 +330,8 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
             if !missing.is_empty() && (!digits(missing, 3, 3) || !(400..=599).contains(&m)) {
                 return Err(format!("missing \"{missing}\" is not an error status (400–599)"));
             }
+            let with_headers = frozen_value(params, "headers") == Some("true");
+            let has_body = inputs.iter().any(|p| p.name == "body");
             let mut leaf = |prim: &str, p: Vec<Param>| add_leaf(store, prim, p, None);
             let mut children = vec![
                 leaf("record", vec![])?,
@@ -334,23 +339,33 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
                 leaf("with_field", vec![frozen("name", "status")])?,
             ];
             let mut edges = vec![e(0, 0, 2, 0), e(1, 0, 2, 1)];
-            // Input 0, the request, is deliberately left unread (see the module doc).
-            if inputs.len() == 1 {
-                edges.push(e(2, 0, B, 0));
-            } else {
+            // Input 0, the request, is deliberately left unread (see the module doc). The envelope
+            // grows field by field: status, the body when there is one, the headers when asked.
+            let mut last: u32 = 2;
+            if has_body {
                 children.push(leaf("with_field", vec![frozen("name", "body")])?);
-                edges.extend([e(2, 0, 3, 0), e(B, 1, 3, 1)]);
-                if missing.is_empty() {
-                    edges.push(e(3, 0, B, 0));
-                } else {
-                    // No body, no envelope: `default` stands in the error envelope (it fires on an
-                    // absent input).
-                    let error = if m == 404 { "not found" } else { "no value to answer with" };
-                    let fallback = format!(r#"{{"status":{m},"body":{{"error":"{error}"}}}}"#);
-                    children.push(leaf("default", vec![frozen("value", &fallback), frozen("type", "Json")])?);
-                    edges.extend([e(3, 0, 4, 0), e(4, 0, B, 0)]);
-                }
+                let k = children.len() as u32 - 1;
+                edges.extend([e(last, 0, k, 0), e(B, 1, k, 1)]);
+                last = k;
             }
+            if with_headers {
+                children.push(leaf("with_field", vec![frozen("name", "headers")])?);
+                let k = children.len() as u32 - 1;
+                let port = if has_body { 2 } else { 1 };
+                edges.extend([e(last, 0, k, 0), e(B, port, k, 1)]);
+                last = k;
+            }
+            if has_body && !missing.is_empty() {
+                // No body, no envelope: `default` stands in the error envelope (it fires on an
+                // absent input).
+                let error = if m == 404 { "not found" } else { "no value to answer with" };
+                let fallback = format!(r#"{{"status":{m},"body":{{"error":"{error}"}}}}"#);
+                children.push(leaf("default", vec![frozen("value", &fallback), frozen("type", "Json")])?);
+                let k = children.len() as u32 - 1;
+                edges.extend([e(last, 0, k, 0)]);
+                last = k;
+            }
+            edges.push(e(last, 0, B, 0));
             Ok(composite(children, edges, inputs, outputs))
         }
     }
@@ -392,6 +407,16 @@ mod tests {
         let f = WParam::frozen;
         assert_eq!(names(&build("respond", &[f("status", "201")], &mut store).unwrap().inputs), ["request", "body"]);
         assert_eq!(names(&build("respond", &[f("status", "204")], &mut store).unwrap().inputs), ["request"]);
+        // `headers: true` adds a third input (a second, for a 204), and nothing else changes: the
+        // respond without it is the unit it always was.
+        assert_eq!(names(&build("respond", &[f("status", "200"), f("missing", "404"), f("headers", "true")], &mut store).unwrap().inputs), ["request", "body", "headers"]);
+        assert_eq!(names(&build("respond", &[f("status", "204"), f("headers", "true")], &mut store).unwrap().inputs), ["request", "headers"]);
+        let plain = build("respond", &[f("status", "200"), f("missing", "404")], &mut store).unwrap();
+        let no_flag = build("respond", &[f("status", "200"), f("missing", "404"), f("headers", "false")], &mut store).unwrap();
+        assert_eq!(plain, no_flag);
+        let with = build("respond", &[f("status", "303"), f("missing", "400"), f("headers", "true")], &mut store).unwrap();
+        let (children, _) = parts(&with);
+        assert_eq!(children.len(), 6, "record, status, with_field status, with_field body, with_field headers, the fallback");
         for bad in ["99", "2xx", "600", "2000"] {
             assert!(build("respond", &[f("status", bad)], &mut store).unwrap_err().contains("not an HTTP status"), "{bad}");
         }
@@ -418,7 +443,7 @@ mod tests {
             let u = build("respond", &params, &mut store).unwrap();
             assert!(parts(&u).0.iter().all(|c| prim_name(&store, c) != "default"));
         }
-        assert_eq!(defaults("respond").unwrap(), [f("status", "200"), f("missing", "404")]);
+        assert_eq!(defaults("respond").unwrap(), [f("status", "200"), f("missing", "404"), f("headers", "false")]);
     }
 
     #[test]

@@ -541,7 +541,7 @@ impl<'a> Lowerer<'a> {
             }
             _ => return err(span, "respond belongs in a route"),
         };
-        let (mut status, mut missing, mut body): (Option<String>, Option<String>, Option<&Expr>) = (None, None, None);
+        let (mut status, mut missing, mut body, mut headers): (Option<String>, Option<String>, Option<&Expr>, Option<&Expr>) = (None, None, None, None);
         let positional: Vec<&Arg> = args.iter().filter(|a| a.name.is_none()).collect();
         for a in args.iter().filter(|a| a.name.is_some()) {
             let n = a.name.as_ref().unwrap();
@@ -549,7 +549,8 @@ impl<'a> Lowerer<'a> {
                 "status" => status = Some(self.status_text(&a.value)?),
                 "missing" => missing = Some(self.status_text(&a.value)?),
                 "body" => body = Some(&a.value),
-                other => return err(n.span, format!("respond has no \"{other}\": a body, then status: and missing:")),
+                "headers" => headers = Some(&a.value),
+                other => return err(n.span, format!("respond has no \"{other}\": a body, then status:, missing: and headers:")),
             }
         }
         match positional.as_slice() {
@@ -573,18 +574,28 @@ impl<'a> Lowerer<'a> {
         {
             return err(b.span, "a 204 answers with no body");
         }
-        // The body's nodes first, then the respond they feed.
+        // The body's and headers' nodes first, then the respond they feed.
         let body_val = match body {
             Some(b) => Some((self.expr(b)?, b.span)),
             None => None,
         };
-        let params = vec![("status".to_string(), status), ("missing".to_string(), missing)];
+        let headers_val = match headers {
+            Some(h) => Some((self.expr(h)?, h.span)),
+            None => None,
+        };
+        let mut params = vec![("status".to_string(), status), ("missing".to_string(), missing)];
+        if headers_val.is_some() {
+            params.push(("headers".to_string(), "true".to_string()));
+        }
         let node = self.node("respond", &params, span)?;
         let Val::Out { id, .. } = &node else { unreachable!() };
         let id = id.clone();
         self.b.wire(&request, "request", &id, "request").or_else(|e| err(span, e))?;
         if let Some((v, at)) = body_val {
             self.connect(&v, &id, "body", at)?;
+        }
+        if let Some((v, at)) = headers_val {
+            self.connect(&v, &id, "headers", at)?;
         }
         if let FrameKind::Route { responded, .. } = &mut self.frame().kind {
             *responded = Some(span);

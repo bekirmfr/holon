@@ -297,6 +297,40 @@ impl Lexer {
                         body.push(self.bump());
                     }
                 }
+                // A regex literal (`/[&<>"']/g`): quotes and braces inside it are its own. A `/`
+                // is one where a value can't be, after an operator, an opening bracket or a
+                // keyword such as `return`; after a value it divides.
+                '/' if regex_may_start(&body) => {
+                    body.push(self.bump());
+                    let mut in_class = false;
+                    loop {
+                        match self.peek(0) {
+                            None | Some('\n') => return self.err(start, "a regex in the js body isn't closed"),
+                            Some('\\') => {
+                                body.push(self.bump());
+                                if self.peek(0).is_some_and(|c| c != '\n') {
+                                    body.push(self.bump());
+                                }
+                            }
+                            Some('[') => {
+                                in_class = true;
+                                body.push(self.bump());
+                            }
+                            Some(']') => {
+                                in_class = false;
+                                body.push(self.bump());
+                            }
+                            Some('/') if !in_class => {
+                                body.push(self.bump());
+                                while self.peek(0).is_some_and(|c| c.is_ascii_alphabetic()) {
+                                    body.push(self.bump());
+                                }
+                                break;
+                            }
+                            Some(_) => body.push(self.bump()),
+                        }
+                    }
+                }
                 '/' if self.peek(1) == Some('*') => {
                     body.push(self.bump());
                     body.push(self.bump());
@@ -470,6 +504,18 @@ impl Lexer {
     }
 }
 
+/// Whether a `/` after `before` (the js body so far) starts a regex literal rather than dividing:
+/// at the start, after an operator or an opening bracket, or after a keyword a value follows.
+fn regex_may_start(before: &str) -> bool {
+    let trimmed = before.trim_end();
+    let Some(last) = trimmed.chars().last() else { return true };
+    if "(,=:[!&|?{};+-*%<>~^".contains(last) {
+        return true;
+    }
+    let word: String = trimmed.chars().rev().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$').collect::<Vec<_>>().into_iter().rev().collect();
+    matches!(word.as_str(), "return" | "typeof" | "case" | "in" | "of" | "delete" | "void" | "throw" | "new" | "instanceof" | "yield" | "await" | "else" | "do")
+}
+
 /// The tokens of `src`, the first at `start` (so a string's `{…}` part lexes with the columns of
 /// the string it sits in).
 pub fn lex_from(src: &str, start: Pos) -> Result<Vec<Token>, LexError> {
@@ -561,6 +607,18 @@ mod tests {
         let e = lex("a\n  b @ c").unwrap_err();
         assert_eq!((e.pos.line, e.pos.col), (2, 5));
         assert_eq!(e.message, "unexpected character '@'");
+    }
+
+    /// A js body is read as JavaScript: a `}` in a string, a template part, a comment or a regex
+    /// (quotes inside one included) doesn't end it, and a `/` after a value divides.
+    #[test]
+    fn a_js_body_is_read_as_javascript() {
+        let body = |src: &str| lex(src).unwrap().into_iter().find(|t| t.tok == Tok::JsBody).map(|t| t.text).unwrap();
+        assert_eq!(body("js f = (a) -> b { return a / 2 }"), " return a / 2 ");
+        assert_eq!(body("js f = (s) -> t { return s.replace(/[&<>\"']}/g, \"x\") }"), " return s.replace(/[&<>\"']}/g, \"x\") ");
+        assert_eq!(body("js f = (s) -> t { const r = /\\/{/; return `${s}}` + '}' // }\n}"), " const r = /\\/{/; return `${s}}` + '}' // }\n");
+        assert_eq!(body("js f = (a, b) -> c { return (a + 1) / (b - 1) }"), " return (a + 1) / (b - 1) ");
+        assert!(lex("js f = (s) -> t { return /[/ }\n").is_err(), "an open regex is a mistake");
     }
 
     #[test]
