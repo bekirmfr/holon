@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.1.0-rc.20
+
+Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.19 keep running.
+A log written by rc.20 has fields an older reader skips; a policy may now set `claim_wait_ms`.
+
+- **Key claims** (docs/L4s/key-claims-L4.md). Two requests with one idempotency key, sent in
+  the same instant, both called the processor: the optimistic commit and its retry kept one call
+  per *run*, never one per *key*, because an outbound call leaves mid-run, before the host knows
+  whether the attempt will be kept. Now a run about to send its first outbound request claims
+  every collection key it read that the flow may write, re-checks those reads against the live
+  state, and holds the keys until it commits, is discarded or parks. One that finds a read changed
+  as it claims it runs again from the new state having sent nothing; one holding keys and needing
+  another run's lets go, waits and runs again, so nothing deadlocks; a commit waits for foreign
+  claims on what it writes. Nothing is declared and nothing is in the manifest: the claim is
+  derived from the run's reads and the grant, and a run that sends nothing claims nothing, so a
+  read-modify-write with no call (the `likes` sample) stays as it was. State cells are never
+  claimed: a cell is one per deployment, and claiming it would serialize every calling run.
+  `claim_wait_ms` (10 s by default, ceiling 60 s) bounds the wait; past it the run answers 503 as
+  busy, naming the key. Verified live: the race that sent two now sends one, the second run
+  waiting 907 ms and replaying the first's record.
+- **Claims shown.** `runs` says "retried ×1" and "waited 681 ms for a key" on a line that has
+  them. `explain` says under the read it protects what the run claimed, how long it waited and
+  held the key, or that it found what it read had changed and ran again having sent nothing.
+  `holon check` and `show` say, apart from what a flow may do, *while it runs: holds the keys it
+  reads in "charges" from its first outbound call until it commits*, for a flow that calls out
+  over a collection it both reads and writes.
+- **A new sample, `idempotent`**: one charge per Idempotency-Key. The same key with the same body
+  answers the first charge again, the same key with a different body is refused (409), a key
+  expires after a day, and the processor is called only when there is no prior charge, since
+  `prior ?? fresh` never asks for the call on a replay.
+- **A new sample, `tally`**: post a CSV and get each column's kind, the min, max and mean of a
+  number column, the distinct values and top three of a text column; parsing text into structure
+  is a js node's work, and the flow around it keeps the last summary in its state.
+- The js engine's cost measurement (`what_a_call_costs`, on request) prints wall time too, cold
+  and warm, and says which build it ran on.
+
 ## 0.1.0-rc.19
 
 Flows deployed with rc.18 keep running. A flow with a `js` node redeploys as a new version
