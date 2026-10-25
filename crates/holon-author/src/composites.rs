@@ -97,6 +97,12 @@ pub fn child_nodes(children: &[Hash], store: &MapResolver, mut next_id: impl FnM
                     let data = NodeData::new(&name, PlacedBody::Composite { hash: hex.clone() }, ports(&unit.inputs), ports(&unit.outputs), vec![]);
                     (format!("composite-{}-{}", next_id(), &hex[..8]), data)
                 }
+                // A module: code by hash, with its ports and its budgets as params, no inside.
+                UnitBody::Module { .. } => {
+                    let name = names.get(&hex).cloned().unwrap_or_else(|| hex[..8].to_string());
+                    let data = NodeData::new(&name, PlacedBody::Module { hash: hex.clone() }, ports(&unit.inputs), ports(&unit.outputs), unit.params.iter().map(WParam::from_core).collect());
+                    (format!("module-{}-{}", next_id(), &hex[..8]), data)
+                }
             };
             Ok(Node::placed(&id, Position::default(), data))
         })
@@ -106,7 +112,7 @@ pub fn child_nodes(children: &[Hash], store: &MapResolver, mut next_id: impl FnM
 fn composite_parts(unit: &Unit) -> Option<(&[Hash], &[holon_core::Edge])> {
     match &unit.body {
         UnitBody::Composite { children, edges } => Some((children, edges)),
-        UnitBody::Primitive { .. } => None,
+        UnitBody::Primitive { .. } | UnitBody::Module { .. } => None,
     }
 }
 

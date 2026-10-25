@@ -75,6 +75,7 @@ fn refork_node(
             UnitBody::Composite { children: new_children, edges: edges.clone() }
         }
         UnitBody::Primitive { name } => UnitBody::Primitive { name: name.clone() },
+        UnitBody::Module { bytes } => UnitBody::Module { bytes: bytes.clone() },
     };
 
     // (2) The `fn` param (a hash-valued reference).

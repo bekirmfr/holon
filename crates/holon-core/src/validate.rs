@@ -44,6 +44,9 @@ pub enum ValidationError {
     Cycle,
     /// An edge connects incompatible types.
     TypeMismatch { edge: usize, src: Type, dst: Type },
+    /// A module body isn't one (`module::validate_module`): imports, a missing export, a bad
+    /// budget, or not WebAssembly at all.
+    Module(crate::ModuleError),
 }
 
 impl std::fmt::Display for ValidationError {
@@ -76,6 +79,7 @@ impl std::fmt::Display for ValidationError {
             ValidationError::TypeMismatch { edge, src, dst } => {
                 write!(f, "edge {edge} connects incompatible types: {src:?} does not fit {dst:?}")
             }
+            ValidationError::Module(e) => write!(f, "{e}"),
         }
     }
 }
@@ -113,6 +117,17 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
     let (children, edges) = match &unit.body {
         UnitBody::Primitive { .. } => return Ok(()),
         UnitBody::Composite { children, edges } => (children, edges),
+        // A module is admitted by its own sections: no imports, the ABI's exports, sane budgets.
+        UnitBody::Module { bytes } => {
+            let mut errors = Vec::new();
+            if let Err(e) = crate::module::validate_module(bytes) {
+                errors.push(ValidationError::Module(e));
+            }
+            if let Err(e) = crate::module::module_limits(&unit.params) {
+                errors.push(ValidationError::Module(e));
+            }
+            return if errors.is_empty() { Ok(()) } else { Err(errors) };
+        }
     };
 
     let mut errors = Vec::new();

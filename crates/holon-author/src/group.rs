@@ -51,7 +51,7 @@ fn validation_children(err: &ValidationError, edges: &[holon_core::Edge]) -> Vec
         ValidationError::TypeMismatch { edge, .. } => {
             edges.get(*edge).map(|e| [e.from_child, e.to_child].into_iter().filter(|&c| c != BOUNDARY).collect()).unwrap_or_default()
         }
-        ValidationError::BoundaryInputOutOfRange { .. } | ValidationError::BoundaryOutputOutOfRange { .. } | ValidationError::Cycle => vec![],
+        ValidationError::BoundaryInputOutOfRange { .. } | ValidationError::BoundaryOutputOutOfRange { .. } | ValidationError::Cycle | ValidationError::Module(_) => vec![],
     }
 }
 
@@ -113,7 +113,7 @@ pub fn group_selection(selected: &[Node], wires: &[Wire], store: &mut MapResolve
     let (raw_inputs, raw_outputs) = (composite.inputs.clone(), composite.outputs.clone());
     let boundary = match &composite.body {
         UnitBody::Composite { edges, .. } => edges.clone(),
-        UnitBody::Primitive { .. } => vec![],
+        UnitBody::Primitive { .. } | UnitBody::Module { .. } => vec![],
     };
     let hash = to_hex(&put_unit(store, composite)?);
 

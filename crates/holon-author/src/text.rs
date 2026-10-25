@@ -588,7 +588,7 @@ impl Printer<'_> {
             let defaults: Vec<WParam> = match d.body {
                 PlacedBody::Template => templates::defaults(&d.name).unwrap_or_default(),
                 PlacedBody::Primitive => catalog.as_ref().map(|u| u.params.iter().map(WParam::from_core).collect()).unwrap_or_default(),
-                PlacedBody::Composite { .. } => vec![],
+                PlacedBody::Composite { .. } | PlacedBody::Module { .. } => vec![],
             };
             let shown: Vec<String> = d
                 .params

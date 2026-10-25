@@ -42,6 +42,7 @@ mod hash;
 mod inspect;
 mod json;
 mod manifest;
+mod module;
 mod resolve;
 mod simulate;
 mod validate;
@@ -71,6 +72,10 @@ pub use hash::{
 pub use kind::{
     capabilities, capabilities_of, effects_of, kind_of, Capabilities, Capability,
     Effects, Kind,
+};
+pub use module::{
+    module_limits, module_limits_of, validate_module, ModuleError, ModuleLimits, DEFAULT_MODULE_FUEL,
+    DEFAULT_MODULE_MEMORY, FUEL_LIMIT, FUEL_PARAM, MEMORY_LIMIT, MEMORY_PARAM,
 };
 pub use resolve::{MapResolver, Resolver};
 pub use simulate::{design_eval, mock_of, Simulated};

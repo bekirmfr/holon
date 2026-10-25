@@ -41,6 +41,10 @@ pub type Hash = [u8; 32];
 // different shapes can never produce the same byte stream by coincidence.
 const TAG_PRIMITIVE: u8 = 0x01;
 const TAG_COMPOSITE: u8 = 0x02;
+/// A module body (2026-10-25). A new body tag is a compatible extension: nothing already
+/// encoded changes, and an older decoder meeting it fails closed with `BadTag`. A change to how
+/// an existing tag encodes is what bumps [`ENCODING_VERSION`].
+const TAG_MODULE: u8 = 0x03;
 const TAG_PARAM: u8 = 0x10;
 const TAG_PORT: u8 = 0x11;
 const TAG_EDGE: u8 = 0x12;
@@ -198,6 +202,12 @@ pub enum UnitBody {
     Primitive { name: String },
     /// A composite references its children **by hash only** and wires them.
     Composite { children: Vec<Hash>, edges: Vec<Edge> },
+    /// A WebAssembly module with **no imports**, as is (docs/L4s/wasm-module-L4.md): the
+    /// vocabulary's escape hatch. Its bytes are its identity; it is pure because it can reach
+    /// nothing (`module::validate_module` reads that from the import section), and total under
+    /// the `fuel` and `memory` budgets in its params. An engine outside core runs it
+    /// (`Resolver::run_module`).
+    Module { bytes: Vec<u8> },
 }
 
 /// A complete unit: its body plus its frozen, derived interface. `outputs` is
@@ -475,6 +485,13 @@ pub fn encode_preimage(unit: &Unit) -> Result<Vec<u8>, EncodeError> {
                 e.u32(edge.to_port);
             }
         }
+        UnitBody::Module { bytes } => {
+            // The bytes are the identity: length-prefixed, as is. No canonicalization applies
+            // (a module's binary is already one byte string), and nothing else of it is read
+            // here; what it must be to be a unit at all is `validate_module`'s to say.
+            e.tag(TAG_MODULE);
+            e.bytes(bytes)?;
+        }
     }
 
     // 2. Params, sorted by name for determinism. The variant (Frozen/Open) is tagged so
@@ -671,6 +688,10 @@ pub fn decode_preimage(bytes: &[u8]) -> Result<Unit, DecodeError> {
                 }
             }
             UnitBody::Composite { children, edges }
+        }
+        TAG_MODULE => {
+            let len = d.u32()? as usize;
+            UnitBody::Module { bytes: d.take(len)?.to_vec() }
         }
         other => return Err(DecodeError::BadTag(other)),
     };

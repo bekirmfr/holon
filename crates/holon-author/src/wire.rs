@@ -144,12 +144,25 @@ impl WEdge {
     }
 }
 
-/// A unit's body: `{ kind: "Primitive", name }` or `{ kind: "Composite", children: [hex…], edges }`.
+/// A unit's body: `{ kind: "Primitive", name }`, `{ kind: "Composite", children: [hex…], edges }`
+/// or `{ kind: "Module", bytes: hex }` (a WebAssembly module's binary, as hex).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind")]
 pub enum WBody {
     Primitive { name: String },
     Composite { children: Vec<String>, edges: Vec<WEdge> },
+    Module { bytes: String },
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    if hex.len() % 2 != 0 || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err("a module's bytes must be hex".into());
+    }
+    Ok((0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0)).collect())
 }
 
 /// A unit. `params` / `inputs` / `outputs` may be omitted (default empty).
@@ -172,6 +185,7 @@ impl WUnit {
                 children: children.iter().map(to_hex).collect(),
                 edges: edges.iter().map(WEdge::from_core).collect(),
             },
+            UnitBody::Module { bytes } => WBody::Module { bytes: bytes_to_hex(bytes) },
         };
         WUnit {
             body,
@@ -191,6 +205,7 @@ impl WUnit {
                     .collect::<Result<_, _>>()?,
                 edges: edges.into_iter().map(WEdge::into_core).collect(),
             },
+            WBody::Module { bytes } => UnitBody::Module { bytes: hex_to_bytes(&bytes)? },
         };
         Ok(Unit {
             body,

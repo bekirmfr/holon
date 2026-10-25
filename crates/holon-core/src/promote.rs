@@ -99,6 +99,8 @@ pub fn instantiate(
             }
             UnitBody::Composite { children: new_children, edges: edges.clone() }
         }
+        // A module's holes are its budgets (`fuel`, `memory`): params, filled below like any.
+        UnitBody::Module { bytes } => UnitBody::Module { bytes: bytes.clone() },
     };
 
     let new_unit = Unit { body, params, inputs: unit.inputs.clone(), outputs: unit.outputs };

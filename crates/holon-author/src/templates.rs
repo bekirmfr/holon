@@ -367,13 +367,13 @@ mod tests {
     fn parts(u: &Unit) -> (&[Hash], &[Edge]) {
         match &u.body {
             UnitBody::Composite { children, edges } => (children, edges),
-            UnitBody::Primitive { .. } => (&[], &[]),
+            UnitBody::Primitive { .. } | UnitBody::Module { .. } => (&[], &[]),
         }
     }
     fn prim_name(store: &MapResolver, h: &Hash) -> String {
         match &store.resolve(h).unwrap().body {
             UnitBody::Primitive { name } => name.clone(),
-            UnitBody::Composite { .. } => String::new(),
+            UnitBody::Composite { .. } | UnitBody::Module { .. } => String::new(),
         }
     }
 

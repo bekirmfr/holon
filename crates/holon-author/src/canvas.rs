@@ -54,13 +54,15 @@ pub struct NodeData {
 }
 
 /// What a node stands for: a genesis primitive (rebuilt from its name, params and ports), a
-/// frozen composite (by hash), or a template (rebuilt from its params, templates.rs).
+/// frozen composite (by hash), a template (rebuilt from its params, templates.rs), or a
+/// WebAssembly module (by hash: code, with ports and no inside, docs/L4s/wasm-module-L4.md).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind")]
 pub enum PlacedBody {
     Primitive,
     Composite { hash: String },
     Template,
+    Module { hash: String },
 }
 
 impl Node {

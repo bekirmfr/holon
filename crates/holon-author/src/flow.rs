@@ -24,7 +24,8 @@ fn put(store: &mut MapResolver, u: Unit) -> Result<Hash, String> {
 /// must already hold to be used).
 pub fn unit_for(node: &Node, store: &mut MapResolver) -> Result<Hash, String> {
     match &node.data.body {
-        PlacedBody::Composite { hash } => parse_hash(hash).ok_or_else(|| format!("{}: bad hash {hash}", node.data.name)),
+        // A composite was frozen when grouped, a module stored when added: each is its hash.
+        PlacedBody::Composite { hash } | PlacedBody::Module { hash } => parse_hash(hash).ok_or_else(|| format!("{}: bad hash {hash}", node.data.name)),
         PlacedBody::Template => {
             let unit = templates::build(&node.data.name, &node.data.params, store).map_err(|e| format!("{}: {e}", node.data.name))?;
             put(store, unit)
@@ -72,7 +73,7 @@ pub fn trace_of(unit: &Unit, group: &[&Node]) -> Vec<String> {
         UnitBody::Composite { children, edges } => canonical_child_order(children, edges)
             .map(|order| order.into_iter().filter_map(|i| group.get(i).map(|n| n.id.clone())).collect())
             .unwrap_or_default(),
-        UnitBody::Primitive { .. } => vec![],
+        UnitBody::Primitive { .. } | UnitBody::Module { .. } => vec![],
     }
 }
 

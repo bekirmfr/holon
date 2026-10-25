@@ -12,9 +12,19 @@
 use crate::{hash_unit, EncodeError, Hash, Unit};
 use std::collections::BTreeMap;
 
+use crate::{ModuleLimits, Value};
+
 /// Turns a content hash into the unit it identifies.
 pub trait Resolver {
     fn resolve(&self, hash: &Hash) -> Option<&Unit>;
+
+    /// Run a module body (docs/L4s/wasm-module-L4.md §5): the engine stays out of core, so a
+    /// resolver that has one answers here, one output per declared port. The default answers
+    /// nothing, which makes every module absent: "this host cannot run code" shows up as a flow
+    /// that produces nothing, never as a wrong answer. A wrapper over another resolver forwards.
+    fn run_module(&self, _bytes: &[u8], _limits: &ModuleLimits, _inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+        None
+    }
 }
 
 /// In-memory resolver (Phase A): a deterministic map, populated as units are built.

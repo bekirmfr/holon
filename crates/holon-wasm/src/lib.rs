@@ -380,6 +380,8 @@ pub enum WValidationError {
     DuplicateInputEdge { to_child: u32, to_port: u32, message: String },
     Cycle { message: String },
     TypeMismatch { edge: usize, src: WType, dst: WType, message: String },
+    /// A module body that isn't one: the message says what (imports, a missing export, a budget).
+    Module { message: String },
 }
 
 impl WValidationError {
@@ -408,6 +410,7 @@ impl WValidationError {
                 WValidationError::DuplicateInputEdge { to_child: *to_child, to_port: *to_port, message }
             }
             ValidationError::Cycle => WValidationError::Cycle { message },
+            ValidationError::Module(_) => WValidationError::Module { message },
             ValidationError::TypeMismatch { edge, src, dst } => WValidationError::TypeMismatch {
                 edge: *edge,
                 src: WType::from_core(src),

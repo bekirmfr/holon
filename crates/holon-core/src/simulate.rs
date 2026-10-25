@@ -39,7 +39,8 @@ use std::collections::BTreeMap;
 pub fn mock_of(unit: &Unit) -> Option<Unit> {
     let name = match &unit.body {
         UnitBody::Primitive { name } => name,
-        UnitBody::Composite { .. } => return None,
+        // A module computes only, so design mode runs the real one under the real budget.
+        UnitBody::Composite { .. } | UnitBody::Module { .. } => return None,
     };
     if capabilities_of(name, &unit.params)?.iter().any(|c| c.is_sourced()) {        sourced_mock(unit)
     } else {
@@ -105,6 +106,10 @@ impl<R: Resolver> Resolver for Simulated<'_, R> {
             Some(mock) => Some(mock),
             None => self.real.resolve(hash),
         }
+    }
+
+    fn run_module(&self, bytes: &[u8], limits: &crate::ModuleLimits, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+        self.real.run_module(bytes, limits, inputs)
     }
 }
 
