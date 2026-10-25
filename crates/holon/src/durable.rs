@@ -264,13 +264,14 @@ pub(crate) struct ParkedRun {
     pub(crate) version: String,
 }
 
-/// The capability a logged sourced value is for.
-fn capability_named(name: &str) -> Option<Capability> {
+/// The capability a logged sourced value is for: what a run's trigger and the run's start supply.
+pub(crate) fn capability_named(name: &str) -> Option<Capability> {
     match name {
         "Clock" => Some(Capability::Clock),
         "Random" => Some(Capability::Random),
         "NetworkIngress" => Some(Capability::NetworkIngress),
-        _ => None,
+        // The new file that started it (arrivals.rs).
+        _ => name.strip_prefix("FileArrival(").and_then(|r| r.strip_suffix(')')).and_then(|q| serde_json::from_str(q).ok()).map(Capability::FileArrival),
     }
 }
 

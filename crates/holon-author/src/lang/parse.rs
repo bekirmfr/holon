@@ -278,6 +278,10 @@ impl Parser {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
+                    "on" if self.peek_at(1).tok == Tok::Ident && self.peek_at(1).text == "file" => {
+                        let h = self.header()?;
+                        file.headers.push(h);
+                    }
                     "holon" => file.items.push(self.holon()?),
                     "route" => file.items.push(Item::Route(self.route()?)),
                     _ => file.items.push(Item::Stmt(self.stmt()?)),
@@ -310,6 +314,10 @@ impl Parser {
             }
             "collection" => HeaderKind::Collection(self.ident("the collection's name")?.text),
             "folder" => HeaderKind::Folder(self.ident("the folder's name")?.text),
+            "on" => {
+                self.next();
+                HeaderKind::OnFile(self.ident("the folder whose new files start a run")?.text)
+            }
             "optional" => HeaderKind::Optional(self.consent()?),
             _ => {
                 let mut origins = Vec::new();

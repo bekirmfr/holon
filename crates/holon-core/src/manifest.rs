@@ -40,16 +40,11 @@ pub fn manifest_items(capabilities: &[String], limits: &BTreeMap<String, u64>, p
 }
 
 /// What starts the runs of a unit with `capabilities`: `NetworkIngress` for one with routes, else
-/// `Clock` for one the clock fires; none for one only triggered by hand.
-pub fn trigger(capabilities: &[String]) -> Option<&'static str> {
-    let has = |c: &str| capabilities.iter().any(|x| x == c);
-    if has("NetworkIngress") {
-        Some("NetworkIngress")
-    } else if has("Clock") {
-        Some("Clock")
-    } else {
-        None
-    }
+/// `FileArrival("inbox")` for one a new file starts, else `Clock` for one the clock fires; none for
+/// one only triggered by hand.
+pub fn trigger(capabilities: &[String]) -> Option<&str> {
+    let find = |p: fn(&str) -> bool| capabilities.iter().find(|c| p(c)).map(String::as_str);
+    find(|c| c == "NetworkIngress").or_else(|| find(|c| c.starts_with("FileArrival("))).or_else(|| find(|c| c == "Clock"))
 }
 
 /// Whether a manifest item is required or optional.
@@ -76,7 +71,7 @@ pub fn permission_kind(item: &str, optional: &BTreeSet<String>, trigger: Option<
 /// point.
 /// Effects it only performs (writes, sends) don't count: they come out as values.
 pub fn reads_from_outside(capabilities: &[String]) -> bool {
-    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "SecretRead", "StateRead", "CollectionRead", "FileRead", "HttpRequest", "Await"];
+    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "SecretRead", "StateRead", "CollectionRead", "FileRead", "HttpRequest", "Await"];
     capabilities.iter().any(|c| SOURCED.contains(&c.split('(').next().unwrap_or("")))
 }
 
@@ -115,6 +110,7 @@ mod tests {
         assert_eq!(trigger(&server), Some("NetworkIngress"));
         assert_eq!(trigger(&caps(&["Clock", "StateWrite(\"b\")"])), Some("Clock"));
         assert_eq!(trigger(&caps(&["StateWrite(\"b\")"])), None);
+        assert_eq!(trigger(&caps(&["Clock", "FileArrival(\"inbox\")", "FileRead(\"inbox\")"])), Some("FileArrival(\"inbox\")"));
         let optional = BTreeSet::from(["SecretRead(\"k\")".to_string(), "NetworkIngress".to_string()]);
         let t = trigger(&server);
         assert_eq!(permission_kind("SecretRead(\"k\")", &optional, t), PermissionKind::Optional);

@@ -108,6 +108,9 @@ pub enum Capability {
     /// `file_slice`. Answered by the host from the
     /// folder an admin bound to that name (`docs/L4s/named-folders-L4.md`).
     FileRead(String),
+    /// Starts a run for each new file in the named folder: `file_arrival`, whose value is the
+    /// file's handle. The host watches the folder an admin bound to that name.
+    FileArrival(String),
     /// Reads a secret / credential (a security-sensitive read).
     SecretAccess,
     /// Reads the named secret from the deployment's secret store: `secret`. Per name, so
@@ -162,7 +165,7 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | FileWrite(_) | Spawn => Kind::Sink,
         }
@@ -179,7 +182,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_)
         )
     }
 }
@@ -277,6 +280,9 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // name to a real folder.
         "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice" => vec![FileRead(ident(params, "folder")?)],
         "file_write" | "file_copy" | "file_delete" => vec![FileWrite(ident(params, "folder")?)],
+        // A new file in a named folder starts a run: the host watches the folder, and the file's
+        // handle is the leaf's value. The folder is a frozen param, so the trigger names it.
+        "file_arrival" => vec![FileArrival(ident(params, "folder")?)],
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
@@ -291,6 +297,9 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // back into the next one (the run observer's `answer`). The host is a frozen param, so
         // the capability names it exactly.
         "http_request" => vec![HttpRequest(http_host(params)?)],
+        // The same request with a file's bytes as its body, streamed by the host from the folder
+        // the handle names (one the deployment reads, checked when it is sent).
+        "http_upload" => vec![HttpRequest(http_host(params)?)],
         // Request/response (P2.5.1): `ingress` is the driver (a request arrives), `egress` carries
         // the reply out. §13 merges the old `email`/`respond` into this one `egress` sink — both
         // were NetworkEgress, and the host dispatches on the *capability*, not the sink name, so the
@@ -800,7 +809,7 @@ mod tests {
     fn is_sourced_splits_input_from_output() {
         use Capability::*;
         // sourced (input-side): drivers and the state *read*
-        for c in [Clock, NetworkIngress, FileRead("inbox".to_string()), SecretAccess, Random, StateRead("var1".to_string())] {
+        for c in [Clock, NetworkIngress, FileRead("inbox".to_string()), FileArrival("inbox".to_string()), SecretAccess, Random, StateRead("var1".to_string())] {
             assert!(c.is_sourced(), "{c:?} should be sourced");
         }
         // performed (output-side): sinks and the state *write*

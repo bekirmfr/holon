@@ -368,11 +368,8 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, res
 
     let mut extra = Vec::new();
     for (name, value) in &entry.sourced {
-        let cap = match name.as_str() {
-            "Clock" => Capability::Clock,
-            "Random" => Capability::Random,
-            "NetworkIngress" => Capability::NetworkIngress,
-            other => return Rerun::Skipped(format!("it read {other}, which verify can't supply")),
+        let Some(cap) = durable::capability_named(name) else {
+            return Rerun::Skipped(format!("it read {name}, which verify can't supply"));
         };
         extra.push((cap, value.clone().into_core()));
     }

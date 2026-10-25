@@ -176,6 +176,8 @@ fn eval_at(
         UnitBody::Primitive { name } if name == "fold" => smallvec![eval_fold(inputs, &unit.params, resolver, observer, path)],
         // An outbound request: built here, answered (or not yet) by the host through the observer.
         UnitBody::Primitive { name } if name == "http_request" => ask(primitives::http_request(inputs, &unit.params), observer, path),
+        // One whose body is a file: the host streams it.
+        UnitBody::Primitive { name } if name == "http_upload" => ask(primitives::http_upload(inputs, &unit.params), observer, path),
         // A durable run's waiting point and its token: also the host's to answer.
         UnitBody::Primitive { name } if name == "await" => ask(primitives::await_request(&unit.params), observer, path),
         // A collection read: the host answers it from the collection as the run found it.

@@ -329,7 +329,9 @@ fn run_attempt(
             records,
         )
     });
-    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &permit.outbound, limits, &mut timer, waits, &prior);
+    // A file as a request's body is sent from a folder the deployment reads.
+    let sender = folders::Sender { outbound: &permit.outbound, folders: waits.folders.clone(), granted: permit.folders_handed() };
+    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
     // A read that failed (a file too big, or not text; a folder not bound) fails the run: it
     // performs nothing.
@@ -340,7 +342,7 @@ fn run_attempt(
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, which would put it on disk and in every later snapshot, and a copy
     // from a folder the deployment doesn't read (a handle is only a record: one can be made up).
-    let reads_folders = permit.folders_read();
+    let reads_folders = permit.folders_handed();
     host.performed.retain(|(cap, payload)| {
         if !permit.allows(cap) {
             eprintln!("holon: refused {cap:?}: not granted to this deployment");

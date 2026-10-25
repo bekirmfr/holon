@@ -147,6 +147,7 @@
 mod access;
 mod accounts;
 mod activity;
+mod arrivals;
 mod auth;
 mod blobs;
 mod claims;
@@ -404,6 +405,9 @@ struct Deployment {
     /// The folders bound on this server, as this deployment sees them (folders.rs): runs read and
     /// write the ones it was granted.
     folders: Arc<folders::Scoped>,
+    /// The folders whose new files start its runs, and what it has seen of them (arrivals.rs).
+    /// Derived from its unit at deploy and load; what it saw is kept beside its log.
+    arrivals: Arc<arrivals::Watch>,
     /// Its runs waiting for an event, by run id (durable.rs). Persisted; kept across redeploys,
     /// each pinned to the unit it started on.
     parked: BTreeMap<String, ParkedRun>,
@@ -911,6 +915,7 @@ fn serve(args: Vec<String>) {
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
+    arrivals::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
     {
         // The texts of files no kept run refers to any more are swept (folders.rs).
         let (folders, deployments) = (Arc::clone(&folders), Arc::clone(&deployments));

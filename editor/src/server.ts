@@ -523,7 +523,7 @@ export type LogEntry = {
   session: number;
   at_ms: number;
   duration_ms: number;
-  kind: "request" | "trigger" | "tick" | "resume";
+  kind: "request" | "trigger" | "tick" | "resume" | "file";
   /** The matched route, e.g. "GET /todos/:id". */
   route: string | null;
   method: string | null;

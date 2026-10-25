@@ -176,6 +176,7 @@ export type WCapability =
   | "Clock"
   | "NetworkIngress"
   | { FileRead: string }
+  | { FileArrival: string }
   | "SecretAccess"
   | { SecretRead: string }
   | { Await: string }

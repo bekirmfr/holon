@@ -27,7 +27,10 @@
 use std::io::{Read as _, Seek as _, Write as _};
 use std::sync::RwLock;
 
+use holon_host::{Limits, Performer};
 use rouille::{Request, Response};
+
+use crate::outbound::{self, Body, FileBody, Outbound};
 
 use crate::http::{err, read_body};
 
@@ -326,11 +329,58 @@ pub(crate) struct Scoped {
     pub(crate) all: Arc<Folders>,
     /// Its slug.
     pub(crate) deployment: String,
+    /// The folders whose new files start its runs (arrivals.rs), as its watcher last said.
+    watched: Mutex<BTreeSet<String>>,
+    /// The files its own runs wrote or copied into those, by folder and name, as they landed (size,
+    /// modified): one doesn't start a run, unless it changes again.
+    landed: Mutex<BTreeMap<(String, String), Signature>>,
 }
+
+/// A file as a watcher sees it without reading it: its size and when it was modified (ms).
+pub(crate) type Signature = (u64, u64);
 
 impl Scoped {
     pub(crate) fn new(all: Arc<Folders>, deployment: &str) -> Scoped {
-        Scoped { all, deployment: deployment.to_string() }
+        Scoped { all, deployment: deployment.to_string(), watched: Mutex::new(BTreeSet::new()), landed: Mutex::new(BTreeMap::new()) }
+    }
+
+    /// Every file of folder `name` a flow may name, by its signature: the folder isn't read.
+    pub(crate) fn signatures(&self, name: &str) -> Result<BTreeMap<String, Signature>, String> {
+        let folder = self.folder(name)?;
+        let mut names = Vec::new();
+        walk(&folder.path, "", &mut names)?;
+        let mut files = BTreeMap::new();
+        for n in names {
+            // One gone between the walk and now is simply not there.
+            if let Ok(meta) = std::fs::metadata(folder.path.join(&n)) {
+                files.insert(n, (meta.len(), modified(&meta)));
+            }
+        }
+        Ok(files)
+    }
+
+    /// The folders its watcher looks at: what its runs write there is noted as its own.
+    pub(crate) fn watch(&self, folders: &BTreeSet<String>) {
+        let mut watched = self.watched.lock().unwrap();
+        if *watched != *folders {
+            watched.clone_from(folders);
+            self.landed.lock().unwrap().retain(|(name, _), _| folders.contains(name));
+        }
+    }
+
+    /// Whether file `file` of folder `name`, now `signature`, is as one of this deployment's runs
+    /// left it; forgotten either way.
+    pub(crate) fn took_own(&self, name: &str, file: &str, signature: Signature) -> bool {
+        self.landed.lock().unwrap().remove(&(name.to_string(), file.to_string())) == Some(signature)
+    }
+
+    fn note_landed(&self, name: &str, file: &str, path: &Path) {
+        if !self.watched.lock().unwrap().contains(name) {
+            return;
+        }
+        if let Ok(meta) = std::fs::metadata(path) {
+            self.landed.lock().unwrap().insert((name.to_string(), file.to_string()), (meta.len(), modified(&meta)));
+        }
     }
 
     /// No folders at all: a deployment read from disk until the server's are opened.
@@ -348,7 +398,7 @@ impl Scoped {
     }
 
     /// File `file` of folder `name`, opened, and its metadata: none if there is no such file.
-    fn open_file(&self, name: &str, file: &str) -> Result<Option<(std::fs::File, std::fs::Metadata)>, String> {
+    pub(crate) fn open_file(&self, name: &str, file: &str) -> Result<Option<(std::fs::File, std::fs::Metadata)>, String> {
         let folder = self.folder(name)?;
         let Some(path) = existing(&folder.path, file)? else { return Ok(None) };
         let meta = std::fs::metadata(&path).map_err(|e| format!("{name}/{file}: {e}"))?;
@@ -439,7 +489,9 @@ impl Scoped {
         let folder = self.writable(name)?;
         let path = for_writing(&folder.path, file)?;
         fits(name, &folder, &path, text.len() as u64).map_err(|e| format!("{name}/{file} not written: {e}"))?;
-        land(&path, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(|e| format!("{name}/{file} not written: {e}"))
+        land(&path, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(|e| format!("{name}/{file} not written: {e}"))?;
+        self.note_landed(name, file, &path);
+        Ok(())
     }
 
     /// Copy file `from_file` of folder `from` as file `file` of folder `name`, streamed beside it
@@ -467,7 +519,9 @@ impl Scoped {
             }
             Ok(())
         })
-        .map_err(|e| format!("{name}/{file} not copied: {e}"))
+        .map_err(|e| format!("{name}/{file} not copied: {e}"))?;
+        self.note_landed(name, file, &path);
+        Ok(())
     }
 
     /// Delete file `file` of folder `name`; nothing to do if there is none.
@@ -1000,6 +1054,76 @@ pub(crate) struct Readable {
 impl std::fmt::Debug for Readable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Readable").field("granted", &self.granted).field("read_bytes", &self.read_bytes).finish()
+    }
+}
+
+/// The performer of a deployment's runs: its outbound rules (outbound.rs), with a file as a
+/// request's body (`http_upload`) read from a folder the deployment reads, as the run's handle
+/// names it.
+pub(crate) struct Sender<'a> {
+    pub(crate) outbound: &'a Outbound,
+    pub(crate) folders: Option<Arc<Scoped>>,
+    /// The folders it reads, by name.
+    pub(crate) granted: BTreeSet<String>,
+}
+
+/// A file a request sends, as the run's handle names it.
+struct Sent<'a> {
+    folders: &'a Scoped,
+    folder: &'a str,
+    name: &'a str,
+    size: u64,
+    hash: &'a str,
+}
+
+impl FileBody for Sent<'_> {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn hash(&self) -> &str {
+        self.hash
+    }
+
+    /// The file, checked whole against the handle before a byte of it is sent (and again as it
+    /// is: outbound.rs).
+    fn open(&self) -> Result<Box<dyn std::io::Read + Send + '_>, Value> {
+        let (folder, name) = (self.folder, self.name);
+        let unreadable = |e: std::io::Error| outbound::failure("file", format!("{folder}/{name} can't be read: {e}"));
+        let changed = || outbound::failure("changed", format!("{folder}/{name} changed since the run read it"));
+        let Some((mut f, meta)) = self.folders.open_file(folder, name).map_err(|e| outbound::failure("file", e))? else {
+            return Err(outbound::failure("changed", format!("{folder}/{name} isn't there any more")));
+        };
+        if meta.len() != self.size {
+            return Err(changed());
+        }
+        let mut hasher = blake3::Hasher::new();
+        std::io::copy(&mut f, &mut hasher).map_err(unreadable)?;
+        if hasher.finalize().to_hex().as_str() != self.hash {
+            return Err(changed());
+        }
+        f.seek(std::io::SeekFrom::Start(0)).map_err(unreadable)?;
+        Ok(Box::new(f))
+    }
+}
+
+impl Performer for Sender<'_> {
+    fn perform(&self, request: &Value, limits: &Limits) -> Value {
+        let Value::Record(r) = request else { return self.outbound.perform(request, limits) };
+        let Some(Value::Record(file)) = r.get("file") else { return self.outbound.perform(request, limits) };
+        let (Some(Value::Text(method)), Some(Value::Text(url)), Some(Value::Record(headers))) = (r.get("method"), r.get("url"), r.get("headers")) else {
+            return outbound::failure("bad_request", "a request needs method, url and headers");
+        };
+        let (Some(folder), Some(name), Some(hash), Some(Value::Number(size))) = (text(file, "folder"), text(file, "name"), text(file, "hash"), file.get("size")) else {
+            return outbound::failure("bad_request", "a file sent names its folder, its name, its size and its hash");
+        };
+        // A handle is only a record: one can be made up, so the folder must be one it reads.
+        if !self.granted.contains(folder) {
+            return outbound::failure("blocked_file", format!("this deployment doesn't read the folder {folder:?}"));
+        }
+        let Some(folders) = &self.folders else { return outbound::failure("blocked_file", "no folders on this server") };
+        let sent = Sent { folders, folder, name, size: *size as u64, hash };
+        self.outbound.send(method, url, headers, Body::File(&sent), limits)
     }
 }
 

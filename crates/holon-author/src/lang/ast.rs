@@ -58,6 +58,9 @@ pub enum HeaderKind {
     Collection(String),
     /// `folder inbox`: a folder an admin binds on the host, used as `inbox[name]`.
     Folder(String),
+    /// `on file inbox`: a run for each new file in the folder, which it declares too; the run
+    /// reads the file's handle as `ingress`.
+    OnFile(String),
 }
 
 /// What `optional` names: a secret by its name, or a consent name as the server prints one.

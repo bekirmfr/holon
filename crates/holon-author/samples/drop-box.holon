@@ -1,0 +1,6 @@
+flow drop-box
+on file drop
+folder receipts
+
+sent = http.put("httpbin.org", "/put", headers: { "content-type": "application/octet-stream" }, file: ingress)
+receipts["{ingress.name}.json"] = json({ file: ingress.name, size: ingress.size, hash: ingress.hash, status: sent.status, received: parse_json(sent.body).headers["Content-Length"] ?? "nothing" })

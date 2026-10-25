@@ -82,6 +82,8 @@ pub fn describe(name: &str) -> Option<&'static str> {
 
         // ── outside the run ──
         "http_request" => "Calls the host set on the node (HTTPS) with the method, path, headers and body, and answers {status, headers, body}. Performed by the server between rounds, within the deployment's limits; the host is a permission it asks for. Holds back when a wired input didn't arrive.",
+        "http_upload" => "Calls the host set on the node like http_request, with the file a handle names as the body: the server streams its bytes from the folder (one the deployment reads), never through the flow, and fails the call if the file changed since the run read it.",
+        "file_arrival" => "The handle of the new file in a folder that started the run: {folder, name, size, hash, modified}. A flow with one runs once for each file that arrives there (and settles), not on requests.",
         "clock" => "The time the run started, in seconds since 1970. The same everywhere in one run, and recorded, so a replay sees it too.",
         "random" => "A random number from 0 up to 1, the same everywhere in one run, and recorded.",
         "ingress" => "What arrived at the deployment (a request's body, a trigger's payload).",

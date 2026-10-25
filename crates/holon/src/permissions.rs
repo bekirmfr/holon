@@ -198,7 +198,7 @@ impl Manifest {
     }
 
     /// What starts its runs, which it can't do without (core's `trigger`).
-    pub(crate) fn trigger(&self) -> Option<&'static str> {
+    pub(crate) fn trigger(&self) -> Option<&str> {
         holon_core::trigger(&self.capabilities)
     }
 
@@ -664,6 +664,14 @@ impl Permit {
     /// The folders it may read, by name.
     pub(crate) fn folders_read(&self) -> BTreeSet<String> {
         self.named("FileRead")
+    }
+
+    /// The folders whose files it may pass on by handle (copy, or send as a body): the ones it
+    /// reads, and the ones whose new files start its runs (that file is handed to the run).
+    pub(crate) fn folders_handed(&self) -> BTreeSet<String> {
+        let mut folders = self.folders_read();
+        folders.extend(self.named("FileArrival"));
+        folders
     }
 }
 

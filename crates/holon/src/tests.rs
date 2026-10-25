@@ -3989,3 +3989,100 @@ fn a_journal_keeps_what_its_runs_read_in_chunks_for_a_while_and_stays_under_its_
     assert!(why.contains("capped at") && why.contains("today.txt not written"), "{why}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A server on this machine that answers each request with the BLAKE3 of the body it got.
+fn hashing_server() -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut got = Vec::new();
+            let mut buf = [0u8; 8192];
+            let head_end = loop {
+                if let Some(i) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break i + 4;
+                }
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break got.len(),
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            };
+            let head = String::from_utf8_lossy(&got[..head_end]).to_ascii_lowercase();
+            let length: usize = head.lines().find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+            while got.len() < head_end + length {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            let body = blake3::hash(&got[head_end..]).to_hex().to_string();
+            let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+        }
+    });
+    host
+}
+
+/// `on file inbox`: the files there at the deploy are seen, not run on; a new one starts one run
+/// once it stops changing, whose `ingress` is its handle, and the run sends its bytes by handle.
+/// What the run writes into the folder it watches doesn't start a run; a file that changes runs
+/// again; and the runs verify.
+#[test]
+fn new_files_start_runs_that_send_them_on_by_handle() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-arrivals-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (inbox, receipts) = (dir.join("inbox"), dir.join("receipts"));
+    for (name, path) in [("inbox", &inbox), ("receipts", &receipts)] {
+        std::fs::create_dir_all(path).unwrap();
+        let body = serde_json::json!({ "name": name, "path": path.display().to_string(), "access": "read-write" });
+        assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    }
+    std::fs::write(inbox.join("old.csv"), "there before").unwrap();
+    let host = hashing_server();
+    let text = format!(
+        "flow drop\non file inbox\nfolder receipts\n\nsent = http.put(\"{host}\", \"/up\", file: ingress)\nreceipts[\"{{ingress.name}}.txt\"] = sent.body\ninbox[\"done/{{ingress.name}}\"] = \"sent\"\n"
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
+    assert_eq!(triggers, serde_json::json!(["Files inbox"]), "the trigger is derived from the unit");
+    let look = || arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+
+    // Dropped the moment it's deployed, before the watcher has looked: still new (old.csv was
+    // seen at the deploy).
+    let bytes: Vec<u8> = (0..200_000u32).flat_map(|i| i.to_le_bytes()).collect();
+    std::fs::write(inbox.join("new.bin"), &bytes).unwrap();
+    look(); // new, settling
+    assert_eq!(log_entries(&state, &slug).len(), 0, "a file runs once it stops changing");
+    look(); // the same: it runs
+    let entries = log_entries(&state, &slug);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0]["kind"], "file");
+    let sourced = entries[0]["sourced"].as_array().unwrap();
+    let handle = sourced.iter().find(|p| p[0] == "FileArrival(\"inbox\")").map(|p| p[1].to_string()).unwrap_or_default();
+    assert!(handle.contains("new.bin") && handle.contains("800000"), "the run's ingress is the file's handle: {sourced:?}");
+    let sent = blake3::hash(&bytes).to_hex().to_string();
+    assert_eq!(std::fs::read_to_string(receipts.join("new.bin.txt")).unwrap(), sent, "the server got the file's bytes");
+    assert!(!receipts.join("old.csv.txt").exists(), "a file there before the deploy isn't new");
+    let logged = serde_json::to_string(&entries[0]["rounds"]).unwrap();
+    assert!(logged.contains(&sent) && logged.len() < 2_000, "the request is logged by hash, never its bytes: {logged}");
+
+    // What its own run wrote (inbox/done/new.bin) starts nothing.
+    look();
+    look();
+    assert_eq!(log_entries(&state, &slug).len(), 1);
+    assert_eq!(std::fs::read_to_string(inbox.join("done/new.bin")).unwrap(), "sent");
+
+    // A file that changes runs again.
+    std::fs::write(inbox.join("new.bin"), b"shorter now").unwrap();
+    look();
+    look();
+    assert_eq!(log_entries(&state, &slug).len(), 2);
+    assert_eq!(std::fs::read_to_string(receipts.join("new.bin.txt")).unwrap(), blake3::hash(b"shorter now").to_hex().to_string());
+
+    // Its runs check offline: the handle is what arrived, the server's answer what the log says.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}

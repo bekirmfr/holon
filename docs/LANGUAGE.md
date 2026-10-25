@@ -438,6 +438,33 @@ lines from line `i` (from the end when negative), and `logs.slice(name, offset: 
 `n` bytes from `o`: only those enter the run, and the log keeps with them the hashes that prove them
 part of the file, so `holon verify` checks the run without it.
 
+### drop-box: a run per new file
+
+```
+flow drop-box
+on file drop
+folder receipts
+
+sent = http.put("httpbin.org", "/put", headers: { "content-type": "application/octet-stream" }, file: ingress)
+receipts["{ingress.name}.json"] = json({ file: ingress.name, size: ingress.size, hash: ingress.hash, status: sent.status, received: parse_json(sent.body).headers["Content-Length"] ?? "nothing" })
+```
+
+`on file drop` makes the flow run once for each new file in the folder `drop` (which it declares,
+as `folder drop` would), once the file stops changing: the server looks at the folder every second,
+by each file's size and time, and a file the same at two looks in a row starts a run. In that run
+`ingress` is the file's handle, `{folder, name, size, hash, modified}`: the `file_arrival{folder:
+drop}` leaf, and the deployment asks `FileArrival("drop")`, its trigger. Files already there when
+it is first deployed aren't new; files that arrive while the server is down, or the deployment is
+paused, start their runs when it is back; one its own runs wrote into the folder doesn't start it
+again (unless it changes).
+
+`file: h` in place of `body:` sends a file as the request's body, by handle: `http_upload{method,
+host}(path, headers, h)`. The server streams the bytes from the folder, never through the flow,
+checks before and as it sends that they still hash to the handle's hash (else the call answers
+`{status: 0, error: "changed"}`), and the run log keeps the request with the handle, never the
+bytes. The handle's folder must be one the deployment reads, or the one whose new file started the
+run.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -498,13 +525,15 @@ a binary operator or a comma. Semicolons are not used.
 file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
           | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
-          | "folder" ident
+          | "folder" ident | "on" "file" ident
 item      = holon | route | statement | wiring        # wiring: the netlist form, §10
 ```
 
 Headers are the flow's deploy settings, exactly as today (`Settings`): `every 10s` is `interval`
 10. `collection notes` declares a name for the body (§5.4); several may be declared, one per line.
-`folder inbox` declares a folder the same way.
+`folder inbox` declares a folder the same way. `on file inbox` declares it too, and makes `ingress`
+the handle of the new file that starts each run (`file_arrival{folder: inbox}`); one per flow, and
+only in a flow without routes.
 Statements at the top level are the body of a flow without routes (§5.12); with routes, only
 bindings of literals are allowed at the top level (§5.11).
 
@@ -577,6 +606,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `now` | `clock()` | the time the run started |
 | `random` | `random()` | one random number for the run |
 | `ingress` | `ingress()` | what arrived at the deployment |
+| `ingress` (with `on file inbox`) | `file_arrival{folder: inbox}()` | the new file's handle |
 | `notes[k]` (`notes` a declared collection) | `collection_get{collection: notes}(k)` | the item under `k` |
 | `notes[k] = e` | `collection_put{collection: notes}(k, e)` | put it when the run finishes |
 | `delete notes[k]` | `collection_delete{collection: notes}(k)` | delete it when the run finishes |
@@ -590,8 +620,9 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `inbox.file(n)` | `file_handle{folder: inbox}(n)` | a handle: `{folder, name, size, hash, modified}`, no bytes |
 | `inbox.lines(n, from: i, limit: k)` | `file_lines{folder: inbox, limit: k}(n, i)` | `k` lines from line `i` (from the end when negative), without line endings |
 | `inbox.slice(n, offset: o, length: k)` | `file_slice{folder: inbox}(n, o, k)` | `k` bytes from `o` (from the end when negative), as text |
-| `reports[n] = h` (`h` a handle read here), `reports.copy(n, h)` | `file_copy{folder: reports}(n, h)` | copy the file when the run finishes, host to host |
+| `reports[n] = h` (`h` a handle read here, or `ingress` with `on file`), `reports.copy(n, h)` | `file_copy{folder: reports}(n, h)` | copy the file when the run finishes, host to host |
 | `http.get(host, path, headers: h, body: b)` and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host}(path, h, b)` | a call to that host |
+| `http.put(host, path, headers: h, file: f)` (`f` a handle), any method | `http_upload{method, host}(path, h, f)` | a call sending the file's bytes, streamed by the server |
 | `stripe.verify(req, secret, now, tolerance: d)` | the `stripe_verify` template | a verified Stripe event |
 | `await paid, expires: 1d` | `await{name: paid, expires: 86400}` | the event, when it arrives |
 | `resume_token(paid)` | `resume_token{await: paid}` | the token that delivers it |
@@ -860,8 +891,8 @@ respond_args = expr ("," "status" ":" number)? ("," "missing" ":" number)?
 
 ### 5.12 Flows without routes
 
-With no `route` in the file, the top-level statements are the flow: a clock flow (`every`), or a
-flow placed as a holon in another. They lower to the whole canvas grouped as one composite,
+With no `route` in the file, the top-level statements are the flow: a clock flow (`every`), a flow
+that runs on new files (`on file`), or a flow placed as a holon in another. They lower to the whole canvas grouped as one composite,
 exactly `flow_unit`'s existing rule. The flow's outputs are its unused values, which is why a
 non-Effect expression statement is allowed here and only here: it is an output. `respond` is an
 error.

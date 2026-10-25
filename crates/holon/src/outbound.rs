@@ -11,6 +11,9 @@
 //!
 //! A request that breaks a rule or a limit, or fails, gets a response `{status: 0, error, message}`
 //! rather than failing the run: the flow decides what to do with it.
+//!
+//! A body is text, or a file (`http_upload`): its bytes are read from the folder as they are sent,
+//! never held whole, and must still hash to what the run's handle says.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -33,7 +36,37 @@ pub(crate) struct Outbound {
     pub(crate) allow_private: bool,
 }
 
-fn failure(error: &str, message: impl Into<String>) -> Value {
+/// A file sent as a request's body: opened afresh for each send (a redirect may resend it).
+pub(crate) trait FileBody: Sync {
+    /// Its size, as the run's handle says.
+    fn size(&self) -> u64;
+    /// Its BLAKE3 hash (hex), as the run's handle says.
+    fn hash(&self) -> &str;
+    /// Its bytes, from the start; or the failure response to answer instead.
+    fn open(&self) -> Result<Box<dyn Read + Send + '_>, Value>;
+}
+
+/// What a request sends.
+pub(crate) enum Body<'a> {
+    Text(String),
+    File(&'a dyn FileBody),
+}
+
+/// Reads through, hashing what it reads.
+struct Hashing<R> {
+    inner: R,
+    hasher: std::sync::Arc<std::sync::Mutex<blake3::Hasher>>,
+}
+
+impl<R: Read> Read for Hashing<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.lock().unwrap().update(&buf[..n]);
+        Ok(n)
+    }
+}
+
+pub(crate) fn failure(error: &str, message: impl Into<String>) -> Value {
     Value::Record(BTreeMap::from([
         ("status".to_string(), Value::Number(0.0)),
         ("error".to_string(), Value::Text(error.to_string())),
@@ -96,10 +129,21 @@ impl Performer for Outbound {
         else {
             return failure("bad_request", "a request needs method, url, headers and body");
         };
-        if body.len() > limits.max_request_bytes {
+        self.send(method, url, headers, Body::Text(body.clone()), limits)
+    }
+}
+
+impl Outbound {
+    /// Send `body` to `url`, within the rules and `limits`: the response record, or a failure.
+    pub(crate) fn send(&self, method: &str, url: &str, headers: &BTreeMap<String, Value>, body: Body, limits: &Limits) -> Value {
+        let size = match &body {
+            Body::Text(t) => t.len() as u64,
+            Body::File(f) => f.size(),
+        };
+        if size > limits.max_request_bytes as u64 {
             return failure("too_large", format!("the request body is over {} bytes", limits.max_request_bytes));
         }
-        let Some(mut target) = parse_url(url) else { return failure("bad_url", url.clone()) };
+        let Some(mut target) = parse_url(url) else { return failure("bad_url", url.to_string()) };
 
         let allow_private = self.allow_private;
         let agent = ureq::AgentBuilder::new()
@@ -116,24 +160,45 @@ impl Performer for Outbound {
             })
             .build();
 
-        let mut method = method.clone();
-        let mut body = body.clone();
+        let mut method = method.to_string();
+        let mut body = Some(body);
         let mut redirects = 0;
         loop {
             if let Err(refused) = self.check(&target) {
                 return refused;
             }
             let mut call = agent.request(&method, &self.url(&target));
+            let file = matches!(body, Some(Body::File(_)));
             for (name, value) in headers {
+                // A file's length is its own: what the flow says can't make it send more or less.
+                if file && (name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("transfer-encoding")) {
+                    continue;
+                }
                 if let Value::Text(v) = value {
                     call = call.set(name, v);
                 }
             }
-            let sent = if body.is_empty() && method != "POST" && method != "PUT" && method != "PATCH" {
-                call.call()
-            } else {
-                call.send_bytes(body.as_bytes())
+            let mut sent_hash = None;
+            let sent = match &body {
+                Some(Body::File(f)) => {
+                    let reader = match f.open() {
+                        Ok(r) => r,
+                        Err(refused) => return refused,
+                    };
+                    let hasher = std::sync::Arc::new(std::sync::Mutex::new(blake3::Hasher::new()));
+                    sent_hash = Some(std::sync::Arc::clone(&hasher));
+                    call.set("Content-Length", &f.size().to_string()).send(Hashing { inner: reader.take(f.size()), hasher })
+                }
+                Some(Body::Text(t)) if !t.is_empty() || method == "POST" || method == "PUT" || method == "PATCH" => call.send_bytes(t.as_bytes()),
+                _ if method == "POST" || method == "PUT" || method == "PATCH" => call.send_bytes(&[]),
+                _ => call.call(),
             };
+            // A file that changed while it was sent: the call fails, whatever came back.
+            if let (Some(hasher), Some(Body::File(f))) = (sent_hash, &body)
+                && hasher.lock().unwrap().finalize().to_hex().as_str() != f.hash()
+            {
+                return failure("changed", "the file changed while it was sent: it no longer hashes to the run's handle");
+            }
             let response = match sent {
                 Ok(response) | Err(ureq::Error::Status(_, response)) => response,
                 Err(ureq::Error::Transport(t)) => return transport_failure(&t),
@@ -154,7 +219,7 @@ impl Performer for Outbound {
                 // 303, and 301/302 after a POST, become a GET without a body, as browsers do.
                 if status == 303 || ((status == 301 || status == 302) && method == "POST") {
                     method = "GET".into();
-                    body.clear();
+                    body = None;
                 }
                 continue;
             }
@@ -413,6 +478,39 @@ mod tests {
         let none = Limits { max_redirects: 0, ..Limits::request_run() };
         let out = o.perform(&request("GET", &format!("https://{hop}/start"), ""), &none);
         assert_eq!(field(&out, "error"), &Value::Text("too_many_redirects".into()));
+    }
+
+    /// A file body from memory.
+    struct Bytes(Vec<u8>, String);
+
+    impl FileBody for Bytes {
+        fn size(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn hash(&self) -> &str {
+            &self.1
+        }
+        fn open(&self) -> Result<Box<dyn Read + Send + '_>, Value> {
+            Ok(Box::new(&self.0[..]))
+        }
+    }
+
+    #[test]
+    fn a_file_body_is_sent_whole_and_must_still_be_the_file_the_run_read() {
+        let addr = serve(|line| ok(&format!("got {line}")));
+        let o = local(&addr);
+        let limits = Limits::request_run();
+        let bytes = b"a,b\n1,2\n".to_vec();
+        let file = Bytes(bytes.clone(), blake3::hash(&bytes).to_hex().to_string());
+        let headers = BTreeMap::from([("content-length".to_string(), Value::Text("1".into()))]);
+        let out = o.send("PUT", &format!("https://{addr}/up"), &headers, Body::File(&file), &limits);
+        assert_eq!(field(&out, "status"), &Value::Number(200.0), "{out:?}");
+        let changed = Bytes(bytes.clone(), blake3::hash(b"other").to_hex().to_string());
+        let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&changed), &limits);
+        assert_eq!(field(&out, "error"), &Value::Text("changed".into()));
+        let small = Limits { max_request_bytes: 3, ..Limits::request_run() };
+        let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&file), &small);
+        assert_eq!(field(&out, "error"), &Value::Text("too_large".into()), "a file counts as a body");
     }
 
     #[test]

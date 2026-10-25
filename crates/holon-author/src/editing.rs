@@ -59,6 +59,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("every", "`every <duration>`: how often a flow without routes runs (`10s`, `5m`, `1h`, `1d`)."),
     ("collection", "`collection <name>`: a named store of items, used as `name[key]`, `name[key] = v`, `delete name[key]` and `name.list(prefix: p, after: a, limit: 50)`. One permission for each use."),
     ("folder", "`folder <name>`: files on the host, in a folder an admin binds to the name: `name[file]` reads a file's text, `name[file] = text` writes it when the run finishes, `delete name[file]` deletes it, `name.list(prefix: p, after: a, limit: 50)` lists files. One permission to read, one to write."),
+    ("on", "`on file <folder>`: a run for each new file in the folder (an admin binds it), once the file stops changing; the run reads its handle as `ingress` (`.name`, `.size`, `.hash`), and the folder as `name[file]`."),
     ("optional", "`optional <permission>`: one the flow can run without. It isn't asked for at deploy; a run without it gets no value where it would have read."),
     ("browsers", "`browsers <origin>, …`: the web pages it answers from other sites (CORS), or `*` for any."),
     ("holon", "`holon name(inputs) -> outputs { … }`: a flow inside a flow, a function placed as one node. One with several outputs is used as `h(…).name`. With `js` after the outputs, its body is JavaScript."),
@@ -84,9 +85,9 @@ const NOUNS: &[(&str, &str)] = &[
     ("state", "`state.name`: the flow's own value, read at the start of the run; `state.name = v` writes it when the run finishes. Each is one permission."),
     ("now", "`now`: the run's time, in epoch seconds, recorded with the run so a replay sees the same. A permission: reading the clock."),
     ("random", "`random`: one random number for the run, recorded so a replay sees the same. A permission: randomness."),
-    ("http", "`http.get(host, path, headers: h, body: b)`, also `post`, `put`, `patch`, `delete`, `head`: a call out. The host, a text literal, is the permission; the answer is recorded with the run."),
+    ("http", "`http.get(host, path, headers: h, body: b)`, also `post`, `put`, `patch`, `delete`, `head`: a call out. The host, a text literal, is the permission; the answer is recorded with the run. `file: inbox.file(name)` in place of `body:` sends a file's bytes, streamed by the server."),
     ("stripe", "`stripe.verify(req, secret.whsec, now)`: the request as a verified Stripe event (`.event`), or no value."),
-    ("ingress", "`ingress`: what a flow without routes receives when triggered."),
+    ("ingress", "`ingress`: what a flow without routes receives when triggered; with `on file`, the new file's handle."),
 ];
 
 /// What a route's request holds.
@@ -218,7 +219,7 @@ pub struct Completion {
 /// Leaves a text doesn't call by name: it writes them as nouns (`http.get`, `state.x`,
 /// `notes[k]`, `now`, `secret.k`, `await`) or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
-    "http_request", "clock", "random", "ingress", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
+    "http_request", "http_upload", "clock", "random", "ingress", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
     "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "egress",
     "const", "record", "json_parse", "json_stringify",
 ];

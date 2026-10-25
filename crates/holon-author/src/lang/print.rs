@@ -220,6 +220,8 @@ pub struct Printer<'s> {
     collections: BTreeSet<String>,
     /// Every folder any leaf names (`folder inbox`).
     folders: BTreeSet<String>,
+    /// The folder whose new files start a run (`on file inbox`), when one does.
+    on_file: Option<String>,
     holon_defs: HashSet<String>,
 }
 
@@ -248,9 +250,17 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         blocks: vec![],
         collections: BTreeSet::new(),
         folders: BTreeSet::new(),
+        on_file: None,
         holon_defs: HashSet::new(),
     };
     p.collect_collections(&doc.nodes)?;
+    // One folder's new files start the runs: `on file`, and its handle is `ingress`.
+    let arrivals: BTreeSet<&str> = doc.nodes.iter().filter(|n| n.data.name == "file_arrival").map(|n| n.param("folder")).collect();
+    if let [folder] = arrivals.into_iter().collect::<Vec<_>>()[..]
+        && plain(folder)
+    {
+        p.on_file = Some(folder.to_string());
+    }
     let mut out: Vec<Line> = Vec::new();
     let header = |s: String| (s, vec![]);
     if let Some(name) = name.filter(|n| !n.is_empty()) {
@@ -271,10 +281,13 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
             out.push(header(format!("optional {}", consent(o))));
         }
     }
+    if let Some(f) = &p.on_file {
+        out.push(header(format!("on file {f}")));
+    }
     for c in &p.collections {
         out.push(header(format!("collection {c}")));
     }
-    for f in &p.folders {
+    for f in p.folders.iter().filter(|f| p.on_file.as_ref() != Some(*f)) {
         out.push(header(format!("folder {f}")));
     }
     let body = p.flow_body(doc)?;
@@ -374,7 +387,7 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
             let optional = n.data.body == PlacedBody::Primitive
                 && matches!(
                     (n.data.name.as_str(), p.name.as_str()),
-                    ("http_request", "headers" | "body") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
+                    ("http_request", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
                 );
             optional || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
         })
@@ -1078,10 +1091,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         name
     }
 
-    /// Whether `node`'s `from` is a file's handle, straight from `file_handle`.
+    /// Whether `node`'s `from` is a file's handle, straight from `file_handle` (or the new file that
+    /// started the run).
     fn copies_a_handle(&self, node: &Node) -> bool {
         match self.g.incoming.get(&(node.id.clone(), "from".to_string())) {
-            Some(Src::Node { id, .. }) => self.g.node(id).data.name == "file_handle",
+            Some(Src::Node { id, .. }) => ["file_handle", "file_arrival"].contains(&self.g.node(id).data.name.as_str()),
             _ => false,
         }
     }
@@ -1188,6 +1202,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             },
             "clock" => atom("now".into()),
             "random" => atom("random".into()),
+            "file_arrival" if self.p.on_file.as_deref() == Some(node.param("folder")) => atom("ingress".into()),
+            // With `on file`, `ingress` is the file: a request's is spelled as itself.
+            "ingress" if self.p.on_file.is_some() => self.generic(node),
             "ingress" => atom("ingress".into()),
             "secret" if plain(node.param("name")) => atom(format!("secret.{}", node.param("name"))),
             "store_read" if plain(node.param("key")) => atom(format!("state.{}", node.param("key"))),
@@ -1271,18 +1288,18 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let value = self.required(node, "value")?;
                 atom(format!("state.set({}, {value})", node.param("key")))
             }
-            "http_request" => {
+            "http_request" | "http_upload" => {
                 let method = node.param("method").to_ascii_lowercase();
                 if !["get", "post", "put", "patch", "delete", "head"].contains(&method.as_str()) {
                     return self.generic(node);
                 }
-                // The host, the path, then headers and body by name: they are optional, and read
-                // better named.
+                // The host, the path, then headers and body (or file) by name: they are optional,
+                // and read better named.
                 let mut args = vec![quote(node.param("host"))];
                 if let Some((t, _)) = self.arg(node, "path")? {
                     args.push(t);
                 }
-                for input in ["headers", "body"] {
+                for input in ["headers", "body", "file"] {
                     if let Some((t, _)) = self.arg(node, input)? {
                         args.push(format!("{input}: {t}"));
                     }
@@ -1696,6 +1713,16 @@ mod tests {
         assert!(text.contains("collection likes\n"), "{text}");
         assert!(text.contains("  respond \"{likes[req.params.id] ?? 0} likes\"\n"), "{text}");
         assert!(text.contains("  likes[id] = n\n"), "{text}");
+    }
+
+    #[test]
+    fn a_flow_on_new_files_prints_its_trigger_and_round_trips() {
+        let src = "flow drop\non file inbox\nfolder sent\n\nh = inbox.file(ingress.name)\nr = http.put(\"files.example.com\", \"/up/{ingress.name}\", file: h)\nsent[ingress.name] = \"{r.status}\"\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("drop", &l.doc, &l.names);
+        assert!(text.contains("on file inbox\nfolder sent\n"), "the trigger declares its folder: {text}");
+        assert!(!text.contains("folder inbox"), "{text}");
+        assert!(text.contains("file: "), "{text}");
     }
 
     /// A value used once is written inline, inside an interpolated part too; when it holds a

@@ -687,7 +687,7 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// `http_request` (headers, body). Inside a composite, such a port that *is* wired holds the
 /// node back while its value is absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
-    matches!(name, "http_request" | "collection_list" | "file_list" | "file_lines")
+    matches!(name, "http_request" | "http_upload" | "collection_list" | "file_list" | "file_lines")
 }
 
 /// The methods `http_request` sends.
@@ -723,6 +723,35 @@ pub(crate) fn http_request(inputs: &[Option<Value>], params: &[Param]) -> Option
         ("headers".to_string(), Value::Record(headers)),
         ("body".to_string(), Value::Text(body)),
     ])))
+}
+
+/// The request an `http_upload` node makes: an `http_request`'s, with `file` in place of `body`:
+/// the handle's `{folder, name, size, hash}`, the bytes the host sends. `None` when the request
+/// isn't valid as an `http_request`'s, or the handle isn't one (a folder and a name as text, a
+/// size, a BLAKE3 hash in hex).
+pub(crate) fn http_upload(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let [path, headers, Some(Value::Record(handle))] = inputs else { return None };
+    let Value::Record(mut request) = http_request(&[path.clone(), headers.clone(), None], params)? else { return None };
+    let text = |k: &str| match handle.get(k) {
+        Some(Value::Text(t)) if !t.is_empty() => Some(t.clone()),
+        _ => None,
+    };
+    let (folder, name, hash) = (text("folder")?, text("name")?, text("hash")?);
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let size = whole(handle.get("size")?).filter(|n| *n >= 0.0)?;
+    request.remove("body");
+    request.insert(
+        "file".to_string(),
+        Value::Record(BTreeMap::from([
+            ("folder".to_string(), Value::Text(folder)),
+            ("name".to_string(), Value::Text(name)),
+            ("size".to_string(), Value::Number(size)),
+            ("hash".to_string(), Value::Text(hash)),
+        ])),
+    );
+    Some(Value::Record(request))
 }
 
 /// Whether an Effect occurs anywhere in `v`.

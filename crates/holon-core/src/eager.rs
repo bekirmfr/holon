@@ -22,7 +22,7 @@ fn primitive(name: &str, unit: &Unit, inputs: &[Option<Value>], resolver: &impl 
         "map" => map(inputs, &unit.params, resolver),
         "fold" => fold(inputs, &unit.params, resolver),
         // The leaves that ask the host: nobody answers here.
-        "http_request" | "await" | "collection_get" | "collection_list" | "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice"
+        "http_request" | "http_upload" | "await" | "collection_get" | "collection_list" | "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice"
         | "resume_token" => None,
         "coalesce" => inputs.iter().flatten().next().cloned(),
         _ => {

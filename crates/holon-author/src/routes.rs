@@ -114,6 +114,7 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
 pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
     let optional: &[&str] = match n.data.name.as_str() {
         "http_request" => &["headers", "body"],
+        "http_upload" => &["headers"],
         "collection_list" | "file_list" => &["prefix", "after"],
         "file_lines" => &["from"],
         _ => &[],

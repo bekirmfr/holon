@@ -574,6 +574,40 @@ test("journal appends to a page in a capped folder, a write past its cap answers
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("drop-box runs once for a file dropped in its folder, sends it by handle, writes its receipt, and its runs verify", async ({ page, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { existsSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "Drop box (a run per new file, sent on by handle)");
+  await deploy(page);
+  // A file dropped in: once it stops changing (a look or two, a second apart), one run sends it
+  // and writes its receipt. Whether httpbin.org answered or not, the receipt says what was sent.
+  const name = `dropped-${Date.now()}.csv`;
+  const text = "region,amount\nnorth,10\nsouth,32\n";
+  writeFileSync(join(FOLDERS, "drop", name), text);
+  const receipt = join(FOLDERS, "receipts", `${name}.json`);
+  await expect.poll(() => existsSync(receipt), { timeout: 15_000 }).toBe(true);
+  const said = JSON.parse(readFileSync(receipt, "utf8"));
+  expect(said.file).toBe(name);
+  expect(said.size).toBe(text.length);
+  expect(said.hash).toMatch(/^[0-9a-f]{64}$/);
+  // A run with no answer to compare has no verdict; its replay still ran the nodes the run ran.
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await expect(page.locator(".hl-view__bottom")).toContainText(`new file ${name}`);
+  await expect(page.locator(".hl-view__bottom")).not.toContainText("replay differs from the run");
+
+  // Its runs check offline: the file's handle is what arrived, the server's answer what the log says.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "drop-box.json");
+  execFileSync(holon, ["export", "drop-box", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
 test("a deployment's runs export from view mode and from holon export, and holon verify runs each again", async ({ page, request, adminToken }) => {
   const { execFileSync, spawnSync } = await import("node:child_process");
   const { mkdtempSync } = await import("node:fs");

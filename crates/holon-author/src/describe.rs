@@ -16,13 +16,14 @@ pub fn describe_item(item: &str) -> String {
         return format!("give that code up to {} MiB of memory per call", n / (1024 * 1024));
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 11] = [
+    let named: [(&str, Say); 12] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
         ("CollectionRead", |a| format!("read items of its collection \"{a}\"")),
         ("CollectionWrite", |a| format!("put and delete items of its collection \"{a}\"")),
         ("FileRead", |a| format!("read files in the folder \"{a}\"")),
+        ("FileArrival", |a| format!("run on each new file in the folder \"{a}\", and pass it on")),
         ("FileWrite", |a| format!("write, copy into and delete files in the folder \"{a}\"")),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
         ("SecretRead", |a| format!("read the secret \"{a}\"")),

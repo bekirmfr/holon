@@ -42,10 +42,11 @@ pub const GENESIS: &[&str] = &[
     // pure — universal, any-typed (7): as_text is to_text's message form, the identity on text;
     // coalesce is the first input that arrived, `default` with its fallback on a wire
     "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals",
-    // request/response — performed by the host, answered in the next round (1)
-    "http_request",
-    // drivers — sourced, no compute (4)
-    "clock", "random", "ingress", "secret",
+    // request/response — performed by the host, answered in the next round (2): a request, and
+    // one whose body is a file a handle names
+    "http_request", "http_upload",
+    // drivers — sourced, no compute (5): a new file in a folder starts a run, as a request does
+    "clock", "random", "ingress", "secret", "file_arrival",
     // durable runs — answered by the host when an event arrives (2)
     "await", "resume_token",
     // state cell (2)
@@ -229,6 +230,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "clock" => prim(vec![], vec![], Number),
         "random" => prim(vec![], vec![], Number),
         "ingress" => prim(vec![], vec![], Any),
+        // The handle of the new file that started the run.
+        "file_arrival" => prim(vec![], vec![Param::frozen("folder", "files")], Type::Record),
         // A named secret from the deployment's secret store (never in the unit: only its name).
         "secret" => prim(vec![], vec![Param::frozen("name", "api_key")], Text),
         // A durable run's waiting point: its event (the request that resumed the run, or
@@ -291,6 +294,12 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("method", "GET"), Param::frozen("host", "example.com")],
             Type::Record,
         ),
+        // A request whose body is the file a handle names, its bytes streamed by the host.
+        "http_upload" => prim(
+            vec![port("path", Text), port("headers", Type::Record), port("file", Type::Record)],
+            vec![Param::frozen("method", "PUT"), Param::frozen("host", "example.com")],
+            Type::Record,
+        ),
 
         _ => return None,
     })
@@ -327,8 +336,9 @@ mod tests {
         // as_text (the language's string interpolation) and coalesce (its `??` and `if … else`
         // with a fallback on a wire), both for docs/LANGUAGE.md, range, and the named-folder kit
         // (file_read, file_list, file_write, file_delete, file_handle, file_lines, file_slice,
-        // file_copy).
-        assert_eq!(GENESIS.len(), 79);
+        // file_copy), and a folder's trigger and a file as a request's body (file_arrival,
+        // http_upload).
+        assert_eq!(GENESIS.len(), 81);
     }
 
     #[test]

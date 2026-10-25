@@ -330,7 +330,16 @@ only the editor.
   their BLAKE3, in content-defined chunks (16 to 256 KiB), so a file that grows adds its new
   chunks; `keep: bytes for 30d` and a sweep every 10 minutes (`holon folder sweep`) of the texts
   no kept run refers to in its folder's window; a folder's cap (`--cap 10M`), checked as each
-  write lands: one past it doesn't, and the run answers 500.
+  write lands: one past it doesn't, and the run answers 500. Slice 4 (`holon/src/arrivals.rs`):
+  a flow `on file inbox` (a `file_arrival` leaf, `FileArrival("inbox")`, its trigger) runs once for
+  each new file there, its handle the run's `ingress`: a thread looks at each watched folder every
+  second by size and modified time, and a file the same at two looks starts the run. The files
+  there at the first deploy are seen, not run on; what a deployment saw is kept beside its log
+  (`<deployments>.arrivals/<slug>.json`), so files that came while it was down or paused run when
+  it is back; one its own runs wrote doesn't start it. A handle as a request's body
+  (`http_upload`, `http.put(host, path, file: h)`) is streamed from the folder by the run's
+  performer, checked against the handle's hash before and as it is sent, within the request size
+  limit; its folder must be one the deployment reads or the one that started the run.
 - **Secrets** ✅ (`holon-server/src/secrets.rs`): a per-deployment secret store on the server
   (`--secrets`, its own file, owner-only), written over the control plane
   (`POST`/`DELETE /deployments/<slug>/secrets/<name>`), never returned by it (`GET` lists names,
@@ -677,7 +686,7 @@ webhook).
   `holon mcp setup` for every major agent host; `holon lsp` and a VS Code extension for people.
 - **What flows can do**, each grown from friction agents met writing flows: collections, `match`,
   lazy choices, holons, key claims (one outbound call per key), `respond` with headers, WebAssembly
-  modules and JavaScript as one node, named folders on the host; 25 samples, each deployed by the
+  modules and JavaScript as one node, named folders on the host, runs on new files; 27 samples, each deployed by the
   end-to-end tests.
 - **What a run leaves**: a hash-chained record per deployment, `holon export` and `holon verify`
   to check it offline, `explain`, and replay in the editor.

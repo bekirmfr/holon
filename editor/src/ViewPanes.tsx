@@ -40,7 +40,9 @@ const runLabel = (e: LogEntry) =>
       ? `resumed ${e.route ?? ""}`.trim()
       : e.kind === "tick"
         ? "clock tick"
-        : "trigger";
+        : e.kind === "file"
+          ? `new file ${text(field(e.sourced.find(([cap]) => cap.startsWith("FileArrival("))?.[1], "name")) || ""}`.trim()
+          : "trigger";
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)}ms` : `${t.toFixed(0)}µs`);
 

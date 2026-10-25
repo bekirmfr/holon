@@ -422,6 +422,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "first bind the folder (an admin): holon folder add journal ~/holon-journal --keep 7d --cap 10M; then curl -s -X POST -d 'first line' http://127.0.0.1:8125/journal/today and curl -s -X POST -d 'second line' http://127.0.0.1:8125/journal/today append to today.txt, curl http://127.0.0.1:8125/journal/today shows both lines, and curl http://127.0.0.1:8125/journal lists the pages; holon folder sweep removes now the texts no run kept within 7 days refers to",
         text: include_str!("../samples/journal.holon"),
     },
+    Sample {
+        name: "drop-box",
+        title: "Drop box (a run per new file, sent on by handle)",
+        description: "Runs once for each new file dropped into a folder on the host (on file drop), when it stops changing: the run's ingress is the file's handle (name, size, hash). It sends the file to a server as the body of a PUT, by handle: the server streams the bytes from the folder, never through the flow, and the run log keeps only their hash. It writes a receipt for each file to another folder. Files already there when it is deployed aren't new; one it writes into a folder it watches doesn't start it again.",
+        shows: &["on file", "file handles", "a file as a request body", "named folders"],
+        port: None,
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folders (an admin): holon folder add drop ~/holon-drop --read-only and holon folder add receipts ~/holon-receipts; deploy, then copy any file into ~/holon-drop: within two seconds ~/holon-receipts holds <file>.json with its size, its hash and how many bytes httpbin.org received, and the deployment's log shows the run",
+        text: include_str!("../samples/drop-box.holon"),
+    },
 ];
 
 #[cfg(test)]
@@ -438,7 +451,9 @@ mod tests {
         let ports: Vec<_> = samples().iter().filter_map(|s| s.port).collect();
         assert_eq!(ports.iter().collect::<HashSet<_>>().len(), ports.len(), "each server its own port");
         for s in samples() {
-            assert!(s.port.is_some() != s.interval.is_some(), "{}: a port or an interval", s.name);
+            // What starts it: requests on a port, the clock, or new files (`on file`).
+            let on_file = s.text.lines().any(|l| l.starts_with("on file "));
+            assert_eq!([s.port.is_some(), s.interval.is_some(), on_file].iter().filter(|b| **b).count(), 1, "{}: a port, an interval or on file", s.name);
             let doc = build(s).unwrap_or_else(|e| panic!("{e}"));
             assert!(!doc.nodes.is_empty(), "{}", s.name);
         }

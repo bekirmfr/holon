@@ -59,9 +59,12 @@ function derive(name: string): { caps: string[]; endpoints: number } {
 }
 
 describe("sample flows", () => {
-  it("have unique names, and a port or an interval", () => {
+  it("have unique names, and a port, an interval or new files to start them", () => {
     expect(new Set(samples().map((s) => s.name)).size).toBe(samples().length);
-    for (const s of samples()) expect(Boolean(s.port) !== Boolean(s.interval), s.name).toBe(true);
+    for (const s of samples()) {
+      const onFile = derive(s.name).caps.some((c) => c.startsWith("FileArrival("));
+      expect([Boolean(s.port), Boolean(s.interval), onFile].filter(Boolean).length, s.name).toBe(1);
+    }
     const ports = samples().flatMap((s) => (s.port ? [s.port] : []));
     expect(new Set(ports).size, "each server its own port").toBe(ports.length);
   });
@@ -92,6 +95,10 @@ describe("sample flows", () => {
       'SecretRead("receipt_key")',
     ]);
     expect(manifestItems(derive("hello-api").caps)).toEqual(["NetworkIngress"]);
+    // A flow on new files: its trigger names the folder, and it calls the host it sends them to.
+    const drop = derive("drop-box").caps;
+    expect(drop).toEqual(['FileArrival("drop")', 'FileWrite("receipts")', 'HttpRequest("httpbin.org")']);
+    expect(manifestTrigger(drop)).toBe('FileArrival("drop")');
   });
 
   it("tell required permissions from optional ones, the trigger always required", () => {

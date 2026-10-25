@@ -141,6 +141,7 @@ grants, starts, stops, deletes or sets a secret.
 | Keep state | `state.beats`, and collections keyed by id: `collection notes`, `notes[id]` | `notes-api`, `likes` |
 | Read secrets | `secret.name`: sealed at rest, never in a log or replay | `guarded-api`, `sign-payload` |
 | Run on a clock | `every 10s` in place of a port: the flow runs on the clock | `heartbeat` |
+| Run on new files | `on file drop`: a run per file dropped in a folder, its handle as `ingress` | `drop-box` |
 | Wait for a person | `await`: a run parks, and a later request resumes it, days later if need be | `approval` |
 | Call out once per key | a collection key read before a call is held until the run commits | `idempotent` |
 | Choose | `if … then … else`, `match`, `??`: the branch not taken doesn't run | `calc`, `cache-aside` |
@@ -176,6 +177,7 @@ opens from the editor's flows page, and is deployed by the end-to-end tests.
 | `nearest`, `tally` | `js` holons: edit distance, parsing a CSV |
 | `inbox-report`, `log-archive` | files in named folders; big files by range, proved by hash |
 | `journal` | a folder whose reads are kept a week and whose size is capped |
+| `drop-box` | a run per new file in a folder, the file sent on by handle as a request's body |
 | `ledger` | every run checked again offline by `holon verify` |
 | `witness` | a witness for another server's run heads, run as a flow |
 | `marketplace` | a marketplace for holons, built as a flow |
@@ -311,6 +313,9 @@ can't be bound; a write lands whole when the run finishes, unless it would take 
 past its cap (the run then answers 500). A text a run reads past 4 KiB is kept beside the store
 by content, in chunks, so a file that grows adds its new chunks, not a copy; the server sweeps
 the texts no kept run refers to within their folder's `--keep` (`holon folder sweep` does it now).
+A flow `on file drop` runs once for each file that arrives in `drop` (once it stops changing),
+and `http.put(host, path, file: ingress)` sends a file's bytes without them passing through the
+flow.
 `holon export` takes `--max-files-bytes 10M` or `--without-files` to leave those texts out.
 
 **Agents on another machine.** For a server elsewhere, `holon mcp setup HOST --server URL` asks

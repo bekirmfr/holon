@@ -87,6 +87,14 @@ describe("replay", () => {
     expect(traces.has("c")).toBe(false);
   });
 
+  it("sources the new file that started a run as its handle", () => {
+    const handle: WValue = { type: "Record", value: [["name", { type: "Text", value: "a.csv" }]] };
+    const run: ReplayInput = { kind: "file", route: null, request: null, sourced: [['FileArrival("drop")', handle]], state_before: {} };
+    const { traces } = replay([n("f", "file_arrival", [], ["out"], [frozen("folder", "drop")]), n("g", "file_arrival", [], ["out"], [frozen("folder", "other")])], [], run, evalNode);
+    expect(traces.get("f")?.outputs).toEqual([handle]);
+    expect(traces.get("g")?.outputs).toEqual([null]);
+  });
+
   it("sources clock and a missing state key, and finds no group for an unknown route", () => {
     const tick: ReplayInput = { kind: "tick", route: null, request: null, sourced: [["Clock", num(42)]], state_before: {} };
     const { traces } = replay(

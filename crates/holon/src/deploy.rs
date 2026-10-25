@@ -108,10 +108,11 @@ pub(crate) fn handle_post_deploy(
     };
     let is_ingress = caps.contains(Capability::NetworkIngress);
     let is_clock = caps.contains(Capability::Clock) && server.is_none();
-    if !is_ingress && !is_clock {
+    let arrivals = Arc::new(arrivals::Watch::open(deployments_path, &body.slug, &caps));
+    if !is_ingress && !is_clock && !arrivals.watches() {
         return err(
             400,
-            "this unit declares no driver capability (NetworkIngress or Clock) — nothing would ever trigger it",
+            "this unit declares no driver capability (NetworkIngress, Clock or FileArrival) — nothing would ever trigger it",
         );
     }
 
@@ -169,7 +170,8 @@ pub(crate) fn handle_post_deploy(
     // time — a person deploying a clock flow wants to see it work now, not in an hour.
     let next_due = interval_seconds.map(|_| SystemTime::now());
 
-    let triggers = trigger_labels(server.as_ref(), is_ingress, is_clock);
+    let mut triggers = trigger_labels(server.as_ref(), is_ingress, is_clock);
+    triggers.extend(arrivals.labels());
     let is_state = derives_state(caps.iter());
 
     {
@@ -216,6 +218,7 @@ pub(crate) fn handle_post_deploy(
             None if is_state => Some(Arc::new(claims::StateCell::new(State::new()))),
             None => None,
         };
+        arrivals.baseline(&seen);
         deployments.insert(
             body.slug.clone(),
             Deployment {
@@ -225,6 +228,7 @@ pub(crate) fn handle_post_deploy(
                 listen_error: None,
                 secrets: secrets.vault(&body.slug),
                 folders: seen,
+                arrivals,
                 parked,
                 unit: unit_hash,
                 triggers: triggers.clone(),
@@ -523,6 +527,7 @@ pub(crate) fn handle_delete_deployment(
     match removed {
         Some(dep) => {
             dep.log.delete_file();
+            dep.arrivals.forget();
             persist_deployments(deployments_path, deployments, store);
             Response::json(&deployment_entry(slug, &dep))
         }

@@ -132,6 +132,7 @@ pub enum WCapability {
     Clock,
     NetworkIngress,
     FileRead(String),
+    FileArrival(String),
     SecretAccess,
     SecretRead(String),
     Await(String),
@@ -152,6 +153,7 @@ impl WCapability {
             Capability::Clock => WCapability::Clock,
             Capability::NetworkIngress => WCapability::NetworkIngress,
             Capability::FileRead(folder) => WCapability::FileRead(folder),
+            Capability::FileArrival(folder) => WCapability::FileArrival(folder),
             Capability::SecretAccess => WCapability::SecretAccess,
             Capability::SecretRead(name) => WCapability::SecretRead(name),
             Capability::Await(name) => WCapability::Await(name),
@@ -1460,8 +1462,8 @@ fn check_wunit_roundtrip() {
 #[cfg(test)]
 fn check_primitive_catalog() {
     let cat = catalog_wunits();
-    // The §13a count crosses the mirror intact.
-    assert_eq!(cat.len(), 79);
+    // Every leaf core has crosses the mirror intact, however many that is.
+    assert_eq!(cat.len(), genesis_units().len());
     // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
     let add = cat
         .iter()

@@ -92,7 +92,7 @@ fn alias(name: &str) -> &str {
 /// Inputs a node works without, left unwired (routes.rs `is_optional_input`, core's
 /// `has_optional_ports`).
 fn is_optional(leaf: &str, input: &str) -> bool {
-    matches!((leaf, input), ("http_request", "headers" | "body") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
+    matches!((leaf, input), ("http_request", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
 }
 
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
@@ -206,6 +206,8 @@ struct Lowerer<'a> {
     collections: HashSet<String>,
     /// The folders the header declares (`folder inbox`): read and written like collections.
     folders: HashSet<String>,
+    /// The folder whose new files start a run (`on file inbox`): `ingress` is the file's handle.
+    on_file: Option<String>,
     /// Top-level bindings of literals in a flow with routes: lowered afresh in each route.
     consts: HashMap<String, &'a Expr>,
     frames: Vec<Frame>,
@@ -222,7 +224,15 @@ impl<'a> Lowerer<'a> {
         let defs = file.items.iter().filter_map(|i| if let Item::Holon(h) = i { Some((h.name.text.clone(), h)) } else { None }).collect();
         let js_defs = file.items.iter().filter_map(|i| if let Item::Js(j) = i { Some((j.name.text.clone(), j)) } else { None }).collect();
         let collections = file.headers.iter().filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.clone()) } else { None }).collect();
-        let folders = file.headers.iter().filter_map(|h| if let HeaderKind::Folder(f) = &h.kind { Some(f.clone()) } else { None }).collect();
+        let on_file = file.headers.iter().find_map(|h| if let HeaderKind::OnFile(f) = &h.kind { Some(f.clone()) } else { None });
+        let folders = file
+            .headers
+            .iter()
+            .filter_map(|h| match &h.kind {
+                HeaderKind::Folder(f) | HeaderKind::OnFile(f) => Some(f.clone()),
+                _ => None,
+            })
+            .collect();
         Lowerer {
             b: FlowBuilder::new(),
             defs,
@@ -231,6 +241,7 @@ impl<'a> Lowerer<'a> {
             in_progress: HashSet::new(),
             collections,
             folders,
+            on_file,
             consts: HashMap::new(),
             frames: vec![],
             names: BTreeMap::new(),
@@ -268,6 +279,13 @@ impl<'a> Lowerer<'a> {
             }
         }
         let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_)));
+        let on_file: Vec<&Header> = file.headers.iter().filter(|h| matches!(h.kind, HeaderKind::OnFile(_))).collect();
+        if let Some(second) = on_file.get(1) {
+            return err(second.span, "a flow starts on new files in one folder: one `on file` line");
+        }
+        if let (Some(h), true) = (on_file.first(), has_routes) {
+            return err(h.span, "a flow with routes runs on requests: `on file` is for a flow without routes, whose runs start with a new file");
+        }
         self.frames.push(Frame::new(FrameKind::Flow { has_routes }));
         // Top-level statements first (the wiring form's nodes, a flow's body, literal constants),
         // then the routes.
@@ -301,6 +319,11 @@ impl<'a> Lowerer<'a> {
             if !self.holons.contains_key(&name) {
                 self.holon(&name, span)?;
             }
+        }
+        if let Some(h) = on_file.first()
+            && !self.spans.keys().any(|id| self.b.data(id).is_some_and(|d| d.name == "file_arrival"))
+        {
+            return err(h.span, "`on file` starts a run for each new file, and the run reads it as `ingress`: use `ingress` (its .name, say)");
         }
         let settings = self.settings(file)?;
         let name = file.headers.iter().find_map(|h| if let HeaderKind::Flow(n) = &h.kind { Some(n.clone()) } else { None });
@@ -339,7 +362,7 @@ impl<'a> Lowerer<'a> {
                     Consent::Named { name, arg: Some(a) } => format!("{name}({a:?})"),
                     Consent::Named { name, arg: None } => name.clone(),
                 }),
-                HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::OnFile(_) => {}
             }
         }
         if !optional.is_empty() {
@@ -486,7 +509,7 @@ impl<'a> Lowerer<'a> {
                 let v = self.expr(value)?;
                 let named = [(store.param.into(), collection.text.clone())];
                 // A file's handle written to a folder is a copy: its bytes go host to host.
-                let handle = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| d.name == "file_handle"));
+                let handle = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| d.name == "file_handle" || d.name == "file_arrival"));
                 let w = if store.kind == "folder" && handle {
                     self.node_with("file_copy", &named, &[("name", k), ("from", v)], s.span)?
                 } else {
@@ -998,15 +1021,8 @@ impl<'a> Lowerer<'a> {
             ExprKind::Name(n) => self.name(n, e.span),
             ExprKind::Secret(n) => self.node("secret", &[("name".into(), n.clone())], e.span),
             ExprKind::State(k) => self.node("store_read", &[("key".into(), k.clone())], e.span),
-            ExprKind::Noun(n) => self.node(
-                match n {
-                    Noun::Now => "clock",
-                    Noun::Random => "random",
-                    Noun::Ingress => "ingress",
-                },
-                &[],
-                e.span,
-            ),
+            ExprKind::Noun(Noun::Ingress) => self.ingress(e.span),
+            ExprKind::Noun(n) => self.node(if *n == Noun::Now { "clock" } else { "random" }, &[], e.span),
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
             ExprKind::Method { receiver, method, args } => self.method(receiver, method, args, e.span),
             ExprKind::Field { base, name } => {
@@ -1109,6 +1125,11 @@ impl<'a> Lowerer<'a> {
         if self.is_def(n) {
             return err(span, format!("\"{n}\" is a holon: call it, {n}(…)"));
         }
+        // `ingress.name`: a keyword before a dot reads as a name (a wiring form's node may be called
+        // so); with no node of that name, it is what arrived.
+        if n == "ingress" {
+            return self.ingress(span);
+        }
         if let Some(s) = self.store(n) {
             return err(span, format!("\"{n}\" is a {}: read it as {n}[{}] or {n}.list(…)", s.kind, s.key));
         }
@@ -1116,6 +1137,15 @@ impl<'a> Lowerer<'a> {
             return err(span, format!("\"{n}\" is a leaf: call it, {n}(…)"));
         }
         err(span, format!("unknown name \"{n}\""))
+    }
+
+    /// What arrived at the deployment: a request's or a trigger's payload; in a flow that runs on
+    /// new files, the file's handle.
+    fn ingress(&mut self, span: Span) -> R<Val> {
+        match self.on_file.clone() {
+            Some(folder) => self.node("file_arrival", &[("folder".into(), folder)], span),
+            None => self.node("ingress", &[], span),
+        }
     }
 
     fn binary(&mut self, op: BinOp, lhs: &'a Expr, rhs: &'a Expr, span: Span) -> R<Val> {
@@ -1301,9 +1331,19 @@ impl<'a> Lowerer<'a> {
                 let ExprKind::Text(host) = &first.value.kind else {
                     return err(first.value.span, "the host is written as text in quotes: it is the permission the deployment asks for, so it can't come from a wire");
                 };
-                let (inputs, params) = leaf("http_request");
+                // A file as the body (a handle): the host streams its bytes.
+                let named = |k: &str| args.iter().find_map(|a| a.name.as_ref().filter(|n| n.text == k));
+                let sent = if let Some(file) = named("file") {
+                    if named("body").is_some() {
+                        return err(file.span, "a call sends a body or a file, not both");
+                    }
+                    "http_upload"
+                } else {
+                    "http_request"
+                };
+                let (inputs, params) = leaf(sent);
                 let preset = vec![("method".to_string(), m), ("host".to_string(), host.clone())];
-                self.unit_call("http_request", &inputs, &params, &preset, &args[1..], span)
+                self.unit_call(sent, &inputs, &params, &preset, &args[1..], span)
             }
             "stripe" => {
                 if method.text != "verify" {
@@ -1824,6 +1864,24 @@ pub(crate) mod tests {
         assert_eq!((lines.param("folder"), lines.param("limit")), ("logs", "10"));
         let first = compiled("folder logs\nl = logs.lines(\"a\")\n").doc;
         assert!(first.nodes.iter().any(|n| n.data.name == "file_lines"), "from the first line: from is optional");
+    }
+
+    #[test]
+    fn a_flow_on_new_files_reads_the_file_as_ingress_and_sends_one_by_handle() {
+        let d = compiled("on file inbox\nh = inbox.file(ingress.name)\nr = http.put(\"files.example.com\", \"/up\", file: h)\n").doc;
+        let mut got = leaves(&d);
+        got.retain(|l| l != "const" && l != "field");
+        assert_eq!(got, ["file_arrival", "file_handle", "http_upload"]);
+        let arrival = d.nodes.iter().find(|n| n.data.name == "file_arrival").unwrap();
+        assert_eq!(arrival.param("folder"), "inbox", "on file declares the folder, and names it");
+        let upload = d.nodes.iter().find(|n| n.data.name == "http_upload").unwrap();
+        assert_eq!((upload.param("method"), upload.param("host")), ("PUT", "files.example.com"));
+        assert!(leaves(&compiled("x = ingress\n").doc).contains(&"ingress".to_string()), "without on file, ingress is a request's");
+        assert_eq!(error("on file inbox\nx = 1\n").2, "`on file` starts a run for each new file, and the run reads it as `ingress`: use `ingress` (its .name, say)");
+        assert!(error("on file a\non file b\nx = ingress\n").2.contains("one `on file` line"));
+        assert!(error("port 8000\non file a\nroute GET /x (req) {\n  respond 1\n}\n").2.contains("for a flow without routes"));
+        assert_eq!(error("folder a\nh = a.file(\"x\")\nr = http.put(\"h.example.com\", \"/\", body: \"t\", file: h)\n").2, "a call sends a body or a file, not both");
+        assert!(leaves(&compiled("on = 1\nx = on + 1\n").doc).contains(&"add".to_string()), "on is still a name elsewhere");
     }
 
     #[test]

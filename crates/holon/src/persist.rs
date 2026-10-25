@@ -138,11 +138,13 @@ pub(crate) fn load_deployments(
             ),
             _ => None,
         };
-        let triggers = trigger_labels(
+        let arrivals = Arc::new(arrivals::Watch::open(path, slug, &caps));
+        let mut triggers = trigger_labels(
             server.as_ref(),
             caps.contains(Capability::NetworkIngress),
             caps.contains(Capability::Clock) && server.is_none(),
         );
+        triggers.extend(arrivals.labels());
         let next_due = record.interval_seconds.filter(|_| server.is_none()).map(|_| SystemTime::now());
 
         // The grant, re-checked against what the unit needs now and the policy in force. A record
@@ -234,6 +236,7 @@ pub(crate) fn load_deployments(
                 listen_error: None,
                 secrets: Vault::default(),
                 folders: Arc::new(folders::Scoped::memory()),
+                arrivals,
                 parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
                 log,
                 document: record.document,

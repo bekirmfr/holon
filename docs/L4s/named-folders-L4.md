@@ -255,6 +255,25 @@ hash).
    and are still answered from there.
 4. **Triggers.** `on file inbox` (a run per new file), and handles as `http` bodies.
 
+   **Built** (`crates/holon/src/arrivals.rs`, the `drop-box` sample). The trigger is derived from
+   the graph, as a request's and the clock's are: `on file inbox` declares the folder and lowers
+   `ingress` to a `file_arrival{folder: inbox}` leaf, whose capability `FileArrival("inbox")` is
+   the deployment's trigger (no deploy setting). A thread looks at each folder a running
+   deployment watches every second, by each file's size and modified time (nothing is read), and
+   a file new or changed since the deployment last saw it starts one run once it is the same at
+   two looks; that run reads its handle, as `inbox.file(name)` would, from `ingress`. The files
+   there when it is first deployed are seen, not run on (a file dropped a moment later runs); what it has seen is kept
+   beside its log, so a file that arrived while it was down or paused runs when it is back; a file
+   its own runs wrote or copied there doesn't start a run unless it changes again; a deleted file
+   is forgotten. At most 100 runs per look per deployment, one after another. A handle as a body
+   is a leaf of its own, `http_upload{method, host}(path, headers, file)` (`http.put(host, path,
+   file: h)`), not a guess about a record's shape: a record sent as `body:` is still JSON. The
+   run's performer opens the file, checks it against the handle's size and hash before a byte is
+   sent and again as it is sent (`{status: 0, error: "changed"}` otherwise), and streams it within
+   the request size limit; the log keeps the request with the handle. A handle's folder, for a
+   body or a copy, must be one the deployment reads or the one whose new file started the run
+   (that file is handed to it). Mail attachments wait for mail.
+
 ## 12. Forks, surfaced
 
 1. **`folder` declared in the header, or inferred from use?** Declared, like `collection`: it
