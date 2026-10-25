@@ -1,0 +1,46 @@
+flow live-board
+port 8126
+collection tickets
+channel updates
+
+holon page(board) -> html js {
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const items = Object.values(board).reverse().map((t) => `<li>${esc(t.title)}</li>`);
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>Live board</title>
+<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em auto;padding:0 1em}input{width:70%}li.new{animation:in 1s}@keyframes in{from{background:#ffd}}</style>
+<h1>Live board</h1>
+<form id="add"><input name="title" placeholder="A new ticket" required maxlength="80"> <button>Add</button></form>
+<ul id="tickets">${items.join("\n")}</ul>
+<script>
+const list = document.getElementById("tickets");
+new EventSource("/live").onmessage = (e) => {
+  const li = document.createElement("li");
+  li.className = "new";
+  li.textContent = JSON.parse(e.data).title;
+  list.prepend(li);
+};
+document.getElementById("add").onsubmit = (e) => {
+  e.preventDefault();
+  const title = e.target.elements.title.value;
+  e.target.reset();
+  fetch("/tickets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
+};
+</script>`;
+}
+
+route GET / (req) {
+  respond page(tickets.list()), headers: { "content-type": "text/html; charset=utf-8" }
+}
+
+route POST /tickets (req) {
+  title = req.json.title
+  tickets["{now}-{slice(sha256(as_text(random)), 0, 6)}"] = { title: title, at: now }
+  updates.send({ title: title, at: now })
+  respond { ok: true, title: title }, status: 201, missing: 400
+}
+
+route GET /live (req) {
+  respond updates.subscribe()
+}

@@ -24,6 +24,7 @@ use holon_core::{hash_value, Capability, Hash, Value};
 use holon_host::Limits;
 use serde::{Deserialize, Serialize};
 
+use crate::channels::ChannelLimits;
 use crate::outbound::Outbound;
 use crate::to_hex;
 
@@ -32,7 +33,7 @@ use crate::to_hex;
 /// bytes. The two module limits are what a flow's module bodies may compute and hold per call
 /// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
 /// gets, so the policy has ceilings for them and no `[limits]` entry.
-pub(crate) const LIMIT_NAMES: [&str; 19] = [
+pub(crate) const LIMIT_NAMES: [&str; 24] = [
     "connect_timeout_ms",
     "request_timeout_ms",
     "claim_wait_ms",
@@ -50,6 +51,11 @@ pub(crate) const LIMIT_NAMES: [&str; 19] = [
     "max_file_read_bytes",
     "max_file_write_bytes",
     "max_files_per_run",
+    "max_pack_bytes",
+    "max_packs_per_run",
+    "channel_keep",
+    "channel_buffer",
+    "max_subscribers",
     holon_core::FUEL_LIMIT,
     holon_core::MEMORY_LIMIT,
 ];
@@ -108,8 +114,8 @@ impl FileLimits {
 }
 
 /// The limits as numbers by name: the request-run limits, the clock run's budget, the
-/// durable-run limits, and the file limits.
-fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits, files: &FileLimits) -> BTreeMap<String, u64> {
+/// durable-run limits, the file limits, and the channel limits.
+fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits, files: &FileLimits, channels: &ChannelLimits) -> BTreeMap<String, u64> {
     let ms = |d: Duration| d.as_millis() as u64;
     BTreeMap::from([
         ("connect_timeout_ms".into(), ms(request.connect_timeout)),
@@ -129,7 +135,24 @@ fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &Durable
         ("max_file_read_bytes".into(), files.max_file_read_bytes),
         ("max_file_write_bytes".into(), files.max_file_write_bytes),
         ("max_files_per_run".into(), files.max_files_per_run),
+        ("max_pack_bytes".into(), channels.max_pack_bytes),
+        ("max_packs_per_run".into(), channels.max_packs_per_run),
+        ("channel_keep".into(), channels.channel_keep),
+        ("channel_buffer".into(), channels.channel_buffer),
+        ("max_subscribers".into(), channels.max_subscribers),
     ])
+}
+
+/// `numbers` applied over `base`'s channel limits.
+fn numbers_to_channels(base: &ChannelLimits, numbers: &BTreeMap<String, u64>) -> ChannelLimits {
+    let n = |k: &str, d: u64| numbers.get(k).copied().unwrap_or(d);
+    ChannelLimits {
+        max_pack_bytes: n("max_pack_bytes", base.max_pack_bytes),
+        max_packs_per_run: n("max_packs_per_run", base.max_packs_per_run),
+        channel_keep: n("channel_keep", base.channel_keep),
+        channel_buffer: n("channel_buffer", base.channel_buffer),
+        max_subscribers: n("max_subscribers", base.max_subscribers),
+    }
 }
 
 /// `numbers` applied over `base`'s file limits.
@@ -279,6 +302,8 @@ pub(crate) struct Policy {
     pub(crate) durable: DurableLimits,
     /// The file limits a deployment gets without asking.
     pub(crate) files: FileLimits,
+    /// The channel limits a deployment gets without asking.
+    pub(crate) channels: ChannelLimits,
     /// What no grant can exceed.
     pub(crate) ceilings: BTreeMap<String, u64>,
     /// Items granted without asking: exact (`HttpRequest("hooks.slack.com")`) or a whole kind
@@ -291,7 +316,7 @@ pub(crate) struct Policy {
 
 impl Default for Policy {
     fn default() -> Policy {
-        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings());
+        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &ChannelLimits::ceilings());
         ceilings.insert(holon_core::FUEL_LIMIT.into(), MODULE_FUEL_CEILING);
         ceilings.insert(holon_core::MEMORY_LIMIT.into(), MODULE_MEMORY_CEILING);
         Policy {
@@ -299,6 +324,7 @@ impl Default for Policy {
             clock_run_budget: Limits::clock_run().run_budget,
             durable: DurableLimits::defaults(),
             files: FileLimits::defaults(),
+            channels: ChannelLimits::defaults(),
             ceilings,
             auto: Vec::new(),
             allow_plain_http: false,
@@ -368,6 +394,7 @@ impl Policy {
         policy.clock_run_budget = Duration::from_millis(defaults["clock_run_budget_ms"]);
         policy.durable = numbers_to_durable(&policy.durable, &defaults);
         policy.files = numbers_to_files(&policy.files, &defaults);
+        policy.channels = numbers_to_channels(&policy.channels, &defaults);
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
         policy.allow_private_addresses = file.grants.allow_private_addresses;
@@ -376,7 +403,7 @@ impl Policy {
 
     /// The defaults, by name.
     pub(crate) fn defaults(&self) -> BTreeMap<String, u64> {
-        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files)
+        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.channels)
     }
 
     /// Whether `item` is granted without asking.
@@ -644,6 +671,8 @@ pub(crate) struct Permit {
     pub(crate) durable: DurableLimits,
     /// How much of its files a run may read and write.
     pub(crate) files: FileLimits,
+    /// What its runs may send on its channels, and how many may subscribe.
+    pub(crate) channels: ChannelLimits,
     pub(crate) outbound: Outbound,
     /// The grant's hash (hex), for the flow log.
     pub(crate) grant: String,
@@ -668,6 +697,7 @@ impl Permit {
         let clock_limits = numbers_to_limits(&clock_base, &clamped, true);
         let durable = numbers_to_durable(&policy.durable, &clamped);
         let files = numbers_to_files(&policy.files, &clamped);
+        let channels = numbers_to_channels(&policy.channels, &clamped);
         let hosts = |items: &BTreeSet<String>| -> BTreeSet<String> {
             items
                 .iter()
@@ -690,7 +720,7 @@ impl Permit {
                 && grant.items.contains("PrivateAddresses")
                 && policy.allow_private_addresses,
         };
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, outbound, grant: to_hex(&grant.hash()) }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, channels, outbound, grant: to_hex(&grant.hash()) }
     }
 
     /// Whether the grant covers this capability.
@@ -712,6 +742,11 @@ impl Permit {
     /// The collections it may write, by name: the ones whose keys a run claims before calling out.
     pub(crate) fn collections_written(&self) -> BTreeSet<String> {
         self.named("CollectionWrite")
+    }
+
+    /// The channels it may send on, by name: the ones a piped call may send its answer to.
+    pub(crate) fn channels_sent(&self) -> BTreeSet<String> {
+        self.named("ChannelSend")
     }
 
     /// The folders it may read, by name.

@@ -99,6 +99,16 @@ describe("sample flows", () => {
     const drop = derive("drop-box").caps;
     expect(drop).toEqual(['FileArrival("drop")', 'FileWrite("receipts")', 'HttpRequest("httpbin.org")']);
     expect(manifestTrigger(drop)).toBe('FileArrival("drop")');
+    // A channel: one permission to send on it, one to let callers subscribe.
+    const board = derive("live-board").caps;
+    expect(board).toContain('ChannelSend("updates")');
+    expect(board).toContain('ChannelRead("updates")');
+    // A streamed reply is a call like any other: to its host, with the key it reads.
+    const chat = derive("chat-proxy").caps;
+    expect(chat).toContain('HttpRequest("api.anthropic.com")');
+    expect(chat).toContain('SecretRead("anthropic_api_key")');
+    // A piped call sends on its channel.
+    expect(chat).toContain('ChannelSend("room")');
   });
 
   it("tell required permissions from optional ones, the trigger always required", () => {
@@ -397,7 +407,7 @@ node outer = outer-holon
       'StateWrite("first_beat")',
       'StateWrite("last_beat")',
     ]);
-    expect(derive("approval").caps).toEqual(['Await("paid")', "NetworkIngress", 'StateWrite("last_order")']);
+    expect(derive("approval").caps).toEqual(['Await("paid")', 'ChannelRead("orders")', 'ChannelSend("orders")', "NetworkIngress", 'StateWrite("last_order")']);
     expect(derive("fetch-json").caps).toEqual(['HttpRequest("httpbin.org")', "NetworkIngress"]);
     expect(derive("sign-payload").caps).toEqual(["NetworkIngress", 'SecretRead("signing_key")']);
     expect(derive("likes").caps).toEqual(['CollectionRead("likes")', 'CollectionWrite("likes")', "NetworkIngress"]);

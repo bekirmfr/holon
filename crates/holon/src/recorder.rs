@@ -107,6 +107,10 @@ pub struct LogEntry {
     /// The waiting points it settled waiting at (a parked run's part), if any.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub parked: Vec<String>,
+    /// For a part that settled waiting: the packs it had settled, the sends that didn't wait,
+    /// which go out as it parks (channels.rs). A later part sends only the ones these didn't.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub progress: Vec<PerformedEntry>,
     /// For a resumed part: the events delivered to its waiting points so far.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub events: BTreeMap<String, SValue>,
@@ -565,6 +569,7 @@ mod tests {
             nonce: String::new(),
             grant: String::new(),
             parked: vec![],
+            progress: vec![],
             events: BTreeMap::new(),
             reads: vec![],
             retries: 0,

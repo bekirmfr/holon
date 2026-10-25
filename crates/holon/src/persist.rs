@@ -201,9 +201,11 @@ pub(crate) fn load_deployments(
                 runs.join(", run ")
             );
         }
+        let channels = Arc::new(channels::Channels::from_log(&log, &permit.channels));
         loaded.insert(
             record.slug,
             Deployment {
+                channels,
                 unit: unit_hash,
                 triggers,
                 interval_seconds: record.interval_seconds,

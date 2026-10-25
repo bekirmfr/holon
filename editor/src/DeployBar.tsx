@@ -53,6 +53,11 @@ const LIMITS: [string, string][] = [
   ["max_file_read_bytes", "file reads per run (bytes)"],
   ["max_file_write_bytes", "file writes per run (bytes)"],
   ["max_files_per_run", "files per run"],
+  ["max_pack_bytes", "pack size (bytes)"],
+  ["max_packs_per_run", "packs per run"],
+  ["channel_keep", "packs a channel keeps"],
+  ["channel_buffer", "packs a subscriber may fall behind"],
+  ["max_subscribers", "subscribers per channel"],
 ];
 
 /** `requirements` with `limit` set to `text` (blank: back to the host default). */

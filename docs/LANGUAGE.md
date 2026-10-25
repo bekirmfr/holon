@@ -309,15 +309,22 @@ what it says.
 ```
 flow approval
 port 8105
+channel orders
 
 route POST /orders (req) {
   respond "/paid/{resume_token(paid)}"
+  orders.send({ item: req.json.item, status: "waiting for payment" })
   paid = await paid, expires: 1d
   state.last_order = { ..req.json, paid_via: paid.method }
+  orders.send({ item: req.json.item, status: "paid", via: paid.method })
 }
 
 route GET /paid/:token (req) resumes paid {
   respond "thanks, the order is paid"
+}
+
+route GET /orders/live (req) {
+  respond orders.subscribe(from: "kept")
 }
 ```
 
@@ -325,6 +332,12 @@ Statement order carries no meaning beyond names being defined before use: the re
 produced in the first round, the run parks at `await`, and the state write happens when the link
 is opened. `{ ..base, k: v }` is `with_field` over an existing record (§5.5). `resumes paid` is
 the request template's `resume` param.
+
+A waiting run performs nothing, but its progress goes out: the packs it has settled when it
+parks, the ones that don't wait for the payment, are sent then (and logged with the parked part,
+its `progress`); the rest when it finishes. The resumed part runs again from the start and
+settles the first pack again, the same, and it isn't sent twice. Channels are §5.4 and the
+live-board sample.
 
 ### fetch-json, sign-payload, likes, witness
 
@@ -486,6 +499,77 @@ are gone). A file its own runs deleted from a folder it watches starts nothing. 
 e)` writes a file that must not exist yet (`file_create`): the run fails, and nothing it did
 lands, rather than replace one; `audit.create_copy(n, h)` is the same for a copy by handle.
 
+### live-board: a channel
+
+```
+flow live-board
+port 8126
+collection tickets
+channel updates
+
+route POST /tickets (req) {
+  title = req.json.title
+  tickets["{now}-{slice(sha256(as_text(random)), 0, 6)}"] = { title: title, at: now }
+  updates.send({ title: title, at: now })
+  respond { ok: true, title: title }, status: 201, missing: 400
+}
+
+route GET /live (req) {
+  respond updates.subscribe()
+}
+```
+
+`channel updates` declares a channel: packs the flow sends to whoever subscribes
+(`docs/L4s/channels-L4.md`). `updates.send(v)` is an effect, `channel_send{channel: updates}(v)`:
+the pack goes out once the run is over and its writes have landed, so a subscriber never hears of
+a ticket that wasn't stored; a run that fails, or is run again, sends nothing. A route answers
+with `respond updates.subscribe()`: a 200 whose body is the channel's packs as server-sent events
+(`id: 12.0`, `data: {"at":…,"title":…}`), while the caller stays. `subscribe(from: "kept")` sends
+the packs the channel keeps first; a browser's `EventSource` that reconnects says the last id it
+saw and gets the kept ones past it. Sending on a channel is a permission (`ChannelSend("updates")`),
+and so is letting callers subscribe (`ChannelRead("updates")`). The sample's page is a js holon
+whose `EventSource` adds each ticket as it arrives.
+
+### chat-proxy: a streamed reply
+
+```
+route POST /chat (req) {
+  prompt = req.json.prompt
+  sent = http.post("api.anthropic.com", "/v1/messages", headers: { "content-type": "application/json", "x-api-key": secret.anthropic_api_key, "anthropic-version": "2026-10-21", "anthropic-beta": "server-side-fallback-2026-07-01" }, body: json({ model: "claude-opus-5-5", max_tokens: 1024, stream: true, fallbacks: "default", output_config: { effort: "low" }, messages: [{ role: "user", content: prompt }] }), stream: true)
+  chats[as_text(now)] = { prompt: prompt, said: answer(sent.body) }
+  respond sent.body, missing: 400, stream: true
+}
+```
+
+A call with `stream: true` (written last) is `http_stream`: a call like `http_request`, whose
+answer the server also forwards to the route's caller as it reads it. The route says so where it
+answers, `respond sent.body, stream: true`: once the upstream answers 2xx, the caller gets a 200
+with the upstream's content type and each piece as it arrives (a model's tokens, here), before the
+run is over. The flow still gets the whole answer when it ends, and goes on with it as with any
+call's: `answer`, a js holon, reads the text out of the events, and the run stores it. Nothing
+the run computes can change what was sent, so a streamed reply takes no `status:` or `headers:`;
+`missing:` is the answer of a run whose call was never made (no prompt). A run that fails after
+the first piece ends an event stream with `event: error`. The log keeps the whole answer, as for
+any call, so the run replays.
+
+```
+route POST /room (req) {
+  prompt = req.json.prompt
+  sent = room.pipe(http.post("api.anthropic.com", "/v1/messages", headers: { … }, body: json({ … })))
+  said = answer(sent.body)
+  room.send({ prompt: prompt, said: said })
+  respond { prompt: prompt, said: said }, missing: 400
+}
+```
+
+`room.pipe(call)` sends the call's answer to the channel `room` instead (`channel room` in the
+header): each piece, as it arrives, is a text pack to whoever is subscribed, without an id and
+never kept, so a late subscriber gets the packs the run sends once it is over, with ids, and not
+the pieces. Piping is sending on the channel (`ChannelSend("room")`); the piped call is still a
+value, the whole answer, as any call's. The pieces are the upstream's bytes, never the flow's
+computation, so they stay true whatever the run does after: a run that runs again answers the
+call from its record and pipes nothing twice. A piped call needn't be in a route.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -547,6 +631,7 @@ file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
           | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
           | "folder" ident | "on" "file" ident ["deleted"] ["matching" string]
+          | "channel" ident
 item      = holon | route | statement | wiring        # wiring: the netlist form, §10
 ```
 
@@ -558,7 +643,8 @@ without routes. `deleted` makes it for files removed from the folder (`on: delet
 `matching "<glob>"` for the names that match (`*` and `?` within a folder, `**/` any number of
 folders, letters either case). A flow may have several, each a different line: `ingress` is then
 the `coalesce` of their `file_arrival`s in the order written, whichever started the run.
-Statements at the top level are the body of a flow without routes (§5.12); with routes, only
+`channel updates` declares a channel, sent on with `updates.send(v)` (or a call's answer piped to
+it, `updates.pipe(http.post(…))`) and subscribed to as a route's answer, `respond updates.subscribe()`. Statements at the top level are the body of a flow without routes (§5.12); with routes, only
 bindings of literals are allowed at the top level (§5.11).
 
 ### 5.2 Definitions and statements
@@ -647,8 +733,12 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `inbox.slice(n, offset: o, length: k)` | `file_slice{folder: inbox}(n, o, k)` | `k` bytes from `o` (from the end when negative), as text |
 | `reports[n] = h` (`h` a handle read here, or `ingress` with `on file`), `reports.copy(n, h)` | `file_copy{folder: reports}(n, h)` | copy the file when the run finishes, host to host |
 | `reports.create(n, e)`, `reports.create_copy(n, h)` | `file_create{folder: reports}(n, e)`, `file_create_copy{folder: reports}(n, h)` | the same write or copy, only if there is no such file yet: else the run fails |
+| `updates.send(e)` (`updates` a declared channel) | `channel_send{channel: updates}(e)` | send `e` to the channel's subscribers once the run is over |
+| `respond updates.subscribe(from: "kept")` | `channel_subscribe{channel: updates, from: kept}` as `respond`'s body | answer with the channel's packs, as server-sent events (`from: "new"`, the default: only those sent from now on) |
 | `http.get(host, path, headers: h, body: b)` and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host}(path, h, b)` | a call to that host |
 | `http.put(host, path, headers: h, file: f)` (`f` a handle), any method | `http_upload{method, host}(path, h, f)` | a call sending the file's bytes, streamed by the server |
+| `http.post(host, path, headers: h, body: b, stream: true)`, any method | `http_stream{method, host}(path, h, b)` | a call whose answer is forwarded to the route's caller as it arrives (`respond sent.body, stream: true`) |
+| `updates.pipe(http.post(host, path, headers: h, body: b))`, any method | `http_stream{method, host, pipe: updates}(path, h, b)` | a call whose answer goes to the channel's subscribers as it arrives, piece by piece |
 | `stripe.verify(req, secret, now, tolerance: d)` | the `stripe_verify` template | a verified Stripe event |
 | `await paid, expires: 1d` | `await{name: paid, expires: 86400}` | the event, when it arrives |
 | `resume_token(paid)` | `resume_token{await: paid}` | the token that delivers it |
@@ -667,6 +757,24 @@ Rules the table implies:
   handle names.
 - `http.*`'s host must be a text literal, because the host is the capability the deployment asks
   for; a host from a wire is an error that says so.
+- A streamed call is a route's, and the route answers with it: `stream:` comes last, takes
+  `true` or `false`, sends a body (not a `file:`), and a route makes one; its `respond` is
+  `respond sent.body, stream: true`, without `status:` or `headers:`. A streamed call the route
+  doesn't answer with, or `stream: true` on anything but a streamed call's body, is an error that
+  says so. The call is `HttpRequest(host)`, as any other.
+- A piped call, `updates.pipe(http.post(…))`, takes one http call, sending a body (no `stream:`
+  or `file:`), and asks `ChannelSend("updates")` beside its `HttpRequest`. Its pieces aren't
+  packs a run sends: they don't count against `max_packs_per_run`, are cut where a character
+  ends, and reach only the subscribers there as they arrive.
+- A subscription is only a route's answer: `respond updates.subscribe()`, with `headers:` if it
+  wants, never `status:` or `missing:` (it answers 200). Elsewhere `updates.subscribe()` is an
+  error that says so. A pack is any value with a JSON form, up to the deployment's
+  `max_pack_bytes` (64 KiB by default), and a run sends up to `max_packs_per_run` (1,000); a run
+  past either does nothing, and answers 500. Each channel keeps its newest `channel_keep` packs
+  (100) for subscribers that ask; a subscriber that falls `channel_buffer` packs behind (256) is
+  ended with `event: missed`, and catches up when it reconnects; one channel has up to
+  `max_subscribers` (100). Pausing or stopping the deployment ends its subscriptions with
+  `event: closed`.
 - `state.x` on the right of `=` and on the left are different leaves, read and write, and that is
   the whole semantics of state in Holon: read at the start, write at the end. The same key may be
   written once per flow (one `store_write` per key), or the error says which two lines collide.
@@ -895,13 +1003,15 @@ and the block's nodes. Every `respond` and every use of `req` wires into the sam
 which is what makes the block one route (`find_routes` works by connectivity, unchanged).
 
 ```
-respond_args = expr ("," "status" ":" number)? ("," "missing" ":" number)?
+respond_args = expr ("," "status" ":" number)? ("," "missing" ":" number)? ("," "stream" ":" bool)?
              | number                                # a status alone: no body (204)
              | "status" ":" number
 ```
 
 - `respond body, status: 200, missing: 404` is the `respond` template; `status` and `missing`
-  default as the catalog's defaults do. `respond 204`, a bare status with nothing after it, is
+  default as the catalog's defaults do. `respond updates.subscribe()` answers with a channel's
+  packs (§5.4): the subscription is the body, and the server streams it. `respond sent.body,
+  stream: true` forwards a streamed call's answer as it arrives (§5.4). `respond 204`, a bare status with nothing after it, is
   `respond{status: 204}` with no body input; to answer a literal number as a body, write
   `respond body: 42`. The hidden `request` input is wired to the route's request node by the
   lowering; `respond` outside a route is an error.

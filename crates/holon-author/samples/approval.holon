@@ -1,12 +1,19 @@
 flow approval
 port 8105
+channel orders
 
 route POST /orders (req) {
   respond "/paid/{resume_token(paid)}"
+  orders.send({ item: req.json.item, status: "waiting for payment" })
   paid = await paid, expires: 1d
   state.last_order = { ..req.json, paid_via: paid.method }
+  orders.send({ item: req.json.item, status: "paid", via: paid.method })
 }
 
 route GET /paid/:token (req) resumes paid {
   respond "thanks, the order is paid"
+}
+
+route GET /orders/live (req) {
+  respond orders.subscribe(from: "kept")
 }

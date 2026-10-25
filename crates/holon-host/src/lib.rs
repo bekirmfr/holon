@@ -99,6 +99,7 @@ fn parse_sink(sink: &str) -> (String, Vec<Param>) {
             (name.to_string(), vec![Param::frozen("collection", collection)])
         }
         Some((name, folder)) if name.starts_with("file_") => (name.to_string(), vec![Param::frozen("folder", folder)]),
+        Some((name, channel)) if name.starts_with("channel_") => (name.to_string(), vec![Param::frozen("channel", channel)]),
         Some((name, key)) => (name.to_string(), vec![Param::frozen("key", key)]),
         None => (sink.to_string(), Vec::new()),
     }
@@ -109,8 +110,9 @@ fn parse_sink(sink: &str) -> (String, Vec<Param>) {
 /// performed in order. Pure data carries nothing. The capability is *derived* from the sink's
 /// name (and, for keyed sinks, the key `parse_sink` recovers from that same string), so the
 /// `Host` trait is unchanged and a graph can only perform a capability it structurally
-/// declares — the effect was constructed by a leaf that has it.
-fn perform_effects(value: &Value, host: &mut impl Host) {
+/// declares — the effect was constructed by a leaf that has it. A server also walks a waiting
+/// run's settled outputs with it, to find the packs that didn't wait (its progress).
+pub fn perform_effects(value: &Value, host: &mut impl Host) {
     match value {
         Value::Effect { sink, payload } => {
             let (name, params) = parse_sink(sink);

@@ -19,9 +19,27 @@ pub(crate) fn serve_data(
     slug: &str,
     request: &DataRequest,
 ) -> DataResponse {
+    serve_data_forwarding(store, deployments, deployments_path, slug, request, None)
+}
+
+/// The origin a page sent the request from, when `slug` answers pages from there (`browsers`).
+pub(crate) fn allowed_origin(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, headers: &[(String, String)]) -> Option<String> {
     let browsers = deployments.lock().unwrap().get(slug).map(|d| d.browsers.clone()).unwrap_or_default();
-    let origin = request.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("origin")).map(|(_, v)| v.clone());
-    let allowed = origin.filter(|o| browsers.iter().any(|b| b == "*" || b == o));
+    let origin = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("origin")).map(|(_, v)| v.clone());
+    origin.filter(|o| browsers.iter().any(|b| b == "*" || b == o))
+}
+
+/// [`serve_data`], a streamed call's answer forwarded to the caller as it arrives (`forward`)
+/// when the route's run makes one.
+pub(crate) fn serve_data_forwarding(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    slug: &str,
+    request: &DataRequest,
+    forward: Option<outbound::Forwarder>,
+) -> DataResponse {
+    let allowed = allowed_origin(deployments, slug, &request.headers);
     if request.method == "OPTIONS"
         && let Some(origin) = &allowed
     {
@@ -35,9 +53,10 @@ pub(crate) fn serve_data(
                 ("vary".into(), "Origin".into()),
             ],
             body: vec![],
+            subscribe: None,
         };
     }
-    let mut answer = serve_flow(store, deployments, deployments_path, slug, request);
+    let mut answer = serve_flow(store, deployments, deployments_path, slug, request, forward);
     if let Some(origin) = allowed {
         answer.headers.push(("access-control-allow-origin".into(), origin));
         answer.headers.push(("vary".into(), "Origin".into()));
@@ -60,13 +79,14 @@ fn serve_flow(
     deployments_path: &str,
     slug: &str,
     request: &DataRequest,
+    forward: Option<outbound::Forwarder>,
 ) -> DataResponse {
     let found = deployments
         .lock()
         .unwrap()
         .get(slug)
-        .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders)));
-    let Some((unit_hash, state, Some(server), status, permit, secrets, folders)) = found else {
+        .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit), Arc::clone(&d.secrets), (Arc::clone(&d.folders), Arc::clone(&d.channels))));
+    let Some((unit_hash, state, Some(server), status, permit, secrets, (folders, channels))) = found else {
         return DataResponse::json_error(503, &format!("{slug:?} is not deployed as a server"));
     };
     if status != Status::Running {
@@ -102,7 +122,7 @@ fn serve_flow(
     }
 
     let mut ran: Option<LogEntry> = None;
-    let mut waits = RunWaits { folders: Some(folders), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), forward, channels: Some(channels), ..Default::default() };
     let mut parked: Result<Vec<String>, String> = Ok(Vec::new());
     // A module in the flow runs through the engine; everything else resolves as before.
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
@@ -125,6 +145,12 @@ fn serve_flow(
     if let Err(e) = &parked {
         answer = data::DataResponse::json_error(503, e);
     }
+    // A subscription to a channel the deployment wasn't granted to let callers subscribe to.
+    if let Some(s) = &answer.subscribe
+        && !permit.allows(&Capability::ChannelRead(s.channel.clone()))
+    {
+        answer = data::DataResponse::json_error(500, &format!("this deployment may not let callers subscribe to the channel {:?}", s.channel));
+    }
     // A run that waited as long as it may for a key another run holds is turned away, not
     // answered from nothing: its client may try again.
     if let Some(busy) = ran.as_ref().and_then(|e| e.error.as_deref()).filter(|e| e.starts_with("busy:")) {
@@ -138,6 +164,10 @@ fn serve_flow(
     // One whose file write didn't land (a folder past its cap, say) didn't do what it answered.
     if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(folders::WRITE_FAILED)) {
         answer = data::DataResponse::json_error(500, "a file this flow writes couldn't be written: its run log says why");
+    }
+    // One whose packs were past its limits did nothing.
+    if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(channels::SEND_FAILED)) {
+        answer = data::DataResponse::json_error(500, "this flow's packs were past its channel limits: its run log says why");
     }
     record_trigger(deployments, slug, answer.status >= 500);
     // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.
@@ -260,7 +290,14 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
         Some(d) => Redactor::of(&d.secrets),
     };
     let inner = DataRequest { method: send.method, url: send.url, headers: send.headers, body: send.body.into_bytes(), by: by.map(str::to_string) };
-    let answer = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &inner);
+    let mut answer = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &inner);
+    // A subscription streams on the deployment's own port; sent from here, it answers with the
+    // packs a subscriber would get first.
+    if let Some(s) = &answer.subscribe
+        && let Some(d) = state.deployments.lock().unwrap().get(slug)
+    {
+        answer.body = d.channels.kept(&s.channel, s.kept).iter().map(|p| channels::event_text(p)).collect::<String>().into_bytes();
+    }
     let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), redactor.text(v))).collect();
     let body = redactor.text(&String::from_utf8_lossy(&answer.body));
     Response::json(&SentResponseBody { status: answer.status, headers, body })

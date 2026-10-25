@@ -29,6 +29,7 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
     match (&dep.attention, dep.life.status) {
         (Some(why), Status::Running) => {
             let _ = dep.life.pause();
+            dep.channels.close();
             dep.grant.paused = true;
             eprintln!("holon: paused: {why}");
         }
