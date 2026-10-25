@@ -233,6 +233,10 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     if let Some(r) = &plan.requirements {
         body["requirements"] = r.clone();
     }
+    // With its schedule, so the preview asks what the deploy will: a clock flow runs on the clock.
+    if let Some(i) = plan.interval_seconds {
+        body["interval_seconds"] = json!(i);
+    }
     let preview = json_of(api, "POST", "/deploy/preview", Some(Body::Json(body.clone())))?;
     if let Some(why) = preview.get("refused").and_then(Value::as_str) {
         return Err(format!("this server won't run it: {why}"));
@@ -255,9 +259,6 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     }
     body["acknowledge"] = json!([]);
     body["document"] = plan.document.clone();
-    if let Some(i) = plan.interval_seconds {
-        body["interval_seconds"] = json!(i);
-    }
     if let Some(b) = &plan.browsers {
         // The plan keeps the origins on one line (`https://a.example *`); the deploy request
         // takes them one by one, as the editor sends them.

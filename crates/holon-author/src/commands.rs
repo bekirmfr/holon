@@ -81,11 +81,18 @@ fn port_of(c: &Lowered) -> &str {
     c.doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or_default()
 }
 
+/// Whether the flow deploys on a schedule: `every`, and no routes. It then runs on the clock, so
+/// what it may do includes the clock (core's `Capabilities::deployed`), as the deploy will ask.
+pub(crate) fn scheduled(c: &Lowered, server: &DerivedServer) -> bool {
+    server.endpoints.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
+}
+
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
 fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
     let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
+    let scheduled = scheduled(c, &server);
     let unit = flow_unit(&c.doc.nodes, &c.doc.edges, store, port_of(c)).map(|hash| {
-        let mut caps: Vec<String> = store.resolve(&hash).map(|u| capabilities(u, store).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
+        let mut caps: Vec<String> = store.resolve(&hash).map(|u| capabilities(u, store).deployed(scheduled).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
         caps.sort();
         (to_hex(&hash), caps)
     });
@@ -425,6 +432,18 @@ mod tests {
     /// A flow that calls out and both reads and writes a collection is told, apart from what it
     /// may do, that the host holds the keys it read from its first call until it commits
     /// (docs/L4s/key-claims-L4.md §3, test 8); one that doesn't call out, or only reads, isn't.
+    #[test]
+    fn check_says_a_flow_on_a_schedule_runs_on_the_clock() {
+        // `every` starts its runs, so it reads the clock as deployed, though nothing reads `now`.
+        let r = check("beats.holon", "flow beats\nevery 5s\n\nstate.beats = (state.beats ?? 0) + 1\n");
+        assert_eq!(r.code, 0, "{r:?}");
+        let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
+        assert_eq!(r.out[may + 1..], ["  read the clock", "  read its state \"beats\"", "  write its state \"beats\""]);
+        // A server answers requests: an interval doesn't make it a clock flow.
+        let r = check("hello.holon", &HELLO.replace("port 8101\n", "port 8101\nevery 5s\n"));
+        assert!(!r.out.iter().any(|l| l == "  read the clock"), "{:?}", r.out);
+    }
+
     #[test]
     fn check_names_the_held_keys() {
         let r = check("cache-aside.holon", crate::samples::sample("cache-aside").unwrap().text);

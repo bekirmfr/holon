@@ -373,8 +373,10 @@ function Canvas({
   const manifestOfDocument = useCallback(
     (doc: FlowDocument) => {
       restoreDocument(doc, ev);
-      const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, doc.server?.port ?? DEFAULT_SETTINGS.port);
-      const caps = (ev.capability_names(hash) as string[]);
+      const port = doc.server?.port ?? DEFAULT_SETTINGS.port;
+      const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
+      const scheduled = (doc.server?.interval ?? "").trim() !== "" && deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port).endpoints.length === 0;
+      const caps = ev.deployed_capability_names(hash, scheduled) as string[];
       return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
     },
     [ev, byName],
@@ -395,13 +397,14 @@ function Canvas({
     try {
       const { nodes: ns, edges: es } = live.current;
       const hash = flowUnitHash(ns, es, ev, settings.port);
-      return ((ev.capability_names(hash) as string[])).sort();
+      const scheduled = settings.interval.trim() !== "" && derived.endpoints.length === 0;
+      return ((ev.deployed_capability_names(hash, scheduled) as string[])).sort();
     } catch {
       return [];
     }
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, settings.port]);
+  }, [canvasKey, ev, byName, settings.port, settings.interval, derived]);
 
   // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to

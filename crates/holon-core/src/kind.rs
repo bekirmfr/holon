@@ -214,6 +214,16 @@ impl Capabilities {
     pub fn iter(&self) -> impl Iterator<Item = Capability> + '_ {
         self.0.iter().cloned()
     }
+    /// The manifest of a unit as deployed: on a schedule (a clock flow's `every`, with no
+    /// routes), what its graph derives and `Clock`, which starts its runs whether or not the flow
+    /// reads the time; otherwise what its graph derives. The one place that rule is kept: the
+    /// host deploys and grants by it, and `holon check` and the editor show it.
+    pub fn deployed(mut self, scheduled: bool) -> Self {
+        if scheduled {
+            self.0.insert(Capability::Clock);
+        }
+        self
+    }
     /// Replayable / cacheable ⇔ **no `State` capability anywhere in the closure** — the
     /// one place the design forfeits caching and replay (`§7`). This is *orthogonal* to
     /// effect-bearing: a sink-bearing but state-free manifest is effect-bearing **and**
@@ -794,6 +804,20 @@ mod tests {
         let ingress = capabilities_of("ingress", &[]).unwrap();
         assert!(ingress.contains(Capability::NetworkIngress));
         assert!(ingress.is_replayable()); // a driver, not state
+    }
+
+    #[test]
+    fn a_unit_deployed_on_a_schedule_runs_on_the_clock() {
+        // A clock flow that never reads the time still runs on the clock: deployed on a
+        // schedule, its manifest has `Clock`, its trigger; unscheduled, only what it derives.
+        let state = capabilities_of("store_write", &[Param::frozen("key", "beats")]).unwrap();
+        assert!(!state.clone().deployed(false).contains(Capability::Clock));
+        let scheduled = state.deployed(true);
+        assert!(scheduled.contains(Capability::Clock) && scheduled.contains(Capability::StateWrite("beats".into())));
+        assert_eq!(scheduled.len(), 2);
+        // One that reads it already is the same either way.
+        let clock = capabilities_of("clock", &[]).unwrap();
+        assert_eq!(clock.clone().deployed(true), clock);
     }
 
     #[test]

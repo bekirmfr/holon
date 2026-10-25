@@ -21,7 +21,7 @@ import {
 } from "./server";
 
 /** A flow's deploy settings, saved with it. `port` is for a flow with routes (a server),
- *  `interval` (seconds) for a flow that reads the clock. Either may be unused. `requirements`:
+ *  `interval` (seconds) for a flow on a clock. Either may be unused. `requirements`:
  *  limits away from the host's defaults, and exceptions, which the host must grant. */
 export type FlowSettings = {
   port: string;
@@ -234,7 +234,7 @@ export function DeployBar({
                 onChange={(e) => setSettings({ ...settings, browsers: e.target.value })}
                 style={input}
               />
-              <span title="how often a flow that reads the clock fires, in seconds">interval (s)</span>
+              <span title="how often a flow without routes runs on the clock, in seconds">interval (s)</span>
               <input
                 value={settings.interval}
                 placeholder="clock flows"

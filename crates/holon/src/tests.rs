@@ -544,6 +544,39 @@ fn clock_ticks_fire_when_due_and_not_before() {
     assert_eq!(ticks[0]["performed"][0]["capability"], "NetworkEgress");
 }
 
+/// A clock flow that never reads the time (`every`, and a counter) deploys: its schedule starts
+/// its runs, so the preview and the deploy ask for the clock, its manifest names the clock its
+/// trigger, and it runs on it. Without the schedule nothing would start it, and it is refused.
+#[test]
+fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
+    let state = test_state();
+    let plan = holon_author::agent::plan("flow beats\nevery 5s\n\nstate.beats = (state.beats ?? 0) + 1\n").unwrap();
+    assert!(plan.may.contains(&"Clock".to_string()), "{:?}", plan.may);
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let unit = parse_hash(&plan.unit).unwrap();
+
+    let unscheduled = deploy_json(&state, "beats", unit, serde_json::json!({}));
+    assert_eq!(unscheduled.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(unscheduled)).contains("nothing would ever trigger it"));
+
+    let body = serde_json::json!({ "slug": "beats", "unit": plan.unit, "interval_seconds": 5 });
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&body).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    assert!(asked.contains(&"Clock".to_string()), "{asked:?}");
+    let r = deploy_json(&state, "beats", unit, serde_json::json!({ "interval_seconds": 5, "acknowledge": asked }));
+    let status = r.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+
+    let manifest = body_json(route(&state, &req("GET", "/deployments/beats/manifest", vec![])));
+    assert_eq!(manifest["trigger"], "Clock");
+    assert_eq!(manifest["not_granted"], serde_json::json!([]));
+    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now());
+    let ticks = body_json(route(&state, &req("GET", "/deployments/beats/history", vec![])))["ticks"].as_array().unwrap().clone();
+    assert_eq!(ticks.len(), 1);
+}
+
 #[test]
 fn deployments_history_for_unknown_slug_is_404() {
     let state = test_state();

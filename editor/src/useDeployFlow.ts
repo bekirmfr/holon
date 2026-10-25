@@ -104,7 +104,9 @@ export function useDeployFlow({
       setError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
       return;
     }
-    const caps = ev.capability_names(hash) as string[];
+    // On a schedule (an interval, and no routes), it runs on the clock whether or not it reads it.
+    const scheduled = !isServer && settings.interval.trim() !== "";
+    const caps = ev.deployed_capability_names(hash, scheduled) as string[];
     let interval: number | undefined;
     if (!isServer && caps.includes("Clock")) {
       interval = Number(settings.interval);
@@ -120,7 +122,7 @@ export function useDeployFlow({
     let ask: string[];
     try {
       await stageClosure(ev, hash, new Set());
-      const preview = await previewDeploy(name, hash, requirements);
+      const preview = await previewDeploy(name, hash, requirements, interval);
       if (preview.refused) {
         setError(`this host can't grant that: ${preview.refused}`);
         return;
