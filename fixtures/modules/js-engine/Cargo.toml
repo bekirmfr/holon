@@ -1,0 +1,31 @@
+[package]
+name = "holon-js-engine"
+version = "0.1.0"
+edition = "2024"
+description = "Holon's JavaScript engine module: Boa compiled to a WebAssembly module with no imports, speaking core's value encoding (docs/L4s/js-node-L4.md §4). Built by build.sh into js-engine.wasm, which is committed beside it."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# No `js` feature: that one imports a clock and randomness from the host, and the whole point of
+# this module is that its import section is empty. No `temporal`, no `intl`: time and locale are
+# environment, and a body that wants the time is handed `now` on a wire.
+boa_engine = { version = "0.22", default-features = false }
+# The ABI is core's own value encoding, so the module decodes its inputs and encodes its answer
+# with the same code the host does.
+holon-core = { path = "../../../crates/holon-core" }
+# Only for its `Error` type: the custom backend below is the whole of its randomness.
+getrandom = "0.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Its own root: not a member of the repository's workspace, since it builds for another target.
+[workspace]

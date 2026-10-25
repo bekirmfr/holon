@@ -34,6 +34,11 @@ use holon_core::{decode_value, encode_value, validate_module, Hash, ModuleError,
 use wasmi_core::LimiterError;
 use wasmi::{Config, Engine as Wasmi, Linker, Module, ResourceLimiter, Store, TrapCode};
 
+/// Holon's JavaScript engine module (docs/L4s/js-node-L4.md §4), as built and committed in
+/// `fixtures/modules/js-engine/`: a module unit with no imports whose interface is
+/// `engine(source: Text, args: List<Any>) -> (result: Record)`. The `js` statement places it.
+pub const JS_ENGINE: &[u8] = include_bytes!("../../../fixtures/modules/js-engine/js-engine.wasm");
+
 /// Why a module didn't answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunError {
@@ -150,7 +155,25 @@ impl Engine {
 
         let ptr = alloc.call(&mut store, len).map_err(|e| self.failed(e, &store, limits, RunError::Trap))?;
         memory.write(&mut store, ptr as u32 as usize, &input).map_err(|e| RunError::Trap(format!("alloc gave an address outside memory: {e}")))?;
-        let packed = run.call(&mut store, (ptr, len)).map_err(|e| self.failed(e, &store, limits, RunError::Trap))?;
+        let packed = match run.call(&mut store, (ptr, len)) {
+            Ok(p) => p,
+            Err(e) => {
+                let mut failure = self.failed(e, &store, limits, RunError::Trap);
+                // A module may export `last_panic() -> i64` (address and length of a message it
+                // kept before trapping): then the trap is named by it. Rust's `panic = "abort"`
+                // is an `unreachable`, so this is how a module written in Rust says what went wrong.
+                if let (RunError::Trap(text), Ok(last)) = (&failure, instance.get_typed_func::<(), i64>(&store, "last_panic"))
+                    && let Ok(packed) = last.call(&mut store, ())
+                {
+                    let (p, n) = (((packed as u64) >> 32) as u32 as usize, (packed as u64 & 0xffff_ffff) as u32 as usize);
+                    let mut msg = vec![0u8; n.min(4096)];
+                    if n > 0 && memory.read(&store, p, &mut msg).is_ok() {
+                        failure = RunError::Trap(format!("{text}: {}", String::from_utf8_lossy(&msg)));
+                    }
+                }
+                return Err(failure);
+            }
+        };
 
         let (out_ptr, out_len) = (((packed as u64) >> 32) as u32 as usize, (packed as u64 & 0xffff_ffff) as u32 as usize);
         let mut out = vec![0u8; out_len];
