@@ -390,6 +390,16 @@ the limits in the manifest), each inch with its tests, a live check and a commit
   the language a body may use, since a fallback to the interpreter would give one statement two
   semantics. Until then, the engine caches compiled modules per process; caching Boa's own
   bytecode per source hash is the cheaper step if startup cost shows.
+  *Measured (2026-10-25, a release build, one developer machine):* a trivial body costs 6 ms
+  warm (32 ms the first call, compiling the engine into wasmi's cache), the edit-distance search
+  over eight words 20 ms, a loop of a hundred thousand 82 ms; a request to `nearest` through the
+  deployed server takes 33 to 105 ms in the log and 70 to 80 ms at the port, against 10 to 12 ms
+  for a request without a js node. The debug build is eighty times slower (0.5 s, 2 to 4 s, 42 s),
+  which is what a developer sees under `cargo run`. So the realm's floor is about 6 ms of the 50
+  to 60 ms a js request adds, and the body's own work the rest: bytecode caching would buy
+  little, and ahead-of-time compilation would matter only for compute-bound bodies (the loop:
+  82 ms interpreted, under a millisecond compiled). Request-sized work is fine as it is; the
+  fork stays open, its trigger unchanged.
 - **F2. Several outputs: object or array.** An object keyed by port name (chosen: readable, and
   a missing key is one absent port, not a shifted list). Revisit only if a body ever needs
   positional outputs.
