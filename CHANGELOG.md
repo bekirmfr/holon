@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.0-rc.25
+
+Nothing to redeploy: no unit is hashed differently, and deployments, logs and waiting runs from
+rc.24 load as they are (a waiting run is sealed the next time the deployments file is written).
+This release fixes what a security review of the server found.
+
+- **An agent's changed code doesn't inherit a secret.** A grant approved what the code did with
+  a secret, so when an agent deploys a new version of a flow that reads one, a person approves it
+  again: a required secret saves the version for approval, an optional one deploys withheld (its
+  reads refused, shown as revoked) until a person grants it back from the deployment's
+  permissions. An agent no longer starts a paused or stopped deployment, and a redeploy keeps the
+  limits a person lowered.
+- **What a run computes from a secret stays out of the log.** The log redacted a secret by its
+  value, so base64 of it (a Basic auth header), a field of a JSON secret or a slice reached the
+  log, the export and the editor's replay as is. The log now keeps no outputs for a node that
+  computes with a secret, and an outbound request built from one reads `‹withheld: computed from
+  a secret›` there. One-way leaves (`sha256`, `hmac_sha256`, `secure_equals`) still log, so signing
+  flows replay and verify as before; `holon verify` counts the other runs as not run again.
+- **A clock run's history is redacted** like its log entry, and the server no longer prints a
+  tick's effects.
+- **A resume token resumes its run once**, however many requests carry it at the same time; the
+  others answer 404 while it runs.
+- **A waiting run's record is sealed on disk**, under the secrets master key, and the deployments
+  file is written owner-only.
+- **Outbound requests: the host sets `Host` and the framing headers.** A flow setting `Host`,
+  `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`,
+  `Expect` or a `Proxy-*` header gets `bad_header`, and nothing is sent. NAT64 addresses
+  (64:ff9b::/96) count as private.
+- **Accounts:** a password reset stops the old password at once; setting a new password ends
+  the account's other sessions (a change keeps the one making it).
+- **Revoking what starts a deployment's runs pauses it**, even with "keep running when something
+  required is revoked" ticked.
+- **Folders:** none may be or hold the `--dotenv` file, the secrets key's file, or the flow
+  logs, arrivals and heads the server keeps beside its deployments file.
+- **Bounded units:** a deploy whose unit holds more than 20,000 units or nests deeper than 64 is
+  refused (400); working out a unit's permissions visits each unit once. A module that claims an
+  answer past its memory fails as bad output instead of making the server allocate it.
+
 ## 0.1.0-rc.24
 
 Flows with a streamed reply (`respond sent.body, stream: true`, the `chat-proxy` sample) are
