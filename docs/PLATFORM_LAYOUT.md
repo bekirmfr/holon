@@ -486,6 +486,8 @@ it. That needs an identity for the run and a way to resume it.
   the default.
 - **Parked runs per deployment:** at most its granted `max_waiting_runs` ✅ (default 10,000); past
   it, a run that would wait is refused with a `503` instead.
+- **Resumed once.** ✅ A resume claims its run under the deployments lock before running it, so
+  requests carrying the same token at once resume it exactly once. The others answer 404.
 - **Visible.** The flow log has an entry per part of a run, under one run id (`parked` names what it
   waits for; a resumed part shows the events delivered). `GET /deployments/<slug>/runs` lists the
   waiting runs, never their tokens; the editor's deployment card shows "⏸ N waiting" with each one's

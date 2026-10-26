@@ -1383,6 +1383,73 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A token resumes its run once even when requests carrying it arrive together: the first claims
+/// the run as its token is checked, so a second finds nothing waiting while the first runs, and
+/// the deadline passing doesn't expire it under the resume either. Once the resume lets go of a
+/// run still waiting, its token works again.
+#[test]
+fn a_token_resumes_its_run_once_however_many_requests_carry_it() {
+    let state = test_state();
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    let children = vec![
+        iface("resume_token", vec![frozen("await", "paid")]),
+        iface("await", vec![frozen("name", "paid"), frozen("expires", "3600")]),
+        iface("field", vec![frozen("name", "method")]),
+        test_store_write("paid"),
+    ];
+    let edges = vec![e(1, 0, 2, 0), e(2, 0, 3, 0), e(0, 0, BOUNDARY, 0), e(3, 0, BOUNDARY, 1)];
+    let orders = endpoint(&state, "POST", "/orders", children, edges, 1);
+    let thanks = stage(&state, &iface("const", vec![frozen("value", "thanks"), frozen("type", "Text")]));
+    let paid_route = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![thanks], edges: vec![e(0, 0, BOUNDARY, 0)] },
+            params: vec![frozen("declare", "endpoint"), frozen("method", "GET"), frozen("path", "/paid/:token"), frozen("resume", "paid")],
+            inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+            outputs: vec![Port { name: "response".into(), ty: Type::Any }],
+        },
+    );
+    let server = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![orders, paid_route], edges: vec![] },
+            params: vec![frozen("declare", "server"), frozen("port", "18093")],
+            inputs: vec![],
+            outputs: vec![],
+        },
+    );
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "Await(\"paid\")", "StateWrite(\"paid\")"] });
+    assert_eq!(deploy_json(&state, "once", server, ack).status_code, 200);
+    let call = |method: &str, url: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, "once", &fake_data(method, url, vec![])).status;
+    let resumes = || {
+        let log = body_json(route(&state, &req("GET", "/deployments/once/log", vec![])));
+        log["entries"].as_array().unwrap().iter().filter(|x| x["kind"] == "resume").count()
+    };
+    let token = String::from_utf8(serve_data(&state.store, &state.deployments, &state.deployments_path, "once", &fake_data("POST", "/orders", vec![])).body).unwrap();
+
+    // While a resume holds the run, its token finds nothing, and its deadline doesn't expire it.
+    let held = durable::claim_by_token(&state.deployments, "once", "paid", &token).expect("the run waits for its token");
+    assert_eq!(call("GET", &format!("/paid/{token}")), 404, "a second resume while the first runs");
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    assert_eq!(resumes(), 0, "not expired under the resume");
+    // Let go with the run still waiting (a resume that failed before it ran): the token works again.
+    drop(held);
+    assert_eq!(call("GET", &format!("/paid/{token}")), 200);
+    assert_eq!(resumes(), 1);
+
+    // Many requests at once with one token: one resumes it, the rest are told it was used.
+    let token = String::from_utf8(serve_data(&state.store, &state.deployments, &state.deployments_path, "once", &fake_data("POST", "/orders", vec![])).body).unwrap();
+    let statuses: Vec<u16> = std::thread::scope(|s| {
+        let calls: Vec<_> = (0..8).map(|_| s.spawn(|| call("GET", &format!("/paid/{token}")))).collect();
+        calls.into_iter().map(|c| c.join().unwrap()).collect()
+    });
+    assert_eq!(statuses.iter().filter(|s| **s == 200).count(), 1, "{statuses:?}");
+    assert!(statuses.iter().all(|s| *s == 200 || *s == 404), "{statuses:?}");
+    assert_eq!(resumes(), 2, "the second order's run resumed once");
+}
+
 /// How long runs may wait and how many may wait at once are limits the host grants: an `await`
 /// longer than the default is refused until the deployment asks for it (and never past the
 /// ceiling), and parking holds to the grant in force, a lowered one included.

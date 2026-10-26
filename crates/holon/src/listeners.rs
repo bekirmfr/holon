@@ -107,18 +107,20 @@ fn serve_flow(
 
     // A resume route needs a run waiting for its token, or it answers nothing at all.
     let (path, query) = raw_url.split_once('?').unwrap_or((raw_url, ""));
-    let mut resume: Option<(String, String, Value, String)> = None;
+    let mut resume: Option<(durable::Claimed, String, Value, String)> = None;
     if let Some((route, params)) = holon_core::match_route(&server, method, path)
         && let Some(name) = &route.resume
     {
         let from_query = query.split('&').find_map(|kv| kv.strip_prefix("token=")).map(data::percent_decode);
         let token = params.get("token").map(|t| data::percent_decode(t)).or(from_query).unwrap_or_default();
-        let Some(run_id) = durable::find_by_token(deployments, slug, name, &token) else {
+        // Claimed now, so a second request carrying the same token while this one runs finds
+        // nothing waiting: a token resumes its run once.
+        let Some(claimed) = durable::claim_by_token(deployments, slug, name, &token) else {
             return DataResponse::json_error(404, "no run is waiting here for that token (it was used, or has expired)");
         };
         let params = params.into_iter().map(|(k, v)| (k, data::percent_decode(&v))).collect();
         let event = data::request_record(method, path, params, query, headers, &String::from_utf8_lossy(body));
-        resume = Some((run_id, name.clone(), event, token));
+        resume = Some((claimed, name.clone(), event, token));
     }
 
     let mut ran: Option<LogEntry> = None;
@@ -193,10 +195,11 @@ fn serve_flow(
         persist_deployments(deployments_path, deployments, store);
     }
     // The route's own handler has answered; now the waiting run continues.
-    if let Some((run_id, name, event, _)) = resume
-        && let Err(e) = durable::resume_parked(store, deployments, deployments_path, slug, &run_id, &name, event)
-    {
-        eprintln!("holon: resuming run {run_id} in {slug:?}: {e}");
+    if let Some((claimed, name, event, _)) = resume {
+        let run_id = claimed.run_id().to_string();
+        if let Err(e) = durable::resume_parked(store, deployments, deployments_path, slug, claimed, &name, event) {
+            eprintln!("holon: resuming run {run_id} in {slug:?}: {e}");
+        }
     }
     answer
 }

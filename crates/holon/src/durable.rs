@@ -267,6 +267,11 @@ pub(crate) struct ParkedRun {
     /// logged as of that version, whose canvas shows it. Absent for runs parked before.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) version: String,
+    /// Whether a resume holds it right now: claimed under the deployments lock when its token
+    /// is checked (or its deadline passes), so a token resumes it once even when requests carrying
+    /// it arrive together. Never persisted: a restart frees it.
+    #[serde(skip)]
+    pub(crate) resuming: bool,
 }
 
 /// The capability a logged sourced value is for: what a run's trigger and the run's start supply.
@@ -347,6 +352,7 @@ impl ParkedRun {
             waiting: waiting.iter().map(|w| StoredWaiting { name: w.name.clone(), expires_at: now + w.expires }).collect(),
             parked_at: now,
             version: String::new(),
+            resuming: false,
         })
     }
 
@@ -471,25 +477,63 @@ pub(crate) fn park_if_waiting(
     Ok(names)
 }
 
-/// The run waiting at `name` for `token` in `slug`, if there is one: what a resume route checks
-/// before it answers.
-pub(crate) fn find_by_token(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, name: &str, token: &str) -> Option<String> {
-    let table = deployments.lock().unwrap();
-    table.get(slug)?.parked.values().find(|p| p.waiting_point_of(token) == Some(name)).map(|p| p.run_id.clone())
+/// A parked run held for one resume: no other resume gets it while this is alive, and dropping
+/// it (the resume done, failed, or panicked) frees the run if it still waits.
+pub(crate) struct Claimed<'a> {
+    deployments: &'a Mutex<BTreeMap<String, Deployment>>,
+    slug: String,
+    run_id: String,
 }
 
-/// Deliver `event` to parked run `run_id`'s waiting point `name`, and run it again from its
+impl Claimed<'_> {
+    pub(crate) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+}
+
+impl Drop for Claimed<'_> {
+    fn drop(&mut self) {
+        let mut table = self.deployments.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(run) = table.get_mut(&self.slug).and_then(|d| d.parked.get_mut(&self.run_id)) {
+            run.resuming = false;
+        }
+    }
+}
+
+/// The run waiting at `name` for `token` in `slug`, claimed for this resume, if there is one and
+/// no other resume holds it: what a resume route checks before it answers.
+pub(crate) fn claim_by_token<'a>(deployments: &'a Mutex<BTreeMap<String, Deployment>>, slug: &str, name: &str, token: &str) -> Option<Claimed<'a>> {
+    let mut table = deployments.lock().unwrap();
+    let run = table.get_mut(slug)?.parked.values_mut().find(|p| !p.resuming && p.waiting_point_of(token) == Some(name))?;
+    run.resuming = true;
+    Some(Claimed { deployments, slug: slug.to_string(), run_id: run.run_id.clone() })
+}
+
+/// Parked run `run_id`, claimed while it still waits at `name`, unless another resume holds it.
+fn claim<'a>(deployments: &'a Mutex<BTreeMap<String, Deployment>>, slug: &str, run_id: &str, name: &str) -> Option<Claimed<'a>> {
+    let mut table = deployments.lock().unwrap();
+    let run = table.get_mut(slug)?.parked.get_mut(run_id)?;
+    if run.resuming || !run.waiting.iter().any(|w| w.name == name) {
+        return None;
+    }
+    run.resuming = true;
+    Some(Claimed { deployments, slug: slug.to_string(), run_id: run_id.to_string() })
+}
+
+/// Deliver `event` to the claimed parked run's waiting point `name`, and run it again from its
 /// record. It finishes (its effects performed now, once), waits again, or fails; the log gets an
-/// entry for this part, under the same run id.
+/// entry for this part, under the same run id. The claim is let go when this returns.
 pub(crate) fn resume_parked(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &str,
     slug: &str,
-    run_id: &str,
+    claimed: Claimed<'_>,
     name: &str,
     event: Value,
 ) -> Result<(), String> {
+    let run_id = claimed.run_id.clone();
+    let run_id = run_id.as_str();
     let (record, state, permit, secrets, folders, channels) = {
         let table = deployments.lock().unwrap();
         let dep = table.get(slug).ok_or("no such deployment")?;
@@ -560,7 +604,11 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<S
         }
     }
     for (slug, run_id, name) in due {
-        if let Err(e) = resume_parked(store, deployments, deployments_path, &slug, &run_id, &name, expired_event()) {
+        // A run a request is resuming right now isn't expired under it.
+        let Some(claimed) = claim(deployments, &slug, &run_id, &name) else {
+            continue;
+        };
+        if let Err(e) = resume_parked(store, deployments, deployments_path, &slug, claimed, &name, expired_event()) {
             eprintln!("holon: expiring {name:?} of run {run_id} in {slug:?}: {e}");
         }
     }
