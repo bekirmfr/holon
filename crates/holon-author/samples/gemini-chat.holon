@@ -13,7 +13,7 @@ holon page(past) -> html js {
 <form id="ask"><input name="prompt" placeholder="Ask something" required> <button>Ask</button></form>
 <p id="said"></p>
 <h2>Asked before</h2>
-<ul>${items.join("\n")}</ul>
+<ul id="past">${items.join("\n")}</ul>
 <script>
 const out = document.getElementById("said");
 document.getElementById("ask").onsubmit = async (e) => {
@@ -40,6 +40,12 @@ document.getElementById("ask").onsubmit = async (e) => {
       if (ev.event_type === "step.delta" && ev.delta && ev.delta.type === "text") out.textContent += ev.delta.text;
     }
   }
+  // The exchange, once the answer has ended: on top of what was asked before, as the flow stored it.
+  const li = document.createElement("li");
+  const asked = document.createElement("b");
+  asked.textContent = prompt;
+  li.append(asked, document.createElement("br"), out.textContent);
+  document.getElementById("past").prepend(li);
 };
 </script>`;
 }
