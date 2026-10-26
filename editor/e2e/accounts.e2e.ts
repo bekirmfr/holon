@@ -134,9 +134,14 @@ test("signing in through the identity provider an admin set, matched by email", 
   await fill(ada, "password", PASSWORD);
   await ada.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
   await ada.getByRole("button", { name: "admin", exact: true }).click();
-  await ada.getByLabel("issuer").fill(ISSUER);
-  await ada.getByLabel("client id").fill("holon-e2e");
-  await ada.getByRole("button", { name: "turn on" }).click();
+  // The page reads the settings it has when it opens and puts them in these fields (AdminPage.tsx's
+  // refresh): a read answering after the fill empties them, and "turn on" stays disabled. So fill
+  // and click again until the click lands, which it does only with both fields filled.
+  await expect(async () => {
+    await ada.getByLabel("issuer").fill(ISSUER);
+    await ada.getByLabel("client id").fill("holon-e2e");
+    await ada.getByRole("button", { name: "turn on" }).click({ timeout: 1_000 });
+  }).toPass();
   await expect(ada.getByText(`on: ${ISSUER} as holon-e2e`)).toBeVisible();
 
   const cy = await someoneElse(browser);
