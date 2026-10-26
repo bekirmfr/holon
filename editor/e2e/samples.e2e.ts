@@ -580,6 +580,76 @@ data: ${JSON.stringify(data)}
   }
 });
 
+test("gemini-chat forwards Gemini's streamed answer as it arrives, and says so when the API refuses", async ({ page, browser, request, adminToken }) => {
+  const { createServer } = await import("node:http");
+  const { readFileSync } = await import("node:fs");
+  // A stand-in for the Interactions API on loopback: step.delta events, then [DONE]; a key it
+  // doesn't know is refused, as the API does.
+  const asked: string[] = [];
+  const event = (data: { event_type: string }) => `event: ${data.event_type}\ndata: ${JSON.stringify(data)}\n\n`;
+  const upstream = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const sent = JSON.parse(body);
+      asked.push(`${req.headers["x-goog-api-key"]} ${sent.model} ${sent.input}`);
+      if (req.headers["x-goog-api-key"] === "e2e-revoked") {
+        res.writeHead(429, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: 429, message: "Resource has been exhausted (e.g. check quota).", status: "RESOURCE_EXHAUSTED" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(event({ event_type: "interaction.created" }));
+      res.write(event({ event_type: "step.delta", index: 1, delta: { type: "text", text: "Rivers run" } } as { event_type: string }));
+      res.write(event({ event_type: "step.delta", index: 1, delta: { type: "text", text: " to the sea." } } as { event_type: string }));
+      res.end(event({ event_type: "interaction.completed" }) + "data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const host = `127.0.0.1:${(upstream.address() as { port: number }).port}`;
+  try {
+    await openSample(page, "Gemini chat (a streamed reply, free tier)");
+    // The sample calls generativelanguage.googleapis.com: here, the stand-in, over plain HTTP to
+    // this machine, on a port the text says (the text's wins while it is open).
+    const text = readFileSync(new URL("../../crates/holon-author/samples/gemini-chat.holon", import.meta.url), "utf8");
+    await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+    const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
+    await editor.click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8128", "port 9128"));
+    await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
+    const settings = page.getByRole("dialog", { name: "deploy settings" });
+    await expect(settings.locator("input").first()).toHaveValue("9128");
+    await settings.getByRole("button", { name: "done" }).click();
+    const port = await deploy(page, 0, async (settings) => {
+      await settings.getByTitle("comma-separated host[:port]").fill(host);
+      await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
+    });
+    const secret = (value: string) => request.post(`${SERVER}/deployments/gemini-chat/secrets/gemini_api_key`, { data: { value }, headers: { Authorization: `Bearer ${adminToken}` } });
+    expect((await secret("e2e-key")).ok()).toBe(true);
+    const chat = await browser.newPage();
+    await chat.goto(`http://127.0.0.1:${port}/`);
+    await chat.locator("input[name=prompt]").fill("a line about rivers");
+    await chat.getByRole("button", { name: "Ask" }).click();
+    await expect(chat.locator("#said")).toHaveText("Rivers run to the sea.");
+    expect(asked).toEqual(["e2e-key gemini-3.5-flash-lite a line about rivers"]);
+    // The run had the whole answer: stored, and listed on the page.
+    await expect(async () => {
+      await chat.reload();
+      await expect(chat.locator("li")).toContainText(["a line about riversRivers run to the sea."], { timeout: 1000 });
+    }).toPass();
+    // The free tier's limit: nothing forwarded, the refusal with its status, which the page shows.
+    expect((await secret("e2e-revoked")).ok()).toBe(true);
+    await chat.locator("input[name=prompt]").fill("refused");
+    await chat.getByRole("button", { name: "Ask" }).click();
+    await expect(chat.locator("#said")).toContainText("Gemini answered 429");
+    await expect(chat.locator("#said")).toContainText("RESOURCE_EXHAUSTED");
+    await chat.close();
+  } finally {
+    upstream.close();
+  }
+});
+
 test("cache-aside answers a name it has from its collection without the fetch, which view mode shows as not run", async ({ page, request }) => {
   await openSample(page, "Cache-aside (a branch not taken)");
   const port = await deploy(page);

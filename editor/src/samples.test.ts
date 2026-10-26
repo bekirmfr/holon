@@ -109,6 +109,9 @@ describe("sample flows", () => {
     expect(chat).toContain('SecretRead("anthropic_api_key")');
     // A piped call sends on its channel.
     expect(chat).toContain('ChannelSend("room")');
+    const gemini = derive("gemini-chat").caps;
+    expect(gemini).toContain('HttpRequest("generativelanguage.googleapis.com")');
+    expect(gemini).toContain('SecretRead("gemini_api_key")');
   });
 
   it("tell required permissions from optional ones, the trigger always required", () => {

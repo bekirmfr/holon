@@ -1,0 +1,67 @@
+flow gemini-chat
+port 8128
+collection chats
+
+holon page(past) -> html js {
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const items = Object.values(past).reverse().slice(0, 10).map((c) => `<li><b>${esc(c.prompt)}</b><br>${esc(c.said)}</li>`);
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>Gemini chat</title>
+<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em auto;padding:0 1em}input{width:70%}#said{white-space:pre-wrap;min-height:3em;border-left:3px solid #ccd;padding-left:1em}</style>
+<h1>Gemini chat</h1>
+<form id="ask"><input name="prompt" placeholder="Ask something" required> <button>Ask</button></form>
+<p id="said"></p>
+<h2>Asked before</h2>
+<ul>${items.join("\n")}</ul>
+<script>
+const out = document.getElementById("said");
+document.getElementById("ask").onsubmit = async (e) => {
+  e.preventDefault();
+  const prompt = e.target.elements.prompt.value;
+  out.textContent = "";
+  const r = await fetch("/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt }) });
+  // Not an event stream: the API refused (a bad key, the free tier's limit), and says why.
+  if (!(r.headers.get("content-type") || "").startsWith("text/event-stream")) {
+    out.textContent = "Gemini answered " + r.status + ": " + (await r.text());
+    return;
+  }
+  const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+  let rest = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const lines = (rest + value).split("\\n");
+    rest = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      let ev;
+      try { ev = JSON.parse(line.slice(5)); } catch (_) { continue; }
+      if (ev.event_type === "step.delta" && ev.delta && ev.delta.type === "text") out.textContent += ev.delta.text;
+    }
+  }
+};
+</script>`;
+}
+
+holon answer(events) -> said js {
+  let said = "";
+  for (const line of String(events).split("\n")) {
+    if (!line.startsWith("data:")) continue;
+    let e;
+    try { e = JSON.parse(line.slice(5)); } catch (_) { continue; }
+    if (e.event_type === "step.delta" && e.delta && e.delta.type === "text") said += e.delta.text;
+  }
+  return said;
+}
+
+route GET / (req) {
+  respond page(chats.list()), headers: { "content-type": "text/html; charset=utf-8" }
+}
+
+route POST /chat (req) {
+  prompt = req.json.prompt
+  sent = http.post("generativelanguage.googleapis.com", "/v1beta/interactions", headers: { "content-type": "application/json", "x-goog-api-key": secret.gemini_api_key }, body: json({ model: "gemini-3.5-flash-lite", input: prompt, stream: true }), stream: true)
+  chats[as_text(now)] = { prompt: prompt, said: answer(sent.body) }
+  respond sent.body, missing: 400, stream: true
+}
