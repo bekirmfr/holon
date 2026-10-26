@@ -2,23 +2,28 @@
 // flows page, deployed through the consent screen, and, for the ones that answer requests here,
 // sent one and replayed exactly in view mode. What CLAUDE.md asks of a sample by hand ("run live
 // once"), kept from rotting by CI. A sample deploys on its own port plus 1000 (set under ⚙), so a
-// developer's deployments on the samples' ports are left alone.
+// developer's deployments on the samples' ports are left alone, plus 100 for each slot past the
+// first (ports.mjs), so runs side by side don't meet.
 
+import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
-import { expect, FOLDERS, RUN_DIR, SERVER, test } from "./fixtures";
+import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 
-/** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. */
-async function openSample(page: Page, title: string) {
-  await page.goto("/");
+/** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. From
+ *  a fresh load of the editor unless `reload` is false: then from the flows page of the editor
+ *  as it is (faster, and its other tabs stay open). */
+async function openSample(page: Page, title: string, reload = true) {
+  if (reload) await page.goto("/");
   await page.getByRole("button", { name: "flows", exact: true }).click();
   const card = page.getByText(title, { exact: true }).locator("xpath=../..");
   await card.getByRole("button", { name: "open" }).click();
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
-/** Deploy the open flow through ⚙ and the consent screen; its port moved up by `by` (1000), and
+/** Deploy the open flow through ⚙ and the consent screen; its port moved up by `by` (the slot's
+ *  SAMPLE_SHIFT, ports.mjs), and
  *  whatever else `set` sets under ⚙. Answers the port it serves on (null for a flow without routes). */
-async function deploy(page: Page, by = 1000, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
+async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
   await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "deploy settings" });
   const portField = settings.locator("input").first();
@@ -69,28 +74,50 @@ async function viewNewestRun(page: Page) {
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
 }
 
-test("every sample opens from the flows page and deploys", async ({ page, request, adminToken }) => {
+/** The samples' titles, as holon-author lists them (samples.rs), read as the tests are collected:
+ *  a test for each group of SAMPLES_PER_TEST below, so they spread over shards (ci.yml) rather
+ *  than make one long test, without a fresh page and editor for each sample (a test each was
+ *  half again as slow). */
+const SAMPLE_TITLES = [...readFileSync(new URL("../../crates/holon-author/src/samples.rs", import.meta.url), "utf8").matchAll(/^\s*title: "(.*)",$/gm)].map((m) => m[1]);
+
+test("the flows page lists every sample", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "flows", exact: true }).click();
-  // The samples, as the flows page lists them.
   const titles = await page.locator("text=samples").locator("xpath=following-sibling::div").locator("div > div:first-child").allInnerTexts();
-  const samples = titles.filter((t) => t.trim().length > 0);
-  expect(samples.length).toBeGreaterThan(5);
-  for (const title of samples) {
-    await test.step(title, async () => {
-      await openSample(page, title);
-      await deploy(page);
-    });
-  }
+  const listed = titles.filter((t) => t.trim().length > 0);
+  // Every sample samples.rs has, so none is left out of the tests below, and nothing else.
+  expect(SAMPLE_TITLES.length).toBeGreaterThan(5);
+  expect([...listed].sort()).toEqual([...SAMPLE_TITLES].sort());
 });
 
+const SAMPLES_PER_TEST = 8;
+for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
+  const titles = SAMPLE_TITLES.slice(first, first + SAMPLES_PER_TEST);
+  test(`samples ${first + 1} to ${first + titles.length} open from the flows page and deploy`, async ({ page }) => {
+    await page.goto("/");
+    for (const title of titles) {
+      await test.step(title, async () => {
+        await openSample(page, title, false);
+        await deploy(page);
+      });
+    }
+  });
+}
+
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
-  // On its own port, so the text (which says `port 8115`) still stands for the canvas: a deploy
-  // then carries `source` and `bindings` (useDeployFlow.ts), and a run explains as the text reads
-  // (`name = req.params.name`, not `field_2 = …`). Changing the port under ⚙ is a canvas change
-  // the text doesn't have, so the loop above, on +1000, deploys the canvas alone.
+  // The port moved in the text (the text's wins while it is open), so the text still stands for
+  // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains
+  // as the text reads (`name = req.params.name`, not `field_2 = …`). Changing the port under ⚙
+  // alone is a canvas change the text doesn't have, so the loop above deploys the canvas alone.
   await openSample(page, "Cache-aside (a branch not taken)");
-  await deploy(page, 0);
+  const port = 8115 + SAMPLE_SHIFT;
+  const text = readFileSync(new URL("../../crates/holon-author/samples/cache-aside.holon", import.meta.url), "utf8");
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace("port 8115", `port ${port}`));
+  await settingsSayPort(page, String(port));
+  expect(await deploy(page, 0)).toBe(port);
   const deployed = await request.get(`${SERVER}/deployments/cache-aside/document`, { headers: { Authorization: `Bearer ${adminToken}` } });
   expect(deployed.status()).toBe(200);
   const document = (await deployed.json()) as { source?: string; bindings?: Record<string, string> };
@@ -122,12 +149,12 @@ test("hello-api answers, and its run replays exactly in view mode", async ({ pag
 
 test("a deployment whose port another program holds says, in view mode, it isn't answering", async ({ page, request }) => {
   const { createServer } = await import("node:net");
-  // Hello API's port moved up by 2000: one no other test deploys on.
+  // Hello API's port moved up 1000 past where samples deploy: one no other test deploys on.
   const holder = createServer();
-  await new Promise<void>((done) => holder.listen(8101 + 2000, "127.0.0.1", done));
+  await new Promise<void>((done) => holder.listen(8101 + SAMPLE_SHIFT + 1000, "127.0.0.1", done));
   await openSample(page, "Hello API");
-  const port = await deploy(page, 2000);
-  expect(port).toBe(8101 + 2000);
+  const port = await deploy(page, SAMPLE_SHIFT + 1000);
+  expect(port).toBe(8101 + SAMPLE_SHIFT + 1000);
   await expect(page.locator(".hl-canvas")).toContainText("port in use");
   await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
   const banner = page.locator(".hl-view__not-listening");
@@ -535,8 +562,8 @@ data: ${JSON.stringify(data)}
     const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
     await editor.click();
     await page.keyboard.press("Control+A");
-    await page.keyboard.insertText(text.replaceAll('"api.anthropic.com"', `"${host}"`).replace("port 8127", "port 9127"));
-    await settingsSayPort(page, "9127");
+    await page.keyboard.insertText(text.replaceAll('"api.anthropic.com"', `"${host}"`).replace("port 8127", `port ${8127 + SAMPLE_SHIFT}`));
+    await settingsSayPort(page, String(8127 + SAMPLE_SHIFT));
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
       await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
@@ -623,8 +650,8 @@ test("gemini-chat forwards Gemini's streamed answer as it arrives, and says so w
     const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
     await editor.click();
     await page.keyboard.press("Control+A");
-    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8128", "port 9128"));
-    await settingsSayPort(page, "9128");
+    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8128", `port ${8128 + SAMPLE_SHIFT}`));
+    await settingsSayPort(page, String(8128 + SAMPLE_SHIFT));
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
       await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
@@ -965,10 +992,10 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const local = { ...process.env, HOLON_RUN_DIR: RUN_DIR, HOLON_TOKEN: "", HOLON_SERVER: "" };
   const which = spawnSync(holon, ["export", "ledger"], { encoding: "utf8", env: local });
   expect(which.status).toBe(1);
-  expect(which.stderr).toContain("pick one with --server 7520 or --server 7521");
+  expect(which.stderr).toContain(`pick one with --server ${PORTS.server} or --server ${PORTS.fresh}`);
   // Into a folder of its own (made for it), by a name (.json added), the full path said.
   const mine = join(dir, "audits", "as-me.json");
-  const asMe = execFileSync(holon, ["export", "ledger", "--server", "7520", "--to", join(dir, "audits"), "--as", "as-me"], { encoding: "utf8", env: local });
+  const asMe = execFileSync(holon, ["export", "ledger", "--server", String(PORTS.server), "--to", join(dir, "audits"), "--as", "as-me"], { encoding: "utf8", env: local });
   expect(asMe).toContain(`wrote ${mine}: 4 runs of "ledger", head ${head.slice(0, 12)}`);
   expect(asMe).toContain(`holon verify ${mine}`);
   expect(execFileSync(holon, ["verify", mine], { encoding: "utf8" })).toContain("re-ran 4 runs");

@@ -7,13 +7,13 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { expect, RUN_DIR, test } from "./fixtures";
+import { expect, PORTS, RUN_DIR, SAMPLE_SHIFT, test } from "./fixtures";
 
 /** `holon mcp` against the test server, as an agent's host runs it: one JSON-RPC line each way. */
 function mcp() {
   const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
   const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
-  const child = spawn(holon, ["mcp", "--server", "7520"], { env: { ...process.env, HOLON_RUN_DIR: RUN_DIR, HOLON_TOKEN: "", HOLON_SERVER: "" } });
+  const child = spawn(holon, ["mcp", "--server", String(PORTS.server)], { env: { ...process.env, HOLON_RUN_DIR: RUN_DIR, HOLON_TOKEN: "", HOLON_SERVER: "" } });
   const waiting = new Map<number, (v: { result?: { content: { text: string }[]; isError: boolean }; error?: unknown }) => void>();
   createInterface({ input: child.stdout }).on("line", (line) => {
     const message = JSON.parse(line);
@@ -39,9 +39,10 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
   try {
     const init = await agent.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "1" } });
     expect(init.result?.protocolVersion).toBe("2025-06-18");
-    // Its own name and port each run, so a reused server's earlier runs don't meet it.
+    // Its own name each run, so a reused server's earlier runs don't meet it; its port past the
+    // samples', in this slot's range (ports.mjs), so it meets no other run's.
     const name = `agent-${Date.now().toString(36)}`;
-    const port = 9200 + Math.floor(Math.random() * 700);
+    const port = 8190 + SAMPLE_SHIFT;
     const text = (greeting: string) => `flow ${name}\nport ${port}\n\nroute GET /hi/:name (req) {\n  respond "${greeting}, {req.params.name}"\n}\n`;
 
     expect((await agent.tool("check", { text: text("Hi") })).text).toContain("GET /hi/:name");
