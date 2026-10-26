@@ -171,17 +171,19 @@ minutes).
 ## `holon database`
 
 ```
-holon database add NAME PATH [--read-only] [--schema SQL | --schema-file FILE] [--for SLUG]
+holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--for SLUG]
 holon database list
 holon database remove NAME [--for SLUG]
 ```
 
-Binds a name flows use (`database shop`) to a SQLite file on the server's machine. Needs an
+Binds a name flows use (`database shop`) to a SQLite file on the server's machine (`PATH`), or
+to a Postgres or MySQL database whose URL the server fetches from `SOURCE`
+(`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`), never storing or showing it. Needs an
 admin; each takes `--server PORT|URL`. See [Databases on the host](../guides/databases.md).
 
 | Option | |
 |---|---|
-| `--schema SQL`, `--schema-file FILE` | run it first, creating the file if there is none |
+| `--schema SQL`, `--schema-file FILE` | run it first, creating a SQLite file if there is none |
 | `--read-only` | flows may read it, not write it |
 | `--for SLUG` | for that deployment only |
 

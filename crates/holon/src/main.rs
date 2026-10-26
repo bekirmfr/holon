@@ -159,6 +159,7 @@ mod dataplane;
 mod deploy;
 mod editor;
 mod durable;
+mod engines;
 mod firing;
 mod fixtures;
 mod grants;
@@ -897,7 +898,8 @@ fn serve(args: Vec<String>) {
     };
     let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let secrets_key = sealing::KeySource::parse(secrets_key_arg.as_deref(), &secrets_arg).unwrap_or_else(|e| refuse_to_start(e));
-    let sources = secret_sources::Sources::new(dotenv_arg.map(std::path::PathBuf::from)).unwrap_or_else(|e| refuse_to_start(e));
+    let dotenv_path = dotenv_arg.map(std::path::PathBuf::from);
+    let sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));
     let secrets = Arc::new(SecretStore::open(&secrets_arg, &secrets_key, sources).unwrap_or_else(|e| refuse_to_start(e)));
     {
         // References are read again every minute: a value changed or revoked where it is kept
@@ -918,8 +920,10 @@ fn serve(args: Vec<String>) {
         .collect();
     own.extend(local::holon_home());
     let folders = folders::Folders::open(&folders_arg, &own).unwrap_or_else(|e| refuse_to_start(e));
-    // The databases an admin bound (databases.rs), beside them.
-    let folders = folders.with_databases(databases::Databases::open(&databases_arg, &own).unwrap_or_else(|e| refuse_to_start(e)));
+    // The databases an admin bound (databases.rs), beside them: a Postgres or MySQL one's
+    // connection is fetched from the environment and dotenv file a secret's source is.
+    let db_sources = secret_sources::Sources::new(dotenv_path).unwrap_or_else(|e| refuse_to_start(e));
+    let folders = folders.with_databases(databases::Databases::open(&databases_arg, &own).unwrap_or_else(|e| refuse_to_start(e)).with_sources(db_sources));
     // The texts of files runs read are kept beside the content store (blobs.rs).
     let folders = Arc::new(if store_arg == ":memory:" { folders } else { folders.with_blobs(blobs::Blobs::at(Path::new(&store_arg).join("blobs"))) });
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));

@@ -172,13 +172,19 @@ pub(crate) fn fire_with_state(
             if !cell.claims.wait_free(&written, &a.run.run_id, std::time::Instant::now() + limits.claim_wait) {
                 eprintln!("holon: run {} commits over a key another run still holds (claim_wait passed)", a.run.run_id);
             }
-            // The same for the rows and files it writes, which a run of another deployment may hold.
-            if let Some(f) = waits.folders.as_deref() {
+            // The same for the rows and files it writes, which a run of another deployment (or of
+            // another server, on a Postgres or MySQL database) may hold: it holds them itself until
+            // it has committed, so none calls out over them meanwhile.
+            let shared_folders = waits.folders.clone();
+            let _writing = shared_folders.as_deref().and_then(|f| {
                 let shared = claims::shared_written_keys(f, &a.run.performed);
-                if !shared.is_empty() && !f.all.claims.wait_free(&shared, &a.run.run_id, std::time::Instant::now() + limits.claim_wait) {
-                    eprintln!("holon: run {} commits over a row or file another run still holds (claim_wait passed)", a.run.run_id);
+                if shared.is_empty() {
+                    return None;
                 }
-            }
+                claims::Hold::take(&f.all, shared, a.run.run_id.clone(), std::time::Instant::now() + limits.claim_wait)
+                    .map_err(|key| eprintln!("holon: run {} commits over {key}, which another run still holds (claim_wait passed)", a.run.run_id))
+                    .ok()
+            });
             // Its files are written beside their names before any lock is taken: under the locks,
             // what is left is the check and a rename.
             let staged = folders::stage(waits.folders.as_ref(), &a.run.performed);
@@ -242,7 +248,7 @@ pub(crate) fn fire_with_state(
         if keys.is_empty() {
             return None;
         }
-        claims::Hold::take(&f.all.claims, keys, holder, std::time::Instant::now() + limits.claim_wait)
+        claims::Hold::take(&f.all, keys, holder, std::time::Instant::now() + limits.claim_wait)
             .map_err(|key| eprintln!("holon: a run runs holding the state while {key} is still claimed (claim_wait passed)"))
             .ok()
     });

@@ -7,9 +7,10 @@
 //! A collection's keys are in a table beside the deployment's state ([`StateCell`]): two
 //! deployments never share one. A shared resource's (a row or table of a database, a file or
 //! folder: `docs/L4s/databases-L4.md` §7.2) are in the server's table, `Folders::claims`, by
-//! the resource's real address, so every deployment bound to it sees them. A run holding keys
-//! never waits for another's (it releases, waits, and runs again), so there is no deadlock;
-//! every wait is bounded by the run's `claim_wait`.
+//! the resource's real address, so every deployment bound to it sees them; a Postgres or MySQL
+//! database's are held in the database too (engines.rs), so the runs of every server that uses it
+//! see them. A run holding keys never waits for another's (it releases, waits, and runs again), so
+//! there is no deadlock; every wait is bounded by the run's `claim_wait`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -92,6 +93,55 @@ impl fmt::Display for ClaimKey {
             ClaimKey::NewRow { name, table, .. } => write!(f, "{name}/{table}[new]"),
             ClaimKey::File { name, file, .. } => write!(f, "{name}/{file}"),
             ClaimKey::Folder { name, .. } => write!(f, "{name}[*]"),
+        }
+    }
+}
+
+/// How often a run waiting for a claim another server's run holds asks its database again.
+const POLL: Duration = Duration::from_millis(20);
+
+/// Hold the shared resources' `keys` for `run`: in the server's table, then in each Postgres or
+/// MySQL database they are in, for the runs of other servers. With a `deadline`, waits until then
+/// while another run holds one; without, takes them at once or not at all. How long it waited, or
+/// the key still held (then nothing was taken).
+pub(crate) fn take_shared(all: &folders::Folders, keys: &[ClaimKey], run: &str, deadline: Option<Instant>) -> Result<Duration, ClaimKey> {
+    let started = Instant::now();
+    match deadline {
+        Some(d) => drop(all.claims.acquire(keys, run, d)?),
+        None => all.claims.try_acquire(keys, run)?,
+    }
+    loop {
+        match all.databases.claim_in_databases(keys, run) {
+            Ok(()) => return Ok(started.elapsed()),
+            Err(_) if deadline.is_some_and(|d| Instant::now() + POLL < d) => std::thread::sleep(POLL),
+            Err(key) => {
+                all.claims.release(keys, run);
+                return Err(key);
+            }
+        }
+    }
+}
+
+/// Let go of the shared resources' `keys` held by `run`, here and in their databases.
+pub(crate) fn release_shared(all: &folders::Folders, keys: &[ClaimKey], run: &str) {
+    all.claims.release(keys, run);
+    all.databases.unclaim_in_databases(keys, run);
+}
+
+/// Wait, until `deadline`, while another run, of this server or another, holds any of the shared
+/// resources' `keys`: whether they came free.
+pub(crate) fn wait_shared(all: &folders::Folders, keys: &[ClaimKey], run: &str, deadline: Instant) -> bool {
+    if !all.claims.wait_free(keys, run, deadline) {
+        return false;
+    }
+    loop {
+        match all.databases.claim_in_databases(keys, run) {
+            Ok(()) => {
+                all.databases.unclaim_in_databases(keys, run);
+                return true;
+            }
+            Err(_) if Instant::now() + POLL < deadline => std::thread::sleep(POLL),
+            Err(_) => return false,
         }
     }
 }
@@ -308,14 +358,6 @@ impl Claiming {
         })
     }
 
-    /// The table a key is claimed in: the deployment's, or the server's for a shared resource.
-    fn table_of<'t>(cell: &'t StateCell, shared: Option<&'t folders::Scoped>, key: &ClaimKey) -> &'t Claims {
-        match shared {
-            Some(f) if key.is_shared() => &f.all.claims,
-            _ => &cell.claims,
-        }
-    }
-
     /// Before the attempt's requests go out: hold every key it has read that it may write, and
     /// check those reads against the live state. Nothing new to hold is `Held` at once.
     pub(crate) fn claim(&mut self, reads: &[collections::Read]) -> Claim {
@@ -332,8 +374,13 @@ impl Claiming {
         let (shared, own): (Vec<ClaimKey>, Vec<ClaimKey>) = new.iter().cloned().partition(|k| k.is_shared() && folders.is_some());
         let first_waits = self.held.is_empty();
         for group in [own, shared].into_iter().filter(|g| !g.is_empty()) {
-            let table = Self::table_of(&cell, folders.as_deref(), &group[0]);
-            let taken = if first_waits && self.held.is_empty() { table.acquire(&group, &self.run, self.deadline).map(|_| ()) } else { table.try_acquire(&group, &self.run) };
+            let all = folders.as_deref().filter(|_| group[0].is_shared()).map(|f| &*f.all);
+            let wait = (first_waits && self.held.is_empty()).then_some(self.deadline);
+            let taken = match (all, wait) {
+                (Some(all), wait) => take_shared(all, &group, &self.run, wait).map(|_| ()),
+                (None, Some(deadline)) => cell.claims.acquire(&group, &self.run, deadline).map(|_| ()),
+                (None, None) => cell.claims.try_acquire(&group, &self.run),
+            };
             match taken {
                 Ok(()) => self.held.extend(group),
                 Err(key) if self.held.is_empty() => {
@@ -343,7 +390,11 @@ impl Claiming {
                 Err(key) => {
                     // Holding some and needing one another run holds: let go, wait for it, run again.
                     self.release_all();
-                    let free = table.wait_free(std::slice::from_ref(&key), &self.run, self.deadline);
+                    let one = std::slice::from_ref(&key);
+                    let free = match all {
+                        Some(all) => wait_shared(all, one, &self.run, self.deadline),
+                        None => cell.claims.wait_free(one, &self.run, self.deadline),
+                    };
                     self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), free));
                     return if free { Claim::Overtaken } else { Claim::Busy { key: key.to_string() } };
                 }
@@ -366,7 +417,7 @@ impl Claiming {
             let (shared, own): (Vec<ClaimKey>, Vec<ClaimKey>) = self.held.iter().cloned().partition(|k| k.is_shared() && folders.is_some());
             self.cell.claims.release(&own, &self.run);
             if let Some(f) = &folders {
-                f.all.claims.release(&shared, &self.run);
+                release_shared(&f.all, &shared, &self.run);
             }
             for r in self.records.iter_mut().filter(|r| r.held.is_none() && self.held.contains(&r.key)) {
                 r.held = Some(r.taken.elapsed());
@@ -421,25 +472,26 @@ pub(crate) fn whole_of(folders: &folders::Scoped, permit: &crate::permissions::P
     keys
 }
 
-/// Claims a run holds until it is dropped: the last try's, on everything shared it may touch.
+/// Claims on shared resources a run holds until it is dropped: the last try's, on everything
+/// shared it may touch, and a commit's, on the rows and files it writes.
 pub(crate) struct Hold<'c> {
-    claims: &'c Claims,
+    all: &'c folders::Folders,
     keys: Vec<ClaimKey>,
     run: String,
 }
 
 impl<'c> Hold<'c> {
-    /// Hold `keys` for `run` once no other run holds any, waiting until `deadline`: none if one
-    /// was still held then.
-    pub(crate) fn take(claims: &'c Claims, keys: Vec<ClaimKey>, run: String, deadline: Instant) -> Result<Hold<'c>, ClaimKey> {
-        claims.acquire(&keys, &run, deadline)?;
-        Ok(Hold { claims, keys, run })
+    /// Hold `keys` for `run` once no other run (of this server or another) holds any, waiting
+    /// until `deadline`: none if one was still held then.
+    pub(crate) fn take(all: &'c folders::Folders, keys: Vec<ClaimKey>, run: String, deadline: Instant) -> Result<Hold<'c>, ClaimKey> {
+        take_shared(all, &keys, &run, Some(deadline))?;
+        Ok(Hold { all, keys, run })
     }
 }
 
 impl Drop for Hold<'_> {
     fn drop(&mut self) {
-        self.claims.release(&self.keys, &self.run);
+        release_shared(self.all, &self.keys, &self.run);
     }
 }
 

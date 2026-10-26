@@ -512,10 +512,11 @@ route POST /order/:id/refund (req) {
 }
 ```
 
-`database shop` names a database on the host; an admin binds the name to a SQLite file, with the
-schema that makes its tables (`holon database add shop ~/shop.db --schema "create table orders
-(…)"`, `--read-only`, `--for <slug>`, or the admin page), and a flow never sees the path or runs
-DDL. `shop.query(sql, v…)` is `db_query{database: shop, sql}(params)`, the rows as the run began;
+`database shop` names a database on the host; an admin binds the name to a SQLite file, or to a
+Postgres or MySQL database by where its URL is fetched from (`env:HOLON_SECRET_SHOP_URL`, as a
+secret's source: `engines.rs`), with the schema that makes its tables (`holon database add shop
+~/shop.db --schema "create table orders (…)"`, `--read-only`, `--for <slug>`, or the admin page),
+and a flow never sees where it is or runs DDL; its text is the same on each engine. `shop.query(sql, v…)` is `db_query{database: shop, sql}(params)`, the rows as the run began;
 `shop.one(…)` is `db_one`, the first row or no value; `shop.exec(…)` is `db_exec`, the statement run
 when the run finishes, and with `expect: n` only if it changes `n` rows, or nothing the run wrote
 lands and the route answers 409. The SQL is a text literal, because its tables are the grant:

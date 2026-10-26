@@ -86,7 +86,7 @@ export function AdminPage({ me }: { me: string }) {
   // The "browse…" for the folder's path is open.
   const [browsing, setBrowsing] = useState(false);
   const [databases, setDatabases] = useState<DatabaseEntry[]>([]);
-  const [databaseDraft, setDatabaseDraft] = useState<DatabaseBinding>({ name: "", path: "", access: "read-write", schema: null, deployment: null });
+  const [databaseDraft, setDatabaseDraft] = useState<DatabaseBinding & { where: string }>({ name: "", where: "", access: "read-write", schema: null, deployment: null });
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(() => {
@@ -397,15 +397,17 @@ export function AdminPage({ me }: { me: string }) {
 
       <div style={head}>databases</div>
       <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 6, lineHeight: 1.45 }}>
-        SQLite databases flows read and write on this server&apos;s machine. A flow names a database (<code>database shop</code>), never a path, and is granted
-        each table its SQL reads or writes. A schema (create table …) is run when it is bound, creating the file if there is none; flows run no DDL. Read
-        only: flows may read it, not write it. A writable database gets a table holon_commits, where each run&apos;s commit marks it done.
+        Databases flows read and write: a SQLite file on this server&apos;s machine, or a Postgres or MySQL database whose URL the server fetches from
+        where it is kept, as a secret&apos;s (<code>env:HOLON_SECRET_SHOP_URL</code>, <code>vault:…</code>), never stored or shown. A flow names a database
+        (<code>database shop</code>), never where it is, and is granted each table its SQL reads or writes. A schema (create table …) is run when it is
+        bound, creating a SQLite file if there is none; flows run no DDL. Read only: flows may read it, not write it. A writable database gets a table
+        holon_commits, where each run&apos;s commit marks it done.
       </div>
       {databases.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no databases bound</div>}
       {databases.map((d) => (
         <div key={`${d.deployment ?? ""}/${d.name}`} style={row}>
           <span style={{ color: "#6fd3e0", minWidth: 90 }}>{d.name}</span>
-          <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{d.path}</span>
+          <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
           <span style={{ color: "#7e8ea8", fontSize: 11 }}>
             {d.engine} · {d.access === "read" ? "read only" : "read and write"}
             {d.deployment ? ` · for ${d.deployment} only` : ""}
@@ -428,18 +430,20 @@ export function AdminPage({ me }: { me: string }) {
         onSubmit={(e) => {
           e.preventDefault();
           act(async () => {
-            const d = databaseDraft;
-            await bindDatabase({ ...d, name: d.name.trim(), path: d.path.trim(), schema: d.schema?.trim() || null, deployment: d.deployment?.trim() || null });
-            setDatabaseDraft({ ...d, name: "", path: "", schema: null, deployment: null });
+            const { where, ...d } = databaseDraft;
+            const at = where.trim();
+            const target = at.startsWith("env:") || at.startsWith("vault:") ? { connection: at } : { path: at };
+            await bindDatabase({ ...d, ...target, name: d.name.trim(), schema: d.schema?.trim() || null, deployment: d.deployment?.trim() || null });
+            setDatabaseDraft({ ...databaseDraft, name: "", where: "", schema: null, deployment: null });
           });
         }}
       >
         <input aria-label="database name" placeholder="name (shop)" value={databaseDraft.name} onChange={(e) => setDatabaseDraft({ ...databaseDraft, name: e.target.value })} style={input} />
         <input
           aria-label="database path"
-          placeholder="the SQLite file's whole path on this server's machine"
-          value={databaseDraft.path}
-          onChange={(e) => setDatabaseDraft({ ...databaseDraft, path: e.target.value })}
+          placeholder="a SQLite file's whole path on this server's machine, or a Postgres or MySQL URL's source (env:HOLON_SECRET_SHOP_URL)"
+          value={databaseDraft.where}
+          onChange={(e) => setDatabaseDraft({ ...databaseDraft, where: e.target.value })}
           style={{ ...input, flex: 1, minWidth: 220 }}
         />
         <select
@@ -460,13 +464,13 @@ export function AdminPage({ me }: { me: string }) {
         />
         <textarea
           aria-label="database schema"
-          placeholder="schema, run when it is bound (create table orders (id integer primary key, …)); empty: the file is a database already"
+          placeholder="schema, run when it is bound (create table orders (id integer primary key, …)); empty: the database is there already"
           value={databaseDraft.schema ?? ""}
           onChange={(e) => setDatabaseDraft({ ...databaseDraft, schema: e.target.value })}
           rows={2}
           style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
         />
-        <button type="submit" style={primary} disabled={!databaseDraft.name.trim() || !databaseDraft.path.trim()}>
+        <button type="submit" style={primary} disabled={!databaseDraft.name.trim() || !databaseDraft.where.trim()}>
           bind database
         </button>
       </form>

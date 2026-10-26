@@ -59,6 +59,49 @@ pub fn tables(sql: &str, write: bool) -> Result<Tables, String> {
     Ok(scan.found)
 }
 
+/// `sql` with each `$n` written `?`, and the parameter each `?` takes, in order: what an engine
+/// with only `?` (MySQL) is sent. `$1` used twice is two `?`. Strings, quoted names and comments
+/// are kept as they are; a statement [`tables`] refuses is refused.
+pub fn positional(sql: &str) -> Result<(String, Vec<usize>), String> {
+    tokenize(sql)?;
+    let s = sql.as_bytes();
+    let (mut out, mut order, mut i, mut kept) = (String::with_capacity(sql.len()), Vec::new(), 0, 0);
+    while i < s.len() {
+        let skip_to = |from: usize, end: &[u8]| s[from..].windows(end.len()).position(|w| w == end).map_or(s.len(), |n| from + n + end.len());
+        match s[i] {
+            b'\'' => {
+                // A string: '' inside it is a quote (tokenize refused anything else).
+                let mut j = i + 1;
+                while j < s.len() {
+                    if s[j] == b'\'' && s.get(j + 1) == Some(&b'\'') {
+                        j += 2;
+                    } else if s[j] == b'\'' {
+                        break;
+                    } else {
+                        j += 1;
+                    }
+                }
+                i = j + 1;
+            }
+            b'"' | b'`' => i = skip_to(i + 1, &s[i..=i]),
+            b'[' => i = skip_to(i + 1, b"]"),
+            b'-' if s.get(i + 1) == Some(&b'-') => i = skip_to(i, b"\n"),
+            b'/' if s.get(i + 1) == Some(&b'*') => i = skip_to(i + 2, b"*/"),
+            b'$' => {
+                let len = s[i + 1..].iter().take_while(|b| b.is_ascii_digit()).count();
+                out.push_str(&sql[kept..i]);
+                out.push('?');
+                order.push(sql[i + 1..i + 1 + len].parse().map_err(|_| "a parameter's number is too big")?);
+                i += 1 + len;
+                kept = i;
+            }
+            _ => i += 1,
+        }
+    }
+    out.push_str(&sql[kept.min(sql.len())..]);
+    Ok((out, order))
+}
+
 /// The one table a statement touches, and the columns it pins to one value each, as `column = $n`
 /// (or `$n = column`) joined by `and` at the top of its `where`; for an insert, the columns its
 /// one row of values gives as `$n`. Column → the parameter's number. None when it touches more
@@ -813,5 +856,15 @@ mod tests {
         assert_eq!(read("select * from t where a = $2 and b = $1 or c = $2").1, 2);
         assert_eq!(read("select * from t").1, 0);
         assert!(refused("select * from t where a = $0", false).contains("$1"));
+    }
+
+    /// MySQL takes `?`: each `$n` is one, in order, wherever it is code, and nowhere else.
+    #[test]
+    fn dollar_parameters_become_question_marks_in_order() {
+        let p = |sql: &str| positional(sql).unwrap();
+        assert_eq!(p("update stock set n = n - $1 where sku = $2 and n >= $1"), ("update stock set n = n - ? where sku = ? and n >= ?".to_string(), vec![1, 2, 1]));
+        assert_eq!(p("select '$1', \"$2\" from t where a = $3 -- $4\n and b = $1 /* $5 */"), ("select '$1', \"$2\" from t where a = ? -- $4\n and b = ? /* $5 */".to_string(), vec![3, 1]));
+        assert_eq!(p("select 'it''s $1' from t where a = $2"), ("select 'it''s $1' from t where a = ?".to_string(), vec![2]));
+        assert!(positional("select ? from t").is_err());
     }
 }

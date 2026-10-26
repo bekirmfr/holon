@@ -1,10 +1,11 @@
 //! Databases (`docs/L4s/databases-L4.md`): SQL databases a flow reads and writes on the host.
 //!
 //! - **Bound by an admin,** as a folder is (`--databases`, owner-only; `/admin/databases`,
-//!   `holon database`): a name a flow uses (`database shop`) bound to a database on this machine
-//!   (SQLite: a file), with the most it allows (read, or read and write), for the whole server or
-//!   one deployment. A flow never sees where it is. The admin's schema (`--schema`) is run when it
-//!   is bound; a flow runs no DDL.
+//!   `holon database`): a name a flow uses (`database shop`) bound to a database (SQLite: a file on
+//!   this machine; Postgres or MySQL: a connection, named as a secret's source is, `env:…` or
+//!   `vault:…`, and fetched by the host: engines.rs), with the most it allows (read, or read and
+//!   write), for the whole server or one deployment. A flow never sees where it is. The admin's
+//!   schema (`--schema`) is run when it is bound; a flow runs no DDL.
 //! - **Reads** (`shop.query`, `shop.one`) are answered on the spot, from the database as the run
 //!   found it, only from the tables the deployment was granted (the host reads the statement's
 //!   tables again: sql.rs), within its [`DbLimits`]; each is kept with the run's reads, so the log
@@ -25,9 +26,11 @@ use rusqlite::types::{Value as Sql, ValueRef};
 use rusqlite::{Connection, OpenFlags};
 
 use crate::claims::ClaimKey;
+use crate::engines::{Failure, Remote};
 use crate::folders::FolderAccess;
 use crate::http::{err, read_body};
 use crate::permissions::{DbLimits, Manifest, Permit};
+use crate::secret_sources::{Reference, Sources};
 
 use crate::*;
 
@@ -44,11 +47,38 @@ pub(crate) const UNMET: &str = "a statement didn't change the rows it expects: "
 /// One bound database.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct Database {
-    /// Which engine: `sqlite`.
+    /// Which engine: `sqlite`, `postgres` or `mysql`.
     pub(crate) engine: String,
     /// A SQLite database's file, as bound (absolute, links resolved).
+    #[serde(default, skip_serializing_if = "is_empty_path")]
     pub(crate) path: PathBuf,
+    /// A Postgres or MySQL database's connection: where the host fetches its URL from (`env:…`,
+    /// `vault:…`), never the URL itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) connection: Option<String>,
+    /// Where that connection points, without its credentials (`postgres://host:5432/shop`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) address: Option<String>,
     pub(crate) access: FolderAccess,
+}
+
+fn is_empty_path(p: &Path) -> bool {
+    p.as_os_str().is_empty()
+}
+
+impl Database {
+    /// What the database is known by: its file, or where its connection points. Two bindings of
+    /// one database are one database to claims and commit locks.
+    pub(crate) fn at(&self) -> String {
+        self.address.clone().unwrap_or_else(|| self.path.display().to_string())
+    }
+}
+
+/// An open database: SQLite's one connection, or a pool of them to a Postgres or MySQL.
+#[derive(Clone)]
+enum Open {
+    Sqlite(Arc<Mutex<Connection>>),
+    Remote(Arc<Remote>),
 }
 
 /// Every binding, as [`folders::Bound`]: the server's by name, each deployment's under
@@ -67,8 +97,11 @@ pub(crate) struct Databases {
     /// The server's own files and folders: never bound, nor anything inside them.
     forbidden: Vec<PathBuf>,
     bound: RwLock<Bound>,
-    /// One connection per database file, every deployment's runs through it, by its path.
-    open: Mutex<BTreeMap<PathBuf, Arc<Mutex<Connection>>>>,
+    /// Each database open, every deployment's runs through it, by what it is known by
+    /// ([`Database::at`]).
+    open: Mutex<BTreeMap<String, Open>>,
+    /// What a connection's source is fetched from: the server's environment and dotenv file.
+    sources: Sources,
 }
 
 impl std::fmt::Debug for Databases {
@@ -80,7 +113,13 @@ impl std::fmt::Debug for Databases {
 impl Databases {
     /// None, kept nowhere: the tests, and a server told `--databases :memory:`.
     pub(crate) fn memory() -> Databases {
-        Databases { file: None, forbidden: Vec::new(), bound: RwLock::new(Bound::default()), open: Mutex::new(BTreeMap::new()) }
+        Databases { file: None, forbidden: Vec::new(), bound: RwLock::new(Bound::default()), open: Mutex::new(BTreeMap::new()), sources: Sources::none() }
+    }
+
+    /// These databases, fetching connections from `sources`.
+    pub(crate) fn with_sources(mut self, sources: Sources) -> Databases {
+        self.sources = sources;
+        self
     }
 
     /// The databases bound in `file` (none yet if it doesn't exist), refusing ever to bind one in
@@ -110,22 +149,58 @@ impl Databases {
         bound.deployments.get(deployment).and_then(|d| d.get(name)).or_else(|| bound.server.get(name)).cloned()
     }
 
-    /// Bind `name` to the SQLite database at `path`, for the whole server or one deployment,
-    /// replacing any binding of it there before. With a `schema` (the admin's DDL), it is run
-    /// first, creating the file if there is none; without one, the file must be a database
-    /// already.
-    pub(crate) fn bind(&self, name: &str, path: &str, access: FolderAccess, schema: Option<&str>, for_deployment: Option<&str>) -> Result<Database, String> {
+    /// Bind `name` to a database, for the whole server or one deployment, replacing any binding of
+    /// it there before: `target` is a SQLite database's file, or where a Postgres or MySQL
+    /// database's connection URL is fetched from (`env:HOLON_SECRET_…`, `vault:…`). With a `schema`
+    /// (the admin's DDL), it is run first (and a SQLite file created, if there is none); without
+    /// one, a SQLite file must be a database already.
+    pub(crate) fn bind(&self, name: &str, target: &str, access: FolderAccess, schema: Option<&str>, for_deployment: Option<&str>) -> Result<Database, String> {
         if !folders::is_folder_name(name) {
             return Err(format!("{name:?} isn't a database name: letters, digits, - and _, up to 64"));
         }
         if let Some(slug) = for_deployment.filter(|s| !folders::is_folder_name(s)) {
             return Err(format!("{slug:?} isn't a deployment's name"));
         }
-        let given = PathBuf::from(path.trim());
-        if !given.is_absolute() {
-            return Err(format!("{path:?} isn't an absolute path: give the whole path, as this server's machine sees it"));
-        }
         let schema = schema.map(str::trim).filter(|s| !s.is_empty());
+        let target = target.trim();
+        let (database, open) = if target.starts_with("env:") || target.starts_with("vault:") {
+            self.open_remote(target, access, schema)?
+        } else {
+            self.open_sqlite(target, access, schema)?
+        };
+        let mut bound = self.bound.write().unwrap();
+        let mut next = bound.clone();
+        match for_deployment {
+            Some(slug) => next.deployments.entry(slug.to_string()).or_default().insert(name.to_string(), database.clone()),
+            None => next.server.insert(name.to_string(), database.clone()),
+        };
+        self.save(&next)?;
+        *bound = next;
+        self.open.lock().unwrap().insert(database.at(), open);
+        Ok(database)
+    }
+
+    /// The Postgres or MySQL database whose URL `source` holds, reached now, its schema run.
+    fn open_remote(&self, source: &str, access: FolderAccess, schema: Option<&str>) -> Result<(Database, Open), String> {
+        let reference = Reference::parse(source)?;
+        let url = self.sources.fetch(&reference)?;
+        let remote = Remote::open(url)?;
+        if let Some(schema) = schema {
+            remote.run_schema(schema)?;
+        }
+        if access == FolderAccess::ReadWrite {
+            remote.keep_tables()?;
+        }
+        let database = Database { engine: remote.engine.name().into(), path: PathBuf::new(), connection: Some(source.to_string()), address: Some(remote.address.clone()), access };
+        Ok((database, Open::Remote(Arc::new(remote))))
+    }
+
+    /// The SQLite database at `path`, its schema run (the file made if there is none).
+    fn open_sqlite(&self, path: &str, access: FolderAccess, schema: Option<&str>) -> Result<(Database, Open), String> {
+        let given = PathBuf::from(path);
+        if !given.is_absolute() {
+            return Err(format!("{path:?} isn't an absolute path: give the whole path, as this server's machine sees it (or a connection: env:HOLON_SECRET_… or vault:…)"));
+        }
         if !given.is_file() && schema.is_none() {
             return Err(format!("there is no database at {path:?}: give a schema to create one there"));
         }
@@ -150,17 +225,8 @@ impl Databases {
             conn.execute_batch(&format!("create table if not exists {COMMITS_TABLE} (run text primary key, at integer not null)"))
                 .map_err(|e| format!("can't keep {COMMITS_TABLE} in it: {e}"))?;
         }
-        let database = Database { engine: "sqlite".into(), path: at.clone(), access };
-        let mut bound = self.bound.write().unwrap();
-        let mut next = bound.clone();
-        match for_deployment {
-            Some(slug) => next.deployments.entry(slug.to_string()).or_default().insert(name.to_string(), database.clone()),
-            None => next.server.insert(name.to_string(), database.clone()),
-        };
-        self.save(&next)?;
-        *bound = next;
-        self.open.lock().unwrap().insert(at, Arc::new(Mutex::new(conn)));
-        Ok(database)
+        let database = Database { engine: "sqlite".into(), path: at, connection: None, address: None, access };
+        Ok((database, Open::Sqlite(Arc::new(Mutex::new(conn)))))
     }
 
     /// Unbind `name`, the server's or one deployment's: whether it was bound. The database stays.
@@ -191,20 +257,75 @@ impl Databases {
         crate::sealing::write_private(file, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
     }
 
-    /// The connection to `database`, opened on first use: read and write, or read only where it
-    /// can't be written (read-only media).
-    fn connection(&self, database: &Database) -> Result<Arc<Mutex<Connection>>, String> {
-        let mut open = self.open.lock().unwrap();
-        if let Some(c) = open.get(&database.path) {
-            return Ok(Arc::clone(c));
+    /// `database`, opened on first use: a SQLite file read and write, or read only where it can't
+    /// be written (read-only media); a Postgres or MySQL database by fetching its connection again.
+    fn connection(&self, database: &Database) -> Result<Open, String> {
+        let at = database.at();
+        if let Some(c) = self.open.lock().unwrap().get(&at) {
+            return Ok(c.clone());
         }
-        let rw = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = Connection::open_with_flags(&database.path, rw)
-            .or_else(|_| Connection::open_with_flags(&database.path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX))
-            .map_err(|e| format!("the database at {} can't be opened: {e}", database.path.display()))?;
-        let conn = Arc::new(Mutex::new(conn));
-        open.insert(database.path.clone(), Arc::clone(&conn));
-        Ok(conn)
+        let opened = match &database.connection {
+            Some(source) => {
+                let url = self.sources.fetch(&Reference::parse(source)?)?;
+                Open::Remote(Arc::new(Remote::open(url)?))
+            }
+            None => {
+                let rw = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+                let conn = Connection::open_with_flags(&database.path, rw)
+                    .or_else(|_| Connection::open_with_flags(&database.path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX))
+                    .map_err(|e| format!("the database at {} can't be opened: {e}", database.path.display()))?;
+                Open::Sqlite(Arc::new(Mutex::new(conn)))
+            }
+        };
+        // Two runs may have opened it at once: the first one in is the one kept.
+        Ok(self.open.lock().unwrap().entry(at).or_insert(opened).clone())
+    }
+
+    /// The Postgres or MySQL database open at `at`, if one is.
+    fn remote_at(&self, at: &str) -> Option<Arc<Remote>> {
+        match self.open.lock().unwrap().get(at) {
+            Some(Open::Remote(r)) => Some(Arc::clone(r)),
+            _ => None,
+        }
+    }
+
+    /// Hold `keys` for `holder` in each Postgres or MySQL database they are in, all or none,
+    /// without waiting (engines.rs): the first another server's run holds, otherwise. Keys of a
+    /// SQLite database, a folder or a collection hold nothing here.
+    pub(crate) fn claim_in_databases(&self, keys: &[ClaimKey], holder: &str) -> Result<(), ClaimKey> {
+        let mut by_database: BTreeMap<String, Vec<ClaimKey>> = BTreeMap::new();
+        for k in keys {
+            if let ClaimKey::Row { at, .. } | ClaimKey::Table { at, .. } | ClaimKey::NewRow { at, .. } = k {
+                by_database.entry(at.clone()).or_default().push(k.clone());
+            }
+        }
+        let mut taken: Vec<(Arc<Remote>, Vec<ClaimKey>)> = Vec::new();
+        for (at, keys) in by_database {
+            let Some(remote) = self.remote_at(&at) else { continue };
+            if let Err(key) = remote.claim(&keys, holder) {
+                for (r, k) in &taken {
+                    r.unclaim(k, holder);
+                }
+                return Err(key);
+            }
+            taken.push((remote, keys));
+        }
+        Ok(())
+    }
+
+    /// Let go of `keys` held for `holder` in the databases they are in.
+    pub(crate) fn unclaim_in_databases(&self, keys: &[ClaimKey], holder: &str) {
+        let mut by_database: BTreeMap<String, Vec<ClaimKey>> = BTreeMap::new();
+        for k in keys {
+            if let ClaimKey::Row { at, .. } | ClaimKey::Table { at, .. } | ClaimKey::NewRow { at, .. } = k {
+                by_database.entry(at.clone()).or_default().push(k.clone());
+            }
+        }
+        for (at, keys) in by_database {
+            if let Some(remote) = self.remote_at(&at) {
+                remote.unclaim(&keys, holder);
+            }
+        }
     }
 
     /// Why a deployment asking for `manifest` can't run here, if it can't: a database it needs
@@ -232,8 +353,8 @@ impl Databases {
     }
 
     /// The commit locks a run's commit takes on its databases (locks.rs): each it read or writes,
-    /// held alone, by its file, so two names for one database are one lock. Its own transaction
-    /// is the lock against other programs.
+    /// held alone, by its file or address, so two names for one database are one lock. Its own
+    /// transaction is the lock against other programs and servers.
     pub(crate) fn commit_locks(&self, deployment: &str, reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<locks::Wanted> {
         self.locks_on(deployment, names_in(reads, performed))
     }
@@ -246,7 +367,7 @@ impl Databases {
             .into_iter()
             .filter_map(|name| {
                 let d = self.resolve(deployment, &name)?;
-                Some(locks::Wanted { address: format!("db:{}", d.path.display()), label: format!("the database {name:?}"), mode: locks::Mode::Exclusive, file: None })
+                Some(locks::Wanted { address: format!("db:{}", d.at()), label: format!("the database {name:?}"), mode: locks::Mode::Exclusive, file: None })
             })
             .collect()
     }
@@ -264,7 +385,7 @@ fn real_file(path: &Path) -> PathBuf {
 }
 
 fn unbound(name: &str, deployment: &str) -> String {
-    format!("the database {name:?} isn't bound on this server: an admin binds it (holon database add {name} PATH, or --for {deployment} for this deployment only)")
+    format!("the database {name:?} isn't bound on this server: an admin binds it (holon database add {name} PATH|env:…, or --for {deployment} for this deployment only)")
 }
 
 /// The databases a run read or writes, by the name its deployment knows them by.
@@ -316,7 +437,7 @@ pub(crate) fn tables_of(folders: &folders::Scoped, permit: &Permit) -> Vec<Claim
         .filter_map(|t| {
             let (name, table) = t.split_once('/')?;
             let d = folders.all.databases.resolve(&folders.deployment, name)?;
-            Some(ClaimKey::Table { at: d.path.display().to_string(), name: name.to_string(), table: table.to_string() })
+            Some(ClaimKey::Table { at: d.at(), name: name.to_string(), table: table.to_string() })
         })
         .collect()
 }
@@ -334,7 +455,7 @@ fn table_of_key(k: &ClaimKey) -> &str {
 fn claims_on(folders: &folders::Scoped, name: &str, sql: &str, params: &[Value], write: bool) -> Vec<ClaimKey> {
     let Some(d) = folders.all.databases.resolve(&folders.deployment, name) else { return Vec::new() };
     let Ok(tables) = holon_core::sql::tables(sql, write) else { return Vec::new() };
-    let at = d.path.display().to_string();
+    let at = d.at();
     let insert = write && sql.trim_start().get(..6).is_some_and(|w| w.eq_ignore_ascii_case("insert") || w.eq_ignore_ascii_case("replac"));
     let row = holon_core::sql::pins(sql, write).and_then(|(table, pinned)| {
         let key = primary_key(folders, &d, &table)?;
@@ -358,7 +479,10 @@ fn claims_on(folders: &folders::Scoped, name: &str, sql: &str, params: &[Value],
 /// The columns of `table`'s primary key, in order and in lower case; none for a table without
 /// one, or one that isn't there.
 fn primary_key(folders: &folders::Scoped, d: &Database, table: &str) -> Option<Vec<String>> {
-    let conn = folders.all.databases.connection(d).ok()?;
+    let conn = match folders.all.databases.connection(d).ok()? {
+        Open::Sqlite(c) => c,
+        Open::Remote(r) => return r.primary_key(table),
+    };
     let conn = conn.lock().unwrap();
     let (schema, table) = table.split_once('.').unwrap_or(("main", table));
     let mut stmt = conn.prepare("select lower(name) from pragma_table_info(?1, ?2) where pk > 0 order by pk").ok()?;
@@ -421,7 +545,7 @@ fn size_of(v: &Value) -> u64 {
 struct Asked<'r> {
     database: &'r str,
     sql: &'r str,
-    params: Vec<Sql>,
+    params: &'r [Value],
     one: bool,
 }
 
@@ -430,7 +554,6 @@ fn asked(request: &Value) -> Result<Asked<'_>, String> {
     let (Some(Value::Text(database)), Some(Value::Text(sql)), Some(Value::List(params))) = (r.get("database"), r.get("query"), r.get("params")) else {
         return Err("a database read names its database, query and params".into());
     };
-    let params = params.iter().map(param).collect::<Result<_, _>>()?;
     Ok(Asked { database, sql, params, one: matches!(r.get("one"), Some(Value::Boolean(true))) })
 }
 
@@ -456,37 +579,59 @@ fn timed<T>(conn: &Connection, until: Instant, f: impl FnOnce(&Connection) -> T)
     out
 }
 
-/// The rows `sql` selects, as records by column name: at most one if `one`, failing past `rows`
-/// rows or `bytes` bytes. Only a statement the engine says writes nothing is run.
-fn select(conn: &Connection, asked: &Asked, until: Instant, rows: u64, bytes: u64) -> Result<(Vec<Value>, u64), String> {
+/// The rows a read gathers, as records by column name: at most one if `one`, failing past
+/// `rows` rows or `bytes` bytes, on every engine alike.
+pub(crate) struct Gather<'s> {
+    sql: &'s str,
+    one: bool,
+    rows: u64,
+    bytes: u64,
+    pub(crate) out: Vec<Value>,
+    pub(crate) size: u64,
+}
+
+impl<'s> Gather<'s> {
+    pub(crate) fn new(sql: &'s str, one: bool, rows: u64, bytes: u64) -> Gather<'s> {
+        Gather { sql, one, rows, bytes, out: Vec::new(), size: 0 }
+    }
+
+    /// Take one row: whether to go on to the next. `Err` past a limit.
+    pub(crate) fn take(&mut self, record: BTreeMap<String, Value>) -> Result<bool, String> {
+        if self.out.len() as u64 >= self.rows {
+            return Err(format!("{:?} gives more than max_db_rows ({}) rows", self.sql, self.rows));
+        }
+        self.size += record.iter().map(|(name, v)| size_of(v) + name.len() as u64).sum::<u64>();
+        if self.size > self.bytes {
+            return Err(format!("{:?} gives more than max_db_read_bytes ({})", self.sql, self.bytes));
+        }
+        self.out.push(Value::Record(record));
+        Ok(!self.one)
+    }
+}
+
+/// The rows `sql` selects from a SQLite database, gathered into `g`. Only a statement the
+/// engine says writes nothing is run.
+fn select(conn: &Connection, sql: &str, params: &[Value], until: Instant, g: &mut Gather) -> Result<(), String> {
+    let params: Vec<Sql> = params.iter().map(param).collect::<Result<_, _>>()?;
     timed(conn, until, |conn| {
-        let mut stmt = conn.prepare(asked.sql).map_err(|e| said(&e, asked.sql))?;
+        let mut stmt = conn.prepare(sql).map_err(|e| said(&e, sql))?;
         if !stmt.readonly() {
-            return Err(format!("{:?} writes: a query reads", asked.sql));
+            return Err(format!("{sql:?} writes: a query reads"));
         }
         let names: Vec<String> = stmt.column_names().into_iter().map(str::to_string).collect();
-        let mut found = stmt.query(rusqlite::params_from_iter(asked.params.iter())).map_err(|e| said(&e, asked.sql))?;
-        let (mut out, mut size) = (Vec::new(), 0u64);
-        while let Some(row) = found.next().map_err(|e| said(&e, asked.sql))? {
-            if out.len() as u64 >= rows {
-                return Err(format!("{:?} gives more than max_db_rows ({rows}) rows", asked.sql));
-            }
+        let mut found = stmt.query(rusqlite::params_from_iter(params.iter())).map_err(|e| said(&e, sql))?;
+        while let Some(row) = found.next().map_err(|e| said(&e, sql))? {
             let mut record = BTreeMap::new();
             for (i, name) in names.iter().enumerate() {
-                if let Some(v) = column(row.get_ref(i).map_err(|e| said(&e, asked.sql))?) {
-                    size += size_of(&v) + name.len() as u64;
+                if let Some(v) = column(row.get_ref(i).map_err(|e| said(&e, sql))?) {
                     record.insert(name.clone(), v);
                 }
             }
-            if size > bytes {
-                return Err(format!("{:?} gives more than max_db_read_bytes ({bytes})", asked.sql));
-            }
-            out.push(Value::Record(record));
-            if asked.one {
+            if !g.take(record)? {
                 break;
             }
         }
-        Ok((out, size))
+        Ok(())
     })
 }
 
@@ -533,15 +678,17 @@ impl Readable {
         if self.statements > self.limits.max_db_statements {
             return Err(format!("the run sends more than max_db_statements ({})", self.limits.max_db_statements));
         }
-        let conn = all.connection(&database)?;
-        let conn = conn.lock().unwrap();
-        let until = Instant::now() + self.limits.db_statement;
         let rows_left = self.limits.max_db_rows.saturating_sub(self.rows);
         let bytes_left = self.limits.max_db_read_bytes.saturating_sub(self.bytes);
-        let (rows, size) = select(&conn, &asked, until, rows_left, bytes_left).map_err(|e| e.replace("max_db_rows (", "max_db_rows (left: ").replace("max_db_read_bytes (", "max_db_read_bytes (left: "))?;
-        self.rows += rows.len() as u64;
-        self.bytes += size;
-        Ok(answer_of(&asked, rows))
+        let mut g = Gather::new(asked.sql, asked.one, rows_left, bytes_left);
+        let read = match all.connection(&database)? {
+            Open::Sqlite(conn) => select(&conn.lock().unwrap(), asked.sql, asked.params, Instant::now() + self.limits.db_statement, &mut g),
+            Open::Remote(remote) => remote.read(asked.sql, asked.params, &mut g, self.limits.db_statement),
+        };
+        read.map_err(|e| e.replace("max_db_rows (", "max_db_rows (left: ").replace("max_db_read_bytes (", "max_db_read_bytes (left: "))?;
+        self.rows += g.out.len() as u64;
+        self.bytes += g.size;
+        Ok(answer_of(&asked, g.out))
     }
 }
 
@@ -560,11 +707,26 @@ pub(crate) enum Commit<T> {
     Refused(String),
 }
 
-/// Commit a run's database writes, each database in one transaction, in the order of their
-/// files: run its reads again (with `check`) and go round again if one changed; apply each
+/// One database's open transaction in a commit.
+enum Held<'a> {
+    Sqlite(MutexGuard<'a, Connection>),
+    Remote(crate::engines::Txn<'a>),
+}
+
+impl Held<'_> {
+    /// Roll it back (a remote one rolls back as it is dropped).
+    fn undo(self) {
+        if let Held::Sqlite(c) = self {
+            let _ = c.execute_batch("rollback");
+        }
+    }
+}
+
+/// Commit a run's database writes, each database in one transaction, in the order of what they
+/// are known by: run its reads again (with `check`) and go round again if one changed; apply each
 /// statement, checking its `expect`; mark the run done in `holon_commits` (a run marked there
-/// already applies nothing again). With every transaction open, `then` lands the run's other
-/// writes; then each commits.
+/// already applies nothing again). A Postgres or MySQL transaction then commits; with every
+/// SQLite one still open, `then` lands the run's other writes, and those commit.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn commit<T>(
     folders: Option<&folders::Scoped>,
@@ -578,19 +740,19 @@ pub(crate) fn commit<T>(
 ) -> Commit<T> {
     let Some(folders) = folders else { return Commit::Done(then(), Vec::new()) };
     let all = &folders.all.databases;
-    // Each database's reads and writes, by its file.
+    // Each database's reads and writes, by what it is known by.
     struct Work<'r> {
         name: String,
         database: Database,
         reads: Vec<&'r collections::Read>,
         execs: Vec<&'r Value>,
     }
-    let mut work: BTreeMap<PathBuf, Work> = BTreeMap::new();
-    let mut place = |name: &str| -> Result<PathBuf, String> {
+    let mut work: BTreeMap<String, Work> = BTreeMap::new();
+    let mut place = |name: &str| -> Result<String, String> {
         let database = all.resolve(&folders.deployment, name).ok_or_else(|| unbound(name, &folders.deployment))?;
-        let path = database.path.clone();
-        work.entry(path.clone()).or_insert(Work { name: name.to_string(), database, reads: Vec::new(), execs: Vec::new() });
-        Ok(path)
+        let at = database.at();
+        work.entry(at.clone()).or_insert(Work { name: name.to_string(), database, reads: Vec::new(), execs: Vec::new() });
+        Ok(at)
     };
     let mut placed_reads = Vec::new();
     for r in reads {
@@ -626,102 +788,203 @@ pub(crate) fn commit<T>(
     if work.is_empty() || (!check && work.values().all(|w| w.execs.is_empty())) {
         return Commit::Done(then(), Vec::new());
     }
-    let conns: Vec<Arc<Mutex<Connection>>> = match work.values().map(|w| all.connection(&w.database)).collect() {
+    let opens: Vec<Open> = match work.values().map(|w| all.connection(&w.database)).collect() {
         Ok(c) => c,
         Err(e) => return Commit::Refused(format!("{WRITE_FAILED}{e}")),
     };
-    let mut held: Vec<MutexGuard<Connection>> = Vec::new();
-    let undo = |held: &mut Vec<MutexGuard<Connection>>| {
-        for c in held.iter() {
-            let _ = c.execute_batch("rollback");
-        }
-    };
-    for (w, conn) in work.values().zip(&conns) {
-        let conn = conn.lock().unwrap();
-        let _ = conn.busy_timeout(limits.commit_wait);
-        // Held against every other writer from the check to the commit; a database it can't
-        // write (read-only media) only reads, and its check is as of now.
-        let begun = conn.execute_batch("begin immediate").or_else(|e| if busy(&e) { Err(e) } else { conn.execute_batch("begin") });
-        if let Err(e) = begun {
-            undo(&mut held);
-            return if busy(&e) {
-                Commit::Again(format!("another program held the database {:?} past commit_wait_ms", w.name))
-            } else {
-                Commit::Refused(format!("{WRITE_FAILED}the database {:?}: {e}", w.name))
-            };
-        }
-        held.push(conn);
-        let conn = held.last().expect("pushed");
-        if check {
-            for r in &w.reads {
-                let now = asked(&r.request).and_then(|a| {
-                    let until = Instant::now() + permit.databases.db_statement;
-                    select(conn, &a, until, permit.databases.max_db_rows, permit.databases.max_db_read_bytes).map(|(rows, _)| answer_of(&a, rows))
-                });
-                if now.as_ref().ok() != Some(&r.answer) {
+    let lim = &permit.databases;
+    let mut held: Vec<Held> = Vec::new();
+    let undo = |held: &mut Vec<Held>| held.drain(..).for_each(Held::undo);
+    let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    for (w, open) in work.values().zip(&opens) {
+        match open {
+            Open::Sqlite(conn) => {
+                let conn = conn.lock().unwrap();
+                let _ = conn.busy_timeout(limits.commit_wait);
+                // Held against every other writer from the check to the commit; a database it
+                // can't write (read-only media) only reads, and its check is as of now.
+                let begun = conn.execute_batch("begin immediate").or_else(|e| if busy(&e) { Err(e) } else { conn.execute_batch("begin") });
+                if let Err(e) = begun {
                     undo(&mut held);
-                    return Commit::Again(format!("a row it read in the database {:?} changed", w.name));
+                    return if busy(&e) {
+                        Commit::Again(format!("another program held the database {:?} past commit_wait_ms", w.name))
+                    } else {
+                        Commit::Refused(format!("{WRITE_FAILED}the database {:?}: {e}", w.name))
+                    };
+                }
+                held.push(Held::Sqlite(conn));
+                let Some(Held::Sqlite(conn)) = held.last() else { unreachable!("pushed") };
+                if check {
+                    for r in &w.reads {
+                        let now = asked(&r.request).and_then(|a| {
+                            let mut g = Gather::new(a.sql, a.one, lim.max_db_rows, lim.max_db_read_bytes);
+                            select(conn, a.sql, a.params, Instant::now() + lim.db_statement, &mut g).map(|_| answer_of(&a, g.out))
+                        });
+                        if now.as_ref().ok() != Some(&r.answer) {
+                            undo(&mut held);
+                            return Commit::Again(format!("a row it read in the database {:?} changed", w.name));
+                        }
+                    }
+                }
+                if w.execs.is_empty() {
+                    continue;
+                }
+                if w.database.access != FolderAccess::ReadWrite {
+                    undo(&mut held);
+                    return Commit::Refused(format!("{WRITE_FAILED}the database {:?} is bound read-only on this server", w.name));
+                }
+                let done: Result<bool, _> = conn.query_row(&format!("select count(*) from {COMMITS_TABLE} where run = ?1"), [run_id], |row| row.get::<_, i64>(0)).map(|n| n > 0);
+                match done {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => {
+                        undo(&mut held);
+                        return Commit::Refused(format!("{WRITE_FAILED}the database {:?} has no {COMMITS_TABLE} (bind it again): {e}", w.name));
+                    }
+                }
+                for exec in &w.execs {
+                    let applied = statement_of(&w.name, exec, permit).and_then(|(sql, params, expect)| {
+                        let params: Vec<Sql> = params.iter().map(param).collect::<Result<_, _>>().map_err(|why| format!("{WRITE_FAILED}{why}"))?;
+                        let until = Instant::now() + lim.db_statement;
+                        let changed = timed(conn, until, |conn| conn.execute(sql, rusqlite::params_from_iter(params.iter()))).map_err(|e| format!("{WRITE_FAILED}{}", said(&e, sql)))?;
+                        met(sql, changed as u64, expect)
+                    });
+                    if let Err(e) = applied {
+                        undo(&mut held);
+                        return Commit::Refused(e);
+                    }
+                }
+                if let Err(e) = conn.execute(&format!("insert into {COMMITS_TABLE} (run, at) values (?1, ?2)"), rusqlite::params![run_id, at]) {
+                    undo(&mut held);
+                    return Commit::Refused(format!("{WRITE_FAILED}the database {:?}: {e}", w.name));
                 }
             }
-        }
-        if w.execs.is_empty() {
-            continue;
-        }
-        if w.database.access != FolderAccess::ReadWrite {
-            undo(&mut held);
-            return Commit::Refused(format!("{WRITE_FAILED}the database {:?} is bound read-only on this server", w.name));
-        }
-        let done: Result<bool, _> = conn.query_row(&format!("select count(*) from {COMMITS_TABLE} where run = ?1"), [run_id], |row| row.get::<_, i64>(0)).map(|n| n > 0);
-        match done {
-            Ok(true) => continue,
-            Ok(false) => {}
-            Err(e) => {
-                undo(&mut held);
-                return Commit::Refused(format!("{WRITE_FAILED}the database {:?} has no {COMMITS_TABLE} (bind it again): {e}", w.name));
+            Open::Remote(remote) => {
+                // Another server's commit, or a lock it couldn't have in time, sends it round again.
+                let failed = |held: &mut Vec<Held>, f: Failure| {
+                    undo(held);
+                    if f.again { Commit::Again(format!("the database {:?}: {}", w.name, f.why)) } else { Commit::Refused(format!("{WRITE_FAILED}the database {:?}: {}", w.name, f.why)) }
+                };
+                let mut tx = match remote.begin(limits.commit_wait, lim.db_statement) {
+                    Ok(tx) => tx,
+                    Err(f) => return failed(&mut held, f),
+                };
+                if check {
+                    for r in &w.reads {
+                        let Ok(a) = asked(&r.request) else { continue };
+                        let mut g = Gather::new(a.sql, a.one, lim.max_db_rows, lim.max_db_read_bytes);
+                        match tx.select(a.sql, a.params, &mut g) {
+                            Ok(()) if answer_of(&a, g.out) == r.answer => {}
+                            Err(f) if f.again => return failed(&mut held, f),
+                            _ => {
+                                drop(tx);
+                                undo(&mut held);
+                                return Commit::Again(format!("a row it read in the database {:?} changed", w.name));
+                            }
+                        }
+                    }
+                }
+                if !w.execs.is_empty() {
+                    if w.database.access != FolderAccess::ReadWrite {
+                        drop(tx);
+                        undo(&mut held);
+                        return Commit::Refused(format!("{WRITE_FAILED}the database {:?} is bound read-only on this server", w.name));
+                    }
+                    match tx.done(run_id) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            for exec in &w.execs {
+                                let (sql, params, expect) = match statement_of(&w.name, exec, permit) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        drop(tx);
+                                        undo(&mut held);
+                                        return Commit::Refused(e);
+                                    }
+                                };
+                                let changed = match tx.exec(sql, params) {
+                                    Ok(n) => n,
+                                    Err(f) => {
+                                        drop(tx);
+                                        return failed(&mut held, f);
+                                    }
+                                };
+                                if let Err(e) = met(sql, changed, expect) {
+                                    drop(tx);
+                                    undo(&mut held);
+                                    return Commit::Refused(e);
+                                }
+                            }
+                            if let Err(f) = tx.mark(run_id, at) {
+                                drop(tx);
+                                return failed(&mut held, f);
+                            }
+                        }
+                        Err(f) => {
+                            drop(tx);
+                            return failed(&mut held, Failure { why: format!("it has no {COMMITS_TABLE} (bind it again): {}", f.why), again: f.again });
+                        }
+                    }
+                }
+                held.push(Held::Remote(tx));
             }
         }
-        for exec in &w.execs {
-            if let Err(e) = apply(conn, &w.name, exec, permit) {
-                undo(&mut held);
-                return Commit::Refused(e);
-            }
-        }
-        let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-        if let Err(e) = conn.execute(&format!("insert into {COMMITS_TABLE} (run, at) values (?1, ?2)"), rusqlite::params![run_id, at]) {
-            undo(&mut held);
-            return Commit::Refused(format!("{WRITE_FAILED}the database {:?}: {e}", w.name));
+    }
+    // A serializable transaction can still fail as it commits: these commit first, so one that
+    // does while nothing of the run has landed sends it round again with nothing written.
+    let mut failed = Vec::new();
+    let mut sqlite: Vec<(MutexGuard<Connection>, &str)> = Vec::new();
+    let mut committed = false;
+    let mut held = held.into_iter().zip(work.values()).collect::<Vec<_>>().into_iter();
+    while let Some((h, w)) = held.next() {
+        match h {
+            Held::Sqlite(c) => sqlite.push((c, &w.name)),
+            Held::Remote(tx) => match tx.commit() {
+                Ok(()) => committed = true,
+                Err(f) if !committed => {
+                    sqlite.into_iter().for_each(|(c, _)| Held::Sqlite(c).undo());
+                    held.for_each(|(h, _)| h.undo());
+                    return if f.again {
+                        Commit::Again(format!("the database {:?}: {}", w.name, f.why))
+                    } else {
+                        Commit::Refused(format!("{WRITE_FAILED}the database {:?}: {}", w.name, f.why))
+                    };
+                }
+                Err(f) => failed.push(format!("the database {:?} didn't commit: {}", w.name, f.why)),
+            },
         }
     }
     let out = then();
-    let failed = held
-        .iter()
-        .zip(work.values())
-        .filter_map(|(c, w)| c.execute_batch("commit").err().map(|e| format!("the database {:?} didn't commit: {e}", w.name)))
-        .collect();
+    failed.extend(sqlite.iter().filter_map(|(c, name)| c.execute_batch("commit").err().map(|e| format!("the database {name:?} didn't commit: {e}"))));
     Commit::Done(out, failed)
 }
 
-/// Apply one statement a run made (`{sql, params, expect}`): its tables checked against the
-/// grant again, and the rows it changed against its `expect`.
-fn apply(conn: &Connection, name: &str, exec: &Value, permit: &Permit) -> Result<(), String> {
+/// One statement a run made (`{sql, params, expect}`), its tables checked against the grant
+/// again: its text, parameters and `expect`.
+fn statement_of<'e>(name: &str, exec: &'e Value, permit: &Permit) -> Result<(&'e str, &'e [Value], Option<f64>), String> {
     let Value::Record(e) = exec else { return Err(format!("{WRITE_FAILED}a statement is a record")) };
     let (Some(Value::Text(sql)), Some(Value::List(params))) = (e.get("sql"), e.get("params")) else {
         return Err(format!("{WRITE_FAILED}a statement has its sql and params"));
     };
     let tables = holon_core::sql::tables(sql, true).map_err(|why| format!("{WRITE_FAILED}{sql:?}: {why}"))?;
-    let granted = |cap: Capability| permit.allows(&cap);
     let reads = tables.reads.iter().map(|t| Capability::DbRead(format!("{name}/{t}")));
     let writes = tables.writes.iter().map(|t| Capability::DbWrite(format!("{name}/{t}")));
-    if let Some(c) = reads.chain(writes).find(|c| !granted(c.clone())) {
+    if let Some(c) = reads.chain(writes).find(|c| !permit.allows(c)) {
         return Err(format!("{WRITE_FAILED}{sql:?} needs {c:?}, which isn't granted to this deployment"));
     }
-    let params: Vec<Sql> = params.iter().map(param).collect::<Result<_, _>>().map_err(|why| format!("{WRITE_FAILED}{why}"))?;
-    let until = Instant::now() + permit.databases.db_statement;
-    let changed = timed(conn, until, |conn| conn.execute(sql, rusqlite::params_from_iter(params.iter()))).map_err(|e| format!("{WRITE_FAILED}{}", said(&e, sql)))?;
-    match e.get("expect") {
-        Some(Value::Number(n)) if *n as usize != changed => {
-            let rows = |k: usize| if k == 1 { "1 row".to_string() } else { format!("{k} rows") };
-            Err(format!("{UNMET}{sql:?} changed {}, not {}", rows(changed), rows(*n as usize)))
+    let expect = match e.get("expect") {
+        Some(Value::Number(n)) => Some(*n),
+        _ => None,
+    };
+    Ok((sql, params, expect))
+}
+
+/// Whether a statement changed the rows it expects: why not, otherwise.
+fn met(sql: &str, changed: u64, expect: Option<f64>) -> Result<(), String> {
+    match expect {
+        Some(n) if n as u64 != changed => {
+            let rows = |k: u64| if k == 1 { "1 row".to_string() } else { format!("{k} rows") };
+            Err(format!("{UNMET}{sql:?} changed {}, not {}", rows(changed), rows(n as u64)))
         }
         _ => Ok(()),
     }
@@ -730,7 +993,15 @@ fn apply(conn: &Connection, name: &str, exec: &Value, permit: &Permit) -> Result
 // ── admin ──
 
 fn shown(name: &str, deployment: Option<&str>, d: &Database) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "engine": d.engine, "path": d.path.display().to_string(), "access": d.access })
+    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "engine": d.engine, "access": d.access });
+    match (&d.connection, &d.address) {
+        (Some(source), address) => {
+            shown["connection"] = serde_json::json!(source);
+            shown["address"] = serde_json::json!(address);
+        }
+        _ => shown["path"] = serde_json::json!(d.path.display().to_string()),
+    }
+    shown
 }
 
 fn labelled(name: &str, deployment: Option<&str>) -> String {
@@ -756,7 +1027,12 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                 #[derive(Deserialize)]
                 struct Bind {
                     name: String,
-                    path: String,
+                    /// A SQLite database's file.
+                    #[serde(default)]
+                    path: Option<String>,
+                    /// Or where a Postgres or MySQL database's URL is fetched from.
+                    #[serde(default)]
+                    connection: Option<String>,
                     #[serde(default = "read_write")]
                     access: FolderAccess,
                     /// The admin's DDL, run first (and the file created, if there is none).
@@ -772,7 +1048,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     .and_then(|b| serde_json::from_slice::<Bind>(&b).map_err(|e| err(400, format!("invalid body: {e}"))))
                     .map(|b| Bind { deployment: b.deployment.filter(|d| !d.trim().is_empty()), ..b })
                     .and_then(|b| {
-                        let d = all.bind(&b.name, &b.path, b.access, b.schema.as_deref(), b.deployment.as_deref()).map_err(|e| err(400, e))?;
+                        let target = b.connection.as_deref().filter(|c| !c.trim().is_empty()).or(b.path.as_deref()).ok_or_else(|| err(400, "a database is a path (SQLite) or a connection (env:… or vault:…)"))?;
+                        let d = all.bind(&b.name, target, b.access, b.schema.as_deref(), b.deployment.as_deref()).map_err(|e| err(400, e))?;
                         Ok((b, d))
                     });
                 match bound {
@@ -841,10 +1118,14 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     }
     let (method, path, body) = match words.as_slice() {
         ["list"] => ("GET", "/admin/databases".to_string(), None),
-        ["add", name, path] => {
-            let path = std::path::absolute(path).map_or_else(|_| path.to_string(), |p| p.display().to_string());
+        ["add", name, target] => {
             let access = if read_only { FolderAccess::Read } else { FolderAccess::ReadWrite };
-            let body = serde_json::json!({ "name": name, "path": path, "access": access, "schema": schema, "deployment": for_deployment });
+            let mut body = serde_json::json!({ "name": name, "access": access, "schema": schema, "deployment": for_deployment });
+            if target.starts_with("env:") || target.starts_with("vault:") {
+                body["connection"] = serde_json::json!(target);
+            } else {
+                body["path"] = serde_json::json!(std::path::absolute(target).map_or_else(|_| target.to_string(), |p| p.display().to_string()));
+            }
             ("POST", "/admin/databases".to_string(), Some(body))
         }
         ["remove", name] => {
@@ -863,13 +1144,17 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let line = |d: &serde_json::Value| {
         let access = if d["access"] == "read" { "read only" } else { "read and write" };
         let only = d["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only"));
-        format!("{}  {} {}  ({access}{only})", d["name"].as_str().unwrap_or(""), d["engine"].as_str().unwrap_or(""), d["path"].as_str().unwrap_or(""))
+        let at = match d["connection"].as_str() {
+            Some(source) => format!("{} (from {source})", d["address"].as_str().unwrap_or("")),
+            None => d["path"].as_str().unwrap_or("").to_string(),
+        };
+        format!("{}  {} {at}  ({access}{only})", d["name"].as_str().unwrap_or(""), d["engine"].as_str().unwrap_or(""))
     };
     match words[0] {
         "list" => {
             let all: Vec<serde_json::Value> = serde_json::from_str(&answer).unwrap_or_default();
             if all.is_empty() {
-                println!("no databases are bound on {server}: holon database add NAME PATH binds one");
+                println!("no databases are bound on {server}: holon database add NAME PATH|env:… binds one");
             }
             for d in &all {
                 println!("{}", line(d));
@@ -885,19 +1170,25 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-const DATABASE_USAGE: &str = "usage: holon database add NAME PATH [--read-only] [--schema SQL | --schema-file FILE] [--for SLUG]
+const DATABASE_USAGE: &str = "usage: holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--for SLUG]
        holon database list
        holon database remove NAME [--for SLUG]
        (each takes --server PORT|URL)
 
-  Binds a name a flow uses (database shop) to a SQLite database on the server's machine, for an
-  admin. A flow reads and writes only the tables it was granted, by the SQL it is written with;
-  it never sees where the database is, and runs no DDL.
-  --schema runs the admin's SQL (create table …) when it is bound, creating the file if there is
-  none; without it, PATH must be a SQLite database already. --read-only: flows may read it, not
-  write it. A writable database gets a table holon_commits, where each run's commit marks it
-  done, so a run is never applied twice. --for SLUG binds it for that deployment only. Removing a
-  binding leaves the database where it is; deployments that use it stop until it is bound again.";
+  Binds a name a flow uses (database shop) to a database, for an admin: a SQLite database's file
+  on the server's machine (PATH), or a Postgres or MySQL database whose URL the server fetches
+  from SOURCE, as a secret's: env:HOLON_SECRET_SHOP_URL (the server's environment or --dotenv)
+  or vault:<mount>/<path>#<field>. The URL (postgres://user:password@host/db, mysql://…) is never
+  stored, shown or logged; ?sslmode= (Postgres) and ?ssl-mode= (MySQL) choose TLS. A flow reads
+  and writes only the tables it was granted, by the SQL it is written with; it never sees where
+  the database is, and runs no DDL.
+  --schema runs the admin's SQL (create table …) when it is bound, creating a SQLite file if
+  there is none; without it, PATH must be a SQLite database already. --read-only: flows may read
+  it, not write it. A writable database gets a table holon_commits, where each run's commit
+  marks it done, so a run is never applied twice (and on MySQL a table holon_claims, whose rows'
+  locks are the claims of several servers). --for SLUG binds it for that deployment only.
+  Removing a binding leaves the database where it is; deployments that use it stop until it is
+  bound again.";
 
 #[cfg(test)]
 mod tests {
@@ -914,9 +1205,10 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("create table t (i integer, r real, s text, b blob, n integer, big integer)").unwrap();
         conn.execute("insert into t values (?1, ?2, ?3, ?4, ?5, ?6)", rusqlite::params![7, 2.5, "x", vec![1u8, 255], None::<i64>, i64::MAX]).unwrap();
-        let asked = Asked { database: "d", sql: "select * from t", params: vec![], one: true };
-        let (rows, _) = select(&conn, &asked, Instant::now() + Duration::from_secs(5), 10, 1 << 20).unwrap();
-        let Value::Record(row) = &rows[0] else { panic!() };
+        let soon = || Instant::now() + Duration::from_secs(5);
+        let mut g = Gather::new("select * from t", true, 10, 1 << 20);
+        select(&conn, "select * from t", &[], soon(), &mut g).unwrap();
+        let Value::Record(row) = &g.out[0] else { panic!() };
         assert_eq!(row.get("i"), Some(&Value::Number(7.0)));
         assert_eq!(row.get("r"), Some(&Value::Number(2.5)));
         assert_eq!(row.get("b"), Some(&Value::Text("01ff".into())));
@@ -924,13 +1216,12 @@ mod tests {
         assert_eq!(row.get("big"), Some(&Value::Text(i64::MAX.to_string())), "past 2^53, its digits");
         assert_eq!(param(&Value::Boolean(true)).unwrap(), Sql::Integer(1));
         assert_eq!(param(&Value::Number(1.5)).unwrap(), Sql::Real(1.5));
-        let writes = Asked { database: "d", sql: "delete from t", params: vec![], one: false };
-        assert!(select(&conn, &writes, Instant::now() + Duration::from_secs(5), 10, 1 << 20).unwrap_err().contains("writes"));
-        let many = Asked { database: "d", sql: "select * from t, t as u, t as v", params: vec![], one: false };
+        assert!(select(&conn, "delete from t", &[], soon(), &mut Gather::new("delete from t", false, 10, 1 << 20)).unwrap_err().contains("writes"));
         conn.execute_batch("insert into t (i) values (1), (2)").unwrap();
-        assert!(select(&conn, &many, Instant::now() + Duration::from_secs(5), 5, 1 << 20).unwrap_err().contains("max_db_rows"));
-        let slow = Asked { database: "d", sql: "with recursive c(n) as (select 1 union all select n + 1 from c) select count(*) from c", params: vec![], one: true };
-        assert!(select(&conn, &slow, Instant::now() + Duration::from_millis(50), 5, 1 << 20).unwrap_err().contains("db_statement_ms"));
+        let many = "select * from t, t as u, t as v";
+        assert!(select(&conn, many, &[], soon(), &mut Gather::new(many, false, 5, 1 << 20)).unwrap_err().contains("max_db_rows"));
+        let slow = "with recursive c(n) as (select 1 union all select n + 1 from c) select count(*) from c";
+        assert!(select(&conn, slow, &[], Instant::now() + Duration::from_millis(50), &mut Gather::new(slow, true, 5, 1 << 20)).unwrap_err().contains("db_statement_ms"));
     }
 
     #[test]

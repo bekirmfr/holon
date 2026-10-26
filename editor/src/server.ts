@@ -157,13 +157,17 @@ export async function unbindFolder(name: string, deployment: string | null): Pro
  *  a SQLite file here; for the whole server (`deployment` null), or for that deployment only. */
 export type DatabaseEntry = {
   name: string;
-  engine: "sqlite";
-  path: string;
+  engine: "sqlite" | "postgres" | "mysql";
+  /** A SQLite database's file. */
+  path?: string;
+  /** A Postgres or MySQL database's: where its URL is fetched from (env:…, vault:…), and where it points, without credentials. */
+  connection?: string;
+  address?: string;
   access: "read" | "read-write";
   deployment: string | null;
 };
-/** A database to bind, with the admin's schema to run first (which creates the file if there is none). */
-export type DatabaseBinding = Omit<DatabaseEntry, "engine"> & { schema: string | null };
+/** A database to bind: a SQLite file's path or a connection's source, with the admin's schema to run first (which creates a SQLite file if there is none). */
+export type DatabaseBinding = Pick<DatabaseEntry, "name" | "access" | "deployment"> & { path?: string; connection?: string; schema: string | null };
 export const listDatabases = async () => asJson<DatabaseEntry[]>(await api(`${BASE}/admin/databases`));
 export const bindDatabase = async (d: DatabaseBinding) => asJson<DatabaseEntry>(await post(`${BASE}/admin/databases`, d));
 export async function unbindDatabase(name: string, deployment: string | null): Promise<void> {

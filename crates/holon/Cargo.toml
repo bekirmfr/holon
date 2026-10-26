@@ -45,6 +45,14 @@ rand = "0.10.2"
 rouille = "3.6"
 # The SQLite databases an admin binds (databases.rs), built in: no library to install.
 rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
+# The Postgres and MySQL databases an admin binds (engines.rs): pure Rust clients, TLS by rustls
+# on ring (as ureq's), with the public CAs built in.
+postgres = "0.19"
+bytes = "1"
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring", "webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+mysql = { version = "28", default-features = false, features = ["minimal-rust", "rustls-tls-ring"] }
 # `holon uninstall` removes its own executable, which Windows won't do directly.
 self-replace = "1"
 serde = { version = "1", features = ["derive"] }

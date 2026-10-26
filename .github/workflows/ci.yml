@@ -6,6 +6,24 @@ jobs:
   # 1. The whole workspace must pass native tests (this covers holon-core AND holon-host).
   native:
     runs-on: ubuntu-latest
+    # The Postgres and MySQL a flow's databases may be (engines.rs): the tests that bind them
+    # (tests.rs, fresh_databases) run against these, each in a database of its own.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: holon
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: holon
+        ports: ["3306:3306"]
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pholon" --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      HOLON_TEST_POSTGRES: postgres://postgres:holon@127.0.0.1:5432/postgres
+      HOLON_TEST_MYSQL: mysql://root:holon@127.0.0.1:3306/mysql
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

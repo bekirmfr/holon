@@ -1,11 +1,12 @@
 # Databases: SQL and documents as host resources, and how runs share what they write (L4)
 
-**Status:** slices 1 to 3 built (2026-10-26): commit locks per file, with intent locks on the
+**Status:** slices 1 to 4 built (2026-10-26): commit locks per file, with intent locks on the
 folder (`locks.rs`, §7.1); SQLite databases (`databases.rs`, the `database` header,
 `db_query`/`db_one`/`db_exec`, `DbLimits`, the commit transaction with `holon_commits`; sample
 `orders-api`, guide `docs/manual/guides/databases.md`); and claims on rows, tables, files and
-folders in the server's table (`claims.rs`, §7.2; sample `refund-once`). A database's reads are
-logged whole: its `keep` (§5) isn't built. Slices 4 to 7 are design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
+folders in the server's table (`claims.rs`, §7.2; sample `refund-once`); Postgres and MySQL
+(`engines.rs`, §8), with claims held in the database for several servers. A database's reads are
+logged whole: its `keep` (§5) isn't built. Slices 5 to 7 are design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
 [host resources](host-resources-L4.md) (also design only: resources the host defines, their
 addresses and timeline) and [key claims](key-claims-L4.md) (built: `claims.rs`).
 
@@ -370,8 +371,18 @@ The same rule as `Claiming::keys_of` (what a run read in what it may write), on 
   `sql::pins` finds the columns a `where` sets equal to parameters. A key's values compare as a
   claim normalizes them (`7` and `"7"` are one row). An insert that doesn't give its primary key
   writes `ClaimKey::NewRow`, which waits for a claim on its table but not on its rows. The last
-  try holds every table and folder it may touch for its whole run. Not built: claims in the
-  database itself, for several servers (`holon_claims`, advisory locks), which come with slice 4.
+  try holds every table and folder it may touch for its whole run.
+- **Built (slice 4):** a claim on a Postgres or MySQL database is taken in the server's table,
+  then in the database, on a connection of its own per run (so a server that stops lets go with
+  its connection), and released in the same order. Postgres: advisory locks
+  (`pg_try_advisory_lock[_shared]`) on the first 8 bytes of `blake3("holon\0" + key)`, a row
+  claim holding its table shared and its row exclusive. MySQL: not `GET_LOCK`, which has no
+  shared mode, but a row of `holon_claims (k char(32) primary key)` per key, made with
+  `insert ignore` and locked `for share nowait` / `for update nowait` in a read-committed
+  transaction on the claim's connection. Both are tried every 20 ms until the claim's wait runs
+  out. The commit holds the same claims on the shared keys it writes, under the run's id, from
+  its check to its last write. Not built: claims across servers on one SQLite file (a
+  `holon_claims` table with a lease); SQLite stays one server's.
 
 ### 7.3 Run locks (an admin's setting)
 
@@ -405,14 +416,32 @@ run's `prior` is (§13, fork 10).
 | Engine | Client | Commit | Claims across servers |
 |---|---|---|---|
 | SQLite | embedded (bundled) | `begin immediate`; the file's own locking across processes | `holon_claims` table, leased |
-| Postgres | a pooled client per resource | `read committed` + `for share` re-reads (`serializable` not needed) | `pg_advisory_lock` |
-| MySQL | a pooled client per resource | `repeatable read` + `for share` re-reads | `GET_LOCK` |
+| Postgres | a pooled client per resource | `read committed` + `for share` re-reads (`serializable` not needed); built: `serializable` | `pg_advisory_lock` |
+| MySQL | a pooled client per resource | `repeatable read` + `for share` re-reads; built: `serializable` | `GET_LOCK`; built: locks on `holon_claims` rows |
 | MongoDB (Atlas too) | the driver, `mongodb+srv://` | a transaction (needs a replica set, which Atlas is) | `holon_claims` collection, TTL |
 
 - **SQLite first:** no network, no service to run in CI, one file the host already knows how to
   confine. It gives queries, indexes and a store several deployments share on day one.
 - **MongoDB through the driver,** not HTTP: MongoDB retired Atlas's HTTP Data API.
 - **Databases with an HTTP API** stay reachable through `http.*`, unchanged.
+- **Built (slice 4):** `postgres` (sync, TLS by rustls with the public CAs) and `mysql` (pure
+  Rust, rustls). A binding's connection is a secret source (`env:HOLON_SECRET_…`, `vault:…`),
+  fetched as secrets are; the binding keeps the source and the address without credentials,
+  which keys its claims and commit lock. Parameters cross as text on Postgres (booleans and
+  numbers adjusted to the type Postgres infers), and `$n` becomes `?` for MySQL
+  (`sql::positional` in core). Each read runs in a read-only transaction with the statement
+  limit. Values back: `numeric`/`decimal` as text, times as RFC 3339 in UTC, `json` as a value,
+  bytes as hex; any other type fails, saying to cast it. Sessions are set the same way on both:
+  standard strings, UTC, and on MySQL `ANSI_QUOTES`, `PIPES_AS_CONCAT`, `NO_BACKSLASH_ESCAPES`,
+  so a flow's SQL means one thing everywhere.
+- **Deviation (slice 4): the commit is `serializable`,** not `read committed` with `for share`
+  re-reads: on Postgres `for share` needs `update` on the table, which a role that only reads it
+  shouldn't have. The check still re-reads; serializable is what makes it hold. Serialization
+  failures, deadlocks and a lock not had within `commit_wait_ms` (Postgres 40001, 40P01, 55P03;
+  MySQL 1205, 1213, 3572) run the run again. What it costs: on Postgres, a program outside Holon
+  that writes a checked row in the milliseconds between the check and the commit isn't seen
+  (Holon's own runs are). A database's transaction commits before the run's state and files
+  land; once one has committed, a later one that fails is reported as not landed.
 
 ## 9. Seeing it
 
@@ -495,7 +524,8 @@ end-to-end tests:
 5. **A run reads its own writes?** No: they haven't landed. Same as state.
 6. **`serializable` commits, or checking reads again?** Checking reads again under `for share`.
    It works the same on every engine, catches writers outside Holon, and costs one re-read per
-   read, only at commit.
+   read, only at commit. Built: both, the re-reads in a `serializable` transaction (§8), since
+   `for share` needs write permission on Postgres.
 7. **Exact decimals as numbers or text?** Text. A total that comes back rounded is a bug nobody
    sees.
 8. **Atomic across resources (two-phase commit)?** No. Ordered commits, each marked with the run's
@@ -506,7 +536,8 @@ end-to-end tests:
 10. **A resumed run whose shared read changed: fail, or run again?** Run again from its last wait,
     with fresh reads. Failing would throw away a person's answer over a race they had no part in.
 11. **Claims for several servers: in the database, or a lock service?** In the database: it is
-    the one thing all of them already reach, and it lets go when a connection drops.
+    the one thing all of them already reach, and it lets go when a connection drops. Built for
+    Postgres and MySQL (§7.2).
 12. **A primary key: from the schema, or declared in the flow?** From the schema, read at bind
     and on refresh. A flow that states its table's key could state it wrong.
 13. **A read past a limit: cut short, or fail?** Fail, naming the limit, as a file too big does.
