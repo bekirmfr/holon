@@ -17,16 +17,19 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
   // The OS's dialog is open on the server's machine, waiting for an answer.
   const [waiting, setWaiting] = useState(false);
 
-  // Only the newest listing asked for is shown, and typing in the field is newer than any: the
-  // home folder's, asked as it opens, may come back after a folder was typed or gone to.
+  // Only the latest listing asked for is shown, and it fills the path field only if nobody has
+  // typed there since: the first one (the home folder) can arrive after someone started typing.
   const asked = useRef(0);
+  const typedSince = useRef(false);
+
   const go = useCallback(async (path?: string) => {
     const mine = ++asked.current;
+    typedSince.current = false;
     try {
       const l = await browseFolders(path);
       if (mine !== asked.current) return null;
       setListing(l);
-      setTyped(l.path);
+      if (!typedSince.current) setTyped(l.path);
       setError("");
       return l;
     } catch (e) {
@@ -38,11 +41,10 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
   useEffect(() => {
     let gone = false;
     (async () => {
-      // Where the path field points, else the home folder, unless a folder was typed meanwhile.
-      const before = asked.current;
-      const opened = start.trim() ? await go(start.trim()) : null;
-      const typedMeanwhile = asked.current !== before + (start.trim() ? 1 : 0);
-      const l = opened || (typedMeanwhile ? null : await go());
+      // Where the path field points, else the home folder; unless someone went elsewhere meanwhile.
+      const from = start.trim();
+      let l = from ? await go(from) : null;
+      if (!l && asked.current === (from ? 1 : 0)) l = await go();
       if (gone || !l?.native) return;
       setWaiting(true);
       try {
@@ -117,7 +119,7 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
                 aria-label="folder to show"
                 value={typed}
                 onChange={(e) => {
-                  asked.current++;
+                  typedSince.current = true;
                   setTyped(e.target.value);
                 }}
                 style={{ flex: 1, font: "inherit", fontSize: 12, color: "#e6eefb", background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 3, padding: "4px 6px" }}

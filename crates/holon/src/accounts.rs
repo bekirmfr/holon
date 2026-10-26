@@ -339,8 +339,9 @@ impl Accounts {
         self.book.lock().unwrap().users.iter().find(|u| u.name == name).cloned()
     }
 
-    /// Set a new password, knowing the current one.
-    pub(crate) fn change_password(&self, name: &str, current: &str, new: &str) -> Result<(), String> {
+    /// Set a new password, knowing the current one. Every other session of theirs ends (one opened
+    /// with the old password by someone who had it); `kept`, the session asking, stays.
+    pub(crate) fn change_password(&self, name: &str, current: &str, new: &str, kept: Option<&str>) -> Result<(), String> {
         check_password(new)?;
         let hash = hash_password(new)?;
         self.change(|book| {
@@ -349,6 +350,8 @@ impl Accounts {
                 return Err("that isn't the current password".to_string());
             }
             account.password = Some(hash);
+            let kept = kept.map(hash_of);
+            book.sessions.retain(|s| s.user != name || kept.as_ref().is_some_and(|k| same(&s.hash, k)));
             Ok(())
         })
     }
@@ -395,12 +398,11 @@ impl Accounts {
         })
     }
 
-    /// A new link for `name` to set a new password; their sessions end.
+    /// A new link for `name` to set a new password; their sessions end, and their old password no
+    /// longer signs in (a reset is often because someone else has it).
     pub(crate) fn reset(&self, name: &str) -> Result<String, String> {
         self.change(|book| {
-            if !book.users.iter().any(|u| u.name == name) {
-                return Err(format!("no account {name:?}"));
-            }
+            book.users.iter_mut().find(|u| u.name == name).ok_or(format!("no account {name:?}"))?.password = None;
             book.invites.retain(|i| i.name != name);
             book.sessions.retain(|s| s.user != name);
             let token = new_token("hi_");
@@ -428,6 +430,8 @@ impl Accounts {
             let account = book.users.iter_mut().find(|u| u.name == name).ok_or("its account is gone")?;
             account.password = Some(hash);
             let account = account.clone();
+            // A new password: any session opened before it ends.
+            book.sessions.retain(|s| s.user != name);
             Ok((Self::start_session(book, &name), account))
         })
     }
@@ -605,11 +609,25 @@ mod tests {
         assert_eq!((account.role, a.who(&token).unwrap().name.as_str()), (Role::Editor, "bob"));
         assert!(a.accept(&link, PW).is_err(), "used up");
         assert!(a.sign_in("bob", PW).is_ok());
-        // A reset: a new link, their sessions end.
+        // A reset: a new link, their sessions end, and the old password no longer signs in.
+        let (other, _) = a.sign_in("bob", PW).unwrap();
         let again = a.reset("bob").unwrap();
-        assert_eq!(a.who(&token), None);
+        assert_eq!((a.who(&token), a.who(&other)), (None, None));
+        assert!(a.sign_in("bob", PW).is_err(), "the old password is gone with the reset");
         a.accept(&again, "another good password").unwrap();
         assert!(a.sign_in("bob", "another good password").is_ok());
+    }
+
+    #[test]
+    fn a_new_password_ends_every_other_session() {
+        let (a, first) = set_up();
+        let (stolen, _) = a.sign_in("ada", PW).unwrap();
+        assert!(a.change_password("ada", "wrong password!", "a new good password", Some(&first)).is_err());
+        a.change_password("ada", PW, "a new good password", Some(&first)).unwrap();
+        assert_eq!(a.who(&stolen), None, "a session opened with the old password ends");
+        assert_eq!(a.who(&first).map(|w| w.name), Some("ada".into()), "the one asking stays");
+        assert!(a.sign_in("ada", PW).is_err());
+        assert!(a.sign_in("ada", "a new good password").is_ok());
     }
 
     #[test]

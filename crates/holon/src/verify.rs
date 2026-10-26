@@ -8,12 +8,19 @@
 //! produces with what the log says the run produced: its run id, its outputs, the effects it
 //! performed and the status it answered.
 //!
-//! Some runs can't be run again, and are counted, not failed: one that used a secret or a resume
-//! token (the log holds a placeholder, never the value), one that failed on a budget (the clock
+//! A node that computed with a secret or a resume token can't be computed again: the log holds a
+//! placeholder, never the value. What the log kept for that node stands in (`Asserting`), as in
+//! the editor's replay, and the rest of the run is checked against it; the report says for how
+//! many runs, and for how many nodes. What such a node produced is taken from the log, not
+//! checked. Some runs can't be run again at all, and are counted, not failed: one whose such node
+//! the log keeps no outputs for (too large, or too deep), one that failed on a budget (the clock
 //! decided), one no route took (nothing ran), one that read a file whose text neither the export
 //! nor `--files` holds (its folder keeps only hashes).
 
+use std::collections::BTreeSet;
+
 use crate::*;
+use holon_core::Observer;
 use holon_host::{Exchange, Limits, Performer, Waits};
 use recorder::{line_hash, LogEntry};
 
@@ -169,6 +176,9 @@ pub(crate) struct Report {
     pub(crate) bad_units: Vec<String>,
     /// Each run, by seq, with what running it again came to.
     pub(crate) reruns: Vec<(u64, Rerun)>,
+    /// The runs checked given what the log kept for nodes that can't be computed again (fed a
+    /// secret or a token): by seq, how many such nodes.
+    pub(crate) given: BTreeMap<u64, usize>,
 }
 
 impl Report {
@@ -232,10 +242,15 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     }
 
     let texts = Texts { blobs: &export.blobs, files };
-    for (i, (entry, line)) in entries.iter().enumerate() {
+    for (i, (entry, _)) in entries.iter().enumerate() {
         let earlier: Vec<&LogEntry> =
             entries[..i].iter().map(|(e, _)| e).filter(|e| !entry.run_id.is_empty() && e.run_id == entry.run_id).collect();
-        report.reruns.push((entry.seq, rerun(entry, line, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()))));
+        let mut given = 0;
+        let came_to = rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &mut given);
+        if given > 0 {
+            report.given.insert(entry.seq, given);
+        }
+        report.reruns.push((entry.seq, came_to));
     }
     report
 }
@@ -333,8 +348,9 @@ fn what(read: &recorder::LoggedRead) -> String {
 }
 
 /// Run `entry` again from what it records (and what the earlier parts of the same run, `earlier`,
-/// record: a resumed run's outbound answers and reads), and compare.
-fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, resolver: &impl holon_core::Resolver) -> Rerun {
+/// record: a resumed run's outbound answers and reads), and compare. `given` is set to how many
+/// nodes the log's record stood in for (`Asserting`).
+fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl holon_core::Resolver, given: &mut usize) -> Rerun {
     if entry.run_id.is_empty() {
         return Rerun::Skipped("nothing ran: no route took the request".into());
     }
@@ -378,21 +394,16 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, res
         return Rerun::Differs("its state doesn't encode".into());
     };
 
-    // A secret or a token stands in as the placeholder the log shows: a run that only passes one
-    // along still checks; one that computes with it can't.
+    // A secret stands in as the placeholder the log shows (a token too: `Logged::token`). A node
+    // that only passes one along computes the same; one that computes with it can't be computed
+    // again, and what the log kept for it stands in (`Asserting`).
     let caps = capabilities(root, resolver);
     let mut sourced: Vec<(Capability, Value)> =
         state.iter().map(|(k, v)| (Capability::StateRead(k.clone()), v.clone())).collect();
     sourced.extend(extra.iter().cloned());
-    let mut hidden = line.contains("‹secret:") || line.contains("‹token:");
     for cap in caps.iter() {
-        match cap {
-            Capability::SecretRead(name) => {
-                sourced.push((Capability::SecretRead(name.clone()), Value::Text(format!("‹secret:{name}›"))));
-                hidden = true;
-            }
-            Capability::Await(_) => hidden |= line.contains("‹token:"),
-            _ => {}
+        if let Capability::SecretRead(name) = cap {
+            sourced.push((Capability::SecretRead(name.clone()), Value::Text(format!("‹secret:{name}›"))));
         }
     }
 
@@ -425,8 +436,9 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, res
     };
     let limits = Limits { run_budget: Duration::from_secs(3600), max_requests: usize::MAX, ..Limits::clock_run() };
     let mut host = RecordingHost { performed: Vec::new() };
-    let mut timer = recorder::Timer::new();
-    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut timer, &mut waits, &prior);
+    let mut observer = Asserting::from_timeline(&entry.timeline);
+    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
+    *given = observer.stood_in.len();
 
     let outputs: Vec<Option<SValue>> = outcome.outputs.iter().map(|o| o.as_ref().map(|v| SValue::from_core(&folders::loggable_output(v)))).collect();
     if json(&outputs) != json(&entry.outputs) {
@@ -440,6 +452,14 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, res
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
     }
+    // A part that settled waiting: the packs it sent as it parked are what it settled.
+    let progress: Vec<PerformedEntry> = if outcome.waiting.is_empty() { Vec::new() } else { channels::settled_sends(&outcome.outputs) }
+        .iter()
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
+        .collect();
+    if json(&progress) != json(&entry.progress) {
+        differs.push("the packs it sent as it waited");
+    }
     if entry.kind == "request"
         && let Some(status) = entry.status
         && data::respond(outcome.outputs.first().and_then(Option::as_ref)).status != status
@@ -452,7 +472,9 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, res
 
     match differs.is_empty() {
         true => Rerun::Matched,
-        false if hidden => Rerun::Skipped("it used a secret or a resume token, which the log never holds".into()),
+        false if !observer.unrecorded.is_empty() => Rerun::Skipped(
+            "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into(),
+        ),
         false if entry.retries > 0 => {
             Rerun::Skipped("it ran again after what it read changed, and its entry holds only its last attempt's requests (logged before entries held them all)".into())
         }
@@ -497,6 +519,85 @@ impl Waits for Logged {
     }
     fn token(&mut self, name: &str) -> String {
         format!("‹token:{name}›")
+    }
+}
+
+/// Observes a run being checked: the server's timer (so its steps are reported the same way), and,
+/// for a node whose inputs carry what the log never holds (a secret's or a token's placeholder),
+/// the outputs the log kept for it in the last round it recorded, stood in for what core would
+/// compute, as the editor's replay does (`editor/src/replay.ts`). The rest of the run is checked
+/// against them; what such a node produced is taken from the log, not checked. A composite fed a
+/// placeholder is opened instead: the leaves inside it that compute with it are stood in for,
+/// and the rest of it checked.
+struct Asserting {
+    timer: recorder::Timer,
+    /// Each node's outputs in the last round the log recorded them in, by path.
+    recorded: BTreeMap<Vec<u32>, Vec<Option<Value>>>,
+    /// The nodes stood in for.
+    stood_in: BTreeSet<Vec<u32>>,
+    /// The nodes that needed standing in for and that the log keeps no outputs for (larger than
+    /// the log keeps, or deeper than it records).
+    unrecorded: BTreeSet<Vec<u32>>,
+}
+
+impl Asserting {
+    fn from_timeline(timeline: &[recorder::NodeTiming]) -> Asserting {
+        let mut rounds: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
+        let mut recorded = BTreeMap::new();
+        for t in timeline {
+            let Some(outputs) = &t.outputs else { continue };
+            if rounds.get(&t.path).is_some_and(|&r| r > t.round) {
+                continue;
+            }
+            rounds.insert(t.path.clone(), t.round);
+            recorded.insert(t.path.clone(), outputs.iter().map(|o| o.clone().map(SValue::into_core)).collect());
+        }
+        Asserting { timer: recorder::Timer::new(), recorded, stood_in: BTreeSet::new(), unrecorded: BTreeSet::new() }
+    }
+}
+
+impl Observer for Asserting {
+    fn enter(&mut self, path: &[u32]) {
+        self.timer.enter(path)
+    }
+    fn leave(&mut self, path: &[u32]) {
+        self.timer.leave(path)
+    }
+    fn produced(&mut self, path: &[u32], outputs: &[holon_core::Slot]) {
+        self.timer.produced(path, outputs)
+    }
+    fn round(&mut self, n: usize) {
+        self.timer.round(n)
+    }
+    fn failed(&mut self, path: &[u32], reason: &str) {
+        self.timer.failed(path, reason)
+    }
+    fn asserted(&mut self, path: &[u32], unit: &holon_core::Unit, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+        if matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(carries_placeholder) {
+            return None;
+        }
+        match self.recorded.get(path) {
+            Some(outputs) => {
+                self.stood_in.insert(path.to_vec());
+                Some(outputs.clone())
+            }
+            None => {
+                self.unrecorded.insert(path.to_vec());
+                None
+            }
+        }
+    }
+}
+
+/// Whether `v` carries a secret's or a token's placeholder anywhere: what the log shows in place
+/// of a value it never holds.
+fn carries_placeholder(v: &Value) -> bool {
+    match v {
+        Value::Text(t) => t.contains("‹secret:") || t.contains("‹token:"),
+        Value::List(items) => items.iter().any(carries_placeholder),
+        Value::Record(fields) => fields.values().any(carries_placeholder),
+        Value::Sum { payload, .. } | Value::Effect { payload, .. } => carries_placeholder(payload),
+        Value::Number(_) | Value::Boolean(_) => false,
     }
 }
 
@@ -624,6 +725,15 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         }
     }
     out += &format!("  re-ran {matched} runs: each produced what its log entry says\n");
+    if !r.given.is_empty() {
+        let seqs: Vec<u64> = r.given.keys().copied().collect();
+        let nodes: usize = r.given.values().sum();
+        out += &format!(
+            "  {} checked given what the log kept for {nodes} node{} fed a secret or a resume token (not computed again)\n",
+            count_of(&seqs),
+            if nodes == 1 { "" } else { "s" }
+        );
+    }
     for (why, seqs) in &not {
         out += &format!("  not re-run ({}): {why}\n", count_of(seqs));
     }

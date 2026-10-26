@@ -14,6 +14,10 @@
 //!
 //! A body is text, or a file (`http_upload`): its bytes are read from the folder as they are sent,
 //! never held whole, and must still hash to what the run's handle says.
+//!
+//! An answer can be forwarded as it is read (`http_stream`, a streamed reply): a 2xx answer's
+//! content type, then each piece of its body, go to a [`Forward`] (the route's caller), while the
+//! whole body is kept for the run, within the same limits.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -47,6 +51,38 @@ pub(crate) trait FileBody: Sync {
 }
 
 /// What a request sends.
+/// Where a streamed call's answer goes as it is read: the route's caller (dataplane.rs).
+pub(crate) trait Forward: Send + Sync {
+    /// The answer is 2xx: its content type, before its first piece.
+    fn head(&self, content_type: &str);
+    /// A piece of its body, as read.
+    fn chunk(&self, bytes: &[u8]);
+}
+
+/// A run's forwarder: the route's caller, for the one streamed call it forwards.
+#[derive(Clone)]
+pub(crate) struct Forwarder {
+    to: std::sync::Arc<dyn Forward>,
+    used: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::fmt::Debug for Forwarder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Forwarder")
+    }
+}
+
+impl Forwarder {
+    pub(crate) fn new(to: std::sync::Arc<dyn Forward>) -> Forwarder {
+        Forwarder { to, used: Default::default() }
+    }
+
+    /// The forwarder for a call, the first time one asks: a reply forwards one call.
+    pub(crate) fn take(&self) -> Option<&dyn Forward> {
+        (!self.used.swap(true, std::sync::atomic::Ordering::SeqCst)).then_some(&*self.to)
+    }
+}
+
 pub(crate) enum Body<'a> {
     Text(String),
     File(&'a dyn FileBody),
@@ -64,6 +100,20 @@ impl<R: Read> Read for Hashing<R> {
         self.hasher.lock().unwrap().update(&buf[..n]);
         Ok(n)
     }
+}
+
+/// Headers a flow doesn't set: the host writes them from the granted URL and the body it sends.
+/// `Host` names the site behind the address: one set by the flow would reach another virtual host
+/// on the granted server, never granted itself. The rest frame the message or the connection (a
+/// length that isn't the body's would carry a second request on it).
+const HOST_HEADERS: &[&str] = &["host", "content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer", "upgrade", "expect"];
+
+/// The first header in `headers` a flow may not set, if any.
+pub(crate) fn refused_header(headers: &BTreeMap<String, Value>) -> Option<&str> {
+    headers.keys().map(String::as_str).find(|name| {
+        let lower = name.to_ascii_lowercase();
+        HOST_HEADERS.contains(&lower.as_str()) || lower.starts_with("proxy-")
+    })
 }
 
 pub(crate) fn failure(error: &str, message: impl Into<String>) -> Value {
@@ -123,19 +173,25 @@ impl Outbound {
 
 impl Performer for Outbound {
     fn perform(&self, request: &Value, limits: &Limits) -> Value {
+        self.perform_forwarding(request, limits, None)
+    }
+}
+
+impl Outbound {
+    /// Perform `request`, its answer forwarded as it is read when `forward` is given.
+    pub(crate) fn perform_forwarding(&self, request: &Value, limits: &Limits, forward: Option<&dyn Forward>) -> Value {
         let Value::Record(r) = request else { return failure("bad_request", "not a request record") };
         let (Some(Value::Text(method)), Some(Value::Text(url)), Some(Value::Record(headers)), Some(Value::Text(body))) =
             (r.get("method"), r.get("url"), r.get("headers"), r.get("body"))
         else {
             return failure("bad_request", "a request needs method, url, headers and body");
         };
-        self.send(method, url, headers, Body::Text(body.clone()), limits)
+        self.send(method, url, headers, Body::Text(body.clone()), limits, forward)
     }
-}
 
-impl Outbound {
-    /// Send `body` to `url`, within the rules and `limits`: the response record, or a failure.
-    pub(crate) fn send(&self, method: &str, url: &str, headers: &BTreeMap<String, Value>, body: Body, limits: &Limits) -> Value {
+    /// Send `body` to `url`, within the rules and `limits`: the response record, or a failure. A
+    /// 2xx answer is forwarded as it is read when `forward` is given.
+    pub(crate) fn send(&self, method: &str, url: &str, headers: &BTreeMap<String, Value>, body: Body, limits: &Limits, forward: Option<&dyn Forward>) -> Value {
         let size = match &body {
             Body::Text(t) => t.len() as u64,
             Body::File(f) => f.size(),
@@ -144,6 +200,9 @@ impl Outbound {
             return failure("too_large", format!("the request body is over {} bytes", limits.max_request_bytes));
         }
         let Some(mut target) = parse_url(url) else { return failure("bad_url", url.to_string()) };
+        if let Some(name) = refused_header(headers) {
+            return failure("bad_header", format!("{name} is the host's to set, from the granted URL and the body it sends"));
+        }
 
         let allow_private = self.allow_private;
         let agent = ureq::AgentBuilder::new()
@@ -168,12 +227,7 @@ impl Outbound {
                 return refused;
             }
             let mut call = agent.request(&method, &self.url(&target));
-            let file = matches!(body, Some(Body::File(_)));
             for (name, value) in headers {
-                // A file's length is its own: what the flow says can't make it send more or less.
-                if file && (name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("transfer-encoding")) {
-                    continue;
-                }
                 if let Value::Text(v) = value {
                     call = call.set(name, v);
                 }
@@ -223,7 +277,7 @@ impl Outbound {
                 }
                 continue;
             }
-            return read_response(response, limits);
+            return read_response(response, limits, forward);
         }
     }
 }
@@ -237,8 +291,8 @@ fn next_target(from: &Target, location: &str) -> Option<Target> {
     }
 }
 
-/// The response record, within the header and body limits.
-fn read_response(response: ureq::Response, limits: &Limits) -> Value {
+/// The response record, within the header and body limits; a 2xx one forwarded as it is read.
+fn read_response(response: ureq::Response, limits: &Limits, forward: Option<&dyn Forward>) -> Value {
     let status = response.status();
     let mut headers: BTreeMap<String, Value> = BTreeMap::new();
     let mut header_bytes = 0;
@@ -250,9 +304,25 @@ fn read_response(response: ureq::Response, limits: &Limits) -> Value {
     if header_bytes > limits.max_header_bytes {
         return failure("too_large", format!("the response headers are over {} bytes", limits.max_header_bytes));
     }
+    let forward = forward.filter(|_| (200..300).contains(&status));
+    if let Some(f) = forward {
+        f.head(response.header("content-type").unwrap_or("application/octet-stream"));
+    }
     let mut bytes = Vec::new();
-    if let Err(e) = response.into_reader().take(limits.max_response_bytes as u64 + 1).read_to_end(&mut bytes) {
-        return failure(if e.kind() == std::io::ErrorKind::TimedOut { "timeout" } else { "transport" }, e.to_string());
+    let mut reader = response.into_reader().take(limits.max_response_bytes as u64 + 1);
+    let mut piece = [0u8; 8192];
+    loop {
+        match reader.read(&mut piece) {
+            Ok(0) => break,
+            Ok(n) => {
+                bytes.extend_from_slice(&piece[..n]);
+                if let Some(f) = forward.filter(|_| bytes.len() <= limits.max_response_bytes) {
+                    f.chunk(&piece[..n]);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return failure(if e.kind() == std::io::ErrorKind::TimedOut { "timeout" } else { "transport" }, e.to_string()),
+        }
     }
     if bytes.len() > limits.max_response_bytes {
         return failure("too_large", format!("the response body is over {} bytes", limits.max_response_bytes));
@@ -333,6 +403,7 @@ pub(crate) fn is_private(ip: IpAddr) -> bool {
                 || v6.is_multicast()
                 || (first & 0xfe00) == 0xfc00 // fc00::/7, unique local
                 || (first & 0xffc0) == 0xfe80 // fe80::/10, link-local
+                || v6.segments()[..6] == [0x64, 0xff9b, 0, 0, 0, 0] // 64:ff9b::/96, NAT64: an IPv4 address behind it
         }
     }
 }
@@ -433,6 +504,15 @@ mod tests {
         // Granted and plain HTTP allowed, but 127.0.0.1 is a private address.
         let public_only = Outbound { allow_private: false, ..local(&addr) };
         assert_eq!(error(&public_only, &format!("https://{addr}/")), text("blocked_address"));
+        // A header that would steer it past what was granted: another virtual host on the granted
+        // server, a length that isn't the body's. Refused before anything is sent.
+        for header in ["Host", "content-length", "Transfer-Encoding", "Connection", "Proxy-Authorization"] {
+            let mut asked = request("GET", &format!("https://{addr}/"), "");
+            if let Value::Record(r) = &mut asked {
+                r.insert("headers".into(), Value::Record(BTreeMap::from([(header.to_string(), text("jenkins.internal"))])));
+            }
+            assert_eq!(field(&local(&addr).perform(&asked, &limits), "error"), &text("bad_header"), "{header}");
+        }
         // Credentials in a URL, or another scheme, are not URLs it sends.
         assert_eq!(error(&local(&addr), &format!("https://u:p@{addr}/")), text("bad_url"));
         assert_eq!(error(&local(&addr), "ftp://a.com/"), text("bad_url"));
@@ -502,20 +582,23 @@ mod tests {
         let limits = Limits::request_run();
         let bytes = b"a,b\n1,2\n".to_vec();
         let file = Bytes(bytes.clone(), blake3::hash(&bytes).to_hex().to_string());
-        let headers = BTreeMap::from([("content-length".to_string(), Value::Text("1".into()))]);
-        let out = o.send("PUT", &format!("https://{addr}/up"), &headers, Body::File(&file), &limits);
+        let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&file), &limits, None);
         assert_eq!(field(&out, "status"), &Value::Number(200.0), "{out:?}");
+        // A file's length is its own: what the flow says can't make it send more or less.
+        let headers = BTreeMap::from([("content-length".to_string(), Value::Text("1".into()))]);
+        let out = o.send("PUT", &format!("https://{addr}/up"), &headers, Body::File(&file), &limits, None);
+        assert_eq!(field(&out, "error"), &Value::Text("bad_header".into()), "{out:?}");
         let changed = Bytes(bytes.clone(), blake3::hash(b"other").to_hex().to_string());
-        let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&changed), &limits);
+        let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&changed), &limits, None);
         assert_eq!(field(&out, "error"), &Value::Text("changed".into()));
         let small = Limits { max_request_bytes: 3, ..Limits::request_run() };
-        let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&file), &small);
+        let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&file), &small, None);
         assert_eq!(field(&out, "error"), &Value::Text("too_large".into()), "a file counts as a body");
     }
 
     #[test]
     fn private_addresses_are_recognised() {
-        for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1"] {
+        for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1", "64:ff9b::a9fe:a9fe"] {
             assert!(is_private(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["8.8.8.8", "1.1.1.1", "172.32.0.1", "100.128.0.1", "2606:4700::1111"] {

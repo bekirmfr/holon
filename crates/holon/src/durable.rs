@@ -161,6 +161,11 @@ pub(crate) struct RunWaits {
     /// The keys this attempt holds (claims.rs), and what it needs to claim more; none for a run
     /// without state, a resumed part, or the attempt that runs holding the state's lock.
     pub(crate) claiming: Option<claims::Claiming>,
+    /// The route's caller, when the run's reply forwards a streamed call (outbound.rs).
+    pub(crate) forward: Option<outbound::Forwarder>,
+    /// The deployment's channels, which a piped call sends its answer to (channels.rs); none
+    /// outside a run.
+    pub(crate) channels: Option<Arc<channels::Channels>>,
 }
 
 impl Waits for RunWaits {
@@ -276,6 +281,39 @@ pub(crate) struct ParkedRun {
     /// logged as of that version, whose canvas shows it. Absent for runs parked before.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) version: String,
+    /// Its inputs, sourced values, requests, events and tokens, sealed, as the deployments file
+    /// keeps them (they may hold a secret, a caller's credential, a token); opened again when
+    /// the server starts (`open`). Never set on a run in memory that could be opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sealed: Option<SealedPart>,
+    /// Whether a resume holds it right now: claimed under the deployments lock when its token
+    /// is checked (or its deadline passes), so a token resumes it once even when requests carrying
+    /// it arrive together. Never persisted: a restart frees it.
+    #[serde(skip)]
+    pub(crate) resuming: bool,
+}
+
+/// A parked run's sealed part: AES-256-GCM under the secrets master key, bound to its deployment
+/// and run id (hex).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub(crate) struct SealedPart {
+    pub(crate) nonce: String,
+    pub(crate) data: String,
+}
+
+/// What of a parked run is sealed on disk.
+#[derive(Serialize, Deserialize, Default)]
+struct Sealable {
+    inputs: Vec<Option<SValue>>,
+    sourced: Vec<(String, SValue)>,
+    rounds: Vec<Vec<StoredExchange>>,
+    #[serde(default)]
+    tokens: BTreeMap<String, String>,
+    events: BTreeMap<String, SValue>,
+}
+
+fn parked_context(slug: &str, run_id: &str) -> String {
+    format!("holon-parked/v1\0{slug}\0{run_id}")
 }
 
 /// The capability a logged sourced value is for: what a run's trigger and the run's start supply.
@@ -356,6 +394,8 @@ impl ParkedRun {
             waiting: waiting.iter().map(|w| StoredWaiting { name: w.name.clone(), expires_at: now + w.expires }).collect(),
             parked_at: now,
             version: String::new(),
+            sealed: None,
+            resuming: false,
         })
     }
 
@@ -416,6 +456,46 @@ impl ParkedRun {
             })
             .collect();
         Ok(Resumption { unit, inputs, sourced, waits, resumed: Resumed { state_before, nonce, prior } })
+    }
+
+    /// This run as the deployments file keeps it: what may hold a secret sealed by `sealer`.
+    pub(crate) fn sealed_for_disk(&self, slug: &str, sealer: &crate::sealing::Sealer) -> ParkedRun {
+        if self.sealed.is_some() {
+            return self.clone();
+        }
+        let part = Sealable {
+            inputs: self.inputs.clone(),
+            sourced: self.sourced.clone(),
+            rounds: self.rounds.clone(),
+            tokens: self.tokens.clone(),
+            events: self.events.clone(),
+        };
+        let plain = zeroize::Zeroizing::new(serde_json::to_string(&part).unwrap_or_default());
+        let (nonce, data) = sealer.seal(&parked_context(slug, &self.run_id), &plain);
+        ParkedRun {
+            inputs: Vec::new(),
+            sourced: Vec::new(),
+            rounds: Vec::new(),
+            tokens: BTreeMap::new(),
+            events: BTreeMap::new(),
+            sealed: Some(SealedPart { nonce, data }),
+            ..self.clone()
+        }
+    }
+
+    /// Open what the deployments file sealed, with `sealer`; nothing to do for a run not sealed.
+    pub(crate) fn open(&mut self, slug: &str, sealer: Option<&crate::sealing::Sealer>) -> Result<(), String> {
+        let Some(sealed) = &self.sealed else { return Ok(()) };
+        let sealer = sealer.ok_or("it was sealed under a key this server doesn't have")?;
+        let plain = sealer.open(&parked_context(slug, &self.run_id), &sealed.nonce, &sealed.data)?;
+        let part: Sealable = serde_json::from_str(&plain).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
+        self.inputs = part.inputs;
+        self.sourced = part.sourced;
+        self.rounds = part.rounds;
+        self.tokens = part.tokens;
+        self.events = part.events;
+        self.sealed = None;
+        Ok(())
     }
 
     /// What `GET .../runs` shows: never the tokens.
@@ -480,33 +560,73 @@ pub(crate) fn park_if_waiting(
     Ok(names)
 }
 
-/// The run waiting at `name` for `token` in `slug`, if there is one: what a resume route checks
-/// before it answers.
-pub(crate) fn find_by_token(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, name: &str, token: &str) -> Option<String> {
-    let table = deployments.lock().unwrap();
-    table.get(slug)?.parked.values().find(|p| p.waiting_point_of(token) == Some(name)).map(|p| p.run_id.clone())
+/// A parked run held for one resume: no other resume gets it while this is alive, and dropping
+/// it (the resume done, failed, or panicked) frees the run if it still waits.
+pub(crate) struct Claimed<'a> {
+    deployments: &'a Mutex<BTreeMap<String, Deployment>>,
+    slug: String,
+    run_id: String,
 }
 
-/// Deliver `event` to parked run `run_id`'s waiting point `name`, and run it again from its
+impl Claimed<'_> {
+    pub(crate) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+}
+
+impl Drop for Claimed<'_> {
+    fn drop(&mut self) {
+        let mut table = self.deployments.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(run) = table.get_mut(&self.slug).and_then(|d| d.parked.get_mut(&self.run_id)) {
+            run.resuming = false;
+        }
+    }
+}
+
+/// The run waiting at `name` for `token` in `slug`, claimed for this resume, if there is one and
+/// no other resume holds it: what a resume route checks before it answers.
+pub(crate) fn claim_by_token<'a>(deployments: &'a Mutex<BTreeMap<String, Deployment>>, slug: &str, name: &str, token: &str) -> Option<Claimed<'a>> {
+    let mut table = deployments.lock().unwrap();
+    let run = table.get_mut(slug)?.parked.values_mut().find(|p| !p.resuming && p.waiting_point_of(token) == Some(name))?;
+    run.resuming = true;
+    Some(Claimed { deployments, slug: slug.to_string(), run_id: run.run_id.clone() })
+}
+
+/// Parked run `run_id`, claimed while it still waits at `name`, unless another resume holds it.
+fn claim<'a>(deployments: &'a Mutex<BTreeMap<String, Deployment>>, slug: &str, run_id: &str, name: &str) -> Option<Claimed<'a>> {
+    let mut table = deployments.lock().unwrap();
+    let run = table.get_mut(slug)?.parked.get_mut(run_id)?;
+    if run.resuming || !run.waiting.iter().any(|w| w.name == name) {
+        return None;
+    }
+    run.resuming = true;
+    Some(Claimed { deployments, slug: slug.to_string(), run_id: run_id.to_string() })
+}
+
+/// Deliver `event` to the claimed parked run's waiting point `name`, and run it again from its
 /// record. It finishes (its effects performed now, once), waits again, or fails; the log gets an
-/// entry for this part, under the same run id.
+/// entry for this part, under the same run id. The claim is let go when this returns.
 pub(crate) fn resume_parked(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &str,
     slug: &str,
-    run_id: &str,
+    claimed: Claimed<'_>,
     name: &str,
     event: Value,
 ) -> Result<(), String> {
-    let (record, state, permit, secrets, folders) = {
+    let run_id = claimed.run_id.clone();
+    let run_id = run_id.as_str();
+    let (record, state, permit, secrets, folders, channels) = {
         let table = deployments.lock().unwrap();
         let dep = table.get(slug).ok_or("no such deployment")?;
-        let record = dep.parked.get(run_id).ok_or("no such waiting run")?.clone();
-        (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders))
+        let mut record = dep.parked.get(run_id).ok_or("no such waiting run")?.clone();
+        record.open(slug, dep.secrets.lock().unwrap().sealer.as_deref())?;
+        (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
     };
     let Resumption { unit, inputs, sourced, mut waits, resumed } = record.resume(name, event, store)?;
     waits.folders = Some(folders);
+    waits.channels = Some(channels);
     let resolver = materialize_closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();
@@ -573,7 +693,11 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<S
         }
     }
     for (slug, run_id, name) in due {
-        if let Err(e) = resume_parked(store, deployments, deployments_path, &slug, &run_id, &name, expired_event()) {
+        // A run a request is resuming right now isn't expired under it.
+        let Some(claimed) = claim(deployments, &slug, &run_id, &name) else {
+            continue;
+        };
+        if let Err(e) = resume_parked(store, deployments, deployments_path, &slug, claimed, &name, expired_event()) {
             eprintln!("holon: expiring {name:?} of run {run_id} in {slug:?}: {e}");
         }
     }

@@ -43,6 +43,43 @@ pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// The slug's current grant and unit, if it is deployed.
+fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> (Option<Grant>, Option<Hash>) {
+    match deployments.lock().unwrap().get(slug) {
+        Some(d) => (Some(d.grant.clone()), Some(d.unit)),
+        None => (None, None),
+    }
+}
+
+/// What deploying `unit` needs a person to approve (what policy and the previous grant don't
+/// cover), and what it deploys without: an agent's new code never inherits the secrets a person
+/// let the old code read, because a secret goes only to code a person has looked at (redaction
+/// catches a secret's literal value only, so code that encodes it first would hand the agent the
+/// value). When an agent changes the code, a secret it can run without is withheld from the grant,
+/// offered back to a person, and one it needs waits for a person's approval.
+fn approval_needed(
+    policy: &Policy,
+    manifest: &Manifest,
+    previous: Option<&Grant>,
+    previous_unit: Option<Hash>,
+    unit: Hash,
+    agent: bool,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut needed = policy.needs_approval(manifest, previous);
+    let mut withheld = BTreeSet::new();
+    if agent && previous_unit != Some(unit) {
+        for item in manifest.items().into_iter().filter(|item| item.starts_with("SecretRead(")) {
+            if manifest.is_optional(&item) {
+                needed.remove(&item);
+                withheld.insert(item);
+            } else {
+                needed.insert(item);
+            }
+        }
+    }
+    (needed, withheld)
+}
+
 /// `POST /deploy` — register `slug → unit`. The trigger(s) are **derived**, not asserted:
 /// `capabilities(unit, resolver)` (the same closure-union already used for capability-consent
 /// elsewhere in this project) tells us whether the unit needs `Ingress`, `Clock`, both, or
@@ -93,7 +130,7 @@ pub(crate) fn handle_post_deploy(
 
     let resolver = match materialize_closure(store, unit_hash) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return e.response(),
     };
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         return err(404, "no unit stored at that hash — stage or publish it first");
@@ -129,12 +166,9 @@ pub(crate) fn handle_post_deploy(
     if let Some(why) = policy.refuses(&manifest).or_else(|| seen.refuses(&manifest)) {
         return err(400, format!("this host can't grant that: {why}"));
     }
-    let previous = deployments.lock().unwrap().get(&body.slug).map(|d| d.grant.clone());
-    let missing: Vec<String> = policy
-        .needs_approval(&manifest, previous.as_ref())
-        .into_iter()
-        .filter(|item| !body.acknowledge.contains(item))
-        .collect();
+    let (previous, previous_unit) = previous_of(deployments, &body.slug);
+    let (needed, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
+    let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
     if agent && !missing.is_empty() {
         return err(
             403,
@@ -153,7 +187,23 @@ pub(crate) fn handle_post_deploy(
             ),
         );
     }
-    let grant = Grant::for_manifest(&manifest, epoch_now(), "deploy");
+    let mut grant = Grant::for_manifest(&manifest, epoch_now(), "deploy");
+    if !withheld.is_empty() {
+        grant.items.retain(|item| !withheld.contains(item));
+        let named = withheld.iter().cloned().collect::<Vec<_>>().join(", ");
+        grant.changes.push(crate::permissions::GrantChange { at: grant.granted_at, change: format!("withheld {named}: an agent changed the code, so a person grants it back") });
+        grant.revoked = withheld;
+    }
+    // Limits the host lowered stay lowered: a new version doesn't undo the host's choice, unless
+    // the deploy asks for that limit anew and a person approves it.
+    if let Some(previous) = &previous {
+        grant.lowered = previous
+            .lowered
+            .iter()
+            .filter(|(name, _)| !body.acknowledge.iter().any(|item| item.starts_with(&format!("Limit({name}="))))
+            .map(|(name, n)| (name.clone(), *n))
+            .collect();
+    }
     let permit = Arc::new(Permit::new(unit_hash, &grant, policy));
     if let Some(why) = durable::refuses_waits(root_unit, &resolver, &permit) {
         return err(400, format!("this host can't grant that: {why}"));
@@ -194,8 +244,16 @@ pub(crate) fn handle_post_deploy(
         // its data again; `DELETE /deployments/<slug>` is the one way to discard it.
         let now_secs = epoch_now();
         // A redeploy keeps the slug's sessions too, and runs it: a stopped deployment starts a new
-        // session from its latest state, a paused one resumes.
+        // session from its latest state, a paused one resumes. Starting is a person's, so an agent
+        // replaces only a running deployment.
         let life = match deployments.get(&body.slug) {
+            Some(old) if agent && old.life.status != crate::lifecycle::Status::Running => {
+                let status = if old.life.status == crate::lifecycle::Status::Paused { "paused" } else { "stopped" };
+                return err(
+                    403,
+                    format!("deployment {:?} is {status}, and an agent doesn't start one: a person runs it first, then deploy again", body.slug),
+                );
+            }
             Some(old) => {
                 let mut life = old.life.clone();
                 let _ = life.run(RunFrom::Latest, now_secs);
@@ -215,6 +273,8 @@ pub(crate) fn handle_post_deploy(
         }
         let document = body.document.clone().or(old_document);
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
+        // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
+        let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
         // Runs waiting keep waiting, each on the unit it started on.
         let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
         let state = match carried {
@@ -249,6 +309,7 @@ pub(crate) fn handle_post_deploy(
                 browsers: body.browsers.clone(),
                 life,
                 log,
+                channels,
                 document,
                 versions,
             },
@@ -298,6 +359,8 @@ pub(crate) fn handle_post_deploy_preview(
     secrets: &SecretStore,
     folders: &Arc<folders::Folders>,
     request: &Request,
+    // Whether an agent asks (access.rs): what it needs approved is what its deploy would.
+    agent: bool,
 ) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -312,7 +375,7 @@ pub(crate) fn handle_post_deploy_preview(
     };
     let resolver = match materialize_closure(store, unit_hash) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return e.response(),
     };
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         return err(404, "no unit stored at that hash — stage or publish it first");
@@ -320,15 +383,17 @@ pub(crate) fn handle_post_deploy_preview(
     // As the deploy will derive it: on a schedule, it runs on the clock.
     let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
     let manifest = Manifest::new(capabilities(root_unit, &resolver).deployed(scheduled).iter(), body.requirements.with_module_limits(root_unit, &resolver));
-    let previous = deployments.lock().unwrap().get(&body.slug).map(|d| d.grant.clone());
-    let needs = policy.needs_approval(&manifest, previous.as_ref());
+    let (previous, previous_unit) = previous_of(deployments, &body.slug);
+    let (needs, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
     let items = manifest.items();
-    let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i)).collect();
+    let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
     Response::json(&serde_json::json!({
         "manifest": to_hex(&manifest.hash()),
         "items": items,
         "needs_approval": needs,
         "already_granted": granted,
+        // Secrets it can run without that an agent's deploy leaves out, for a person to grant back.
+        "withheld": withheld,
         "refused": policy.refuses(&manifest).or_else(|| {
             let permit = Permit::new(unit_hash, &Grant::for_manifest(&manifest, 0, "preview"), policy);
             durable::refuses_waits(root_unit, &resolver, &permit)
@@ -447,7 +512,7 @@ pub(crate) fn handle_get_permission_view(
     }
     let resolver = match materialize_closure(store, unit) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return e.response(),
     };
     let Some(root) = resolver.resolve(&unit) else { return err(500, "deployed unit no longer resolves in the store") };
     let manifest = Manifest::new(capabilities(root, &resolver).deployed(scheduled).iter(), grant.requirements.clone().with_module_limits(root, &resolver));
@@ -475,7 +540,12 @@ pub(crate) fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Deploy
 pub(crate) fn handle_get_history(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
     let deployments = deployments.lock().unwrap();
     match deployments.get(slug) {
-        Some(dep) => Response::json(&HistoryBody { slug: slug.to_string(), ticks: dep.history.clone() }),
+        Some(dep) => {
+            // Redacted when kept; again here, against the secrets as they are now.
+            let mut reply = serde_json::to_value(HistoryBody { slug: slug.to_string(), ticks: dep.history.clone() }).unwrap_or_default();
+            Redactor::of(&dep.secrets).json(&mut reply);
+            Response::json(&reply)
+        }
         None => Response::empty_404(),
     }
 }
@@ -534,6 +604,7 @@ pub(crate) fn handle_delete_deployment(
         Some(dep) => {
             dep.log.delete_file();
             dep.arrivals.forget();
+            dep.channels.close();
             persist_deployments(deployments_path, deployments, store);
             Response::json(&deployment_entry(slug, &dep))
         }
@@ -589,7 +660,7 @@ pub(crate) fn handle_post_trigger(
     slug: &str,
     request: &Request,
 ) -> Response {
-    let (unit_hash, state, permit, vault, folders) = {
+    let (unit_hash, state, permit, vault, folders, channels) = {
         let deployments = deployments.lock().unwrap();
         match deployments.get(slug) {
             Some(dep) if dep.life.status != Status::Running => {
@@ -598,7 +669,7 @@ pub(crate) fn handle_post_trigger(
             Some(dep) if dep.server.is_some() => {
                 return err(400, "this deployment is an HTTP server: send requests to its own port");
             }
-            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders)),
+            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels)),
             None => return Response::empty_404(),
         }
     };
@@ -630,7 +701,7 @@ pub(crate) fn handle_post_trigger(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let mut waits = RunWaits { folders: Some(folders), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
 
@@ -802,6 +873,10 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         };
         if let Err(e) = result {
             return err(409, format!("can't {action} {slug:?}: {}", e.message()));
+        }
+        // A paused or stopped deployment answers nobody: its subscribers hear so.
+        if dep.life.status != Status::Running {
+            dep.channels.close();
         }
         // From here on the status is the person's choice, not the grant's.
         dep.grant.paused = false;

@@ -133,7 +133,8 @@ can narrow it:
 - **revoke** an item: from now on, the server refuses that effect. Revoking something optional
   makes those parts absent, and the flow carries on. Revoking something required **pauses** the
   deployment, unless **keep running when something required is revoked** is ticked: then those
-  calls fail and the rest runs.
+  calls fail and the rest runs. What starts its runs (receiving requests, its schedule, a
+  folder's new files) always pauses it when revoked, ticked or not.
 - **grant back** restores a revoked item.
 - a limit can be **lowered**. Raising one needs a new deploy, and approval.
 

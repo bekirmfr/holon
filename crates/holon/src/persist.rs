@@ -51,7 +51,12 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                 document: dep.document.clone(),
                 versions: dep.versions.clone(),
                 grant: Some(dep.grant.clone()),
-                parked: dep.parked.values().cloned().collect(),
+                // What a waiting run keeps that may hold a secret is sealed under the secrets
+                // master key, which is kept apart from this file: a backup of it carries none.
+                parked: {
+                    let sealer = dep.secrets.lock().unwrap().sealer.clone();
+                    dep.parked.values().map(|p| sealer.as_deref().map_or_else(|| p.clone(), |s| p.sealed_for_disk(slug, s))).collect()
+                },
             };
             (record, dep.state.clone())
         })
@@ -76,7 +81,9 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
     }
     match serde_json::to_vec_pretty(&records) {
         Ok(bytes) => {
-            if let Err(e) = write_atomically(Path::new(path), &bytes) {
+            // Owner-only, as the secrets and the flow log are: it holds the flows' documents,
+            // grants and what their waiting runs need.
+            if let Err(e) = crate::sealing::write_private(Path::new(path), &bytes) {
                 eprintln!("warning: failed to persist deployments to {path:?}: {e}");
             }
         }
@@ -201,9 +208,11 @@ pub(crate) fn load_deployments(
                 runs.join(", run ")
             );
         }
+        let channels = Arc::new(channels::Channels::from_log(&log, &permit.channels));
         loaded.insert(
             record.slug,
             Deployment {
+                channels,
                 unit: unit_hash,
                 triggers,
                 interval_seconds: record.interval_seconds,

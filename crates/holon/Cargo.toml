@@ -1,6 +1,6 @@
 [package]
 name = "holon"
-version = "0.1.0-rc.22"
+version = "0.1.0-rc.26"
 edition = "2024"
 # Proprietary: all rights reserved (the repository's LICENSE, which releases carry: see
 # dist-workspace.toml). Never published to crates.io.

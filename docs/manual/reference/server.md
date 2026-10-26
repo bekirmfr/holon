@@ -98,8 +98,9 @@ admin. Until then the server answers everything but setting up with 403.
   it at once.
 - Commands on this machine (`holon export`, `holon folder`, `holon mcp`) sign in through the run
   file in `~/.holon/run/`, as `local:<your user>`, while that server runs.
-- A request with `X-Holon-Role: agent` is treated as the agent role, whoever sends it: `holon mcp`
-  sends it, so an agent acting through your sign-in still can't approve. It never raises a role.
+- A request with `X-Holon-Role: agent` from an editor or an admin is treated as the agent role:
+  `holon mcp` sends it, so an agent acting through your sign-in still can't approve. It never
+  raises a role: a viewer who sends it stays a viewer, since an agent may do more than read.
 
 ### Signing in through an identity provider
 
@@ -137,9 +138,9 @@ minute; a value that can't be read is kept for five minutes at most.
 ## Deployed flows' servers
 
 Each deployed server flow listens on its own port, on `--data-host` (127.0.0.1 unless told
-otherwise). It speaks HTTP/1.1, without TLS; put HTTPS in front
-([A public HTTPS address](../guides/public-https.md)). It has no sign-in: a flow guards its own
-routes.
+otherwise). It speaks HTTP/1.1, without TLS: HTTPS ends at your ingress or proxy in front of it
+([A public HTTPS address](../guides/public-https.md)). `holon serve` warns as it starts when the
+server or these ports listen beyond loopback. It has no sign-in: a flow guards its own routes.
 
 | Case | Answer |
 |---|---|

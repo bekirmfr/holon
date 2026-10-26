@@ -1,5 +1,134 @@
 # Changelog
 
+## 0.1.0-rc.26
+
+Nothing to redeploy: no unit is hashed differently, and deployments, logs and waiting runs from
+rc.25 load as they are. A flow that stores or sends to a channel something computed from a
+secret now has that write refused: keep a one-way form of it instead (`sha256`, `hmac_sha256`).
+
+- **What is computed from a secret is never kept.** A state, collection or channel write of a
+  value computed from a secret (base64 of it, a slice, a field of a JSON secret) is refused, as a
+  write of the secret itself was; the run's other writes go through. Its outputs, its response
+  body, any other effect built from one and a clock run's history read `‹withheld: computed from
+  a secret›` in the log; the caller still gets its answer. An effect doesn't say which node made
+  it, so a key written from such a value has all its writes in that run refused. One-way leaves,
+  true/false answers and HTTP answers still cut it, so no sample changes.
+- **A viewer stays a viewer.** `X-Holon-Role: agent` made anyone signed in an agent, and an agent
+  may save flows, deploy a version needing no new approval and call a deployment, so a viewer
+  could replace live code. Only an editor or an admin now steps down to an agent.
+
+## 0.1.0-rc.25
+
+Nothing to redeploy: no unit is hashed differently, and deployments, logs and waiting runs from
+rc.24 load as they are (a waiting run is sealed the next time the deployments file is written).
+This release fixes what a security review of the server found.
+
+- **An agent's changed code doesn't inherit a secret.** A grant approved what the code did with
+  a secret, so when an agent deploys a new version of a flow that reads one, a person approves it
+  again: a required secret saves the version for approval, an optional one deploys withheld (its
+  reads refused, shown as revoked) until a person grants it back from the deployment's
+  permissions. An agent no longer starts a paused or stopped deployment, and a redeploy keeps the
+  limits a person lowered.
+- **What a run computes from a secret stays out of the log.** The log redacted a secret by its
+  value, so base64 of it (a Basic auth header), a field of a JSON secret or a slice reached the
+  log, the export and the editor's replay as is. The log now keeps no outputs for a node that
+  computes with a secret, and an outbound request built from one reads `‹withheld: computed from
+  a secret›` there. One-way leaves (`sha256`, `hmac_sha256`, `secure_equals`) still log, so signing
+  flows replay and verify as before; `holon verify` counts the other runs as not run again.
+- **A clock run's history is redacted** like its log entry, and the server no longer prints a
+  tick's effects.
+- **A resume token resumes its run once**, however many requests carry it at the same time; the
+  others answer 404 while it runs.
+- **A waiting run's record is sealed on disk**, under the secrets master key, and the deployments
+  file is written owner-only.
+- **Outbound requests: the host sets `Host` and the framing headers.** A flow setting `Host`,
+  `Content-Length`, `Transfer-Encoding`, `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`,
+  `Expect` or a `Proxy-*` header gets `bad_header`, and nothing is sent. NAT64 addresses
+  (64:ff9b::/96) count as private.
+- **Accounts:** a password reset stops the old password at once; setting a new password ends
+  the account's other sessions (a change keeps the one making it).
+- **Revoking what starts a deployment's runs pauses it**, even with "keep running when something
+  required is revoked" ticked.
+- **Folders:** none may be or hold the `--dotenv` file, the secrets key's file, or the flow
+  logs, arrivals and heads the server keeps beside its deployments file.
+- **Bounded units:** a deploy whose unit holds more than 20,000 units or nests deeper than 64 is
+  refused (400); working out a unit's permissions visits each unit once. A module that claims an
+  answer past its memory fails as bad output instead of making the server allocate it.
+
+## 0.1.0-rc.24
+
+Flows with a streamed reply (`respond sent.body, stream: true`, the `chat-proxy` sample) are
+hashed differently: redeploy them to get the change below. Every other flow is the unit it was,
+and keeps running.
+
+- **A streamed reply answers with its call's status.** A call that fails (not 2xx: a bad key, no
+  credit, a limit) forwards nothing, and the reply is its answer, whole; it went out as a 200, so
+  a page reading the stream showed nothing. Now the lowering wires the call's `sent.status` to
+  the respond's status input, and the caller gets the 401 or 400 with the API's own error; the
+  log, a replay and `holon verify` say the same. `chat-proxy`'s page shows such an answer ("the
+  model's API answered 400: …").
+- **A new sample, `gemini-chat`**: chat-proxy's streamed reply against Google's Gemini API (the
+  Interactions API, `gemini-3.5-flash-lite`), whose free tier needs no credit. The answer goes to
+  the page as it is written, the flow stores it once it ends, and a refusal (a bad key, the free
+  tier's rate limit) shows on the page with its status. On the free tier Google may use what is
+  sent to improve its products.
+- **`respond` takes a computed status:** `respond body, status: req.json.code`, on the respond
+  template's status input (`status_input: true`, there only when asked). A number out of 100–599
+  answers 500.
+- **A plain-HTTP host the server refuses says which.** A browser's password manager could fill
+  the deploy settings' "plain HTTP to" with a saved login's name (it takes the field before the
+  secret's value box for a username), and the field was then greyed out with it, so a deploy was
+  refused with "this host never grants plain HTTP" and no way to see why. The refusal now names
+  the host and the field, the field stays editable while it holds a host the server refuses, and
+  the secret's value box tells password managers it isn't a sign-in. If yours filled it, its
+  password may have gone into that secret: set it again from an empty box.
+
+## 0.1.0-rc.23
+
+Nothing to redeploy: no unit is hashed differently (the catalog only gains `channel_send`,
+`channel_subscribe` and `http_stream`), and flows deployed with rc.22 keep running, their logs
+read as they are.
+
+- **Channels** (docs/L4s/channels-L4.md): packs a flow streams to whoever listens. A flow
+  declares `channel updates`; `updates.send(x)` sends a pack once the run is over
+  (`ChannelSend("updates")`), and a route that answers `respond updates.subscribe()` is an event
+  stream of them (`ChannelRead("updates")`), `subscribe(from: "kept")` with the kept packs
+  first.
+  - A pack's id is its run's place in the log and its place among the run's packs (`12.0`), so a
+    subscriber that comes back with `Last-Event-ID` gets what it missed, across a restart too;
+    one that fell too far behind hears `event: missed`, and a paused, stopped or revoked
+    deployment ends its streams with `event: closed`. Subscribers stay across a redeploy.
+  - Limits, granted like a deployment's others and in the deploy bar: `max_pack_bytes`,
+    `max_packs_per_run`, `channel_keep`, `channel_buffer` and `max_subscribers` (per channel).
+- **Streamed replies.** `http.post(…, stream: true)` with `respond sent.body, stream: true`
+  forwards the upstream's answer to the caller as it arrives (a model's tokens, a long export),
+  with the upstream's content type and nothing buffered on the way; the flow still gets the whole
+  answer, and the log keeps it, so the run replays. It takes `missing:`, not `status:` or
+  `headers:`.
+- **Pipes.** `updates.pipe(http.post(…))` sends a call's answer to the channel's subscribers piece
+  by piece as it arrives, cut where a character ends, without an id and never kept; it asks
+  `ChannelSend` beside the call's `HttpRequest`, and needn't be in a route.
+- **A waiting run's progress goes out as it parks:** the packs it has settled that don't wait are
+  sent then and logged with the parked part (`progress`, checked by `holon verify`), and the rest
+  when it finishes, none twice.
+- **Two new samples**, `live-board` (a board that updates as tickets arrive) and `chat-proxy` (a
+  streamed `/chat` and a piped `/room` with a page that listens); `approval` now sends its order's
+  status before and after the payment and serves it at `GET /orders/live`.
+- **`holon verify` checks a run that computed with a secret.** A node fed a secret or a resume
+  token can't be computed again from the log, which holds a placeholder; verify used to count
+  such a run as not re-run, so an entry with its answer rewritten passed as the real one did.
+  Now the outputs the log kept for that node stand in for it, as the editor's replay does, and
+  the rest of the run is checked against them: the answer, the effects, the status. The report
+  says which runs were checked that way and for how many nodes; what such a node produced is
+  still trusted, and the checking-runs guide says so.
+- **The admin page's browse…** chooses the folder to bind: the OS's own folder dialog when the
+  editor is on the server's machine, otherwise a list of the server's folders to click through
+  (`GET /admin/folders/browse`, admin-only). `HOLON_NO_FOLDER_DIALOG=1` keeps the dialog from
+  opening. A listing that arrives late no longer replaces a path being typed, which is what failed
+  CI after rc.22.
+- **`holon serve` warns when it listens beyond loopback over plain HTTP**, naming which (the
+  editor, the flows' ports); the manual says TLS ends at the operator's ingress or proxy.
+
 ## 0.1.0-rc.22
 
 Nothing to redeploy: no unit is hashed differently, and flows deployed with rc.21 keep running.

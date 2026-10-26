@@ -150,6 +150,7 @@ mod activity;
 mod arrivals;
 mod auth;
 mod blobs;
+mod channels;
 mod claims;
 mod oidc;
 mod collections;
@@ -189,6 +190,7 @@ mod sealing;
 mod secret_sources;
 mod secrets;
 mod selfmanage;
+mod taint;
 #[cfg(test)]
 mod tests;
 mod units;
@@ -232,6 +234,21 @@ use persist::*;
 use scheduler::*;
 use units::*;
 use wire::*;
+
+/// The server's own files, which no folder may be or hold: those it was given (`files`), what it
+/// keeps beside its deployments file (the flow logs, the arrivals it noted, the heads it
+/// published), the `.env` it reads secrets from, and the secrets key's file.
+fn server_files(files: &[&String], deployments: &str, dotenv: Option<&str>, key: &sealing::KeySource) -> Vec<PathBuf> {
+    let mut own: Vec<PathBuf> = files.iter().filter(|p| p.as_str() != ":memory:").map(PathBuf::from).collect();
+    if deployments != ":memory:" {
+        own.extend(["logs", "arrivals", "heads"].map(|beside| Path::new(deployments).with_extension(beside)));
+    }
+    own.extend(dotenv.map(PathBuf::from));
+    if let sealing::KeySource::File(path) = key {
+        own.push(path.clone());
+    }
+    own
+}
 
 /// Any concrete `Store` backend, boxed so the server picks one at startup without the rest of
 /// the file branching on which. `Store`'s own trait shape (no generics, no `Self`-returning
@@ -419,6 +436,9 @@ struct Deployment {
     /// Every run, with what it read and produced (recorder.rs): the newest in memory, kept beside
     /// the deployments file so a restart reads them back.
     log: Log,
+    /// Its channels, with their kept packs and subscribers (channels.rs): kept across redeploys,
+    /// rebuilt from the log at load.
+    channels: Arc<channels::Channels>,
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
     /// view mode shows exactly what runs even after the flow is edited. Persisted.
     document: Option<serde_json::Value>,
@@ -483,6 +503,26 @@ fn parse_at(v: &str) -> Result<std::net::SocketAddr, String> {
         return Ok(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
     }
     v.parse().map_err(|_| format!("{v:?} isn't an address to listen on: give IP:PORT (127.0.0.1:8080, 0.0.0.0:8080, [::1]:8080) or a port"))
+}
+
+/// What `serve` warns when it listens beyond this machine: Holon speaks plain HTTP, and TLS ends
+/// at the operator's ingress in front of it (the manual's guides/public-https.md). None when
+/// both the server and deployed flows' ports stay on loopback.
+fn plain_http_warning(server: std::net::SocketAddr, data_host: std::net::IpAddr) -> Option<String> {
+    let open: Vec<String> = [
+        (!server.ip().is_loopback()).then(|| format!("the server and editor ({server})")),
+        (!data_host.is_loopback()).then(|| format!("deployed flows' ports ({data_host})")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if open.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "holon: warning: {} take plain HTTP from the network. Holon has no TLS of its own: put it behind your ingress or a TLS proxy (the manual: \"A public HTTPS address\"), and keep the hop from there to Holon on this machine or a network you trust.",
+        open.join(" and ")
+    ))
 }
 
 fn main() {
@@ -899,7 +939,7 @@ fn serve(args: Vec<String>) {
     };
     let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let secrets_key = sealing::KeySource::parse(secrets_key_arg.as_deref(), &secrets_arg).unwrap_or_else(|e| refuse_to_start(e));
-    let dotenv_path = dotenv_arg.map(std::path::PathBuf::from);
+    let dotenv_path = dotenv_arg.clone().map(std::path::PathBuf::from);
     let sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));
     let secrets = Arc::new(SecretStore::open(&secrets_arg, &secrets_key, sources).unwrap_or_else(|e| refuse_to_start(e)));
     {
@@ -914,11 +954,12 @@ fn serve(args: Vec<String>) {
         });
     }
     // The folders an admin bound (folders.rs): never the server's own files, nor what holds them.
-    let mut own: Vec<PathBuf> = [&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &databases_arg, &accounts_arg, &host_key_arg]
-        .into_iter()
-        .filter(|p| p.as_str() != ":memory:")
-        .map(PathBuf::from)
-        .collect();
+    let mut own = server_files(
+        &[&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &databases_arg, &accounts_arg, &host_key_arg],
+        &deployments_arg,
+        dotenv_arg.as_deref(),
+        &secrets_key,
+    );
     own.extend(local::holon_home());
     let folders = folders::Folders::open(&folders_arg, &own).unwrap_or_else(|e| refuse_to_start(e));
     // The databases an admin bound (databases.rs), beside them: a Postgres or MySQL one's
@@ -931,6 +972,13 @@ fn serve(args: Vec<String>) {
     let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     for (slug, dep) in initial_deployments.iter_mut() {
         dep.secrets = secrets.vault(slug);
+        // Its waiting runs' sealed parts open under the secrets key.
+        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        for run in dep.parked.values_mut() {
+            if let Err(e) = run.open(slug, sealer.as_deref()) {
+                eprintln!("holon: waiting run {} of {slug:?} can't be opened: {e}", run.run_id);
+            }
+        }
         dep.folders = Arc::new(folders::Scoped::new(Arc::clone(&folders), slug));
     }
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
@@ -992,6 +1040,9 @@ fn serve(args: Vec<String>) {
         println!("holon: the editor ({}) at http://{addr}/", source.describe());
     }
     println!("holon: listening on http://{addr} ({gate}; see access.rs)");
+    if let Some(warning) = plain_http_warning(bound, state.data_limits.host) {
+        eprintln!("{warning}");
+    }
     // Commands this user runs on this machine find it, and sign in, from here (local.rs).
     local::publish(bound, &accounts.new_local(&local::user()));
     if state_cell.set(state).is_err() {

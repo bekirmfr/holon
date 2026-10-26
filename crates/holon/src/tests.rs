@@ -577,6 +577,36 @@ fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
     assert_eq!(ticks.len(), 1);
 }
 
+/// A clock run's history is redacted as its log entry is: whoever may read the deployment reads
+/// it. Here the write of a secret into state is refused, but the run's outputs still hold it; and a
+/// write of something computed from it is refused too, its output withheld.
+#[test]
+fn a_clock_runs_history_never_shows_a_secret() {
+    let state = test_state();
+    let plan = holon_author::agent::plan("flow leak\nevery 5s\n\nstate.k = secret.api_key\nstate.encoded = base64(secret.api_key)\n").unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let unit = parse_hash(&plan.unit).unwrap();
+    let body = serde_json::json!({ "slug": "leak", "unit": plan.unit, "interval_seconds": 5 });
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&body).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    assert_eq!(deploy_json(&state, "leak", unit, serde_json::json!({ "interval_seconds": 5, "acknowledge": asked })).status_code, 200);
+    let value = "sk_live_kept_off_the_history";
+    let set = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+    assert_eq!(route(&state, &req("POST", "/deployments/leak/secrets/api_key", set)).status_code, 200);
+
+    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now());
+    let history = String::from_utf8(body_bytes(route(&state, &req("GET", "/deployments/leak/history", vec![])))).unwrap();
+    assert!(history.contains("\"ticks\":[{"), "it ticked: {history}");
+    assert!(!history.contains(value), "the history leaks it: {history}");
+    assert!(history.contains("‹secret:api_key›"), "{history}");
+    assert!(!history.contains("c2tfbGl2ZV9rZXB0") && history.contains("‹withheld: computed from a secret›"), "{history}");
+    let current = body_json(route(&state, &req("GET", "/deployments/leak/state", vec![])));
+    assert!(current["state"].get("encoded").is_none(), "the derived write was refused: {current}");
+    assert!(state.deployments.lock().unwrap()["leak"].history[0].outputs.iter().flatten().all(|o| !format!("{o:?}").contains(value)), "not kept either");
+}
+
 #[test]
 fn deployments_history_for_unknown_slug_is_404() {
     let state = test_state();
@@ -819,6 +849,9 @@ fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
     assert!(body_json(huge)["error"].as_str().unwrap().contains("ceiling of 1000"));
     let private = deploy_json(&state, "w", writer, serde_json::json!({ "requirements": { "private_addresses": true } }));
     assert!(body_json(private)["error"].as_str().unwrap().contains("never grants private addresses"));
+    let plain = deploy_json(&state, "w", writer, serde_json::json!({ "requirements": { "plain_http": ["bma"] } }));
+    let message = body_json(plain)["error"].as_str().unwrap().to_string();
+    assert!(message.contains("never grants plain HTTP, asked for \"bma\"") && message.contains("plain HTTP to"), "{message}");
     // A preview says what a deploy would ask for, and changes nothing.
     let preview = |extra: serde_json::Value| {
         let mut body = serde_json::json!({ "slug": "w", "unit": to_hex(&writer) });
@@ -1041,6 +1074,12 @@ fn a_limit_can_be_lowered_without_a_redeploy_but_not_raised() {
     assert_eq!(view["status"], "running");
     assert_eq!(limits(&state).request_timeout, Duration::from_secs(60));
     assert_eq!(limits(&state).max_requests, 5, "the other lowered limit stays");
+
+    // A redeploy doesn't undo what the host lowered.
+    let redeployed = deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ack, "requirements": requirements }));
+    assert_eq!(redeployed.status_code, 200);
+    assert_eq!(limits(&state).max_requests, 5, "still lowered after a redeploy");
+    assert_eq!(limits(&state).request_timeout, Duration::from_secs(60), "what the deploy asked anew is granted");
 }
 
 /// The policy file read again holds every deployment to it at once: a ceiling lowered below what a
@@ -1372,6 +1411,152 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let entries = body_json(route(&state, &req("GET", "/deployments/shop/log", vec![])))["entries"].as_array().unwrap().clone();
     assert_eq!(entries.last().unwrap()["events"]["paid"]["value"][0][0], "expired");
     let _ = std::fs::remove_file(&path);
+}
+
+/// What a waiting run keeps that may hold a secret (the request that started it, the requests it
+/// made, the events delivered to it) is sealed in the deployments file under the secrets master
+/// key, which is kept apart from it, and the file is its owner's alone. The run still resumes
+/// after a restart.
+#[test]
+fn a_waiting_runs_record_is_sealed_on_disk() {
+    let mut state = test_state();
+    let dir = unique_temp_path("sealed-parked");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = format!("{dir}/deployments.json");
+    state.deployments_path = path.clone();
+    let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{dir}/secrets.key")));
+    state.secrets = Arc::new(SecretStore::open(&format!("{dir}/secrets.json"), &key, crate::secret_sources::Sources::none()).unwrap());
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    let children = vec![
+        iface("resume_token", vec![frozen("await", "paid")]),
+        iface("await", vec![frozen("name", "paid"), frozen("expires", "3600")]),
+        iface("field", vec![frozen("name", "method")]),
+        test_store_write("paid"),
+    ];
+    let edges = vec![e(1, 0, 2, 0), e(2, 0, 3, 0), e(0, 0, BOUNDARY, 0), e(3, 0, BOUNDARY, 1)];
+    let orders = endpoint(&state, "POST", "/orders", children, edges, 1);
+    let thanks = stage(&state, &iface("const", vec![frozen("value", "thanks"), frozen("type", "Text")]));
+    let paid_route = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![thanks], edges: vec![e(0, 0, BOUNDARY, 0)] },
+            params: vec![frozen("declare", "endpoint"), frozen("method", "GET"), frozen("path", "/paid/:token"), frozen("resume", "paid")],
+            inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+            outputs: vec![Port { name: "response".into(), ty: Type::Any }],
+        },
+    );
+    let server = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![orders, paid_route], edges: vec![] },
+            params: vec![frozen("declare", "server"), frozen("port", "18094")],
+            inputs: vec![],
+            outputs: vec![],
+        },
+    );
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "Await(\"paid\")", "StateWrite(\"paid\")"] });
+    assert_eq!(deploy_json(&state, "sealed", server, ack).status_code, 200);
+    // The order carries its caller's credential, which the waiting run keeps with its request.
+    let mut order = fake_data("POST", "/orders", vec![]);
+    order.headers.push(("authorization".into(), "Bearer caller_credential_xyz".into()));
+    let token = String::from_utf8(serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &order).body).unwrap();
+    assert!(state.deployments.lock().unwrap()["sealed"].parked.values().next().unwrap().sealed.is_none(), "open in memory");
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains("caller_credential_xyz"), "the file holds the credential: {on_disk}");
+    assert!(on_disk.contains("\"sealed\""), "{on_disk}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "its owner's alone");
+    }
+
+    // A restart: loaded sealed, opened with the deployment's vault, and it resumes.
+    let mut reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    {
+        let dep = reloaded.get_mut("sealed").unwrap();
+        dep.secrets = state.secrets.vault("sealed");
+        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        let run = dep.parked.values_mut().next().unwrap();
+        assert!(run.sealed.is_some() && run.inputs.is_empty(), "loaded sealed");
+        assert!(run.open("other-slug", sealer.as_deref()).is_err(), "bound to its deployment");
+        run.open("sealed", sealer.as_deref()).unwrap();
+        assert!(format!("{:?}", run.inputs).contains("caller_credential_xyz"), "opened whole");
+    }
+    *state.deployments.lock().unwrap() = reloaded;
+    let paid = serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &fake_data("GET", &format!("/paid/{token}"), vec![]));
+    assert_eq!(paid.status, 200);
+    assert!(state.deployments.lock().unwrap()["sealed"].parked.is_empty(), "resumed and finished");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A token resumes its run once even when requests carrying it arrive together: the first claims
+/// the run as its token is checked, so a second finds nothing waiting while the first runs, and
+/// the deadline passing doesn't expire it under the resume either. Once the resume lets go of a
+/// run still waiting, its token works again.
+#[test]
+fn a_token_resumes_its_run_once_however_many_requests_carry_it() {
+    let state = test_state();
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    let children = vec![
+        iface("resume_token", vec![frozen("await", "paid")]),
+        iface("await", vec![frozen("name", "paid"), frozen("expires", "3600")]),
+        iface("field", vec![frozen("name", "method")]),
+        test_store_write("paid"),
+    ];
+    let edges = vec![e(1, 0, 2, 0), e(2, 0, 3, 0), e(0, 0, BOUNDARY, 0), e(3, 0, BOUNDARY, 1)];
+    let orders = endpoint(&state, "POST", "/orders", children, edges, 1);
+    let thanks = stage(&state, &iface("const", vec![frozen("value", "thanks"), frozen("type", "Text")]));
+    let paid_route = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![thanks], edges: vec![e(0, 0, BOUNDARY, 0)] },
+            params: vec![frozen("declare", "endpoint"), frozen("method", "GET"), frozen("path", "/paid/:token"), frozen("resume", "paid")],
+            inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+            outputs: vec![Port { name: "response".into(), ty: Type::Any }],
+        },
+    );
+    let server = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![orders, paid_route], edges: vec![] },
+            params: vec![frozen("declare", "server"), frozen("port", "18093")],
+            inputs: vec![],
+            outputs: vec![],
+        },
+    );
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "Await(\"paid\")", "StateWrite(\"paid\")"] });
+    assert_eq!(deploy_json(&state, "once", server, ack).status_code, 200);
+    let call = |method: &str, url: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, "once", &fake_data(method, url, vec![])).status;
+    let resumes = || {
+        let log = body_json(route(&state, &req("GET", "/deployments/once/log", vec![])));
+        log["entries"].as_array().unwrap().iter().filter(|x| x["kind"] == "resume").count()
+    };
+    let token = String::from_utf8(serve_data(&state.store, &state.deployments, &state.deployments_path, "once", &fake_data("POST", "/orders", vec![])).body).unwrap();
+
+    // While a resume holds the run, its token finds nothing, and its deadline doesn't expire it.
+    let held = durable::claim_by_token(&state.deployments, "once", "paid", &token).expect("the run waits for its token");
+    assert_eq!(call("GET", &format!("/paid/{token}")), 404, "a second resume while the first runs");
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    assert_eq!(resumes(), 0, "not expired under the resume");
+    // Let go with the run still waiting (a resume that failed before it ran): the token works again.
+    drop(held);
+    assert_eq!(call("GET", &format!("/paid/{token}")), 200);
+    assert_eq!(resumes(), 1);
+
+    // Many requests at once with one token: one resumes it, the rest are told it was used.
+    let token = String::from_utf8(serve_data(&state.store, &state.deployments, &state.deployments_path, "once", &fake_data("POST", "/orders", vec![])).body).unwrap();
+    let statuses: Vec<u16> = std::thread::scope(|s| {
+        let calls: Vec<_> = (0..8).map(|_| s.spawn(|| call("GET", &format!("/paid/{token}")))).collect();
+        calls.into_iter().map(|c| c.join().unwrap()).collect()
+    });
+    assert_eq!(statuses.iter().filter(|s| **s == 200).count(), 1, "{statuses:?}");
+    assert!(statuses.iter().all(|s| *s == 200 || *s == 404), "{statuses:?}");
+    assert_eq!(resumes(), 2, "the second order's run resumed once");
 }
 
 /// How long runs may wait and how many may wait at once are limits the host grants: an `await`
@@ -3433,6 +3618,19 @@ fn at_takes_an_address_or_a_port_alone() {
     }
 }
 
+/// Listening beyond this machine warns that it's plain HTTP, naming what is open; loopback doesn't.
+#[test]
+fn listening_beyond_loopback_warns_that_it_is_plain_http() {
+    let local: std::net::IpAddr = [127, 0, 0, 1].into();
+    assert_eq!(plain_http_warning(parse_at("7420").unwrap(), local), None);
+    assert_eq!(plain_http_warning(parse_at("[::1]:7420").unwrap(), "::1".parse().unwrap()), None);
+    let both = plain_http_warning(parse_at("0.0.0.0:7420").unwrap(), [0, 0, 0, 0].into()).unwrap();
+    assert!(both.contains("the server and editor (0.0.0.0:7420) and deployed flows' ports (0.0.0.0)"), "{both}");
+    assert!(both.contains("no TLS of its own"), "{both}");
+    let flows = plain_http_warning(parse_at("7420").unwrap(), [10, 0, 0, 5].into()).unwrap();
+    assert!(flows.contains("deployed flows' ports (10.0.0.5) take") && !flows.contains("editor"), "{flows}");
+}
+
 /// A deployment's runs, exported and checked offline: every run runs again to what its entry
 /// says. A copy re-chained after changing what a run performed still links, but that run no longer
 /// re-runs to its entry; a witnessed head is found only in the copy it came from.
@@ -3483,6 +3681,62 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A run that computes with a secret (here, signing the body under it) can't be computed again
+/// from its entry: the log holds a placeholder, never the value. What the log kept for that node
+/// stands in, and the rest of the run is checked against it: the entry with its answer rewritten
+/// (and the line chained again) differs; one rewritten everywhere, that node's own output too,
+/// passes, since what the node produced is taken from the log. The report says how many nodes.
+#[test]
+fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() {
+    let state = claims_state("");
+    let value = "whsec_test_123456";
+    let set = req("POST", "/deployments/signer/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let text = "flow signer\nport 18199\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    assert_eq!(slug, "signer");
+    let (status, signature, _) = data_call(&state, &slug, "POST", "/sign", "hello");
+    assert_eq!(status, 200);
+    let real = holon_core::primitives::compute("hmac_sha256", &[&Value::Text(value.into()), &Value::Text("hello".into())], &[Param::frozen("encoding", "hex")]);
+    assert_eq!(real, Some(Value::Text(signature.clone())), "the run signed with the secret's value");
+
+    // Exported, the run checks: the log holds the secret's placeholder, so the signing node's
+    // recorded output stands in, and the answer built from it is the one logged.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/signer/export", vec![])))).unwrap();
+    assert_eq!(export.lines.len(), 1);
+    assert!(!export.lines[0].contains(value), "the log never holds the value");
+    assert!(export.lines[0].contains(&signature), "it holds the signature the run answered");
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+    assert_eq!(report.given, BTreeMap::from([(0, 1)]), "one node stood in for: the signing");
+    assert!(verify::describe(&report, None).contains("1 run: 0 checked given what the log kept for 1 node fed a secret"), "{}", verify::describe(&report, None));
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+
+    let forged_signature: String = signature.chars().rev().collect();
+    assert_ne!(forged_signature, signature);
+    let rechained = |line: String| {
+        let head = recorder::line_hash(&line);
+        (verify::Export { lines: vec![line], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() }, head)
+    };
+    // Someone with the data folder rewrites the answer the run gave, and chains the line again:
+    // the signing node's recorded output still gives the real signature, so the run differs.
+    let mut v: serde_json::Value = serde_json::from_str(&export.lines[0]).unwrap();
+    let outputs = v["outputs"].to_string().replace(&signature, &forged_signature);
+    assert_ne!(outputs, v["outputs"].to_string());
+    v["outputs"] = serde_json::from_str(&outputs).unwrap();
+    let (forged, head) = rechained(serde_json::to_string(&v).unwrap());
+    let report = verify::check(&forged, Some(&head), &BTreeMap::new());
+    assert!(report.breaks.is_empty(), "re-chained, it links");
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Differs("its outputs".into()))], "{}", verify::describe(&report, None));
+    assert!(!report.ok(), "the forged export fails: {}", verify::describe(&report, None));
+    // Rewritten everywhere, the signing node's own recorded output too, it passes: what a node
+    // fed a secret produced is taken from the log, not checked. That is the trust that remains.
+    let (forged, head) = rechained(export.lines[0].replace(&signature, &forged_signature));
+    let report = verify::check(&forged, Some(&head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+    assert_eq!(report.given, BTreeMap::from([(0, 1)]));
+}
+
 // ── key claims: a key read before a call is held until the run commits ───────────────────────
 // (docs/L4s/key-claims-L4.md §10)
 
@@ -3517,6 +3771,99 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
         }
     });
     (host, hits)
+}
+
+/// A secret computed into something else is kept out of the log as surely as its value is: a
+/// Basic auth header (base64 of the key), a key with quotes and newlines sent inside JSON (escaped
+/// there), and a field read out of a JSON secret. Redaction finds a value, not what is computed from
+/// it, so the nodes it reaches keep no outputs and the requests built from them are withheld.
+#[test]
+fn a_secret_computed_into_something_else_stays_out_of_the_log() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let text = format!(
+        r#"flow leaky
+port 18141
+
+route POST /go (req) {{
+  basic = http.get("{host}", "/basic", headers: {{ authorization: "Basic {{base64(secret.api_key)}}" }})
+  account = json_parse(secret.service_account)
+  sent = http.post("{host}", "/json", headers: {{ "content-type": "application/json", "x-email": account.client_email }}, body: json({{ key: secret.pem }}))
+  respond {{ basic: basic.status, sent: sent.status }}
+}}
+"#
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let set = |name: &str, value: &str| {
+        let body = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/secrets/{name}"), body)).status_code, 200, "{name}");
+    };
+    set("api_key", "sk_live_basic_secret_value");
+    set("pem", "-----BEGIN KEY-----\nMIIabc\"quoted\"\n-----END KEY-----");
+    set("service_account", r#"{"client_email":"bot@x.iam","private_key":"pk_private_value_123"}"#);
+    let (status, body, _) = data_call(&state, &slug, "POST", "/go", "");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, r#"{"basic":200,"sent":200}"#);
+
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    assert!(!log.contains("c2tfbGl2ZV9iYXNp"), "base64 of the key: {log}");
+    assert!(!log.contains("MIIabc"), "the escaped key: {log}");
+    assert!(!log.contains("pk_private_value_123") && !log.contains("bot@x.iam"), "fields of the JSON secret: {log}");
+    assert!(log.contains("‹withheld: computed from a secret›"), "the derived parts say they were withheld: {log}");
+    assert!(log.contains("‹secret:pem›"), "the escaped key is redacted where it stands: {log}");
+    // The export says no more than the log.
+    let export = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(!export.contains("c2tfbGl2ZV9iYXNp") && !export.contains("MIIabc") && !export.contains("pk_private_value_123"));
+}
+
+/// What is computed from a secret isn't kept: a state, collection or channel write of it is
+/// refused, as a write of its value is (it would sit on disk, in every later snapshot, and in the
+/// channel's packs), while the run's other writes go through; and the run's answer, though the
+/// caller gets it, is withheld from the log, its output and its response body alike. Verify
+/// skips such a run rather than calling it changed.
+#[test]
+fn what_is_computed_from_a_secret_is_neither_kept_nor_logged() {
+    let state = claims_state("");
+    let text = r#"flow derived
+port 18144
+collection kept
+channel news
+
+route POST /go (req) {
+  token = "{req.body}:{base64(secret.api_key)}"
+  state.token = token
+  kept["k"] = token
+  news.send({ t: token })
+  state.plain = req.body
+  respond { echoed: token }
+}
+"#;
+    let slug = deploy_text(&state, text, "x");
+    let value = "sk_live_derived_secret_value";
+    let set = req("POST", &format!("/deployments/{slug}/secrets/api_key"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let encoded = "c2tfbGl2ZV9kZXJpdmVkX3NlY3JldF92YWx1ZQ==";
+    let (status, body, _) = data_call(&state, &slug, "POST", "/go", "hello");
+    assert_eq!((status, body), (200, format!(r#"{{"echoed":"hello:{encoded}"}}"#)), "the caller gets its answer");
+
+    let current = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/state"), vec![])));
+    assert!(current["state"].get("token").is_none(), "the derived write was refused: {current}");
+    assert!(current["state"].get("plain").is_some(), "the clean one went through: {current}");
+    let items = route(&state, &req("GET", &format!("/deployments/{slug}/collections/kept"), vec![]));
+    assert!(items.status_code == 404 || body_json(items)["items"].as_array().unwrap().is_empty(), "nothing put in the collection");
+
+    let entries = log_entries(&state, &slug);
+    let entry = entries.last().unwrap();
+    let performed: Vec<&str> = entry["performed"].as_array().unwrap().iter().map(|p| p["capability"].as_str().unwrap()).collect();
+    assert_eq!(performed, [r#"StateWrite("plain")"#], "no channel send to rebuild packs from: {entry}");
+    assert_eq!(entry["response_body"], "‹withheld: computed from a secret›", "{entry}");
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    assert!(!log.contains("c2tfbGl2ZV9kZXJp"), "base64 of the key: {log}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(matches!(report.reruns[..], [(0, verify::Rerun::Skipped(_))]), "{}", verify::describe(&report, None));
+    assert!(report.ok(), "{}", verify::describe(&report, None));
 }
 
 /// The read-call-write flows the claim tests run, calling `host` over plain HTTP.
@@ -5359,4 +5706,329 @@ fn a_connection_whose_password_is_still_a_placeholder_says_so() {
     let r = bind_notes(&server_with_database("mongodb://ada:%3Cpw%3E@127.0.0.1:1/notes?serverSelectionTimeoutMS=500"));
     let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
     assert!(said.contains("can't be reached") && !said.contains("placeholder"), "{said}");
+}
+
+/// A channel through a real socket (`docs/L4s/channels-L4.md`): a subscriber gets each pack a
+/// run sends once the run is over, as an event with its id; one asking for the kept packs, or
+/// reconnecting after an id, gets those first; pausing ends the subscriptions with `closed`.
+#[test]
+fn a_channel_streams_each_runs_packs_to_its_subscribers() {
+    use std::io::{BufRead, BufReader, Write};
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!(
+        "flow board\nport {port}\nchannel updates\n\nroute POST /t (req) {{\n  updates.send({{ new: req.json.title }})\n  respond {{ ok: true }}, status: 201\n}}\n\nroute GET /live (req) {{\n  respond updates.subscribe()\n}}\n\nroute GET /all (req) {{\n  respond updates.subscribe(from: \"kept\")\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, "x");
+    sync_listeners(&state);
+    // A subscriber: the response's headers, then its events, a line at a time.
+    let subscribe = |path: &str, last: Option<&str>| {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let last = last.map(|id| format!("Last-Event-ID: {id}\r\n")).unwrap_or_default();
+        stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n{last}\r\n").as_bytes()).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut head = String::new();
+        while !head.ends_with("\r\n\r\n") {
+            reader.read_line(&mut head).unwrap();
+        }
+        (head, reader)
+    };
+    // The next event's lines (chunk sizes and comments skipped).
+    let next_event = |reader: &mut BufReader<std::net::TcpStream>| {
+        let mut lines = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let line = line.trim_end().to_string();
+            if line.starts_with("id:") || line.starts_with("data:") || line.starts_with("event:") {
+                lines.push(line);
+            } else if line.is_empty() && !lines.is_empty() {
+                return lines;
+            }
+        }
+    };
+    let post = |path: &str, body: &str| raw_http(port, format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+
+    let (head, mut live) = subscribe("/live", None);
+    assert!(head.starts_with("HTTP/1.1 200") && head.contains("content-type: text/event-stream"), "{head}");
+    assert!(post("/t", r#"{"title":"one"}"#).starts_with("HTTP/1.1 201"));
+    let first = next_event(&mut live);
+    let id = first[0].strip_prefix("id: ").unwrap().to_string();
+    assert_eq!(first[1], r#"data: {"new":"one"}"#);
+    assert!(post("/t", r#"{"title":"three"}"#).starts_with("HTTP/1.1 201"));
+    assert_eq!(next_event(&mut live)[1], r#"data: {"new":"three"}"#);
+
+    let (_, mut all) = subscribe("/all", None);
+    assert_eq!(next_event(&mut all)[1], r#"data: {"new":"one"}"#, "the kept ones first");
+    let (_, mut after) = subscribe("/live", Some(&id));
+    assert_eq!(next_event(&mut after)[1], r#"data: {"new":"three"}"#, "the kept ones past the last it saw");
+
+    let entries = log_entries(&state, &slug);
+    assert!(entries.iter().any(|e| e["route"] == "GET /live" && e["status"] == 200), "a subscription is logged as a request");
+
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/pause"), vec![])).status_code, 200);
+    assert_eq!(next_event(&mut live), ["event: closed", "data: {}"]);
+}
+
+/// A durable run's progress (`docs/L4s/channels-L4.md` §8, slice 3): the pack that doesn't wait
+/// goes out as the run parks, the rest when it finishes, and the first never again, though the
+/// resumed part settles it again; the channel rebuilt from the log says the same.
+#[test]
+fn a_waiting_run_sends_what_didnt_wait_as_it_parks() {
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]
+allow_plain_http = true
+allow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!(
+        "flow orders\nport {port}\nchannel orders\n\nroute POST /orders (req) {{\n  respond \"/paid/{{resume_token(paid)}}\"\n  orders.send({{ item: req.json.item, status: \"waiting\" }})\n  paid = await paid, expires: 1d\n  orders.send({{ item: req.json.item, status: \"paid\", via: paid.method }})\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, "x");
+    sync_listeners(&state);
+    let kept = |state: &AppState| -> Vec<String> {
+        let table = state.deployments.lock().unwrap();
+        table[&slug].channels.kept("orders", true).iter().map(|p| format!("{} {}", p.id.unwrap(), p.json)).collect()
+    };
+    let posted = raw_http(port, b"POST /orders HTTP/1.1\r\nHost: x\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"item\":\"book\"}");
+    assert!(posted.starts_with("HTTP/1.1 200"), "{posted}");
+    assert!(posted.contains("content-length:"), "a whole answer says its length: {posted}");
+    let link = posted[posted.find("/paid/").unwrap()..].trim_end_matches(['"', '\r', '\n']).to_string();
+    let parked = kept(&state);
+    assert_eq!(parked.len(), 1, "{parked:?}");
+    assert!(parked[0].ends_with(r#"{"item":"book","status":"waiting"}"#), "{parked:?}");
+
+    let paid = raw_http(port, format!("GET {link} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes());
+    assert!(paid.starts_with("HTTP/1.1 200"), "{paid}");
+    let both = kept(&state);
+    assert_eq!(both.len(), 2, "the waiting one isn't sent again: {both:?}");
+    assert!(both[1].ends_with(r#"{"item":"book","status":"paid","via":"GET"}"#), "{both:?}");
+    let entries = log_entries(&state, &slug);
+    assert!(entries.iter().any(|e| e["progress"].as_array().is_some_and(|p| p.len() == 1)), "the parked part logs what it sent");
+
+    let table = state.deployments.lock().unwrap();
+    let dep = &table[&slug];
+    let rebuilt = channels::Channels::from_log(&dep.log, &dep.permit.channels);
+    let again: Vec<String> = rebuilt.kept("orders", true).iter().map(|p| format!("{} {}", p.id.unwrap(), p.json)).collect();
+    assert_eq!(again, both);
+}
+
+/// A streamed reply through a real socket (`docs/L4s/channels-L4.md` §4): the caller gets the
+/// upstream's first piece while the upstream is still answering (it sends the second only once
+/// the caller has the first), with its content type; the flow still gets the whole answer, which
+/// it stores and logs.
+#[test]
+fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = upstream.local_addr().unwrap().to_string();
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let piece = |s: &str| format!("{:x}\r\n{s}\r\n", s.len());
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        stream.write_all(format!("{head}{}", piece("data: a\n\n")).as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        stream.write_all(format!("{}0\r\n\r\n", piece("data: b\n\n")).as_bytes()).unwrap();
+    });
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!(
+        "flow chat\nport {port}\ncollection said\n\nroute POST /ask (req) {{\n  sent = http.post(\"{host}\", \"/v1\", body: req.json, stream: true)\n  said[\"last\"] = sent.body\n  respond sent.body, stream: true\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, &host);
+    sync_listeners(&state);
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.write_all(b"POST /ask HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut head = String::new();
+    while !head.ends_with("\r\n\r\n") {
+        reader.read_line(&mut head).unwrap();
+    }
+    assert!(head.starts_with("HTTP/1.1 200") && head.contains("content-type: text/event-stream"), "{head}");
+    let mut got = String::new();
+    while !got.contains("data: a") {
+        reader.read_line(&mut got).unwrap();
+    }
+    assert!(!got.contains("data: b"), "the second piece isn't sent yet");
+    seen_tx.send(()).unwrap();
+    let mut rest = String::new();
+    let _ = reader.read_to_string(&mut rest);
+    assert!(rest.contains("data: b") && !rest.contains("event: error"), "{rest}");
+
+    // The flow got the whole answer: logged as the route's response, and stored.
+    let entry = log_entries(&state, &slug).into_iter().find(|e| e["route"] == "POST /ask").unwrap();
+    assert_eq!(entry["status"], 200);
+    assert_eq!(entry["response_body"], "data: a\n\ndata: b\n\n");
+    assert!(entry["performed"].to_string().contains("CollectionWrite"), "the whole answer stored: {entry}");
+}
+
+/// A streamed call that fails (not 2xx) forwards nothing: the reply is its answer, whole, with
+/// its status (the respond's status input, wired from the call's), so the caller sees the 401 and
+/// the error, and the log says the same.
+#[test]
+fn a_streamed_reply_whose_call_fails_answers_with_its_status() {
+    use std::io::{Read, Write};
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = upstream.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
+        let answer = format!("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        stream.write_all(answer.as_bytes()).unwrap();
+    });
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!("flow chat\nport {port}\n\nroute POST /ask (req) {{\n  sent = http.post(\"{host}\", \"/v1\", body: req.json, stream: true)\n  respond sent.body, stream: true\n}}\n");
+    let slug = deploy_text(&state, &text, &host);
+    sync_listeners(&state);
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.write_all(b"POST /ask HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    let entry = log_entries(&state, &slug).into_iter().find(|e| e["route"] == "POST /ask").unwrap();
+    assert!(answer.starts_with("HTTP/1.1 401") && answer.contains("invalid x-api-key"), "{answer}\n{entry}");
+    assert_eq!(entry["status"], 401);
+}
+
+/// A piped call (`docs/L4s/channels-L4.md` §8, slice 3): its upstream's pieces go to the
+/// channel's subscribers as they arrive, each a text pack without an id (never kept), while the
+/// run goes on; the packs it sends once it is over follow, with ids.
+#[test]
+fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = upstream.local_addr().unwrap().to_string();
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let piece = |s: &str| format!("{:x}\r\n{s}\r\n", s.len());
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        stream.write_all(format!("{head}{}", piece("Rivers run")).as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        stream.write_all(format!("{}0\r\n\r\n", piece(" to the sea.")).as_bytes()).unwrap();
+    });
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!(
+        "flow room\nport {port}\nchannel room\n\nroute POST /ask (req) {{\n  sent = room.pipe(http.post(\"{host}\", \"/v1\", body: req.json))\n  room.send({{ said: sent.body }})\n  respond {{ ok: true }}, status: 202\n}}\n\nroute GET /live (req) {{\n  respond room.subscribe()\n}}\n"
+    );
+    deploy_text(&state, &text, &host);
+    sync_listeners(&state);
+
+    let mut live = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    live.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    live.write_all(b"GET /live HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut live = BufReader::new(live);
+    let mut head = String::new();
+    while !head.ends_with("\r\n\r\n") {
+        live.read_line(&mut head).unwrap();
+    }
+    let next_event = |reader: &mut BufReader<std::net::TcpStream>| {
+        let mut lines = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let line = line.trim_end().to_string();
+            if line.starts_with("id:") || line.starts_with("data:") || line.starts_with("event:") {
+                lines.push(line);
+            } else if line.is_empty() && !lines.is_empty() {
+                return lines;
+            }
+        }
+    };
+    let asked = std::thread::spawn(move || raw_http(port, b"POST /ask HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"));
+    assert_eq!(next_event(&mut live), [r#"data: "Rivers run""#], "the first piece, while the upstream holds the rest");
+    seen_tx.send(()).unwrap();
+    assert_eq!(next_event(&mut live), [r#"data: " to the sea.""#]);
+    let done = next_event(&mut live);
+    assert!(done[0].starts_with("id: "), "{done:?}");
+    assert_eq!(done[1], r#"data: {"said":"Rivers run to the sea."}"#);
+    assert!(asked.join().unwrap().starts_with("HTTP/1.1 202"));
+}
+
+#[test]
+fn no_folder_is_or_holds_what_the_server_keeps_beside_its_files() {
+    let dir = unique_temp_path("server-files");
+    let deployments = format!("{dir}/data/deployments.json");
+    let (logs, keys, env) = (format!("{dir}/data/deployments.logs"), format!("{dir}/keys"), format!("{dir}/conf"));
+    for d in [&logs, &keys, &env] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(format!("{keys}/secrets.key"), "").unwrap();
+    std::fs::write(format!("{env}/.env"), "").unwrap();
+    let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{keys}/secrets.key")));
+    let memory = ":memory:".to_string();
+    let own = server_files(&[&deployments, &memory], &deployments, Some(&format!("{env}/.env")), &key);
+    let folders = crate::folders::Folders::open(":memory:", &own).unwrap();
+    let bind = |path: &str| folders.bind("x", path, crate::folders::FolderAccess::Read, crate::folders::Keep::Bytes, None, None);
+    // The flow logs beside the deployments file, the folder of the secrets key, the `.env`'s.
+    for path in [&logs, &keys, &env] {
+        assert!(bind(path).unwrap_err().contains("own data"), "{path}");
+    }
+    let elsewhere = format!("{dir}/inbox");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    bind(&elsewhere).unwrap();
+}
+
+#[test]
+fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
+    let state = test_state();
+    let mut store = state.store.clone();
+    // Every sample's closure, nested well inside the bound: room for flows bigger than these.
+    let mut deepest = (0, "");
+    for sample in holon_author::samples::samples() {
+        let plan = holon_author::agent::plan(sample.text).unwrap();
+        for bytes in &plan.units {
+            store.put(&decode_preimage(bytes).unwrap()).unwrap();
+        }
+        let root = parse_hash(&plan.unit).unwrap();
+        materialize_closure(&state.store, root).unwrap();
+        let mut refs = BTreeMap::new();
+        let mut queue = vec![root];
+        while let Some(h) = queue.pop() {
+            if let Some(u) = store.get(&h).unwrap().filter(|_| !refs.contains_key(&h)) {
+                queue.extend(child_refs(&u));
+                refs.insert(h, child_refs(&u));
+            }
+        }
+        deepest = deepest.max((crate::units::closure_depth(root, &refs), sample.name));
+    }
+    assert!(deepest.0 * 2 <= crate::units::MAX_CLOSURE_DEPTH, "{deepest:?}");
+
+    // A chain nested one past the bound: refused, a 400 where a deploy asks.
+    let mut below = store.put(&Unit { params: vec![], ..holon_core::interface_of("clock").unwrap() }).unwrap();
+    let wrap = |child: Hash| Unit { body: UnitBody::Composite { children: vec![child], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] };
+    for _ in 0..crate::units::MAX_CLOSURE_DEPTH {
+        below = store.put(&wrap(below)).unwrap();
+    }
+    let Err(e) = materialize_closure(&state.store, below) else { panic!("a closure past the bound is refused") };
+    assert!(matches!(&e, crate::units::Closure::TooBig(why) if why.contains("more than 64 units deep")), "{e:?}");
+    let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "deep", "unit": to_hex(&below) })).unwrap()));
+    assert_eq!(deployed.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("too big to run"));
+    // One level less is materialized.
+    let inside = match store.get(&below).unwrap().unwrap().body { UnitBody::Composite { children, .. } => children[0], _ => unreachable!() };
+    materialize_closure(&state.store, inside).unwrap();
 }

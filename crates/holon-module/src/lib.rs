@@ -199,8 +199,13 @@ impl Engine {
         };
 
         let (out_ptr, out_len) = (((packed as u64) >> 32) as u32 as usize, (packed as u64 & 0xffff_ffff) as u32 as usize);
-        let mut out = vec![0u8; out_len];
-        memory.read(&store, out_ptr, &mut out).map_err(|e| RunError::BadOutput(format!("the answer lies outside memory: {e}")))?;
+        // Taken from inside its memory, never allocated to the length it claims first: a length
+        // past its memory (up to 4 GiB) is a bad answer, not that much of the host's.
+        let out = out_ptr
+            .checked_add(out_len)
+            .and_then(|end| memory.data(&store).get(out_ptr..end))
+            .ok_or_else(|| RunError::BadOutput(format!("the answer ({out_len} bytes at {out_ptr}) lies outside memory")))?
+            .to_vec();
         if store.data().refused {
             // It asked past its budget and still answered: whatever it answered was computed
             // without the memory it wanted, so the budget is the failure to name.
@@ -379,6 +384,18 @@ mod tests {
         let roomy = ModuleLimits { fuel: 1_000_000_000, memory: 128 << 20 };
         let roomy_result = Engine::new().run(&wat::parse_str(greedy).unwrap(), &roomy, &[Some(n(1.0))]);
         assert!(matches!(roomy_result, Err(RunError::BadOutput(_))), "{roomy_result:?}");
+    }
+
+    #[test]
+    fn an_answer_claimed_past_its_memory_is_bad_output_not_an_allocation() {
+        // 0xffff_ffff bytes at address 0, in a memory of one page: refused before the host
+        // allocates anything for it.
+        let liar = r#"(module
+            (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 1024)
+            (func (export "run") (param i32 i32) (result i64) i64.const 0xffffffff))"#;
+        let err = Engine::new().run(&wat::parse_str(liar).unwrap(), &ModuleLimits::default(), &[]).unwrap_err();
+        assert!(matches!(&err, RunError::BadOutput(why) if why.contains("outside memory")), "{err}");
     }
 
     #[test]

@@ -1,6 +1,18 @@
 name: ci
 
-on: [push, pull_request]
+# Main on every push; anything else through its pull request, once (a branch pushed with a PR
+# open ran twice before). A tag runs no CI of its own: its commit ran it when it reached main.
+# `workflow_dispatch` runs it by hand on any branch.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to a pull request cancels the run it supersedes; on main every commit runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # 1. The whole workspace must pass native tests (this covers holon-core AND holon-host).
@@ -33,25 +45,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      # Dependencies built once and kept (Cargo.lock and the toolchain key it); saved from main
+      # only, so pull requests read main's and don't crowd the cache. The same in every job.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace
       # Lints as errors: the workspace is clean, and stays so.
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # The `holon` command, as installed: it writes a sample as text and checks it on its own.
       - run: cargo run -q -p holon -- new "$RUNNER_TEMP/slugs.holon" --sample slugs && cargo run -q -p holon -- check "$RUNNER_TEMP/slugs.holon"
 
-  # 2. The pure core + bridge must COMPILE to wasm32 (catches a dependency that isn't
-  #    wasm-compatible — the most common first surprise).
-  wasm-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - run: cargo build -p holon-wasm --target wasm32-unknown-unknown
-
-  # 3. The guardrail: run the parity body UNDER wasm and assert it matches the core. Together with
-  #    the native run in job (1), this proves wasm-core hashes bit-identically to native-core.
+  # 2. The guardrail: run the parity body UNDER wasm and assert it matches the core. Together with
+  #    the native run in job (1), this proves wasm-core hashes bit-identically to native-core. It
+  #    also proves the pure core + bridge compile to wasm32 (a dependency that isn't
+  #    wasm-compatible fails here), which was a job of its own.
   wasm-parity:
     runs-on: ubuntu-latest
     steps:
@@ -59,10 +67,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # wasm-pack at a pinned version, the one releases use (.github/build-setup.yml): asked for
+      # "latest", the action asks GitHub's API, and when that fails it installs v0.9.1, which has
+      # no --no-opt. A version named is downloaded as it is. The same in every job.
       - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.15.0
       - run: wasm-pack test --node crates/holon-wasm
+        # It downloads wasm-bindgen and wasm-opt; a stalled download fails here, not after 6 h.
+        timeout-minutes: 10
 
-  # 4. The editor, against the wasm package built here (it's generated, never committed):
+  # 3. The editor, against the wasm package built here (it's generated, never committed):
   #    type-checked, and its tests run. Those include every sample flow building from the live
   #    catalog and deriving through the real core (CLAUDE.md), so a sample that stops building,
   #    or a primitive with no description, fails here.
@@ -73,8 +91,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jetli/wasm-pack-action@v0.4.0
-      - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm
+        with:
+          version: v0.15.0
+      # `--no-opt`, as releases build it (.github/build-setup.yml): the wasm tested is the wasm
+      # shipped, and no wasm-opt download or pass.
+      - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
+        timeout-minutes: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -91,22 +117,35 @@ jobs:
         working-directory: editor
       - run: cargo test -p holon --features embed-editor editor
 
-  # 5. End to end: the editor in a real browser against a real `holon serve`, both started by
+  # 4. End to end: the editor in a real browser against a real `holon serve`, both started by
   #    Playwright (editor/playwright.config.ts) with throwaway state. Every sample opens and
-  #    deploys through the consent screen; requests replay exactly in view mode.
+  #    deploys through the consent screen; requests replay exactly in view mode. In two shards,
+  #    each on its own runner with its own servers; `--fully-parallel` lets a shard take single
+  #    tests rather than whole files (samples.e2e.ts holds most of them), and each still runs its
+  #    tests one at a time, in order.
   e2e:
     runs-on: ubuntu-latest
     # The atlas-notes sample's MongoDB (editor/e2e/server.mjs binds it).
     env:
       HOLON_TEST_MONGODB: mongodb://127.0.0.1:27017/holontest?replicaSet=rs0
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - run: bash .github/start-mongodb.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jetli/wasm-pack-action@v0.4.0
-      - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm
+        with:
+          version: v0.15.0
+      - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
+        timeout-minutes: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -114,17 +153,34 @@ jobs:
           cache-dependency-path: editor/package-lock.json
       - run: npm ci
         working-directory: editor
-      - run: npx playwright install --with-deps chromium
+      # Chromium alone (seconds). Each try gets five minutes and a second try follows: an install
+      # once hung past twelve, with no limit short of the job's six hours.
+      - run: timeout 300 npx playwright install chromium || timeout 300 npx playwright install chromium
         working-directory: editor
-      - run: npx playwright test
+        timeout-minutes: 11
+      # Its system packages from apt only if it can't start without them: one launch is Playwright's
+      # own check of the system, which names what is missing. The runner image has had every library
+      # (a trial without apt passed, 6a3db69 on ci-no-apt), and apt's fonts were what waited on
+      # Ubuntu's mirror; if the image drops one, this installs it (fonts and all) and goes on.
+      - name: Chromium's system packages, only if it can't start without them
+        run: |
+          if node -e "require('@playwright/test').chromium.launch().then((b) => b.close())"; then
+            echo "Chromium starts: no system packages needed"
+          else
+            echo "Chromium can't start without its system packages: installing them"
+            timeout 300 npx playwright install-deps chromium || timeout 300 npx playwright install-deps chromium
+          fi
+        working-directory: editor
+        timeout-minutes: 12
+      - run: npx playwright test --fully-parallel --shard=${{ matrix.shard }}/2
         working-directory: editor
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-traces
+          name: playwright-traces-${{ matrix.shard }}
           path: editor/test-results
 
-  # 6. The VS Code extension (editors/vscode): its grammar on every sample, through VS Code's own
+  # 5. The VS Code extension (editors/vscode): its grammar on every sample, through VS Code's own
   #    TextMate engine; then, in a real VS Code (downloaded, on a virtual display), a flow's
   #    mistake, hover and formatting through `holon lsp`.
   vscode:
@@ -132,6 +188,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build -p holon
       - uses: actions/setup-node@v4
         with:

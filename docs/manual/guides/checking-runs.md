@@ -56,8 +56,8 @@ holon verify notes-api-runs.json
 notes-api: 42 runs, runs 1 to 42
   chain: unbroken
   head: 3f9c2a7be01d is the newest run's
-  re-ran 39 runs: each produced what its log entry says
-  not re-run (3 runs: 4, 17, 30): it used a secret or a resume token, which the log never holds
+  re-ran 42 runs: each produced what its log entry says
+  3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret or a resume token (not computed again)
 ok
 ```
 
@@ -77,10 +77,27 @@ It exits 0 when everything checks, and 1 otherwise, with what failed:
 FAILED
 ```
 
-Some runs can't be run again, and are counted, not failed: a run that used a secret or a resume
-token (the log never holds their values), a run that failed (a budget ran out), a request no route
-took, a run logged before entries kept every attempt's requests that ran again after what it read
-changed, and a run that read a file whose text the export doesn't hold.
+A node that computed with a secret or a resume token (a signature, a token check) can't be
+computed again: the log never holds their values, only a placeholder. What the log kept for that
+node stands in, as in the editor's replay, and the rest of the run is checked against it: the
+answer built from a signature, the effects, the status. The report says which runs were checked
+that way, and for how many nodes. What such a node produced is taken from the log, not checked:
+a run whose signature check the log says passed is checked as if it had.
+
+The log keeps such a node's outputs only when they can't give the secret away. A one-way leaf
+(`sha256`, `hmac_sha256`, `secure_equals`) or a Boolean answer gives nothing of it away. A value
+that holds the secret as it is gets the placeholder. But a value computed from the secret (base64
+of it for a Basic auth header, a field of a JSON secret, a slice) no longer holds it literally,
+so the log keeps no outputs for that node. An outbound request built from one is logged with
+those parts reading `‹withheld: computed from a secret›`, and so are the run's own outputs, its
+response body and any other effect built from one. Such a value is never kept: a state,
+collection or channel write of it is refused, as a write of the secret itself is.
+
+Some runs can't be run again at all, and are counted, not failed: a run whose such node the log
+keeps no outputs for (computed from a secret, larger than 16 KiB, or deeper than the log's
+timeline records), a run that
+failed (a budget ran out), a request no route took, a run logged before entries kept every
+attempt's requests that ran again after what it read changed, and a run that read a file whose text the export doesn't hold.
 
 ### Files
 

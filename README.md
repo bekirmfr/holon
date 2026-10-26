@@ -282,8 +282,9 @@ where there's no OS key store, `run/` a file per running server, `tokens.json` a
 | `--export-heads URL` | send each run's head to a witness (only hashes leave the server) |
 | `--policy PATH` | the policy: what may be granted, and what needs a person |
 
-There is no TLS in the server yet: to reach it from other machines, put HTTPS in front (a reverse
-proxy).
+The server leaves TLS to what stands in front of it: to reach it from other machines, your ingress
+or a reverse proxy ends HTTPS, as for most internal services. `holon serve` warns when it listens
+beyond this machine.
 
 **Checking runs.** A deployment's runs export to one file, from the editor's run log ("export
 runs") or the command line:
@@ -331,8 +332,8 @@ never holds it.
 
 Holon is pre-release: 0.1.0 release candidates, each in [`CHANGELOG.md`](CHANGELOG.md).
 
-- It runs on one machine, its state in files, for one team. There is no TLS in the server, and
-  request limits are server-wide.
+- It runs on one machine, its state in files, for one team. TLS ends at your ingress or proxy, not in the
+  server, and request limits are server-wide.
 - The next milestone, and the bar for 0.1.0, is someone outside the project doing a real job with
   it end to end: [`docs/PLATFORM_LAYOUT.md`](docs/PLATFORM_LAYOUT.md) §7, M3.
 

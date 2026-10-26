@@ -19,9 +19,27 @@ pub(crate) fn serve_data(
     slug: &str,
     request: &DataRequest,
 ) -> DataResponse {
+    serve_data_forwarding(store, deployments, deployments_path, slug, request, None)
+}
+
+/// The origin a page sent the request from, when `slug` answers pages from there (`browsers`).
+pub(crate) fn allowed_origin(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, headers: &[(String, String)]) -> Option<String> {
     let browsers = deployments.lock().unwrap().get(slug).map(|d| d.browsers.clone()).unwrap_or_default();
-    let origin = request.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("origin")).map(|(_, v)| v.clone());
-    let allowed = origin.filter(|o| browsers.iter().any(|b| b == "*" || b == o));
+    let origin = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("origin")).map(|(_, v)| v.clone());
+    origin.filter(|o| browsers.iter().any(|b| b == "*" || b == o))
+}
+
+/// [`serve_data`], a streamed call's answer forwarded to the caller as it arrives (`forward`)
+/// when the route's run makes one.
+pub(crate) fn serve_data_forwarding(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    slug: &str,
+    request: &DataRequest,
+    forward: Option<outbound::Forwarder>,
+) -> DataResponse {
+    let allowed = allowed_origin(deployments, slug, &request.headers);
     if request.method == "OPTIONS"
         && let Some(origin) = &allowed
     {
@@ -35,9 +53,10 @@ pub(crate) fn serve_data(
                 ("vary".into(), "Origin".into()),
             ],
             body: vec![],
+            subscribe: None,
         };
     }
-    let mut answer = serve_flow(store, deployments, deployments_path, slug, request);
+    let mut answer = serve_flow(store, deployments, deployments_path, slug, request, forward);
     if let Some(origin) = allowed {
         answer.headers.push(("access-control-allow-origin".into(), origin));
         answer.headers.push(("vary".into(), "Origin".into()));
@@ -60,13 +79,14 @@ fn serve_flow(
     deployments_path: &str,
     slug: &str,
     request: &DataRequest,
+    forward: Option<outbound::Forwarder>,
 ) -> DataResponse {
     let found = deployments
         .lock()
         .unwrap()
         .get(slug)
-        .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders)));
-    let Some((unit_hash, state, Some(server), status, permit, secrets, folders)) = found else {
+        .map(|d| (d.unit, d.state.clone(), d.server.clone(), d.life.status, Arc::clone(&d.permit), Arc::clone(&d.secrets), (Arc::clone(&d.folders), Arc::clone(&d.channels))));
+    let Some((unit_hash, state, Some(server), status, permit, secrets, (folders, channels))) = found else {
         return DataResponse::json_error(503, &format!("{slug:?} is not deployed as a server"));
     };
     if status != Status::Running {
@@ -87,22 +107,26 @@ fn serve_flow(
 
     // A resume route needs a run waiting for its token, or it answers nothing at all.
     let (path, query) = raw_url.split_once('?').unwrap_or((raw_url, ""));
-    let mut resume: Option<(String, String, Value, String)> = None;
+    let mut resume: Option<(durable::Claimed, String, Value, String)> = None;
     if let Some((route, params)) = holon_core::match_route(&server, method, path)
         && let Some(name) = &route.resume
     {
         let from_query = query.split('&').find_map(|kv| kv.strip_prefix("token=")).map(data::percent_decode);
         let token = params.get("token").map(|t| data::percent_decode(t)).or(from_query).unwrap_or_default();
-        let Some(run_id) = durable::find_by_token(deployments, slug, name, &token) else {
+        // Claimed now, so a second request carrying the same token while this one runs finds
+        // nothing waiting: a token resumes its run once.
+        let Some(claimed) = durable::claim_by_token(deployments, slug, name, &token) else {
             return DataResponse::json_error(404, "no run is waiting here for that token (it was used, or has expired)");
         };
         let params = params.into_iter().map(|(k, v)| (k, data::percent_decode(&v))).collect();
         let event = data::request_record(method, path, params, query, headers, &String::from_utf8_lossy(body));
-        resume = Some((run_id, name.clone(), event, token));
+        resume = Some((claimed, name.clone(), event, token));
     }
 
     let mut ran: Option<LogEntry> = None;
-    let mut waits = RunWaits { folders: Some(folders), ..Default::default() };
+    // Whether its answer may be computed from a secret: the log keeps it withheld then.
+    let mut answer_derived = false;
+    let mut waits = RunWaits { folders: Some(folders), forward, channels: Some(channels), ..Default::default() };
     let mut parked: Result<Vec<String>, String> = Ok(Vec::new());
     // A module in the flow runs through the engine; everything else resolves as before.
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
@@ -115,6 +139,7 @@ fn serve_flow(
             let unit = hash_unit(endpoint).unwrap_or([0; 32]);
             parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
             let mut entry = run_entry("request", started, sourced, &run);
+            answer_derived = run.secret_fed.derives_output(0);
             entry.route = Some(route.to_string());
             entry.request = Some(SValue::from_core(&req));
             ran = Some(entry);
@@ -124,6 +149,12 @@ fn serve_flow(
     );
     if let Err(e) = &parked {
         answer = data::DataResponse::json_error(503, e);
+    }
+    // A subscription to a channel the deployment wasn't granted to let callers subscribe to.
+    if let Some(s) = &answer.subscribe
+        && !permit.allows(&Capability::ChannelRead(s.channel.clone()))
+    {
+        answer = data::DataResponse::json_error(500, &format!("this deployment may not let callers subscribe to the channel {:?}", s.channel));
     }
     // A run that waited as long as it may for a key another run holds is turned away, not
     // answered from nothing: its client may try again.
@@ -151,6 +182,10 @@ fn serve_flow(
     if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(folders::WRITE_FAILED)) {
         answer = data::DataResponse::json_error(500, "a file this flow writes couldn't be written: its run log says why");
     }
+    // One whose packs were past its limits did nothing.
+    if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(channels::SEND_FAILED)) {
+        answer = data::DataResponse::json_error(500, "this flow's packs were past its channel limits: its run log says why");
+    }
     record_trigger(deployments, slug, answer.status >= 500);
     // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.
     let mut entry = ran.unwrap_or_else(|| run_entry("request", started, &sourced, &FiredRun::nothing()));
@@ -158,7 +193,7 @@ fn serve_flow(
     entry.method = Some(method.to_string());
     entry.url = Some(raw_url.to_string());
     entry.status = Some(answer.status);
-    entry.response_body = Some(recorder::body_text(&answer.body));
+    entry.response_body = Some(if answer_derived { crate::taint::WITHHELD.to_string() } else { recorder::body_text(&answer.body) });
     entry.by = request.by.clone();
     match parked {
         Ok(names) => entry.parked = names,
@@ -175,10 +210,11 @@ fn serve_flow(
         persist_deployments(deployments_path, deployments, store);
     }
     // The route's own handler has answered; now the waiting run continues.
-    if let Some((run_id, name, event, _)) = resume
-        && let Err(e) = durable::resume_parked(store, deployments, deployments_path, slug, &run_id, &name, event)
-    {
-        eprintln!("holon: resuming run {run_id} in {slug:?}: {e}");
+    if let Some((claimed, name, event, _)) = resume {
+        let run_id = claimed.run_id().to_string();
+        if let Err(e) = durable::resume_parked(store, deployments, deployments_path, slug, claimed, &name, event) {
+            eprintln!("holon: resuming run {run_id} in {slug:?}: {e}");
+        }
     }
     answer
 }
@@ -272,7 +308,14 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
         Some(d) => Redactor::of(&d.secrets),
     };
     let inner = DataRequest { method: send.method, url: send.url, headers: send.headers, body: send.body.into_bytes(), by: by.map(str::to_string) };
-    let answer = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &inner);
+    let mut answer = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &inner);
+    // A subscription streams on the deployment's own port; sent from here, it answers with the
+    // packs a subscriber would get first.
+    if let Some(s) = &answer.subscribe
+        && let Some(d) = state.deployments.lock().unwrap().get(slug)
+    {
+        answer.body = d.channels.kept(&s.channel, s.kept).iter().map(|p| channels::event_text(p)).collect::<String>().into_bytes();
+    }
     let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), redactor.text(v))).collect();
     let body = redactor.text(&String::from_utf8_lossy(&answer.body));
     Response::json(&SentResponseBody { status: answer.status, headers, body })

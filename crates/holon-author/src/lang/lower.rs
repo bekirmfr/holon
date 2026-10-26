@@ -75,7 +75,7 @@ pub fn lower(file: &File) -> R<Lowered> {
 
 /// Words a binding may not take: the keywords and nouns of the language, and the wiring form's.
 const RESERVED: &[&str] = &[
-    "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
+    "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
@@ -89,10 +89,16 @@ fn alias(name: &str) -> &str {
     }
 }
 
+/// Whether an `http_stream` node pipes its answer to a channel (`updates.pipe(…)`), rather than
+/// forwarding it to the route's caller.
+fn piped(d: &crate::canvas::NodeData) -> bool {
+    crate::wire::frozen_value(&d.params, "pipe").is_some_and(|c| !c.is_empty())
+}
+
 /// Inputs a node works without, left unwired (routes.rs `is_optional_input`, core's
 /// `has_optional_ports`).
 fn is_optional(leaf: &str, input: &str) -> bool {
-    matches!((leaf, input), ("http_request", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
+    matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
 }
 
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
@@ -209,6 +215,13 @@ struct Lowerer<'a> {
     /// The databases the header declares (`database shop`): `shop.query(…)`, `shop.one(…)`,
     /// `shop.exec(…)`.
     databases: HashSet<String>,
+    /// The channels the header declares (`channel updates`): sent on, and subscribed to as a
+    /// route's answer.
+    channels: HashSet<String>,
+    /// The streamed call (`http_stream`) the current route's `respond …, stream: true` forwards.
+    streamed: Option<String>,
+    /// The channel the http call being lowered pipes to (`updates.pipe(http.post(…))`).
+    piping: Option<String>,
     /// The `on file` lines: `ingress` is the handle of the file that started the run.
     on_files: Vec<FileOn>,
     /// The `ingress` chains of a flow with several `on file` lines (a `coalesce` of their
@@ -232,6 +245,7 @@ impl<'a> Lowerer<'a> {
         let collections = file.headers.iter().filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let on_files = file.headers.iter().filter_map(|h| if let HeaderKind::OnFile(f) = &h.kind { Some(f.clone()) } else { None }).collect();
         let databases = file.headers.iter().filter_map(|h| if let HeaderKind::Database(d) = &h.kind { Some(d.clone()) } else { None }).collect();
+        let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let folders = file
             .headers
             .iter()
@@ -250,6 +264,9 @@ impl<'a> Lowerer<'a> {
             collections,
             folders,
             databases,
+            channels,
+            streamed: None,
+            piping: None,
             on_files,
             arrivals: HashSet::new(),
             consts: HashMap::new(),
@@ -380,7 +397,7 @@ impl<'a> Lowerer<'a> {
                     Consent::Named { name, arg: Some(a) } => format!("{name}({a:?})"),
                     Consent::Named { name, arg: None } => name.clone(),
                 }),
-                HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::OnFile(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
             }
         }
         if !optional.is_empty() {
@@ -476,6 +493,9 @@ impl<'a> Lowerer<'a> {
         }
         if self.databases.contains(n) {
             return err(name.span, format!("\"{n}\" is a database; a binding may not shadow it"));
+        }
+        if self.channels.contains(n) {
+            return err(name.span, format!("\"{n}\" is a channel; a binding may not shadow it"));
         }
         if self.is_def(n) {
             return err(name.span, format!("\"{n}\" is a holon; a binding may not shadow it"));
@@ -612,6 +632,9 @@ impl<'a> Lowerer<'a> {
     fn check_collection(&self, name: &Name) -> R<&'static Store> {
         match self.store(&name.text) {
             Some(s) => Ok(s),
+            None if self.channels.contains(&name.text) => {
+                err(name.span, format!("\"{0}\" is a channel: send on it with {0}.send(…); a route answers with respond {0}.subscribe()", name.text))
+            }
             None => err(name.span, format!("\"{}\" is not a declared collection (add `collection {}` to the header)", name.text, name.text)),
         }
     }
@@ -647,15 +670,25 @@ impl<'a> Lowerer<'a> {
             _ => return err(span, "respond belongs in a route"),
         };
         let (mut status, mut missing, mut body, mut headers): (Option<String>, Option<String>, Option<&Expr>, Option<&Expr>) = (None, None, None, None);
+        // A status that isn't a number written out: computed, it feeds the respond's status input.
+        let mut status_from: Option<&Expr> = None;
+        let mut stream = false;
         let positional: Vec<&Arg> = args.iter().filter(|a| a.name.is_none()).collect();
         for a in args.iter().filter(|a| a.name.is_some()) {
             let n = a.name.as_ref().unwrap();
             match n.text.as_str() {
-                "status" => status = Some(self.status_text(&a.value)?),
+                "status" => match &a.value.kind {
+                    ExprKind::Number { .. } => status = Some(self.status_text(&a.value)?),
+                    _ => status_from = Some(&a.value),
+                },
                 "missing" => missing = Some(self.status_text(&a.value)?),
                 "body" => body = Some(&a.value),
                 "headers" => headers = Some(&a.value),
-                other => return err(n.span, format!("respond has no \"{other}\": a body, then status:, missing: and headers:")),
+                "stream" => match &a.value.kind {
+                    ExprKind::Bool(b) => stream = *b,
+                    _ => return err(a.value.span, "stream: is true or false"),
+                },
+                other => return err(n.span, format!("respond has no \"{other}\": a body, then status:, missing:, headers: and stream:")),
             }
         }
         match positional.as_slice() {
@@ -672,6 +705,32 @@ impl<'a> Lowerer<'a> {
             }
             [_, second, ..] => return err(second.value.span, "respond takes one body; status: and missing: are named"),
         }
+        // A streamed reply is the upstream's answer as it arrives: its status and content type are
+        // the call's, sent before the run is over, so nothing the run computes can set them. A call
+        // that fails (not 2xx) forwards nothing, and the reply is its answer, whole, with its status:
+        // the respond's status is wired from the call's. `missing:` is still the answer of a run
+        // whose call was never made (an input absent).
+        let mut streamed_status = None;
+        if stream {
+            if let Some(a) = args.iter().find(|a| a.name.as_ref().is_some_and(|n| ["status", "headers"].contains(&n.text.as_str()))) {
+                return err(a.value.span, "a streamed reply answers with its call's status and content type: it takes no status: or headers:");
+            }
+            let Some(id) = body.and_then(|b| self.streamed_call(b)) else {
+                return err(body.map_or(span, |b| b.span), "only a streamed call's body can be streamed: respond sent.body, stream: true, with sent = http.post(…, stream: true)");
+            };
+            streamed_status = Some(id.clone());
+            self.streamed = Some(id);
+        }
+        // A subscription is the whole answer: the stream of the channel's packs, always a 200.
+        let subscribing = body.and_then(|b| match &b.kind {
+            ExprKind::Method { receiver, method, args } if method.text == "subscribe" && self.channels.contains(&receiver.text) => Some((receiver, args, b.span)),
+            _ => None,
+        });
+        if subscribing.is_some()
+            && let Some(a) = args.iter().find(|a| a.name.as_ref().is_some_and(|n| n.text == "status" || n.text == "missing"))
+        {
+            return err(a.value.span, "a subscription answers 200 with the stream of packs: it takes no status: or missing:");
+        }
         let status = status.unwrap_or_else(|| "200".into());
         let missing = missing.unwrap_or_else(|| "404".into());
         if status == "204"
@@ -680,17 +739,29 @@ impl<'a> Lowerer<'a> {
             return err(b.span, "a 204 answers with no body");
         }
         // The body's and headers' nodes first, then the respond they feed.
-        let body_val = match body {
-            Some(b) => Some((self.expr(b)?, b.span)),
-            None => None,
+        let body_val = match (subscribing, body) {
+            (Some((channel, sub_args, at)), _) => Some((self.subscribe(channel, sub_args, at)?, at)),
+            (None, Some(b)) => Some((self.expr(b)?, b.span)),
+            (None, None) => None,
         };
         let headers_val = match headers {
             Some(h) => Some((self.expr(h)?, h.span)),
             None => None,
         };
+        let status_val = match (status_from, streamed_status) {
+            (Some(s), _) => Some((self.expr(s)?, s.span)),
+            (None, Some(call)) => {
+                let record = self.out(&call);
+                Some((self.node_with("field", &[("name".into(), "status".into())], &[("record", record)], span)?, span))
+            }
+            (None, None) => None,
+        };
         let mut params = vec![("status".to_string(), status), ("missing".to_string(), missing)];
         if headers_val.is_some() {
             params.push(("headers".to_string(), "true".to_string()));
+        }
+        if status_val.is_some() {
+            params.push(("status_input".to_string(), "true".to_string()));
         }
         let node = self.node("respond", &params, span)?;
         let Val::Out { id, .. } = &node else { unreachable!() };
@@ -702,10 +773,41 @@ impl<'a> Lowerer<'a> {
         if let Some((v, at)) = headers_val {
             self.connect(&v, &id, "headers", at)?;
         }
+        if let Some((v, at)) = status_val {
+            self.connect(&v, &id, "status", at)?;
+        }
         if let FrameKind::Route { responded, .. } = &mut self.frame().kind {
             *responded = Some(span);
         }
         Ok(())
+    }
+
+    /// The `http_stream` node `e` is the body of (`sent.body`, `sent` bound to one), if it is.
+    fn streamed_call(&self, e: &Expr) -> Option<String> {
+        let ExprKind::Field { base, name } = &e.kind else { return None };
+        let ExprKind::Name(n) = &base.kind else { return None };
+        let Some(Val::Out { id, .. }) = self.cur().env.get(n) else { return None };
+        (name.text == "body" && self.b.data(id).is_some_and(|d| d.name == "http_stream" && !piped(d))).then(|| id.clone())
+    }
+
+    /// `channel.subscribe(from: "kept")`, a route's answer: the packs sent on the channel from
+    /// now on, or (`from: "kept"`) the ones it keeps first.
+    fn subscribe(&mut self, channel: &Name, args: &'a [Arg], span: Span) -> R<Val> {
+        for a in args {
+            match a.name.as_ref().map(|n| n.text.as_str()) {
+                Some("from") => {
+                    let from = self.literal_text(&a.value)?;
+                    if from != "new" && from != "kept" {
+                        return err(a.value.span, "from: is \"new\" (packs sent from now on) or \"kept\" (the ones the channel keeps, first)");
+                    }
+                }
+                Some(other) => return err(a.name.as_ref().unwrap().span, format!("subscribe has no \"{other}\": only from: \"new\" or \"kept\"")),
+                None => return err(a.value.span, "subscribe takes no value: only from: \"new\" or \"kept\""),
+            }
+        }
+        let u = interface_of("channel_subscribe").expect("a genesis leaf");
+        let params: Vec<WParam> = u.params.iter().map(WParam::from_core).collect();
+        self.unit_call("channel_subscribe", &[], &params, &[("channel".to_string(), channel.text.clone())], args, span)
     }
 
     fn status_text(&self, e: &Expr) -> R<String> {
@@ -731,10 +833,22 @@ impl<'a> Lowerer<'a> {
         self.check_name_free(&r.request)?;
         frame.env.insert(r.request.text.clone(), request);
         self.frames.push(frame);
+        self.streamed = None;
         for s in &r.body {
             self.stmt(s)?;
         }
         let frame = self.frames.pop().expect("the route's frame");
+        // A streamed call is forwarded to the caller: the route says so where it answers.
+        let streams: Vec<&String> = frame.created.iter().filter(|id| self.b.data(id).is_some_and(|d| d.name == "http_stream" && !piped(d))).collect();
+        if streams.len() > 1 {
+            return err(r.method.span.to(r.path.span), "a route forwards one streamed call: this one makes several");
+        }
+        if let Some(id) = streams.first()
+            && self.streamed.as_ref() != Some(*id)
+        {
+            let at = self.spans.get(*id).copied().unwrap_or(r.method.span);
+            return err(at, "a streamed call is forwarded to the caller: answer with it, respond sent.body, stream: true");
+        }
         // No respond and no effect: route_spec would refuse it too; say so here, at the route.
         let FrameKind::Route { responded, request } = frame.kind else { unreachable!() };
         self.routes.push((request, frame.created, r.method.span.to(r.path.span)));
@@ -747,7 +861,7 @@ impl<'a> Lowerer<'a> {
 
     fn check_name_free(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.is_def(n) {
+        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name"));
         }
         Ok(())
@@ -758,7 +872,7 @@ impl<'a> Lowerer<'a> {
     /// collection or a holon.
     fn check_port_name(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.store(n).is_some() || self.databases.contains(n) || self.is_def(n) {
+        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
         }
         Ok(())
@@ -838,7 +952,7 @@ impl<'a> Lowerer<'a> {
                     "file_create" | "file_create_copy" => "created",
                     "file_delete" => "deleted",
                     "store_write" => "write",
-                    "egress" => "sent",
+                    "egress" | "channel_send" => "sent",
                     _ => "effect",
                 };
                 let n = counts.entry(base.to_string()).or_insert(0);
@@ -1145,6 +1259,9 @@ impl<'a> Lowerer<'a> {
         if self.databases.contains(n) {
             return err(span, format!("\"{n}\" is a database: read it as {n}.query(\"select …\") or {n}.one(…)"));
         }
+        if self.channels.contains(n) {
+            return err(span, format!("\"{n}\" is a channel: send on it with {n}.send(…); a route answers with respond {n}.subscribe()"));
+        }
         if interface_of(alias(n)).is_some() || templates::is_template(n) {
             return err(span, format!("\"{n}\" is a leaf: call it, {n}(…)"));
         }
@@ -1356,6 +1473,8 @@ impl<'a> Lowerer<'a> {
         };
         match receiver.text.as_str() {
             "http" => {
+                // Inside `updates.pipe(…)`: its answer goes to the channel as it arrives.
+                let pipe = self.piping.take();
                 let m = method.text.to_ascii_uppercase();
                 if !["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].contains(&m.as_str()) {
                     return err(method.span, format!("http has no \"{}\": get, post, put, patch, delete or head", method.text));
@@ -1368,17 +1487,42 @@ impl<'a> Lowerer<'a> {
                 };
                 // A file as the body (a handle): the host streams its bytes.
                 let named = |k: &str| args.iter().find_map(|a| a.name.as_ref().filter(|n| n.text == k));
+                // `stream: true`, last: the answer is forwarded to the route's caller as it arrives.
+                let mut args = &args[1..];
+                let mut stream = false;
+                if let (Some(at), Some(c)) = (named("stream").or(named("file")), &pipe) {
+                    return err(at.span, format!("a piped call sends a body and goes to its channel as it arrives: {c}.pipe(http.{}(host, path, body: …)), without {}:", method.text, at.text));
+                }
+                if let Some(at) = named("stream") {
+                    let last = args.last().expect("named is one of them");
+                    if last.name.as_ref().map(|n| &n.text) != Some(&at.text) {
+                        return err(at.span, "stream: comes last in the call");
+                    }
+                    let ExprKind::Bool(b) = last.value.kind else { return err(last.value.span, "stream: is true or false") };
+                    if b && !matches!(self.cur().kind, FrameKind::Route { .. }) {
+                        return err(at.span, "a streamed call is a route's: it forwards its answer to the route's caller, so call it in the route that responds with it");
+                    }
+                    stream = b;
+                    args = &args[..args.len() - 1];
+                }
                 let sent = if let Some(file) = named("file") {
                     if named("body").is_some() {
                         return err(file.span, "a call sends a body or a file, not both");
                     }
+                    if stream {
+                        return err(file.span, "a streamed call sends a body, not a file");
+                    }
                     "http_upload"
+                } else if stream {
+                    "http_stream"
                 } else {
                     "http_request"
                 };
+                let sent = if pipe.is_some() { "http_stream" } else { sent };
                 let (inputs, params) = leaf(sent);
-                let preset = vec![("method".to_string(), m), ("host".to_string(), host.clone())];
-                self.unit_call(sent, &inputs, &params, &preset, &args[1..], span)
+                let mut preset = vec![("method".to_string(), m), ("host".to_string(), host.clone())];
+                preset.extend(pipe.map(|c| ("pipe".to_string(), c)));
+                self.unit_call(sent, &inputs, &params, &preset, args, span)
             }
             "stripe" => {
                 if method.text != "verify" {
@@ -1423,6 +1567,28 @@ impl<'a> Lowerer<'a> {
                 let (inputs, params) = leaf(leaf_name);
                 self.unit_call(leaf_name, &inputs, &params, &[(store.param.to_string(), c.to_string())], args, span)
             }
+            c if self.channels.contains(c) => match method.text.as_str() {
+                "send" => {
+                    let (inputs, params) = leaf("channel_send");
+                    self.unit_call("channel_send", &inputs, &params, &[("channel".to_string(), c.to_string())], args, span)
+                }
+                "subscribe" => err(span, format!("a subscription is a route's answer: respond {c}.subscribe()")),
+                // `updates.pipe(http.post(…))`: the call's answer, to the channel as it arrives.
+                "pipe" => {
+                    let call = match args {
+                        [only] if only.name.is_none() => &only.value,
+                        _ => return err(span, format!("{c}.pipe takes one call, whose answer it sends as it arrives: {c}.pipe(http.post(…))")),
+                    };
+                    if !matches!(&call.kind, ExprKind::Method { receiver, .. } if receiver.text == "http") {
+                        return err(call.span, format!("only a call's answer can be piped: {c}.pipe(http.post(…))"));
+                    }
+                    self.piping = Some(c.to_string());
+                    let piped = self.expr(call);
+                    self.piping = None;
+                    piped
+                }
+                other => err(method.span, format!("a channel has no \"{other}\": send(…), pipe(http.post(…)), or respond {c}.subscribe() in a route")),
+            },
             c if ["get", "put", "delete", "list"].contains(&method.text.as_str()) => {
                 err(receiver.span, format!("\"{c}\" is not a declared collection (add `collection {c}` to the header)"))
             }
@@ -2325,5 +2491,29 @@ route POST /n/:who (req) {
         assert_eq!(error("x = 1\ny = match x { \"add\" -> 1, \"add\" -> 2 }\n"), (2, 27, "\"add\" is matched twice; the second arm could never be chosen".into()));
         assert_eq!(error("x = 1\ny = match x { 1, 2 -> 1, 1.0 -> 2 }\n"), (2, 26, "1.0 is matched twice; the second arm could never be chosen".into()));
         assert_eq!(error("match = 1\n").2, "expected an expression, found \"=\"");
+    }
+
+    /// A streamed reply answers with its call's status: the respond's status input, wired from
+    /// the call's `status`. A computed `status:` is the same input, and a number written out the
+    /// param, as before.
+    #[test]
+    fn a_respond_takes_a_computed_status_on_its_status_input() {
+        let into = |d: &FlowDocument, node: &str, port: &str| {
+            d.edges.iter().find(|w| w.target == node && w.target_handle.as_deref() == Some(port)).map(|w| w.source.clone())
+        };
+        let streamed = compiled("port 8200\nroute POST /ask (req) {\n  sent = http.post(\"a.com\", \"/x\", body: req.json, stream: true)\n  respond sent.body, stream: true\n}\n").doc;
+        let respond = streamed.nodes.iter().find(|n| n.data.name == "respond").unwrap();
+        assert_eq!((respond.param("status_input"), respond.param("status")), ("true", "200"));
+        let field = streamed.nodes.iter().find(|n| Some(&n.id) == into(&streamed, &respond.id, "status").as_ref()).unwrap();
+        let call = streamed.nodes.iter().find(|n| n.data.name == "http_stream").unwrap();
+        assert_eq!((field.data.name.as_str(), field.param("name")), ("field", "status"));
+        assert_eq!(into(&streamed, &field.id, "record"), Some(call.id.clone()));
+        let computed = compiled("port 8200\nroute POST /a (req) {\n  respond { ok: false }, status: req.json.code, missing: 400\n}\n").doc;
+        let respond = computed.nodes.iter().find(|n| n.data.name == "respond").unwrap();
+        assert_eq!((respond.param("status_input"), respond.param("missing")), ("true", "400"));
+        assert!(into(&computed, &respond.id, "status").is_some());
+        let written = compiled("port 8200\nroute POST /a (req) {\n  respond { ok: true }, status: 201\n}\n").doc;
+        let respond = written.nodes.iter().find(|n| n.data.name == "respond").unwrap();
+        assert_eq!((respond.param("status_input"), respond.param("status")), ("false", "201"));
     }
 }

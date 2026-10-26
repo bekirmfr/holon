@@ -24,6 +24,7 @@ use holon_core::{hash_value, Capability, Hash, Value};
 use holon_host::Limits;
 use serde::{Deserialize, Serialize};
 
+use crate::channels::ChannelLimits;
 use crate::outbound::Outbound;
 use crate::to_hex;
 
@@ -32,7 +33,7 @@ use crate::to_hex;
 /// bytes. The two module limits are what a flow's module bodies may compute and hold per call
 /// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
 /// gets, so the policy has ceilings for them and no `[limits]` entry.
-pub(crate) const LIMIT_NAMES: [&str; 24] = [
+pub(crate) const LIMIT_NAMES: [&str; 29] = [
     "connect_timeout_ms",
     "request_timeout_ms",
     "claim_wait_ms",
@@ -55,6 +56,11 @@ pub(crate) const LIMIT_NAMES: [&str; 24] = [
     "max_db_read_bytes",
     "db_statement_ms",
     "max_db_statements",
+    "max_pack_bytes",
+    "max_packs_per_run",
+    "channel_keep",
+    "channel_buffer",
+    "max_subscribers",
     holon_core::FUEL_LIMIT,
     holon_core::MEMORY_LIMIT,
 ];
@@ -151,8 +157,8 @@ fn numbers_to_databases(base: &DbLimits, numbers: &BTreeMap<String, u64>) -> DbL
 }
 
 /// The limits as numbers by name: the request-run limits, the clock run's budget, the
-/// durable-run limits, the file limits and the database limits.
-fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits, files: &FileLimits, databases: &DbLimits) -> BTreeMap<String, u64> {
+/// durable-run limits, the file limits, the database limits and the channel limits.
+fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits, files: &FileLimits, databases: &DbLimits, channels: &ChannelLimits) -> BTreeMap<String, u64> {
     let ms = |d: Duration| d.as_millis() as u64;
     BTreeMap::from([
         ("connect_timeout_ms".into(), ms(request.connect_timeout)),
@@ -177,7 +183,24 @@ fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &Durable
         ("max_db_read_bytes".into(), databases.max_db_read_bytes),
         ("db_statement_ms".into(), ms(databases.db_statement)),
         ("max_db_statements".into(), databases.max_db_statements),
+        ("max_pack_bytes".into(), channels.max_pack_bytes),
+        ("max_packs_per_run".into(), channels.max_packs_per_run),
+        ("channel_keep".into(), channels.channel_keep),
+        ("channel_buffer".into(), channels.channel_buffer),
+        ("max_subscribers".into(), channels.max_subscribers),
     ])
+}
+
+/// `numbers` applied over `base`'s channel limits.
+fn numbers_to_channels(base: &ChannelLimits, numbers: &BTreeMap<String, u64>) -> ChannelLimits {
+    let n = |k: &str, d: u64| numbers.get(k).copied().unwrap_or(d);
+    ChannelLimits {
+        max_pack_bytes: n("max_pack_bytes", base.max_pack_bytes),
+        max_packs_per_run: n("max_packs_per_run", base.max_packs_per_run),
+        channel_keep: n("channel_keep", base.channel_keep),
+        channel_buffer: n("channel_buffer", base.channel_buffer),
+        max_subscribers: n("max_subscribers", base.max_subscribers),
+    }
 }
 
 /// `numbers` applied over `base`'s file limits.
@@ -330,6 +353,8 @@ pub(crate) struct Policy {
     pub(crate) files: FileLimits,
     /// The database limits a deployment gets without asking.
     pub(crate) databases: DbLimits,
+    /// The channel limits a deployment gets without asking.
+    pub(crate) channels: ChannelLimits,
     /// What no grant can exceed.
     pub(crate) ceilings: BTreeMap<String, u64>,
     /// Items granted without asking: exact (`HttpRequest("hooks.slack.com")`) or a whole kind
@@ -342,7 +367,7 @@ pub(crate) struct Policy {
 
 impl Default for Policy {
     fn default() -> Policy {
-        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &DbLimits::ceilings());
+        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &DbLimits::ceilings(), &ChannelLimits::ceilings());
         ceilings.insert(holon_core::FUEL_LIMIT.into(), MODULE_FUEL_CEILING);
         ceilings.insert(holon_core::MEMORY_LIMIT.into(), MODULE_MEMORY_CEILING);
         Policy {
@@ -351,6 +376,7 @@ impl Default for Policy {
             durable: DurableLimits::defaults(),
             files: FileLimits::defaults(),
             databases: DbLimits::defaults(),
+            channels: ChannelLimits::defaults(),
             ceilings,
             auto: Vec::new(),
             allow_plain_http: false,
@@ -421,6 +447,7 @@ impl Policy {
         policy.durable = numbers_to_durable(&policy.durable, &defaults);
         policy.files = numbers_to_files(&policy.files, &defaults);
         policy.databases = numbers_to_databases(&policy.databases, &defaults);
+        policy.channels = numbers_to_channels(&policy.channels, &defaults);
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
         policy.allow_private_addresses = file.grants.allow_private_addresses;
@@ -429,7 +456,7 @@ impl Policy {
 
     /// The defaults, by name.
     pub(crate) fn defaults(&self) -> BTreeMap<String, u64> {
-        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases)
+        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases, &self.channels)
     }
 
     /// Whether `item` is granted without asking.
@@ -455,8 +482,13 @@ impl Policy {
                 _ => None,
             };
         }
-        if item.starts_with("PlainHttp(") && !self.allow_plain_http {
-            return Some("this host never grants plain HTTP (holon.toml: grants.allow_plain_http)".into());
+        // The host by name: it comes from the deploy settings, not the flow.
+        if let Some(host) = item.strip_prefix("PlainHttp(").and_then(|h| h.strip_suffix(')'))
+            && !self.allow_plain_http
+        {
+            return Some(format!(
+                "this host never grants plain HTTP, asked for {host} (the deploy settings' \"plain HTTP to\"; holon.toml: grants.allow_plain_http)"
+            ));
         }
         if item == "PrivateAddresses" && !self.allow_private_addresses {
             return Some("this host never grants private addresses (holon.toml: grants.allow_private_addresses)".into());
@@ -652,9 +684,14 @@ impl Grant {
 
     /// Why the deployment can't run under this grant and the policy in force, if it can't: it
     /// needs required items it isn't granted (unless it keeps running without them), or the host
-    /// no longer grants what it asks for. Optional items it lacks never stop it.
+    /// no longer grants what it asks for. Optional items it lacks never stop it. Its trigger
+    /// always does: the host supplies what starts a run (a request's body, the time), never asking
+    /// the permit, so a deployment running without it would go on being started.
     pub(crate) fn attention(&self, manifest: &Manifest, policy: &Policy) -> Option<String> {
         let missing: Vec<String> = self.missing(manifest).into_iter().filter(|i| !manifest.is_optional(i)).collect();
+        if let Some(trigger) = manifest.trigger().filter(|t| missing.iter().any(|i| i == t)) {
+            return Some(format!("{trigger} starts its runs and isn't granted; grant it back, or deploy it again to approve"));
+        }
         if !missing.is_empty() && !self.keep_running {
             return Some(format!(
                 "it needs {} it isn't granted; grant it back, or deploy it again to approve",
@@ -699,6 +736,8 @@ pub(crate) struct Permit {
     pub(crate) files: FileLimits,
     /// How much of its databases a run may read, and how many statements it sends.
     pub(crate) databases: DbLimits,
+    /// What its runs may send on its channels, and how many may subscribe.
+    pub(crate) channels: ChannelLimits,
     pub(crate) outbound: Outbound,
     /// The grant's hash (hex), for the flow log.
     pub(crate) grant: String,
@@ -724,6 +763,7 @@ impl Permit {
         let durable = numbers_to_durable(&policy.durable, &clamped);
         let files = numbers_to_files(&policy.files, &clamped);
         let databases = numbers_to_databases(&policy.databases, &clamped);
+        let channels = numbers_to_channels(&policy.channels, &clamped);
         let hosts = |items: &BTreeSet<String>| -> BTreeSet<String> {
             items
                 .iter()
@@ -746,7 +786,7 @@ impl Permit {
                 && grant.items.contains("PrivateAddresses")
                 && policy.allow_private_addresses,
         };
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, outbound, grant: to_hex(&grant.hash()) }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, outbound, grant: to_hex(&grant.hash()) }
     }
 
     /// Whether the grant covers this capability.
@@ -768,6 +808,11 @@ impl Permit {
     /// The collections it may write, by name: the ones whose keys a run claims before calling out.
     pub(crate) fn collections_written(&self) -> BTreeSet<String> {
         self.named("CollectionWrite")
+    }
+
+    /// The channels it may send on, by name: the ones a piped call may send its answer to.
+    pub(crate) fn channels_sent(&self) -> BTreeSet<String> {
+        self.named("ChannelSend")
     }
 
     /// The folders it may read, by name.
@@ -958,6 +1003,11 @@ mod tests {
         grant.items.remove("SecretRead(\"token\")");
         assert!(grant.attention(&m, &policy).unwrap().contains("SecretRead(\"token\")"), "required: it pauses");
         assert!(!grant.attention(&m, &policy).unwrap().contains("receipt"), "the optional one isn't named");
+        grant.keep_running = true;
+        assert_eq!(grant.attention(&m, &policy), None, "kept running, its reads refused");
+        // Its trigger the host supplies without asking the permit: without it, it always pauses.
+        grant.items.remove("NetworkIngress");
+        assert!(grant.attention(&m, &policy).unwrap().contains("NetworkIngress starts its runs"), "kept running or not");
 
         // Its trigger can't be optional, nor can something it doesn't use.
         assert!(policy.refuses(&manifest(&caps, optional(&["NetworkIngress"]))).unwrap().contains("starts its runs"));

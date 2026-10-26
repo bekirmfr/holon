@@ -2,31 +2,37 @@
 // flows page, deployed through the consent screen, and, for the ones that answer requests here,
 // sent one and replayed exactly in view mode. What CLAUDE.md asks of a sample by hand ("run live
 // once"), kept from rotting by CI. A sample deploys on its own port plus 1000 (set under ⚙), so a
-// developer's deployments on the samples' ports are left alone.
+// developer's deployments on the samples' ports are left alone, plus 100 for each slot past the
+// first (ports.mjs), so runs side by side don't meet.
 
-import type { Page } from "@playwright/test";
-import { expect, FOLDERS, RUN_DIR, SERVER, test } from "./fixtures";
+import { readFileSync } from "node:fs";
+import type { Locator, Page } from "@playwright/test";
+import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 
 const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
 
-/** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. */
-async function openSample(page: Page, title: string) {
-  await page.goto("/");
+/** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. From
+ *  a fresh load of the editor unless `reload` is false: then from the flows page of the editor
+ *  as it is (faster, and its other tabs stay open). */
+async function openSample(page: Page, title: string, reload = true) {
+  if (reload) await page.goto("/");
   await page.getByRole("button", { name: "flows", exact: true }).click();
   const card = page.getByText(title, { exact: true }).locator("xpath=../..");
   await card.getByRole("button", { name: "open" }).click();
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
-/** Deploy the open flow through ⚙ and the consent screen; its port moved up by `by` (1000).
- *  Answers the port it serves on (null for a flow without routes). */
-async function deploy(page: Page, by = 1000): Promise<number | null> {
+/** Deploy the open flow through ⚙ and the consent screen; its port moved up by `by` (the slot's
+ *  SAMPLE_SHIFT, ports.mjs), and
+ *  whatever else `set` sets under ⚙. Answers the port it serves on (null for a flow without routes). */
+async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
   await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "deploy settings" });
   const portField = settings.locator("input").first();
   const given = Number(await portField.inputValue());
   const port = Number.isInteger(given) && given > 0 ? given + by : null;
   if (port) await portField.fill(String(port));
+  if (set) await set(settings);
   await settings.getByRole("button", { name: "done" }).click();
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).click();
   // Wait for the server's answer to the deploy, which comes once the flow listens on its port
@@ -37,6 +43,17 @@ async function deploy(page: Page, by = 1000): Promise<number | null> {
   expect((await deployed).status()).toBe(200);
   await expect(page.locator(".hl-tab--active")).toContainText("deployed");
   return port;
+}
+
+/** Wait until text typed into the Text pane has compiled: ⚙ then says its port. Opened again if a
+ *  compile that lands after the click rebuilds the canvas and closes it. */
+async function settingsSayPort(page: Page, port: string) {
+  const settings = page.getByRole("dialog", { name: "deploy settings" });
+  await expect(async () => {
+    if (!(await settings.isVisible())) await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
+    await expect(settings.locator("input").first()).toHaveValue(port, { timeout: 1_000 });
+  }).toPass({ timeout: 15_000 });
+  await settings.getByRole("button", { name: "done" }).click();
 }
 
 /** Drop the palette entry `entry` (a primitive's name, or `flow:<name>` for a saved flow) on the
@@ -59,30 +76,52 @@ async function viewNewestRun(page: Page) {
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
 }
 
-test("every sample opens from the flows page and deploys", async ({ page, request, adminToken }) => {
+/** The samples' titles, as holon-author lists them (samples.rs), read as the tests are collected:
+ *  a test for each group of SAMPLES_PER_TEST below, so they spread over shards (ci.yml) rather
+ *  than make one long test, without a fresh page and editor for each sample (a test each was
+ *  half again as slow). */
+const SAMPLE_TITLES = [...readFileSync(new URL("../../crates/holon-author/src/samples.rs", import.meta.url), "utf8").matchAll(/^\s*title: "(.*)",$/gm)].map((m) => m[1]);
+
+test("the flows page lists every sample", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "flows", exact: true }).click();
-  // The samples, as the flows page lists them.
   const titles = await page.locator("text=samples").locator("xpath=following-sibling::div").locator("div > div:first-child").allInnerTexts();
-  const samples = titles.filter((t) => t.trim().length > 0);
-  expect(samples.length).toBeGreaterThan(5);
-  for (const title of samples) {
-    // Its database is a MongoDB, bound only where the environment names one (CI does).
-    if (title === ATLAS_NOTES && !process.env.HOLON_TEST_MONGODB) continue;
-    await test.step(title, async () => {
-      await openSample(page, title);
-      await deploy(page);
-    });
-  }
+  const listed = titles.filter((t) => t.trim().length > 0);
+  // Every sample samples.rs has, so none is left out of the tests below, and nothing else.
+  expect(SAMPLE_TITLES.length).toBeGreaterThan(5);
+  expect([...listed].sort()).toEqual([...SAMPLE_TITLES].sort());
 });
 
+const SAMPLES_PER_TEST = 8;
+for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
+  const titles = SAMPLE_TITLES.slice(first, first + SAMPLES_PER_TEST);
+  test(`samples ${first + 1} to ${first + titles.length} open from the flows page and deploy`, async ({ page }) => {
+    await page.goto("/");
+    for (const title of titles) {
+      // Its database is a MongoDB, bound only where the environment names one (CI does).
+      if (title === ATLAS_NOTES && !process.env.HOLON_TEST_MONGODB) continue;
+      await test.step(title, async () => {
+        await openSample(page, title, false);
+        await deploy(page);
+      });
+    }
+  });
+}
+
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
-  // On its own port, so the text (which says `port 8115`) still stands for the canvas: a deploy
-  // then carries `source` and `bindings` (useDeployFlow.ts), and a run explains as the text reads
-  // (`name = req.params.name`, not `field_2 = …`). Changing the port under ⚙ is a canvas change
-  // the text doesn't have, so the loop above, on +1000, deploys the canvas alone.
+  // The port moved in the text (the text's wins while it is open), so the text still stands for
+  // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains
+  // as the text reads (`name = req.params.name`, not `field_2 = …`). Changing the port under ⚙
+  // alone is a canvas change the text doesn't have, so the loop above deploys the canvas alone.
   await openSample(page, "Cache-aside (a branch not taken)");
-  await deploy(page, 0);
+  const port = 8115 + SAMPLE_SHIFT;
+  const text = readFileSync(new URL("../../crates/holon-author/samples/cache-aside.holon", import.meta.url), "utf8");
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace("port 8115", `port ${port}`));
+  await settingsSayPort(page, String(port));
+  expect(await deploy(page, 0)).toBe(port);
   const deployed = await request.get(`${SERVER}/deployments/cache-aside/document`, { headers: { Authorization: `Bearer ${adminToken}` } });
   expect(deployed.status()).toBe(200);
   const document = (await deployed.json()) as { source?: string; bindings?: Record<string, string> };
@@ -114,12 +153,12 @@ test("hello-api answers, and its run replays exactly in view mode", async ({ pag
 
 test("a deployment whose port another program holds says, in view mode, it isn't answering", async ({ page, request }) => {
   const { createServer } = await import("node:net");
-  // Hello API's port moved up by 2000: one no other test deploys on.
+  // Hello API's port moved up 1000 past where samples deploy: one no other test deploys on.
   const holder = createServer();
-  await new Promise<void>((done) => holder.listen(8101 + 2000, "127.0.0.1", done));
+  await new Promise<void>((done) => holder.listen(8101 + SAMPLE_SHIFT + 1000, "127.0.0.1", done));
   await openSample(page, "Hello API");
-  const port = await deploy(page, 2000);
-  expect(port).toBe(8101 + 2000);
+  const port = await deploy(page, SAMPLE_SHIFT + 1000);
+  expect(port).toBe(8101 + SAMPLE_SHIFT + 1000);
   await expect(page.locator(".hl-canvas")).toContainText("port in use");
   await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
   const banner = page.locator(".hl-view__not-listening");
@@ -411,6 +450,239 @@ test("basket reads a price inside a mapped function, per item, and its run repla
   // The map's reads aren't the canvas's nodes: view mode shows it with what the run recorded.
   await viewNewestRun(page);
   expect((await request.post(`http://127.0.0.1:${port}/basket`, { data: { items: [{ name: `scone-${Date.now()}`, qty: 1 }] } })).status()).toBe(404);
+});
+
+test("live-board's page gets each ticket posted as a pack on its channel, and a reconnect gets the ones it missed", async ({ page, browser, request }) => {
+  await openSample(page, "Live board (a channel: packs to whoever listens)");
+  const port = await deploy(page);
+  // The board itself, subscribed (its EventSource on GET /live) before anything is posted.
+  const board = await browser.newPage();
+  const subscribed = board.waitForResponse((r) => new URL(r.url()).pathname === "/live");
+  await board.goto(`http://127.0.0.1:${port}/`);
+  expect((await subscribed).headers()["content-type"]).toBe("text/event-stream");
+  const title = `e2e-${Date.now()}`;
+  const posted = await request.post(`http://127.0.0.1:${port}/tickets`, { data: { title } });
+  expect(posted.status()).toBe(201);
+  await expect(board.locator("li.new")).toHaveText([title]);
+  // Without a title nothing is stored or sent.
+  expect((await request.post(`http://127.0.0.1:${port}/tickets`, { data: {} })).status()).toBe(400);
+  // A subscriber that reconnects after the last pack it saw gets the kept ones past it, here as a
+  // stream read for a moment.
+  const events = await board.evaluate(
+    async ([url, title]) => {
+      const ctl = new AbortController();
+      const r = await fetch(url, { headers: { "last-event-id": "0.0" }, signal: ctl.signal });
+      const reader = r.body!.getReader();
+      let text = "";
+      while (!text.includes(title)) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += new TextDecoder().decode(value);
+      }
+      ctl.abort();
+      return text;
+    },
+    [`http://127.0.0.1:${port}/live`, title],
+  );
+  expect(events).toContain(`"title":"${title}"`);
+  await board.close();
+});
+
+test("approval sends an order's progress on its channel: waiting as the run parks, paid when it finishes, never the first twice", async ({ page, browser, request }) => {
+  await openSample(page, "Order approval (durable run)");
+  const port = await deploy(page);
+  const item = `e2e-${Date.now()}`;
+  const link = await (await request.post(`http://127.0.0.1:${port}/orders`, { data: { item } })).text();
+  expect(link).toMatch(/^\/paid\//);
+  // The channel's kept packs, read for a moment from a page of the flow's own (the stream stays
+  // open, so read until `until`).
+  const own = await browser.newPage();
+  await own.goto(`http://127.0.0.1:${port}/nothing`);
+  const live = (until: string) =>
+    own.evaluate(
+      async ([url, until]) => {
+        const ctl = new AbortController();
+        const r = await fetch(url, { signal: ctl.signal });
+        const reader = r.body!.getReader();
+        let text = "";
+        while (!text.includes(until)) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          text += new TextDecoder().decode(value);
+        }
+        ctl.abort();
+        return text;
+      },
+      [`http://127.0.0.1:${port}/orders/live`, until],
+    );
+  expect(await live(item)).toContain(`"item":"${item}","status":"waiting for payment"`);
+  expect((await request.get(`http://127.0.0.1:${port}${link}`)).ok()).toBe(true);
+  const after = await live(`"status":"paid"`);
+  const mine = after.split("\n").filter((l) => l.startsWith("data:") && l.includes(item));
+  expect(mine).toHaveLength(2);
+  expect(mine[1]).toContain(`"status":"paid","via":"GET"`);
+  await own.close();
+});
+
+test("chat-proxy forwards its upstream's answer as it arrives, and stores the whole of it once it ends", async ({ page, browser, request, adminToken }) => {
+  const { createServer } = await import("node:http");
+  const { readFileSync } = await import("node:fs");
+  // A stand-in for the Messages API on loopback: it streams one piece, then holds the rest until
+  // the test has seen the first on the page, so the page can only have it if it was forwarded.
+  let release = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  const asked: string[] = [];
+  const event = (data: object) => `event: ${(data as { type: string }).type}
+data: ${JSON.stringify(data)}
+
+`;
+  const upstream = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      asked.push(`${req.headers["x-api-key"]} ${JSON.parse(body).messages[0].content}`);
+      // A key it doesn't know is refused, as the API does: a 401 and why, not an event stream.
+      if (req.headers["x-api-key"] === "sk-e2e-revoked") {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(event({ type: "message_start", message: { id: "msg_e2e" } }));
+      res.write(event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Rivers run" } }));
+      await held;
+      res.write(event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " to the sea." } }));
+      res.end(event({ type: "message_stop" }));
+    });
+  });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const host = `127.0.0.1:${(upstream.address() as { port: number }).port}`;
+  try {
+    await openSample(page, "Chat proxy (a streamed reply)");
+    // The sample calls api.anthropic.com: here, the stand-in, over plain HTTP to this machine. The
+    // text says the port (with the text open, it is the text's), moved up as deploy() moves it.
+    const text = readFileSync(new URL("../../crates/holon-author/samples/chat-proxy.holon", import.meta.url), "utf8");
+    await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+    const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
+    await editor.click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text.replaceAll('"api.anthropic.com"', `"${host}"`).replace("port 8127", `port ${8127 + SAMPLE_SHIFT}`));
+    await settingsSayPort(page, String(8127 + SAMPLE_SHIFT));
+    const port = await deploy(page, 0, async (settings) => {
+      await settings.getByTitle("comma-separated host[:port]").fill(host);
+      await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
+    });
+    const key = "sk-e2e-0123456789";
+    expect((await request.post(`${SERVER}/deployments/chat-proxy/secrets/anthropic_api_key`, { data: { value: key }, headers: { Authorization: `Bearer ${adminToken}` } })).ok()).toBe(true);
+    const chat = await browser.newPage();
+    await chat.goto(`http://127.0.0.1:${port}/`);
+    await chat.locator("input[name=prompt]").fill("a line about rivers");
+    await chat.getByRole("button", { name: "Ask" }).click();
+    await expect(chat.locator("#said")).toHaveText("Rivers run");
+    release();
+    await expect(chat.locator("#said")).toHaveText("Rivers run to the sea.");
+    expect(asked).toEqual([`${key} a line about rivers`]);
+    // The run had the whole answer: stored, and listed on the page.
+    await expect(async () => {
+      await chat.reload();
+      await expect(chat.locator("li")).toContainText(["a line about riversRivers run to the sea."], { timeout: 1000 });
+    }).toPass();
+    // Without a prompt nothing is called.
+    expect((await request.post(`http://127.0.0.1:${port}/chat`, { data: {} })).status()).toBe(400);
+    expect(asked).toHaveLength(1);
+    // The room: a piped call's pieces to whoever watches, as they arrive, then the run's pack.
+    await chat.evaluate(() => {
+      const w = window as unknown as { heard: string[] };
+      w.heard = [];
+      new EventSource("/room/live").onmessage = (e) => w.heard.push(e.data);
+    });
+    await expect.poll(() => request.get(`${SERVER}/deployments/chat-proxy/log`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.text())).toContain("GET /room/live");
+    const roomed = await request.post(`http://127.0.0.1:${port}/room`, { data: { prompt: "the room" } });
+    expect(await roomed.json()).toEqual({ prompt: "the room", said: "Rivers run to the sea." });
+    const heard = () => chat.evaluate(() => (window as unknown as { heard: string[] }).heard);
+    await expect.poll(heard).toContainEqual(JSON.stringify({ prompt: "the room", said: "Rivers run to the sea." }));
+    expect((await heard()).slice(0, -1).map((piece) => JSON.parse(piece)).join("")).toContain('"text":"Rivers run"');
+    // A key the API refuses: nothing is forwarded, and the reply is the refusal with its status,
+    // which the page shows.
+    expect((await request.post(`${SERVER}/deployments/chat-proxy/secrets/anthropic_api_key`, { data: { value: "sk-e2e-revoked" }, headers: { Authorization: `Bearer ${adminToken}` } })).ok()).toBe(true);
+    await chat.reload();
+    await chat.locator("input[name=prompt]").fill("refused");
+    await chat.getByRole("button", { name: "Ask" }).click();
+    await expect(chat.locator("#said")).toContainText("the model's API answered 401");
+    await expect(chat.locator("#said")).toContainText("invalid x-api-key");
+    expect((await request.post(`http://127.0.0.1:${port}/chat`, { data: { prompt: "refused" } })).status()).toBe(401);
+    await chat.close();
+  } finally {
+    release();
+    upstream.close();
+  }
+});
+
+test("gemini-chat forwards Gemini's streamed answer as it arrives, and says so when the API refuses", async ({ page, browser, request, adminToken }) => {
+  const { createServer } = await import("node:http");
+  const { readFileSync } = await import("node:fs");
+  // A stand-in for the Interactions API on loopback: step.delta events, then [DONE]; a key it
+  // doesn't know is refused, as the API does.
+  const asked: string[] = [];
+  const event = (data: { event_type: string }) => `event: ${data.event_type}\ndata: ${JSON.stringify(data)}\n\n`;
+  const upstream = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const sent = JSON.parse(body);
+      asked.push(`${req.headers["x-goog-api-key"]} ${sent.model} ${sent.input}`);
+      if (req.headers["x-goog-api-key"] === "e2e-revoked") {
+        res.writeHead(429, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: 429, message: "Resource has been exhausted (e.g. check quota).", status: "RESOURCE_EXHAUSTED" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(event({ event_type: "interaction.created" }));
+      res.write(event({ event_type: "step.delta", index: 1, delta: { type: "text", text: "Rivers run" } } as { event_type: string }));
+      res.write(event({ event_type: "step.delta", index: 1, delta: { type: "text", text: " to the sea." } } as { event_type: string }));
+      res.end(event({ event_type: "interaction.completed" }) + "data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const host = `127.0.0.1:${(upstream.address() as { port: number }).port}`;
+  try {
+    await openSample(page, "Gemini chat (a streamed reply, free tier)");
+    // The sample calls generativelanguage.googleapis.com: here, the stand-in, over plain HTTP to
+    // this machine, on a port the text says (the text's wins while it is open).
+    const text = readFileSync(new URL("../../crates/holon-author/samples/gemini-chat.holon", import.meta.url), "utf8");
+    await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+    const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
+    await editor.click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8128", `port ${8128 + SAMPLE_SHIFT}`));
+    await settingsSayPort(page, String(8128 + SAMPLE_SHIFT));
+    const port = await deploy(page, 0, async (settings) => {
+      await settings.getByTitle("comma-separated host[:port]").fill(host);
+      await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
+    });
+    const secret = (value: string) => request.post(`${SERVER}/deployments/gemini-chat/secrets/gemini_api_key`, { data: { value }, headers: { Authorization: `Bearer ${adminToken}` } });
+    expect((await secret("e2e-key")).ok()).toBe(true);
+    const chat = await browser.newPage();
+    await chat.goto(`http://127.0.0.1:${port}/`);
+    await chat.locator("input[name=prompt]").fill("a line about rivers");
+    await chat.getByRole("button", { name: "Ask" }).click();
+    await expect(chat.locator("#said")).toHaveText("Rivers run to the sea.");
+    expect(asked).toEqual(["e2e-key gemini-3.5-flash-lite a line about rivers"]);
+    // The run had the whole answer: stored, and listed on the page.
+    await expect(async () => {
+      await chat.reload();
+      await expect(chat.locator("li")).toContainText(["a line about riversRivers run to the sea."], { timeout: 1000 });
+    }).toPass();
+    // The free tier's limit: nothing forwarded, the refusal with its status, which the page shows.
+    expect((await secret("e2e-revoked")).ok()).toBe(true);
+    await chat.locator("input[name=prompt]").fill("refused");
+    await chat.getByRole("button", { name: "Ask" }).click();
+    await expect(chat.locator("#said")).toContainText("Gemini answered 429");
+    await expect(chat.locator("#said")).toContainText("RESOURCE_EXHAUSTED");
+    await chat.close();
+  } finally {
+    upstream.close();
+  }
 });
 
 test("cache-aside answers a name it has from its collection without the fetch, which view mode shows as not run", async ({ page, request }) => {
@@ -810,10 +1082,25 @@ test("the admin page's browse… lists the server's folders, and the one chosen 
   await page.goto("/");
   await page.getByRole("button", { name: "admin", exact: true }).click();
   await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  // The first listing (the home folder) answers only once a path is typed, as on a slow machine:
+  // it mustn't replace what was typed.
+  let release = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  let first = true;
+  await page.route(/\/admin\/folders\/browse/, async (route) => {
+    if (first) {
+      first = false;
+      await held;
+    }
+    await route.continue();
+  });
   await page.getByRole("button", { name: "browse…" }).click();
   // The e2e server shows no OS dialog (HOLON_NO_FOLDER_DIALOG), so the editor lists the folders.
   const picker = page.getByRole("dialog", { name: "choose a folder" });
   await picker.getByLabel("folder to show").fill(FOLDERS);
+  release();
+  await expect(picker.getByRole("button", { name: "home", exact: true })).toBeVisible();
+  await expect(picker.getByLabel("folder to show")).toHaveValue(FOLDERS);
   await picker.getByRole("button", { name: "go", exact: true }).click();
   await picker.getByLabel("folders").getByRole("button", { name: "▸ drop" }).click();
   await expect(picker.getByLabel("folder to show")).toHaveValue(realpathSync.native(join(FOLDERS, "drop")));
@@ -870,10 +1157,10 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const local = { ...process.env, HOLON_RUN_DIR: RUN_DIR, HOLON_TOKEN: "", HOLON_SERVER: "" };
   const which = spawnSync(holon, ["export", "ledger"], { encoding: "utf8", env: local });
   expect(which.status).toBe(1);
-  expect(which.stderr).toContain("pick one with --server 7520 or --server 7521");
+  expect(which.stderr).toContain(`pick one with --server ${PORTS.server} or --server ${PORTS.fresh}`);
   // Into a folder of its own (made for it), by a name (.json added), the full path said.
   const mine = join(dir, "audits", "as-me.json");
-  const asMe = execFileSync(holon, ["export", "ledger", "--server", "7520", "--to", join(dir, "audits"), "--as", "as-me"], { encoding: "utf8", env: local });
+  const asMe = execFileSync(holon, ["export", "ledger", "--server", String(PORTS.server), "--to", join(dir, "audits"), "--as", "as-me"], { encoding: "utf8", env: local });
   expect(asMe).toContain(`wrote ${mine}: 4 runs of "ledger", head ${head.slice(0, 12)}`);
   expect(asMe).toContain(`holon verify ${mine}`);
   expect(execFileSync(holon, ["verify", mine], { encoding: "utf8" })).toContain("re-ran 4 runs");

@@ -83,6 +83,8 @@ pub(crate) struct FiredRun {
     pub(crate) grant: String,
     /// The waiting points it settled waiting at: then it performed nothing (durable.rs parks it).
     pub(crate) waiting: Vec<Waiting>,
+    /// For a run that settled waiting: the packs that didn't wait, sent as it parks.
+    pub(crate) progress: Vec<(Capability, Value)>,
     /// The state it started from (the live state, or a resumed run's recorded one).
     pub(crate) start_state: Option<State>,
     /// The collection reads it made, and what each answered.
@@ -91,6 +93,8 @@ pub(crate) struct FiredRun {
     pub(crate) retries: u32,
     /// The keys it claimed before calling out (claims.rs), over every attempt.
     pub(crate) claims: Vec<claims::ClaimRecord>,
+    /// The nodes a secret reaches (taint.rs): what its log entry keeps none of, or withholds.
+    pub(crate) secret_fed: taint::SecretFed,
 }
 
 /// How many times a run is tried without holding its state's lock before it runs holding it.
@@ -522,6 +526,13 @@ fn run_attempt(
         }
     }
 
+    // Which nodes compute with a secret it was granted, for its log entry.
+    let secret_fed = if sourced.iter().any(|(c, _)| matches!(c, Capability::SecretRead(_))) {
+        taint::SecretFed::of(root_unit, resolver)
+    } else {
+        taint::SecretFed::default()
+    };
+
     let mut host = RecordingHost { performed: Vec::new() };
     let mut timer = recorder::Timer::new();
     // Outbound requests go only where the grant allows, within its limits.
@@ -550,7 +561,15 @@ fn run_attempt(
         )
     });
     // A file as a request's body is sent from a folder the deployment reads.
-    let sender = folders::Sender { outbound: &permit.outbound, folders: waits.folders.clone(), granted: permit.folders_handed() };
+    let forward = waits.forward.clone();
+    let sender = folders::Sender {
+        outbound: &permit.outbound,
+        folders: waits.folders.clone(),
+        granted: permit.folders_handed(),
+        forward: forward.as_ref(),
+        channels: waits.channels.clone(),
+        sends: permit.channels_sent(),
+    };
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
     // A read that failed (a file too big, or not text; a folder not bound) fails the run: it
@@ -560,8 +579,9 @@ fn run_attempt(
         host.performed.clear();
     }
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
-    // carrying a secret's value, which would put it on disk and in every later snapshot, and a copy
-    // from a folder the deployment doesn't read (a handle is only a record: one can be made up).
+    // carrying a secret's value, or something computed from one (taint.rs), which would put it on
+    // disk and in every later snapshot, and a copy from a folder the deployment doesn't read (a
+    // handle is only a record: one can be made up).
     let reads_folders = permit.folders_handed();
     host.performed.retain(|(cap, payload)| {
         if !permit.allows(cap) {
@@ -574,19 +594,40 @@ fn run_attempt(
             eprintln!("holon: refused {cap:?}: a copy from the folder {from:?}, which this deployment doesn't read");
             return false;
         }
-        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) = cap
-            && let Some(name) = secrets::secret_in(payload, secrets)
-        {
-            eprintln!("holon: refused to store secret {name:?} in {key:?}");
-            return false;
+        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) = cap {
+            if let Some(name) = secrets::secret_in(payload, secrets) {
+                eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
+                return false;
+            }
+            if secret_fed.derives_effect(cap) {
+                eprintln!("holon: refused to store or send in {key:?} what is computed from a secret");
+                return false;
+            }
         }
-        true
+        // A subscription is a route's answer, read from its response, never performed.
+        !matches!(cap, Capability::ChannelRead(_))
     });
     // Writes past the run's file limits: it fails before anything it did commits.
     let files_read = waits.files.as_ref().map_or(0, |f| f.files);
     let past_limit = failed_read.is_none().then(|| folders::past_write_limits(&host.performed, files_read, &permit.files)).flatten();
-    if past_limit.is_some() {
+    // Packs past the run's channel limits: likewise.
+    let past_packs = (failed_read.is_none() && past_limit.is_none()).then(|| channels::past_pack_limits(&host.performed, &permit.channels)).flatten();
+    if past_limit.is_some() || past_packs.is_some() {
         host.performed.clear();
+    }
+    // A run that settled waiting performs nothing yet, but the packs it settled that didn't wait
+    // go out as it parks, held to the same grant, secrets and limits as any run's.
+    let mut progress = if outcome.waiting.is_empty() || outcome.error.is_some() { Vec::new() } else { channels::settled_sends(&outcome.outputs) };
+    progress.retain(|(cap, payload)| {
+        let sends = permit.allows(cap) && secrets::secret_in(payload, secrets).is_none() && !secret_fed.derives_effect(cap);
+        if !sends {
+            eprintln!("holon: refused {cap:?} as the run waits: not granted, or carrying a secret or what is computed from one");
+        }
+        sends
+    });
+    if let Some(past) = channels::past_pack_limits(&progress, &permit.channels) {
+        eprintln!("holon: the packs a waiting run settled weren't sent: {past}");
+        progress.clear();
     }
 
     let run = FiredRun {
@@ -597,16 +638,19 @@ fn run_attempt(
         rounds: outcome.rounds,
         error: failed_read
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
+            .or(past_packs.map(|e| format!("{}{e}", channels::SEND_FAILED)))
             .or(outcome.error.map(|e| e.message())),
         run_id: to_hex(&run_id),
         unit: to_hex(&permit.deployment),
         nonce: hex_bytes(nonce),
         grant: permit.grant.clone(),
         waiting: outcome.waiting,
+        progress,
         start_state: start.clone(),
         reads: std::mem::take(&mut waits.reads),
         retries: 0,
         claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
+        secret_fed,
     };
     Attempt { run, start, overtaken }
 }
@@ -676,7 +720,7 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
     };
     let resolver = match materialize_closure(store, root_hash) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return e.response(),
     };
     let Some(root_unit) = resolver.resolve(&root_hash) else {
         return err(404, "no unit stored at that hash — stage or publish it first");
@@ -702,7 +746,13 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
         Redactor::of(&dep.secrets).entry(&mut entry);
         entry.session = dep.life.sessions.last().map_or(0, |s| s.number);
+        // Its packs go out as it is logged: the run is over and its writes have landed, and what
+        // a subscriber gets is what the log holds (channels.rs).
+        let packs = dep.channels.packs_of(&entry, dep.log.next_seq());
         dep.log.push(entry);
+        for (name, pack) in packs {
+            dep.channels.send(&name, pack, &dep.permit.channels);
+        }
     }
 }
 
@@ -738,6 +788,49 @@ fn without_kept_files(timeline: &[recorder::NodeTiming], reads: &[collections::R
     timeline
 }
 
+/// The timeline, with the outputs of each node that may produce something computed from a secret
+/// left out: redaction finds a secret's value, not what is computed from it (taint.rs).
+fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::SecretFed) -> Vec<recorder::NodeTiming> {
+    if !fed.is_empty() {
+        for node in timeline.iter_mut().filter(|n| fed.derives(&n.path)) {
+            node.outputs = None;
+        }
+    }
+    timeline
+}
+
+/// `value` as the log keeps it, or the withheld mark when it may be computed from a secret.
+fn withheld_or(derived: bool, value: &Value) -> SValue {
+    if derived { SValue::from_core(&Value::Text(taint::WITHHELD.into())) } else { SValue::from_core(value) }
+}
+
+/// A run's outputs as its log entry and history keep them (`shown`: how each looks there), each
+/// that may be computed from a secret withheld.
+pub(crate) fn logged_outputs(run: &FiredRun, shown: impl Fn(&Value) -> Value) -> Vec<Option<SValue>> {
+    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or(run.secret_fed.derives_output(port), &shown(v)))).collect()
+}
+
+/// What a run performed as its log entry and history keep it (`shown`: how each payload looks
+/// there), each payload that may be computed from a secret withheld.
+pub(crate) fn logged_performed(run: &FiredRun, shown: impl Fn(&Capability, &Value) -> Value) -> Vec<PerformedEntry> {
+    run.performed
+        .iter()
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.secret_fed.derives_effect(c), &shown(c, p)) })
+        .collect()
+}
+
+/// A round as the log keeps it: each request's parts computed from a secret withheld.
+fn logged_round(round: &Round, fed: &taint::SecretFed) -> recorder::LoggedRound {
+    if fed.is_empty() {
+        return recorder::LoggedRound::from_host(round);
+    }
+    let mut round = round.clone();
+    for x in &mut round.exchanges {
+        taint::withhold_request(&mut x.request, &x.path, fed);
+    }
+    recorder::LoggedRound::from_host(&round)
+}
+
 /// The parts every log entry shares, from what a run read and produced.
 pub(crate) fn run_entry(
     kind: &'static str,
@@ -759,21 +852,22 @@ pub(crate) fn run_entry(
         request: None,
         sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
         state_before: run.state_before.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
-        outputs: run.outputs.iter().map(|o| o.as_ref().map(|v| SValue::from_core(&folders::loggable_output(v)))).collect(),
-        performed: run
-            .performed
-            .iter()
-            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(&folders::loggable(c, p)) })
-            .collect(),
+        outputs: logged_outputs(run, folders::loggable_output),
+        performed: logged_performed(run, folders::loggable),
         response_body: None,
         error: run.error.clone(),
-        timeline: without_kept_files(&run.timeline, &run.reads, &run.performed),
-        rounds: run.rounds.iter().map(recorder::LoggedRound::from_host).collect(),
+        timeline: without_secret_derived(without_kept_files(&run.timeline, &run.reads, &run.performed), &run.secret_fed),
+        rounds: run.rounds.iter().map(|r| logged_round(r, &run.secret_fed)).collect(),
         run_id: run.run_id.clone(),
         unit: run.unit.clone(),
         nonce: run.nonce.clone(),
         grant: run.grant.clone(),
         parked: vec![],
+        progress: run
+            .progress
+            .iter()
+            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.secret_fed.derives_effect(c), p) })
+            .collect(),
         events: BTreeMap::new(),
         retries: run.retries,
         claims: run
@@ -829,10 +923,12 @@ impl FiredRun {
             nonce: String::new(),
             grant: String::new(),
             waiting: vec![],
+            progress: vec![],
             start_state: None,
             reads: vec![],
             retries: 0,
             claims: vec![],
+            secret_fed: taint::SecretFed::default(),
         }
     }
 }

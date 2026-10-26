@@ -139,6 +139,15 @@ pub trait Observer {
     /// of fuel, a trap, a body's exception as the engine words it). Called just before its
     /// `produced`, so a host can keep the reason beside the node for a replay to show.
     fn failed(&mut self, _path: &[u32], _reason: &str) {}
+    /// What the node at `path` (the unit `unit`) produced, when the observer stands that in for
+    /// what core would compute from `inputs`: none (the default) computes the node. A check that
+    /// runs a recorded run again (`holon verify`) answers for a node whose inputs carry what the
+    /// record never holds (a secret's placeholder) with the outputs the record kept for it, and
+    /// checks the rest of the run against them. An answer with the wrong number of outputs is
+    /// ignored, and the node computed.
+    fn asserted(&mut self, _path: &[u32], _unit: &Unit, _inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+        None
+    }
 }
 
 /// Observes nothing: what plain [`eval`] uses.
@@ -178,6 +187,8 @@ fn eval_at(
         UnitBody::Primitive { name } if name == "http_request" => ask(primitives::http_request(inputs, &unit.params), observer, path),
         // One whose body is a file: the host streams it.
         UnitBody::Primitive { name } if name == "http_upload" => ask(primitives::http_upload(inputs, &unit.params), observer, path),
+        // One whose answer the host forwards to the route's caller as it arrives.
+        UnitBody::Primitive { name } if name == "http_stream" => ask(primitives::http_stream(inputs, &unit.params), observer, path),
         // A durable run's waiting point and its token: also the host's to answer.
         UnitBody::Primitive { name } if name == "await" => ask(primitives::await_request(&unit.params), observer, path),
         // A collection read: the host answers it from the collection as the run found it.
@@ -430,7 +441,14 @@ fn eval_composite(
                     let held = wired_but_absent && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name));
                     path.push(ci as u32);
                     observer.enter(path);
-                    let outs = if held { smallvec![Slot::Absent; child.outputs.len()] } else { eval_at(child, &gathered, resolver, observer, path) };
+                    let outs = if held {
+                        smallvec![Slot::Absent; child.outputs.len()]
+                    } else {
+                        match observer.asserted(path, child, &gathered) {
+                            Some(asserted) if asserted.len() == child.outputs.len() => asserted.into_iter().map(Slot::of).collect(),
+                            _ => eval_at(child, &gathered, resolver, observer, path),
+                        }
+                    };
                     observer.produced(path, &outs);
                     observer.leave(path);
                     path.pop();
@@ -789,6 +807,41 @@ mod tests {
         assert_eq!(seen.0, expected, "each node's outputs, just before it is left");
     }
 
+    /// An observer may stand a node's outputs in for what core would compute (`asserted`), and
+    /// the rest of the run uses them; an answer with the wrong number of outputs is ignored.
+    #[test]
+    fn an_observer_may_assert_a_nodes_outputs() {
+        struct Asserts(Vec<u32>, Vec<Option<Value>>, Vec<(Vec<u32>, Vec<Option<Value>>)>);
+        impl Observer for Asserts {
+            fn asserted(&mut self, path: &[u32], _unit: &Unit, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+                self.2.push((path.to_vec(), inputs.to_vec()));
+                (path == self.0.as_slice()).then(|| self.1.clone())
+            }
+        }
+        let mut r = MapResolver::new();
+        let inner = add2(&mut r);
+        let hinner = r.insert(inner).unwrap();
+        let hmul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
+        let outer = composite(
+            vec![nport("a"), nport("b")],
+            Type::Number,
+            vec![hinner, hmul],
+            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, 1, 0), edge(BOUNDARY, 1, 1, 1), edge(1, 0, BOUNDARY, 0)],
+        );
+        let inputs = [Some(num(3.0)), Some(num(4.0))];
+        // The add at [0] is said to have made 10 (it makes 7): the multiply after it uses 10.
+        let mut o = Asserts(vec![0], vec![Some(num(10.0))], Vec::new());
+        assert_eq!(eval_observed(&outer, &inputs, &r, &mut o).into_vec(), vec![Some(num(40.0))]);
+        assert_eq!(o.2[0], (vec![0], vec![Some(num(3.0)), Some(num(4.0))]), "asked with the node's gathered inputs");
+        assert!(!o.2.iter().any(|(p, _)| p == &[0, 0]), "a node stood in for isn't evaluated inside");
+        // Two outputs for a one-output node: ignored, and the node computed.
+        let mut o = Asserts(vec![0], vec![Some(num(10.0)), None], Vec::new());
+        assert_eq!(eval_observed(&outer, &inputs, &r, &mut o).into_vec(), vec![Some(num(28.0))]);
+        // Nothing stood in for: as plain eval.
+        let mut o = Asserts(vec![9], vec![], Vec::new());
+        assert_eq!(eval_observed(&outer, &inputs, &r, &mut o), eval(&outer, &inputs, &r));
+    }
+
     /// `path → http_request → field(status)`: the observer is asked for the request's answer by
     /// the node's path; its answer flows downstream. Plain `eval` has no one to answer, so the
     /// response, and everything after it, is absent.
@@ -911,6 +964,39 @@ mod tests {
             vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
         );
         assert_eq!(eval(&outer, &[Some(num(10.0)), Some(num(5.0))], &r).into_vec(), vec![Some(num(15.0))]);
+    }
+
+    #[test]
+    fn a_composite_nested_as_deep_as_a_host_runs_fits_half_a_threads_stack() {
+        // The server refuses closures nested past 64 units (`MAX_CLOSURE_DEPTH`) because eval
+        // recurses a level per nested composite; its threads have 2 MiB. 64 levels in 1 MiB,
+        // unoptimized, leaves the rest for the host around it.
+        let mut r = MapResolver::new();
+        // `add`, `add2` around it, 61 wrappers, the top: 64 units deep.
+        let inner = add2(&mut r);
+        let mut below = r.insert(inner).unwrap();
+        for _ in 0..61 {
+            let wrap = composite(
+                vec![nport("x"), nport("y")],
+                Type::Number,
+                vec![below],
+                vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
+            );
+            below = r.insert(wrap).unwrap();
+        }
+        let top = composite(
+            vec![nport("x"), nport("y")],
+            Type::Number,
+            vec![below],
+            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
+        );
+        let out = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(move || eval(&top, &[Some(num(10.0)), Some(num(5.0))], &r).into_vec())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(out, vec![Some(num(15.0))]);
     }
 
     #[test]

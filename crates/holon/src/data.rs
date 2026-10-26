@@ -13,6 +13,9 @@
 //! - a record with a numeric `status` is an envelope: `{status, headers?, body?}`;
 //! - any other value is the body, sent with status 200;
 //! - an effect (e.g. a lone `store_write`) is performed and answered 204;
+//! - a subscription (`respond updates.subscribe()`, a `channel_subscribe` as the body) is
+//!   answered 200 with the channel's packs as server-sent events, streamed by the transport
+//!   (`subscribe`; channels.rs);
 //! - nothing at all (the handler didn't settle) is a 500.
 //!
 //! A text body goes out as `text/plain`, anything else as JSON, unless the envelope sets
@@ -28,6 +31,25 @@ pub struct DataResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// The channel the caller subscribes to, when the answer is a subscription: the transport
+    /// streams its packs after the headers.
+    pub subscribe: Option<Subscribe>,
+}
+
+/// A subscription a route answered with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Subscribe {
+    pub channel: String,
+    /// The packs the channel keeps first (`from: "kept"`), not only those sent from now on.
+    pub kept: bool,
+}
+
+/// The subscription `v` asks for, if it is one (`channel_subscribe`'s effect).
+fn subscription(v: &Value) -> Option<Subscribe> {
+    let Value::Effect { sink, payload } = v else { return None };
+    let channel = sink.strip_prefix("channel_subscribe:")?;
+    let kept = matches!(&**payload, Value::Record(f) if f.get("from") == Some(&Value::Text("kept".into())));
+    Some(Subscribe { channel: channel.to_string(), kept })
 }
 
 impl DataResponse {
@@ -37,6 +59,7 @@ impl DataResponse {
             status,
             headers: vec![("content-type".into(), "application/json".into())],
             body: stringify_json(&body).unwrap_or_default().into_bytes(),
+            subscribe: None,
         }
     }
 }
@@ -138,8 +161,11 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
     let Some(output) = output else {
         return DataResponse::json_error(500, "the handler produced no response");
     };
+    if let Some(subscribe) = subscription(output) {
+        return DataResponse { status: 200, headers: event_stream(vec![]), body: vec![], subscribe: Some(subscribe) };
+    }
     if let Value::Effect { .. } = output {
-        return DataResponse { status: 204, headers: vec![], body: vec![] };
+        return DataResponse { status: 204, headers: vec![], body: vec![], subscribe: None };
     }
     let (status, mut headers, body) = match output {
         Value::Record(fields) if matches!(fields.get("status"), Some(Value::Number(_))) => {
@@ -161,6 +187,9 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
                 }
                 Some(_) => return DataResponse::json_error(500, "response headers must be a record"),
             };
+            if let Some(subscribe) = fields.get("body").and_then(subscription) {
+                return DataResponse { status: *n as u16, headers: event_stream(headers), body: vec![], subscribe: Some(subscribe) };
+            }
             (*n as u16, headers, fields.get("body"))
         }
         other => (200, vec![], Some(other)),
@@ -178,7 +207,17 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
     {
         headers.push(("content-type".into(), ct.into()));
     }
-    DataResponse { status, headers, body: bytes }
+    DataResponse { status, headers, body: bytes, subscribe: None }
+}
+
+/// A subscription's headers: the flow's, and an event stream nothing caches or buffers.
+fn event_stream(mut headers: Vec<(String, String)>) -> Vec<(String, String)> {
+    for (k, v) in [("content-type", "text/event-stream"), ("cache-control", "no-cache"), ("x-accel-buffering", "no")] {
+        if !headers.iter().any(|(h, _)| h == k) {
+            headers.push((k.into(), v.into()));
+        }
+    }
+    headers
 }
 
 /// Decode `%XX` escapes and `+` (as a space, the query-string convention). Invalid escapes are
@@ -258,6 +297,13 @@ mod tests {
 
         let effect = Value::Effect { sink: "store_write:todos".into(), payload: Box::new(Value::List(vec![])) };
         assert_eq!(respond(Some(&effect)).status, 204);
+
+        let ask = |from: &str| Value::Effect { sink: "channel_subscribe:updates".into(), payload: Box::new(rec(&[("channel", txt("updates")), ("from", txt(from))])) };
+        let sub = respond(Some(&rec(&[("status", Value::Number(200.0)), ("headers", rec(&[("Cache-Control", txt("no-store"))])), ("body", ask("kept"))])));
+        assert_eq!((sub.status, sub.subscribe), (200, Some(Subscribe { channel: "updates".into(), kept: true })));
+        assert!(sub.headers.contains(&("content-type".to_string(), "text/event-stream".to_string())));
+        assert!(sub.headers.contains(&("cache-control".to_string(), "no-store".to_string())), "the flow's header stands");
+        assert_eq!(respond(Some(&ask("new"))).subscribe, Some(Subscribe { channel: "updates".into(), kept: false }));
         assert_eq!(respond(None).status, 500);
         assert_eq!(respond(Some(&rec(&[("status", Value::Number(99.0))]))).status, 500);
         assert_eq!(respond(Some(&rec(&[("status", Value::Number(200.5))]))).status, 500);

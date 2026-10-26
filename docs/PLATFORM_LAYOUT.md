@@ -191,10 +191,15 @@ it, §4.2.1):
   the path input) would need its possible hosts declared as a requirement; a host the deployment
   wasn't granted is refused at perform time.
 - **No private destinations.** Loopback, link-local, private, CGNAT and metadata ranges (127/8,
-  10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, ::1, fc00::/7, fe80::/10) are refused after
+  10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, ::1, fc00::/7, fe80::/10, and NAT64's
+  64:ff9b::/96, an IPv4 address behind it) are refused after
   DNS resolution, against the address actually connected to, and again on every redirect. This is
   OWASP's SSRF guidance; it also stops DNS rebinding, since the check is on the resolved address.
 - **HTTPS only**, with certificate verification; plain HTTP is a per-host opt-out.
+- **The host frames the message.** ✅ A flow doesn't set `Host` (another virtual host on the
+  granted server, never granted itself), the length or framing (`Content-Length`,
+  `Transfer-Encoding`, `TE`, `Trailer`, `Expect`), the connection (`Connection`, `Keep-Alive`,
+  `Upgrade`) or any `Proxy-*` header. A request that sets one answers `bad_header` and isn't sent.
 
 **Limits** (numbers: a flow asks for what it needs, the host grants within its ceilings, §4.2.1).
 Host defaults follow what the systems a flow talks to already expect:
@@ -363,11 +368,18 @@ only the editor.
   in its manifest, granted by the host); a run reads only the secrets it was granted, and its run
   id doesn't include them. Every literal occurrence of a value is redacted, as `‹secret:name›`,
   from the flow log and from what the control plane says about a deployment (state, sessions,
-  `/trigger` and "send live" replies); a replay substitutes the same placeholder. A state write
-  carrying a secret's value is refused, so one never reaches the state store, snapshots or disk.
-  Values under 6 characters are refused (too short to redact reliably), and a value transformed
-  before it's logged (hashed, encoded, sliced) can't be recognised. A flow may still send a secret
-  where it is meant to go: an outbound request's header, or its own response to a caller.
+  `/trigger` and "send live" replies); a replay substitutes the same placeholder. A state,
+  collection or channel write carrying a secret's value is refused, so one never reaches the state
+  store, snapshots, a channel's packs or disk. Values under 6 characters are refused (too short to
+  redact reliably). A value transformed before it's logged (encoded, sliced, a field of a JSON
+  secret) can't be recognised, so the graph is followed instead (`taint.rs`): what a secret reaches
+  through anything but a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`) or a Boolean
+  answer counts as computed from it. A write of that is refused as the value's is; any other effect
+  carrying it, the run's outputs and its response body are logged as
+  `‹withheld: computed from a secret›`. An effect carries no node, so this goes by capability: a
+  key written anywhere in the run from such a value has all its writes in that run refused. A flow
+  may still send a secret where it is meant to go: an outbound request's header, or its own
+  response to a caller.
   - **Sealed at rest** ✅ (`sealing.rs`): each value is AES-256-GCM sealed, bound to its
     deployment, name and version, under a master key kept apart from the file: the OS key store
     by default (Credential Manager, Keychain), else `--secrets-key env:VAR` (a container, or a
@@ -399,9 +411,10 @@ only the editor.
     runs, deletes), `admin` (also writes secrets and the admin panel), `agent` (reads, proposes
     and calls: stores units, saves its own flows, deploys what needs no approval it hasn't had,
     and sends a deployed flow requests; never approves, grants, starts, stops, deletes or writes
-    a secret). A request with `X-Holon-Role: agent` acts as one under its sender's name with
-    ` (agent)` after it, whoever sends it: how `holon mcp` keeps to proposing while it signs in
-    as the person who runs it. The header only lowers a role. Passwords are argon2id
+    a secret). A request with `X-Holon-Role: agent` from an editor or an admin acts as one under
+    its sender's name with ` (agent)` after it: how `holon mcp` keeps to proposing while it signs
+    in as the person who runs it. The header only lowers a role: a viewer who sends it stays a
+    viewer. Passwords are argon2id
     hashes, sessions last 7 days, and a few wrong passwords lock a name for a minute. The admin
     panel adds people by name and role and gives a one-time link (7 days) for them to set their
     own password; it changes roles, disables (their sessions end), resets (a new link), removes,
@@ -486,6 +499,13 @@ it. That needs an identity for the run and a way to resume it.
   the default.
 - **Parked runs per deployment:** at most its granted `max_waiting_runs` ✅ (default 10,000); past
   it, a run that would wait is refused with a `503` instead.
+- **Sealed at rest.** ✅ A waiting run keeps what it needs to continue: its inputs, sourced values,
+  outbound exchanges and events. These may hold a secret or a caller's credential, so the
+  deployments file keeps them AES-256-GCM sealed under the secrets master key, bound to the
+  deployment and run id. They're opened when the server starts, and the file is written
+  owner-only. A server whose secrets live in memory has no key to keep, so it seals nothing.
+- **Resumed once.** ✅ A resume claims its run under the deployments lock before running it, so
+  requests carrying the same token at once resume it exactly once. The others answer 404.
 - **Visible.** The flow log has an entry per part of a run, under one run id (`parked` names what it
   waits for; a resumed part shows the events delivered). `GET /deployments/<slug>/runs` lists the
   waiting runs, never their tokens; the editor's deployment card shows "⏸ N waiting" with each one's
@@ -785,6 +805,10 @@ public data plane**, not for an open marketplace.
 
 **Deferred: these only matter when running other people's units (they return when the marketplace does).**
 - Exponential closure walks (`collect_caps`, `refork`, `instantiate`, `eval` on doubling DAGs).
+  ✅ Partly: `capabilities` and `module_limits_of` visit each unit once, with a stack. The server
+  refuses a closure past 20,000 units or nested past 64 (`units.rs`, a 400 at deploy), since eval
+  recurses a level per nested composite. `refork`, `instantiate` and eval's time on a doubling
+  DAG within those bounds remain.
 - The decoder accepts non-canonical bytes, so `encode(decode(b)) ≠ b`.
 - `refork` silently does a partial fork when a re-hash fails.
 - The memo key folds ±0 while `to_text` doesn't (parked cache only). ✅ Fixed: `to_text` and `json_stringify` print `-0` as `0` (§4.5).

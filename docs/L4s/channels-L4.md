@@ -1,7 +1,9 @@
 # Channels: packs a flow streams to whoever listens, through the host (L4)
 
-**Status:** design, before any code. Written 2026-10-25; every claim about what exists is checked
-against the code at `21f8ed1`, and cited by file and line there.
+**Status:** built, all three slices (2026-10-26). The design below was written on 2026-10-25,
+before any code, its claims checked against the code at `21f8ed1` and cited by file and line
+there; §10 says where what was built differs from it, and the samples (`live-board`,
+`chat-proxy`, `approval`) and `docs/LANGUAGE.md` are the reference for the language as it is.
 
 A flow asks the host for a **channel**: a named sink, owned by the host, that the flow sends
 **packs** into and that callers subscribe to. A pack is one Holon value. Subscribers receive each
@@ -22,7 +24,7 @@ route POST /tickets (req) {
 }
 
 route GET /live (req) {
-  respond updates
+  respond updates.subscribe()
 }
 ```
 
@@ -172,8 +174,11 @@ A channel is declared like a collection, has one method, and is subscribed to by
 |---|---|---|
 | `channel updates` (header) | `HeaderKind::Channel("updates")` | a channel of this flow |
 | `updates.send(v)` | `channel_send{channel: updates}(v)` | `v` as one pack, sent when the run is over (§2) |
-| `respond updates` | `channel_subscribe{channel: updates}` as the respond's `stream` | the answer is a subscription: an SSE stream of the packs |
-| `respond x, stream: true` | `respond{stream: true}`, `x` wired from a streaming source | the answer is `x`'s bytes as they arrive (§4) |
+| `respond updates.subscribe()` | `channel_subscribe{channel: updates}` as the respond's body | the answer is a subscription: an SSE stream of the packs |
+| `respond sent.body, stream: true` | `respond`, its body `sent.body` of an `http_stream` call | the answer is the call's bytes as they arrive (§4) |
+| `updates.pipe(http.post(…))` | `http_stream{pipe: updates}` | the call's bytes to the channel's subscribers as they arrive |
+
+(The table as built; §10 lists what changed from the design, the spelling first.)
 
 **In the author crate:** `channel` joins the header words (parse.rs 277) and `HeaderKind`
 (ast.rs), and the lowering's declared names (lower.rs 612) as a third store-like receiver whose
@@ -367,3 +372,46 @@ A streamed reply is held to what holds a run now: `run_budget_ms` (the whole run
    which a redeploy keeps.
 6. **Where a pack's sequence is logged:** beside `performed`, not in it (§6), so verify compares
    packs as it compares every effect.
+
+## 10. As built
+
+Where the code differs from the design above, and why.
+
+- **The spelling is `respond updates.subscribe()`** (fork 3 went the other way): a method on the
+  channel reads as what it does, and `send` and `subscribe` are then one family. Its option is an
+  argument, `subscribe(from: "kept")`. `updates.subscribe()` anywhere but as a route's answer is an
+  error that says so.
+- **The subscription is the respond envelope's body,** not a `stream` param: `channel_subscribe`
+  builds an effect value, `data::respond` finds it as the body (or the whole output) and the data
+  plane streams it. The respond template is unchanged, so no flow's hash moved.
+- **A pack's id is its run's log seq and its place among the run's packs** (`12.0`), not a
+  per-channel sequence, and no `packs` field is logged: the id is recomputed from the entry, so
+  the kept packs rebuild from the log with the ids subscribers saw, and they only grow, across
+  restarts too. Packs go out in `log_run` (firing.rs), as the entry is pushed, from the logged
+  (redacted) `performed`.
+- **`max_subscribers` is per channel,** not per deployment: one busy channel can't starve another.
+- **The SSE `event` field from a record's `event` text is not built:** every pack is a `message`
+  (`id:` and `data:`), and the host's own ends are `event: missed`, `event: closed` and
+  `event: error`.
+- **A streamed call is its own leaf, `http_stream`, not a `stream` param on `http_request`:** the
+  builder writes every catalog param into every node it places, so a new param would have
+  changed the hash of every flow with a call. `http.post(…, stream: true)` lowers to it (`stream:`
+  last); its request is `http_request`'s plus `stream: true`, which tells the performer
+  (`folders::Sender`) to forward it through the run's `outbound::Forwarder`, once per run.
+- **A streamed reply has the upstream's status and content type,** `cache-control: no-cache` and
+  `x-accel-buffering: no`; it takes no `status:` or `headers:`, but takes `missing:`, the answer
+  of a run whose call was never made (an input absent). A non-2xx upstream forwards nothing and
+  the reply is sent whole at the end, as the design says, with the call's status: the lowering
+  wires `sent.status` to the respond's status input (`status_input: true`, the respond template's
+  only when asked), so a refused key reaches the caller as the 401 it was, not a 200 the page
+  can't read, and the log and a replay say the same.
+- **Chunk timing is not logged** (no `chunks`, `first_byte_us`): the exchange is logged whole, as
+  any call's, and replays.
+- **A waiting run's progress (slice 3)** is the sends among its settled outputs when it parks,
+  logged with the parked part as `progress` and checked by `holon verify`; a later part sends only
+  what an earlier part didn't, matched one for one by channel and JSON (the parts of a run replay,
+  so the same sends settle again, the same), not recorded by node path.
+- **`updates.pipe(call)` (slice 3) is `http_stream` with its `pipe` param set:** one leaf, which
+  asks `ChannelSend(updates)` beside `HttpRequest(host)`. Its pieces are text packs without an id,
+  never kept and not counted as the run's packs: what a late subscriber gets is what the run sends
+  once it is over. A piped call needn't be in a route.

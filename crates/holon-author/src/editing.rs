@@ -60,6 +60,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("collection", "`collection <name>`: a named store of items, used as `name[key]`, `name[key] = v`, `delete name[key]` and `name.list(prefix: p, after: a, limit: 50)`. One permission for each use."),
     ("folder", "`folder <name>`: files on the host, in a folder an admin binds to the name: `name[file]` reads a file's text, `name[file] = text` writes it when the run finishes (`name.create(file, text)` only if no file has that name), `delete name[file]` deletes it, `name.list(prefix: p, after: a, limit: 50)` lists files. One permission to read, one to write."),
     ("database", "`database <name>`: a database an admin binds on the host. `name.query(\"select … where id = $1\", id)` reads rows (a list of records by column name), `name.one(…)` the first row or nothing, `name.exec(\"update … where id = $1\", id, expect: 1)` changes rows when the run finishes, in one transaction with its other writes there (`expect:`: exactly that many, or nothing lands). The SQL is written in quotes; its tables are the permission, one to read each, one to write each. Values go after it as $1, $2, …, never into it. A document database (MongoDB) is called with record literals instead: `name.find(\"notes\", { owner: who }, sort: { at: -1 }, limit: 20)` reads documents, `name.find_one(…)` the first, and `name.insert(\"notes\", { … })`, `name.update(\"notes\", { _id: id }, { \"$set\": { text: t } }, expect: 1)` and `name.delete(\"notes\", { … })` write when the run finishes. The collection is the permission; the records' fields and operators are the flow's, and each computed value goes in as a value, never as an operator."),
+    ("channel", "`channel <name>`: packs the flow sends to whoever subscribes: `name.send(v)` sends one once the run is over and its writes have landed; a route answers with `respond name.subscribe()`, a stream of server-sent events (`from: \"kept\"`, the ones it keeps first). One permission to send, one to let callers subscribe."),
     ("on", "`on file <folder>`: a run for each file new or changed in the folder (an admin binds it), once it stops changing; `on file <folder> deleted`, for each file removed; `matching \"*.csv\"` after either, only for names that match. The run reads the file's handle as `ingress` (`.name`, `.size`, `.hash`, `.folder`, `.event`). A flow may have several lines; `ingress` is the file that started the run."),
     ("optional", "`optional <permission>`: one the flow can run without. It isn't asked for at deploy; a run without it gets no value where it would have read."),
     ("browsers", "`browsers <origin>, …`: the web pages it answers from other sites (CORS), or `*` for any."),
@@ -134,6 +135,7 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     let file = parse(source).ok();
     let collections: Vec<&str> = file.iter().flat_map(|f| &f.headers).filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.as_str()) } else { None }).collect();
     let folders: Vec<&str> = file.iter().flat_map(|f| &f.headers).filter_map(|h| if let HeaderKind::Folder(f) = &h.kind { Some(f.as_str()) } else { None }).collect();
+    let channels: Vec<&str> = file.iter().flat_map(|f| &f.headers).filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.as_str()) } else { None }).collect();
     let requests: Vec<&str> = file.iter().flat_map(|f| &f.items).filter_map(|item| if let Item::Route(r) = item { Some(r.request.text.as_str()) } else { None }).collect();
     let said = |text: String| Some(Hover { span: token.span, text });
 
@@ -148,6 +150,9 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
         }
         if folders.contains(&head) {
             return said(format!("`{head}.{word}`: on the folder `{head}`. {}", line_of(KEYWORDS, "folder").unwrap_or("")));
+        }
+        if channels.contains(&head) {
+            return said(format!("`{head}.{word}`: on the channel `{head}`. {}", line_of(KEYWORDS, "channel").unwrap_or("")));
         }
         if requests.contains(&head) {
             return said(format!("`{head}.{word}`: part of {REQUEST}"));
@@ -168,6 +173,9 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     }
     if folders.contains(&word) {
         return said(format!("`{word}`: a folder of this flow. {}", line_of(KEYWORDS, "folder").unwrap_or("")));
+    }
+    if channels.contains(&word) {
+        return said(format!("`{word}`: a channel of this flow. {}", line_of(KEYWORDS, "channel").unwrap_or("")));
     }
     if requests.contains(&word) {
         return said(format!("`{word}`: {REQUEST}"));
@@ -220,9 +228,9 @@ pub struct Completion {
 /// Leaves a text doesn't call by name: it writes them as nouns (`http.get`, `state.x`,
 /// `notes[k]`, `now`, `secret.k`, `await`) or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
-    "http_request", "http_upload", "clock", "random", "ingress", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
+    "http_request", "http_upload", "http_stream", "clock", "random", "ingress", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
     "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "egress",
-    "const", "record", "json_parse", "json_stringify",
+    "channel_send", "channel_subscribe", "const", "record", "json_parse", "json_stringify",
 ];
 
 /// The leaves a text calls by name, as it names them: their name, signature and what they do.
@@ -291,6 +299,7 @@ pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
     };
     let collections = header("collection");
     let folders = header("folder");
+    let channels = header("channel");
     let holons = header("holon");
     // A noun's keys as used: `secret.k`, `state.k`.
     let keys = |noun: &str| -> Vec<String> {
@@ -340,6 +349,14 @@ pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
             .iter()
             .map(|(m, d)| word(m, Kind::Member, format!("{f}.{d}"), None))
             .collect(),
+            c if channels.iter().any(|k| k == c) => [
+                ("send", "send(pack): sent to its subscribers once the run is over"),
+                ("pipe", "pipe(http.post(…)): the call's answer, to its subscribers as it arrives"),
+                ("subscribe", "subscribe(from: \"kept\"): a route's answer, respond with it: the packs as server-sent events"),
+            ]
+            .iter()
+            .map(|(m, d)| word(m, Kind::Member, format!("{c}.{d}"), None))
+            .collect(),
             r if requests.iter().any(|q| q == r) => [
                 ("params", "the path's :names"),
                 ("query", "the query string's names"),
@@ -363,6 +380,7 @@ pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
         v.extend(requests.iter().map(|r| word(r, Kind::Variable, "a route's request", Some(REQUEST.to_string()))));
         v.extend(collections.iter().map(|c| word(c, Kind::Module, "a collection of this flow", line_of(KEYWORDS, "collection").map(str::to_string))));
         v.extend(folders.iter().map(|f| word(f, Kind::Module, "a folder of this flow", line_of(KEYWORDS, "folder").map(str::to_string))));
+        v.extend(channels.iter().map(|c| word(c, Kind::Module, "a channel of this flow", line_of(KEYWORDS, "channel").map(str::to_string))));
         v.extend(NOUNS.iter().map(|(n, d)| word(n, Kind::Module, "the outside world: one permission", Some(d.to_string()))));
         v.extend(callable().into_iter().map(|(n, sig, doc)| word(&n, Kind::Function, sig, (!doc.is_empty()).then_some(doc))));
         v.extend(KEYWORDS.iter().map(|(k, d)| word(k, Kind::Keyword, "keyword", Some(d.to_string()))));
@@ -468,7 +486,7 @@ impl Colourer {
                 self.mark(start, end, Class::Keyword);
                 i = self.next_word(i, Class::Definition, &['-']);
             }
-            "collection" | "folder" => {
+            "collection" | "folder" | "channel" => {
                 self.mark(start, end, Class::Keyword);
                 i = self.next_word(i, Class::Definition, &[]);
             }

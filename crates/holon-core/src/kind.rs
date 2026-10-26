@@ -38,7 +38,7 @@
 
 /// What a primitive or composite *is*, with respect to effects.
 ///
-use crate::{Param, Resolver, Unit, UnitBody};
+use crate::{Hash, Param, Resolver, Unit, UnitBody};
 use std::collections::BTreeSet;
 
 /// The non-`Pure` variants are the three ways purity ends, in increasing
@@ -140,6 +140,12 @@ pub enum Capability {
     /// `file_delete`, `file_create`, `file_create_copy`, committed when
     /// the run finishes.
     FileWrite(String),
+    /// Sends packs on the named channel: `channel_send`, sent to its subscribers once the run is
+    /// over and its writes have landed (`docs/L4s/channels-L4.md`).
+    ChannelSend(String),
+    /// Lets callers subscribe to the named channel: `channel_subscribe`, a route answering with
+    /// the stream of its packs.
+    ChannelRead(String),
     /// Starts a process / job.
     Spawn,
     /// Reads rows of a table of a database the host binds: `"shop/orders"`, the database's name
@@ -175,7 +181,7 @@ impl Capability {
         match self {
             Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | FileWrite(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -311,6 +317,10 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // write it. Each template is checked for what its part may say (documents.rs), and one that
         // can't be fails closed.
         "db_find" | "db_find_one" | "db_insert" | "db_update" | "db_delete" => db_collection(name, params)?,
+        // A named channel: packs sent when the run is over, and a route's answer that subscribes
+        // to them. The channel is a frozen param, so the capability names it exactly.
+        "channel_send" => vec![ChannelSend(ident(params, "channel")?)],
+        "channel_subscribe" => vec![ChannelRead(ident(params, "channel")?)],
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
@@ -328,6 +338,12 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // The same request with a file's bytes as its body, streamed by the host from the folder
         // the handle names (one the deployment reads, checked when it is sent).
         "http_upload" => vec![HttpRequest(http_host(params)?)],
+        // A request whose answer the host forwards as it reads it: to the route's caller, or,
+        // piped, to a channel's subscribers, which is sending on that channel too.
+        "http_stream" => match params.iter().find(|p| p.name() == "pipe").and_then(|p| p.value()).filter(|v| !v.is_empty()) {
+            None => vec![HttpRequest(http_host(params)?)],
+            Some(_) => vec![HttpRequest(http_host(params)?), ChannelSend(ident(params, "pipe")?)],
+        },
         // Request/response (P2.5.1): `ingress` is the driver (a request arrives), `egress` carries
         // the reply out. §13 merges the old `email`/`respond` into this one `egress` sink — both
         // were NetworkEgress, and the host dispatches on the *capability*, not the sink name, so the
@@ -597,6 +613,8 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         NetworkEgress,
         HttpRequest(SATURATED_STATE_KEY.to_string()),
         FileWrite(SATURATED_STATE_KEY.to_string()),
+        ChannelSend(SATURATED_STATE_KEY.to_string()),
+        ChannelRead(SATURATED_STATE_KEY.to_string()),
         Spawn,
         DbRead(SATURATED_STATE_KEY.to_string()),
         DbWrite(SATURATED_STATE_KEY.to_string()),
@@ -605,7 +623,32 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
     }
 }
 
-fn collect_caps(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capability>) {
+/// Every unit of the closure contributes once, however many references reach it, walked with a
+/// stack rather than recursion: a closure is anyone's who can stage it, and neither a chain nested
+/// deep nor a diamond of shared children may cost more than the units it holds.
+fn collect_caps(root: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capability>) {
+    let mut seen: BTreeSet<Hash> = BTreeSet::new();
+    let mut stack: Vec<&Unit> = vec![root];
+    while let Some(unit) = stack.pop() {
+        unit_caps(unit, acc);
+        // (2) Every reference — a composite's children and the `fn` param — via the shared
+        //     `child_refs` (the one definition of what a unit references). A capability routed
+        //     through a reference cannot hide; an unresolvable reference fails closed rather than
+        //     being read as inert data.
+        for h in crate::inspect::child_refs(unit) {
+            if !seen.insert(h) {
+                continue;
+            }
+            match resolver.resolve(&h) {
+                Some(u) => stack.push(u),
+                None => saturate_caps(acc),
+            }
+        }
+    }
+}
+
+/// What `unit` itself contributes to its closure's capabilities, its references aside.
+fn unit_caps(unit: &Unit, acc: &mut BTreeSet<Capability>) {
     // (1) This unit's own leaf contribution, if it is a primitive: its capability
     //     manifest, read from its name **and its own params** (the state-cell leaves'
     //     key lives there). A pure leaf's ∅ contributes nothing; an unknown leaf, or a
@@ -625,17 +668,6 @@ fn collect_caps(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capabi
     //      endpoints' handlers contribute the rest through (2).
     if crate::declaration_of(unit) == Some("server") {
         acc.insert(Capability::NetworkIngress);
-    }
-
-    // (2) Every reference — a composite's children and the `fn` param — via the shared
-    //     `child_refs` (the one definition of what a unit references). A capability routed
-    //     through a reference cannot hide; an unresolvable reference fails closed rather than
-    //     being read as inert data.
-    for h in crate::inspect::child_refs(unit) {
-        match resolver.resolve(&h) {
-            Some(u) => collect_caps(u, resolver, acc),
-            None => saturate_caps(acc),
-        }
     }
 }
 
@@ -866,6 +898,32 @@ mod tests {
         assert!(!fx.is_pure());
         assert!(fx.contains(Kind::Sink));
         assert_eq!(fx.len(), 1);
+    }
+
+    #[test]
+    fn a_closure_costs_its_units_however_it_shares_or_nests_them() {
+        // Each level reaches the one below twice (as a child, and as a `map`'s `fn`): 2^300
+        // paths over 901 units. A walk that followed every path wouldn't finish.
+        let mut store = MapResolver::new();
+        let mut below = store.insert(prim("clock")).unwrap();
+        for _ in 0..300 {
+            let child = store.insert(composite(vec![below])).unwrap();
+            let mapped = store.insert(map_over(&below)).unwrap();
+            below = store.insert(composite(vec![child, mapped])).unwrap();
+        }
+        let top = composite(vec![below]);
+        let caps = capabilities(&top, &store);
+        assert!(caps.contains(Capability::Clock));
+        assert_eq!(caps.len(), 1);
+        // A deep chain of single references, walked on a small stack.
+        let mut store = MapResolver::new();
+        let mut below = store.insert(prim("clock")).unwrap();
+        for _ in 0..20_000 {
+            below = store.insert(composite(vec![below])).unwrap();
+        }
+        let top = composite(vec![below]);
+        let caps = std::thread::Builder::new().stack_size(256 * 1024).spawn(move || capabilities(&top, &store)).unwrap().join().unwrap();
+        assert!(caps.contains(Capability::Clock));
     }
 
     #[test]
@@ -1128,10 +1186,22 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 17); // every capability — fail closed
+        assert_eq!(caps.len(), 19); // every capability — fail closed
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
         assert!(caps.contains(Capability::FileWrite("<unknown>".to_string())), "any folder");
+        assert!(caps.contains(Capability::ChannelSend("<unknown>".to_string())), "any channel");
+        assert!(caps.contains(Capability::DbWrite("<unknown>".to_string())), "any database");
+    }
+
+    #[test]
+    fn a_channel_names_itself_in_both_capabilities() {
+        let on = |leaf: &str| capabilities_of(leaf, &[Param::frozen("channel", "updates"), Param::frozen("from", "new")]).unwrap();
+        assert!(on("channel_send").contains(Capability::ChannelSend("updates".into())));
+        assert!(on("channel_subscribe").contains(Capability::ChannelRead("updates".into())));
+        assert_eq!(Capability::ChannelSend("x".into()).kind(), Kind::Sink);
+        assert!(!Capability::ChannelRead("x".into()).is_sourced(), "a subscription is the host's to hold, not an input");
+        assert!(capabilities_of("channel_send", &[]).is_none(), "a channel names itself");
     }
 
     #[test]

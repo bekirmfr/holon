@@ -27,7 +27,7 @@ use crate::wire::{WParam, WPort, WType};
 
 /// The words a binding may not take, as lower.rs holds them.
 const RESERVED: &[&str] = &[
-    "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
+    "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
@@ -222,6 +222,8 @@ pub struct Printer<'s> {
     folders: BTreeSet<String>,
     /// The databases any leaf names: the header declares them.
     databases: BTreeSet<String>,
+    /// Every channel any leaf names (`channel updates`).
+    channels: BTreeSet<String>,
     /// The `on file` lines, in order, when the flow runs on files: folder, `deleted`, `matching`.
     on_files: Vec<OnFile>,
     /// With several lines, each `coalesce` of their `file_arrival`s that is `ingress`, and the
@@ -259,6 +261,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         collections: BTreeSet::new(),
         folders: BTreeSet::new(),
         databases: BTreeSet::new(),
+        channels: BTreeSet::new(),
         on_files: Vec::new(),
         ingress_chains: HashMap::new(),
         holon_defs: HashSet::new(),
@@ -304,6 +307,9 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     }
     for d in &p.databases {
         out.push(header(format!("database {d}")));
+    }
+    for c in &p.channels {
+        out.push(header(format!("channel {c}")));
     }
     let body = p.flow_body(doc)?;
     let blocks = std::mem::take(&mut p.blocks);
@@ -402,7 +408,7 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
             let optional = n.data.body == PlacedBody::Primitive
                 && matches!(
                     (n.data.name.as_str(), p.name.as_str()),
-                    ("http_request", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
+                    ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
                 );
             optional || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
         })
@@ -421,9 +427,10 @@ fn consent(o: &str) -> String {
 }
 
 impl<'s> Printer<'s> {
-    /// Every collection, folder and database any leaf names, the holons' leaves included.
+    /// Every collection, folder, database and channel any leaf names, the holons' leaves included.
     fn collect_collections(&mut self, nodes: &[Node]) -> Result<(), String> {
-        /// The param naming what a leaf reads or writes: a collection's, or a folder's.
+        /// The param naming what a leaf reads or writes: a collection's, a folder's, a
+        /// database's or a channel's (a piped call's `pipe`).
         fn named_by(leaf: &str) -> Option<&'static str> {
             if leaf.starts_with("collection_") {
                 Some("collection")
@@ -431,17 +438,23 @@ impl<'s> Printer<'s> {
                 Some("folder")
             } else if leaf.starts_with("db_") {
                 Some("database")
+            } else if leaf.starts_with("channel_") {
+                Some("channel")
+            } else if leaf == "http_stream" {
+                // A piped call's channel (empty when it isn't piped).
+                Some("pipe")
             } else {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
             if !name.is_empty() {
                 match param {
                     "collection" => &mut out.0,
                     "folder" => &mut out.1,
-                    _ => &mut out.2,
+                    "database" => &mut out.2,
+                    _ => &mut out.3,
                 }
                 .insert(name);
             }
@@ -470,7 +483,7 @@ impl<'s> Printer<'s> {
             }
         }
         let mut seen = HashSet::new();
-        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases));
+        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases), std::mem::take(&mut self.channels));
         for n in nodes {
             match &n.data.body {
                 PlacedBody::Primitive if named_by(&n.data.name).is_some() => {
@@ -484,7 +497,7 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders, self.databases) = out;
+        (self.collections, self.folders, self.databases, self.channels) = out;
         Ok(())
     }
 
@@ -555,7 +568,7 @@ impl<'s> Printer<'s> {
 
     fn request_name(&self, request: &Node) -> String {
         let n = self.bindings.get(&request.id).cloned().unwrap_or_else(|| "req".into());
-        if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) && !self.folders.contains(&n) && !self.databases.contains(&n) {
+        if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) && !self.folders.contains(&n) && !self.databases.contains(&n) && !self.channels.contains(&n) {
             n
         } else {
             "req".into()
@@ -608,7 +621,7 @@ impl<'s> Printer<'s> {
     }
 
     fn reserved(&self, n: &str) -> bool {
-        RESERVED.contains(&n) || interface_of(n).is_some() || templates::is_template(n) || self.collections.contains(n) || self.folders.contains(n) || self.databases.contains(n)
+        RESERVED.contains(&n) || interface_of(n).is_some() || templates::is_template(n) || self.collections.contains(n) || self.folders.contains(n) || self.databases.contains(n) || self.channels.contains(n)
     }
 
     /// `holon name(inputs) -> (outputs) { body }`, the body as the expand view opens it: the
@@ -1256,6 +1269,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let value = self.required(node, "value")?;
                 atom(format!("{}.put({key}, {value})", node.param("collection")))
             }
+            "channel_send" if plain(node.param("channel")) => atom(format!("{}.send({})", node.param("channel"), self.required(node, "pack")?)),
+            "channel_subscribe" if plain(node.param("channel")) => match node.param("from") {
+                "kept" => atom(format!("{}.subscribe(from: \"kept\")", node.param("channel"))),
+                _ => atom(format!("{}.subscribe()", node.param("channel"))),
+            },
             "collection_delete" if plain(node.param("collection")) => {
                 let key = self.required(node, "key")?;
                 atom(format!("{}.delete({key})", node.param("collection")))
@@ -1340,7 +1358,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
                 None => self.generic(node),
             },
-            "http_request" | "http_upload" => {
+            "http_request" | "http_upload" | "http_stream" => {
                 let method = node.param("method").to_ascii_lowercase();
                 if !["get", "post", "put", "patch", "delete", "head"].contains(&method.as_str()) {
                     return self.generic(node);
@@ -1355,6 +1373,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     if let Some((t, _)) = self.arg(node, input)? {
                         args.push(format!("{input}: {t}"));
                     }
+                }
+                let pipe = node.param("pipe");
+                if node.data.name == "http_stream" && !pipe.is_empty() {
+                    return atom(format!("{pipe}.pipe(http.{method}({}))", args.join(", ")));
+                }
+                if node.data.name == "http_stream" {
+                    args.push("stream: true".into());
                 }
                 atom(format!("http.{method}({})", args.join(", ")))
             }
@@ -1728,20 +1753,41 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         let (status, missing) = (node.param("status"), node.param("missing"));
         let body = self.arg(node, "body")?.map(|(t, _)| t);
         let headers = if node.param("headers") == "true" { self.arg(node, "headers")?.map(|(t, _)| t) } else { None };
+        let wired = if node.param("status_input") == "true" { self.arg(node, "status")?.map(|(t, _)| t) } else { None };
         let mut parts = Vec::new();
         match body {
             Some(b) => parts.push(b),
-            None if status == "204" && missing == "404" && headers.is_none() => return Ok("respond 204".into()),
-            None => parts.push(format!("status: {status}")),
+            None if status == "204" && missing == "404" && headers.is_none() && wired.is_none() => return Ok("respond 204".into()),
+            None => parts.push(format!("status: {}", wired.clone().unwrap_or_else(|| status.to_string()))),
         }
         if let Some(h) = headers {
             parts.push(format!("headers: {h}"));
         }
-        if status != "200" && parts.first().is_some_and(|p| !p.starts_with("status:")) {
-            parts.push(format!("status: {status}"));
+        // The body of a streamed call: the reply forwards it (the text says so), with the call's
+        // status, which the text leaves unsaid.
+        let streamed = self.source_id(node, "body").map(|id| self.g.node(&id)).is_some_and(|f| {
+            f.data.name == "field" && f.param("name") == "body" && self.source_id(f, "record").is_some_and(|c| self.g.node(&c).data.name == "http_stream" && self.g.node(&c).param("pipe").is_empty())
+        });
+        match wired {
+            Some(s) if streamed => {
+                let own = parts.first().and_then(|b| b.strip_suffix(".body")).is_some_and(|call| s == format!("{call}.status"));
+                if !own {
+                    return Err(format!("a streamed reply answers with its call's status, not {s}"));
+                }
+            }
+            Some(s) if !parts.first().is_some_and(|p| p.starts_with("status:")) => parts.push(format!("status: {s}")),
+            Some(_) => {}
+            None => {
+                if status != "200" && parts.first().is_some_and(|p| !p.starts_with("status:")) {
+                    parts.push(format!("status: {status}"));
+                }
+            }
         }
         if missing != "404" {
             parts.push(format!("missing: {missing}"));
+        }
+        if streamed {
+            parts.push("stream: true".into());
         }
         Ok(format!("respond {}", parts.join(", ")))
     }
