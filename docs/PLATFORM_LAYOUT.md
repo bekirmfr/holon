@@ -411,9 +411,10 @@ only the editor.
     runs, deletes), `admin` (also writes secrets and the admin panel), `agent` (reads, proposes
     and calls: stores units, saves its own flows, deploys what needs no approval it hasn't had,
     and sends a deployed flow requests; never approves, grants, starts, stops, deletes or writes
-    a secret). A request with `X-Holon-Role: agent` acts as one under its sender's name with
-    ` (agent)` after it, whoever sends it: how `holon mcp` keeps to proposing while it signs in
-    as the person who runs it. The header only lowers a role. Passwords are argon2id
+    a secret). A request with `X-Holon-Role: agent` from an editor or an admin acts as one under
+    its sender's name with ` (agent)` after it: how `holon mcp` keeps to proposing while it signs
+    in as the person who runs it. The header only lowers a role: a viewer who sends it stays a
+    viewer. Passwords are argon2id
     hashes, sessions last 7 days, and a few wrong passwords lock a name for a minute. The admin
     panel adds people by name and role and gives a one-time link (7 days) for them to set their
     own password; it changes roles, disables (their sessions end), resets (a new link), removes,

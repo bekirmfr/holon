@@ -14,9 +14,10 @@
 //!   someone else saved (flows.rs), and never grants, starts, stops, deletes or writes a secret:
 //!   those are a person's (docs/L4s/agent-surface-L4.md).
 //!
-//! A request that says `X-Holon-Role: agent` acts as an agent, whoever sends it, under its
+//! A request that says `X-Holon-Role: agent` from an editor or an admin acts as an agent, under its
 //! sender's name with ` (agent)` after it: how `holon mcp` keeps an agent to proposing when it
-//! signs in as the person who runs it. The header only ever lowers a role.
+//! signs in as the person who runs it. The header only ever lowers a role: a viewer who sends it
+//! stays a viewer, since an agent may do more than read.
 //!
 //! Anyone may change their own password and sign out. Open without signing in: a CORS
 //! preflight, the health check, and signing in itself (`/auth/…`: the server's state, setup,
@@ -118,7 +119,7 @@ impl Access {
         };
         let who = match who.role {
             Role::Agent => who,
-            _ if asks_as_agent(request) => Who { name: format!("{} (agent)", who.name), role: Role::Agent },
+            Role::Editor | Role::Admin if asks_as_agent(request) => Who { name: format!("{} (agent)", who.name), role: Role::Agent },
             _ => who,
         };
         let allowed = match who.role {
@@ -253,7 +254,7 @@ mod tests {
 
     #[test]
     fn an_agent_proposes_and_calls_and_does_nothing_else() {
-        let (access, [ada, ..]) = server();
+        let (access, [ada, bob, cy]) = server();
         let accounts = access.accounts().unwrap();
         let (claude, _) = accounts.create_token("claude", Role::Agent, "ada").unwrap();
         for (method, url) in [("GET", "/flows"), ("POST", "/unit"), ("POST", "/deploy/preview"), ("POST", "/deploy"), ("POST", "/flows"), ("POST", "/deployments/a/request"), ("GET", "/auth/me")] {
@@ -276,8 +277,8 @@ mod tests {
         ] {
             assert_eq!(call(&access, method, url, Some(&claude)), Err(403), "{method} {url}");
         }
-        // Anyone who says they are an agent is one, an admin and the run file's user too; the
-        // header never raises a role.
+        // An editor or an admin who says they are an agent is one, the run file's user too; the
+        // header never raises a role, so a viewer who says so stays a viewer.
         let as_agent = |method: &str, url: &str, bearer: &str| {
             let headers = vec![("Host".into(), "localhost:7420".into()), ("Authorization".into(), format!("Bearer {bearer}")), ("X-Holon-Role".into(), "agent".into())];
             access.check(&Request::fake_http(method, url, headers, vec![])).map(|c| (c.name, c.role)).map_err(|r| r.status_code)
@@ -289,6 +290,11 @@ mod tests {
         assert_eq!(as_agent("POST", "/deployments/a/grant", &local), Err(403));
         assert_eq!(as_agent("POST", "/flows", &local), Ok((Some("local:bma (agent)".into()), Some(Role::Agent))));
         assert_eq!(as_agent("POST", "/flows", &claude), Ok((Some("token:claude".into()), Some(Role::Agent))), "an agent's name as it is");
+        assert_eq!(as_agent("POST", "/flows", &bob), Ok((Some("bob (agent)".into()), Some(Role::Agent))));
+        for (method, url) in [("POST", "/deploy"), ("POST", "/flows"), ("POST", "/unit"), ("POST", "/deployments/a/request")] {
+            assert_eq!(as_agent(method, url, &cy), Err(403), "a viewer as an agent: {method} {url}");
+        }
+        assert_eq!(as_agent("GET", "/flows", &cy), Ok((Some("cy".into()), Some(Role::Viewer))), "still a viewer");
     }
 
     #[test]
