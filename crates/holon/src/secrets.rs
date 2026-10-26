@@ -605,7 +605,14 @@ impl Redactor {
             .current
             .iter()
             .chain(vault.retired.iter().map(|(name, value)| (name, value)))
-            .map(|(name, value)| (value.to_string(), format!("‹secret:{name}›")))
+            .flat_map(|(name, value)| {
+                let mark = format!("‹secret:{name}›");
+                // As it is, and as it reads inside JSON text (a request's body, a value written
+                // out with `json_stringify`), where a quote, a backslash or a newline in it is
+                // escaped and the value as it is no longer appears.
+                let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value.as_str());
+                std::iter::once((value.to_string(), mark.clone())).chain(escaped.map(|e| (e, mark)))
+            })
             .collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
         Redactor { pairs }

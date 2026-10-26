@@ -84,8 +84,16 @@ answer built from a signature, the effects, the status. The report says which ru
 that way, and for how many nodes. What such a node produced is taken from the log, not checked:
 a run whose signature check the log says passed is checked as if it had.
 
+The log keeps such a node's outputs only when they can't give the secret away. A one-way leaf
+(`sha256`, `hmac_sha256`, `secure_equals`) or a Boolean answer gives nothing of it away. A value
+that holds the secret as it is gets the placeholder. But a value computed from the secret (base64
+of it for a Basic auth header, a field of a JSON secret, a slice) no longer holds it literally,
+so the log keeps no outputs for that node. An outbound request built from one is logged with
+those parts reading `‹withheld: computed from a secret›`.
+
 Some runs can't be run again at all, and are counted, not failed: a run whose such node the log
-keeps no outputs for (larger than 16 KiB, or deeper than the log's timeline records), a run that
+keeps no outputs for (computed from a secret, larger than 16 KiB, or deeper than the log's
+timeline records), a run that
 failed (a budget ran out), a request no route took, a run that ran again after what it read
 changed, and a run that read a file whose text the export doesn't hold.
 

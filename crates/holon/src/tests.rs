@@ -3685,6 +3685,49 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
     (host, hits)
 }
 
+/// A secret computed into something else is kept out of the log as surely as its value is: a
+/// Basic auth header (base64 of the key), a key with quotes and newlines sent inside JSON (escaped
+/// there), and a field read out of a JSON secret. Redaction finds a value, not what is computed from
+/// it, so the nodes it reaches keep no outputs and the requests built from them are withheld.
+#[test]
+fn a_secret_computed_into_something_else_stays_out_of_the_log() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let text = format!(
+        r#"flow leaky
+port 18141
+
+route POST /go (req) {{
+  basic = http.get("{host}", "/basic", headers: {{ authorization: "Basic {{base64(secret.api_key)}}" }})
+  account = json_parse(secret.service_account)
+  sent = http.post("{host}", "/json", headers: {{ "content-type": "application/json", "x-email": account.client_email }}, body: json({{ key: secret.pem }}))
+  respond {{ basic: basic.status, sent: sent.status }}
+}}
+"#
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let set = |name: &str, value: &str| {
+        let body = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/secrets/{name}"), body)).status_code, 200, "{name}");
+    };
+    set("api_key", "sk_live_basic_secret_value");
+    set("pem", "-----BEGIN KEY-----\nMIIabc\"quoted\"\n-----END KEY-----");
+    set("service_account", r#"{"client_email":"bot@x.iam","private_key":"pk_private_value_123"}"#);
+    let (status, body, _) = data_call(&state, &slug, "POST", "/go", "");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, r#"{"basic":200,"sent":200}"#);
+
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    assert!(!log.contains("c2tfbGl2ZV9iYXNp"), "base64 of the key: {log}");
+    assert!(!log.contains("MIIabc"), "the escaped key: {log}");
+    assert!(!log.contains("pk_private_value_123") && !log.contains("bot@x.iam"), "fields of the JSON secret: {log}");
+    assert!(log.contains("‹withheld: computed from a secret›"), "the derived parts say they were withheld: {log}");
+    assert!(log.contains("‹secret:pem›"), "the escaped key is redacted where it stands: {log}");
+    // The export says no more than the log.
+    let export = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(!export.contains("c2tfbGl2ZV9iYXNp") && !export.contains("MIIabc") && !export.contains("pk_private_value_123"));
+}
+
 /// The read-call-write flows the claim tests run, calling `host` over plain HTTP.
 fn idem_text(host: &str) -> String {
     format!(

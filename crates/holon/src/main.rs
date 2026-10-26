@@ -186,6 +186,7 @@ mod sealing;
 mod secret_sources;
 mod secrets;
 mod selfmanage;
+mod taint;
 #[cfg(test)]
 mod tests;
 mod units;

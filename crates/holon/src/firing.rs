@@ -93,6 +93,8 @@ pub(crate) struct FiredRun {
     pub(crate) retries: u32,
     /// The keys it claimed before calling out (claims.rs), over every attempt.
     pub(crate) claims: Vec<claims::ClaimRecord>,
+    /// The nodes a secret reaches (taint.rs): what its log entry keeps none of, or withholds.
+    pub(crate) secret_fed: taint::SecretFed,
 }
 
 /// How many times a run is tried without holding its state's lock before it runs holding it.
@@ -315,6 +317,13 @@ fn run_attempt(
         }
     }
 
+    // Which nodes compute with a secret it was granted, for its log entry.
+    let secret_fed = if sourced.iter().any(|(c, _)| matches!(c, Capability::SecretRead(_))) {
+        taint::SecretFed::of(root_unit, resolver)
+    } else {
+        taint::SecretFed::default()
+    };
+
     let mut host = RecordingHost { performed: Vec::new() };
     let mut timer = recorder::Timer::new();
     // Outbound requests go only where the grant allows, within its limits.
@@ -417,6 +426,7 @@ fn run_attempt(
         reads: std::mem::take(&mut waits.reads),
         retries: 0,
         claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
+        secret_fed,
     };
     Attempt { run, start, overtaken }
 }
@@ -554,6 +564,29 @@ fn without_kept_files(timeline: &[recorder::NodeTiming], reads: &[collections::R
     timeline
 }
 
+/// The timeline, with the outputs of each node that may produce something computed from a secret
+/// left out: redaction finds a secret's value, not what is computed from it (taint.rs).
+fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::SecretFed) -> Vec<recorder::NodeTiming> {
+    if !fed.is_empty() {
+        for node in timeline.iter_mut().filter(|n| fed.derives(&n.path)) {
+            node.outputs = None;
+        }
+    }
+    timeline
+}
+
+/// A round as the log keeps it: each request's parts computed from a secret withheld.
+fn logged_round(round: &Round, fed: &taint::SecretFed) -> recorder::LoggedRound {
+    if fed.is_empty() {
+        return recorder::LoggedRound::from_host(round);
+    }
+    let mut round = round.clone();
+    for x in &mut round.exchanges {
+        taint::withhold_request(&mut x.request, &x.path, fed);
+    }
+    recorder::LoggedRound::from_host(&round)
+}
+
 /// The parts every log entry shares, from what a run read and produced.
 pub(crate) fn run_entry(
     kind: &'static str,
@@ -583,8 +616,8 @@ pub(crate) fn run_entry(
             .collect(),
         response_body: None,
         error: run.error.clone(),
-        timeline: without_kept_files(&run.timeline, &run.reads, &run.performed),
-        rounds: run.rounds.iter().map(recorder::LoggedRound::from_host).collect(),
+        timeline: without_secret_derived(without_kept_files(&run.timeline, &run.reads, &run.performed), &run.secret_fed),
+        rounds: run.rounds.iter().map(|r| logged_round(r, &run.secret_fed)).collect(),
         run_id: run.run_id.clone(),
         unit: run.unit.clone(),
         nonce: run.nonce.clone(),
@@ -655,6 +688,7 @@ impl FiredRun {
             reads: vec![],
             retries: 0,
             claims: vec![],
+            secret_fed: taint::SecretFed::default(),
         }
     }
 }
