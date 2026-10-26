@@ -290,19 +290,30 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   // Names of their own, so a run never meets an earlier one's flows.
   const run = Date.now().toString(36);
   const [shout, user] = [`shout-${run}`, `loud-user-${run}`];
-  /** A new flow named `name`, `entry` dropped from the palette onto it, saved. */
+  const ask = page.locator('[aria-modal="true"]');
+  /** A new flow, `entry` dropped from the palette onto it, saved as `name` (asked on save). */
   const saveWith = async (name: string, entry: string) => {
     await page.getByRole("button", { name: "new", exact: true }).click();
-    await page.locator('[aria-modal="true"] input').fill(name);
-    await page.keyboard.press("Enter");
-    await expect(page.locator(".hl-tab--active")).toContainText(name);
+    await expect(page.locator(".hl-tab--active")).toContainText("untitled");
     await dropFromPalette(page, entry);
     await expect(flow.locator(".react-flow__node")).toHaveCount(1);
     await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
+    await ask.locator("input").fill(name);
+    await page.keyboard.press("Enter");
     await expect(page.locator(".hl-canvas")).toContainText("saved");
+    await expect(page.locator(".hl-tab--active")).toContainText(name);
   };
   await saveWith(shout, "uppercase");
   await saveWith(user, `flow:${shout}`);
+  // A draft named on save as a flow saved already asks before replacing it; cancelled, it stays untitled.
+  await page.getByRole("button", { name: "new", exact: true }).click();
+  await dropFromPalette(page, "concat");
+  await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
+  await ask.locator("input").fill(shout);
+  await page.keyboard.press("Enter");
+  await expect(ask).toContainText(`A flow named "${shout}" is saved already`);
+  await ask.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator(".hl-tab--active")).toContainText("untitled");
   await page.getByRole("button", { name: "flows", exact: true }).click();
   await expect(page.getByText(`placed in ${user}`, { exact: true })).toBeVisible();
   // A save of "shout" that takes its input away asks first, naming who places it.
@@ -315,7 +326,6 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await dropFromPalette(page, "concat");
   await expect(flow.locator(".react-flow__node", { hasText: "concat" })).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
-  const ask = page.locator('[aria-modal="true"]');
   await expect(ask).toContainText(`"${shout}" is placed as a node in ${user}`);
   await expect(ask).toContainText('input "uppercase · s" removed');
   await ask.getByRole("button", { name: "Save" }).click();
@@ -342,11 +352,10 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
     await page.keyboard.press("Enter");
   };
   await page.getByRole("button", { name: "new", exact: true }).click();
-  await answer(shout);
-  await expect(page.locator(".hl-tab--active")).toContainText(shout);
   await dropFromPalette(page, "uppercase");
   await expect(flow.locator(".react-flow__node")).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
+  await answer(shout);
   await expect(page.locator(".hl-canvas")).toContainText("saved");
 
   // Set the marketplace, and publish from the flows page.
@@ -364,7 +373,6 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
 
   // In another flow, from the palette's marketplace: seen what it may do, placed.
   await page.getByRole("button", { name: "new", exact: true }).click();
-  await answer(`uses-mk-${run}`);
   await expect(page.locator(".hl-palette")).toContainText(shout);
   await dropFromPalette(page, `market:${listed.id}`);
   await expect(ask).toContainText("It only computes");
@@ -390,12 +398,12 @@ test("a flow as text: exported as .holon, checked by the command line, imported 
   const name = `texty-${Date.now().toString(36)}`;
   await page.goto("/");
   await page.getByRole("button", { name: "new", exact: true }).click();
-  await page.locator('[aria-modal="true"] input').fill(name);
-  await page.keyboard.press("Enter");
-  await expect(page.locator(".hl-tab--active")).toContainText(name);
   await dropFromPalette(page, "uppercase");
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
+  await page.locator('[aria-modal="true"] input').fill(name);
+  await page.keyboard.press("Enter");
   await expect(page.locator(".hl-canvas")).toContainText("saved");
+  await expect(page.locator(".hl-tab--active")).toContainText(name);
 
   // Exported from the flows page.
   await page.getByRole("button", { name: "flows", exact: true }).click();

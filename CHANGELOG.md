@@ -7,6 +7,9 @@
   suggests chosen; **another name…** types one. Opening ⚙ reads the dotenv file again, so a line
   just added is offered and can be set at once. The names (never values) come from
   `GET /admin/secrets/env`, for admins only.
+- **New opens a draft.** **new** opens an untitled canvas without asking anything; the flow is
+  named on its first save or deploy. A name another saved flow or a deployment already has asks
+  before that one is replaced.
 
 ## 0.1.0-rc.26
 

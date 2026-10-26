@@ -114,7 +114,7 @@ function Canvas({
   };
   page: AppPage;
   setPage: (p: AppPage) => void;
-  pendingNew: { name: string; nonce: number } | null;
+  pendingNew: { nonce: number } | null;
   docs: Map<string, string>;
 }) {
   const dialog = useDialog();
@@ -242,11 +242,11 @@ function Canvas({
   // What the work area shows: the page asked for, or, with no flow open, home.
   const shown: AppPage = page === "canvas" && tabIds.length === 0 ? "home" : page;
 
-  // "New" from the menu: a clean canvas under the prompted name, in a tab of its own. `nonce`
-  // makes a second New with the same name still fire.
+  // "New" from the menu: a clean, untitled canvas in a tab of its own, named when it is first
+  // saved (or deployed). `nonce` makes each New fire.
   useEffect(() => {
     if (!pendingNew) return;
-    showTab(null, freshTab(pendingNew.name));
+    showTab(null, freshTab(null));
     // Only a new request opens a tab, not the callbacks changing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingNew]);
@@ -988,15 +988,13 @@ function Editor({ me }: { me: Me }) {
     setPrefsState(p);
     setPrefs(p).catch(() => undefined);
   }, []);
-  const dialog = useDialog();
   const [catalog, setCatalog] = useState<WUnit[] | null>(null);
   // What each primitive does, from core: on each node, the palette and the component tab.
   const [docs, setDocs] = useState<Map<string, string>>(new Map());
   const [variadic, setVariadic] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>("");
-  // "New" carries the prompted name down to the canvas, which opens it in a tab of its own;
-  // `nonce` makes a second New with the same name still take effect.
-  const [pendingNew, setPendingNew] = useState<{ name: string; nonce: number } | null>(null);
+  // "New" asks the canvas for an untitled draft in a tab of its own; `nonce` makes each New take effect.
+  const [pendingNew, setPendingNew] = useState<{ nonce: number } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -1007,10 +1005,8 @@ function Editor({ me }: { me: Me }) {
     })().catch((e: unknown) => setError(String(e)));
   }, []);
 
-  const onNew = async () => {
-    const name = await dialog.prompt("Flow name (letters, digits, - and _ only):");
-    if (!name) return;
-    setPendingNew((p) => ({ name, nonce: (p?.nonce ?? 0) + 1 }));
+  const onNew = () => {
+    setPendingNew((p) => ({ nonce: (p?.nonce ?? 0) + 1 }));
     setPage("canvas");
   };
 

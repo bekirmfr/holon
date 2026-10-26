@@ -60,9 +60,9 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
   await expect(cy.getByRole("button", { name: "admin", exact: true })).toHaveCount(0);
   await cy.getByRole("button", { name: "new", exact: true }).click();
+  await cy.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await cy.locator('[aria-modal="true"] input').fill("cys-flow");
   await cy.keyboard.press("Enter");
-  await cy.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await expect(cy.locator(".hl-canvas")).toContainText("cy may not do that: a viewer only reads");
   // The link is used up.
   const again = await someoneElse(browser);
