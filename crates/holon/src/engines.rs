@@ -19,6 +19,8 @@
 //!   own, so a server that stops lets go with its connection: Postgres advisory locks (a row's
 //!   table shared and the row exclusive, a whole table exclusive), and on MySQL, which has no shared
 //!   `GET_LOCK`, record locks on rows of a `holon_claims` table, `for share` and `for update`.
+//!   A database an admin set to `run` (§7.3) has one more such lock, its run lock, which runs that
+//!   touch it hold for their whole length: shared to read, exclusive to write.
 //! - **Each session** reads strings as standard SQL does: Postgres with
 //!   `standard_conforming_strings`, MySQL with `ANSI_QUOTES`, `PIPES_AS_CONCAT` and
 //!   `NO_BACKSLASH_ESCAPES`, so the engine reads a statement as core's parser did when it found its
@@ -345,6 +347,27 @@ impl Remote {
     /// itself, all or none, without waiting: the first another server's run holds, otherwise. A
     /// holder taking a key it holds already takes it again (and lets go of it as many times).
     pub(crate) fn claim(&self, keys: &[ClaimKey], holder: &str) -> Result<(), ClaimKey> {
+        let locks: Vec<(usize, Lock)> = keys.iter().enumerate().flat_map(|(i, k)| locks_of(k).into_iter().map(move |l| (i, l))).collect();
+        self.hold(&locks, holder).map_err(|i| keys[i].clone())
+    }
+
+    /// Hold this database's run lock (§7.3) for `holder`, shared or `exclusive`, without waiting:
+    /// whether it was free.
+    pub(crate) fn hold_run(&self, holder: &str, exclusive: bool) -> bool {
+        self.hold(&[(0, (RUN_LOCK.to_string(), exclusive))], holder).is_ok()
+    }
+
+    /// Let go of its run lock held for `holder`.
+    pub(crate) fn let_go_run(&self, holder: &str, exclusive: bool) {
+        self.let_go(&[(RUN_LOCK.to_string(), exclusive)], holder);
+    }
+
+    /// Hold `locks` for `holder`, all or none, without waiting: the index (its key's) of the first
+    /// another holder has, otherwise.
+    fn hold(&self, locks: &[(usize, Lock)], holder: &str) -> Result<(), usize> {
+        if locks.is_empty() {
+            return Ok(());
+        }
         let session = {
             let mut sessions = self.sessions.lock().unwrap();
             match sessions.get(holder) {
@@ -352,7 +375,7 @@ impl Remote {
                 None => {
                     let conn = self.conn().map_err(|e| {
                         eprintln!("holon: can't claim in {}: {e}", self.address);
-                        keys[0].clone()
+                        locks[0].0
                     })?;
                     let s = Arc::new(Mutex::new(Session { conn: conn.into_conn(), held: BTreeMap::new(), began: false }));
                     sessions.insert(holder.to_string(), Arc::clone(&s));
@@ -361,41 +384,43 @@ impl Remote {
             }
         };
         let mut s = session.lock().unwrap();
-        let mut taken: Vec<Lock> = Vec::new();
-        for key in keys {
-            for lock in locks_of(key) {
-                if s.held.get(&lock).copied().unwrap_or(0) == 0 {
-                    match s.take(self, &lock) {
-                        Ok(true) => {}
-                        Ok(false) | Err(_) => {
-                            for l in &taken {
-                                s.drop_one(l);
-                            }
-                            let empty = s.held.is_empty();
-                            drop(s);
-                            if empty {
-                                self.end_session(holder);
-                            }
-                            return Err(key.clone());
+        let mut taken: Vec<&Lock> = Vec::new();
+        for (key, lock) in locks {
+            if s.held.get(lock).copied().unwrap_or(0) == 0 {
+                match s.take(self, lock) {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => {
+                        for l in &taken {
+                            s.drop_one(l);
                         }
+                        let empty = s.held.is_empty();
+                        drop(s);
+                        if empty {
+                            self.end_session(holder);
+                        }
+                        return Err(*key);
                     }
                 }
-                *s.held.entry(lock.clone()).or_insert(0) += 1;
-                taken.push(lock);
             }
+            *s.held.entry(lock.clone()).or_insert(0) += 1;
+            taken.push(lock);
         }
         Ok(())
     }
 
     /// Let go of `keys` held for `holder` (once each), and of its connection once it holds none.
     pub(crate) fn unclaim(&self, keys: &[ClaimKey], holder: &str) {
+        let locks: Vec<Lock> = keys.iter().flat_map(locks_of).collect();
+        self.let_go(&locks, holder);
+    }
+
+    /// Let go of `locks` held for `holder` (once each), and of its connection once it holds none.
+    fn let_go(&self, locks: &[Lock], holder: &str) {
         let Some(session) = self.sessions.lock().unwrap().get(holder).map(Arc::clone) else { return };
         let mut s = session.lock().unwrap();
-        for key in keys {
-            for lock in locks_of(key) {
-                if s.held.contains_key(&lock) {
-                    s.drop_one(&lock);
-                }
+        for lock in locks {
+            if s.held.contains_key(lock) {
+                s.drop_one(lock);
             }
         }
         let empty = s.held.is_empty();
@@ -422,6 +447,9 @@ impl Remote {
 /// One lock in the database a claim takes: a name (the table, or the table and a row's key) and
 /// whether it is exclusive.
 type Lock = (String, bool);
+
+/// The name of a database's run lock (§7.3): one no table's name is, so it is no claim's.
+const RUN_LOCK: &str = "\u{0}run";
 
 /// A row: its table shared and itself exclusive; a whole table: exclusive; a new row: its table
 /// shared. So a row waits for its table and the same row, never another row.
@@ -461,22 +489,36 @@ impl Session {
             Conn::My(m) => {
                 use mysql::prelude::Queryable;
                 let k: String = id.iter().map(|b| format!("{b:02x}")).collect();
-                // Its row exists, made on another connection so this one's transaction holds no
-                // lock on it but the one it asks for.
-                let mut other = remote.conn()?;
-                if let Conn::My(o) = other.inner() {
-                    o.exec_drop(format!("insert ignore into {CLAIMS_TABLE} (k) values (?)"), (&k,)).map_err(|e| my_said(&e))?;
-                }
                 if !self.began {
                     m.query_drop("set transaction isolation level read committed").and_then(|_| m.query_drop("start transaction")).map_err(|e| my_said(&e))?;
                     self.began = true;
                 }
                 let sql = format!("select k from {CLAIMS_TABLE} where k = ? {}", if *exclusive { "for update nowait" } else { "for share nowait" });
-                match m.exec_drop(sql, (&k,)) {
-                    Ok(()) => Ok(true),
-                    Err(mysql::Error::MySqlError(e)) if e.code == 3572 => Ok(false),
+                let mut lock = || match m.exec_first::<String, _, _>(&sql, (&k,)) {
+                    Ok(row) => Ok(Some(row.is_some())),
+                    Err(mysql::Error::MySqlError(e)) if e.code == 3572 => Ok(None),
                     Err(e) => Err(my_said(&e)),
+                };
+                match lock()? {
+                    Some(true) => return Ok(true),
+                    None => return Ok(false),
+                    Some(false) => {}
                 }
+                // No row yet: made on another connection, so this one's transaction holds no lock
+                // on it but the one it asks for. Only when there is none: an insert that finds the
+                // row another server holds waits for it, past any claim's wait.
+                let mut other = remote.conn()?;
+                if let Conn::My(o) = other.inner() {
+                    // Made by another server in the moment since, and held: waited for a second
+                    // at most (a commit sets its own wait on the connection again).
+                    let _ = o.query_drop("set session innodb_lock_wait_timeout = 1");
+                    match o.exec_drop(format!("insert ignore into {CLAIMS_TABLE} (k) values (?)"), (&k,)) {
+                        Ok(()) => {}
+                        Err(mysql::Error::MySqlError(e)) if e.code == 1205 => return Ok(false),
+                        Err(e) => return Err(my_said(&e)),
+                    }
+                }
+                Ok(lock()?.unwrap_or(false))
             }
         }
     }

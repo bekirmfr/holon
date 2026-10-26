@@ -4187,6 +4187,184 @@ fn a_row_another_program_changed_sends_the_run_round_again() {
     }
 }
 
+/// A sequence's next number, handed to an API before it is written back, from a database an admin
+/// set to `run` (Â§7.3 of the databases L4): each flow's text the same as without it.
+fn numbering_text(host: &str, flow: &str, port: u16) -> String {
+    format!(
+        "flow {flow}\nport {port}\ndatabase shop\n\nroute POST /next (req) {{\n  row = shop.one(\"select n from seq where id = $1\", 1)\n  sent = http.get(\"{host}\", \"/slow\").body\n  shop.exec(\"update seq set n = $1 where id = $2\", row.n + 1, 1, expect: 1)\n  respond {{ n: row.n + 1, sent: sent }}\n}}\n"
+    )
+}
+
+/// Reads the sequence and calls out, writing nothing.
+fn peeking_text(host: &str, flow: &str, port: u16) -> String {
+    format!(
+        "flow {flow}\nport {port}\ndatabase shop\n\nroute GET /peek (req) {{\n  row = shop.one(\"select n from seq where id = $1\", 1)\n  sent = http.get(\"{host}\", \"/slow\").body\n  respond {{ n: row.n, sent: sent }}\n}}\n"
+    )
+}
+
+/// Whether any run of `slug` found a claimed key changed and ran again.
+fn overtaken_in(state: &AppState, slug: &str) -> bool {
+    log_entries(state, slug).iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).any(|c| c["overtaken"] == true)
+}
+
+/// Two requests to `first` and `second` 60 ms apart: their answers, and how long the second took.
+fn two_at_once(state: &AppState, first: (&str, &str, &str), second: (&str, &str, &str)) -> ((u16, String), (u16, String, Duration)) {
+    std::thread::scope(|s| {
+        let a = s.spawn(|| data_call(state, first.0, first.1, first.2, ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let b = s.spawn(|| data_call(state, second.0, second.1, second.2, ""));
+        let (a, b) = (a.join().unwrap(), b.join().unwrap());
+        ((a.0, a.1), b)
+    })
+}
+
+/// A database an admin set to `run`: a run that may write it holds it alone from before it starts
+/// until it commits, so two deployments' writers go one after the other, whole: the second never
+/// starts, reads or calls out until the first has committed (it is never overtaken, as it would be
+/// under a claim alone). Readers hold it shared: side by side with each other, after a writer. One
+/// that would wait past its claim_wait is turned away (503), naming the database, having sent
+/// nothing.
+#[test]
+fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
+    let (host, hits) = counting_server();
+    let dir = std::env::temp_dir().join(format!("holon-runlock-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bind = |state: &AppState, file: &str| {
+        let body = serde_json::json!({
+            "name": "shop",
+            "path": dir.join(file).display().to_string(),
+            "schema": "create table seq (id integer primary key, n integer not null); insert into seq values (1, 0)",
+            "lock": "run",
+        });
+        assert_eq!(route(state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    };
+    let state = claims_state("");
+    bind(&state, "seq.db");
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/databases", vec![])))[0]["lock"], "run");
+    let a = deploy_text(&state, &numbering_text(&host, "numbers", 18181), &host);
+    let b = deploy_text(&state, &numbering_text(&host, "numbers-2", 18182), &host);
+    let (first, second) = two_at_once(&state, (&a, "POST", "/next"), (&b, "POST", "/next"));
+    assert_eq!((first.0, second.0), (200, 200), "{} / {}", first.1, second.1);
+    let ns: BTreeSet<String> = [&first.1, &second.1].iter().map(|b| serde_json::from_str::<serde_json::Value>(b).unwrap()["n"].to_string()).collect();
+    assert_eq!(ns, BTreeSet::from(["1".to_string(), "2".to_string()]));
+    assert!(second.2 > Duration::from_millis(700), "it ran after the first, whole: {:?}", second.2);
+    assert!(!overtaken_in(&state, &b), "it started once the first had committed: {:#?}", log_entries(&state, &b));
+    assert_eq!(hits_of(&hits, "/slow"), 2);
+
+    // Readers side by side; a reader after a writer.
+    let r1 = deploy_text(&state, &peeking_text(&host, "peek", 18183), &host);
+    let r2 = deploy_text(&state, &peeking_text(&host, "peek-2", 18184), &host);
+    let (one, two) = two_at_once(&state, (&r1, "GET", "/peek"), (&r2, "GET", "/peek"));
+    assert_eq!((one.0, two.0), (200, 200));
+    assert!(two.2 < Duration::from_millis(650), "readers share it: {:?}", two.2);
+    let (_, after) = two_at_once(&state, (&a, "POST", "/next"), (&r1, "GET", "/peek"));
+    assert_eq!(after.0, 200);
+    assert!(after.2 > Duration::from_millis(700), "a reader waits for a writer: {:?}", after.2);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&after.1).unwrap()["n"], 3, "and reads what it wrote");
+
+    // Past claim_wait: turned away, sending nothing.
+    let quick = claims_state("[limits]\nclaim_wait_ms = 100");
+    bind(&quick, "quick.db");
+    let a = deploy_text(&quick, &numbering_text(&host, "numbers", 18185), &host);
+    let b = deploy_text(&quick, &numbering_text(&host, "numbers-2", 18186), &host);
+    let before = hits_of(&hits, "/slow");
+    let (first, second) = two_at_once(&quick, (&a, "POST", "/next"), (&b, "POST", "/next"));
+    assert_eq!((first.0, second.0), (200, 503), "{}", second.1);
+    assert!(second.1.contains("the database \\\"shop\\\""), "it names the database: {}", second.1);
+    assert_eq!(hits_of(&hits, "/slow"), before + 1, "the one turned away sent nothing");
+    let turned = log_entries(&quick, &b);
+    assert!(turned.last().unwrap()["error"].as_str().unwrap().starts_with("busy:"), "{turned:#?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A folder an admin set to `run`, bound by several servers: its writers go one after the other,
+/// whole, and the lock is an OS lock on a file of its own in the folder, so another server's runs
+/// see it too.
+#[test]
+fn a_folder_held_for_whole_runs_runs_its_writers_one_at_a_time() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-runlock-f-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({ "name": "ledger", "path": dir.display().to_string(), "shared": true, "lock": "run" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/folders", vec![])))[0]["lock"], "run");
+    let text = format!(
+        "flow tally\nport 18191\nfolder ledger\n\nroute POST /add (req) {{\n  lines = ledger[\"lines.txt\"] ?? \"\"\n  sent = http.get(\"{host}\", \"/slow\").body\n  ledger[\"lines.txt\"] = \"{{lines}}{{sent}}\\n\"\n  respond {{ sent: sent }}\n}}\n"
+    );
+    let a = deploy_text(&state, &text, &host);
+    let b = deploy_text(&state, &text.replace("flow tally", "flow tally-2").replace("port 18191", "port 18192"), &host);
+    let (first, second) = two_at_once(&state, (&a, "POST", "/add"), (&b, "POST", "/add"));
+    assert_eq!((first.0, second.0), (200, 200), "{} / {}", first.1, second.1);
+    assert!(second.2 > Duration::from_millis(700), "it ran after the first, whole: {:?}", second.2);
+    assert!(!overtaken_in(&state, &b), "{:#?}", log_entries(&state, &b));
+    assert_eq!(hits_of(&hits, "/slow"), 2);
+    assert_eq!(std::fs::read_to_string(dir.join("lines.txt")).unwrap(), "slow\nslow\n");
+    assert!(dir.join(locks::RUN_LOCK_FILE).exists(), "bound shared: its lock is a file in it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two servers on one Postgres (or MySQL) an admin set to `run`: the lock is held in the database,
+/// so one server's writer waits for the other's to commit, whole, its readers side by side with
+/// the other's, and past claim_wait a run is turned away.
+#[test]
+fn a_database_held_for_whole_runs_holds_across_servers() {
+    for db in fresh_databases("runlock") {
+        let (engine, url) = (db.engine, db.url.clone());
+        let (host, hits) = counting_server();
+        let servers = [server_with_database(&url), server_with_database(&url)];
+        for s in &servers {
+            *s.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n[limits]\nclaim_wait_ms = 3000").unwrap());
+        }
+        for (i, s) in servers.iter().enumerate() {
+            let schema = (i == 0).then_some("create table seq (id integer primary key, n integer not null); insert into seq values (1, 0)");
+            let body = serde_json::json!({ "name": "shop", "connection": "env:HOLON_SECRET_SHOP_URL", "schema": schema, "lock": "run" });
+            let r = route(s, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()));
+            let status = r.status_code;
+            assert_eq!(status, 200, "{engine}: {}", String::from_utf8_lossy(&body_bytes(r)));
+        }
+        let writers = [deploy_text(&servers[0], &numbering_text(&host, "numbers", 18181), &host), deploy_text(&servers[1], &numbering_text(&host, "numbers", 18181), &host)];
+        let (first, second) = std::thread::scope(|s| {
+            let a = s.spawn(|| data_call(&servers[0], &writers[0], "POST", "/next", ""));
+            std::thread::sleep(Duration::from_millis(60));
+            let b = s.spawn(|| data_call(&servers[1], &writers[1], "POST", "/next", ""));
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_eq!((first.0, second.0), (200, 200), "{engine}: {} / {}", first.1, second.1);
+        assert!(second.2 > Duration::from_millis(700), "{engine}: it ran after the other server's, whole: {:?}", second.2);
+        assert!(!overtaken_in(&servers[1], &writers[1]), "{engine}: {:#?}", log_entries(&servers[1], &writers[1]));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&second.1).unwrap()["n"], 2, "{engine}");
+        let readers = [deploy_text(&servers[0], &peeking_text(&host, "peek", 18183), &host), deploy_text(&servers[1], &peeking_text(&host, "peek", 18183), &host)];
+        let t0 = std::time::Instant::now();
+        std::thread::scope(|s| {
+            let calls = [0, 1].map(|i| {
+                let (server, slug) = (&servers[i], &readers[i]);
+                s.spawn(move || data_call(server, slug, "GET", "/peek", "").0)
+            });
+            assert_eq!(calls.map(|c| c.join().unwrap()), [200, 200], "{engine}");
+        });
+        assert!(t0.elapsed() < Duration::from_millis(700), "{engine}: readers of two servers share it: {:?}", t0.elapsed());
+        assert_eq!(hits_of(&hits, "/slow"), 4, "{engine}");
+
+        // A writer deployed where claim_wait is 100 ms, while the other server's writer runs:
+        // turned away, sending nothing.
+        *servers[1].policy.write().unwrap() = Arc::new(Policy::parse("[grants]
+allow_plain_http = true
+allow_private_addresses = true
+[limits]
+claim_wait_ms = 100").unwrap());
+        let quick = deploy_text(&servers[1], &numbering_text(&host, "numbers-quick", 18185), &host);
+        let (first, second) = std::thread::scope(|s| {
+            let a = s.spawn(|| data_call(&servers[0], &writers[0], "POST", "/next", ""));
+            std::thread::sleep(Duration::from_millis(60));
+            let b = s.spawn(|| data_call(&servers[1], &quick, "POST", "/next", ""));
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_eq!((first.0, second.0), (200, 503), "{engine}: {}", second.1);
+        assert_eq!(hits_of(&hits, "/slow"), 5, "{engine}: the one turned away sent nothing");
+    }
+}
+
 /// A flow reads and writes files in the folders an admin bound, by name: deploying waits for the
 /// binding, a write lands whole when the run commits, a name that leaves its folder fails the run
 /// with nothing written, and the log keeps a write by its hash. The runs check offline: a small

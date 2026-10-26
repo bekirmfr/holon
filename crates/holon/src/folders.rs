@@ -150,6 +150,9 @@ pub(crate) struct Folder {
     /// it, so their runs exclude each other too (locks.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) shared: bool,
+    /// Its runs hold it for their whole length (`run`), not only across their commits.
+    #[serde(default, skip_serializing_if = "locks::Setting::is_commit")]
+    pub(crate) lock: locks::Setting,
 }
 
 /// The largest file a run reads as text, without asking for more (`inline_file_bytes`).
@@ -287,10 +290,11 @@ impl Folders {
     /// it there before.
     #[cfg(test)]
     pub(crate) fn bind(&self, name: &str, path: &str, access: FolderAccess, keep: Keep, cap: Option<u64>, for_deployment: Option<&str>) -> Result<Folder, String> {
-        self.bind_as(name, path, access, keep, cap, false, for_deployment)
+        self.bind_as(name, path, access, keep, cap, false, locks::Setting::Commit, for_deployment)
     }
 
-    /// As [`bind`](Self::bind), saying whether other servers bind it too (`shared`).
+    /// As [`bind`](Self::bind), saying whether other servers bind it too (`shared`), and how long
+    /// its runs hold it (`lock`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn bind_as(
         &self,
@@ -300,6 +304,7 @@ impl Folders {
         keep: Keep,
         cap: Option<u64>,
         shared: bool,
+        lock: locks::Setting,
         for_deployment: Option<&str>,
     ) -> Result<Folder, String> {
         if !is_folder_name(name) {
@@ -322,7 +327,7 @@ impl Folders {
         if cap == Some(0) {
             return Err("a folder's cap is a size above nothing (10M, say)".into());
         }
-        let folder = Folder { path: at, access, keep, cap, shared };
+        let folder = Folder { path: at, access, keep, cap, shared, lock };
         let mut bound = self.bound.write().unwrap();
         let mut next = bound.clone();
         match for_deployment {
@@ -760,6 +765,25 @@ impl Scoped {
         read.chain(written).filter_map(|(name, mode)| self.lock_of(name, mode)).collect()
     }
 
+    /// The run locks (§7.3) a run of this deployment takes before it starts: on each folder it may
+    /// read (shared) or write (exclusive) that an admin set to `run`, by its real path, and across
+    /// servers by an OS lock on a file in it when it is bound `shared`.
+    pub(crate) fn whole_run_locks(&self, read: &BTreeSet<String>, written: &BTreeSet<String>) -> Vec<locks::Wanted> {
+        let read = read.iter().filter(|n| !written.contains(*n)).map(|n| (n, locks::Mode::Shared));
+        let written = written.iter().map(|n| (n, locks::Mode::Exclusive));
+        read.chain(written)
+            .filter_map(|(name, mode)| {
+                let folder = self.get(name).filter(|f| f.lock == locks::Setting::Run)?;
+                Some(locks::Wanted {
+                    address: format!("run:folder:{}", folder.path.display()),
+                    label: format!("the folder {name:?}"),
+                    mode,
+                    file: folder.shared.then(|| folder.path.join(locks::RUN_LOCK_FILE)),
+                })
+            })
+            .collect()
+    }
+
     /// The lock on the folder this deployment sees as `name`, by its real path; none if it isn't
     /// bound.
     fn lock_of(&self, name: &str, mode: locks::Mode) -> Option<locks::Wanted> {
@@ -1058,7 +1082,7 @@ fn walk(dir: &Path, under: &str, names: &mut Vec<String>) -> Result<(), String> 
 /// A binding as the admin panel and `holon folder list` show it: `deployment` is the slug it is
 /// bound for, or null for the whole server.
 fn shown(name: &str, deployment: Option<&str>, f: &Folder) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "path": f.path.display().to_string(), "access": f.access, "keep": f.keep, "cap": f.cap, "shared": f.shared })
+    serde_json::json!({ "name": name, "deployment": deployment, "path": f.path.display().to_string(), "access": f.access, "keep": f.keep, "cap": f.cap, "shared": f.shared, "lock": f.lock })
 }
 
 /// What a binding is called in the activity log: its name, and the deployment it is for.
@@ -1098,6 +1122,9 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     /// Other servers bind it too.
                     #[serde(default)]
                     shared: bool,
+                    /// Its runs hold it for their whole length.
+                    #[serde(default)]
+                    lock: locks::Setting,
                 }
                 fn read_write() -> FolderAccess {
                     FolderAccess::ReadWrite
@@ -1113,7 +1140,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                         Some(serde_json::Value::String(s)) => Some(verify::budget_of(s).ok_or_else(|| err(400, format!("a cap is a size (1048576, 64K, 10M or 2G), not {s:?}")))?),
                         Some(_) => return Err(err(400, "a cap is a whole number of bytes, or a size (10M)")),
                     };
-                    let folder = state.folders.bind_as(&b.name, &b.path, b.access, b.keep, cap, b.shared, b.deployment.as_deref()).map_err(|e| err(400, e))?;
+                    let folder = state.folders.bind_as(&b.name, &b.path, b.access, b.keep, cap, b.shared, b.lock, b.deployment.as_deref()).map_err(|e| err(400, e))?;
                     Ok((b, folder))
                 });
                 match bound {
@@ -1158,13 +1185,13 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
     })
 }
 
-/// `holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] | list | remove NAME |
+/// `holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] [--lock run] | list | remove NAME |
 /// sweep`: bind, show and unbind the folders of the server this user runs here (or `--server`),
 /// and sweep the texts their runs read that no kept run refers to, as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
     let mut server = None;
     let mut for_deployment: Option<String> = None;
-    let (mut read_only, mut keep, mut cap, mut shared) = (false, Keep::Bytes, None, false);
+    let (mut read_only, mut keep, mut cap, mut shared, mut lock) = (false, Keep::Bytes, None, false, locks::Setting::Commit);
     let mut words = Vec::new();
     let mut args = args.iter();
     while let Some(a) = args.next() {
@@ -1173,6 +1200,14 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             "--for" => for_deployment = args.next().cloned(),
             "--read-only" => read_only = true,
             "--shared" => shared = true,
+            "--lock" => match args.next().map(String::as_str) {
+                Some("run") => lock = locks::Setting::Run,
+                Some("commit") => lock = locks::Setting::Commit,
+                _ => {
+                    eprintln!("holon folder: --lock takes run (its runs hold it for their whole length) or commit");
+                    return 2;
+                }
+            },
             "--keep" => match args.next().map(|k| Keep::try_from(k.clone())) {
                 Some(Ok(k)) => keep = k,
                 _ => {
@@ -1204,7 +1239,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             // The path as the server's machine sees it: this one, for the server this user runs.
             let path = std::path::absolute(path).map_or_else(|_| path.to_string(), |p| p.display().to_string());
             let access = if read_only { FolderAccess::Read } else { FolderAccess::ReadWrite };
-            let body = serde_json::json!({ "name": name, "path": path, "access": access, "keep": keep, "cap": cap, "shared": shared, "deployment": for_deployment });
+            let body = serde_json::json!({ "name": name, "path": path, "access": access, "keep": keep, "cap": cap, "shared": shared, "lock": lock, "deployment": for_deployment });
             ("POST", "/admin/folders".to_string(), Some(body))
         }
         ["sweep"] => ("POST", "/admin/folders/sweep".to_string(), Some(serde_json::json!({}))),
@@ -1230,7 +1265,8 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         };
         let cap = f["cap"].as_u64().map_or(String::new(), |c| format!(", capped at {}", size_text(c)));
         let only = f["deployment"].as_str().map_or(String::new(), |d| format!(", for {d} only"));
-        format!("{}  {}  ({access}{keep}{cap}{only})", f["name"].as_str().unwrap_or(""), f["path"].as_str().unwrap_or(""))
+        let lock = if f["lock"] == "run" { ", held for whole runs" } else { "" };
+        format!("{}  {}  ({access}{keep}{cap}{lock}{only})", f["name"].as_str().unwrap_or(""), f["path"].as_str().unwrap_or(""))
     };
     match words[0] {
         "list" => {
@@ -1263,7 +1299,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] [--for SLUG]
+const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] [--lock run] [--for SLUG]
        holon folder list
        holon folder remove NAME [--for SLUG]
        holon folder sweep
@@ -1278,8 +1314,13 @@ const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--k
   the text for 30 days (s, m, h or d), then only its hash. --cap 10M: a write that would take the
   folder's files past 10 MiB in all doesn't land. --shared: other servers bind it too (a network
   share): a run's commit also locks a file in it, .holon-tmp-commit.lock, so their runs never
-  write over each other's. Removing a binding leaves the files where they are; deployments that
-  use it stop until it is bound again.
+  write over each other's. --lock run: each run that touches it holds it from before it starts
+  until it commits, fails or waits, shared if it only reads it, alone if it may write it, so
+  every run that writes it goes one at a time, for its whole length, across every deployment
+  bound to it (and every server, with --shared: .holon-tmp-run.lock); one that waits past its
+  claim_wait is turned away (503). For files a program expects one writer for. Removing a
+  binding leaves the files where they are; deployments that use it stop until it is bound
+  again.
   sweep removes now the texts runs read that no kept run refers to (the server does it every 10
   minutes).";
 

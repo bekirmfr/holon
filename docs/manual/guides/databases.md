@@ -25,6 +25,7 @@ holon database remove shop
 |---|---|
 | `--schema SQL`, `--schema-file FILE` | run this first (`create table …`), creating the file if there is none |
 | `--read-only` | flows may read it, not write it |
+| `--lock run` | each run that touches it holds it for its whole length ([Held for whole runs](#held-for-whole-runs)) |
 | `--for SLUG` | for that deployment only: it sees this database as the name, and no other deployment sees it |
 
 - A name is letters, digits, `-` and `_`, up to 64 characters.
@@ -182,6 +183,33 @@ shows it beside `orders-api`, on the same database.
 - A run that never calls out holds nothing; one that only reads a table holds nothing in it.
 - `holon check` says it, under `while it runs:`, and the run log lists each row held, how long it
   waited, and whether it found the row changed. A run waits `claim_wait_ms` at most (10 s).
+
+## Held for whole runs
+
+The check at commit, and holding what a run read before it calls out, let runs go side by side
+and keep them right. Some things they can't make right, or only by running a lot again: a
+sequence many runs take the next number of at once, a queue, an API with no transactions that
+must see one caller at a time. For those an admin sets the database to be **held for whole
+runs**:
+
+```sh
+holon database add tickets ~/tickets.db --lock run --schema-file tickets.sql
+```
+
+- Each run that touches it takes it **before it starts**: shared if its flow only reads the
+  database, alone if it may write it (what its manifest says, not what one run happens to do).
+  It holds it until it commits, fails or waits for an event.
+- So **every run that writes it goes one at a time, for its whole length**, across every
+  deployment bound to it, and on Postgres or MySQL across every server (the lock is held in the
+  database, as claims are). Runs that only read it go side by side, after any writer.
+- A run that would wait past `claim_wait_ms` (10 s) for it is turned away: a request answers 503
+  naming the database, a clock tick is skipped; both are in the run log, and nothing was sent.
+- Nothing in the flow changes: the same text runs on a database held only across commits.
+- The `ticket-numbers` sample shows it: twenty requests at once take twenty numbers one after the
+  other, each run committing on its first try.
+
+It is off unless set: it costs every writer its turn, where the check costs a run going again
+only when two touched the same rows. A folder can be set so too (`holon folder add … --lock run`).
 
 ## Limits
 

@@ -295,7 +295,9 @@ export function AdminPage({ me }: { me: string }) {
         Read only: flows may read it, not write it. Reads kept by hash: the run log keeps a hash of what each run read, not its text; for a while (7d, 12h):
         its text for that long, then only its hash. A cap (10M): a write that would take the folder&apos;s files past it doesn&apos;t land. For one deployment:
         that deployment sees this folder by the name, whatever the server&apos;s is, and no other deployment sees it. Other servers bind it too (a network share):
-        their runs&apos; commits lock a file in it, so they never write over each other.
+        their runs&apos; commits lock a file in it, so they never write over each other. Held for whole runs: each run that touches it holds it from before
+        it starts until it commits, fails or waits, so every run that writes it goes one at a time, for its whole length, across every deployment bound to
+        it; one that waits past its claim_wait is turned away (503). For files a program expects one writer for.
       </div>
       {folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no folders bound</div>}
       {folders.map((f) => (
@@ -307,6 +309,7 @@ export function AdminPage({ me }: { me: string }) {
             {f.keep === "hash" ? " · reads kept by hash" : f.keep.startsWith("bytes for ") ? ` · reads kept ${f.keep.slice("bytes for ".length)}, then by hash` : ""}
             {f.cap != null ? ` · capped at ${sizeText(f.cap)}` : ""}
             {f.shared ? " · other servers bind it too" : ""}
+            {f.lock === "run" ? " · held for whole runs" : ""}
             {f.deployment ? ` · for ${f.deployment} only` : ""}
           </span>
           <button
@@ -330,7 +333,7 @@ export function AdminPage({ me }: { me: string }) {
             const keep = folderDraft.keep === "bytes for " ? `bytes for ${keepFor.trim()}` : folderDraft.keep;
             const cap = typeof folderDraft.cap === "string" ? folderDraft.cap.trim() || null : folderDraft.cap;
             await bindFolder({ ...folderDraft, name: folderDraft.name.trim(), path: folderDraft.path.trim(), keep: keep as FolderEntry["keep"], cap, deployment: folderDraft.deployment?.trim() || null });
-            setFolderDraft({ ...folderDraft, name: "", path: "", cap: null, shared: false, deployment: null });
+            setFolderDraft({ ...folderDraft, name: "", path: "", cap: null, shared: false, lock: "commit", deployment: null });
           });
         }}
       >
@@ -368,6 +371,18 @@ export function AdminPage({ me }: { me: string }) {
           <input type="checkbox" checked={folderDraft.shared ?? false} onChange={(e) => setFolderDraft({ ...folderDraft, shared: e.target.checked })} />
           other servers bind it too
         </label>
+        <label
+          style={{ color: "#9fb4d4", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}
+          title="each run that touches it holds it for its whole length: every run that writes it goes one at a time, across every deployment bound to it"
+        >
+          <input
+            type="checkbox"
+            aria-label="folder held for whole runs"
+            checked={folderDraft.lock === "run"}
+            onChange={(e) => setFolderDraft({ ...folderDraft, lock: e.target.checked ? "run" : "commit" })}
+          />
+          held for whole runs
+        </label>
         <input
           aria-label="for one deployment"
           placeholder="for one deployment (empty: all)"
@@ -401,7 +416,10 @@ export function AdminPage({ me }: { me: string }) {
         where it is kept, as a secret&apos;s (<code>env:HOLON_SECRET_SHOP_URL</code>, <code>vault:…</code>), never stored or shown. A flow names a database
         (<code>database shop</code>), never where it is, and is granted each table its SQL reads or writes. A schema (create table …) is run when it is
         bound, creating a SQLite file if there is none; flows run no DDL. Read only: flows may read it, not write it. A writable database gets a table
-        holon_commits, where each run&apos;s commit marks it done.
+        holon_commits, where each run&apos;s commit marks it done. Held for whole runs: each run that touches it holds it from before it starts until it
+        commits, fails or waits, so every run that writes it goes one at a time, for its whole length, across every deployment bound to it (and, on
+        Postgres or MySQL, every server); one that waits past its claim_wait is turned away (503). For what a commit&apos;s check can&apos;t cover: a
+        sequence&apos;s next value, a queue, or contention so high that running again costs more than waiting.
       </div>
       {databases.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no databases bound</div>}
       {databases.map((d) => (
@@ -410,6 +428,7 @@ export function AdminPage({ me }: { me: string }) {
           <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
           <span style={{ color: "#7e8ea8", fontSize: 11 }}>
             {d.engine} · {d.access === "read" ? "read only" : "read and write"}
+            {d.lock === "run" ? " · held for whole runs" : ""}
             {d.deployment ? ` · for ${d.deployment} only` : ""}
           </span>
           <button
@@ -434,7 +453,7 @@ export function AdminPage({ me }: { me: string }) {
             const at = where.trim();
             const target = at.startsWith("env:") || at.startsWith("vault:") ? { connection: at } : { path: at };
             await bindDatabase({ ...d, ...target, name: d.name.trim(), schema: d.schema?.trim() || null, deployment: d.deployment?.trim() || null });
-            setDatabaseDraft({ ...databaseDraft, name: "", where: "", schema: null, deployment: null });
+            setDatabaseDraft({ ...databaseDraft, name: "", where: "", schema: null, lock: "commit", deployment: null });
           });
         }}
       >
@@ -455,6 +474,18 @@ export function AdminPage({ me }: { me: string }) {
           <option value="read-write">read and write</option>
           <option value="read">read only</option>
         </select>
+        <label
+          style={{ color: "#9fb4d4", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}
+          title="each run that touches it holds it for its whole length: every run that writes it goes one at a time, across every deployment bound to it"
+        >
+          <input
+            type="checkbox"
+            aria-label="database held for whole runs"
+            checked={databaseDraft.lock === "run"}
+            onChange={(e) => setDatabaseDraft({ ...databaseDraft, lock: e.target.checked ? "run" : "commit" })}
+          />
+          held for whole runs
+        </label>
         <input
           aria-label="database for one deployment"
           placeholder="for one deployment (empty: all)"

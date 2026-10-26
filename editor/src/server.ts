@@ -133,6 +133,8 @@ export type FolderEntry = {
   cap: number | null;
   /** Other servers bind it too (a network share): a commit also locks a file in it. */
   shared?: boolean;
+  /** "run": each run that touches it holds it for its whole length (shared to read, alone to write), not only across its commit. */
+  lock?: "commit" | "run";
   deployment: string | null;
 };
 /** A folder to bind: its cap as bytes or a size (`10M`). */
@@ -164,10 +166,12 @@ export type DatabaseEntry = {
   connection?: string;
   address?: string;
   access: "read" | "read-write";
+  /** "run": each run that touches it holds it for its whole length (shared to read, alone to write), not only across its commit. */
+  lock?: "commit" | "run";
   deployment: string | null;
 };
 /** A database to bind: a SQLite file's path or a connection's source, with the admin's schema to run first (which creates a SQLite file if there is none). */
-export type DatabaseBinding = Pick<DatabaseEntry, "name" | "access" | "deployment"> & { path?: string; connection?: string; schema: string | null };
+export type DatabaseBinding = Pick<DatabaseEntry, "name" | "access" | "deployment" | "lock"> & { path?: string; connection?: string; schema: string | null };
 export const listDatabases = async () => asJson<DatabaseEntry[]>(await api(`${BASE}/admin/databases`));
 export const bindDatabase = async (d: DatabaseBinding) => asJson<DatabaseEntry>(await post(`${BASE}/admin/databases`, d));
 export async function unbindDatabase(name: string, deployment: string | null): Promise<void> {

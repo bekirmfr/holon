@@ -29,6 +29,7 @@ holon folder remove reports
 | `--keep 30d` | the log keeps the text for 30 days (`s`, `m`, `h` or `d`), then only its hash |
 | `--cap 10M` | a write that would take the folder's files past 10 MiB in all doesn't land |
 | `--shared` | other servers bind this folder too (a network share): their runs' writes exclude each other as one server's do |
+| `--lock run` | each run that touches it holds it for its whole length: shared to read, alone to write (below) |
 
 - A name is letters, digits, `-` and `_`, up to 64 characters.
 - `--for` lets two deployments use the same name for different folders: bind `inbox` for `acme`
@@ -89,6 +90,12 @@ route DELETE /reports/:name (req) {
   first outbound call until it commits (a listing, the whole folder): another run that read it
   waits at its own first call, reads it again, and runs on what it finds, having sent nothing.
   So two runs that fetch something to cache in one file fetch it once, across deployments.
+- A folder bound `--lock run` is held by each run that touches it from before it starts until it
+  commits, fails or waits: shared by runs whose flow only reads it, alone by one that may write
+  it. Every run that writes it then goes one at a time, for its whole length, across every
+  deployment bound to it (and, bound `--shared` too, every server: the lock is also an OS lock on
+  `.holon-tmp-run.lock` in it). For files a program outside Holon expects one writer for. A run
+  that would wait past `claim_wait_ms` is turned away (503), having done nothing.
 
 ## Big files
 

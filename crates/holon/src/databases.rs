@@ -60,6 +60,9 @@ pub(crate) struct Database {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) address: Option<String>,
     pub(crate) access: FolderAccess,
+    /// Its runs hold it for their whole length (`run`), not only across their commits.
+    #[serde(default, skip_serializing_if = "locks::Setting::is_commit")]
+    pub(crate) lock: locks::Setting,
 }
 
 fn is_empty_path(p: &Path) -> bool {
@@ -154,7 +157,13 @@ impl Databases {
     /// database's connection URL is fetched from (`env:HOLON_SECRET_…`, `vault:…`). With a `schema`
     /// (the admin's DDL), it is run first (and a SQLite file created, if there is none); without
     /// one, a SQLite file must be a database already.
+    #[cfg(test)]
     pub(crate) fn bind(&self, name: &str, target: &str, access: FolderAccess, schema: Option<&str>, for_deployment: Option<&str>) -> Result<Database, String> {
+        self.bind_as(name, target, access, schema, locks::Setting::Commit, for_deployment)
+    }
+
+    /// As [`bind`](Self::bind), saying how long its runs hold it (`lock`).
+    pub(crate) fn bind_as(&self, name: &str, target: &str, access: FolderAccess, schema: Option<&str>, lock: locks::Setting, for_deployment: Option<&str>) -> Result<Database, String> {
         if !folders::is_folder_name(name) {
             return Err(format!("{name:?} isn't a database name: letters, digits, - and _, up to 64"));
         }
@@ -163,11 +172,12 @@ impl Databases {
         }
         let schema = schema.map(str::trim).filter(|s| !s.is_empty());
         let target = target.trim();
-        let (database, open) = if target.starts_with("env:") || target.starts_with("vault:") {
-            self.open_remote(target, access, schema)?
+        let (mut database, open) = if target.starts_with("env:") || target.starts_with("vault:") {
+            self.open_remote(target, access, schema, lock)?
         } else {
             self.open_sqlite(target, access, schema)?
         };
+        database.lock = lock;
         let mut bound = self.bound.write().unwrap();
         let mut next = bound.clone();
         match for_deployment {
@@ -181,17 +191,25 @@ impl Databases {
     }
 
     /// The Postgres or MySQL database whose URL `source` holds, reached now, its schema run.
-    fn open_remote(&self, source: &str, access: FolderAccess, schema: Option<&str>) -> Result<(Database, Open), String> {
+    fn open_remote(&self, source: &str, access: FolderAccess, schema: Option<&str>, lock: locks::Setting) -> Result<(Database, Open), String> {
         let reference = Reference::parse(source)?;
         let url = self.sources.fetch(&reference)?;
         let remote = Remote::open(url)?;
         if let Some(schema) = schema {
             remote.run_schema(schema)?;
         }
-        if access == FolderAccess::ReadWrite {
+        // A run lock is held in the database too, on MySQL in holon_claims, read only or not.
+        if access == FolderAccess::ReadWrite || lock == locks::Setting::Run {
             remote.keep_tables()?;
         }
-        let database = Database { engine: remote.engine.name().into(), path: PathBuf::new(), connection: Some(source.to_string()), address: Some(remote.address.clone()), access };
+        let database = Database {
+            engine: remote.engine.name().into(),
+            path: PathBuf::new(),
+            connection: Some(source.to_string()),
+            address: Some(remote.address.clone()),
+            access,
+            lock,
+        };
         Ok((database, Open::Remote(Arc::new(remote))))
     }
 
@@ -225,7 +243,7 @@ impl Databases {
             conn.execute_batch(&format!("create table if not exists {COMMITS_TABLE} (run text primary key, at integer not null)"))
                 .map_err(|e| format!("can't keep {COMMITS_TABLE} in it: {e}"))?;
         }
-        let database = Database { engine: "sqlite".into(), path: at, connection: None, address: None, access };
+        let database = Database { engine: "sqlite".into(), path: at, connection: None, address: None, access, lock: locks::Setting::Commit };
         Ok((database, Open::Sqlite(Arc::new(Mutex::new(conn)))))
     }
 
@@ -357,6 +375,29 @@ impl Databases {
     /// transaction is the lock against other programs and servers.
     pub(crate) fn commit_locks(&self, deployment: &str, reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<locks::Wanted> {
         self.locks_on(deployment, names_in(reads, performed))
+    }
+
+    /// The run locks (§7.3) a run of `deployment` takes before it starts: on each database it may
+    /// read (shared) or write (exclusive) that an admin set to `run`, by its file or address, in the
+    /// server's table; and the Postgres and MySQL ones among them, to hold in the database too,
+    /// with whether exclusive and how it is said, for the runs of other servers.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn whole_run_locks(&self, deployment: &str, read: &BTreeSet<String>, written: &BTreeSet<String>) -> (Vec<locks::Wanted>, Vec<(Arc<Remote>, bool, String)>) {
+        let (mut wanted, mut remote) = (Vec::new(), Vec::new());
+        for name in read.union(written) {
+            let Some(d) = self.resolve(deployment, name).filter(|d| d.lock == locks::Setting::Run) else { continue };
+            let exclusive = written.contains(name);
+            let mode = if exclusive { locks::Mode::Exclusive } else { locks::Mode::Shared };
+            let label = format!("the database {name:?}");
+            wanted.push(locks::Wanted { address: format!("run:db:{}", d.at()), label: label.clone(), mode, file: None });
+            // One that can't be reached holds nothing there: its run's first read says why.
+            if let Ok(Open::Remote(r)) = self.connection(&d) {
+                remote.push((r, exclusive, label));
+            }
+        }
+        // In the order of their addresses, as the server's locks are taken.
+        remote.sort_by(|a, b| a.0.address.cmp(&b.0.address));
+        (wanted, remote)
     }
 
     /// The locks on the databases `names` (as `deployment` knows them), each held alone: what a
@@ -993,7 +1034,7 @@ fn met(sql: &str, changed: u64, expect: Option<f64>) -> Result<(), String> {
 // ── admin ──
 
 fn shown(name: &str, deployment: Option<&str>, d: &Database) -> serde_json::Value {
-    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "engine": d.engine, "access": d.access });
+    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "engine": d.engine, "access": d.access, "lock": d.lock });
     match (&d.connection, &d.address) {
         (Some(source), address) => {
             shown["connection"] = serde_json::json!(source);
@@ -1038,6 +1079,9 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     /// The admin's DDL, run first (and the file created, if there is none).
                     #[serde(default)]
                     schema: Option<String>,
+                    /// Its runs hold it for their whole length.
+                    #[serde(default)]
+                    lock: locks::Setting,
                     #[serde(default)]
                     deployment: Option<String>,
                 }
@@ -1049,7 +1093,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     .map(|b| Bind { deployment: b.deployment.filter(|d| !d.trim().is_empty()), ..b })
                     .and_then(|b| {
                         let target = b.connection.as_deref().filter(|c| !c.trim().is_empty()).or(b.path.as_deref()).ok_or_else(|| err(400, "a database is a path (SQLite) or a connection (env:… or vault:…)"))?;
-                        let d = all.bind(&b.name, target, b.access, b.schema.as_deref(), b.deployment.as_deref()).map_err(|e| err(400, e))?;
+                        let d = all.bind_as(&b.name, target, b.access, b.schema.as_deref(), b.lock, b.deployment.as_deref()).map_err(|e| err(400, e))?;
                         Ok((b, d))
                     });
                 match bound {
@@ -1078,13 +1122,14 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
     })
 }
 
-/// `holon database add NAME PATH [--read-only] [--schema SQL | --schema-file FILE] [--for SLUG] |
+/// `holon database add NAME PATH [--read-only] [--schema SQL | --schema-file FILE] [--lock run] [--for SLUG] |
 /// list | remove NAME`: bind, show and unbind the databases of the server this user runs here (or
 /// `--server`), as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
     let mut server = None;
     let mut for_deployment: Option<String> = None;
     let mut read_only = false;
+    let mut lock = locks::Setting::Commit;
     let mut schema: Option<String> = None;
     let mut words = Vec::new();
     let mut args = args.iter();
@@ -1093,6 +1138,14 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             "--server" => server = args.next().cloned(),
             "--for" => for_deployment = args.next().cloned(),
             "--read-only" => read_only = true,
+            "--lock" => match args.next().map(String::as_str) {
+                Some("run") => lock = locks::Setting::Run,
+                Some("commit") => lock = locks::Setting::Commit,
+                _ => {
+                    eprintln!("holon database: --lock takes run (its runs hold it for their whole length) or commit");
+                    return 2;
+                }
+            },
             "--schema" => schema = args.next().cloned(),
             "--schema-file" => match args.next().map(std::fs::read_to_string) {
                 Some(Ok(s)) => schema = Some(s),
@@ -1120,7 +1173,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         ["list"] => ("GET", "/admin/databases".to_string(), None),
         ["add", name, target] => {
             let access = if read_only { FolderAccess::Read } else { FolderAccess::ReadWrite };
-            let mut body = serde_json::json!({ "name": name, "access": access, "schema": schema, "deployment": for_deployment });
+            let mut body = serde_json::json!({ "name": name, "access": access, "schema": schema, "lock": lock, "deployment": for_deployment });
             if target.starts_with("env:") || target.starts_with("vault:") {
                 body["connection"] = serde_json::json!(target);
             } else {
@@ -1148,7 +1201,8 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             Some(source) => format!("{} (from {source})", d["address"].as_str().unwrap_or("")),
             None => d["path"].as_str().unwrap_or("").to_string(),
         };
-        format!("{}  {} {at}  ({access}{only})", d["name"].as_str().unwrap_or(""), d["engine"].as_str().unwrap_or(""))
+        let lock = if d["lock"] == "run" { ", held for whole runs" } else { "" };
+        format!("{}  {} {at}  ({access}{lock}{only})", d["name"].as_str().unwrap_or(""), d["engine"].as_str().unwrap_or(""))
     };
     match words[0] {
         "list" => {
@@ -1170,7 +1224,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-const DATABASE_USAGE: &str = "usage: holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--for SLUG]
+const DATABASE_USAGE: &str = "usage: holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--lock run] [--for SLUG]
        holon database list
        holon database remove NAME [--for SLUG]
        (each takes --server PORT|URL)
@@ -1186,7 +1240,13 @@ const DATABASE_USAGE: &str = "usage: holon database add NAME PATH|SOURCE [--read
   there is none; without it, PATH must be a SQLite database already. --read-only: flows may read
   it, not write it. A writable database gets a table holon_commits, where each run's commit
   marks it done, so a run is never applied twice (and on MySQL a table holon_claims, whose rows'
-  locks are the claims of several servers). --for SLUG binds it for that deployment only.
+  locks are the claims of several servers). --lock run: each run that touches it holds it from
+  before it starts until it commits, fails or waits, shared if it only reads it, alone if it
+  may write it, so every run that writes it goes one at a time, for its whole length, across
+  every deployment bound to it (and, on Postgres or MySQL, every server); one that waits past
+  its claim_wait is turned away (503). For what a commit's check can't cover: a sequence's
+  next value, a queue, or contention so high that running again costs more than waiting.
+  --for SLUG binds it for that deployment only.
   Removing a binding leaves the database where it is; deployments that use it stop until it is
   bound again.";
 

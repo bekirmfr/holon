@@ -646,6 +646,37 @@ test("refund-once, beside orders-api on one database, calls the payment API once
   expect((await (await request.get(`${orders}/order/${order.id}`)).json()).refunded).toBe(1);
 });
 
+test("ticket-numbers, on a database held for whole runs, hands out twenty numbers at once one after the other, none running again", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "Ticket numbers (a database held for whole runs)");
+  const base = `http://127.0.0.1:${await deploy(page)}`;
+  const tag = `e2e-${Date.now()}`;
+  const taken = await Promise.all(Array.from({ length: 20 }, (_, i) => request.post(`${base}/ticket`, { data: { name: `${tag}-${i}` }, timeout: 60_000 })));
+  expect(taken.map((t) => t.status())).toEqual(taken.map(() => 201));
+  const numbers = (await Promise.all(taken.map((t) => t.json()))).map((t) => t.ticket);
+  expect(new Set(numbers).size).toBe(20);
+  const issued: { n: number; holder: string }[] = await (await request.get(`${base}/tickets`)).json();
+  expect(issued.filter((t) => t.holder.startsWith(tag)).map((t) => t.n).sort((a, b) => a - b)).toEqual([...numbers].sort((a, b) => a - b));
+
+  // Each run committed on its first try: the database was its alone from before it started.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "ticket-numbers.json");
+  execFileSync(holon, ["export", "ticket-numbers", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const runs: { route?: string; retries?: number }[] = JSON.parse(readFileSync(out, "utf8")).lines.map((l: string) => JSON.parse(l));
+  const posts = runs.filter((r) => r.route === "POST /ticket");
+  expect(posts.length).toBeGreaterThanOrEqual(20);
+  expect(posts.filter((r) => (r.retries ?? 0) > 0)).toEqual([]);
+
+  // The admin page says the database is held for whole runs.
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await expect(page.getByText(join(FOLDERS, "tickets.db"), { exact: true }).locator("..")).toContainText("held for whole runs");
+});
+
 test("drop-box runs once for a file dropped in its folder, sends it by handle, writes its receipt, and its runs verify", async ({ page, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
   const { existsSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");

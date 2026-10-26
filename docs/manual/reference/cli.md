@@ -147,7 +147,7 @@ it can't read.
 ## `holon folder`
 
 ```
-holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] [--for SLUG]
+holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] [--lock run] [--for SLUG]
 holon folder list
 holon folder remove NAME [--for SLUG]
 holon folder sweep
@@ -163,6 +163,7 @@ takes `--server PORT|URL`. See [Files on the host](../guides/files.md).
 | `--keep 30d` | the text for 30 days (`s`, `m`, `h`, `d`), then its hash |
 | `--cap 10M` | no write takes the folder past 10 MiB |
 | `--shared` | other servers bind it too: a commit also locks `.holon-tmp-commit.lock` in it |
+| `--lock run` | each run that touches it holds it for its whole length, shared to read, alone to write |
 | `--for SLUG` | for that deployment only |
 
 `sweep` removes, now, the file texts no kept run refers to (the server does it every ten
@@ -171,7 +172,7 @@ minutes).
 ## `holon database`
 
 ```
-holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--for SLUG]
+holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--lock run] [--for SLUG]
 holon database list
 holon database remove NAME [--for SLUG]
 ```
@@ -185,6 +186,7 @@ admin; each takes `--server PORT|URL`. See [Databases on the host](../guides/dat
 |---|---|
 | `--schema SQL`, `--schema-file FILE` | run it first, creating a SQLite file if there is none |
 | `--read-only` | flows may read it, not write it |
+| `--lock run` | each run that touches it holds it for its whole length, shared to read, alone to write |
 | `--for SLUG` | for that deployment only |
 
 ## `holon mcp`

@@ -30,6 +30,28 @@ use crate::*;
 
 /// The file in a folder whose OS lock stands for the folder's commit lock across servers.
 pub(crate) const LOCK_FILE: &str = ".holon-tmp-commit.lock";
+/// The file in a folder whose OS lock stands for its run lock across servers: another file than
+/// the commit lock's, since a run holding its run lock takes its commit lock too.
+pub(crate) const RUN_LOCK_FILE: &str = ".holon-tmp-run.lock";
+
+/// How long an admin has a resource's runs hold it (§7.3 of the databases L4): only across their
+/// commits (the default), or for their whole length (`run`): every run that touches it takes, before
+/// it starts, its run lock, shared if it only reads the resource and exclusive if it may write it,
+/// and holds it until it commits, fails or waits. Writers then go one at a time, across every
+/// deployment bound to it (and every server, on a Postgres or MySQL database or a shared folder).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Setting {
+    #[default]
+    Commit,
+    Run,
+}
+
+impl Setting {
+    pub(crate) fn is_commit(&self) -> bool {
+        *self == Setting::Commit
+    }
+}
 
 /// How a commit holds a resource. Which may be held at once:
 ///

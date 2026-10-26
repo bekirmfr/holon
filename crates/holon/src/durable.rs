@@ -527,7 +527,12 @@ pub(crate) fn resume_parked(
     {
         let mut table = deployments.lock().unwrap();
         if let Some(dep) = table.get_mut(slug) {
-            if run.waiting.is_empty() || run.error.is_some() {
+            // One turned away by a run lock (firing.rs) didn't run: it waits on, for its event
+            // to be delivered again.
+            let turned_away = run.error.as_deref().is_some_and(|e| e.starts_with("busy:"));
+            if turned_away {
+                eprintln!("holon: run {run_id} in {slug:?} waits on: its event can be delivered again");
+            } else if run.waiting.is_empty() || run.error.is_some() {
                 dep.parked.remove(run_id);
             } else if let Some(kept) = dep.parked.get_mut(run_id) {
                 // Still waiting: what it learned is kept; a point it was already waiting at keeps

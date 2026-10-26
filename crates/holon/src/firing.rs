@@ -124,6 +124,14 @@ pub(crate) fn fire_with_state(
         run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior, claim)
     };
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
+    // A resumed run keeps the nonce it started with: it is the same run.
+    let nonce = resumed.as_ref().map_or_else(new_nonce, |r| r.nonce);
+    // The resources an admin set to `run` it holds from before it starts until it returns (it
+    // commits, fails or waits); one held by others' runs past its claim_wait turns it away.
+    let _run_locked = match RunLocked::take(waits.folders.as_deref(), permit, format!("run:{}", hex_bytes(&nonce)), std::time::Instant::now() + limits.claim_wait) {
+        Ok(held) => held,
+        Err(resource) => return turned_away(permit, inputs, extra_sourced, &nonce, &resource),
+    };
     // A resumed run is the same run it started as: pinned to the state it first read, run once,
     // its writes landing on the live state when it finishes.
     if let Some(r) = resumed {
@@ -148,7 +156,6 @@ pub(crate) fn fire_with_state(
         }
         return run;
     }
-    let nonce = new_nonce();
     let Some(cell) = state else {
         return attempt(None, &nonce, Vec::new(), waits, None).run;
     };
@@ -287,6 +294,65 @@ pub(crate) fn fire_with_state(
     a.run.retries = OPTIMISTIC_ATTEMPTS;
     a.run.claims = records;
     a.run
+}
+
+/// The run locks (§7.3) a run holds for its whole length: on each resource it touches that an
+/// admin set to `run`, shared if it only reads it and exclusive if it may write it, in the server's
+/// table (and a shared folder's file), and in each Postgres or MySQL database among them, for the
+/// runs of other servers. Let go when dropped.
+struct RunLocked {
+    _guards: Vec<locks::Guard>,
+    remote: Vec<(Arc<engines::Remote>, bool)>,
+    holder: String,
+}
+
+impl RunLocked {
+    /// Take every one the grant's resources need, in the order of their addresses, waiting until
+    /// `deadline` at most: past it, none is held, and the error names the resource it waited for.
+    /// None to take: none held.
+    fn take(folders: Option<&folders::Scoped>, permit: &Permit, holder: String, deadline: std::time::Instant) -> Result<Option<RunLocked>, String> {
+        let Some(f) = folders else { return Ok(None) };
+        let mut wanted = f.whole_run_locks(&permit.folders_handed(), &permit.folders_written());
+        let databases = |tables: BTreeSet<String>| tables.into_iter().map(|t| t.split('/').next().unwrap_or(&t).to_string()).collect::<BTreeSet<String>>();
+        let (in_databases, remote) = f.all.databases.whole_run_locks(&f.deployment, &databases(permit.tables_read()), &databases(permit.tables_written()));
+        wanted.extend(in_databases);
+        if wanted.is_empty() {
+            return Ok(None);
+        }
+        let mut held = RunLocked { _guards: f.all.locks.take(wanted, deadline)?, remote: Vec::new(), holder };
+        for (database, exclusive, label) in remote {
+            while !database.hold_run(&held.holder, exclusive) {
+                if std::time::Instant::now() + claims::POLL >= deadline {
+                    return Err(label);
+                }
+                std::thread::sleep(claims::POLL);
+            }
+            held.remote.push((database, exclusive));
+        }
+        Ok(Some(held))
+    }
+}
+
+impl Drop for RunLocked {
+    fn drop(&mut self) {
+        for (database, exclusive) in &self.remote {
+            database.let_go_run(&self.holder, *exclusive);
+        }
+    }
+}
+
+/// A run turned away before it started: `resource`, which an admin set to `run`, was held by other
+/// runs past its `claim_wait`. It did nothing, and says so as a busy claim does: a request answers
+/// 503, a clock tick is skipped, both logged.
+fn turned_away(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capability, Value)], nonce: &[u8; 16], resource: &str) -> FiredRun {
+    let mut run = FiredRun::nothing();
+    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce));
+    run.unit = to_hex(&permit.deployment);
+    run.nonce = hex_bytes(nonce);
+    run.grant = permit.grant.clone();
+    run.error = Some(format!("busy: {resource} is held by another run for its whole length (its run lock) past claim_wait"));
+    eprintln!("holon: run {} turned away: {resource} is run-locked by another run past claim_wait", run.run_id);
+    run
 }
 
 /// What a run whose writes didn't all land says: the run happened, and these didn't.

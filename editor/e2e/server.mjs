@@ -118,4 +118,16 @@ if (!fresh) {
     }),
   });
   if (!shop.ok) console.error(`e2e server: binding the database shop failed: ${await shop.text()}`);
+  // The ticket-numbers sample's, held for whole runs (an admin's setting: locks.rs).
+  const tickets = await fetch(`${base}/admin/databases`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: "tickets",
+      path: join(folders, "tickets.db"),
+      lock: "run",
+      schema: "create table if not exists counter (id integer primary key, n integer not null); insert or ignore into counter values (1, 0); create table if not exists issued (n integer primary key, holder text not null)",
+    }),
+  });
+  if (!tickets.ok) console.error(`e2e server: binding the database tickets failed: ${await tickets.text()}`);
 }

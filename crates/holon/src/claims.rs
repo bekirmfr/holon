@@ -98,7 +98,7 @@ impl fmt::Display for ClaimKey {
 }
 
 /// How often a run waiting for a claim another server's run holds asks its database again.
-const POLL: Duration = Duration::from_millis(20);
+pub(crate) const POLL: Duration = Duration::from_millis(20);
 
 /// Hold the shared resources' `keys` for `run`: in the server's table, then in each Postgres or
 /// MySQL database they are in, for the runs of other servers. With a `deadline`, waits until then

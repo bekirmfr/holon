@@ -1,12 +1,13 @@
 # Databases: SQL and documents as host resources, and how runs share what they write (L4)
 
-**Status:** slices 1 to 4 built (2026-10-26): commit locks per file, with intent locks on the
+**Status:** slices 1 to 5 built (2026-10-26): commit locks per file, with intent locks on the
 folder (`locks.rs`, §7.1); SQLite databases (`databases.rs`, the `database` header,
 `db_query`/`db_one`/`db_exec`, `DbLimits`, the commit transaction with `holon_commits`; sample
 `orders-api`, guide `docs/manual/guides/databases.md`); and claims on rows, tables, files and
 folders in the server's table (`claims.rs`, §7.2; sample `refund-once`); Postgres and MySQL
-(`engines.rs`, §8), with claims held in the database for several servers. A database's reads are
-logged whole: its `keep` (§5) isn't built. Slices 5 to 7 are design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
+(`engines.rs`, §8), with claims held in the database for several servers; and run locks, an
+admin's setting on a database or folder (`--lock run`, §7.3; sample `ticket-numbers`). A
+database's reads are logged whole: its `keep` (§5) isn't built. Slices 6 and 7 are design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
 [host resources](host-resources-L4.md) (also design only: resources the host defines, their
 addresses and timeline) and [key claims](key-claims-L4.md) (built: `claims.rs`).
 
@@ -399,6 +400,22 @@ the manifest, in resource-id order, held until it commits, fails or parks.
 - **Bounded as a claim is:** the wait counts against `claim_wait`; past it a request is turned
   away as busy, a 503 naming the resource, as `busy_after_claim_wait` does for a key, and a clock
   tick is skipped and logged.
+- **Built (slice 5):** the setting is `"lock": "run"` on a database's or folder's binding
+  (`locks::Setting`; `holon database add … --lock run`, `holon folder add … --lock run`, a
+  checkbox on the admin page, which says the cost), shown in listings as "held for whole runs".
+  `fire_with_state` takes the locks first, before a resumed run's branch too, and holds them
+  until it returns (`RunLocked`): in the server's lock table (locks.rs) under addresses of their
+  own (`run:db:…`, `run:folder:…`), so a run's own commit locks never wait for its run lock; for
+  a folder bound `shared`, also an OS lock on `.holon-tmp-run.lock` in it (not the commit lock's
+  file, since one run holds both); for a Postgres or MySQL database, also in the database (one
+  more named lock beside the claims', `engines.rs`), tried every 20 ms. Shared or exclusive from
+  the grant: a database or folder the flow may write is held exclusive by every run of it. A run
+  turned away has done nothing; its log entry says `busy: the database "shop" is held by another
+  run for its whole length …`, and a request answers 503. A resumed run turned away keeps
+  waiting, so its event can be delivered again (slice 6 makes a resumed run's shared reads
+  right). On MySQL a lock's `holon_claims` row is made only when it doesn't exist: an
+  `insert ignore` that finds the row another server holds waits for it, past any `claim_wait`
+  (slice 4's claims did; now fixed). SQLite's run lock is one server's, as its claims are.
 
 ### 7.4 Durable runs
 
@@ -468,6 +485,9 @@ end-to-end tests:
   payment API (an httpbin stand-in) once; the second reads the order as refunded. The database
   form of `idempotent` and `cache-aside`.
 - **slice 4:** `orders-api` on Postgres, the same text, the resource's engine changed.
+- **slice 5, `ticket-numbers`:** numbered tickets from one counter row, on a database bound
+  `--lock run`: twenty requests at once take twenty numbers one after the other, each run
+  committing on its first try.
 - **slice 7, `atlas-notes`:** notes kept in a MongoDB collection.
 
 ## 11. Tests

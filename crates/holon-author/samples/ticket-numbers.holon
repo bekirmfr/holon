@@ -1,0 +1,14 @@
+flow ticket-numbers
+port 8152
+database tickets
+
+route POST /ticket (req) {
+  last = tickets.one("select n from counter where id = $1", 1)
+  tickets.exec("update counter set n = $1 where id = $2", last.n + 1, 1, expect: 1)
+  tickets.exec("insert into issued (n, holder) values ($1, $2)", last.n + 1, req.json.name)
+  respond { ticket: last.n + 1 }, status: 201
+}
+
+route GET /tickets (req) {
+  respond tickets.query("select n, holder from issued order by n")
+}
