@@ -117,6 +117,9 @@ pub(crate) fn address_of(url: &str) -> Result<(Engine, String), String> {
             let config: postgres::Config = url.parse().map_err(|e| format!("the connection isn't a Postgres URL: {e}"))?;
             let host = match config.get_hosts().first() {
                 Some(postgres::config::Host::Tcp(h)) => h.to_lowercase(),
+                // A Unix socket's folder (`host=/run/postgresql`), a host there is only on Unix.
+                #[cfg(unix)]
+                Some(postgres::config::Host::Unix(path)) => path.display().to_string(),
                 None => "localhost".to_string(),
             };
             let port = config.get_ports().first().copied().unwrap_or(5432);
