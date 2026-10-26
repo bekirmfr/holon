@@ -135,6 +135,8 @@ export function DeployBar({
   };
   useEffect(reloadSecrets, [open, slug]);
   const req = settings.requirements;
+  const noPlainHttp = policy !== null && !policy.allow_plain_http;
+  const hasPlainHttp = (req?.plain_http ?? []).length > 0;
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
   const title = entry
@@ -269,15 +271,17 @@ export function DeployBar({
               <input
                 value={(req?.plain_http ?? []).join(", ")}
                 placeholder="none"
-                disabled={policy !== null && !policy.allow_plain_http}
-                title={policy && !policy.allow_plain_http ? "this host never grants plain HTTP" : "comma-separated host[:port]"}
+                autoComplete="off"
+                // A host this policy refuses stays here to be cleared, not greyed out with it.
+                disabled={noPlainHttp && !hasPlainHttp}
+                title={noPlainHttp ? "this host never grants plain HTTP" + (hasPlainHttp ? ": clear this to deploy" : "") : "comma-separated host[:port]"}
                 onChange={(e) =>
                   setSettings({
                     ...settings,
                     requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
                   })
                 }
-                style={{ ...input, width: 140 }}
+                style={{ ...input, width: 140, ...(noPlainHttp && hasPlainHttp ? { borderColor: "#e0916f" } : {}) }}
               />
               <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
               <input
@@ -395,7 +399,10 @@ function SecretRow({ slug, name, info, onChanged }: { slug: string | null; name:
         </select>
         <input
           type={kind === "value" ? "password" : "text"}
-          autoComplete="off"
+          // Not a sign-in: a browser's saved login would fill this, and its name the field before.
+          autoComplete={kind === "value" ? "new-password" : "off"}
+          data-1p-ignore
+          data-lpignore="true"
           value={text}
           placeholder={k.placeholder(name, !!info)}
           disabled={!slug}

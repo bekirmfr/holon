@@ -429,8 +429,13 @@ impl Policy {
                 _ => None,
             };
         }
-        if item.starts_with("PlainHttp(") && !self.allow_plain_http {
-            return Some("this host never grants plain HTTP (holon.toml: grants.allow_plain_http)".into());
+        // The host by name: it comes from the deploy settings, not the flow.
+        if let Some(host) = item.strip_prefix("PlainHttp(").and_then(|h| h.strip_suffix(')'))
+            && !self.allow_plain_http
+        {
+            return Some(format!(
+                "this host never grants plain HTTP, asked for {host} (the deploy settings' \"plain HTTP to\"; holon.toml: grants.allow_plain_http)"
+            ));
         }
         if item == "PrivateAddresses" && !self.allow_private_addresses {
             return Some("this host never grants private addresses (holon.toml: grants.allow_private_addresses)".into());

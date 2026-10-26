@@ -819,6 +819,9 @@ fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
     assert!(body_json(huge)["error"].as_str().unwrap().contains("ceiling of 1000"));
     let private = deploy_json(&state, "w", writer, serde_json::json!({ "requirements": { "private_addresses": true } }));
     assert!(body_json(private)["error"].as_str().unwrap().contains("never grants private addresses"));
+    let plain = deploy_json(&state, "w", writer, serde_json::json!({ "requirements": { "plain_http": ["bma"] } }));
+    let message = body_json(plain)["error"].as_str().unwrap().to_string();
+    assert!(message.contains("never grants plain HTTP, asked for \"bma\"") && message.contains("plain HTTP to"), "{message}");
     // A preview says what a deploy would ask for, and changes nothing.
     let preview = |extra: serde_json::Value| {
         let mut body = serde_json::json!({ "slug": "w", "unit": to_hex(&writer) });
