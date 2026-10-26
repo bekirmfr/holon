@@ -38,6 +38,17 @@ async function deploy(page: Page, by = 1000, set?: (settings: Locator) => Promis
   return port;
 }
 
+/** Wait until text typed into the Text pane has compiled: ⚙ then says its port. Opened again if a
+ *  compile that lands after the click rebuilds the canvas and closes it. */
+async function settingsSayPort(page: Page, port: string) {
+  const settings = page.getByRole("dialog", { name: "deploy settings" });
+  await expect(async () => {
+    if (!(await settings.isVisible())) await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
+    await expect(settings.locator("input").first()).toHaveValue(port, { timeout: 1_000 });
+  }).toPass({ timeout: 15_000 });
+  await settings.getByRole("button", { name: "done" }).click();
+}
+
 /** Drop the palette entry `entry` (a primitive's name, or `flow:<name>` for a saved flow) on the
  *  canvas, as dragging it from the palette does: with the palette's own drag data, so it can't
  *  pick up a neighbouring row. */
@@ -525,11 +536,7 @@ data: ${JSON.stringify(data)}
     await editor.click();
     await page.keyboard.press("Control+A");
     await page.keyboard.insertText(text.replaceAll('"api.anthropic.com"', `"${host}"`).replace("port 8127", "port 9127"));
-    // Compiled once ⚙ says the text's port.
-    await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
-    const settings = page.getByRole("dialog", { name: "deploy settings" });
-    await expect(settings.locator("input").first()).toHaveValue("9127");
-    await settings.getByRole("button", { name: "done" }).click();
+    await settingsSayPort(page, "9127");
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
       await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
@@ -617,10 +624,7 @@ test("gemini-chat forwards Gemini's streamed answer as it arrives, and says so w
     await editor.click();
     await page.keyboard.press("Control+A");
     await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8128", "port 9128"));
-    await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
-    const settings = page.getByRole("dialog", { name: "deploy settings" });
-    await expect(settings.locator("input").first()).toHaveValue("9128");
-    await settings.getByRole("button", { name: "done" }).click();
+    await settingsSayPort(page, "9128");
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
       await settings.getByText("private addresses", { exact: true }).locator("xpath=following-sibling::input[1]").check();
