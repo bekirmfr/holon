@@ -72,7 +72,10 @@ holon database add ledger vault:secret/payments/ledger#url --read-only
 ### MongoDB
 
 A MongoDB is bound the same way, by where its URL is fetched from: Atlas's `mongodb+srv://`
-address, or `mongodb://` for one of your own. The URL names the database.
+address, or `mongodb://` for one of your own. The URL names the database: Atlas's "Connect"
+gives one without, ending `.mongodb.net/?…`, so put the name after the `/`. It also gives
+`<db_password>` where the password goes: a URL bound with that (or another provider's
+`[YOUR-PASSWORD]`) still in it is turned away, saying so, before it is tried.
 
 ```sh
 export HOLON_SECRET_NOTES_URL='mongodb+srv://notes:…@cluster0.example.mongodb.net/notes'

@@ -260,6 +260,9 @@ impl Databases {
     fn open_remote(&self, source: &str, access: FolderAccess, schema: Option<&str>, lock: locks::Setting) -> Result<(Database, Open), String> {
         let reference = Reference::parse(source)?;
         let url = self.sources.fetch(&reference)?;
+        if has_placeholder(&url) {
+            return Err(format!("{source} gives a URL whose user or password is still a placeholder (Atlas's <db_password>, say): put the database user's own in its place, percent-encoded (@ as %40), and bind it again"));
+        }
         if crate::mongo::is_mongo(&url) {
             if schema.is_some() {
                 return Err("a MongoDB database has no schema to run: its collections are made as documents are written (and its indexes are the admin's, made in MongoDB)".into());
@@ -495,6 +498,15 @@ fn real_file(path: &Path) -> PathBuf {
         (Some(dir), Some(name)) => dir.join(name),
         _ => std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
     }
+}
+
+/// Whether a connection URL's user or password is still a provider's placeholder, as Atlas's
+/// `<db_password>` or `[YOUR-PASSWORD]`: `<`, `>`, `[` and `]` are never in a URL's user info
+/// unencoded, so one there was pasted as shown, not filled in. Says nothing of the password.
+fn has_placeholder(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else { return false };
+    let authority = rest.split(['/', '?']).next().unwrap_or("");
+    authority.rsplit_once('@').is_some_and(|(user_info, _)| user_info.contains(['<', '>', '[', ']']))
 }
 
 fn unbound(name: &str, deployment: &str) -> String {

@@ -5281,3 +5281,24 @@ fn a_mongodb_binds_without_a_schema() {
     let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
     assert!(said.contains("can't be reached") && !said.contains("hunter2"), "{said}");
 }
+
+/// A URL pasted with its provider's placeholder still in it (Atlas's `<db_password>`, another's
+/// `[YOUR-PASSWORD]`) is turned away before it is tried, saying so and showing none of the URL;
+/// the same characters percent-encoded, as a real password's are, are tried.
+#[test]
+fn a_connection_whose_password_is_still_a_placeholder_says_so() {
+    for url in [
+        "mongodb+srv://ada:<db_password>@cluster0.abc12.mongodb.net/notes?retryWrites=true",
+        "postgres://<username>:hunter2@db.example.com:5432/shop",
+        "postgresql://postgres:[YOUR-PASSWORD]@db.abc12.supabase.co:5432/postgres",
+    ] {
+        let r = bind_notes(&server_with_database(url));
+        let status = r.status_code;
+        let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
+        assert!(status >= 400 && said.contains("still a placeholder") && said.contains("env:HOLON_SECRET_SHOP_URL"), "{status} {said}");
+        assert!(!said.contains("example.com") && !said.contains("abc12") && !said.contains("hunter2"), "none of the URL: {said}");
+    }
+    let r = bind_notes(&server_with_database("mongodb://ada:%3Cpw%3E@127.0.0.1:1/notes?serverSelectionTimeoutMS=500"));
+    let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
+    assert!(said.contains("can't be reached") && !said.contains("placeholder"), "{said}");
+}
