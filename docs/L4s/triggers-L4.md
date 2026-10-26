@@ -311,7 +311,7 @@ A flow is its headers, its definitions (`holon`), and its **handlers**. There ar
 - **Routes are the only handlers the network reaches.** A clock and a file have no caller. An
   action has callers, all through Holon, and its grant says which (§5).
 
-The **old forms stay**, as the one-handler case, lowered as they are apart from the sinks' trigger
+The **old forms stay**, as the one-handler case, lowered as they are, their sinks' triggers open
 (§3):
 
 - `every 10s` with top-level statements is a flow with one clock handler, lowered as today: the
@@ -388,18 +388,21 @@ same thing, and no node belongs to a handler by a field you can't see.
 
 - **`after` ties a sink to something else,** any value: `state.last = id after saved`, or
   `posts.put(k, v) after x`. It is not a node. It is how the text writes the trigger wire, and
-  `fmt` prints it only when the trigger isn't the block's own. Because an absent trigger means no
+  `fmt` prints it only when the trigger isn't the block's own. What it names is a statement of its
+  own, before it, never written inline in the clause. An effect read only by a trigger is still
+  performed: a trigger waits for it, it doesn't take it in (encapsulate.rs `default_spec`). Because an absent trigger means no
   write, `after found` is "write only if the lookup found something". `after` stays a name
   everywhere else (`list(after: …)`, `req.query.after`); it is a keyword only as the clause after
   a sink.
 - **A tick's value is its time.** The `every` block's trigger node is a `now` read (the `clock`
   leaf), so sinks have something to tie to without the handler taking an input (fork 8 stands).
-  The old forms tie likewise:
-  - a clock flow's sinks to a `now` read. The lowering places one `clock` leaf per `now` written
-    (lower.rs 1161) and none otherwise, so it adds one for a flow without `now`;
-  - a file flow's to its `ingress`: one `file_arrival` per `on file` line, folded into a
-    `coalesce` chain (lower.rs 1271–1295), so the tie is the chain's output;
-  - a by-hand flow's to its `ingress` leaf (lower.rs 1290).
+- **The old forms stay untied** (as built in slice 1). A clock flow, a file flow, a by-hand flow
+  and a flow of top-level statements are each one run of the whole canvas, so their sinks run
+  with it through the open trigger below, as they did. Their ties come with the blocks of slices
+  2–4, which replace them.
+- **The wiring form ties nothing.** It is the graph as written: a tie there is a wire,
+  `in.trigger -> w.trigger`, and a holon in it gets no trigger it doesn't declare. `fmt` writes a
+  holon with an open sink inside (a canvas group) in that form, so it reads back untied.
 - **A holon with a sink gets a `trigger` input,** last, whether the sink is in its body or in a
   holon it places. Its sinks are wired to it, and a placement wires it to the block's trigger, so
   `bump()` in a route is tied. `bump() after x` ties it to something else. It is the one port a
@@ -411,22 +414,27 @@ same thing, and no node belongs to a handler by a field you can't see.
 - **Two handlers still may not share a node.** A node wired to two triggers joins their groups,
   which is an error, as two requests wired together are today (routes.rs 81).
 
-The trigger is not one of today's optional inputs (`has_optional_ports`, primitives.rs 804). An
-unwired optional input reads as "none" and the leaf still fires (an `http_request` with no headers
-sends `{}`, primitives.rs 824–834). So a sink with its trigger left unwired would still write, and
-what it belongs to would be invisible again. The trigger is required, and the lowering always
-wires it.
+**What core does with it, as built.** The trigger is never read: a sink drops it before it
+computes (`takes_trigger`, eval.rs and eager.rs), so it computes on its own inputs as it always
+did. Wired and absent, it holds the sink back, as a wired optional input does (the hold, eval.rs).
+Left unwired, it is open, and the sink runs with the unit around it, as an unwired optional input
+lets a leaf fire. A holon's own trigger left unwired reads as present (`open_trigger`), so its
+sinks run as a leaf's would. Open is what keeps a whole-canvas flow and a node just dropped on the
+canvas working. It doesn't make membership invisible again: the lowering ties every sink a block
+places, and the canvas flags an open trigger on a canvas that has a trigger to tie it to (§7).
 
 Saved flows need a migration, because a saved flow is its graph. The editor saves a `FlowDocument`
 of React Flow nodes and edges, with the text only as an optional `source` (`useSavedFlows.ts`
 97–130, `server.ts` 750–776; the server keeps it as opaque JSON, `holon/src/flows.rs` 5–7). A
 placed leaf's unit is rebuilt from the ports stored in its own node data, not from the catalog
 (`holon-author/src/canvas.rs` 38–40, `flow.rs` 33–40), and nothing refreshes them on load
-(`tabs.ts` 179–214). So on load, an old sink gets its `trigger` port added to its stored inputs,
-then the wire to its group's trigger. Loading goes through `tabFromDocument` (`tabs.ts` 179: open,
-import, mode switch) and `flowAsNode` (`canvasOps.ts` 231: placing a saved flow as a holon).
-Samples are compiled from text and need none. Deployments from before are not migrated: they are
-removed and deployed again (Holon is in development).
+(`tabs.ts` 179–214). So on load (`tabFromDocument`: open, import, mode switch), an old sink gets
+its `trigger` port added to its stored inputs, then the wire from its route's request when it is
+in a route's group (`canvasOps.withTriggers`); one in no group stays open. Placing a saved flow as
+a holon (`flowAsNode`) needs none: a sink saved without the port is not a sink with its trigger
+to core (`takes_trigger` reads the last input's name), so it computes as it did. Samples are
+compiled from text and need none. Deployments from before are not migrated: they are removed and
+deployed again (Holon is in development).
 
 ## 4. The units
 
@@ -585,7 +593,7 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
 
 | slice | what lands | sample |
 |---|---|---|
-| 1. Every sink takes its trigger | the `trigger` input on the seventeen sinks (the catalog, `docs/manual/language/leaves.md` blessed by `crates/holon-author/tests/manual.rs`, the wasm parity checks in `holon-wasm/src/lib.rs`), the lowering's tie, `after`, a holon's `trigger` port, the old forms' ties, the migration of saved graphs, the canvas's trigger ports and quick fix | `counter`: a route that counts its hits with no wire to the request in its text, and records the last id `after` the put |
+| 1. Every sink takes its trigger | the `trigger` input on the seventeen sinks (the catalog, `docs/manual/language/leaves.md` blessed by `crates/holon-author/tests/manual.rs`, the wasm parity checks in `holon-wasm/src/lib.rs`), the lowering's tie, `after`, a holon's `trigger` port, the migration of saved graphs, the canvas's trigger ports and quick fix | `counter`: a route that counts its hits with no wire to the request in its text, and records the last id `after` the put |
 | 2. Clock blocks | `every … { }`, `declare=every`, deploy and the manifest's triggers, a `next_due` per handler, the log label, verify and replay by label, "tick now" | `ticker` without its action: a page that adds each tick as it arrives |
 | 3. File blocks | `on file … (f) { }`, `declare=on_file`, arrivals for servers, the handle as an input | `drop-board` (new, beside today's `drop-box`): files dropped in a folder show on a live page (`on file drop (f)` sends on a channel, `GET /live` subscribes) |
 | 4. Actions | `action … (x) { }`, `declare=action`, `Action(name)`, `/trigger/<slug>/<name>`, `LogEntry.by`, the agents' actions in the grant, the run rows in the handlers panel and on the deployed page, the no-trigger error naming `action run` and its quick fix | `ticker`'s `reset`, the flow at the top of this L4 |

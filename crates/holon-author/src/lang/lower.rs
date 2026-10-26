@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
-use holon_core::{interface_of, PASSES_EXTRA, VARIADIC};
+use holon_core::{interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
 use serde_json::json;
 
 use super::ast::*;
@@ -98,7 +98,8 @@ fn piped(d: &crate::canvas::NodeData) -> bool {
 /// Inputs a node works without, left unwired (routes.rs `is_optional_input`, core's
 /// `has_optional_ports`).
 fn is_optional(leaf: &str, input: &str) -> bool {
-    matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
+    input == TRIGGER
+        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
 }
 
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
@@ -506,7 +507,41 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// A statement, its sinks tied to what `after` names when it has one; the rest are tied to the
+    /// block's trigger when the block ends (`route`, `holon`).
     fn stmt(&mut self, s: &'a Stmt) -> R<()> {
+        let Some(after) = &s.after else { return self.stmt_kind(s) };
+        let before = self.cur().created.len();
+        self.stmt_kind(s)?;
+        let placed: Vec<String> = self.cur().created[before..].to_vec();
+        let sinks: Vec<String> = placed.into_iter().filter(|id| self.untied(id)).collect();
+        if sinks.is_empty() {
+            return err(after.span, "`after` ties a write or a call to what it names: this statement makes none");
+        }
+        let v = self.expr(after)?;
+        for id in &sinks {
+            self.connect(&v, id, TRIGGER, after.span)?;
+        }
+        Ok(())
+    }
+
+    /// Whether node `id` takes a trigger (a sink, or a holon with one) that nothing feeds yet.
+    fn untied(&self, id: &str) -> bool {
+        self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER))
+            && !self.b.is_wired(id, TRIGGER)
+            && !self.cur().wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER)
+    }
+
+    /// Every sink placed in this block and not tied by `after`, tied to `v`: the block's trigger.
+    fn tie_block(&mut self, v: &Val, span: Span) -> R<bool> {
+        let untied: Vec<String> = self.cur().created.iter().filter(|id| self.untied(id)).cloned().collect();
+        for id in &untied {
+            self.connect(v, id, TRIGGER, span)?;
+        }
+        Ok(!untied.is_empty())
+    }
+
+    fn stmt_kind(&mut self, s: &'a Stmt) -> R<()> {
         match &s.kind {
             StmtKind::Bind { name, value } => {
                 // In a holon, a declared output is bound here.
@@ -837,6 +872,16 @@ impl<'a> Lowerer<'a> {
         for s in &r.body {
             self.stmt(s)?;
         }
+        // Every sink of the route is tied to its request (docs/L4s/triggers-L4.md §3).
+        let request = self.cur().env.get(&r.request.text).cloned().filter(|v| matches!(v, Val::Out { .. }));
+        let request = match request {
+            Some(Val::Out { id, outputs, .. }) => Val::Out { port: outputs.iter().position(|p| p.name == "request").unwrap_or(0), id, outputs, explicit: true },
+            _ => self.out(&match &self.cur().kind {
+                FrameKind::Route { request, .. } => request.clone(),
+                _ => unreachable!("a route's frame"),
+            }),
+        };
+        self.tie_block(&request, r.method.span.to(r.path.span))?;
         let frame = self.frames.pop().expect("the route's frame");
         // A streamed call is forwarded to the caller: the route says so where it answers.
         let streams: Vec<&String> = frame.created.iter().filter(|id| self.b.data(id).is_some_and(|d| d.name == "http_stream" && !piped(d))).collect();
@@ -908,7 +953,17 @@ impl<'a> Lowerer<'a> {
             }
         }
         self.frames.push(frame);
-        let result = self.holon_body(def);
+        let mut result = self.holon_body(def);
+        // Its sinks are tied to its trigger: the input named so when it declares one, else one it
+        // gets last, which a placement ties to the block it is placed in. (The wiring form is the
+        // graph as written: a tie there is a wire, `in.trigger -> w.trigger`, so nothing is added.)
+        let mut implicit_trigger = false;
+        if result.is_ok() && !self.cur().wiring_form {
+            match self.tie_block(&Val::In(TRIGGER.into()), def.name.span) {
+                Ok(tied) => implicit_trigger = tied && !def.inputs.iter().any(|p| p.name.text == TRIGGER),
+                Err(e) => result = Err(e),
+            }
+        }
         let frame = self.frames.pop().expect("the holon's frame");
         self.in_progress.remove(name);
         result?;
@@ -966,7 +1021,10 @@ impl<'a> Lowerer<'a> {
                 wiring_out.push((id.clone(), output, pname.clone()));
                 outputs.push(HolonPort { name: pname, unit: None });
             }
-            let inputs: Vec<HolonPort> = def.inputs.iter().map(|p| HolonPort { name: p.name.text.clone(), unit: p.unit.clone() }).collect();
+            let mut inputs: Vec<HolonPort> = def.inputs.iter().map(|p| HolonPort { name: p.name.text.clone(), unit: p.unit.clone() }).collect();
+            if implicit_trigger {
+                inputs.push(HolonPort { name: TRIGGER.into(), unit: None });
+            }
             // Inputs in declared order, as the boundary lists them.
             wiring_in.sort_by_key(|(port, _, _)| inputs.iter().position(|p| p.name == *port));
             self.b.end_holon_exact(name, &inputs, &outputs, &wiring_in, &wiring_out).or_else(|e| err(def.name.span, e))?
@@ -1053,14 +1111,16 @@ impl<'a> Lowerer<'a> {
     fn place(&mut self, name: &Name, args: &'a [Arg], span: Span) -> R<Val> {
         let h = self.holon(&name.text, name.span)?;
         let mut given: Vec<Option<&'a Expr>> = vec![None; h.inputs.len()];
+        // Positional arguments fill the inputs in order, the trigger aside: the block ties it.
+        let fillable: Vec<usize> = (0..h.inputs.len()).filter(|&k| h.inputs[k].name != TRIGGER).collect();
         let mut positional = 0;
         for a in args {
             match &a.name {
                 None => {
-                    if positional >= h.inputs.len() {
-                        return err(a.value.span, format!("\"{}\" takes {} inputs", name.text, h.inputs.len()));
-                    }
-                    given[positional] = Some(&a.value);
+                    let Some(&k) = fillable.get(positional) else {
+                        return err(a.value.span, format!("\"{}\" takes {} inputs", name.text, fillable.len()));
+                    };
+                    given[k] = Some(&a.value);
                     positional += 1;
                 }
                 Some(n) => match h.inputs.iter().position(|p| p.name == n.text) {
@@ -1074,6 +1134,7 @@ impl<'a> Lowerer<'a> {
             .inputs
             .iter()
             .zip(&given)
+            .filter(|(p, g)| g.is_some() || p.name != TRIGGER)
             .map(|(p, g)| match g {
                 Some(e) => Ok((p.name.clone(), self.expr(e)?)),
                 None => err(span, format!("\"{}\": the input \"{}\" can't be left out", name.text, p.name)),
@@ -1809,6 +1870,8 @@ impl<'a> Lowerer<'a> {
         let mut function: Option<(usize, Vec<Val>, Span)> = None;
         let mut positional = 0;
         let zero_input = inputs.is_empty();
+        // A sink's trigger, last, is never an argument in order: the block or `after` ties it.
+        let fillable = if inputs.last().is_some_and(|p| p.name == TRIGGER) { inputs.len() - 1 } else { inputs.len() };
         for a in args {
             match &a.name {
                 None if zero_input => {
@@ -1819,12 +1882,12 @@ impl<'a> Lowerer<'a> {
                     params.push((p.name().to_string(), self.literal_text(&a.value)?));
                 }
                 None => {
-                    if positional < inputs.len() {
+                    if positional < fillable {
                         given[positional] = Some(&a.value);
                     } else if variadic {
                         extra.push(&a.value);
                     } else {
-                        return err(a.value.span, format!("\"{leaf}\" takes {} inputs, {} given", inputs.len(), positional + 1));
+                        return err(a.value.span, format!("\"{leaf}\" takes {fillable} inputs, {} given", positional + 1));
                     }
                     positional += 1;
                 }
@@ -2218,6 +2281,32 @@ pub(crate) mod tests {
         assert_eq!(outs, ["receipt", "put", "write"]);
     }
 
+    /// A route's sinks are tied to its request; `after x` ties a statement's to x instead; a
+    /// holon's to its own trigger, an input it gets last, which the block placing it ties.
+    #[test]
+    fn sinks_are_tied_to_their_block_or_to_what_after_names() {
+        let src = "collection c\n\nholon keep(v) -> saved {\n  saved = state.set(last, v)\n}\n\nroute POST /v/:id (req) {\n  id = req.params.id\n  put = c.put(id, 1)\n  state.last = id after put\n  keep(id)\n  respond id\n}";
+        let d = compiled(src).doc;
+        let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
+        let tie = |leaf: &str| {
+            let n = d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+            let w = d.edges.iter().find(|w| w.target == n.id && w.input() == TRIGGER).unwrap_or_else(|| panic!("{leaf} is tied"));
+            (node(&w.source).data.name.clone(), w.output().to_string())
+        };
+        assert_eq!(tie("collection_put"), ("request".into(), "request".into()));
+        assert_eq!(tie("store_write"), ("collection_put".into(), "out".into()), "after put");
+        assert_eq!(tie("keep"), ("request".into(), "request".into()), "the placed holon");
+        let keep = d.nodes.iter().find(|n| n.data.name == "keep").unwrap();
+        assert_eq!(keep.data.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["v", TRIGGER]);
+        // One that declares its trigger uses it; a holon with no sink takes none.
+        let d = compiled("holon keep(v, trigger) -> saved {\n  saved = state.set(last, v)\n}\nholon twice(n) -> m {\n  m = n * 2\n}\nkeep(twice(1), trigger: 2)").doc;
+        let ins = |name: &str| d.nodes.iter().find(|n| n.data.name == name).unwrap().data.inputs.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        assert_eq!(ins("keep"), ["v", TRIGGER]);
+        assert_eq!(ins("twice"), ["n"]);
+        // `after` on a statement with nothing to tie is said.
+        assert!(error("route GET /a (req) {\n  n = 1 after req\n  respond n\n}").2.contains("this statement makes none"));
+    }
+
     #[test]
     fn routes_respond_and_their_errors() {
         let d = compiled("route GET /a (req) {\n  respond 204\n}\nroute POST /b (r) resumes paid {\n  respond r.json, status: 201, missing: 400\n}\n").doc;
@@ -2232,10 +2321,15 @@ pub(crate) mod tests {
         assert_eq!(error("route GET /a (req) {\n  respond 1, status: 700\n}"), (2, 22, "a status is a number from 100 to 599".into()));
         assert_eq!(error("route GET /a (req) {\n  respond \"x\", status: 204\n}"), (2, 11, "a 204 answers with no body".into()));
         assert_eq!(error("route GET /a (req) {\n  1 + 1\n  respond 2\n}"), (2, 3, "a value nobody uses: bind it, or remove it".into()));
-        // A statement that never touches the request isn't in the route's group: said, not dropped.
+        // A write that reads nothing of the request is tied to it by its trigger: a route counts
+        // its hits (docs/L4s/triggers-L4.md §3).
+        let d = compiled("route GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  respond 2\n}").doc;
+        let tie = d.edges.iter().find(|w| w.target.starts_with("store_write") && w.input() == "trigger").expect("the write is tied");
+        assert!(tie.source.starts_with("request") && tie.output() == "request", "{tie:?}");
+        // A value that never touches the request isn't in the route's group: said, not dropped.
         assert_eq!(
-            error("route GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  respond 2\n}"),
-            (2, 17, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own".into())
+            error("route GET /a (req) {\n  n = length([1, 2])\n  respond 2\n}"),
+            (2, 15, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own".into())
         );
         assert_eq!(error("x = 1 + 1\nroute GET /a (req) {\n  respond x\n}"), (1, 1, "routes are separate units; put shared logic in a holon (only a literal may be bound at the top level)".into()));
         // A literal at the top level is placed afresh in each route that uses it.

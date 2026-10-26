@@ -570,9 +570,18 @@ impl Parser {
                 StmtKind::Expr(e)
             }
         };
+        // `… after x` ties the statement's writes and calls to x, not to the block's trigger.
+        let tieable = !matches!(kind, StmtKind::Node { .. } | StmtKind::Wire { .. } | StmtKind::Respond(_));
+        let after = if tieable && self.is_word("after") {
+            self.next();
+            self.skip_newlines();
+            Some(self.expr()?)
+        } else {
+            None
+        };
         let end = self.toks[self.at - 1].span;
         self.end_statement()?;
-        Ok(Stmt { kind, span: start.to(end) })
+        Ok(Stmt { kind, span: start.to(end), after })
     }
 
     /// A binding's right side: an expression, or `await name, expires: expr`.

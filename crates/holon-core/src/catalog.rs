@@ -113,7 +113,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
     };
     let port = |n: &str, ty: Type| Port { name: n.to_string(), ty };
 
-    Some(match name {
+    let mut unit = match name {
         // ── pure — language core ──
         "const" => prim(
             vec![],
@@ -375,7 +375,53 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         ),
 
         _ => return None,
-    })
+    };
+    // A write or a call out takes its trigger last: what starts it, never read (eval drops it), so
+    // a sink belongs to whatever started the run that reaches it (docs/L4s/triggers-L4.md §3).
+    if TRIGGERED.contains(&name) {
+        unit.inputs.push(port(TRIGGER, Any));
+    }
+    Some(unit)
+}
+
+/// The input every sink takes last: the value that starts it (a route's request, a holon's own
+/// trigger, whatever `after` names). It is never read; it only has to be there.
+pub const TRIGGER: &str = "trigger";
+
+/// The sinks: the leaves whose output is an Effect the host performs, and the calls out. Each
+/// takes a [`TRIGGER`] input last. `channel_subscribe` is a read (a route's streamed answer) and
+/// takes none.
+pub const TRIGGERED: &[&str] = &[
+    "store_write",
+    "collection_put",
+    "collection_delete",
+    "file_write",
+    "file_delete",
+    "file_copy",
+    "file_create",
+    "file_create_copy",
+    "db_exec",
+    "db_insert",
+    "db_update",
+    "db_delete",
+    "channel_send",
+    "egress",
+    "http_request",
+    "http_upload",
+    "http_stream",
+];
+
+/// Whether `unit` is a sink leaf with its trigger: the last input, by name (a leaf placed before
+/// sinks had one has none, and is computed as it always was).
+pub fn takes_trigger(unit: &Unit) -> bool {
+    matches!(&unit.body, UnitBody::Primitive { name } if TRIGGERED.contains(&name.as_str())) && unit.inputs.last().is_some_and(|p| p.name == TRIGGER)
+}
+
+/// What a unit's input named [`TRIGGER`] reads when nothing is wired to it: present, so a holon
+/// placed without a tie runs its sinks with the unit around it, as a leaf with an open trigger
+/// does. Never read for its value.
+pub fn open_trigger() -> crate::Value {
+    crate::Value::Boolean(true)
 }
 
 /// Every genesis primitive's canonical interface, in manifest order. A convenience over

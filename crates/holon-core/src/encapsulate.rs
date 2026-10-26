@@ -219,7 +219,9 @@ pub fn default_spec(
     let mut promote = Vec::new();
     for (ci, child) in resolved.iter().enumerate().take(k) {
         for (p, port) in child.inputs.iter().enumerate() {
-            if !bound.contains(&(ci as u32, p as u32)) {
+            // A trigger left open stays open: the sink runs with the unit it is grouped into
+            // (`open_trigger`), and the group doesn't grow a port per sink.
+            if !bound.contains(&(ci as u32, p as u32)) && port.name != crate::TRIGGER {
                 promote.push(Promote {
                     child: ci as u32,
                     port: p as u32,
@@ -232,8 +234,15 @@ pub fn default_spec(
     // The dual of `bound` above: which (child, port) OUTPUTS already feed some inner
     // destination. Tracked by the full pair, not just `from_child` — a child with two
     // outputs, one consumed and one free, must still surface the free one.
+    // An effect a trigger reads (`after saved`) is still free: a trigger doesn't take the effect
+    // in, it only waits for it, so the effect still leaves the boundary and is performed.
+    let effect_into_trigger = |e: &Edge| {
+        let from = resolved.get(e.from_child as usize).and_then(|u| u.outputs.get(e.from_port as usize));
+        let to = resolved.get(e.to_child as usize).and_then(|u| u.inputs.get(e.to_port as usize));
+        from.is_some_and(|p| p.ty == crate::Type::Effect) && to.is_some_and(|p| p.name == crate::TRIGGER)
+    };
     let consumed: BTreeSet<(u32, u32)> =
-        inner_edges.iter().map(|e| (e.from_child, e.from_port)).collect();
+        inner_edges.iter().filter(|e| !effect_into_trigger(e)).map(|e| (e.from_child, e.from_port)).collect();
 
     let mut expose = Vec::new();
     for (ci, child) in resolved.iter().enumerate().take(k) {
@@ -272,6 +281,22 @@ mod tests {
     }
     fn num(n: f64) -> Value { Value::Number(n) }
     fn port(name: &str) -> Port { Port { name: name.into(), ty: Type::Number } }
+
+    /// A trigger is never promoted (the lowering ties it), and an effect that only a trigger reads
+    /// (`after saved`) is still exposed, so the host performs it.
+    #[test]
+    fn a_trigger_is_not_promoted_and_an_effect_into_one_is_still_exposed() {
+        let mut r = MapResolver::new();
+        let put = r.insert(Unit { params: vec![crate::Param::frozen("collection", "c")], ..crate::interface_of("collection_put").unwrap() }).unwrap();
+        let write = r.insert(Unit { params: vec![crate::Param::frozen("key", "k")], ..crate::interface_of("store_write").unwrap() }).unwrap();
+        // put.out → write.trigger
+        let edges = vec![e(0, 0, 1, 1)];
+        let spec = default_spec(&[put, write], &edges, &r).unwrap();
+        let promoted: Vec<&str> = spec.promote.iter().map(|p| p.name.as_str()).collect();
+        assert!(!promoted.contains(&crate::TRIGGER), "{promoted:?}");
+        let exposed: Vec<(u32, u32)> = spec.expose.iter().map(|x| (x.child, x.port)).collect();
+        assert_eq!(exposed, vec![(0, 0), (1, 0)], "both effects leave the boundary");
+    }
 
     #[test]
     fn encapsulates_single_unit_to_expected_hash() {

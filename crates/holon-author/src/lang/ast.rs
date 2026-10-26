@@ -162,6 +162,8 @@ pub struct RouteDef {
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
+    /// `… after x`: what the statement's sinks are tied to, instead of the block's trigger.
+    pub after: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

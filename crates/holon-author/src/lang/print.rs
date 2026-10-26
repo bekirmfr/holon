@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY};
+use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, TRIGGER};
 
 use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
@@ -152,6 +152,7 @@ struct Group<'g> {
 
 impl<'g> Group<'g> {
     fn new(nodes: Vec<&'g Node>, wires: Vec<(Src, String, String)>, outs: Vec<(String, String, String)>) -> Group<'g> {
+        let (nodes, wires) = without_block_ties(nodes, wires);
         let ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
         let mut incoming = HashMap::new();
         let mut consumers: HashMap<(String, String), usize> = HashMap::new();
@@ -394,6 +395,47 @@ pub(crate) fn js_statement(store: &MapResolver, unit: &holon_core::Unit, hname: 
     Some(format!("holon {hname}({}) -> {outs_text} js{budgets} {{{body}}}", ins.join(", ")))
 }
 
+/// `nodes` and `wires` without the ties the text doesn't write: a trigger fed by its block's
+/// trigger (a route's request, a holon's own `trigger`, or the pass-through the lowering places
+/// when that feeds several, which goes too, with its `true`). What's left on a trigger is
+/// written `after`.
+fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (Vec<&Node>, Vec<(Src, String, String)>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
+    // The last wire into an input is the one that counts, as `Group` keeps it: a holon's
+    // boundary is listed as its node first, then as the port.
+    let into = |to: &str, input: &str| wires.iter().rev().find(|(_, t, i)| t == to && i == input).map(|(s, _, _)| s);
+    let own_trigger = |src: &Src| match src {
+        Src::In(p) => p == TRIGGER,
+        Src::Node { id, output } => id == crate::composites::BOUNDARY_IN && output == TRIGGER,
+    };
+    let passes_trigger = |id: &str| {
+        let Some(n) = by_id.get(id) else { return false };
+        let always = matches!(into(id, "cond"), Some(Src::Node { id: c, .. }) if by_id.get(c.as_str()).is_some_and(|c| c.data.name == "const" && c.param("type") == "Boolean" && c.param("value") == "true"));
+        n.data.name == "guard" && always && into(id, "value").is_some_and(own_trigger)
+    };
+    let tie = |src: &Src, input: &str| {
+        input == TRIGGER
+            && (own_trigger(src)
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || passes_trigger(id)))
+    };
+    // A pass-through that feeds only ties goes, with the `true` it holds.
+    let mut gone: HashSet<String> = HashSet::new();
+    for n in &nodes {
+        let feeds: Vec<&(Src, String, String)> = wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id, .. } if *id == n.id)).collect();
+        if passes_trigger(&n.id) && !feeds.is_empty() && feeds.iter().all(|(_, _, input)| input == TRIGGER) {
+            gone.insert(n.id.clone());
+            if let Some(Src::Node { id: c, .. }) = into(&n.id, "cond")
+                && wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id, .. } if id == c)).count() == 1
+            {
+                gone.insert(c.clone());
+            }
+        }
+    }
+    let touches_gone = |(src, to, _): &(Src, String, String)| gone.contains(to) || matches!(src, Src::Node { id, .. } if gone.contains(id));
+    let kept: Vec<(Src, String, String)> = wires.iter().filter(|w| !tie(&w.0, &w.2) && !touches_gone(w)).cloned().collect();
+    (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept)
+}
+
 /// Whether the expression form can spell `nodes` as wired: every input a node needs is wired
 /// (the lowering refuses one left out), and nothing but a route's request has a hidden input.
 fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, request: Option<&str>) -> bool {
@@ -410,7 +452,7 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
                     (n.data.name.as_str(), p.name.as_str()),
                     ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
                 );
-            optional || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
+            optional || p.name == TRIGGER || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
         })
     })
 }
@@ -688,22 +730,31 @@ impl<'s> Printer<'s> {
                 }
             }
         }
+        // A sink left open inside (a canvas group) is said in the wiring form, which ties nothing:
+        // the expression form would tie it to the holon's trigger.
+        let open = opened.children.iter().any(|c| c.data.inputs.iter().any(|p| p.name == TRIGGER) && !wires.iter().any(|(_, to, input)| *to == c.id && input == TRIGGER));
+        let boundary_in: Vec<(String, String, String)> =
+            wires.iter().filter_map(|(src, to, input)| if let Src::In(port) = src { Some((port.clone(), to.clone(), input.clone())) } else { None }).collect();
         let group = Group::new(opened.children.iter().collect(), wires, bouts);
         let outs_text = if outs.len() == 1 { port(&outs[0]) } else { format!("({})", outs.iter().map(port).collect::<Vec<_>>().join(", ")) };
-        let mut lines: Vec<Line> = vec![(format!("holon {hname}({}) -> {outs_text} {{", ins.iter().map(port).collect::<Vec<_>>().join(", ")), vec![])];
-        if expressible(&group.nodes, &group.incoming, None) {
+        let expression = !open && expressible(&group.nodes, &group.incoming, None);
+        // Its trigger, last and read by nothing but ties, is the one it gets without declaring it.
+        let own_trigger = expression
+            && unit_ins.last().is_some_and(|u| u == TRIGGER)
+            && ins.last().is_some_and(|(n, _)| !group.incoming.values().any(|s| matches!(s, Src::In(p) if p == n)));
+        let declared = &ins[..ins.len() - usize::from(own_trigger)];
+        let mut lines: Vec<Line> = vec![(format!("holon {hname}({}) -> {outs_text} {{", declared.iter().map(port).collect::<Vec<_>>().join(", ")), vec![])];
+        if expression {
             let inputs: HashSet<String> = ins.iter().map(|(n, _)| n.clone()).collect();
             let mut block = Block::new(self, &group, "  ", None);
             block.inputs = inputs;
             lines.extend(block.statements()?);
         } else {
             // The wiring form inside: nodes, wires, and the boundary as `in.x -> n.p`, `n.p -> out.y`.
-            let (wired, node_names) = self.wiring_form(&group.nodes, opened.wires.iter(), "  ")?;
+            let (wired, node_names) = self.wiring_form(&opened.children.iter().collect::<Vec<_>>(), opened.wires.iter(), "  ")?;
             lines.extend(wired);
-            for ((to, input), src) in &group.incoming {
-                if let Src::In(port) = src
-                    && let Some(n) = node_names.get(to)
-                {
+            for (port, to, input) in &boundary_in {
+                if let Some(n) = node_names.get(to) {
                     lines.push((format!("  in.{port} -> {n}.{}", if plain(input) { input.clone() } else { quote(input) }), vec![]));
                 }
             }
@@ -1016,7 +1067,26 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// Whether `node`'s one output prints inline at its one consumer. A node the text named keeps
     /// its binding: fmt keeps an author's names.
     fn inline(&self, node: &Node) -> bool {
-        self.free(node) && (self.g.consumed_total(node) == 1 || self.absorbed.contains(&node.id))
+        self.free(node) && (self.g.consumed_total(node) == 1 || self.absorbed.contains(&node.id)) && !self.tied_elsewhere(node) && !self.awaited(node)
+    }
+
+    /// Whether `node`'s trigger is fed by something other than its block's trigger: `after`.
+    fn tied_elsewhere(&self, node: &Node) -> bool {
+        self.g.incoming.contains_key(&(node.id.clone(), TRIGGER.to_string()))
+    }
+
+    /// Whether a trigger waits for `node` (`after x`): it is a statement of its own, placed before
+    /// what waits for it, as the text that made it wrote it.
+    fn awaited(&self, node: &Node) -> bool {
+        self.g.incoming.iter().any(|((_, input), src)| input == TRIGGER && matches!(src, Src::Node { id, .. } if *id == node.id))
+    }
+
+    /// ` after x` for a node tied elsewhere, else nothing.
+    fn after(&mut self, node: &Node) -> Result<String, String> {
+        Ok(match self.arg(node, TRIGGER)? {
+            Some((text, _)) => format!(" after {text}"),
+            None => String::new(),
+        })
     }
 
     /// The input a `guard(true, input)` passes through, when `node` is one: the lowering places it
@@ -1062,19 +1132,23 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             let effect = single && node.data.outputs[0].ty == WType::Effect;
             if total == 0 && effect {
                 let text = self.effect_statement(node)?;
-                let l = self.line(format!("{}{text}", self.indent));
+                let after = self.after(node)?;
+                let l = self.line(format!("{}{text}{after}", self.indent));
                 lines.push(l);
                 continue;
             }
             if total == 0 && !single && node.data.outputs.iter().any(|o| o.ty == WType::Effect) {
                 let (text, _) = self.render(node, "")?;
-                let l = self.line(format!("{}{text}", self.indent));
+                let after = self.after(node)?;
+                let l = self.line(format!("{}{text}{after}", self.indent));
                 lines.push(l);
                 continue;
             }
             // A binding, then any boundary outputs it feeds. Rendered first: a holon's block is
             // written (and its name taken) on first use, and the binding must not shadow it.
             let (text, _) = self.render(node, if single { &node.data.outputs[0].name } else { "" })?;
+            let after = self.after(node)?;
+            let text = format!("{text}{after}");
             let name = self.bind(node);
             let l = self.line(format!("{}{name} = {text}", self.indent));
             lines.push(l);
@@ -1679,7 +1753,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     fn positional_then_named(&mut self, node: &Node, inputs: &[String], _skip: &[&str]) -> Result<Vec<String>, String> {
         let mut args = Vec::new();
         let mut named = false;
-        for input in inputs {
+        for input in inputs.iter().filter(|i| *i != TRIGGER) {
             match self.arg(node, input)? {
                 Some((t, _)) if !named => args.push(t),
                 Some((t, _)) => args.push(format!("{input}: {t}")),
@@ -2030,6 +2104,19 @@ mod tests {
         assert!(text.contains("on file inbox\nfolder sent\n"), "the trigger declares its folder: {text}");
         assert!(!text.contains("folder inbox"), "{text}");
         assert!(text.contains("file: "), "{text}");
+    }
+
+    /// The ties the lowering makes aren't written: a route's writes, a holon's own trigger (absent
+    /// from its signature) and the placement's tie; what `after` names is (docs/L4s/triggers-L4.md).
+    #[test]
+    fn ties_print_as_the_text_wrote_them_and_round_trip() {
+        let src = "flow f\nport 8100\ncollection c\n\nholon keep(v) -> (saved, put) {\n  saved = state.set(last, v)\n  put = c.put(\"k\", v)\n}\n\nroute POST /k (req) {\n  id = req.params.id\n  r = keep(id)\n  state.seen = id after r.put\n  state.hits = (state.hits ?? 0) + 1\n  respond id\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("f", &l.doc, &l.names);
+        assert!(text.contains("holon keep(v) -> (saved, put) {"), "its trigger isn't declared: {text}");
+        assert!(text.contains("state.seen = id after r.put"), "{text}");
+        assert!(text.contains("state.hits = (state.hits ?? 0) + 1\n"), "tied to the request, nothing written: {text}");
+        assert!(!text.contains("trigger"), "{text}");
     }
 
     #[test]

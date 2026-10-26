@@ -54,7 +54,12 @@ import {
   nodeFromPalette,
   flowUnitHash,
   groupSelection,
+  lighterTriggers,
   projectCanvas,
+  takesTrigger,
+  tieEdge,
+  triggersOf,
+  untiedSinks,
   type Projection,
 } from "./canvasOps";
 import { expandComposite } from "./composites";
@@ -120,7 +125,7 @@ function Canvas({
   const dialog = useDialog();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const { screenToFlowPosition, getNode, getEdges, getViewport, setViewport, fitView } =
+  const { screenToFlowPosition, getNode, getNodes, getEdges, getViewport, setViewport, fitView } =
     useReactFlow<PrimitiveNodeType>();
   const idRef = useRef(0);
   // The one in-browser workspace every placed composite lives in (see Projection below).
@@ -386,9 +391,13 @@ function Canvas({
         return;
       }
       const node = nodeFromPalette(name, byName, variadic, `${name}-${idRef.current++}`, screenToFlowPosition({ x: e.clientX, y: e.clientY }));
-      if (node) setNodes((ns) => ns.concat(node));
+      if (!node) return;
+      setNodes((ns) => ns.concat(node));
+      // A sink placed on a canvas with one trigger is tied to it; with several, it is flagged.
+      const triggers = triggersOf(getNodes());
+      if (takesTrigger(node) && triggers.length === 1) setEdges((es) => es.concat(tieEdge(node.id, triggers[0])));
     },
-    [byName, variadic, screenToFlowPosition, setNodes, viewing, ev, market],
+    [byName, variadic, screenToFlowPosition, setNodes, setEdges, getNodes, viewing, ev, market],
   );
 
   // A saved flow's manifest (the flows page), derived from its document as deploying it would:
@@ -619,7 +628,12 @@ function Canvas({
   });
   const expandNode = compositeOverlay.expand;
   overlayOpen.current = compositeOverlay.open;
-  const nodeActions = useMemo(() => ({ updateHolon, expandComposite: expandNode, ungroup }), [updateHolon, expandNode, ungroup]);
+  // A sink's quick fix: tie its trigger to the one picked.
+  const tie = useCallback(
+    (id: string, trigger: { id: string; output: string }) => setEdges((es) => (es.some((e) => e.target === id && e.targetHandle === "trigger") ? es : es.concat(tieEdge(id, trigger)))),
+    [setEdges],
+  );
+  const nodeActions = useMemo(() => ({ updateHolon, expandComposite: expandNode, ungroup, tie }), [updateHolon, expandNode, ungroup, tie]);
 
   const onExpand = useCallback(() => {
     const selected = nodes.filter((n) => n.selected);
@@ -681,14 +695,18 @@ function Canvas({
       const latest = src ? savedFlowTimes.get(src.flow) : undefined;
       return src !== undefined && latest !== undefined && latest > src.savedAt;
     };
-    if (errorNodeIds.size === 0 && !nodes.some(outdated)) return nodes;
+    // A sink nothing triggers, on a canvas with a trigger: flagged, a fix for each trigger.
+    const untied = untiedSinks(nodes, edges);
+    const triggers = untied.size > 0 ? triggersOf(nodes) : [];
+    if (errorNodeIds.size === 0 && !nodes.some(outdated) && untied.size === 0) return nodes;
     return nodes.map((n) => {
-      const flags = { ...(errorNodeIds.has(n.id) ? { error: true } : {}), ...(outdated(n) ? { updateAvailable: true } : {}) };
+      const flags = { ...(errorNodeIds.has(n.id) ? { error: true } : {}), ...(outdated(n) ? { updateAvailable: true } : {}), ...(untied.has(n.id) ? { untied: triggers } : {}) };
       return Object.keys(flags).length > 0 ? { ...n, data: { ...n.data, ...flags } } : n;
     });
-  }, [nodes, errorNodeIds, viewing, view.viewNodes, savedFlowTimes]);
+  }, [nodes, edges, errorNodeIds, viewing, view.viewNodes, savedFlowTimes]);
 
-  const decoratedEdges = viewing ? view.viewEdges : edges;
+  // Trigger wires are drawn lighter than data wires (canvasOps.lighterTriggers).
+  const decoratedEdges = useMemo(() => lighterTriggers(viewing ? view.viewEdges : edges), [viewing, view.viewEdges, edges]);
 
   // The flow's text beside the canvas (useTextPane.ts, TextPane.tsx), and in view mode the run
   // shown in it.

@@ -112,6 +112,11 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
 /// `has_optional_ports`). An http_request's headers and body; a collection's or folder's listing's
 /// prefix and after; a file's lines' first line.
 pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
+    // A sink's trigger, or a holon's: left open, it runs with the unit around it (core's
+    // `open_trigger`). The lowering ties it wherever there is a trigger.
+    if port == Some(holon_core::TRIGGER) {
+        return true;
+    }
     let optional: &[&str] = match n.data.name.as_str() {
         "http_request" => &["headers", "body"],
         "http_upload" => &["headers"],

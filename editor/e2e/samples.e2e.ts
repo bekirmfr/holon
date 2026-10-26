@@ -446,6 +446,19 @@ test("likes answers a count in a sentence: the number as text (as_text), then th
   expect(await (await request.get(`http://127.0.0.1:${port}/posts/${post}-never/likes`)).text()).toBe("0 likes");
 });
 
+test("counter counts its hits with no wire to the request, and records the last visit after it is put", async ({ page, request }) => {
+  await openSample(page, "Hit counter (writes run with their route)");
+  const port = await deploy(page);
+  // Each hit's write is tied to its route's request: it runs, though it reads nothing of it.
+  const hit = async () => Number((await (await request.get(`http://127.0.0.1:${port}/hit`)).text()).replace("hit ", ""));
+  const first = await hit();
+  expect(await hit()).toBe(first + 1);
+  // The last visitor is written after the visit is put.
+  const who = `e2e-${Date.now()}`;
+  expect(await (await request.post(`http://127.0.0.1:${port}/visits/${who}`)).text()).toBe(`visited ${who}`);
+  expect(await (await request.get(`http://127.0.0.1:${port}/last`)).text()).toBe(who);
+});
+
 test("basket reads a price inside a mapped function, per item, and its run replays exactly", async ({ page, request }) => {
   await openSample(page, "Basket (a collection read inside a function)");
   const port = await deploy(page);

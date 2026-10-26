@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { initSync, Evaluator, primitive_catalog, primitive_docs } from "../wasm/holon_wasm.js";
 import { buildPreimage, type WUnit, type WValue } from "./holon";
-import { deriveServer, flowAsNode, flowUnitHash } from "./canvasOps";
+import { deriveServer, flowAsNode, flowUnitHash, lighterTriggers, takesTrigger, tieEdge, TRIGGER, triggersOf, untiedSinks, withTriggers } from "./canvasOps";
 import {
   BOUNDARY_IN,
   BOUNDARY_OUT,
@@ -149,7 +149,11 @@ describe("sample flows", () => {
     const unit = ev.get_unit(publish.data.body.hash) as WUnit;
     // Evaluated offline: no clock or secret is sourced, so the post isn't put and the receipt is
     // unsigned; the state write still comes out, naming the slug. Each output is what it's named.
-    const out = ev.eval(buildPreimage(unit), [{ type: "Text", value: "hello-holon" }, { type: "Text", value: "ada" }]) as (WValue | null)[];
+    // Its writes wait for its trigger, last (docs/L4s/triggers-L4.md §3): given here.
+    expect(publish.data.inputs.map((p) => p.name)).toEqual(["slug", "author", "trigger"]);
+    const out = ev.eval(buildPreimage(unit), [{ type: "Text", value: "hello-holon" }, { type: "Text", value: "ada" }, { type: "Boolean", value: true }]) as (WValue | null)[];
+    const untriggered = ev.eval(buildPreimage(unit), [{ type: "Text", value: "hello-holon" }, { type: "Text", value: "ada" }, null]) as (WValue | null)[];
+    expect(untriggered[publish.data.outputs.findIndex((p) => p.name === "saved")] ?? null, "no trigger, no write").toBeNull();
     const at = (name: string) => out[publish.data.outputs.findIndex((p) => p.name === name)] ?? null;
     expect(at("receipt")).toEqual({ type: "Text", value: "unsigned" });
     expect(at("saved")).toEqual({ type: "Effect", value: { sink: "store_write:last_post", payload: { type: "Text", value: "hello-holon" } } });
@@ -202,6 +206,31 @@ placed.slug -> upper.s
     expect(empty.ok ? "" : empty.message).toContain("empty");
   });
 
+  it("tie a sink to its trigger: a saved canvas gets the port and its route's tie, one left untied is flagged", () => {
+    const doc = buildSample(samples().find((s) => s.name === "counter")!, new Evaluator());
+    const nodes = doc.nodes as PrimitiveNodeType[];
+    const edges = doc.edges as Edge[];
+    expect(triggersOf(nodes).map((t) => t.label)).toEqual(["GET /hit", "POST /visits/:id", "GET /last"]);
+    expect(untiedSinks(nodes, edges).size, "the language ties every sink").toBe(0);
+    // As saved before sinks took their trigger: no port, no tie.
+    const old = nodes.map((n) => (n.data.body.kind === "Primitive" && takesTrigger(n) ? { ...n, data: { ...n.data, inputs: n.data.inputs.filter((p) => p.name !== TRIGGER) } } : n));
+    const back = withTriggers(old, edges.filter((e) => e.targetHandle !== TRIGGER), primitive_catalog() as WUnit[]);
+    expect(back.nodes.map((n) => n.data.inputs.map((p) => p.name))).toEqual(nodes.map((n) => n.data.inputs.map((p) => p.name)));
+    // Each write in a route's group (wired to its request, however far) is tied to it.
+    expect(untiedSinks(back.nodes, back.edges).size).toBe(0);
+    expect(back.edges.filter((e) => e.targetHandle === TRIGGER).length).toBe(3);
+    // A write dropped on its own is flagged, and its fix ties it.
+    const write = nodes.find((n) => n.data.name === "store_write")!;
+    const dropped = [...back.nodes, { ...write, id: "store_write-99" }];
+    expect([...untiedSinks(dropped, back.edges)]).toEqual(["store_write-99"]);
+    const fixed = [...back.edges, tieEdge("store_write-99", triggersOf(dropped)[0])];
+    expect(untiedSinks(dropped, fixed).size).toBe(0);
+    // Trigger wires are drawn lighter.
+    expect(lighterTriggers(fixed).filter((e) => e.style?.opacity !== undefined).length).toBe(fixed.filter((e) => e.targetHandle === TRIGGER).length);
+    // Already migrated, it is left as it is.
+    expect(withTriggers(nodes, edges, primitive_catalog() as WUnit[]).nodes).toBe(nodes);
+  });
+
   it("say what every node does: core's primitives, the templates, a holon from what it is", () => {
     const raw = primitive_docs() as Map<string, string>;
     const docs = raw instanceof Map ? raw : new Map(Object.entries(raw as Record<string, string>));
@@ -224,15 +253,17 @@ placed.slug -> upper.s
     const publish = nodes.find((n) => n.data.name === "publish")!;
     const opened = innerCanvas(publish, nodes, edges, ev);
     if (!opened.ok) throw new Error(opened.message);
-    // The holon's leaves, plus the pass-through its thrice-used `slug` input shares (a guard and
-    // its constant true), as the language lowers it (docs/LANGUAGE.md, step 3).
-    expect(opened.childIds.length).toBe(11);
-    expect(opened.nodes.length).toBe(13);
+    // The holon's leaves, plus the pass-throughs its thrice-used `slug` input and its trigger share
+    // (a guard and its constant true each), as the language lowers it (docs/LANGUAGE.md, step 3).
+    expect(opened.childIds.length).toBe(13);
+    expect(opened.nodes.length).toBe(15);
     const boundary = (id: string) => opened.nodes.find((n) => n.id === id)!.data as BoundaryData;
-    // slug arrives through the `?? ""` at the call site (a default), author straight from slugify.
+    // slug arrives through the `?? ""` at the call site (a default), author straight from slugify,
+    // the trigger from the route's request, as the route ties it.
     expect(boundary(BOUNDARY_IN).ports.map((p) => [p.name, p.outside])).toEqual([
       ["slug", ["default"]],
       ["author", ["slugify"]],
+      ["trigger", ["request.request"]],
     ]);
     expect(boundary(BOUNDARY_OUT).ports.map((p) => [p.name, p.outside])).toEqual([
       ["put", []],
@@ -244,8 +275,8 @@ placed.slug -> upper.s
     for (const e of opened.edges) {
       expect(ports.has(e.source) && ports.has(e.target), e.id).toBe(true);
     }
-    // slug enters once, through the pass-through that fans out inside.
-    expect(opened.edges.filter((e) => e.source === BOUNDARY_IN).length).toBe(2);
+    // slug and the trigger enter once each, through the pass-throughs that fan out inside.
+    expect(opened.edges.filter((e) => e.source === BOUNDARY_IN).length).toBe(3);
     expect(opened.edges.filter((e) => e.target === BOUNDARY_OUT).length).toBe(3);
     // Laid out by how far data has come: no two nodes on the same spot.
     const spots = new Set(opened.nodes.map((n) => `${n.position.x},${n.position.y}`));
@@ -265,7 +296,7 @@ placed.slug -> upper.s
     const same = freezeInner(canvas, ev);
     if (!same.ok) throw new Error(same.message);
     expect(same.hash, "nothing changed: the very same unit").toBe(publish.data.body.kind === "Composite" ? publish.data.body.hash : "");
-    expect(same.inputs.map((p) => p.name)).toEqual(["slug", "author"]);
+    expect(same.inputs.map((p) => p.name)).toEqual(["slug", "author", "trigger"]);
 
     // Renaming a boundary port renames it on the node only: the unit is the same.
     const renamed = {
@@ -275,7 +306,7 @@ placed.slug -> upper.s
     const same2 = freezeInner(renamed, ev);
     if (!same2.ok) throw new Error(same2.message);
     expect(same2.hash).toBe(same.hash);
-    expect(same2.inputs.map((p) => p.name)).toEqual(["key", "author"]);
+    expect(same2.inputs.map((p) => p.name)).toEqual(["key", "author", "trigger"]);
     // Changing what's inside is another unit: the receipt's fallback, say.
     const edited = {
       ...canvas,
@@ -288,7 +319,7 @@ placed.slug -> upper.s
     const other = freezeInner(edited, ev);
     if (!other.ok) throw new Error(other.message);
     expect(other.hash).not.toBe(same.hash);
-    const out = ev.eval(buildPreimage(ev.get_unit(other.hash) as WUnit), [{ type: "Text", value: "x" }, { type: "Text", value: "y" }]) as (WValue | null)[];
+    const out = ev.eval(buildPreimage(ev.get_unit(other.hash) as WUnit), [{ type: "Text", value: "x" }, { type: "Text", value: "y" }, { type: "Boolean", value: true }]) as (WValue | null)[];
     expect(out[2]).toEqual({ type: "Text", value: "not signed" });
 
     // An input feeds one port; an output needs a source.
@@ -325,8 +356,8 @@ placed.slug -> upper.s
     const done = replaceComposite(nodes, edges, publish.id, frozen, renames);
     const after = done.nodes.find((n) => n.id === publish.id)!;
     expect(after.data.body.kind === "Composite" && after.data.body.hash).toBe(frozen.hash);
-    expect(after.data.inputs.map((p) => p.name)).toEqual(["key", "author"]);
-    expect(done.edges.filter((e) => e.target === publish.id).map((e) => e.targetHandle).sort()).toEqual(["author", "key"]);
+    expect(after.data.inputs.map((p) => p.name)).toEqual(["key", "author", "trigger"]);
+    expect(done.edges.filter((e) => e.target === publish.id).map((e) => e.targetHandle).sort()).toEqual(["author", "key", "trigger"]);
     // The wire from "receipt" is gone, and said so.
     expect(done.dropped.map((e) => e.sourceHandle)).toEqual(["receipt"]);
     // Settled: freezing it again unchanged is the same unit, with nothing renamed.

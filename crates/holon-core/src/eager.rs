@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 /// Every output of `unit` on `inputs`, evaluating every node.
 pub fn eval_eager(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> Vec<Option<Value>> {
+    let inputs = if crate::takes_trigger(unit) && inputs.len() == unit.inputs.len() { &inputs[..inputs.len() - 1] } else { inputs };
     match &unit.body {
         UnitBody::Primitive { name } => vec![primitive(name, unit, inputs, resolver)],
         UnitBody::Composite { children, edges } => composite(children, edges, unit.outputs.len(), inputs, resolver),
@@ -54,15 +55,17 @@ fn composite(children: &[Hash], edges: &[Edge], n_outputs: usize, inputs: &[Opti
     for ci in order {
         let child = resolved[ci];
         let k = child.inputs.len();
-        let gathered: Vec<Option<Value>> = (0..k)
+        let mut gathered: Vec<Option<Value>> = (0..k)
             .map(|p| match incoming.get(&(ci as u32, p as u32)) {
                 Some(&(BOUNDARY, fp)) => inputs.get(fp as usize).cloned().flatten(),
                 Some(&(fc, fp)) => output_of(&scratch, fc, fp),
                 None => None,
             })
             .collect();
+        crate::eval::open_triggers(child, &mut gathered, |p| incoming.contains_key(&(ci as u32, p as u32)));
         let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
-        let held = wired_but_absent && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name));
+        let held = wired_but_absent
+            && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str()));
         scratch[ci] = if held { vec![None; child.outputs.len()] } else { eval_eager(child, &gathered, resolver) };
     }
     (0..n_outputs as u32)

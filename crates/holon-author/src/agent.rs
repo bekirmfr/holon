@@ -637,7 +637,7 @@ pub fn leaves_page() -> String {
         .collect();
     let sections = [
         ("Computing", "These touch nothing outside: given the same inputs, they always give the same output.", false),
-        ("The outside world", "Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder).", true),
+        ("The outside world", "Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or what `after` names. The language ties it, so it is never an argument.", true),
     ];
     for (title, about, outside) in sections {
         let these: Vec<_> = all.iter().filter(|(name, ..)| reaches.contains(name) == outside).collect();
