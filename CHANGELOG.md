@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.0-rc.24
+
+Flows with a streamed reply (`respond sent.body, stream: true`, the `chat-proxy` sample) are
+hashed differently: redeploy them to get the change below. Every other flow is the unit it was,
+and keeps running.
+
+- **A streamed reply answers with its call's status.** A call that fails (not 2xx: a bad key, no
+  credit, a limit) forwards nothing, and the reply is its answer, whole; it went out as a 200, so
+  a page reading the stream showed nothing. Now the lowering wires the call's `sent.status` to
+  the respond's status input, and the caller gets the 401 or 400 with the API's own error; the
+  log, a replay and `holon verify` say the same. `chat-proxy`'s page shows such an answer ("the
+  model's API answered 400: …").
+- **A new sample, `gemini-chat`**: chat-proxy's streamed reply against Google's Gemini API (the
+  Interactions API, `gemini-3.5-flash-lite`), whose free tier needs no credit. The answer goes to
+  the page as it is written, the flow stores it once it ends, and a refusal (a bad key, the free
+  tier's rate limit) shows on the page with its status. On the free tier Google may use what is
+  sent to improve its products.
+- **`respond` takes a computed status:** `respond body, status: req.json.code`, on the respond
+  template's status input (`status_input: true`, there only when asked). A number out of 100–599
+  answers 500.
+- **A plain-HTTP host the server refuses says which.** A browser's password manager could fill
+  the deploy settings' "plain HTTP to" with a saved login's name (it takes the field before the
+  secret's value box for a username), and the field was then greyed out with it, so a deploy was
+  refused with "this host never grants plain HTTP" and no way to see why. The refusal now names
+  the host and the field, the field stays editable while it holds a host the server refuses, and
+  the secret's value box tells password managers it isn't a sign-in. If yours filled it, its
+  password may have gone into that secret: set it again from an empty box.
+
 ## 0.1.0-rc.23
 
 Nothing to redeploy: no unit is hashed differently (the catalog only gains `channel_send`,
