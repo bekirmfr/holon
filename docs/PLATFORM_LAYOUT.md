@@ -486,6 +486,11 @@ it. That needs an identity for the run and a way to resume it.
   the default.
 - **Parked runs per deployment:** at most its granted `max_waiting_runs` ✅ (default 10,000); past
   it, a run that would wait is refused with a `503` instead.
+- **Sealed at rest.** ✅ A waiting run keeps what it needs to continue: its inputs, sourced values,
+  outbound exchanges and events. These may hold a secret or a caller's credential, so the
+  deployments file keeps them AES-256-GCM sealed under the secrets master key, bound to the
+  deployment and run id. They're opened when the server starts, and the file is written
+  owner-only. A server whose secrets live in memory has no key to keep, so it seals nothing.
 - **Resumed once.** ✅ A resume claims its run under the deployments lock before running it, so
   requests carrying the same token at once resume it exactly once. The others answer 404.
 - **Visible.** The flow log has an entry per part of a run, under one run id (`parked` names what it

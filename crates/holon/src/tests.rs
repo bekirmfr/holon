@@ -1409,6 +1409,85 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// What a waiting run keeps that may hold a secret (the request that started it, the requests it
+/// made, the events delivered to it) is sealed in the deployments file under the secrets master
+/// key, which is kept apart from it, and the file is its owner's alone. The run still resumes
+/// after a restart.
+#[test]
+fn a_waiting_runs_record_is_sealed_on_disk() {
+    let mut state = test_state();
+    let dir = unique_temp_path("sealed-parked");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = format!("{dir}/deployments.json");
+    state.deployments_path = path.clone();
+    let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{dir}/secrets.key")));
+    state.secrets = Arc::new(SecretStore::open(&format!("{dir}/secrets.json"), &key, crate::secret_sources::Sources::none()).unwrap());
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    let children = vec![
+        iface("resume_token", vec![frozen("await", "paid")]),
+        iface("await", vec![frozen("name", "paid"), frozen("expires", "3600")]),
+        iface("field", vec![frozen("name", "method")]),
+        test_store_write("paid"),
+    ];
+    let edges = vec![e(1, 0, 2, 0), e(2, 0, 3, 0), e(0, 0, BOUNDARY, 0), e(3, 0, BOUNDARY, 1)];
+    let orders = endpoint(&state, "POST", "/orders", children, edges, 1);
+    let thanks = stage(&state, &iface("const", vec![frozen("value", "thanks"), frozen("type", "Text")]));
+    let paid_route = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![thanks], edges: vec![e(0, 0, BOUNDARY, 0)] },
+            params: vec![frozen("declare", "endpoint"), frozen("method", "GET"), frozen("path", "/paid/:token"), frozen("resume", "paid")],
+            inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+            outputs: vec![Port { name: "response".into(), ty: Type::Any }],
+        },
+    );
+    let server = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![orders, paid_route], edges: vec![] },
+            params: vec![frozen("declare", "server"), frozen("port", "18094")],
+            inputs: vec![],
+            outputs: vec![],
+        },
+    );
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "Await(\"paid\")", "StateWrite(\"paid\")"] });
+    assert_eq!(deploy_json(&state, "sealed", server, ack).status_code, 200);
+    // The order carries its caller's credential, which the waiting run keeps with its request.
+    let mut order = fake_data("POST", "/orders", vec![]);
+    order.headers.push(("authorization".into(), "Bearer caller_credential_xyz".into()));
+    let token = String::from_utf8(serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &order).body).unwrap();
+    assert!(state.deployments.lock().unwrap()["sealed"].parked.values().next().unwrap().sealed.is_none(), "open in memory");
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains("caller_credential_xyz"), "the file holds the credential: {on_disk}");
+    assert!(on_disk.contains("\"sealed\""), "{on_disk}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "its owner's alone");
+    }
+
+    // A restart: loaded sealed, opened with the deployment's vault, and it resumes.
+    let mut reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    {
+        let dep = reloaded.get_mut("sealed").unwrap();
+        dep.secrets = state.secrets.vault("sealed");
+        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        let run = dep.parked.values_mut().next().unwrap();
+        assert!(run.sealed.is_some() && run.inputs.is_empty(), "loaded sealed");
+        assert!(run.open("other-slug", sealer.as_deref()).is_err(), "bound to its deployment");
+        run.open("sealed", sealer.as_deref()).unwrap();
+        assert!(format!("{:?}", run.inputs).contains("caller_credential_xyz"), "opened whole");
+    }
+    *state.deployments.lock().unwrap() = reloaded;
+    let paid = serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &fake_data("GET", &format!("/paid/{token}"), vec![]));
+    assert_eq!(paid.status, 200);
+    assert!(state.deployments.lock().unwrap()["sealed"].parked.is_empty(), "resumed and finished");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A token resumes its run once even when requests carrying it arrive together: the first claims
 /// the run as its token is checked, so a second finds nothing waiting while the first runs, and
 /// the deadline passing doesn't expire it under the resume either. Once the resume lets go of a

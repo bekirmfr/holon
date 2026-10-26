@@ -938,6 +938,13 @@ fn serve(args: Vec<String>) {
     let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     for (slug, dep) in initial_deployments.iter_mut() {
         dep.secrets = secrets.vault(slug);
+        // Its waiting runs' sealed parts open under the secrets key.
+        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        for run in dep.parked.values_mut() {
+            if let Err(e) = run.open(slug, sealer.as_deref()) {
+                eprintln!("holon: waiting run {} of {slug:?} can't be opened: {e}", run.run_id);
+            }
+        }
         dep.folders = Arc::new(folders::Scoped::new(Arc::clone(&folders), slug));
     }
     let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));

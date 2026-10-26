@@ -49,6 +49,10 @@ pub(crate) struct Resolved {
     pub(crate) problems: BTreeMap<String, String>,
     /// name → the version its current value is of, and when it was last read from its source.
     fetched: BTreeMap<String, (u32, std::time::Instant)>,
+    /// What seals what the deployment keeps on disk that may hold these values (a waiting run's
+    /// requests): the store's, under its master key. None for a store that keeps no key
+    /// (`":memory:"`), whose seal couldn't be opened after a restart.
+    pub(crate) sealer: Option<Arc<Sealer>>,
 }
 
 /// The shortest value accepted: shorter ones would match ordinary text when redacting.
@@ -192,7 +196,7 @@ pub(crate) struct SecretStore {
     path: String,
     /// What the file records its key is kept under.
     key_id: String,
-    sealer: Sealer,
+    sealer: Arc<Sealer>,
     sources: Sources,
     audit: Audit,
     slugs: Mutex<BTreeMap<String, Slug>>,
@@ -209,7 +213,7 @@ impl SecretStore {
         SecretStore {
             path: ":memory:".into(),
             key_id: String::new(),
-            sealer: Sealer::ephemeral(),
+            sealer: Arc::new(Sealer::ephemeral()),
             sources: Sources::none(),
             audit: Audit { path: None, kept: Mutex::new(Vec::new()) },
             slugs: Mutex::new(BTreeMap::new()),
@@ -250,7 +254,7 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            return Ok(SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Sealer::new(&master), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) });
+            return Ok(SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Arc::new(Sealer::new(&master)), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) });
         };
         if parsed.get("format").is_none() {
             // Plain values, from before sealing: seal them under a key (kept from now on).
@@ -260,7 +264,7 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            let store = SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Sealer::new(&master), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
+            let store = SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Arc::new(Sealer::new(&master)), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
             let count: usize = plain.values().map(|names| names.len()).sum();
             for (slug, names) in plain {
                 for (name, value) in names {
@@ -297,7 +301,7 @@ impl SecretStore {
         if has_secrets && sealer.check() != file.key_check {
             return Err(format!("{key} holds a different key from the one that sealed {path:?}"));
         }
-        let store = SecretStore { path: path.into(), key_id, sealer, sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
+        let store = SecretStore { path: path.into(), key_id, sealer: Arc::new(sealer), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
         {
             let mut slugs = store.slugs.lock().unwrap();
             for (slug, secrets) in file.deployments {
@@ -314,7 +318,11 @@ impl SecretStore {
 
     /// `slug`'s vault, created empty if it has none: a deployment holds this, and its runs read it.
     pub(crate) fn vault(&self, slug: &str) -> Vault {
-        Arc::clone(&self.slugs.lock().unwrap().entry(slug.to_string()).or_default().vault)
+        let vault = Arc::clone(&self.slugs.lock().unwrap().entry(slug.to_string()).or_default().vault);
+        if self.path != ":memory:" {
+            vault.lock().unwrap().sealer.get_or_insert_with(|| Arc::clone(&self.sealer));
+        }
+        vault
     }
 
     /// The names set for `slug`, never their values.

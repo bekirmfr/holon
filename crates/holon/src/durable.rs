@@ -267,11 +267,39 @@ pub(crate) struct ParkedRun {
     /// logged as of that version, whose canvas shows it. Absent for runs parked before.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) version: String,
+    /// Its inputs, sourced values, requests, events and tokens, sealed, as the deployments file
+    /// keeps them (they may hold a secret, a caller's credential, a token); opened again when
+    /// the server starts (`open`). Never set on a run in memory that could be opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sealed: Option<SealedPart>,
     /// Whether a resume holds it right now: claimed under the deployments lock when its token
     /// is checked (or its deadline passes), so a token resumes it once even when requests carrying
     /// it arrive together. Never persisted: a restart frees it.
     #[serde(skip)]
     pub(crate) resuming: bool,
+}
+
+/// A parked run's sealed part: AES-256-GCM under the secrets master key, bound to its deployment
+/// and run id (hex).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub(crate) struct SealedPart {
+    pub(crate) nonce: String,
+    pub(crate) data: String,
+}
+
+/// What of a parked run is sealed on disk.
+#[derive(Serialize, Deserialize, Default)]
+struct Sealable {
+    inputs: Vec<Option<SValue>>,
+    sourced: Vec<(String, SValue)>,
+    rounds: Vec<Vec<StoredExchange>>,
+    #[serde(default)]
+    tokens: BTreeMap<String, String>,
+    events: BTreeMap<String, SValue>,
+}
+
+fn parked_context(slug: &str, run_id: &str) -> String {
+    format!("holon-parked/v1\0{slug}\0{run_id}")
 }
 
 /// The capability a logged sourced value is for: what a run's trigger and the run's start supply.
@@ -352,6 +380,7 @@ impl ParkedRun {
             waiting: waiting.iter().map(|w| StoredWaiting { name: w.name.clone(), expires_at: now + w.expires }).collect(),
             parked_at: now,
             version: String::new(),
+            sealed: None,
             resuming: false,
         })
     }
@@ -413,6 +442,46 @@ impl ParkedRun {
             })
             .collect();
         Ok(Resumption { unit, inputs, sourced, waits, resumed: Resumed { state_before, nonce, prior } })
+    }
+
+    /// This run as the deployments file keeps it: what may hold a secret sealed by `sealer`.
+    pub(crate) fn sealed_for_disk(&self, slug: &str, sealer: &crate::sealing::Sealer) -> ParkedRun {
+        if self.sealed.is_some() {
+            return self.clone();
+        }
+        let part = Sealable {
+            inputs: self.inputs.clone(),
+            sourced: self.sourced.clone(),
+            rounds: self.rounds.clone(),
+            tokens: self.tokens.clone(),
+            events: self.events.clone(),
+        };
+        let plain = zeroize::Zeroizing::new(serde_json::to_string(&part).unwrap_or_default());
+        let (nonce, data) = sealer.seal(&parked_context(slug, &self.run_id), &plain);
+        ParkedRun {
+            inputs: Vec::new(),
+            sourced: Vec::new(),
+            rounds: Vec::new(),
+            tokens: BTreeMap::new(),
+            events: BTreeMap::new(),
+            sealed: Some(SealedPart { nonce, data }),
+            ..self.clone()
+        }
+    }
+
+    /// Open what the deployments file sealed, with `sealer`; nothing to do for a run not sealed.
+    pub(crate) fn open(&mut self, slug: &str, sealer: Option<&crate::sealing::Sealer>) -> Result<(), String> {
+        let Some(sealed) = &self.sealed else { return Ok(()) };
+        let sealer = sealer.ok_or("it was sealed under a key this server doesn't have")?;
+        let plain = sealer.open(&parked_context(slug, &self.run_id), &sealed.nonce, &sealed.data)?;
+        let part: Sealable = serde_json::from_str(&plain).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
+        self.inputs = part.inputs;
+        self.sourced = part.sourced;
+        self.rounds = part.rounds;
+        self.tokens = part.tokens;
+        self.events = part.events;
+        self.sealed = None;
+        Ok(())
     }
 
     /// What `GET .../runs` shows: never the tokens.
@@ -537,7 +606,8 @@ pub(crate) fn resume_parked(
     let (record, state, permit, secrets, folders, channels) = {
         let table = deployments.lock().unwrap();
         let dep = table.get(slug).ok_or("no such deployment")?;
-        let record = dep.parked.get(run_id).ok_or("no such waiting run")?.clone();
+        let mut record = dep.parked.get(run_id).ok_or("no such waiting run")?.clone();
+        record.open(slug, dep.secrets.lock().unwrap().sealer.as_deref())?;
         (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
     };
     let Resumption { unit, inputs, sourced, mut waits, resumed } = record.resume(name, event, store)?;
