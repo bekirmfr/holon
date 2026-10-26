@@ -48,7 +48,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # wasm-pack at a pinned version, the one releases use (.github/build-setup.yml): asked for
+      # "latest", the action asks GitHub's API, and when that fails it installs v0.9.1, which has
+      # no --no-opt. A version named is downloaded as it is. The same in every job.
       - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.15.0
+        with:
+          version: v0.15.0
       - run: wasm-pack test --node crates/holon-wasm
         # It downloads wasm-bindgen and wasm-opt; a stalled download fails here, not after 6 h.
         timeout-minutes: 10
@@ -68,6 +75,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.15.0
       # `--no-opt`, as releases build it (.github/build-setup.yml): the wasm tested is the wasm
       # shipped, and no wasm-opt download or pass.
       - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
@@ -109,6 +118,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.15.0
       - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
         timeout-minutes: 10
       - uses: actions/setup-node@v4
