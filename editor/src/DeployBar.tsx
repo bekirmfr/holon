@@ -330,7 +330,7 @@ const KINDS: { kind: Kind; label: string; placeholder: (name: string, isSet: boo
 ];
 
 /** The env row's choice that types a name the server didn't list. */
-const OTHER = " other";
+const OTHER = "\u0000other";
 
 const when = (epoch: number) => new Date(epoch * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
 const sourceLabel = (source: string) => (source === "local" ? "sealed here" : source);
