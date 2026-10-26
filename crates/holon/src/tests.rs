@@ -5360,9 +5360,10 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let report = verify::check(&export, None, &BTreeMap::new());
         assert!(report.ok(), "{engine}: {}", verify::describe(&report, None));
-        // Its first part answered with its token, which the log never holds; the rest re-run.
+        // Every part re-runs: the token its first part answered with, and the request that
+        // carried it, are checked given what the log kept, and the resumed part that ran again too.
         let matched = report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count();
-        assert_eq!(matched, 2, "{engine}: the resumed part that ran again re-runs offline: {}", verify::describe(&report, None));
+        assert_eq!(matched, 3, "{engine}: the resumed part that ran again re-runs offline: {}", verify::describe(&report, None));
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

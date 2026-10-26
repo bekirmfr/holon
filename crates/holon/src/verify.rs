@@ -409,7 +409,10 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
 
     let mut differs = Vec::new();
     let nonce = bytes_of(&entry.nonce).and_then(|b| <[u8; 16]>::try_from(b).ok());
-    let id_matches = nonce.is_some_and(|nonce| {
+    // A request that carried a secret or a token (a resume route's path) is logged with its
+    // placeholder, and its run id was made from the value: it can't be made again, and the log's
+    // stands, as what the log kept stands in for a node fed one.
+    let id_matches = inputs.iter().flatten().any(carries_placeholder) || nonce.is_some_and(|nonce| {
         let id = |state: Option<&State>| to_hex(&run_id_of(deployment, &inputs, state, &extra, &nonce));
         id(Some(&state)) == entry.run_id || (state.is_empty() && id(None) == entry.run_id)
     });
