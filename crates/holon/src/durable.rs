@@ -627,8 +627,7 @@ pub(crate) fn resume_parked(
     entry.request = inputs.first().cloned().flatten().map(|r| SValue::from_core(&r));
     entry.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
     entry.parked = run.waiting.iter().map(|w| w.name.clone()).collect();
-    Redactor::tokens(&waits.tokens).entry(&mut entry);
-    log_run(deployments, slug, entry);
+    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
 
     {
         let mut table = deployments.lock().unwrap();

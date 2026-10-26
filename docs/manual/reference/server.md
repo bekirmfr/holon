@@ -166,7 +166,9 @@ hash of the one before. It keeps the newest `--keep-runs` runs (500 by default).
 run's request, what it read (clock, randomness, state, files, each outbound response), its
 outputs, the effects it performed, its answer (up to 64 KiB of the body), its timings, the unit
 and the grant it ran under, and who started it. Secrets and resume tokens are replaced by
-`‹secret:name›` and `‹token:name›` before anything is written.
+`‹secret:name›` and `‹token:name›` before anything is written. Text a run received that only
+looks like one is written escaped (each `‹` before it doubled, and `"escaped": true` on the
+entry), so a placeholder in the log is always the server's own.
 
 `--export-heads URL` sends each new head to a witness every five seconds, with
 `HOLON_EXPORT_HEADS_TOKEN` as a bearer token; heads that can't be sent wait in

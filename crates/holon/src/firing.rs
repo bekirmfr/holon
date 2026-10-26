@@ -522,10 +522,11 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
     })
 }
 
-/// Add a run to `slug`'s flow log, in its current session.
-pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry) {
+/// Add a run to `slug`'s flow log, in its current session: redacted of its secrets and of
+/// `tokens` (the run's), in one pass, so that the log's marks are only ever its own.
+pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor) {
     if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
-        Redactor::of(&dep.secrets).entry(&mut entry);
+        tokens.and(Redactor::of(&dep.secrets)).entry(&mut entry);
         entry.session = dep.life.sessions.last().map_or(0, |s| s.number);
         // Its packs go out as it is logged: the run is over and its writes have landed, and what
         // a subscriber gets is what the log holds (channels.rs).
@@ -662,6 +663,7 @@ pub(crate) fn run_entry(
             })
             .collect(),
         by: None,
+        escaped: false,
         reads: run
             .reads
             .iter()

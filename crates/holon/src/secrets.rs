@@ -634,8 +634,12 @@ impl Redactor {
         Redactor { pairs }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.pairs.is_empty()
+    /// This and `other` together: an entry is redacted once, so a mark one of them writes is
+    /// never read by the other as a run's own text.
+    pub(crate) fn and(mut self, other: Redactor) -> Redactor {
+        self.pairs.extend(other.pairs);
+        self.pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        self
     }
 
     pub(crate) fn text(&self, s: &str) -> String {
@@ -674,42 +678,160 @@ impl Redactor {
         }
     }
 
-    /// Everything a log entry carries that a run could have put a secret into.
-    pub(crate) fn entry(&self, e: &mut LogEntry) {
-        if self.is_empty() {
-            return;
+    /// `s` as the log writes it: each value replaced by its mark (the leftmost first, the longest
+    /// where two start together), and a look-alike of a mark in the run's own text escaped
+    /// ([`write_marked`]). Whether one was.
+    fn logged(&self, s: &str) -> (String, bool) {
+        let mut next: Vec<Option<usize>> = self.pairs.iter().map(|(value, _)| (!value.is_empty()).then(|| s.find(value.as_str())).flatten()).collect();
+        if !s.contains('‹') && next.iter().all(Option::is_none) {
+            return (s.to_string(), false);
         }
-        let r = |v: &mut SValue| self.svalue(v);
-        e.request.iter_mut().for_each(r);
-        e.sourced.iter_mut().for_each(|(_, v)| self.svalue(v));
-        e.state_before.values_mut().for_each(|v| self.svalue(v));
-        e.outputs.iter_mut().flatten().for_each(|v| self.svalue(v));
-        e.performed.iter_mut().for_each(|p| self.svalue(&mut p.payload));
-        e.progress.iter_mut().for_each(|p| self.svalue(&mut p.payload));
-        e.events.values_mut().for_each(|v| self.svalue(v));
-        for r in &mut e.reads {
-            self.svalue(&mut r.request);
-            r.answer.iter_mut().for_each(|v| self.svalue(v));
+        let mut pieces = Vec::new();
+        let mut at = 0;
+        loop {
+            for (k, (value, _)) in self.pairs.iter().enumerate() {
+                if next[k].is_some_and(|p| p < at) {
+                    next[k] = s[at..].find(value.as_str()).map(|p| p + at);
+                }
+            }
+            // Pairs are longest first, so the first found at the leftmost place is the longest.
+            let Some((k, p)) = next.iter().enumerate().filter_map(|(k, p)| p.map(|p| (k, p))).min_by_key(|&(_, p)| p) else { break };
+            pieces.push((&s[at..p], false));
+            pieces.push((self.pairs[k].1.as_str(), true));
+            at = p + self.pairs[k].0.len();
+        }
+        pieces.push((&s[at..], false));
+        write_marked(&pieces)
+    }
+
+    fn logged_svalue(&self, v: &mut SValue) -> bool {
+        let mut escaped = false;
+        texts_mut(v, &mut |s| {
+            let (out, e) = self.logged(s);
+            *s = out;
+            escaped |= e;
+        });
+        escaped
+    }
+
+    /// Everything a log entry carries that a run could have put a secret into, as the log writes
+    /// it: with each value marked, and the run's own look-alikes of a mark escaped. Applied once,
+    /// where the entry is logged, with every value the entry is redacted of (`and`).
+    pub(crate) fn entry(&self, e: &mut LogEntry) {
+        let mut escaped = false;
+        let mut r = |v: &mut SValue| escaped |= self.logged_svalue(v);
+        e.request.iter_mut().for_each(&mut r);
+        e.sourced.iter_mut().for_each(|(_, v)| r(v));
+        e.state_before.values_mut().for_each(&mut r);
+        e.outputs.iter_mut().flatten().for_each(&mut r);
+        e.performed.iter_mut().for_each(|p| r(&mut p.payload));
+        e.progress.iter_mut().for_each(|p| r(&mut p.payload));
+        e.events.values_mut().for_each(&mut r);
+        for read in &mut e.reads {
+            r(&mut read.request);
+            read.answer.iter_mut().for_each(&mut r);
         }
         for t in &mut e.timeline {
-            t.outputs.iter_mut().flatten().flatten().for_each(|v| self.svalue(v));
+            t.outputs.iter_mut().flatten().flatten().for_each(&mut r);
         }
         for round in &mut e.rounds {
             for x in &mut round.exchanges {
-                self.svalue(&mut x.request);
-                self.svalue(&mut x.response);
+                r(&mut x.request);
+                r(&mut x.response);
             }
         }
-        if let Some(body) = &mut e.response_body {
-            *body = self.text(body);
+        for s in [&mut e.response_body, &mut e.error, &mut e.url].into_iter().flatten() {
+            let (out, e) = self.logged(s);
+            *s = out;
+            escaped |= e;
         }
-        if let Some(error) = &mut e.error {
-            *error = self.text(error);
+        e.escaped |= escaped;
+    }
+}
+
+/// Each text in `v`, in place (not a record's keys).
+pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
+    match v {
+        SValue::Text(s) => f(s),
+        SValue::List(xs) => xs.iter_mut().for_each(|x| texts_mut(x, f)),
+        SValue::Record(fields) => fields.iter_mut().for_each(|(_, x)| texts_mut(x, f)),
+        SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => texts_mut(payload, f),
+        SValue::Number(_) | SValue::Boolean(_) => {}
+    }
+}
+
+/// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:` or
+/// `token:`.
+fn reads_as_mark(s: &str) -> bool {
+    let rest = s.trim_start_matches('‹');
+    rest.len() < s.len() && (rest.starts_with("secret:") || rest.starts_with("token:"))
+}
+
+/// Text as the log writes it, from its pieces: the run's own text, and the marks (`true`) put in
+/// place of values the log never holds. Each `‹` of the run's own that reads as part of a mark (a
+/// run of them before `secret:` or `token:`, a mark's own included) is written twice, so that a
+/// mark in the log is only ever one written here: a caller who sends `‹token:paid›` can't pass
+/// for a token (`holon verify` trusts only the log's own). Whether one was written twice.
+pub(crate) fn write_marked(pieces: &[(&str, bool)]) -> (String, bool) {
+    let mut whole = String::new();
+    let mut marks = Vec::new();
+    for (text, mark) in pieces {
+        if *mark {
+            marks.push(whole.len());
         }
-        if let Some(url) = &mut e.url {
-            *url = self.text(url);
+        whole.push_str(text);
+    }
+    let mut out = String::with_capacity(whole.len());
+    let mut escaped = false;
+    for (at, c) in whole.char_indices() {
+        if c == '‹' && marks.binary_search(&at).is_err() && reads_as_mark(&whole[at..]) {
+            out.push('‹');
+            escaped = true;
+        }
+        out.push(c);
+    }
+    (out, escaped)
+}
+
+/// Text the log wrote, as its pieces again: the run's own text, and the marks (`true`, as
+/// `‹secret:name›`). `escaped`: its entry says a look-alike was escaped ([`write_marked`]);
+/// otherwise there is none to tell apart (or it was logged before they were escaped, and every
+/// look-alike reads as a mark, as it did then).
+pub(crate) fn read_marked(s: &str, escaped: bool) -> Vec<(String, bool)> {
+    let mut pieces = Vec::new();
+    let mut text = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find('‹') {
+        text.push_str(&rest[..i]);
+        let after = rest[i..].trim_start_matches('‹');
+        let n = (rest.len() - i - after.len()) / '‹'.len_utf8();
+        rest = after;
+        if !(after.starts_with("secret:") || after.starts_with("token:")) {
+            text.extend(std::iter::repeat_n('‹', n));
+            continue;
+        }
+        let (literal, mark) = if escaped { (n / 2, n % 2 == 1) } else { (n - 1, true) };
+        match after.find('›').filter(|_| mark) {
+            Some(end) => {
+                text.extend(std::iter::repeat_n('‹', literal));
+                pieces.push((std::mem::take(&mut text), false));
+                let end = end + '›'.len_utf8();
+                pieces.push((format!("‹{}", &after[..end]), true));
+                rest = &after[end..];
+            }
+            // One the log didn't write: no mark is left open.
+            None => text.extend(std::iter::repeat_n('‹', literal + usize::from(mark))),
         }
     }
+    text.push_str(rest);
+    pieces.push((text, false));
+    pieces
+}
+
+/// A logged value with its look-alikes of a mark as the run had them (and the log's own marks as
+/// they read): what a channel's subscriber gets.
+pub(crate) fn unescaped(v: &mut SValue) {
+    texts_mut(v, &mut |s| *s = read_marked(s, true).into_iter().map(|(t, _)| t).collect());
 }
 
 #[cfg(test)]
@@ -924,5 +1046,43 @@ mod tests {
         let mut j = serde_json::json!({ "sk_123456": ["token sk_123456"] });
         r.json(&mut j);
         assert_eq!(j, serde_json::json!({ "‹secret:key›": ["token ‹secret:key›"] }));
+    }
+
+    /// In a log entry, a run's own text that reads like a mark is escaped (each `‹` before one
+    /// written twice), so the marks read back are only the log's own; text without one is as it was.
+    #[test]
+    fn a_look_alike_of_a_mark_is_escaped_and_reads_back_as_text() {
+        let vault: Vault = Arc::new(Mutex::new(Resolved {
+            current: BTreeMap::from([("key".to_string(), Zeroizing::new("sk_123456".to_string()))]),
+            ..Resolved::default()
+        }));
+        let r = Redactor::of(&vault).and(Redactor::tokens(&BTreeMap::from([("paid".to_string(), "tok-abcdef".to_string())])));
+        let read = |s: &str, escaped| read_marked(s, escaped).into_iter().map(|(t, m)| if m { format!("[{t}]") } else { t }).collect::<String>();
+        for (run, logged, marks) in [
+            ("plain ‹quoted› text", "plain ‹quoted› text", "plain ‹quoted› text"),
+            ("Bearer sk_123456 for tok-abcdef", "Bearer ‹secret:key› for ‹token:paid›", "Bearer [‹secret:key›] for [‹token:paid›]"),
+            ("sent ‹token:paid›", "sent ‹‹token:paid›", "sent ‹token:paid›"),
+            ("‹‹secret:key› and ‹sk_123456", "‹‹‹‹secret:key› and ‹‹‹secret:key›", "‹‹secret:key› and ‹[‹secret:key›]"),
+            ("open ‹token:paid", "open ‹‹token:paid", "open ‹token:paid"),
+        ] {
+            let (out, escaped) = r.logged(run);
+            assert_eq!(out, logged, "{run:?}");
+            assert_eq!(escaped, logged != run.replace("sk_123456", "‹secret:key›").replace("tok-abcdef", "‹token:paid›"), "{run:?}");
+            assert_eq!(read(&out, escaped), marks, "{run:?}");
+        }
+        // An entry logged before look-alikes were escaped: each reads as a mark, as it did then.
+        assert_eq!(read("sent ‹token:paid› and ‹‹secret:key›", false), "sent [‹token:paid›] and ‹[‹secret:key›]");
+
+        let mut e = LogEntry { request: Some(SValue::Text("‹token:paid›".into())), outputs: vec![Some(SValue::Text("tok-abcdef".into()))], ..LogEntry::default() };
+        r.entry(&mut e);
+        assert!(e.escaped);
+        assert_eq!(e.request, Some(SValue::Text("‹‹token:paid›".into())));
+        assert_eq!(e.outputs, vec![Some(SValue::Text("‹token:paid›".into()))]);
+        let mut plain = e.request.clone().unwrap();
+        unescaped(&mut plain);
+        assert_eq!(plain, SValue::Text("‹token:paid›".into()), "as the run had it");
+        let mut e = LogEntry { request: Some(SValue::Text("sk_123456".into())), ..LogEntry::default() };
+        r.entry(&mut e);
+        assert!(!e.escaped, "nothing to escape: the line is as it was");
     }
 }
