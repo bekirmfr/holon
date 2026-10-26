@@ -7,7 +7,7 @@ import { expect, test } from "./fixtures";
 test("the docs tab shows the manual, follows its links and opens its flows", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "docs", exact: true }).click();
-  await expect(page.getByRole("tablist").getByRole("tab", { name: "docs" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "docs" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("heading", { level: 1, name: "The Holon manual" })).toBeVisible();
 
   // The contents, as the manual's index lists them.
@@ -23,5 +23,5 @@ test("the docs tab shows the manual, follows its links and opens its flows", asy
   // A flow in the tour opens as an unsaved copy, in a tab of its own.
   await contents.getByRole("button", { name: "A tour" }).click();
   await page.getByRole("button", { name: "open in a tab" }).first().click();
-  await expect(page.getByRole("tablist").getByRole("tab", { name: /^hello/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: /^hello/ })).toHaveAttribute("aria-selected", "true");
 });

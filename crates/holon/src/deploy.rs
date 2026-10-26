@@ -8,7 +8,7 @@ use crate::*;
 /// already gives, rather than the `Capabilities` type itself, so this needs no new import.
 pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool {
     caps.any(|c| {
-        // A folder's reads are checked, and its writes committed, as a collection's are.
+        // A folder's or a database's reads are checked, and its writes committed, as a collection's are.
         matches!(
             c,
             Capability::StateRead(_)
@@ -17,6 +17,8 @@ pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool 
                 | Capability::CollectionWrite(_)
                 | Capability::FileRead(_)
                 | Capability::FileWrite(_)
+                | Capability::DbRead(_)
+                | Capability::DbWrite(_)
         )
     })
 }
@@ -709,9 +711,8 @@ pub(crate) fn handle_post_trigger(
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
-    Redactor::tokens(&waits.tokens).entry(&mut entry);
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, slug, entry);
+    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
     let FiredRun { outputs, performed, .. } = run;
     if state.is_some() || parked_any {
         persist_deployments(deployments_path, deployments, store);

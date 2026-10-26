@@ -59,6 +59,12 @@ pub const GENESIS: &[&str] = &[
     "file_handle", "file_lines", "file_slice", "file_copy",
     // and a write and a copy that never replace a file (2)
     "file_create", "file_create_copy",
+    // databases the host binds: rows a statement reads, one row, and a write when the run
+    // finishes (3)
+    "db_query", "db_one", "db_exec",
+    // and a document database's: documents a filter finds, one document, and an insert, an update
+    // and a delete when the run finishes (5)
+    "db_find", "db_find_one", "db_insert", "db_update", "db_delete",
     // channels: a pack sent when the run is over, and a route's answer that subscribes (2)
     "channel_send", "channel_subscribe",
     // sink — performed (1)
@@ -298,6 +304,47 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "file_create" => prim(vec![port("name", Text), port("text", Text)], vec![Param::frozen("folder", "files")], Effect),
         "file_create_copy" => prim(vec![port("name", Text), port("from", Type::Record)], vec![Param::frozen("folder", "files")], Effect),
 
+        // ── databases ── `database` (frozen) names which one, the host binding the name; `sql`
+        // (frozen) is the statement, the tables it touches its capabilities (sql.rs). Its
+        // parameters, `$1`, `$2`, …, arrive as a list on a wire, never in the text. A query's
+        // rows are records by column name; `expect` is how many rows a write must change ("":
+        // any number), or nothing it did lands.
+        "db_query" => prim(vec![port("params", Type::list_any())], vec![Param::frozen("database", "db"), Param::frozen("sql", "select * from t")], Type::List(Box::new(Type::Record))),
+        "db_one" => prim(vec![port("params", Type::list_any())], vec![Param::frozen("database", "db"), Param::frozen("sql", "select * from t")], Type::Record),
+        "db_exec" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("sql", "delete from t where false"), Param::frozen("expect", "")],
+            Effect,
+        ),
+        // A document database's (MongoDB): `collection` (frozen) is the capability, as a SQL
+        // statement's tables are; `filter`, `update`, `document` and `sort` are frozen templates
+        // (documents.rs), JSON whose holes, `$1`, `$2`, …, are the `params` list's values. A find
+        // answers documents as records; `limit` is how many at most ("": all).
+        "db_find" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("filter", "{}"), Param::frozen("sort", ""), Param::frozen("limit", "")],
+            Type::List(Box::new(Type::Record)),
+        ),
+        "db_find_one" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("filter", "{}"), Param::frozen("sort", "")],
+            Type::Record,
+        ),
+        "db_insert" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("document", "{}")],
+            Effect,
+        ),
+        "db_update" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("filter", "{}"), Param::frozen("update", "{\"$set\":{}}"), Param::frozen("expect", "")],
+            Effect,
+        ),
+        "db_delete" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("filter", "{}"), Param::frozen("expect", "")],
+            Effect,
+        ),
         // A channel's pack, sent once the run is over; and a subscription to the channel, which
         // a route answers with (`from`: "new" packs only, or the "kept" ones first).
         "channel_send" => prim(vec![port("pack", Any)], vec![Param::frozen("channel", "updates")], Effect),
@@ -351,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_79_leaves() {
+    fn genesis_has_86_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -364,8 +411,10 @@ mod tests {
         // (file_read, file_list, file_write, file_delete, file_handle, file_lines, file_slice,
         // file_copy), and a folder's trigger and a file as a request's body (file_arrival,
         // http_upload), and the create-only pair (file_create, file_create_copy), and the
-        // channel pair (channel_send, channel_subscribe), and http_stream.
-        assert_eq!(GENESIS.len(), 86);
+        // channel pair (channel_send, channel_subscribe), and http_stream, and the database kit
+        // (db_query, db_one, db_exec), and the document kit (db_find, db_find_one, db_insert,
+        // db_update, db_delete).
+        assert_eq!(GENESIS.len(), 94);
     }
 
     #[test]

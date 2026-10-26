@@ -103,9 +103,8 @@ pub(crate) fn fire_one_clock_tick(
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
-    Redactor::tokens(&waits.tokens).entry(&mut entry);
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, &slug, entry);
+    log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens));
 
     // What it produced isn't printed: a secret or a resume token in it would land in the server's
     // console, which nothing redacts.

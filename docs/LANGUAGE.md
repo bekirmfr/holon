@@ -499,6 +499,104 @@ are gone). A file its own runs deleted from a folder it watches starts nothing. 
 e)` writes a file that must not exist yet (`file_create`): the run fails, and nothing it did
 lands, rather than replace one; `audit.create_copy(n, h)` is the same for a copy by handle.
 
+### orders-api: a database on the host
+
+```
+flow orders-api
+port 8150
+database shop
+
+route POST /orders (req) {
+  shop.exec("insert into orders (customer, total) values ($1, $2)", req.json.customer, req.json.total)
+  respond { placed: req.json.customer }, status: 201
+}
+
+route GET /orders/:customer (req) {
+  respond shop.query("select id, total, refunded from orders where customer = $1 order by id", req.params.customer)
+}
+
+route GET /order/:id (req) {
+  respond shop.one("select id, customer, total, refunded from orders where id = $1", req.params.id)
+}
+
+route POST /order/:id/refund (req) {
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, expect: 1)
+  respond { refunded: req.params.id }
+}
+```
+
+`database shop` names a database on the host; an admin binds the name to a SQLite file, or to a
+Postgres or MySQL database by where its URL is fetched from (`env:HOLON_SECRET_SHOP_URL`, as a
+secret's source: `engines.rs`), with the schema that makes its tables (`holon database add shop
+~/shop.db --schema "create table orders (…)"`, `--read-only`, `--for <slug>`, or the admin page),
+and a flow never sees where it is or runs DDL; its text is the same on each engine. `shop.query(sql, v…)` is `db_query{database: shop, sql}(params)`, the rows as the run began;
+`shop.one(…)` is `db_one`, the first row or no value; `shop.exec(…)` is `db_exec`, the statement run
+when the run finishes, and with `expect: n` only if it changes `n` rows, or nothing the run wrote
+lands and the route answers 409. The SQL is a text literal, because its tables are the grant:
+core parses it (`sql.rs`) and `select … from orders` asks `DbRead("shop/orders")`, `update
+orders …` `DbWrite("shop/orders")`; the values after it are `$1`, `$2`, …, as many as it takes.
+The commit re-reads what the run read in the same transaction as its writes, and marks the run
+in the database's `holon_commits`. Design: `docs/L4s/databases-L4.md`.
+
+### refund-once: a row held while a run calls out
+
+```
+flow refund-once
+port 8151
+database shop
+
+route POST /refund/:id (req) {
+  order = shop.one("select id, total from orders where id = $1 and refunded = 0", req.params.id)
+  paid = http.post("httpbin.org", "/anything/refunds", headers: { "content-type": "application/json" }, body: json({ order: order.id, amount: order.total }))
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", order.id, expect: 1)
+  shop.exec("insert into refunds (order_id, amount, status) values ($1, $2, $3)", order.id, order.total, paid.status)
+  respond { refunded: order.total, payment: paid.status }, missing: 409
+}
+
+route GET /refunds/:id (req) {
+  respond shop.query("select amount, status from refunds where order_id = $1", req.params.id)
+}
+```
+
+A run that reads a row it may write and then calls out holds the row (`claims.rs`:
+`ClaimKey::Row`) from its first outbound call until it commits, as a collection's key is held: the
+second of two refunds at once waits at `http.post`, reads the order again when it is let go, finds
+no row, and runs again sending nothing. The row is the one a `where` pins by the table's whole
+primary key (core's `sql::pins`, the key read from the database); any other read holds the
+table, a file read the file, a listing the folder. These are held in the server's table, by the
+resource's real address, so two deployments bound to one database exclude each other. Design:
+`docs/L4s/databases-L4.md` §7.2.
+
+### atlas-notes: documents
+
+```holon
+flow atlas-notes
+port 8154
+database notes
+
+route GET /notes/:owner/tagged/:tag (req) {
+  respond notes.find("notes", { owner: req.params.owner, tags: { "$in": [req.params.tag] } }, sort: { _id: 1 })
+}
+
+route POST /notes/:owner/:id/done (req) {
+  note = notes.find_one("notes", { _id: req.params.id, owner: req.params.owner, done: false })
+  notes.update("notes", { _id: note._id }, { "$set": { done: true } }, expect: 1)
+  respond { done: note._id, text: note.text }
+}
+```
+
+A database an admin binds to a MongoDB (`mongodb+srv://…`, fetched as a secret is: `mongo.rs`) is
+called with records instead of SQL: `find`, `find_one`, `insert`, `update` and `delete`, the
+collection in quotes first (the grant, as a statement's tables are), then record literals written
+in the call. The lowering freezes each one's shape into the leaf as a **template**, JSON whose
+values may be holes (core's `documents.rs`): every key, operator and constant is the flow's, and
+each other value is a hole, `$1`, `$2`, … in the order written, wired as the leaf's `params` list.
+So `{ owner: req.params.owner, tags: { "$in": [req.params.tag] } }` is the frozen
+`{"owner":$1,"tags":{"$in":[$2]}}`, and a request can never add an operator: the host fills each
+hole with its value as data, and a record value with a `$` field fails the run. A record from a
+value, or a spread, is an error that says so; `$where`, `$function` and `$accumulator` are refused
+anywhere, an update is update operators only, a sort fields of `1` and `-1`. `fmt` writes the
+records back from the templates, the values in place.
 ### live-board: a channel
 
 ```
@@ -736,6 +834,14 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `inbox.slice(n, offset: o, length: k)` | `file_slice{folder: inbox}(n, o, k)` | `k` bytes from `o` (from the end when negative), as text |
 | `reports[n] = h` (`h` a handle read here, or `ingress` with `on file`), `reports.copy(n, h)` | `file_copy{folder: reports}(n, h)` | copy the file when the run finishes, host to host |
 | `reports.create(n, e)`, `reports.create_copy(n, h)` | `file_create{folder: reports}(n, e)`, `file_create_copy{folder: reports}(n, h)` | the same write or copy, only if there is no such file yet: else the run fails |
+| `shop.query(sql, v…)` (`shop` a declared database, `sql` a text literal) | `db_query{database: shop, sql}(list(v…))` | the rows, as the run began |
+| `shop.one(sql, v…)` | `db_one{database: shop, sql}(list(v…))` | the first row, or no value |
+| `shop.exec(sql, v…, expect: n)` | `db_exec{database: shop, sql, expect: n}(list(v…))` | run the statement when the run finishes (only if it changes `n` rows) |
+| `notes.find(c, { … }, sort: { … }, limit: n)` (`c` a text literal, each record written in the call) | `db_find{database: notes, collection: c, filter, sort, limit}(list(v…))`, the records frozen as templates, `v…` their computed values | the documents, as the run began (no filter: all) |
+| `notes.find_one(c, { … }, sort: { … })` | `db_find_one{database: notes, collection: c, filter, sort}(list(v…))` | the first document, or no value |
+| `notes.insert(c, { … })` | `db_insert{database: notes, collection: c, document}(list(v…))` | add the document when the run finishes |
+| `notes.update(c, { … }, { "$set": … }, expect: n)` | `db_update{database: notes, collection: c, filter, update, expect: n}(list(v…))` | update what the filter selects when the run finishes (only if it matches `n`) |
+| `notes.delete(c, { … }, expect: n)` | `db_delete{database: notes, collection: c, filter, expect: n}(list(v…))` | delete what the filter selects when the run finishes (only if it deletes `n`) |
 | `updates.send(e)` (`updates` a declared channel) | `channel_send{channel: updates}(e)` | send `e` to the channel's subscribers once the run is over |
 | `respond updates.subscribe(from: "kept")` | `channel_subscribe{channel: updates, from: kept}` as `respond`'s body | answer with the channel's packs, as server-sent events (`from: "new"`, the default: only those sent from now on) |
 | `http.get(host, path, headers: h, body: b)` and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host}(path, h, b)` | a call to that host |
@@ -759,7 +865,9 @@ Rules the table implies:
   bigger one is read by handle, lines or slice; a copy also asks `FileRead` of the folder its
   handle names.
 - `http.*`'s host must be a text literal, because the host is the capability the deployment asks
-  for; a host from a wire is an error that says so.
+  for; a host from a wire is an error that says so. A database's SQL the same: its tables are
+  `DbRead("shop/orders")` and `DbWrite("shop/orders")`, a statement that names no table is an
+  error, and so is a count of values that isn't the SQL's `$n`s.
 - A streamed call is a route's, and the route answers with it: `stream:` comes last, takes
   `true` or `false`, sends a body (not a `file:`), and a route makes one; its `respond` is
   `respond sent.body, stream: true`, without `status:` or `headers:` (its status is the call's,

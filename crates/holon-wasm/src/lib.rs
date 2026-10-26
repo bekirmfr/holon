@@ -147,6 +147,8 @@ pub enum WCapability {
     ChannelSend(String),
     ChannelRead(String),
     Spawn,
+    DbRead(String),
+    DbWrite(String),
 }
 
 impl WCapability {
@@ -170,6 +172,8 @@ impl WCapability {
             Capability::ChannelSend(channel) => WCapability::ChannelSend(channel),
             Capability::ChannelRead(channel) => WCapability::ChannelRead(channel),
             Capability::Spawn => WCapability::Spawn,
+            Capability::DbRead(table) => WCapability::DbRead(table),
+            Capability::DbWrite(table) => WCapability::DbWrite(table),
         }
     }
 }

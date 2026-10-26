@@ -9,6 +9,8 @@ import { appendFileSync, readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 
+const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
+
 /** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. From
  *  a fresh load of the editor unless `reload` is false: then from the flows page of the editor
  *  as it is (faster, and its other tabs stay open). */
@@ -96,6 +98,8 @@ for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
   test(`samples ${first + 1} to ${first + titles.length} open from the flows page and deploy`, async ({ page }) => {
     await page.goto("/");
     for (const title of titles) {
+      // Its database is a MongoDB, bound only where the environment names one (CI does).
+      if (title === ATLAS_NOTES && !process.env.HOLON_TEST_MONGODB) continue;
       await test.step(title, async () => {
         await openSample(page, title, false);
         await deploy(page);
@@ -889,6 +893,166 @@ test("journal appends to a page in a capped folder, a write past its cap answers
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("shared-ledger, deployed twice, loses no line when both append to one file at once", async ({ page, request }) => {
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "Shared ledger (one file, several deployments)");
+  const first = await deploy(page);
+  // A second deployment of the same text, under another name and port, imported as a file.
+  const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "shared-ledger.holon"), "utf8");
+  const copy = join(mkdtempSync(join(tmpdir(), "holon-ledger-")), "shared-ledger-2.holon");
+  writeFileSync(copy, text.replace("flow shared-ledger", "flow shared-ledger-2").replace("port 8140", "port 8141"));
+  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await page.getByLabel("import a .holon file").setInputFiles(copy);
+  await expect(page.locator(".hl-tab--active")).toContainText("shared-ledger-2");
+  const second = await deploy(page);
+  expect(second).not.toBe(first);
+
+  const tag = `e2e-${Date.now()}`;
+  const lines = Array.from({ length: 30 }, (_, i) => `${tag} ${i}`);
+  const answers = await Promise.all(
+    lines.map((line, i) => request.post(`http://127.0.0.1:${i % 2 ? second : first}/lines`, { data: line, headers: { "content-type": "text/plain" } })),
+  );
+  expect(answers.map((a) => a.status())).toEqual(lines.map(() => 200));
+  const kept = (await (await request.get(`http://127.0.0.1:${first}/lines`)).text()).split("\n").filter((l) => l.startsWith(tag));
+  expect(kept.sort()).toEqual([...lines].sort());
+  expect(readFileSync(join(FOLDERS, "ledger", "lines.txt"), "utf8")).toContain(`${tag} 29`);
+});
+
+test("orders-api places, lists and refunds orders in the database an admin bound; a second refund changes no row and answers 409", async ({ page, request }) => {
+  const { join } = await import("node:path");
+  await openSample(page, "Orders API (a database on the host)");
+  const port = await deploy(page);
+  const base = `http://127.0.0.1:${port}`;
+  const customer = `e2e-${Date.now()}`;
+  expect((await request.post(`${base}/orders`, { data: { customer, total: "12.50" } })).status()).toBe(201);
+  const listed = await (await request.get(`${base}/orders/${customer}`)).json();
+  expect(listed).toEqual([{ id: listed[0].id, total: 12.5, refunded: 0 }]);
+  const id = listed[0].id;
+  expect((await request.post(`${base}/order/${id}/refund`)).status()).toBe(200);
+  const again = await request.post(`${base}/order/${id}/refund`);
+  expect(again.status()).toBe(409);
+  expect(await again.text()).toContain("changed 0 rows, not 1 row");
+  expect((await (await request.get(`${base}/order/${id}`)).json()).refunded).toBe(1);
+
+  // The admin page's resources list the database, its tables and who uses it, and bind another,
+  // made by its schema.
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  const sections = page.getByRole("tablist", { name: "admin sections" });
+  await sections.getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByText(join(FOLDERS, "shop.db"), { exact: true })).toBeVisible();
+  await expect(page.getByLabel("shop's tables")).toContainText("tables: orders");
+  await expect(page.getByLabel("shop's tables")).not.toContainText("holon_commits");
+  const scratch = join(FOLDERS, `scratch-${Date.now()}.db`);
+  await page.getByLabel("database name").fill("scratch");
+  await page.getByLabel("database path").fill(scratch);
+  await page.getByLabel("database schema").fill("create table notes (id integer primary key, text text)");
+  await page.getByRole("button", { name: "bind database" }).click();
+  await expect(page.getByText(scratch, { exact: true })).toBeVisible();
+  await expect(page.getByLabel("scratch's tables")).toHaveText(/tables: notes/);
+  // A URL typed in where its secret's source goes is refused here, never sent.
+  await page.getByLabel("database path").fill("postgres://u:p@db.example/shop");
+  await expect(page.getByRole("button", { name: "bind database" })).toBeDisabled();
+  await page.getByLabel("database path").fill("");
+
+  // Permissions: the policy, read only, and who may touch the shop: orders-api, by table, with
+  // a link to its card, where its grant changes.
+  await sections.getByRole("tab", { name: "permissions" }).click();
+  await expect(page.getByRole("button", { name: "read the policy again" })).toBeVisible();
+  const shop = page.getByLabel("database shop", { exact: true });
+  await expect(shop).toContainText("orders-api");
+  await expect(shop).toContainText("writes orders");
+  await page.getByLabel("show what").selectOption("folders");
+  await expect(shop).toHaveCount(0);
+  await page.getByLabel("show what").selectOption("databases");
+  await shop.getByRole("button", { name: "card →" }).first().click();
+  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: /^deployed/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("deployment orders-api", { exact: true })).toContainText("permissions ▾");
+});
+
+test("refund-once, beside orders-api on one database, calls the payment API once for two refunds of one order at once", async ({ page, request }) => {
+  await openSample(page, "Orders API (a database on the host)");
+  const orders = `http://127.0.0.1:${await deploy(page)}`;
+  await openSample(page, "Refund once (two requests, one payment)");
+  const refunds = `http://127.0.0.1:${await deploy(page)}`;
+  const customer = `e2e-refund-${Date.now()}`;
+  expect((await request.post(`${orders}/orders`, { data: { customer, total: 5 } })).status()).toBe(201);
+  const [order] = await (await request.get(`${orders}/orders/${customer}`)).json();
+  // The two at once: one holds the order's row from its call out until it commits; the other
+  // waits, finds the order refunded, and sends nothing.
+  const both = await Promise.all([request.post(`${refunds}/refund/${order.id}`, { timeout: 60_000 }), request.post(`${refunds}/refund/${order.id}`, { timeout: 60_000 })]);
+  expect(both.map((r) => r.status()).sort()).toEqual([200, 409]);
+  const made = await (await request.get(`${refunds}/refunds/${order.id}`)).json();
+  expect(made).toHaveLength(1);
+  expect(made[0].amount).toBe(5);
+  expect((await (await request.get(`${orders}/order/${order.id}`)).json()).refunded).toBe(1);
+});
+
+test("ticket-numbers, on a database held for whole runs, hands out twenty numbers at once one after the other, none running again", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "Ticket numbers (a database held for whole runs)");
+  const base = `http://127.0.0.1:${await deploy(page)}`;
+  const tag = `e2e-${Date.now()}`;
+  const taken = await Promise.all(Array.from({ length: 20 }, (_, i) => request.post(`${base}/ticket`, { data: { name: `${tag}-${i}` }, timeout: 60_000 })));
+  expect(taken.map((t) => t.status())).toEqual(taken.map(() => 201));
+  const numbers = (await Promise.all(taken.map((t) => t.json()))).map((t) => t.ticket);
+  expect(new Set(numbers).size).toBe(20);
+  const issued: { n: number; holder: string }[] = await (await request.get(`${base}/tickets`)).json();
+  expect(issued.filter((t) => t.holder.startsWith(tag)).map((t) => t.n).sort((a, b) => a - b)).toEqual([...numbers].sort((a, b) => a - b));
+
+  // Each run committed on its first try: the database was its alone from before it started.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "ticket-numbers.json");
+  execFileSync(holon, ["export", "ticket-numbers", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const runs: { route?: string; retries?: number }[] = JSON.parse(readFileSync(out, "utf8")).lines.map((l: string) => JSON.parse(l));
+  const posts = runs.filter((r) => r.route === "POST /ticket");
+  expect(posts.length).toBeGreaterThanOrEqual(20);
+  expect(posts.filter((r) => (r.retries ?? 0) > 0)).toEqual([]);
+
+  // The admin page says the database is held for whole runs.
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByText(join(FOLDERS, "tickets.db"), { exact: true }).locator("..")).toContainText("held for whole runs");
+});
+
+test("approved-payout waits for its approval holding nothing, and pays from the balance as it is then: a deposit made meanwhile is kept", async ({ page, request }) => {
+  await openSample(page, "Approved payout (a waiting run checks what it read)");
+  const base = `http://127.0.0.1:${await deploy(page)}`;
+  const before: number = (await (await request.get(`${base}/accounts/1`)).json()).balance;
+  const asked = await request.post(`${base}/payout/1`, { data: { amount: 30 } });
+  expect(asked.status()).toBe(202);
+  const { approve } = await asked.json();
+  expect(approve).toMatch(/^\/approve\/rt_/);
+  // While it waits, a deposit goes ahead: the waiting run holds nothing on the account.
+  const deposited = await request.post(`${base}/deposit/1`, { data: { amount: 50 } });
+  expect((await deposited.json()).balance).toBe(before + 50);
+  expect((await request.post(`${base}${approve}`, { data: { by: "e2e" }, timeout: 60_000 })).status()).toBe(200);
+  expect((await (await request.get(`${base}/accounts/1`)).json()).balance).toBe(before + 50 - 30);
+});
+
+test("atlas-notes keeps notes as documents in a MongoDB: found by owner and tag, marked done once, and a value never an operator", async ({ page, request }) => {
+  test.skip(!process.env.HOLON_TEST_MONGODB, "set HOLON_TEST_MONGODB (a replica set's URL) to run it against MongoDB");
+  await openSample(page, ATLAS_NOTES);
+  const base = `http://127.0.0.1:${await deploy(page)}`;
+  const owner = `e2e-${Date.now()}`;
+  expect((await request.post(`${base}/notes/${owner}`, { data: { id: `${owner}-1`, text: "buy milk", tags: ["home"] } })).status()).toBe(201);
+  expect((await request.post(`${base}/notes/${owner}`, { data: { id: `${owner}-2`, text: "call bo" } })).status()).toBe(201);
+  const found = await (await request.get(`${base}/notes/${owner}`)).json();
+  expect(found.map((n: { text: string }) => n.text)).toEqual(["buy milk", "call bo"]);
+  expect(await (await request.get(`${base}/notes/${owner}/tagged/home`)).json()).toHaveLength(1);
+  expect((await request.post(`${base}/notes/${owner}/${owner}-1/done`)).status()).toBe(200);
+  expect((await request.post(`${base}/notes/${owner}/${owner}-1/done`)).status()).toBe(404);
+  // A value is data: a record with an operator in it fails the run, and nothing lands.
+  expect((await request.put(`${base}/notes/${owner}/${owner}-2`, { data: { text: { $set: { owner: "mallory" } } } })).status()).toBe(500);
+  expect((await (await request.get(`${base}/notes/${owner}`)).json())[0].text).toBe("call bo");
+});
+
 test("drop-box runs once for a file dropped in its folder, sends it by handle, writes its receipt, and its runs verify", async ({ page, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
   const { existsSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
@@ -960,6 +1124,7 @@ test("the admin page's browse… lists the server's folders, and the one chosen 
   const { join } = await import("node:path");
   await page.goto("/");
   await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
   // The first listing (the home folder) answers only once a path is typed, as on a slow machine:
   // it mustn't replace what was typed.
   let release = () => {};

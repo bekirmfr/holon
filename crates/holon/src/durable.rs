@@ -150,9 +150,13 @@ pub(crate) struct RunWaits {
     pub(crate) folders: Option<Arc<folders::Scoped>>,
     /// The folders this run may read, and how much it has read (folders.rs); none outside a run.
     pub(crate) files: Option<folders::Readable>,
+    /// The databases this run may read, and how much it has read (databases.rs); none outside a
+    /// run.
+    pub(crate) databases: Option<databases::Readable>,
     /// The collection and file reads it made, each once, with what each answered.
     pub(crate) reads: Vec<collections::Read>,
-    /// Why a read failed the run (a file too big, a folder not bound…), if one did.
+    /// Why a read failed the run (a file too big, a folder not bound…), if one did: the run's
+    /// error, as it starts (`folders::READ_FAILED`, `databases::READ_FAILED`).
     pub(crate) failed: Option<String>,
     /// The keys this attempt holds (claims.rs), and what it needs to claim more; none for a run
     /// without state, a resumed part, or the attempt that runs holding the state's lock.
@@ -177,11 +181,21 @@ impl Waits for RunWaits {
             return seen.answer.clone();
         }
         let is_file = matches!(request, Value::Record(r) if r.contains_key("folder"));
+        let is_database = matches!(request, Value::Record(r) if r.contains_key("database"));
         let (answer, file) = if is_file {
             match self.files.as_mut().map(|f| f.answer(request, true)) {
                 Some(Ok(seen)) => seen,
                 Some(Err(e)) => {
-                    self.failed.get_or_insert(e);
+                    self.failed.get_or_insert(format!("{}{e}", folders::READ_FAILED));
+                    (None, None)
+                }
+                None => (None, None),
+            }
+        } else if is_database {
+            match self.databases.as_mut().map(|d| d.answer(request)) {
+                Some(Ok(answer)) => (answer, None),
+                Some(Err(e)) => {
+                    self.failed.get_or_insert(format!("{}{e}", databases::READ_FAILED));
                     (None, None)
                 }
                 None => (None, None),
@@ -627,13 +641,17 @@ pub(crate) fn resume_parked(
     entry.request = inputs.first().cloned().flatten().map(|r| SValue::from_core(&r));
     entry.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
     entry.parked = run.waiting.iter().map(|w| w.name.clone()).collect();
-    Redactor::tokens(&waits.tokens).entry(&mut entry);
-    log_run(deployments, slug, entry);
+    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
 
     {
         let mut table = deployments.lock().unwrap();
         if let Some(dep) = table.get_mut(slug) {
-            if run.waiting.is_empty() || run.error.is_some() {
+            // One turned away by a run lock (firing.rs) didn't run: it waits on, for its event
+            // to be delivered again.
+            let turned_away = run.error.as_deref().is_some_and(|e| e.starts_with("busy:"));
+            if turned_away {
+                eprintln!("holon: run {run_id} in {slug:?} waits on: its event can be delivered again");
+            } else if run.waiting.is_empty() || run.error.is_some() {
                 dep.parked.remove(run_id);
             } else if let Some(kept) = dep.parked.get_mut(run_id) {
                 // Still waiting: what it learned is kept; a point it was already waiting at keeps

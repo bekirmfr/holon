@@ -131,6 +131,10 @@ export type FolderEntry = {
   access: "read" | "read-write";
   keep: "bytes" | "hash" | `bytes for ${string}`;
   cap: number | null;
+  /** Other servers bind it too (a network share): a commit also locks a file in it. */
+  shared?: boolean;
+  /** "run": each run that touches it holds it for its whole length (shared to read, alone to write), not only across its commit. */
+  lock?: "commit" | "run";
   deployment: string | null;
 };
 /** A folder to bind: its cap as bytes or a size (`10M`). */
@@ -151,6 +155,37 @@ export async function unbindFolder(name: string, deployment: string | null): Pro
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
 }
+/** A database an admin bound (holon-server's databases.rs): a name flows use (`database shop`),
+ *  a SQLite file here; for the whole server (`deployment` null), or for that deployment only. */
+export type DatabaseEntry = {
+  name: string;
+  engine: "sqlite" | "postgres" | "mysql" | "mongodb";
+  /** A SQLite database's file. */
+  path?: string;
+  /** A Postgres, MySQL or MongoDB database's: where its URL is fetched from (env:…, vault:…), and where it points, without credentials. */
+  connection?: string;
+  address?: string;
+  access: "read" | "read-write";
+  /** "run": each run that touches it holds it for its whole length (shared to read, alone to write), not only across its commit. */
+  lock?: "commit" | "run";
+  deployment: string | null;
+};
+/** A database to bind: a SQLite file's path or a connection's source, with the admin's schema to run first (which creates a SQLite file if there is none). */
+export type DatabaseBinding = Pick<DatabaseEntry, "name" | "access" | "deployment" | "lock"> & { path?: string; connection?: string; schema: string | null };
+export const listDatabases = async () => asJson<DatabaseEntry[]>(await api(`${BASE}/admin/databases`));
+export const bindDatabase = async (d: DatabaseBinding) => asJson<DatabaseEntry>(await post(`${BASE}/admin/databases`, d));
+export async function unbindDatabase(name: string, deployment: string | null): Promise<void> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  await asJson<void>(await api(`${BASE}/admin/databases/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
+}
+/** `GET /admin/databases/<name>/tables`: a bound database's tables (a MongoDB's collections), read now, Holon's own left out. */
+export async function listTables(name: string, deployment: string | null): Promise<string[]> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  return (await asJson<{ tables: string[] }>(await api(`${BASE}/admin/databases/${encodeURIComponent(name)}/tables${only}`))).tables;
+}
+/** One deployment's grant as `GET /admin/grants` lists it (grants.rs): what it holds, what was taken back since. */
+export type HeldGrant = { slug: string; status: DeploymentEntry["status"]; attention: string | null; items: string[]; revoked: string[] };
+export const listGrants = async () => asJson<HeldGrant[]>(await api(`${BASE}/admin/grants`));
 export const getOidcSettings = async () => (await asJson<{ settings: OidcSettings | null }>(await api(`${BASE}/admin/oidc`))).settings;
 export async function setOidcSettings(settings: OidcSettings | null): Promise<void> {
   await asJson<void>(await post(`${BASE}/admin/oidc`, { settings }));
@@ -378,6 +413,12 @@ export type HostPolicy = {
 
 export async function getPermissions(): Promise<HostPolicy> {
   return asJson<HostPolicy>(await api(`${BASE}/permissions`));
+}
+
+/** `POST /permissions/reload`: the server reads its policy file again and holds every deployment
+ *  to it; the policy, and why each deployment can't run, if it can't. */
+export async function reloadPermissions(): Promise<HostPolicy & { attention: Record<string, string | null> }> {
+  return asJson(await post(`${BASE}/permissions/reload`));
 }
 
 /** One entry from `GET /deployments` (or `DELETE /deployments/<slug>`'s response) — mirrors

@@ -12,10 +12,15 @@
 //! placeholder, never the value. What the log kept for that node stands in (`Asserting`), as in
 //! the editor's replay, and the rest of the run is checked against it; the report says for how
 //! many runs, and for how many nodes. What such a node produced is taken from the log, not
-//! checked. Some runs can't be run again at all, and are counted, not failed: one whose such node
-//! the log keeps no outputs for (too large, or too deep), one that failed on a budget (the clock
-//! decided), one no route took (nothing ran), one that read a file whose text neither the export
-//! nor `--files` holds (its folder keeps only hashes).
+//! checked. A run that received one (a resume route's token, a bearer token equal to a secret)
+//! keeps its logged run id, made from the value; the report says for which runs. Only a mark the
+//! log wrote is a placeholder: a look-alike a caller sent is logged escaped, read back as the text
+//! it was, and computed with (`Marks`).
+//!
+//! Some runs can't be run again at all, and are counted, not failed: one whose such node the log
+//! keeps no outputs for (too large, or too deep), one that failed on a budget (the clock decided),
+//! one no route took (nothing ran), one that read a file whose text neither the export nor
+//! `--files` holds (its folder keeps only hashes).
 
 use std::collections::BTreeSet;
 
@@ -179,6 +184,19 @@ pub(crate) struct Report {
     /// The runs checked given what the log kept for nodes that can't be computed again (fed a
     /// secret or a token): by seq, how many such nodes.
     pub(crate) given: BTreeMap<u64, usize>,
+    /// The runs whose run id was taken from the log, not made again: it was made from a secret or
+    /// a resume token the run received (in its request, its state or what it read), which the log
+    /// never holds.
+    pub(crate) ids_given: Vec<u64>,
+}
+
+/// What the log's record stood in for, running one run again.
+#[derive(Default)]
+struct Given {
+    /// Nodes fed a secret or a token (`Asserting`).
+    nodes: usize,
+    /// The run id.
+    id: bool,
 }
 
 impl Report {
@@ -242,13 +260,17 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     }
 
     let texts = Texts { blobs: &export.blobs, files };
+    let marks = Marks::new();
     for (i, (entry, _)) in entries.iter().enumerate() {
         let earlier: Vec<&LogEntry> =
             entries[..i].iter().map(|(e, _)| e).filter(|e| !entry.run_id.is_empty() && e.run_id == entry.run_id).collect();
-        let mut given = 0;
-        let came_to = rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &mut given);
-        if given > 0 {
-            report.given.insert(entry.seq, given);
+        let mut given = Given::default();
+        let came_to = rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &marks, &mut given);
+        if given.nodes > 0 {
+            report.given.insert(entry.seq, given.nodes);
+        }
+        if given.id {
+            report.ids_given.push(entry.seq);
         }
         report.reruns.push((entry.seq, came_to));
     }
@@ -265,13 +287,14 @@ struct Texts<'a> {
 impl Texts<'_> {
     /// The text a logged file read answered: the entry's own, or found by its blob or its hash.
     /// `Err`: none here (what the run read), or a blob that isn't the file it says.
-    fn answer(&self, read: &recorder::LoggedRead) -> Result<Option<Value>, Rerun> {
-        let Some(file) = &read.file else { return Ok(read.answer.clone().map(SValue::into_core)) };
+    /// `marks`, `escaped`: an answer the entry holds is read as the run had it (`Marks::read`).
+    fn answer(&self, read: &recorder::LoggedRead, marks: &Marks, escaped: bool) -> Result<Option<Value>, Rerun> {
+        let Some(file) = &read.file else { return Ok(read.answer.as_ref().map(|a| marks.read(a, escaped))) };
         if let Some(range) = &file.range {
             return self.range(read, file, range);
         }
         if let Some(answer) = &read.answer {
-            return Ok(Some(answer.clone().into_core()));
+            return Ok(Some(marks.read(answer, escaped)));
         }
         let what = || what(read);
         if let Some(text) = file.blob.as_ref().and_then(|b| self.blobs.get(b)) {
@@ -348,9 +371,9 @@ fn what(read: &recorder::LoggedRead) -> String {
 }
 
 /// Run `entry` again from what it records (and what the earlier parts of the same run, `earlier`,
-/// record: a resumed run's outbound answers and reads), and compare. `given` is set to how many
-/// nodes the log's record stood in for (`Asserting`).
-fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl holon_core::Resolver, given: &mut usize) -> Rerun {
+/// record: a resumed run's outbound answers and reads), and compare. `given` is set to what the
+/// log's record stood in for: nodes (`Asserting`), and the run id.
+fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl holon_core::Resolver, marks: &Marks, given: &mut Given) -> Rerun {
     if entry.run_id.is_empty() {
         return Rerun::Skipped("nothing ran: no route took the request".into());
     }
@@ -377,7 +400,7 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
             let Some(root) = resolver.resolve(&endpoint) else {
                 return Rerun::Differs(format!("the endpoint of {route:?} isn't in the export"));
             };
-            (root, vec![entry.request.clone().map(SValue::into_core)])
+            (root, vec![entry.request.as_ref().map(|r| marks.read(r, entry.escaped))])
         }
         None => (deployed, Vec::new()),
     };
@@ -387,29 +410,34 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
         let Some(cap) = durable::capability_named(name) else {
             return Rerun::Skipped(format!("it read {name}, which verify can't supply"));
         };
-        extra.push((cap, value.clone().into_core()));
+        extra.push((cap, marks.read(value, entry.escaped)));
     }
-    let values: BTreeMap<String, Value> = entry.state_before.iter().map(|(k, v)| (k.clone(), v.clone().into_core())).collect();
+    let values: BTreeMap<String, Value> = entry.state_before.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect();
     let Ok(state) = State::from_values(values) else {
         return Rerun::Differs("its state doesn't encode".into());
     };
 
-    // A secret stands in as the placeholder the log shows (a token too: `Logged::token`). A node
-    // that only passes one along computes the same; one that computes with it can't be computed
-    // again, and what the log kept for it stands in (`Asserting`).
+    // A secret stands in as its placeholder (a token too: `Logged::token`), as the marks the log
+    // wrote do (`Marks`). A node that only passes one along computes the same; one that computes
+    // with it can't be computed again, and what the log kept for it stands in (`Asserting`).
     let caps = capabilities(root, resolver);
     let mut sourced: Vec<(Capability, Value)> =
         state.iter().map(|(k, v)| (Capability::StateRead(k.clone()), v.clone())).collect();
     sourced.extend(extra.iter().cloned());
     for cap in caps.iter() {
         if let Capability::SecretRead(name) = cap {
-            sourced.push((Capability::SecretRead(name.clone()), Value::Text(format!("‹secret:{name}›"))));
+            sourced.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &name))));
         }
     }
 
     let mut differs = Vec::new();
     let nonce = bytes_of(&entry.nonce).and_then(|b| <[u8; 16]>::try_from(b).ok());
-    let id_matches = nonce.is_some_and(|nonce| {
+    // A run that received a secret or a token (a resume route's in its path, a bearer token equal
+    // to a secret) was given its id from the value, which the log never holds: it can't be made
+    // again, and the log's stands, as what the log kept stands in for a node fed one. Only a mark
+    // the log wrote counts: a look-alike a caller sent is computed with.
+    given.id = inputs.iter().flatten().chain(state.iter().map(|(_, v)| v)).chain(extra.iter().map(|(_, v)| v)).any(|v| marks.carried(v));
+    let id_matches = given.id || nonce.is_some_and(|nonce| {
         let id = |state: Option<&State>| to_hex(&run_id_of(deployment, &inputs, state, &extra, &nonce));
         id(Some(&state)) == entry.run_id || (state.is_empty() && id(None) == entry.run_id)
     });
@@ -419,33 +447,40 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
 
     // Its outbound requests are answered from the record (the earlier parts', then its own), never
     // sent again.
-    let prior: Vec<Round> = earlier.iter().flat_map(|e| &e.rounds).chain(&entry.rounds).map(round_of).collect();
+    let parts = || earlier.iter().copied().chain([entry]);
+    let prior: Vec<Round> = parts().flat_map(|e| e.rounds.iter().map(|r| round_of(r, marks, e.escaped))).collect();
+    // Its reads, its own first: a resumed part reads again what it shares (files, databases), and
+    // its last part's answers are the ones it finished with.
     let mut reads: Vec<(Vec<u32>, Value, Option<Value>)> = Vec::new();
-    for read in earlier.iter().flat_map(|e| &e.reads).chain(&entry.reads) {
-        let answer = match texts.answer(read) {
+    let own = entry.reads.iter().map(|r| (r, entry.escaped));
+    for (read, escaped) in own.chain(earlier.iter().rev().flat_map(|e| e.reads.iter().map(|r| (r, e.escaped)))) {
+        let answer = match texts.answer(read, marks, escaped) {
             Ok(answer) => answer,
             Err(not) => return not,
         };
-        reads.push((read.path.clone(), read.request.clone().into_core(), answer));
+        reads.push((read.path.clone(), marks.read(&read.request, escaped), answer));
     }
     let mut waits = Logged {
         reads,
-        events: entry.events.iter().map(|(k, v)| (k.clone(), v.clone().into_core())).collect(),
+        events: entry.events.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect(),
+        marks: marks.clone(),
     };
     let limits = Limits { run_budget: Duration::from_secs(3600), max_requests: usize::MAX, ..Limits::clock_run() };
     let mut host = RecordingHost { performed: Vec::new() };
-    let mut observer = Asserting::from_timeline(&entry.timeline);
+    let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
-    *given = observer.stood_in.len();
+    given.nodes = observer.stood_in.len();
 
-    let outputs: Vec<Option<SValue>> = outcome.outputs.iter().map(|o| o.as_ref().map(|v| SValue::from_core(&folders::loggable_output(v)))).collect();
+    // What it produced, as the log would write it, to compare with what the log wrote.
+    let outputs: Vec<Option<SValue>> =
+        outcome.outputs.iter().map(|o| o.as_ref().map(|v| marks.write(SValue::from_core(&folders::loggable_output(v))))).collect();
     if json(&outputs) != json(&entry.outputs) {
         differs.push("its outputs");
     }
     let performed: Vec<PerformedEntry> = host
         .performed
         .iter()
-        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(&folders::loggable(c, p)) })
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: marks.write(SValue::from_core(&folders::loggable(c, p))) })
         .collect();
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
@@ -453,7 +488,7 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
     // A part that settled waiting: the packs it sent as it parked are what it settled.
     let progress: Vec<PerformedEntry> = if outcome.waiting.is_empty() { Vec::new() } else { channels::settled_sends(&outcome.outputs) }
         .iter()
-        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: marks.write(SValue::from_core(p)) })
         .collect();
     if json(&progress) != json(&entry.progress) {
         differs.push("the packs it sent as it waited");
@@ -474,7 +509,7 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
             "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into(),
         ),
         false if entry.retries > 0 => {
-            Rerun::Skipped("it ran again after what it read changed, and the log keeps only its last attempt".into())
+            Rerun::Skipped("it ran again after what it read changed, and its entry holds only its last attempt's requests (logged before entries held them all)".into())
         }
         false => Rerun::Differs(differs.join(", ")),
     }
@@ -485,15 +520,15 @@ fn json<T: Serialize>(v: &T) -> serde_json::Value {
     serde_json::to_value(v).unwrap_or(serde_json::Value::Null)
 }
 
-fn round_of(round: &recorder::LoggedRound) -> Round {
+fn round_of(round: &recorder::LoggedRound, marks: &Marks, escaped: bool) -> Round {
     Round {
         exchanges: round
             .exchanges
             .iter()
             .map(|x| Exchange {
                 path: x.path.clone(),
-                request: x.request.clone().into_core(),
-                response: x.response.clone().into_core(),
+                request: marks.read(&x.request, escaped),
+                response: marks.read(&x.response, escaped),
                 start_us: x.start_us,
                 end_us: x.end_us,
             })
@@ -502,10 +537,11 @@ fn round_of(round: &recorder::LoggedRound) -> Round {
 }
 
 /// Answers a run's waiting points, collection reads and file reads from its log entries (a file's
-/// text from the export or `--files`); its tokens as the placeholder the log shows.
+/// text from the export or `--files`); its tokens as their placeholder (`Marks`).
 struct Logged {
     reads: Vec<(Vec<u32>, Value, Option<Value>)>,
     events: BTreeMap<String, Value>,
+    marks: Marks,
 }
 
 impl Waits for Logged {
@@ -516,7 +552,7 @@ impl Waits for Logged {
         self.events.get(name).cloned()
     }
     fn token(&mut self, name: &str) -> String {
-        format!("‹token:{name}›")
+        self.marks.of("token", name)
     }
 }
 
@@ -536,10 +572,11 @@ struct Asserting {
     /// The nodes that needed standing in for and that the log keeps no outputs for (larger than
     /// the log keeps, or deeper than it records).
     unrecorded: BTreeSet<Vec<u32>>,
+    marks: Marks,
 }
 
 impl Asserting {
-    fn from_timeline(timeline: &[recorder::NodeTiming]) -> Asserting {
+    fn from_timeline(timeline: &[recorder::NodeTiming], marks: &Marks, escaped: bool) -> Asserting {
         let mut rounds: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
         let mut recorded = BTreeMap::new();
         for t in timeline {
@@ -548,9 +585,9 @@ impl Asserting {
                 continue;
             }
             rounds.insert(t.path.clone(), t.round);
-            recorded.insert(t.path.clone(), outputs.iter().map(|o| o.clone().map(SValue::into_core)).collect());
+            recorded.insert(t.path.clone(), outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
         }
-        Asserting { timer: recorder::Timer::new(), recorded, stood_in: BTreeSet::new(), unrecorded: BTreeSet::new() }
+        Asserting { timer: recorder::Timer::new(), recorded, stood_in: BTreeSet::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
     }
 }
 
@@ -571,7 +608,7 @@ impl Observer for Asserting {
         self.timer.failed(path, reason)
     }
     fn asserted(&mut self, path: &[u32], unit: &holon_core::Unit, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
-        if matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(carries_placeholder) {
+        if matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(|v| self.marks.carried(v)) {
             return None;
         }
         match self.recorded.get(path) {
@@ -587,15 +624,73 @@ impl Observer for Asserting {
     }
 }
 
-/// Whether `v` carries a secret's or a token's placeholder anywhere: what the log shows in place
-/// of a value it never holds.
-fn carries_placeholder(v: &Value) -> bool {
-    match v {
-        Value::Text(t) => t.contains("‹secret:") || t.contains("‹token:"),
-        Value::List(items) => items.iter().any(carries_placeholder),
-        Value::Record(fields) => fields.values().any(carries_placeholder),
-        Value::Sum { payload, .. } | Value::Effect { payload, .. } => carries_placeholder(payload),
-        Value::Number(_) | Value::Boolean(_) => false,
+/// The placeholders of values the log never holds, as a run being checked has them. Each mark the
+/// log wrote (`‹secret:name›`, `‹token:name›`) stands in as `‹<tag>|secret:name›`, with a tag
+/// made for this check, and so does each secret and token the run gets again: text a caller sent
+/// that only looks like a mark (which the log escaped, `secrets::write_marked`) is read back as
+/// the text it was, and computed with like any other.
+#[derive(Clone)]
+struct Marks {
+    /// `‹<tag>|`: what starts a placeholder.
+    start: String,
+}
+
+impl Marks {
+    fn new() -> Marks {
+        let mut tag = [0u8; 16];
+        getrandom::fill(&mut tag).expect("the OS random source");
+        Marks { start: format!("‹{}|", hex_of(&tag)) }
+    }
+
+    /// The placeholder of a secret's (`kind` "secret") or a token's value.
+    fn of(&self, kind: &str, name: &str) -> String {
+        format!("{}{kind}:{name}›", self.start)
+    }
+
+    /// A value the log wrote (its entry `escaped` or not), as the run is run again with it.
+    fn read(&self, v: &SValue, escaped: bool) -> Value {
+        let mut v = v.clone();
+        secrets::texts_mut(&mut v, &mut |s| {
+            *s = secrets::read_marked(s, escaped)
+                .into_iter()
+                .map(|(t, mark)| if mark { format!("{}{}", self.start, &t['‹'.len_utf8()..]) } else { t })
+                .collect()
+        });
+        v.into_core()
+    }
+
+    /// A value the run produced again, as the log would write it: its placeholders as marks, a
+    /// look-alike escaped.
+    fn write(&self, mut v: SValue) -> SValue {
+        secrets::texts_mut(&mut v, &mut |s| {
+            if !s.contains('‹') {
+                return;
+            }
+            let mut pieces: Vec<(String, bool)> = Vec::new();
+            let mut rest = s.as_str();
+            while let Some(i) = rest.find(&self.start) {
+                let after = &rest[i + self.start.len()..];
+                let Some(end) = after.find('›') else { break };
+                pieces.push((rest[..i].to_string(), false));
+                pieces.push((format!("‹{}", &after[..end + '›'.len_utf8()]), true));
+                rest = &after[end + '›'.len_utf8()..];
+            }
+            pieces.push((rest.to_string(), false));
+            let pieces: Vec<(&str, bool)> = pieces.iter().map(|(t, m)| (t.as_str(), *m)).collect();
+            *s = secrets::write_marked(&pieces).0;
+        });
+        v
+    }
+
+    /// Whether `v` carries a placeholder anywhere.
+    fn carried(&self, v: &Value) -> bool {
+        match v {
+            Value::Text(t) => t.contains(&self.start),
+            Value::List(items) => items.iter().any(|v| self.carried(v)),
+            Value::Record(fields) => fields.values().any(|v| self.carried(v)),
+            Value::Sum { payload, .. } | Value::Effect { payload, .. } => self.carried(payload),
+            Value::Number(_) | Value::Boolean(_) => false,
+        }
     }
 }
 
@@ -730,6 +825,12 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             "  {} checked given what the log kept for {nodes} node{} fed a secret or a resume token (not computed again)\n",
             count_of(&seqs),
             if nodes == 1 { "" } else { "s" }
+        );
+    }
+    if !r.ids_given.is_empty() {
+        out += &format!(
+            "  {} checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)\n",
+            count_of(&r.ids_given)
         );
     }
     for (why, seqs) in &not {

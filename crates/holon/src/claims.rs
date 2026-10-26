@@ -4,8 +4,12 @@
 //! call anyone. A claim is derived from the run's reads and the grant, never declared, and taken
 //! only when a run is about to send something: a run that sends nothing claims nothing.
 //!
-//! The table lives beside the deployment's state ([`StateCell`]): two deployments never share
-//! one. A run holding keys never waits for another's (it releases, waits, and runs again), so
+//! A collection's keys are in a table beside the deployment's state ([`StateCell`]): two
+//! deployments never share one. A shared resource's (a row or table of a database, a file or
+//! folder: `docs/L4s/databases-L4.md` §7.2) are in the server's table, `Folders::claims`, by
+//! the resource's real address, so every deployment bound to it sees them; a Postgres or MySQL
+//! database's are held in the database too (engines.rs), so the runs of every server that uses it
+//! see them. A run holding keys never waits for another's (it releases, waits, and runs again), so
 //! there is no deadlock; every wait is bounded by the run's `claim_wait`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,7 +20,7 @@ use std::time::{Duration, Instant};
 use holon_core::Value;
 use holon_host::{Claim, State};
 
-use crate::{collections, SharedStore};
+use crate::{collections, databases, folders, SharedStore};
 
 /// One deployment's keyed state and the claims on its keys, shared between its runs.
 pub(crate) struct StateCell {
@@ -30,23 +34,52 @@ impl StateCell {
     }
 }
 
-/// What a claim names: one item of a collection, or a whole collection (a listing was read).
-/// Never a state cell: a cell is one per deployment, so claiming it would serialize every run
-/// that calls out, which is what runs side by side was built to end (the L4, §2).
+/// What a claim names: one item of a collection, or a whole collection (a listing was read); a
+/// row of a database's table, by its primary key, or the whole table (any other read); a file of
+/// a folder, or the whole folder (a listing). Never a state cell: a cell is one per deployment,
+/// so claiming it would serialize every run that calls out, which is what runs side by side was
+/// built to end (the key-claims L4, §2).
+///
+/// A shared resource's key holds its real address (`at`: the database's file, the folder's or
+/// file's path, in lower case), which is what two keys are compared by, and the name the flow
+/// knows it by, for its log.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ClaimKey {
     Item { collection: String, key: String },
     Collection(String),
+    /// `key`: the primary key's values, as a JSON list, numbers whole and text in lower case, so
+    /// `1` and `"1"` are one row (two keys that differ only so share a claim: that only waits).
+    Row { at: String, name: String, table: String, key: String },
+    Table { at: String, name: String, table: String },
+    /// A row an insert adds without naming its primary key: never claimed, only written, so a
+    /// commit waits for a claim on its table but not on the table's rows.
+    NewRow { at: String, name: String, table: String },
+    File { at: String, name: String, file: String },
+    Folder { at: String, name: String },
 }
 
 impl ClaimKey {
     /// Whether two claims cover the same thing: the same key, or a whole collection and one of
-    /// its items.
+    /// its items; a row and its table; a file and a folder it is in.
     fn conflicts(&self, other: &ClaimKey) -> bool {
+        use ClaimKey::*;
+        let inside = |file: &str, folder: &str| file.strip_prefix(folder).is_some_and(|rest| rest.starts_with(['/', '\\']));
         match (self, other) {
-            (ClaimKey::Collection(a), ClaimKey::Item { collection, .. }) | (ClaimKey::Item { collection, .. }, ClaimKey::Collection(a)) => a == collection,
+            (Collection(a), Item { collection, .. }) | (Item { collection, .. }, Collection(a)) => a == collection,
+            (Row { at: a, table: t, key: k, .. }, Row { at: b, table: u, key: l, .. }) => a == b && t == u && k == l,
+            (Row { at: a, table: t, .. } | Table { at: a, table: t, .. }, Row { at: b, table: u, .. } | Table { at: b, table: u, .. }) => a == b && t == u,
+            (NewRow { at: a, table: t, .. }, Table { at: b, table: u, .. }) | (Table { at: b, table: u, .. }, NewRow { at: a, table: t, .. }) => a == b && t == u,
+            (NewRow { .. }, _) | (_, NewRow { .. }) => false,
+            (File { at: a, .. }, File { at: b, .. }) => a == b,
+            (Folder { at: d, .. }, File { at: f, .. }) | (File { at: f, .. }, Folder { at: d, .. }) => inside(f, d),
+            (Folder { at: a, .. }, Folder { at: b, .. }) => a == b || inside(a, b) || inside(b, a),
             _ => self == other,
         }
+    }
+
+    /// Whether it names a resource other deployments may share: claimed in the server's table.
+    pub(crate) fn is_shared(&self) -> bool {
+        !matches!(self, ClaimKey::Item { .. } | ClaimKey::Collection(_))
     }
 }
 
@@ -55,6 +88,60 @@ impl fmt::Display for ClaimKey {
         match self {
             ClaimKey::Item { collection, key } => write!(f, "{collection}[{key}]"),
             ClaimKey::Collection(name) => write!(f, "{name}[*]"),
+            ClaimKey::Row { name, table, key, .. } => write!(f, "{name}/{table}[{}]", key.strip_prefix('[').and_then(|k| k.strip_suffix(']')).unwrap_or(key)),
+            ClaimKey::Table { name, table, .. } => write!(f, "{name}/{table}[*]"),
+            ClaimKey::NewRow { name, table, .. } => write!(f, "{name}/{table}[new]"),
+            ClaimKey::File { name, file, .. } => write!(f, "{name}/{file}"),
+            ClaimKey::Folder { name, .. } => write!(f, "{name}[*]"),
+        }
+    }
+}
+
+/// How often a run waiting for a claim another server's run holds asks its database again.
+pub(crate) const POLL: Duration = Duration::from_millis(20);
+
+/// Hold the shared resources' `keys` for `run`: in the server's table, then in each Postgres or
+/// MySQL database they are in, for the runs of other servers. With a `deadline`, waits until then
+/// while another run holds one; without, takes them at once or not at all. How long it waited, or
+/// the key still held (then nothing was taken).
+pub(crate) fn take_shared(all: &folders::Folders, keys: &[ClaimKey], run: &str, deadline: Option<Instant>) -> Result<Duration, ClaimKey> {
+    let started = Instant::now();
+    match deadline {
+        Some(d) => drop(all.claims.acquire(keys, run, d)?),
+        None => all.claims.try_acquire(keys, run)?,
+    }
+    loop {
+        match all.databases.claim_in_databases(keys, run) {
+            Ok(()) => return Ok(started.elapsed()),
+            Err(_) if deadline.is_some_and(|d| Instant::now() + POLL < d) => std::thread::sleep(POLL),
+            Err(key) => {
+                all.claims.release(keys, run);
+                return Err(key);
+            }
+        }
+    }
+}
+
+/// Let go of the shared resources' `keys` held by `run`, here and in their databases.
+pub(crate) fn release_shared(all: &folders::Folders, keys: &[ClaimKey], run: &str) {
+    all.claims.release(keys, run);
+    all.databases.unclaim_in_databases(keys, run);
+}
+
+/// Wait, until `deadline`, while another run, of this server or another, holds any of the shared
+/// resources' `keys`: whether they came free.
+pub(crate) fn wait_shared(all: &folders::Folders, keys: &[ClaimKey], run: &str, deadline: Instant) -> bool {
+    if !all.claims.wait_free(keys, run, deadline) {
+        return false;
+    }
+    loop {
+        match all.databases.claim_in_databases(keys, run) {
+            Ok(()) => {
+                all.databases.unclaim_in_databases(keys, run);
+                return true;
+            }
+            Err(_) if Instant::now() + POLL < deadline => std::thread::sleep(POLL),
+            Err(_) => return false,
         }
     }
 }
@@ -165,6 +252,42 @@ impl ClaimRecord {
     }
 }
 
+/// What a run reads of the resources other deployments share, to claim their keys: the folders
+/// and databases it sees, and what it may write in them (the only keys it claims), with readers
+/// to ask its reads again as they now are.
+pub(crate) struct SharedReads {
+    pub(crate) folders: std::sync::Arc<folders::Scoped>,
+    /// The tables it may write, as `shop/orders`.
+    pub(crate) tables_written: BTreeSet<String>,
+    /// The folders it may write, by name.
+    pub(crate) folders_written: BTreeSet<String>,
+    pub(crate) files: folders::Readable,
+    pub(crate) databases: databases::Readable,
+}
+
+impl SharedReads {
+    /// The key of a read of a shared resource it may write: its row or table, file or folder.
+    fn keys_of(&self, request: &Value) -> Vec<ClaimKey> {
+        let Value::Record(q) = request else { return Vec::new() };
+        if q.contains_key("database") {
+            return databases::claims_of_read(&self.folders, request, &self.tables_written);
+        }
+        if q.contains_key("folder") {
+            return self.folders.claim_of_read(request, &self.folders_written).into_iter().collect();
+        }
+        Vec::new()
+    }
+
+    /// Whether a read of a shared resource answers now as it did.
+    fn still_as_read(&mut self, read: &collections::Read) -> bool {
+        let Value::Record(q) = &read.request else { return true };
+        if q.contains_key("database") {
+            return self.databases.answer(&read.request).is_ok_and(|now| now == read.answer);
+        }
+        self.files.answer(&read.request, false).is_ok_and(|(now, _)| now == read.answer)
+    }
+}
+
 /// One attempt's claiming: what it holds, and what it needs to decide the next claim.
 pub(crate) struct Claiming {
     cell: std::sync::Arc<StateCell>,
@@ -173,6 +296,8 @@ pub(crate) struct Claiming {
     writable: BTreeSet<String>,
     /// The collections it may read (to re-ask its reads against the live state).
     readable: BTreeSet<String>,
+    /// Its shared resources, if it has any (a run with no folders on the server has none).
+    shared: Option<SharedReads>,
     run: String,
     deadline: Instant,
     held: Vec<ClaimKey>,
@@ -186,16 +311,18 @@ impl fmt::Debug for Claiming {
 }
 
 impl Claiming {
-        pub(crate) fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
         cell: std::sync::Arc<StateCell>,
         store: SharedStore,
         writable: BTreeSet<String>,
         readable: BTreeSet<String>,
+        shared: Option<SharedReads>,
         run: String,
         wait: Duration,
         records: Vec<ClaimRecord>,
     ) -> Claiming {
-        Claiming { cell, store, writable, readable, run, deadline: Instant::now() + wait, held: Vec::new(), records }
+        Claiming { cell, store, writable, readable, shared, run, deadline: Instant::now() + wait, held: Vec::new(), records }
     }
 
     /// The keys `reads` touch that this run may write.
@@ -203,6 +330,9 @@ impl Claiming {
         let mut keys: BTreeSet<ClaimKey> = BTreeSet::new();
         for r in reads {
             let Value::Record(req) = &r.request else { continue };
+            if let Some(shared) = &self.shared {
+                keys.extend(shared.keys_of(&r.request));
+            }
             let Some(Value::Text(name)) = req.get("collection") else { continue };
             if !self.writable.contains(name) {
                 continue;
@@ -215,12 +345,17 @@ impl Claiming {
         keys.into_iter().collect()
     }
 
-    /// Whether what the attempt read under `keys` is still as it found it, in the live state.
-    fn still_as_read(&self, keys: &[ClaimKey], reads: &[collections::Read]) -> bool {
+    /// Whether what the attempt read under `keys` is still as it found it: in the live state, or
+    /// the database or folder as it now is.
+    fn still_as_read(&mut self, keys: &[ClaimKey], reads: &[collections::Read]) -> bool {
         let live = self.cell.state.lock().unwrap();
         let now = collections::Readable { store: self.store.clone(), roots: collections::roots(&live), granted: self.readable.clone() };
         drop(live);
-        reads.iter().filter(|r| self.keys_of(std::slice::from_ref(r)).iter().any(|k| keys.iter().any(|c| c.conflicts(k)))).all(|r| now.answer(&r.request) == r.answer)
+        let under: Vec<&collections::Read> = reads.iter().filter(|r| self.keys_of(std::slice::from_ref(r)).iter().any(|k| keys.iter().any(|c| c.conflicts(k)))).collect();
+        under.into_iter().all(|r| match self.shared.as_mut() {
+            Some(shared) if matches!(&r.request, Value::Record(q) if q.contains_key("database") || q.contains_key("folder")) => shared.still_as_read(r),
+            _ => now.answer(&r.request) == r.answer,
+        })
     }
 
     /// Before the attempt's requests go out: hold every key it has read that it may write, and
@@ -232,23 +367,40 @@ impl Claiming {
             return Claim::Held;
         }
         let started = Instant::now();
-        if self.held.is_empty() {
-            match self.cell.claims.acquire(&new, &self.run, self.deadline) {
-                Ok(_) => {}
-                Err(key) => {
+        let cell = std::sync::Arc::clone(&self.cell);
+        let folders = self.shared.as_ref().map(|s| std::sync::Arc::clone(&s.folders));
+        // The deployment's keys, then the shared ones: the first group waits for its keys only if
+        // the run holds none yet; any other it can't take at once, it lets everything go for.
+        let (shared, own): (Vec<ClaimKey>, Vec<ClaimKey>) = new.iter().cloned().partition(|k| k.is_shared() && folders.is_some());
+        let first_waits = self.held.is_empty();
+        for group in [own, shared].into_iter().filter(|g| !g.is_empty()) {
+            let all = folders.as_deref().filter(|_| group[0].is_shared()).map(|f| &*f.all);
+            let wait = (first_waits && self.held.is_empty()).then_some(self.deadline);
+            let taken = match (all, wait) {
+                (Some(all), wait) => take_shared(all, &group, &self.run, wait).map(|_| ()),
+                (None, Some(deadline)) => cell.claims.acquire(&group, &self.run, deadline).map(|_| ()),
+                (None, None) => cell.claims.try_acquire(&group, &self.run),
+            };
+            match taken {
+                Ok(()) => self.held.extend(group),
+                Err(key) if self.held.is_empty() => {
                     self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), false));
                     return Claim::Busy { key: key.to_string() };
                 }
+                Err(key) => {
+                    // Holding some and needing one another run holds: let go, wait for it, run again.
+                    self.release_all();
+                    let one = std::slice::from_ref(&key);
+                    let free = match all {
+                        Some(all) => wait_shared(all, one, &self.run, self.deadline),
+                        None => cell.claims.wait_free(one, &self.run, self.deadline),
+                    };
+                    self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), free));
+                    return if free { Claim::Overtaken } else { Claim::Busy { key: key.to_string() } };
+                }
             }
-        } else if let Err(key) = self.cell.claims.try_acquire(&new, &self.run) {
-            // Holding some and needing one another run holds: let go, wait for it, run again.
-            self.release_all();
-            let free = self.cell.claims.wait_free(std::slice::from_ref(&key), &self.run, self.deadline);
-            self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), free));
-            return if free { Claim::Overtaken } else { Claim::Busy { key: key.to_string() } };
         }
         let waited = started.elapsed();
-        self.held.extend(new.iter().cloned());
         if self.still_as_read(&new, reads) {
             self.records.extend(new.into_iter().map(|key| ClaimRecord::new(key, waited, false)));
             Claim::Held
@@ -261,7 +413,12 @@ impl Claiming {
 
     fn release_all(&mut self) {
         if !self.held.is_empty() {
-            self.cell.claims.release(&self.held, &self.run);
+            let folders = self.shared.as_ref().map(|s| std::sync::Arc::clone(&s.folders));
+            let (shared, own): (Vec<ClaimKey>, Vec<ClaimKey>) = self.held.iter().cloned().partition(|k| k.is_shared() && folders.is_some());
+            self.cell.claims.release(&own, &self.run);
+            if let Some(f) = &folders {
+                release_shared(&f.all, &shared, &self.run);
+            }
             for r in self.records.iter_mut().filter(|r| r.held.is_none() && self.held.contains(&r.key)) {
                 r.held = Some(r.taken.elapsed());
             }
@@ -283,7 +440,7 @@ impl Drop for Claiming {
 }
 
 /// The keys a run's performed effects write: what its commit must not do under another run's
-/// claim.
+/// claim. A collection's, in its deployment's table.
 pub(crate) fn written_keys(performed: &[(holon_core::Capability, Value)]) -> Vec<ClaimKey> {
     use holon_core::Capability;
     performed
@@ -297,6 +454,45 @@ pub(crate) fn written_keys(performed: &[(holon_core::Capability, Value)]) -> Vec
             _ => None,
         })
         .collect()
+}
+
+/// The keys of the shared resources a run's performed effects write: its databases' rows (or
+/// tables) and its folders' files, in the server's table.
+pub(crate) fn shared_written_keys(folders: &folders::Scoped, performed: &[(holon_core::Capability, Value)]) -> Vec<ClaimKey> {
+    let mut keys = databases::claims_of_writes(folders, performed);
+    keys.extend(folders.claims_of_writes(performed));
+    keys
+}
+
+/// Every shared resource a deployment may read or write, whole: what its last try holds for its
+/// whole run, so no run of another deployment calls out over what it may touch meanwhile.
+pub(crate) fn whole_of(folders: &folders::Scoped, permit: &crate::permissions::Permit) -> Vec<ClaimKey> {
+    let mut keys = databases::tables_of(folders, permit);
+    keys.extend(folders.whole_claims(&permit.folders_read(), &permit.folders_written()));
+    keys
+}
+
+/// Claims on shared resources a run holds until it is dropped: the last try's, on everything
+/// shared it may touch, and a commit's, on the rows and files it writes.
+pub(crate) struct Hold<'c> {
+    all: &'c folders::Folders,
+    keys: Vec<ClaimKey>,
+    run: String,
+}
+
+impl<'c> Hold<'c> {
+    /// Hold `keys` for `run` once no other run (of this server or another) holds any, waiting
+    /// until `deadline`: none if one was still held then.
+    pub(crate) fn take(all: &'c folders::Folders, keys: Vec<ClaimKey>, run: String, deadline: Instant) -> Result<Hold<'c>, ClaimKey> {
+        take_shared(all, &keys, &run, Some(deadline))?;
+        Ok(Hold { all, keys, run })
+    }
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        release_shared(self.all, &self.keys, &self.run);
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +517,33 @@ mod tests {
         assert!(!claims.wait_until_empty(soon()));
         claims.release(&[item("c", "k"), item("c", "other")], "b");
         assert!(claims.wait_until_empty(soon()));
+    }
+
+    /// A row conflicts with itself and its table, never another row; a new row only with its
+    /// table; a file with itself and a folder it is in; a collection's keys with no shared
+    /// resource's.
+    #[test]
+    fn rows_and_files_conflict_with_their_tables_and_folders() {
+        let row = |t: &str, k: &str| ClaimKey::Row { at: "/db".into(), name: "shop".into(), table: t.into(), key: k.into() };
+        let table = |t: &str| ClaimKey::Table { at: "/db".into(), name: "shop".into(), table: t.into() };
+        let new_row = ClaimKey::NewRow { at: "/db".into(), name: "shop".into(), table: "orders".into() };
+        assert!(row("orders", "[1]").conflicts(&row("orders", "[1]")));
+        assert!(!row("orders", "[1]").conflicts(&row("orders", "[2]")));
+        assert!(row("orders", "[1]").conflicts(&table("orders")) && table("orders").conflicts(&row("orders", "[1]")));
+        assert!(!row("orders", "[1]").conflicts(&table("refunds")));
+        let elsewhere = ClaimKey::Row { at: "/other".into(), name: "shop".into(), table: "orders".into(), key: "[1]".into() };
+        assert!(!row("orders", "[1]").conflicts(&elsewhere), "another database");
+        let renamed = ClaimKey::Row { at: "/db".into(), name: "store".into(), table: "orders".into(), key: "[1]".into() };
+        assert!(row("orders", "[1]").conflicts(&renamed), "one database under two names is one");
+        assert!(new_row.conflicts(&table("orders")) && !new_row.conflicts(&row("orders", "[1]")) && !new_row.conflicts(&new_row.clone()));
+        let file = |at: &str| ClaimKey::File { at: at.into(), name: "inbox".into(), file: "a".into() };
+        let folder = |at: &str| ClaimKey::Folder { at: at.into(), name: "inbox".into() };
+        assert!(file("/srv/in/a.csv").conflicts(&file("/srv/in/a.csv")) && !file("/srv/in/a.csv").conflicts(&file("/srv/in/b.csv")));
+        assert!(folder("/srv/in").conflicts(&file("/srv/in/a.csv")) && file("c:\\srv\\in\\a.csv").conflicts(&folder("c:\\srv\\in")));
+        assert!(!folder("/srv/in").conflicts(&file("/srv/inbox/a.csv")), "a folder whose name starts the same is another");
+        assert!(!item("orders", "1").conflicts(&row("orders", "[1]")));
+        assert_eq!(row("orders", "[1]").to_string(), "shop/orders[1]");
+        assert_eq!(table("orders").to_string(), "shop/orders[*]");
     }
 
     /// A run waiting for a key is woken when it is let go, not when its deadline passes: with a

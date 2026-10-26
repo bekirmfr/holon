@@ -321,6 +321,28 @@ The flow names the folders, never a path. A flow can also run on files instead o
 `on file drop` in place of `port` runs it once for each new file in the folder `drop`, with the
 file's handle as `ingress`. See [Files on the host](../guides/files.md).
 
+## Databases
+
+A flow can query and change a SQL database an admin has bound to a name, with the SQL in quotes
+and its values after it:
+
+```holon
+flow orders-api
+port 8150
+database shop
+
+route POST /order/:id/refund (req) {
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, expect: 1)
+  respond { refunded: req.params.id }
+}
+```
+
+The tables its SQL names are what it asks for (`DbWrite("shop/orders")`); `expect: 1` makes the
+refund happen once, and a second answers 409. A MongoDB is called with records instead, its
+fields and operators written in the call and each value passed in as data:
+`notes.find("notes", { owner: req.params.owner })`. See
+[Databases on the host](../guides/databases.md).
+
 ## Where to next
 
 - The [reference](reference.md) has every construct and rule.

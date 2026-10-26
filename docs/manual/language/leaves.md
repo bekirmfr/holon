@@ -475,7 +475,7 @@ Whether two values are the same.
 
 Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder).
 
-[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`clock`](#clock) · [`random`](#random) · [`ingress`](#ingress) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
+[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`clock`](#clock) · [`random`](#random) · [`ingress`](#ingress) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
 
 ### `http_request`
 
@@ -684,6 +684,70 @@ file_create_copy(name: Text, from: Record) -> out: Effect  {folder: files}
 ```
 
 Copies the file a handle names into this folder as name when the run finishes, only if no file has that name then: it never replaces one.
+
+### `db_query`
+
+```
+db_query(params: List<Any>) -> out: List<Record>  {database: db, sql: select * from t}
+```
+
+The rows sql selects from a database, as records by column name, as the run found them; params are its $1, $2, …. The database is a name an admin binds. Reading each table it names is a permission.
+
+### `db_one`
+
+```
+db_one(params: List<Any>) -> out: Record  {database: db, sql: select * from t}
+```
+
+The first row sql selects from a database, as a record by column name; nothing when there is none. params are its $1, $2, ….
+
+### `db_exec`
+
+```
+db_exec(params: List<Any>) -> out: Effect  {database: db, sql: delete from t where false, expect}
+```
+
+Runs sql (an insert, update or delete) on a database when the run finishes, in one transaction with the run's other writes there; params are its $1, $2, …. With expect, it must change exactly that many rows, or nothing the run did there lands.
+
+### `db_find`
+
+```
+db_find(params: List<Any>) -> out: List<Record>  {database: db, collection: items, filter: {}, sort, limit}
+```
+
+The documents filter selects from a collection of a document database (MongoDB), as records, as the run found them; params are its $1, $2, …. sort orders them and limit caps how many. Reading the collection is a permission.
+
+### `db_find_one`
+
+```
+db_find_one(params: List<Any>) -> out: Record  {database: db, collection: items, filter: {}, sort}
+```
+
+The first document filter selects from a collection, as a record; nothing when there is none. params are its $1, $2, ….
+
+### `db_insert`
+
+```
+db_insert(params: List<Any>) -> out: Effect  {database: db, collection: items, document: {}}
+```
+
+Adds document to a collection when the run finishes, in one transaction with the run's other writes there; params are its $1, $2, ….
+
+### `db_update`
+
+```
+db_update(params: List<Any>) -> out: Effect  {database: db, collection: items, filter: {}, update: {"$set":{}}, expect}
+```
+
+Applies update (its $set, $inc, … operators) to the documents filter selects, when the run finishes; params are their $1, $2, …. With expect, it must match exactly that many documents, or nothing the run did there lands.
+
+### `db_delete`
+
+```
+db_delete(params: List<Any>) -> out: Effect  {database: db, collection: items, filter: {}, expect}
+```
+
+Deletes the documents filter selects when the run finishes; params are its $1, $2, …. With expect, it must delete exactly that many, or nothing the run did there lands.
 
 ### `channel_send`
 

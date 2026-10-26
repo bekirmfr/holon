@@ -47,6 +47,14 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or("")) {
         return Some(response);
     }
+    // And the databases (databases.rs).
+    if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or("")) {
+        return Some(response);
+    }
+    // Who holds what (grants.rs): a server without accounts has deployments too.
+    if request.method() == "GET" && url == "/admin/grants" {
+        return Some(crate::grants::handle_get_admin_grants(state));
+    }
     // The variables an env secret can name (secret_sources.rs), for the deploy settings to offer:
     // names only, and only to an admin, who alone sets secrets (`/admin/…`, access.rs).
     if url == "/admin/secrets/env" && request.method() == "GET" {

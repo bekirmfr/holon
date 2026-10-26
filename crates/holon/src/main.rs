@@ -155,10 +155,13 @@ mod claims;
 mod oidc;
 mod collections;
 mod data;
+mod databases;
 mod dataplane;
 mod deploy;
 mod editor;
 mod durable;
+mod engines;
+mod mongo;
 mod firing;
 mod fixtures;
 mod grants;
@@ -170,6 +173,7 @@ mod folders;
 mod http;
 mod lifecycle;
 mod listeners;
+mod locks;
 mod local;
 mod lsp;
 mod migrate;
@@ -455,6 +459,7 @@ const USAGE: &str = "usage: holon <command>
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
   folder add|list|remove             bind a name flows use to a folder on this machine (admin)
+  database add|list|remove           bind a name flows use to a database on this machine (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
   mcp setup [HOST…|--all]            add holon mcp to an agent host's settings (mcp hosts: which)
@@ -479,6 +484,7 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
                              token in HOLON_EXPORT_HEADS_TOKEN)
   --secrets PATH             the secrets file
   --folders PATH             the named folders an admin bound (holon folder --help)
+  --databases PATH           the databases an admin bound (holon database --help)
   --secrets-key os|env:VAR|file:PATH
                              where the secrets file's key is kept (default: the OS key store)
   --new-secrets-key          print a fresh key for --secrets-key env:VAR, and exit
@@ -528,6 +534,7 @@ fn main() {
         Some("verify") => std::process::exit(verify::run(&rest)),
         Some("export") => std::process::exit(verify::export(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
+        Some("database") => std::process::exit(databases::cli(&rest)),
         // Not in the usage: the server runs it for the admin page's "browse…" (pick.rs).
         Some("pick-folder") => std::process::exit(pick::cli(&rest)),
         Some("mcp") => std::process::exit(mcp::run(&rest)),
@@ -590,6 +597,7 @@ fn serve(args: Vec<String>) {
     let mut policy_arg = "holon.toml".to_string();
     let mut secrets_arg = ".holon-secrets.json".to_string();
     let mut folders_arg = ".holon-folders.json".to_string();
+    let mut databases_arg = ".holon-databases.json".to_string();
     let mut secrets_key_arg: Option<String> = None;
     let mut dotenv_arg: Option<String> = None;
     let mut accounts_arg = ".holon-accounts.json".to_string();
@@ -648,6 +656,10 @@ fn serve(args: Vec<String>) {
         } else if a == "--folders" {
             if let Some(v) = args.next() {
                 folders_arg = v;
+            }
+        } else if a == "--databases" {
+            if let Some(v) = args.next() {
+                databases_arg = v;
             }
         } else if a == "--secrets-key" {
             // Where the secrets file's master key is kept: `os` (the OS key store, the default
@@ -869,6 +881,7 @@ fn serve(args: Vec<String>) {
     inside(&mut policy_arg, "holon.toml", "holon.toml");
     inside(&mut secrets_arg, ".holon-secrets.json", "secrets.json");
     inside(&mut folders_arg, ".holon-folders.json", "folders.json");
+    inside(&mut databases_arg, ".holon-databases.json", "databases.json");
     inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
     inside(&mut host_key_arg, ".holon-host-key", "host.key");
     if landed {
@@ -926,7 +939,8 @@ fn serve(args: Vec<String>) {
     };
     let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let secrets_key = sealing::KeySource::parse(secrets_key_arg.as_deref(), &secrets_arg).unwrap_or_else(|e| refuse_to_start(e));
-    let sources = secret_sources::Sources::new(dotenv_arg.clone().map(std::path::PathBuf::from)).unwrap_or_else(|e| refuse_to_start(e));
+    let dotenv_path = dotenv_arg.clone().map(std::path::PathBuf::from);
+    let sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));
     let secrets = Arc::new(SecretStore::open(&secrets_arg, &secrets_key, sources).unwrap_or_else(|e| refuse_to_start(e)));
     {
         // References are read again every minute: a value changed or revoked where it is kept
@@ -941,13 +955,17 @@ fn serve(args: Vec<String>) {
     }
     // The folders an admin bound (folders.rs): never the server's own files, nor what holds them.
     let mut own = server_files(
-        &[&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &accounts_arg, &host_key_arg],
+        &[&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &databases_arg, &accounts_arg, &host_key_arg],
         &deployments_arg,
         dotenv_arg.as_deref(),
         &secrets_key,
     );
     own.extend(local::holon_home());
     let folders = folders::Folders::open(&folders_arg, &own).unwrap_or_else(|e| refuse_to_start(e));
+    // The databases an admin bound (databases.rs), beside them: a Postgres or MySQL one's
+    // connection is fetched from the environment and dotenv file a secret's source is.
+    let db_sources = secret_sources::Sources::new(dotenv_path).unwrap_or_else(|e| refuse_to_start(e));
+    let folders = folders.with_databases(databases::Databases::open(&databases_arg, &own).unwrap_or_else(|e| refuse_to_start(e)).with_sources(db_sources));
     // The texts of files runs read are kept beside the content store (blobs.rs).
     let folders = Arc::new(if store_arg == ":memory:" { folders } else { folders.with_blobs(blobs::Blobs::at(Path::new(&store_arg).join("blobs"))) });
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));

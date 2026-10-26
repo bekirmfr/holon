@@ -33,10 +33,11 @@ use crate::to_hex;
 /// bytes. The two module limits are what a flow's module bodies may compute and hold per call
 /// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
 /// gets, so the policy has ceilings for them and no `[limits]` entry.
-pub(crate) const LIMIT_NAMES: [&str; 24] = [
+pub(crate) const LIMIT_NAMES: [&str; 29] = [
     "connect_timeout_ms",
     "request_timeout_ms",
     "claim_wait_ms",
+    "commit_wait_ms",
     "run_budget_ms",
     "clock_run_budget_ms",
     "max_requests",
@@ -51,6 +52,10 @@ pub(crate) const LIMIT_NAMES: [&str; 24] = [
     "max_file_read_bytes",
     "max_file_write_bytes",
     "max_files_per_run",
+    "max_db_rows",
+    "max_db_read_bytes",
+    "db_statement_ms",
+    "max_db_statements",
     "max_pack_bytes",
     "max_packs_per_run",
     "channel_keep",
@@ -113,14 +118,53 @@ impl FileLimits {
     }
 }
 
+/// Limits on a run's database reads and statements (`docs/L4s/databases-L4.md` §5): the host's,
+/// like the file limits. A read past one fails the run; it is never cut short.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DbLimits {
+    /// The rows a run's queries give, in all.
+    pub(crate) max_db_rows: u64,
+    /// The bytes of what they give, in all.
+    pub(crate) max_db_read_bytes: u64,
+    /// How long one statement may take.
+    pub(crate) db_statement: Duration,
+    /// The statements a run sends: its queries and its writes.
+    pub(crate) max_db_statements: u64,
+}
+
+impl DbLimits {
+    /// What a deployment gets without asking: ten thousand rows, 16 MiB, five seconds a
+    /// statement, a hundred statements.
+    pub(crate) fn defaults() -> DbLimits {
+        DbLimits { max_db_rows: 10_000, max_db_read_bytes: 16 << 20, db_statement: Duration::from_secs(5), max_db_statements: 100 }
+    }
+
+    /// What no grant can exceed.
+    pub(crate) fn ceilings() -> DbLimits {
+        DbLimits { max_db_rows: 1_000_000, max_db_read_bytes: 256 << 20, db_statement: Duration::from_secs(60), max_db_statements: 10_000 }
+    }
+}
+
+/// `numbers` applied over `base`'s database limits.
+fn numbers_to_databases(base: &DbLimits, numbers: &BTreeMap<String, u64>) -> DbLimits {
+    let n = |k: &str, d: u64| numbers.get(k).copied().unwrap_or(d);
+    DbLimits {
+        max_db_rows: n("max_db_rows", base.max_db_rows),
+        max_db_read_bytes: n("max_db_read_bytes", base.max_db_read_bytes),
+        db_statement: Duration::from_millis(n("db_statement_ms", base.db_statement.as_millis() as u64)),
+        max_db_statements: n("max_db_statements", base.max_db_statements),
+    }
+}
+
 /// The limits as numbers by name: the request-run limits, the clock run's budget, the
-/// durable-run limits, the file limits, and the channel limits.
-fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits, files: &FileLimits, channels: &ChannelLimits) -> BTreeMap<String, u64> {
+/// durable-run limits, the file limits, the database limits and the channel limits.
+fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits, files: &FileLimits, databases: &DbLimits, channels: &ChannelLimits) -> BTreeMap<String, u64> {
     let ms = |d: Duration| d.as_millis() as u64;
     BTreeMap::from([
         ("connect_timeout_ms".into(), ms(request.connect_timeout)),
         ("request_timeout_ms".into(), ms(request.request_timeout)),
         ("claim_wait_ms".into(), ms(request.claim_wait)),
+        ("commit_wait_ms".into(), ms(request.commit_wait)),
         ("run_budget_ms".into(), ms(request.run_budget)),
         ("clock_run_budget_ms".into(), ms(clock_budget)),
         ("max_requests".into(), request.max_requests as u64),
@@ -135,6 +179,10 @@ fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &Durable
         ("max_file_read_bytes".into(), files.max_file_read_bytes),
         ("max_file_write_bytes".into(), files.max_file_write_bytes),
         ("max_files_per_run".into(), files.max_files_per_run),
+        ("max_db_rows".into(), databases.max_db_rows),
+        ("max_db_read_bytes".into(), databases.max_db_read_bytes),
+        ("db_statement_ms".into(), ms(databases.db_statement)),
+        ("max_db_statements".into(), databases.max_db_statements),
         ("max_pack_bytes".into(), channels.max_pack_bytes),
         ("max_packs_per_run".into(), channels.max_packs_per_run),
         ("channel_keep".into(), channels.channel_keep),
@@ -182,6 +230,7 @@ fn numbers_to_limits(base: &Limits, numbers: &BTreeMap<String, u64>, clock: bool
             "connect_timeout_ms" => l.connect_timeout = Duration::from_millis(n),
             "request_timeout_ms" => l.request_timeout = Duration::from_millis(n),
             "claim_wait_ms" => l.claim_wait = Duration::from_millis(n),
+            "commit_wait_ms" => l.commit_wait = Duration::from_millis(n),
             "run_budget_ms" if !clock => l.run_budget = Duration::from_millis(n),
             "clock_run_budget_ms" if clock => l.run_budget = Duration::from_millis(n),
             "max_requests" => l.max_requests = n as usize,
@@ -302,6 +351,8 @@ pub(crate) struct Policy {
     pub(crate) durable: DurableLimits,
     /// The file limits a deployment gets without asking.
     pub(crate) files: FileLimits,
+    /// The database limits a deployment gets without asking.
+    pub(crate) databases: DbLimits,
     /// The channel limits a deployment gets without asking.
     pub(crate) channels: ChannelLimits,
     /// What no grant can exceed.
@@ -316,7 +367,7 @@ pub(crate) struct Policy {
 
 impl Default for Policy {
     fn default() -> Policy {
-        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &ChannelLimits::ceilings());
+        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &DbLimits::ceilings(), &ChannelLimits::ceilings());
         ceilings.insert(holon_core::FUEL_LIMIT.into(), MODULE_FUEL_CEILING);
         ceilings.insert(holon_core::MEMORY_LIMIT.into(), MODULE_MEMORY_CEILING);
         Policy {
@@ -324,6 +375,7 @@ impl Default for Policy {
             clock_run_budget: Limits::clock_run().run_budget,
             durable: DurableLimits::defaults(),
             files: FileLimits::defaults(),
+            databases: DbLimits::defaults(),
             channels: ChannelLimits::defaults(),
             ceilings,
             auto: Vec::new(),
@@ -394,6 +446,7 @@ impl Policy {
         policy.clock_run_budget = Duration::from_millis(defaults["clock_run_budget_ms"]);
         policy.durable = numbers_to_durable(&policy.durable, &defaults);
         policy.files = numbers_to_files(&policy.files, &defaults);
+        policy.databases = numbers_to_databases(&policy.databases, &defaults);
         policy.channels = numbers_to_channels(&policy.channels, &defaults);
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
@@ -403,7 +456,7 @@ impl Policy {
 
     /// The defaults, by name.
     pub(crate) fn defaults(&self) -> BTreeMap<String, u64> {
-        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.channels)
+        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases, &self.channels)
     }
 
     /// Whether `item` is granted without asking.
@@ -681,6 +734,8 @@ pub(crate) struct Permit {
     pub(crate) durable: DurableLimits,
     /// How much of its files a run may read and write.
     pub(crate) files: FileLimits,
+    /// How much of its databases a run may read, and how many statements it sends.
+    pub(crate) databases: DbLimits,
     /// What its runs may send on its channels, and how many may subscribe.
     pub(crate) channels: ChannelLimits,
     pub(crate) outbound: Outbound,
@@ -707,6 +762,7 @@ impl Permit {
         let clock_limits = numbers_to_limits(&clock_base, &clamped, true);
         let durable = numbers_to_durable(&policy.durable, &clamped);
         let files = numbers_to_files(&policy.files, &clamped);
+        let databases = numbers_to_databases(&policy.databases, &clamped);
         let channels = numbers_to_channels(&policy.channels, &clamped);
         let hosts = |items: &BTreeSet<String>| -> BTreeSet<String> {
             items
@@ -730,7 +786,7 @@ impl Permit {
                 && grant.items.contains("PrivateAddresses")
                 && policy.allow_private_addresses,
         };
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, channels, outbound, grant: to_hex(&grant.hash()) }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, outbound, grant: to_hex(&grant.hash()) }
     }
 
     /// Whether the grant covers this capability.
@@ -762,6 +818,27 @@ impl Permit {
     /// The folders it may read, by name.
     pub(crate) fn folders_read(&self) -> BTreeSet<String> {
         self.named("FileRead")
+    }
+
+    /// The folders it may write, by name.
+    pub(crate) fn folders_written(&self) -> BTreeSet<String> {
+        self.named("FileWrite")
+    }
+
+    /// The tables it may read, as `shop/orders`.
+    pub(crate) fn tables_read(&self) -> BTreeSet<String> {
+        self.named("DbRead")
+    }
+
+    /// The tables it may write, as `shop/orders`.
+    pub(crate) fn tables_written(&self) -> BTreeSet<String> {
+        self.named("DbWrite")
+    }
+
+    /// The databases it may read or write, by name.
+    pub(crate) fn databases_named(&self) -> BTreeSet<String> {
+        let tables = self.named("DbRead").into_iter().chain(self.named("DbWrite"));
+        tables.map(|t| t.split('/').next().unwrap_or(&t).to_string()).collect()
     }
 
     /// The folders whose files it may pass on by handle (copy, or send as a body): the ones it

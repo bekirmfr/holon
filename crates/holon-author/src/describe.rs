@@ -16,7 +16,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("give that code up to {} MiB of memory per call", n / (1024 * 1024));
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 14] = [
+    let named: [(&str, Say); 16] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -25,6 +25,8 @@ pub fn describe_item(item: &str) -> String {
         ("FileRead", |a| format!("read files in the folder \"{a}\"")),
         ("FileArrival", |a| format!("run on each file new, changed or removed in the folder \"{a}\" (as its on file lines say), and pass it on")),
         ("FileWrite", |a| format!("write, copy into and delete files in the folder \"{a}\"")),
+        ("DbRead", |a| table_of(a, "read")),
+        ("DbWrite", |a| table_of(a, "insert, update and delete rows of")),
         ("ChannelSend", |a| format!("send packs on its channel \"{a}\" to whoever subscribes")),
         ("ChannelRead", |a| format!("let callers subscribe to its channel \"{a}\"")),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
@@ -50,6 +52,15 @@ pub fn describe_item(item: &str) -> String {
     .to_string()
 }
 
+/// A database capability's argument (`shop/orders`) said as what it lets a flow do: `read table
+/// "orders" of database "shop"`.
+fn table_of(arg: &str, verb: &str) -> String {
+    match arg.split_once('/') {
+        Some((database, table)) => format!("{verb} the table \"{table}\" of the database \"{database}\""),
+        None => format!("{verb} the database \"{arg}\""),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::describe_item;
@@ -59,6 +70,8 @@ mod tests {
         assert_eq!(describe_item(r#"HttpRequest("hooks.slack.com")"#), "call https://hooks.slack.com");
         assert_eq!(describe_item(r#"SecretRead("api_token")"#), r#"read the secret "api_token""#);
         assert_eq!(describe_item("Limit(max_requests=80)"), "raise max_requests to 80");
+        assert_eq!(describe_item(r#"DbRead("shop/orders")"#), r#"read the table "orders" of the database "shop""#);
+        assert_eq!(describe_item(r#"DbWrite("shop/public.orders")"#), r#"insert, update and delete rows of the table "public.orders" of the database "shop""#);
         // A module's budgets read as what the code may consume, not as a limit raised.
         assert_eq!(describe_item("Limit(module_fuel=200000000)"), "run code it carries (a js node) for up to 200000000 instructions per call, reaching nothing outside");
         assert_eq!(describe_item("Limit(module_memory=16777216)"), "give that code up to 16 MiB of memory per call");
@@ -66,3 +79,4 @@ mod tests {
         assert_eq!(describe_item("Something(new)"), "Something(new)");
     }
 }
+

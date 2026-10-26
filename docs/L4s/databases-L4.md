@@ -1,6 +1,15 @@
 # Databases: SQL and documents as host resources, and how runs share what they write (L4)
 
-**Status:** design, before any code. Written 2026-10-25, against `main` at 6ee0c58. Builds on
+**Status:** slices 1 to 6 built (2026-10-26): commit locks per file, with intent locks on the
+folder (`locks.rs`, §7.1); SQLite databases (`databases.rs`, the `database` header,
+`db_query`/`db_one`/`db_exec`, `DbLimits`, the commit transaction with `holon_commits`; sample
+`orders-api`, guide `docs/manual/guides/databases.md`); and claims on rows, tables, files and
+folders in the server's table (`claims.rs`, §7.2; sample `refund-once`); Postgres and MySQL
+(`engines.rs`, §8), with claims held in the database for several servers; and run locks, an
+admin's setting on a database or folder (`--lock run`, §7.3; sample `ticket-numbers`); and
+resumed runs that check what they share at their commit (§7.4; sample `approved-payout`); and
+MongoDB, Atlas included (`mongo.rs`, `documents.rs`; slice 7, sample `atlas-notes`). A
+database's reads are logged whole: its `keep` (§5) isn't built. Written 2026-10-25, against `main` at 6ee0c58. Builds on
 [host resources](host-resources-L4.md) (also design only: resources the host defines, their
 addresses and timeline) and [key claims](key-claims-L4.md) (built: `claims.rs`).
 
@@ -215,6 +224,18 @@ shop.exec("update stock set n = n - $1 where sku = $2 and n >= $1", qty, sku, ex
 - **MongoDB** has its own leaves (`db_find`, `db_find_one`, `db_insert`, `db_update`,
   `db_delete`), the collection a frozen parameter, the filter or update a JSON literal with `$1`,
   `$2` placeholders (slice 7).
+- **Built (slice 7):** the language writes them as record literals,
+  `notes.find("notes", { owner: req.params.owner }, sort: { at: -1 }, limit: 20)`, and the
+  lowering freezes each record into a template (core's `documents.rs`): JSON whose holes, in the
+  order written, are the computed values, wired as the `params` list; `fmt` prints the records
+  back from the templates. A record from a value or a spread is refused at compile, so the
+  flow's fields and operators are fixed when it deploys; the host fills each hole as data and
+  fails a run whose value is a record with a `$` field. Refused in any template: `$where`,
+  `$function`, `$accumulator`; an update is update operators only, a document has no top-level
+  operator, a sort is fields of `1`/`-1` with no hole, and the holes of a call's templates
+  together are `$1` to `$n`. `{ "$oid": … }`, `$date`, `$numberDecimal` and `$numberLong` make a
+  value that type. A collection is `[A-Za-z0-9_.-]`, never `system.…` nor `holon_…`. Its
+  capabilities: a find `DbRead("notes/notes")`, an insert `DbWrite`, an update or delete both.
 
 ## 4. What the manifest says
 
@@ -320,8 +341,14 @@ every deployment that writes it or checked a read of it:
 - **Per kind:**
   - a database: **its own transaction** is the lock (`begin immediate` on SQLite; `for share`
     re-reads and the writes' row locks on Postgres and MySQL);
-  - a folder, one server: a lock per resource in the server (a table beside `Folders`);
-  - a folder several servers bind (a share): also an OS lock on a lock file in it;
+  - a folder, one server: a lock per **file** in the server (a table beside `Folders`, by the
+    file's real path), shared for a file the run read and exclusive for one it writes, with the
+    folder held by intent (hierarchical locking: `locks.rs`). A run that writes `a.txt` never
+    waits for one that read `b.txt`. A listing holds the folder itself, shared, since a file
+    created under its prefix would change it; so does the last try (it can't know before it runs
+    which files it touches), for its whole run;
+  - a folder several servers bind (a share): also an OS lock on a lock file in it, whole-folder
+    (an OS lock is on a whole file: a reader of any file shares it, a writer of any holds it);
   - a deployment's own state and collections: the state lock, as today.
 - **Several resources:** taken in resource-id order, after the state lock, so two commits can't
   deadlock.
@@ -353,6 +380,24 @@ The same rule as `Claiming::keys_of` (what a run read in what it may write), on 
   hash of the address, or for SQLite and MongoDB a `holon_claims` table with a lease, so a server
   that stops lets go.
 - **`while_it_runs`** (`commands.rs`) says them too: rows for a database, files for a folder.
+- **Built (slice 3):** the table is `Folders::claims`, keyed by each resource's real address (a
+  database's file, a file's path in lower case) so one database bound under two names is one.
+  The primary key is read from the database (`pragma_table_info`) when a run claims; core's
+  `sql::pins` finds the columns a `where` sets equal to parameters. A key's values compare as a
+  claim normalizes them (`7` and `"7"` are one row). An insert that doesn't give its primary key
+  writes `ClaimKey::NewRow`, which waits for a claim on its table but not on its rows. The last
+  try holds every table and folder it may touch for its whole run.
+- **Built (slice 4):** a claim on a Postgres or MySQL database is taken in the server's table,
+  then in the database, on a connection of its own per run (so a server that stops lets go with
+  its connection), and released in the same order. Postgres: advisory locks
+  (`pg_try_advisory_lock[_shared]`) on the first 8 bytes of `blake3("holon\0" + key)`, a row
+  claim holding its table shared and its row exclusive. MySQL: not `GET_LOCK`, which has no
+  shared mode, but a row of `holon_claims (k char(32) primary key)` per key, made with
+  `insert ignore` and locked `for share nowait` / `for update nowait` in a read-committed
+  transaction on the claim's connection. Both are tried every 20 ms until the claim's wait runs
+  out. The commit holds the same claims on the shared keys it writes, under the run's id, from
+  its check to its last write. Not built: claims across servers on one SQLite file (a
+  `holon_claims` table with a lease); SQLite stays one server's.
 
 ### 7.3 Run locks (an admin's setting)
 
@@ -369,6 +414,22 @@ the manifest, in resource-id order, held until it commits, fails or parks.
 - **Bounded as a claim is:** the wait counts against `claim_wait`; past it a request is turned
   away as busy, a 503 naming the resource, as `busy_after_claim_wait` does for a key, and a clock
   tick is skipped and logged.
+- **Built (slice 5):** the setting is `"lock": "run"` on a database's or folder's binding
+  (`locks::Setting`; `holon database add … --lock run`, `holon folder add … --lock run`, a
+  checkbox on the admin page, which says the cost), shown in listings as "held for whole runs".
+  `fire_with_state` takes the locks first, before a resumed run's branch too, and holds them
+  until it returns (`RunLocked`): in the server's lock table (locks.rs) under addresses of their
+  own (`run:db:…`, `run:folder:…`), so a run's own commit locks never wait for its run lock; for
+  a folder bound `shared`, also an OS lock on `.holon-tmp-run.lock` in it (not the commit lock's
+  file, since one run holds both); for a Postgres or MySQL database, also in the database (one
+  more named lock beside the claims', `engines.rs`), tried every 20 ms. Shared or exclusive from
+  the grant: a database or folder the flow may write is held exclusive by every run of it. A run
+  turned away has done nothing; its log entry says `busy: the database "shop" is held by another
+  run for its whole length …`, and a request answers 503. A resumed run turned away keeps
+  waiting, so its event can be delivered again (slice 6 makes a resumed run's shared reads
+  right). On MySQL a lock's `holon_claims` row is made only when it doesn't exist: an
+  `insert ignore` that finds the row another server holds waits for it, past any `claim_wait`
+  (slice 4's claims did; now fixed). SQLite's run lock is one server's, as its claims are.
 
 ### 7.4 Durable runs
 
@@ -381,19 +442,73 @@ again **from where it last waited**, with fresh reads: the events delivered and 
 made are answered from its record (the parked record's `events` and `rounds`), as an optimistic
 run's `prior` is (§13, fork 10).
 
+- **Built (slice 6):** the resumed branch is gone: a resumed run goes through the optimistic loop
+  of `fire_with_state` as a fresh one does, `pinned` to the state it first read. Each attempt
+  starts from that state (its own cells and collections, as before), its earlier parts' rounds
+  and its events answered from its record, and reads its files and databases as they are then.
+  It claims only what it shares (rows, tables, files and folders it reads and may write; never
+  its own collections, which no claim can change under it), and its commit takes the commit
+  locks over its reads and writes, checks its file reads (`still_as_read`, which skips its cells
+  and collections when pinned) and runs its database reads again in the commit transaction, as
+  any run's. Changed, it runs again (four times, then once more holding everything it may touch,
+  as a fresh run does). Its resume tokens stay its first's: its id doesn't change.
+- **A database marked done** (`holon_commits`) needs nothing more: a run resumed again after its
+  commit landed (the server stopped before forgetting it) reads what its own commit wrote, so its
+  check finds nothing changed, and the mark keeps its writes from applying twice.
+- **Fixed on the way:** an attempt's rounds are only the requests it sent itself, so a run that
+  ran twice answered its third attempt from its second's rounds alone (empty, its first's
+  requests answered from its record), and sent its first's again; and its log entry held only its
+  last attempt's requests, so `verify` couldn't re-run it. Every attempt's rounds are now carried
+  to the next and kept in the entry: a run that ran again re-runs offline. And `verify` answers a
+  resumed part's reads from its own entry first, then its earlier parts': a file or row read
+  again on resume answers as the part that finished found it.
+
 ## 8. Engines
 
 | Engine | Client | Commit | Claims across servers |
 |---|---|---|---|
 | SQLite | embedded (bundled) | `begin immediate`; the file's own locking across processes | `holon_claims` table, leased |
-| Postgres | a pooled client per resource | `read committed` + `for share` re-reads (`serializable` not needed) | `pg_advisory_lock` |
-| MySQL | a pooled client per resource | `repeatable read` + `for share` re-reads | `GET_LOCK` |
+| Postgres | a pooled client per resource | `read committed` + `for share` re-reads (`serializable` not needed); built: `serializable` | `pg_advisory_lock` |
+| MySQL | a pooled client per resource | `repeatable read` + `for share` re-reads; built: `serializable` | `GET_LOCK`; built: locks on `holon_claims` rows |
 | MongoDB (Atlas too) | the driver, `mongodb+srv://` | a transaction (needs a replica set, which Atlas is) | `holon_claims` collection, TTL |
 
 - **SQLite first:** no network, no service to run in CI, one file the host already knows how to
   confine. It gives queries, indexes and a store several deployments share on day one.
 - **MongoDB through the driver,** not HTTP: MongoDB retired Atlas's HTTP Data API.
+- **Built (slice 7):** the official `mongodb` crate (its blocking API, rustls on ring;
+  `mongodb+srv://` resolved by its DNS client), on bson 3: bson 2 turns on serde_json's
+  `preserve_order` for the whole build, which would freeze a record literal compiled by the
+  server in another key order than the editor's (a test in the binary says so). Bound as Postgres is, by a secret source, never
+  with a schema; one bound read-write or `--lock run` must be a replica set or a sharded
+  cluster. The commit is a transaction (snapshot reads, majority writes): its finds run again in
+  it, its writes applied with `expect` checked against what an update matched or a delete
+  deleted, the run marked in `holon_commits`; a write conflict, or a commit whose result is
+  unknown, sends the run round again, and a duplicate `_id` refuses it as an unmet `expect`
+  does. A document it only read that a program outside Holon changes between the check and the
+  commit isn't seen (snapshot isolation; Holon's own runs are held off by claims). Claims and the
+  run lock are documents in `holon_claims`, one per lock, holding their holders with a lease
+  (30 s, the server's clock): taken by one atomic pipeline update that drops expired holders and
+  adds this one if it fits, renewed by a thread while held. A filter's `_id` (an insert's
+  document's) is the row a claim holds, else the collection.
 - **Databases with an HTTP API** stay reachable through `http.*`, unchanged.
+- **Built (slice 4):** `postgres` (sync, TLS by rustls with the public CAs) and `mysql` (pure
+  Rust, rustls). A binding's connection is a secret source (`env:HOLON_SECRET_…`, `vault:…`),
+  fetched as secrets are; the binding keeps the source and the address without credentials,
+  which keys its claims and commit lock. Parameters cross as text on Postgres (booleans and
+  numbers adjusted to the type Postgres infers), and `$n` becomes `?` for MySQL
+  (`sql::positional` in core). Each read runs in a read-only transaction with the statement
+  limit. Values back: `numeric`/`decimal` as text, times as RFC 3339 in UTC, `json` as a value,
+  bytes as hex; any other type fails, saying to cast it. Sessions are set the same way on both:
+  standard strings, UTC, and on MySQL `ANSI_QUOTES`, `PIPES_AS_CONCAT`, `NO_BACKSLASH_ESCAPES`,
+  so a flow's SQL means one thing everywhere.
+- **Deviation (slice 4): the commit is `serializable`,** not `read committed` with `for share`
+  re-reads: on Postgres `for share` needs `update` on the table, which a role that only reads it
+  shouldn't have. The check still re-reads; serializable is what makes it hold. Serialization
+  failures, deadlocks and a lock not had within `commit_wait_ms` (Postgres 40001, 40P01, 55P03;
+  MySQL 1205, 1213, 3572) run the run again. What it costs: on Postgres, a program outside Holon
+  that writes a checked row in the milliseconds between the check and the commit isn't seen
+  (Holon's own runs are). A database's transaction commits before the run's state and files
+  land; once one has committed, a later one that fails is reported as not landed.
 
 ## 9. Seeing it
 
@@ -403,9 +518,67 @@ run's `prior` is (§13, fork 10).
   commit's wait for its locks.
 - **The timeline** (host-resources §5, design): `read`, `write` and `claim` rows under
   `db:<id>/<table>`, each pointing to its run.
-- **The editor:** the deploy dialog lists tables (through `describe.rs`); the inspector shows a
-  query node's rows for the selected run; the admin page defines database resources, the
-  connection by secret source only.
+- **The inspector** shows a query node's rows for the selected run.
+
+### 9.1 Where permissions are shown
+
+Permissions answer three questions, each asked by someone else. Today the editor asks them in
+three places, and a database adds to each rather than moving them:
+
+| Question | Who asks | Where, today | With databases |
+|---|---|---|---|
+| What may this flow do? | whoever deploys | the deploy dialog (`useDeployFlow.ts`: what it asks against `already_granted`) | its tables, in `describe.rs`'s words; nothing new to build |
+| What is this deployment granted? | an admin, about one flow | the deployment card's grant panel (`DeploymentCard.tsx`, `GET`/`POST /deployments/<slug>/grant`, `grants.rs`): revoke, grant back, keep running, the last changes | the same panel, the same controls, on `DbRead`/`DbWrite` lines |
+| What does this host allow at all? | an admin, about the server | `holon.toml`, read by the editor only as the deploy bar's limit placeholders and disabled fields (`DeployBar.tsx`, `GET /permissions`) | the admin page's **permissions** (below) |
+
+The admin page (`AdminPage.tsx`) has people, API tokens, folders and the identity provider, under
+"who uses this server, and how they get in". It grows two sections and, past that length, small
+tabs: **people and sign-in** (people, API tokens, the identity provider), **resources** and
+**permissions**.
+
+**Resources** (replacing "folders"): what exists on this host, one row per resource, its kind
+first.
+
+- A folder's row is today's (`/admin/folders`, `folders.rs`): name, path (chosen with
+  `FolderPicker.tsx`), access, keep, cap, the server or one deployment.
+- A database's row: name and engine; the connection, chosen as a secret source (`env:` or
+  `vault:`), never typed in as a value; access and keep; the server or one deployment; the tables
+  read at bind, with "read the schema again"; and the lock (§7.3), commit by default, run as a
+  choice that says its cost where it's set ("every run that writes it goes one at a time, across
+  every deployment bound to it").
+- Rebinding or unbinding is a grant change for each deployment bound to it (§2), so the row says
+  which deployments that pauses before it's done.
+
+**Permissions:** what the host allows, and who holds what.
+
+- **The policy,** read-only to start (it lives in `holon.toml`): what's granted without asking
+  (`auto`, as `DbRead(*)` would be), each limit's default and ceiling (`DbLimits` among them),
+  plain HTTP and private addresses, and "read the policy again" (`POST /permissions/reload`,
+  `handle_post_permissions_reload`, which holds every deployment to it at once). Editing the
+  policy here is a later choice: today the file is its one source.
+- **Who may touch what,** the reverse of the deployment card. Today, to answer "who may write
+  `shop/orders`?" an admin opens every card. Here each resource lists the deployments granted it,
+  by table for a database and by file access for a folder, read or write, each linking to its
+  card; a filter by capability kind answers the same for `HttpRequest` hosts and secrets. Built
+  from each deployment's grant (`grant_view`), so it needs one new read, `GET /admin/grants`,
+  and no new state.
+- **Nothing is changed here.** Revoking and granting back stay on the card, the one place that
+  calls `POST /deployments/<slug>/grant`; this view links to it. One panel that changes a grant
+  means one set of controls to keep right.
+- **Built:** the admin page's three tabs (`AdminPage.tsx`). Each database's tables (each
+  MongoDB's collections) come from `GET /admin/databases/<name>/tables[?deployment=]`
+  (`Databases::tables`), read when the resources show and again on "read the schema again",
+  `holon_`'s own and the engine's left out. Who holds what is `GET /admin/grants` (`grants.rs`:
+  each deployment's status, items and revoked items) turned round in the editor
+  (`holdings.ts`), through the binding each deployment sees (its own, else the server's), so a
+  deployment that bound its own `shop` isn't listed under the server's. The kinds no resource
+  answers (hosts, secrets, ingress, a database name nothing binds) are listed by item, and
+  "card →" opens the deployed page with that card's permissions open. A URL typed where a
+  database's secret source goes is refused in the page and never sent.
+- **Not built: rebinding as a grant change** (§2). Unbinding pauses nothing: a deployment bound to
+  it keeps running and its calls fail ("isn't bound") until the name is bound again, and binding
+  it again changes what its next runs reach without asking. The row's unbind and rebind say
+  exactly that, naming the deployments that use it, and stop there.
 
 ## 10. Samples
 
@@ -420,6 +593,13 @@ end-to-end tests:
   payment API (an httpbin stand-in) once; the second reads the order as refunded. The database
   form of `idempotent` and `cache-aside`.
 - **slice 4:** `orders-api` on Postgres, the same text, the resource's engine changed.
+- **slice 5, `ticket-numbers`:** numbered tickets from one counter row, on a database bound
+  `--lock run`: twenty requests at once take twenty numbers one after the other, each run
+  committing on its first try.
+- **slice 6, `approved-payout`:** a payout from an account balance that waits for its approval:
+  a deposit while it waits goes ahead, and the approved run pays from the balance as it then is,
+  holding the row from its payout to its commit; a change from outside Holon while the payout is
+  in flight sends it round again from the approval, the payout not sent twice.
 - **slice 7, `atlas-notes`:** notes kept in a MongoDB collection.
 
 ## 11. Tests
@@ -476,7 +656,8 @@ end-to-end tests:
 5. **A run reads its own writes?** No: they haven't landed. Same as state.
 6. **`serializable` commits, or checking reads again?** Checking reads again under `for share`.
    It works the same on every engine, catches writers outside Holon, and costs one re-read per
-   read, only at commit.
+   read, only at commit. Built: both, the re-reads in a `serializable` transaction (§8), since
+   `for share` needs write permission on Postgres.
 7. **Exact decimals as numbers or text?** Text. A total that comes back rounded is a bug nobody
    sees.
 8. **Atomic across resources (two-phase commit)?** No. Ordered commits, each marked with the run's
@@ -487,7 +668,8 @@ end-to-end tests:
 10. **A resumed run whose shared read changed: fail, or run again?** Run again from its last wait,
     with fresh reads. Failing would throw away a person's answer over a race they had no part in.
 11. **Claims for several servers: in the database, or a lock service?** In the database: it is
-    the one thing all of them already reach, and it lets go when a connection drops.
+    the one thing all of them already reach, and it lets go when a connection drops. Built for
+    Postgres and MySQL (§7.2).
 12. **A primary key: from the schema, or declared in the flow?** From the schema, read at bind
     and on refresh. A flow that states its table's key could state it wrong.
 13. **A read past a limit: cut short, or fail?** Fail, naming the limit, as a file too big does.

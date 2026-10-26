@@ -1,7 +1,7 @@
 # Command line
 
 Everything is one program, `holon`. `holon help` lists the commands; `serve`, `export`,
-`verify`, `folder`, `mcp` and `lsp` say more with `--help`.
+`verify`, `folder`, `database`, `mcp` and `lsp` say more with `--help`.
 
 | Command | |
 |---|---|
@@ -13,6 +13,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon export`](#holon-export) | write a deployment's runs to a file |
 | [`holon verify`](#holon-verify) | check exported runs offline |
 | [`holon folder`](#holon-folder) | bind the folders flows use |
+| [`holon database`](#holon-database) | bind the databases flows use |
 | [`holon mcp`](#holon-mcp) | the tools for agents, and adding them to an agent's host |
 | [`holon lsp`](#holon-lsp) | a language server for editors |
 | [`holon version`, `update`, `uninstall`, `migrate`](#looking-after-the-install) | the install itself |
@@ -111,7 +112,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from, again every minute while the server runs ([Secrets from a `.env` file](../guides/deploying.md#secrets-from-a-env-file)) |
 | `--editor DIR` | serve the editor from `DIR` instead of the built-in one (or `HOLON_EDITOR`) |
 | `--policy PATH` | the policy file (default `holon.toml` in the data folder) |
-| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:` |
+| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:` |
 
 `HOLON_SETUP_CODE` sets the setup code instead of a random one.
 
@@ -146,7 +147,7 @@ it can't read.
 ## `holon folder`
 
 ```
-holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--for SLUG]
+holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] [--lock run] [--for SLUG]
 holon folder list
 holon folder remove NAME [--for SLUG]
 holon folder sweep
@@ -161,10 +162,32 @@ takes `--server PORT|URL`. See [Files on the host](../guides/files.md).
 | `--keep hash` | the run log keeps a hash of what runs read, not the text |
 | `--keep 30d` | the text for 30 days (`s`, `m`, `h`, `d`), then its hash |
 | `--cap 10M` | no write takes the folder past 10 MiB |
+| `--shared` | other servers bind it too: a commit also locks `.holon-tmp-commit.lock` in it |
+| `--lock run` | each run that touches it holds it for its whole length, shared to read, alone to write |
 | `--for SLUG` | for that deployment only |
 
 `sweep` removes, now, the file texts no kept run refers to (the server does it every ten
 minutes).
+
+## `holon database`
+
+```
+holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--lock run] [--for SLUG]
+holon database list
+holon database remove NAME [--for SLUG]
+```
+
+Binds a name flows use (`database shop`) to a SQLite file on the server's machine (`PATH`), or
+to a Postgres, MySQL or MongoDB database whose URL the server fetches from `SOURCE`
+(`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`), never storing or showing it. Needs an
+admin; each takes `--server PORT|URL`. See [Databases on the host](../guides/databases.md).
+
+| Option | |
+|---|---|
+| `--schema SQL`, `--schema-file FILE` | run it first, creating a SQLite file if there is none (not for a MongoDB) |
+| `--read-only` | flows may read it, not write it |
+| `--lock run` | each run that touches it holds it for its whole length, shared to read, alone to write |
+| `--for SLUG` | for that deployment only |
 
 ## `holon mcp`
 

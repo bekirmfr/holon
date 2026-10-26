@@ -2508,6 +2508,11 @@ fn a_slow_run_holds_up_no_other_and_retries_without_resending() {
     let log = body_json(route(&state, &req("GET", "/deployments/slow/log", vec![])));
     let retried: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|x| x["retries"].as_u64().unwrap_or(0)).collect();
     assert_eq!(retried.iter().sum::<u64>(), 1, "the slow run ran once more: {retried:?}");
+    // The run that ran again checks offline: the call its first try made is in its entry.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/slow/export", vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
 }
 
 /// A port nothing listens on just now.
@@ -3735,6 +3740,63 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     assert_eq!(report.given, BTreeMap::from([(0, 1)]));
 }
 
+/// A caller who sends text that looks like a placeholder (`‹token:paid›`) gets nothing taken as
+/// given: the log escapes it (only a mark the log wrote reads as one), and verify computes the
+/// run's id and every node from it again. The caller's answer, and the request as the run saw it,
+/// are the text it sent. Rewritten everywhere, the answer differs: nothing stood in for it.
+#[test]
+fn a_look_alike_of_a_placeholder_is_computed_with_not_taken_as_given() {
+    let state = claims_state("");
+    let text = "flow echo\nport 18198\n\nroute POST /echo (req) {\n  respond \"got {req.body}\"\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let (status, answer, _) = data_call(&state, &slug, "POST", "/echo", "‹token:paid›");
+    assert_eq!((status, answer.as_str()), (200, "got ‹token:paid›"), "the caller gets what it sent");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/echo/export", vec![])))).unwrap();
+    assert_eq!(export.lines.len(), 1);
+    assert!(export.lines[0].contains("got ‹‹token:paid›") && export.lines[0].contains("\"escaped\":true"), "{}", export.lines[0]);
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+    assert!(report.given.is_empty() && report.ids_given.is_empty(), "nothing taken as given: {}", verify::describe(&report, None));
+    assert!(!verify::describe(&report, None).contains("given"), "{}", verify::describe(&report, None));
+
+    let line = export.lines[0].replace("got ‹‹token:paid›", "got ‹‹token:other›");
+    assert_ne!(line, export.lines[0]);
+    let head = recorder::line_hash(&line);
+    let forged = verify::Export { lines: vec![line], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&forged, Some(&head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Differs("its outputs".into()))], "{}", verify::describe(&report, None));
+}
+
+/// A run that received a real secret or a real token was given its id from the value, which the
+/// log never holds: verify keeps the log's run id for it and says so, and checks the rest. Here a
+/// bearer token equal to a secret, and a resume route's token in its path.
+#[test]
+fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
+    let state = claims_state("");
+    let value = "tok_live_abcdef123";
+    let set = req("POST", "/deployments/gate/secrets/api_token", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let text = "flow gate\nport 18197\ncollection seen\n\nroute POST /me (req) {\n  ok = secure_equals(req.body, \"Bearer {secret.api_token}\")\n  respond \"/paid/{resume_token(paid)}\" when ok, missing: 401\n  paid = await paid, expires: 1h\n  seen[\"last\"] = { at: req.path, via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let (status, link, _) = data_call(&state, &slug, "POST", "/me", &format!("Bearer {value}"));
+    assert_eq!(status, 200, "{link}");
+    let (status, thanks, _) = data_call(&state, &slug, "GET", &link, "");
+    assert_eq!((status, thanks.as_str()), (200, "thanks"));
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/gate/export", vec![])))).unwrap();
+    let token = &link["/paid/".len()..];
+    assert!(export.lines.iter().all(|l| !l.contains(value) && !l.contains(token)), "the log holds neither");
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let seqs: Vec<u64> = report.reruns.iter().map(|(seq, _)| *seq).collect();
+    assert!(seqs.len() >= 3, "the request, the resume and the resumed part: {seqs:?}");
+    let resume = export.lines.iter().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find(|e| e["route"] == "GET /paid/:token").unwrap();
+    assert!(report.ids_given.contains(&0), "the request carried the secret: {}", verify::describe(&report, None));
+    assert!(report.ids_given.contains(&resume["seq"].as_u64().unwrap()), "the resume carried the token: {}", verify::describe(&report, None));
+    assert!(verify::describe(&report, None).contains("checked given the run id the log kept"), "{}", verify::describe(&report, None));
+}
+
 // ── key claims: a key read before a call is held until the run commits ───────────────────────
 // (docs/L4s/key-claims-L4.md §10)
 
@@ -4109,6 +4171,668 @@ fn a_parked_run_releases_its_claims() {
     let go = entries.iter().find(|e| e["route"] == "POST /go/:k").unwrap();
     assert!(go["claims"][0]["waited_ms"].as_f64().unwrap() < 50.0, "{go}");
     assert_eq!(go["retries"], serde_json::Value::Null, "{go}");
+}
+
+/// Two deployments append to one file of a folder bound for the whole server, many runs at once:
+/// every line lands. Each deployment's commit is under its own state lock, so without a commit lock
+/// on the folder both could check the file and both write it, the second over the first
+/// (docs/L4s/databases-L4.md §7.1).
+#[test]
+fn two_deployments_appending_to_one_shared_file_lose_no_line() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-shared-ledger-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({ "name": "ledger", "path": dir.display().to_string(), "access": "read-write" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = include_str!("../../holon-author/samples/shared-ledger.holon");
+    let a = deploy_text(&state, text, "");
+    let b = deploy_text(&state, &text.replace("flow shared-ledger", "flow shared-ledger-2").replace("port 8140", "port 8141"), "");
+
+    let lines: Vec<String> = (0..40).map(|i| format!("line {i}")).collect();
+    std::thread::scope(|s| {
+        for (i, line) in lines.iter().enumerate() {
+            let (state, slug) = (&state, if i % 2 == 0 { &a } else { &b });
+            s.spawn(move || {
+                let (status, said, _) = data_call(state, slug, "POST", "/lines", line);
+                let errors: Vec<serde_json::Value> = log_entries(state, slug).iter().map(|e| e["error"].clone()).filter(|e| !e.is_null()).collect();
+                assert_eq!(status, 200, "{said}, the log says {errors:?}");
+            });
+        }
+    });
+    let written = std::fs::read_to_string(dir.join("lines.txt")).unwrap();
+    let missing: Vec<&String> = lines.iter().filter(|l| !written.lines().any(|w| w == l.as_str())).collect();
+    assert!(missing.is_empty(), "lost {missing:?} of {}:\n{written}", lines.len());
+    assert_eq!(written.lines().count(), lines.len(), "{written}");
+    // Nothing of the server's is left in it: no write beside its name, and no lock file (that is
+    // for a folder other servers bind too).
+    let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(left, ["lines.txt"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A flow reads and writes a SQLite database an admin bound: deploying waits for the binding (and
+/// for one it can write), its writes land when the run finishes, a statement that doesn't change
+/// the rows it expects lands nothing and answers 409, and its reads are in its log.
+#[test]
+fn a_flow_reads_and_writes_a_bound_database() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-orders-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("shop.db");
+    let text = include_str!("../../holon-author/samples/orders-api.holon");
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        route(&state, &req("POST", "/unit", u.clone()));
+    }
+    let preview = || body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    assert!(preview()["refused"].as_str().unwrap_or("").contains("holon database add shop"), "{}", preview());
+    let bind = |access: &str, schema: Option<&str>| {
+        let body = serde_json::json!({ "name": "shop", "path": file.display().to_string(), "access": access, "schema": schema });
+        route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()))
+    };
+    assert_eq!(bind("read", None).status_code, 400, "no database there, and no schema to make one");
+    let schema = "create table orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0)";
+    assert_eq!(bind("read", Some(schema)).status_code, 200);
+    assert!(preview()["refused"].as_str().unwrap_or("").contains("read-only"), "it writes orders: {}", preview());
+    assert_eq!(bind("read-write", None).status_code, 200);
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/databases", vec![])))[0]["engine"], "sqlite");
+    let slug = deploy_text(&state, text, "");
+
+    assert_eq!(data_call(&state, &slug, "POST", "/orders", r#"{"customer":"ada","total":"12.50"}"#).0, 201);
+    assert_eq!(data_call(&state, &slug, "POST", "/orders", r#"{"customer":"ada","total":7}"#).0, 201);
+    let (status, listed, _) = data_call(&state, &slug, "GET", "/orders/ada", "");
+    assert_eq!(status, 200, "{listed}");
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!(listed, serde_json::json!([{ "id": 1, "total": 12.5, "refunded": 0 }, { "id": 2, "total": 7, "refunded": 0 }]));
+    let (status, one, _) = data_call(&state, &slug, "GET", "/order/2", "");
+    assert_eq!((status, serde_json::from_str::<serde_json::Value>(&one).unwrap()["customer"].clone()), (200, serde_json::json!("ada")));
+    assert_eq!(data_call(&state, &slug, "GET", "/order/9", "").0, 404, "no row: nothing to answer");
+
+    // Two refunds of one order at once: one changes the row, the other finds none to change.
+    let statuses: Vec<u16> = std::thread::scope(|s| {
+        let calls: Vec<_> = (0..2).map(|_| s.spawn(|| data_call(&state, &slug, "POST", "/order/1/refund", "").0)).collect();
+        calls.into_iter().map(|c| c.join().unwrap()).collect()
+    });
+    let mut sorted = statuses.clone();
+    sorted.sort();
+    assert_eq!(sorted, [200, 409], "{statuses:?}");
+    let (status, said, _) = data_call(&state, &slug, "POST", "/order/1/refund", "");
+    assert_eq!(status, 409);
+    assert!(said.contains("changed 0 rows, not 1 row"), "{said}");
+    let conn = rusqlite::Connection::open(&file).unwrap();
+    let marked: i64 = conn.query_row("select count(*) from holon_commits", [], |r| r.get(0)).unwrap();
+    assert_eq!(marked, 3, "two orders and one refund, each run marked done once");
+    // Its reads are in the log, as it found them.
+    let entries = log_entries(&state, &slug);
+    let read = entries.iter().find(|e| e["reads"][0]["request"].to_string().contains("\"shop\"")).unwrap_or_else(|| panic!("a logged read: {entries:?}"));
+    assert!(!read["reads"][0]["answer"].is_null(), "{read}");
+    // Every run checks offline, its reads answered from the log: no database at hand.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    // The two refunds that changed no row failed, and say so; every other run matches.
+    let skipped = report.reruns.iter().filter(|(_, r)| matches!(r, verify::Rerun::Skipped(why) if why.contains("changed 0 rows"))).count();
+    assert_eq!((report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), skipped), (entries.len() - 2, 2), "{:?}", report.reruns);
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two deployments that read a row and write it back, at once: none loses another's update. A
+/// run whose row changed between its read and its commit runs again on the row as it now is.
+#[test]
+fn two_deployments_counting_in_one_row_lose_no_count() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-counts-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({
+        "name": "shop",
+        "path": dir.join("counts.db").display().to_string(),
+        "schema": "create table counts (id integer primary key, n integer not null); insert into counts values (1, 0)",
+    });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = "flow counter\nport 8160\ndatabase shop\n\nroute POST /hit/:id (req) {\n  row = shop.one(\"select n from counts where id = $1\", req.params.id)\n  shop.exec(\"update counts set n = $1 where id = $2\", row.n + 1, req.params.id, expect: 1)\n  respond { n: row.n + 1 }\n}\n";
+    let a = deploy_text(&state, text, "");
+    let b = deploy_text(&state, &text.replace("flow counter", "flow counter-2").replace("port 8160", "port 8161"), "");
+    std::thread::scope(|s| {
+        for i in 0..30 {
+            let (state, slug) = (&state, if i % 2 == 0 { &a } else { &b });
+            s.spawn(move || {
+                let (status, said, _) = data_call(state, slug, "POST", "/hit/1", "");
+                let errors: Vec<serde_json::Value> = log_entries(state, slug).iter().map(|e| e["error"].clone()).filter(|e| !e.is_null()).collect();
+                assert_eq!(status, 200, "{said}, the log says {errors:?}");
+            });
+        }
+    });
+    let conn = rusqlite::Connection::open(dir.join("counts.db")).unwrap();
+    let n: i64 = conn.query_row("select n from counts where id = 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 30);
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two refunds of one order at the same moment, from two deployments bound to one database: the
+/// first to call out holds the order's row (it read it and may write it) until it commits, so the
+/// payment API is called once; the second waits, finds the order refunded, and sends nothing
+/// (docs/L4s/databases-L4.md §7.2). Orders apart never wait for each other.
+#[test]
+fn two_deployments_refunding_one_order_call_the_payment_api_once() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-refunds-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema = "create table orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0); create table refunds (order_id integer not null, amount numeric not null, status integer); insert into orders (customer, total) values ('ada', 5), ('bo', 7), ('cy', 9)";
+    let body = serde_json::json!({ "name": "shop", "path": dir.join("shop.db").display().to_string(), "schema": schema });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = include_str!("../../holon-author/samples/refund-once.holon").replace("\"httpbin.org\", \"/anything/refunds\"", &format!("\"{host}\", \"/slow\"")).replace("port 8151", "port 18151");
+    let a = deploy_text(&state, &text, &host);
+    let b = deploy_text(&state, &text.replace("flow refund-once", "flow refund-once-2").replace("port 18151", "port 18152"), &host);
+    let race = |id: u32| -> Vec<u16> {
+        std::thread::scope(|s| {
+            let first = s.spawn(|| data_call(&state, &a, "POST", &format!("/refund/{id}"), ""));
+            std::thread::sleep(Duration::from_millis(60));
+            let second = s.spawn(|| data_call(&state, &b, "POST", &format!("/refund/{id}"), ""));
+            let mut statuses = vec![first.join().unwrap().0, second.join().unwrap().0];
+            statuses.sort();
+            statuses
+        })
+    };
+    assert_eq!(race(1), [200, 409]);
+    assert_eq!(hits_of(&hits, "/slow"), 1, "one payment for one order");
+    let (_, refunds, _) = data_call(&state, &a, "GET", "/refunds/1", "");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&refunds).unwrap(), serde_json::json!([{ "amount": 5, "status": 200 }]));
+    let waited = log_entries(&state, &b);
+    let claim = waited.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "shop/orders[1]").unwrap_or_else(|| panic!("{waited:#?}"));
+    assert!(claim["waited_ms"].as_f64().unwrap() > 100.0 && claim["overtaken"] == true, "it waited for the first's row: {claim}");
+
+    // Two orders at once: neither waits for the other's row.
+    let statuses: Vec<u16> = std::thread::scope(|s| {
+        let state = &state;
+        let calls = [(&a, 2), (&b, 3)].map(|(slug, id)| s.spawn(move || data_call(state, slug, "POST", &format!("/refund/{id}"), "").0));
+        calls.into_iter().map(|c| c.join().unwrap()).collect()
+    });
+    assert_eq!(statuses, [200, 200]);
+    assert_eq!(hits_of(&hits, "/slow"), 3);
+    for (slug, key) in [(&a, "shop/orders[2]"), (&b, "shop/orders[3]")] {
+        let entries = log_entries(&state, slug);
+        let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == key).unwrap_or_else(|| panic!("{entries:#?}"));
+        assert!(claim["overtaken"] == false && claim["waited_ms"].as_f64().unwrap() < 250.0, "its own row, taken at once: {claim}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two deployments that read a file of one folder, call out, and write it, at once: the first to
+/// call out holds the file, the second waits, finds it written, and sends nothing; another file
+/// never waits.
+#[test]
+fn two_deployments_caching_into_one_file_call_out_once() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-memo-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({ "name": "memos", "path": dir.display().to_string() });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = format!(
+        "flow memo\nport 18161\nfolder memos\n\nroute POST /memo/:name (req) {{\n  memo = memos[req.params.name] ?? http.get(\"{host}\", \"/slow\").body\n  memos[req.params.name] = memo\n  respond memo\n}}\n"
+    );
+    let a = deploy_text(&state, &text, &host);
+    let b = deploy_text(&state, &text.replace("flow memo", "flow memo-2").replace("port 18161", "port 18162"), &host);
+    let (first, second) = std::thread::scope(|s| {
+        let first = s.spawn(|| data_call(&state, &a, "POST", "/memo/x.txt", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let second = s.spawn(|| data_call(&state, &b, "POST", "/memo/x.txt", ""));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert_eq!((first.0, second.0, first.1.as_str(), second.1.as_str()), (200, 200, "slow", "slow"));
+    assert_eq!(hits_of(&hits, "/slow"), 1, "one fetch for one file");
+    let entries = log_entries(&state, &b);
+    let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "memos/x.txt").unwrap_or_else(|| panic!("{entries:#?}"));
+    assert_eq!(claim["overtaken"], true, "{claim}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A fresh, empty database on each engine the environment names (`HOLON_TEST_POSTGRES`,
+/// `HOLON_TEST_MYSQL`: a URL whose user may create databases), one per test so tests running at
+/// once never share one; dropped when the test is done with it. None named: none, and it says so.
+fn fresh_databases(tag: &str) -> Vec<Fresh> {
+    let name = format!("holon_{tag}_{:08x}", rand::random::<u32>());
+    let mut out = Vec::new();
+    if let Ok(admin) = std::env::var("HOLON_TEST_POSTGRES") {
+        let mut c = postgres::Client::connect(&admin, postgres::NoTls).unwrap_or_else(|e| panic!("HOLON_TEST_POSTGRES: {e}"));
+        c.batch_execute(&format!("create database {name}")).unwrap();
+        out.push(Fresh { engine: "postgres", url: with_database(&admin, &name), admin, name: name.clone() });
+    }
+    if let Ok(admin) = std::env::var("HOLON_TEST_MYSQL") {
+        use mysql::prelude::Queryable;
+        let mut c = mysql::Conn::new(mysql::Opts::from_url(&admin).unwrap()).unwrap_or_else(|e| panic!("HOLON_TEST_MYSQL: {e}"));
+        c.query_drop(format!("create database {name}")).unwrap();
+        out.push(Fresh { engine: "mysql", url: with_database(&admin, &name), admin, name: name.clone() });
+    }
+    if out.is_empty() {
+        eprintln!("{tag}: skipped: set HOLON_TEST_POSTGRES and/or HOLON_TEST_MYSQL to run it against those engines");
+    }
+    out
+}
+
+/// A test's own database: its engine, and the URL to bind it by.
+struct Fresh {
+    engine: &'static str,
+    url: String,
+    admin: String,
+    name: String,
+}
+
+impl Drop for Fresh {
+    fn drop(&mut self) {
+        match self.engine {
+            "postgres" => {
+                if let Ok(mut c) = postgres::Client::connect(&self.admin, postgres::NoTls) {
+                    let _ = c.batch_execute(&format!("drop database if exists {} with (force)", self.name));
+                }
+            }
+            _ => {
+                use mysql::prelude::Queryable;
+                if let Ok(mut c) = mysql::Opts::from_url(&self.admin).map_err(|e| e.to_string()).and_then(|o| mysql::Conn::new(o).map_err(|e| e.to_string())) {
+                    let _ = c.query_drop(format!("drop database if exists {}", self.name));
+                }
+            }
+        }
+    }
+}
+
+/// `url` naming the database `name` instead of its own.
+fn with_database(url: &str, name: &str) -> String {
+    let (base, query) = url.split_once('?').map_or((url, None), |(b, q)| (b, Some(q)));
+    let rest = base.split_once("://").map_or(base, |(_, r)| r);
+    let base = match rest.find('/') {
+        Some(slash) => format!("{}/{name}", &base[..base.len() - rest.len() + slash]),
+        None => format!("{base}/{name}"),
+    };
+    query.map_or_else(|| base.clone(), |q| format!("{base}?{q}"))
+}
+
+/// A test server whose databases fetch `HOLON_SECRET_SHOP_URL` as `url`.
+fn server_with_database(url: &str) -> AppState {
+    let mut state = claims_state("");
+    let sources = secret_sources::Sources::of(&[("HOLON_SECRET_SHOP_URL", url)]);
+    state.folders = Arc::new(folders::Folders::memory().with_databases(databases::Databases::memory().with_sources(sources)));
+    state
+}
+
+/// The shop's schema on `engine`: ids each engine numbers itself, exact totals (two places), a
+/// refunds table.
+fn shop_schema(engine: &str) -> String {
+    let id = if engine == "postgres" { "integer generated by default as identity primary key" } else { "integer primary key auto_increment" };
+    format!(
+        "create table orders (id {id}, customer varchar(64) not null, total numeric(10,2) not null, refunded integer not null default 0); \
+         create table refunds (order_id integer not null, amount numeric(10,2) not null, status integer)"
+    )
+}
+
+fn bind_shop(state: &AppState, schema: Option<&str>) -> rouille::Response {
+    let body = serde_json::json!({ "name": "shop", "connection": "env:HOLON_SECRET_SHOP_URL", "access": "read-write", "schema": schema });
+    route(state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()))
+}
+
+/// The admin page's resources and permissions (databases-L4 §9.1): a bound database's tables are
+/// read on asking, Holon's own left out, and who holds what is each deployment's grant, a revoked
+/// item among its revoked, changed only on its card.
+#[test]
+fn an_admin_sees_each_databases_tables_and_who_holds_what() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-holds-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({
+        "name": "shop",
+        "path": dir.join("shop.db").display().to_string(),
+        "schema": "create table orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0); create view big as select * from orders where total > 100",
+    });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let tables = body_json(route(&state, &req("GET", "/admin/databases/shop/tables", vec![])));
+    assert_eq!(tables["tables"], serde_json::json!(["big", "orders"]), "holon_commits is Holon's: {tables}");
+    assert_eq!(route(&state, &req("GET", "/admin/databases/nope/tables", vec![])).status_code, 404);
+    assert_eq!(route(&state, &req("GET", "/admin/databases/shop/tables?deployment=other", vec![])).status_code, 404, "bound for the server, not for other");
+    assert_eq!(route(&state, &req("POST", "/admin/databases/shop/tables", vec![])).status_code, 404);
+
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/orders-api.holon"), "");
+    let held = body_json(route(&state, &req("GET", "/admin/grants", vec![])));
+    let entry = held.as_array().unwrap().iter().find(|d| d["slug"] == slug.as_str()).unwrap_or_else(|| panic!("{held}"));
+    assert_eq!(entry["status"], "running", "{entry}");
+    let items: Vec<&str> = entry["items"].as_array().unwrap().iter().filter_map(|i| i.as_str()).collect();
+    assert!(items.contains(&"DbRead(\"shop/orders\")") && items.contains(&"DbWrite(\"shop/orders\")"), "{items:?}");
+    assert_eq!(entry["revoked"], serde_json::json!([]));
+    assert_eq!(change_grant(&state, &slug, serde_json::json!({ "revoke": ["DbWrite(\"shop/orders\")"] })).status_code, 200);
+    let held = body_json(route(&state, &req("GET", "/admin/grants", vec![])));
+    let entry = held.as_array().unwrap().iter().find(|d| d["slug"] == slug.as_str()).unwrap();
+    assert_eq!(entry["revoked"], serde_json::json!(["DbWrite(\"shop/orders\")"]), "{entry}");
+    assert_eq!(entry["status"], "paused", "a required item revoked pauses it: {entry}");
+    assert!(entry["attention"].as_str().is_some_and(|a| !a.is_empty()), "{entry}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Each engine lists its tables as a flow names them, Holon's own left out: Postgres's and
+/// MySQL's from the schema, a MongoDB's collections as documents are written to them.
+#[test]
+fn each_engine_lists_its_tables_without_holons_own() {
+    for db in fresh_databases("tables") {
+        let (engine, url) = (db.engine, db.url.clone());
+        let state = server_with_database(&url);
+        let r = bind_shop(&state, Some(&shop_schema(engine)));
+        let status = r.status_code;
+        assert_eq!(status, 200, "{engine}: {}", String::from_utf8_lossy(&body_bytes(r)));
+        let tables = body_json(route(&state, &req("GET", "/admin/databases/shop/tables", vec![])));
+        assert_eq!(tables["tables"], serde_json::json!(["orders", "refunds"]), "{engine}: {tables}");
+    }
+    let Some(db) = fresh_mongo("tables") else { return };
+    let state = server_with_database(&db.url);
+    assert_eq!(bind_notes(&state).status_code, 200);
+    let tables = || body_json(route(&state, &req("GET", "/admin/databases/notes/tables", vec![])))["tables"].clone();
+    assert_eq!(tables(), serde_json::json!([]), "holon_commits and holon_claims are Holon's");
+    db.notes().insert_one(mongodb::bson::doc! { "_id": "n1" }).run().unwrap();
+    assert_eq!(tables(), serde_json::json!(["notes"]));
+}
+
+/// The orders-api sample runs on Postgres and MySQL with its text unchanged, the binding a
+/// connection instead of a file: its totals are exact (text), its refund's `expect` holds, every
+/// run is marked done in the database once, and every run checks offline.
+#[test]
+fn orders_api_runs_on_postgres_and_mysql_as_on_sqlite() {
+    for db in fresh_databases("orders") {
+        let (engine, url) = (db.engine, db.url.clone());
+        let state = server_with_database(&url);
+        let r = bind_shop(&state, Some(&shop_schema(engine)));
+        let status = r.status_code;
+        assert_eq!(status, 200, "{engine}: {}", String::from_utf8_lossy(&body_bytes(r)));
+        let listed = body_json(route(&state, &req("GET", "/admin/databases", vec![])));
+        assert_eq!((listed[0]["engine"].as_str(), listed[0]["connection"].as_str()), (Some(engine), Some("env:HOLON_SECRET_SHOP_URL")));
+        assert!(!listed.to_string().contains(&url) && !listed.to_string().contains("@"), "the URL is never shown: {listed}");
+        let text = include_str!("../../holon-author/samples/orders-api.holon");
+        let slug = deploy_text(&state, text, "");
+        assert_eq!(data_call(&state, &slug, "POST", "/orders", r#"{"customer":"ada","total":"12.50"}"#).0, 201, "{engine}");
+        assert_eq!(data_call(&state, &slug, "POST", "/orders", r#"{"customer":"ada","total":7}"#).0, 201, "{engine}");
+        let (status, listed, _) = data_call(&state, &slug, "GET", "/orders/ada", "");
+        assert_eq!(status, 200, "{engine}: {listed}");
+        let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(listed, serde_json::json!([{ "id": 1, "total": "12.50", "refunded": 0 }, { "id": 2, "total": "7.00", "refunded": 0 }]), "{engine}");
+        assert_eq!(data_call(&state, &slug, "GET", "/order/9", "").0, 404, "{engine}");
+        let statuses: Vec<u16> = std::thread::scope(|s| {
+            let calls: Vec<_> = (0..2).map(|_| s.spawn(|| data_call(&state, &slug, "POST", "/order/1/refund", "").0)).collect();
+            let mut st: Vec<u16> = calls.into_iter().map(|c| c.join().unwrap()).collect();
+            st.sort();
+            st
+        });
+        assert_eq!(statuses, [200, 409], "{engine}");
+        let (_, one, _) = data_call(&state, &slug, "GET", "/order/1", "");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&one).unwrap()["refunded"], 1, "{engine}");
+        let marked = match engine {
+            "postgres" => postgres::Client::connect(&url, postgres::NoTls).unwrap().query_one("select count(*) from holon_commits", &[]).unwrap().get::<_, i64>(0),
+            _ => {
+                use mysql::prelude::Queryable;
+                mysql::Conn::new(mysql::Opts::from_url(&url).unwrap()).unwrap().query_first::<i64, _>("select count(*) from holon_commits").unwrap().unwrap()
+            }
+        };
+        assert_eq!(marked, 3, "{engine}: two orders and one refund, each marked done once");
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        assert!(report.ok(), "{engine}: {}", verify::describe(&report, None));
+    }
+}
+
+/// Two servers on one Postgres (or MySQL), each running refund-once, refund one order at the same
+/// moment: their own tables of claims can't see each other's, the database can. The first to call
+/// out holds the order's row there until it commits, so the payment API is called once; the
+/// second waits, finds the order refunded, and sends nothing. Orders apart never wait.
+#[test]
+fn two_servers_refunding_one_order_call_the_payment_api_once() {
+    for db in fresh_databases("refunds") {
+        let (engine, url) = (db.engine, db.url.clone());
+        let (host, hits) = counting_server();
+        let servers = [server_with_database(&url), server_with_database(&url)];
+        assert_eq!(bind_shop(&servers[0], Some(&format!("{}; insert into orders (id, customer, total) values (1, 'ada', 5), (2, 'bo', 7), (3, 'cy', 9)", shop_schema(engine)))).status_code, 200, "{engine}");
+        assert_eq!(bind_shop(&servers[1], None).status_code, 200, "{engine}");
+        let text = include_str!("../../holon-author/samples/refund-once.holon").replace("\"httpbin.org\", \"/anything/refunds\"", &format!("\"{host}\", \"/slow\""));
+        let slugs = [deploy_text(&servers[0], &text, &host), deploy_text(&servers[1], &text, &host)];
+        let (first, second) = std::thread::scope(|s| {
+            let first = s.spawn(|| data_call(&servers[0], &slugs[0], "POST", "/refund/1", ""));
+            std::thread::sleep(Duration::from_millis(60));
+            let second = s.spawn(|| data_call(&servers[1], &slugs[1], "POST", "/refund/1", ""));
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        let mut statuses = [first.0, second.0];
+        statuses.sort();
+        assert_eq!(statuses, [200, 409], "{engine}: {} / {}", first.1, second.1);
+        assert_eq!(hits_of(&hits, "/slow"), 1, "{engine}: one payment for one order, across servers");
+        let (_, refunds, _) = data_call(&servers[1], &slugs[1], "GET", "/refunds/1", "");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&refunds).unwrap(), serde_json::json!([{ "amount": "5.00", "status": 200 }]), "{engine}");
+        let entries = log_entries(&servers[1], &slugs[1]);
+        let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "shop/orders[1]").unwrap_or_else(|| panic!("{engine}: {entries:#?}"));
+        assert!(claim["waited_ms"].as_f64().unwrap() > 100.0 && claim["overtaken"] == true, "{engine}: it waited for the other server's row: {claim}");
+
+        // Two orders at once, one on each server: neither waits for the other's row.
+        let t0 = std::time::Instant::now();
+        let statuses: Vec<u16> = std::thread::scope(|s| {
+            let calls = [(0, 2), (1, 3)].map(|(i, id)| {
+                let (server, slug) = (&servers[i], &slugs[i]);
+                s.spawn(move || data_call(server, slug, "POST", &format!("/refund/{id}"), "").0)
+            });
+            calls.into_iter().map(|c| c.join().unwrap()).collect()
+        });
+        assert_eq!(statuses, [200, 200], "{engine}");
+        assert_eq!(hits_of(&hits, "/slow"), 3, "{engine}");
+        assert!(t0.elapsed() < Duration::from_millis(780), "{engine}: side by side, not one after the other: {:?}", t0.elapsed());
+    }
+}
+
+/// A program outside Holon changes a row a run read while the run is calling out: its commit's
+/// check finds the row changed, and it runs again on the row as it now is, its request answered
+/// from its record, not sent again.
+#[test]
+fn a_row_another_program_changed_sends_the_run_round_again() {
+    for db in fresh_databases("counts") {
+        let (engine, url) = (db.engine, db.url.clone());
+        let (host, hits) = counting_server();
+        let state = server_with_database(&url);
+        assert_eq!(bind_shop(&state, Some("create table counts (id integer primary key, n integer not null); insert into counts values (1, 0)")).status_code, 200, "{engine}");
+        let text = format!(
+            "flow tally\nport 18171\ndatabase shop\n\nroute POST /tally (req) {{\n  row = shop.one(\"select n from counts where id = $1\", 1)\n  seen = http.get(\"{host}\", \"/slow\").body\n  shop.exec(\"update counts set n = $1 where id = $2\", row.n + 1, 1, expect: 1)\n  respond {{ n: row.n + 1, seen: seen }}\n}}\n"
+        );
+        let slug = deploy_text(&state, &text, &host);
+        let outside = || match engine {
+            "postgres" => {
+                postgres::Client::connect(&url, postgres::NoTls).unwrap().execute("update counts set n = 100 where id = 1", &[]).unwrap();
+            }
+            _ => {
+                use mysql::prelude::Queryable;
+                mysql::Conn::new(mysql::Opts::from_url(&url).unwrap()).unwrap().query_drop("update counts set n = 100 where id = 1").unwrap();
+            }
+        };
+        let (status, body, _) = std::thread::scope(|s| {
+            let run = s.spawn(|| data_call(&state, &slug, "POST", "/tally", ""));
+            std::thread::sleep(Duration::from_millis(150));
+            outside();
+            run.join().unwrap()
+        });
+        assert_eq!(status, 200, "{engine}: {body}");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["n"], 101, "{engine}: it ran again on 100");
+        assert_eq!(hits_of(&hits, "/slow"), 1, "{engine}: its request was answered from its record");
+    }
+}
+
+/// A sequence's next number, handed to an API before it is written back, from a database an admin
+/// set to `run` (Â§7.3 of the databases L4): each flow's text the same as without it.
+fn numbering_text(host: &str, flow: &str, port: u16) -> String {
+    format!(
+        "flow {flow}\nport {port}\ndatabase shop\n\nroute POST /next (req) {{\n  row = shop.one(\"select n from seq where id = $1\", 1)\n  sent = http.get(\"{host}\", \"/slow\").body\n  shop.exec(\"update seq set n = $1 where id = $2\", row.n + 1, 1, expect: 1)\n  respond {{ n: row.n + 1, sent: sent }}\n}}\n"
+    )
+}
+
+/// Reads the sequence and calls out, writing nothing.
+fn peeking_text(host: &str, flow: &str, port: u16) -> String {
+    format!(
+        "flow {flow}\nport {port}\ndatabase shop\n\nroute GET /peek (req) {{\n  row = shop.one(\"select n from seq where id = $1\", 1)\n  sent = http.get(\"{host}\", \"/slow\").body\n  respond {{ n: row.n, sent: sent }}\n}}\n"
+    )
+}
+
+/// Whether any run of `slug` found a claimed key changed and ran again.
+fn overtaken_in(state: &AppState, slug: &str) -> bool {
+    log_entries(state, slug).iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).any(|c| c["overtaken"] == true)
+}
+
+/// Two requests to `first` and `second` 60 ms apart: their answers, and how long the second took.
+fn two_at_once(state: &AppState, first: (&str, &str, &str), second: (&str, &str, &str)) -> ((u16, String), (u16, String, Duration)) {
+    std::thread::scope(|s| {
+        let a = s.spawn(|| data_call(state, first.0, first.1, first.2, ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let b = s.spawn(|| data_call(state, second.0, second.1, second.2, ""));
+        let (a, b) = (a.join().unwrap(), b.join().unwrap());
+        ((a.0, a.1), b)
+    })
+}
+
+/// A database an admin set to `run`: a run that may write it holds it alone from before it starts
+/// until it commits, so two deployments' writers go one after the other, whole: the second never
+/// starts, reads or calls out until the first has committed (it is never overtaken, as it would be
+/// under a claim alone). Readers hold it shared: side by side with each other, after a writer. One
+/// that would wait past its claim_wait is turned away (503), naming the database, having sent
+/// nothing.
+#[test]
+fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
+    let (host, hits) = counting_server();
+    let dir = std::env::temp_dir().join(format!("holon-runlock-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bind = |state: &AppState, file: &str| {
+        let body = serde_json::json!({
+            "name": "shop",
+            "path": dir.join(file).display().to_string(),
+            "schema": "create table seq (id integer primary key, n integer not null); insert into seq values (1, 0)",
+            "lock": "run",
+        });
+        assert_eq!(route(state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    };
+    let state = claims_state("");
+    bind(&state, "seq.db");
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/databases", vec![])))[0]["lock"], "run");
+    let a = deploy_text(&state, &numbering_text(&host, "numbers", 18181), &host);
+    let b = deploy_text(&state, &numbering_text(&host, "numbers-2", 18182), &host);
+    let (first, second) = two_at_once(&state, (&a, "POST", "/next"), (&b, "POST", "/next"));
+    assert_eq!((first.0, second.0), (200, 200), "{} / {}", first.1, second.1);
+    let ns: BTreeSet<String> = [&first.1, &second.1].iter().map(|b| serde_json::from_str::<serde_json::Value>(b).unwrap()["n"].to_string()).collect();
+    assert_eq!(ns, BTreeSet::from(["1".to_string(), "2".to_string()]));
+    assert!(second.2 > Duration::from_millis(700), "it ran after the first, whole: {:?}", second.2);
+    assert!(!overtaken_in(&state, &b), "it started once the first had committed: {:#?}", log_entries(&state, &b));
+    assert_eq!(hits_of(&hits, "/slow"), 2);
+
+    // Readers side by side; a reader after a writer.
+    let r1 = deploy_text(&state, &peeking_text(&host, "peek", 18183), &host);
+    let r2 = deploy_text(&state, &peeking_text(&host, "peek-2", 18184), &host);
+    let (one, two) = two_at_once(&state, (&r1, "GET", "/peek"), (&r2, "GET", "/peek"));
+    assert_eq!((one.0, two.0), (200, 200));
+    assert!(two.2 < Duration::from_millis(650), "readers share it: {:?}", two.2);
+    let (_, after) = two_at_once(&state, (&a, "POST", "/next"), (&r1, "GET", "/peek"));
+    assert_eq!(after.0, 200);
+    assert!(after.2 > Duration::from_millis(700), "a reader waits for a writer: {:?}", after.2);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&after.1).unwrap()["n"], 3, "and reads what it wrote");
+
+    // Past claim_wait: turned away, sending nothing.
+    let quick = claims_state("[limits]\nclaim_wait_ms = 100");
+    bind(&quick, "quick.db");
+    let a = deploy_text(&quick, &numbering_text(&host, "numbers", 18185), &host);
+    let b = deploy_text(&quick, &numbering_text(&host, "numbers-2", 18186), &host);
+    let before = hits_of(&hits, "/slow");
+    let (first, second) = two_at_once(&quick, (&a, "POST", "/next"), (&b, "POST", "/next"));
+    assert_eq!((first.0, second.0), (200, 503), "{}", second.1);
+    assert!(second.1.contains("the database \\\"shop\\\""), "it names the database: {}", second.1);
+    assert_eq!(hits_of(&hits, "/slow"), before + 1, "the one turned away sent nothing");
+    let turned = log_entries(&quick, &b);
+    assert!(turned.last().unwrap()["error"].as_str().unwrap().starts_with("busy:"), "{turned:#?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A folder an admin set to `run`, bound by several servers: its writers go one after the other,
+/// whole, and the lock is an OS lock on a file of its own in the folder, so another server's runs
+/// see it too.
+#[test]
+fn a_folder_held_for_whole_runs_runs_its_writers_one_at_a_time() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-runlock-f-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({ "name": "ledger", "path": dir.display().to_string(), "shared": true, "lock": "run" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/folders", vec![])))[0]["lock"], "run");
+    let text = format!(
+        "flow tally\nport 18191\nfolder ledger\n\nroute POST /add (req) {{\n  lines = ledger[\"lines.txt\"] ?? \"\"\n  sent = http.get(\"{host}\", \"/slow\").body\n  ledger[\"lines.txt\"] = \"{{lines}}{{sent}}\\n\"\n  respond {{ sent: sent }}\n}}\n"
+    );
+    let a = deploy_text(&state, &text, &host);
+    let b = deploy_text(&state, &text.replace("flow tally", "flow tally-2").replace("port 18191", "port 18192"), &host);
+    let (first, second) = two_at_once(&state, (&a, "POST", "/add"), (&b, "POST", "/add"));
+    assert_eq!((first.0, second.0), (200, 200), "{} / {}", first.1, second.1);
+    assert!(second.2 > Duration::from_millis(700), "it ran after the first, whole: {:?}", second.2);
+    assert!(!overtaken_in(&state, &b), "{:#?}", log_entries(&state, &b));
+    assert_eq!(hits_of(&hits, "/slow"), 2);
+    assert_eq!(std::fs::read_to_string(dir.join("lines.txt")).unwrap(), "slow\nslow\n");
+    assert!(dir.join(locks::RUN_LOCK_FILE).exists(), "bound shared: its lock is a file in it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two servers on one Postgres (or MySQL) an admin set to `run`: the lock is held in the database,
+/// so one server's writer waits for the other's to commit, whole, its readers side by side with
+/// the other's, and past claim_wait a run is turned away.
+#[test]
+fn a_database_held_for_whole_runs_holds_across_servers() {
+    for db in fresh_databases("runlock") {
+        let (engine, url) = (db.engine, db.url.clone());
+        let (host, hits) = counting_server();
+        let servers = [server_with_database(&url), server_with_database(&url)];
+        for s in &servers {
+            *s.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n[limits]\nclaim_wait_ms = 3000").unwrap());
+        }
+        for (i, s) in servers.iter().enumerate() {
+            let schema = (i == 0).then_some("create table seq (id integer primary key, n integer not null); insert into seq values (1, 0)");
+            let body = serde_json::json!({ "name": "shop", "connection": "env:HOLON_SECRET_SHOP_URL", "schema": schema, "lock": "run" });
+            let r = route(s, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()));
+            let status = r.status_code;
+            assert_eq!(status, 200, "{engine}: {}", String::from_utf8_lossy(&body_bytes(r)));
+        }
+        let writers = [deploy_text(&servers[0], &numbering_text(&host, "numbers", 18181), &host), deploy_text(&servers[1], &numbering_text(&host, "numbers", 18181), &host)];
+        let (first, second) = std::thread::scope(|s| {
+            let a = s.spawn(|| data_call(&servers[0], &writers[0], "POST", "/next", ""));
+            std::thread::sleep(Duration::from_millis(60));
+            let b = s.spawn(|| data_call(&servers[1], &writers[1], "POST", "/next", ""));
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_eq!((first.0, second.0), (200, 200), "{engine}: {} / {}", first.1, second.1);
+        assert!(second.2 > Duration::from_millis(700), "{engine}: it ran after the other server's, whole: {:?}", second.2);
+        assert!(!overtaken_in(&servers[1], &writers[1]), "{engine}: {:#?}", log_entries(&servers[1], &writers[1]));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&second.1).unwrap()["n"], 2, "{engine}");
+        let readers = [deploy_text(&servers[0], &peeking_text(&host, "peek", 18183), &host), deploy_text(&servers[1], &peeking_text(&host, "peek", 18183), &host)];
+        let t0 = std::time::Instant::now();
+        std::thread::scope(|s| {
+            let calls = [0, 1].map(|i| {
+                let (server, slug) = (&servers[i], &readers[i]);
+                s.spawn(move || data_call(server, slug, "GET", "/peek", "").0)
+            });
+            assert_eq!(calls.map(|c| c.join().unwrap()), [200, 200], "{engine}");
+        });
+        assert!(t0.elapsed() < Duration::from_millis(700), "{engine}: readers of two servers share it: {:?}", t0.elapsed());
+        assert_eq!(hits_of(&hits, "/slow"), 4, "{engine}");
+
+        // A writer deployed where claim_wait is 100 ms, while the other server's writer runs:
+        // turned away, sending nothing.
+        *servers[1].policy.write().unwrap() = Arc::new(Policy::parse("[grants]
+allow_plain_http = true
+allow_private_addresses = true
+[limits]
+claim_wait_ms = 100").unwrap());
+        let quick = deploy_text(&servers[1], &numbering_text(&host, "numbers-quick", 18185), &host);
+        let (first, second) = std::thread::scope(|s| {
+            let a = s.spawn(|| data_call(&servers[0], &writers[0], "POST", "/next", ""));
+            std::thread::sleep(Duration::from_millis(60));
+            let b = s.spawn(|| data_call(&servers[1], &quick, "POST", "/next", ""));
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert_eq!((first.0, second.0), (200, 503), "{engine}: {}", second.1);
+        assert_eq!(hits_of(&hits, "/slow"), 5, "{engine}: the one turned away sent nothing");
+    }
 }
 
 /// A flow reads and writes files in the folders an admin bound, by name: deploying waits for the
@@ -4621,6 +5345,428 @@ fn a_file_a_run_deletes_starts_no_run() {
     look();
     assert_eq!(log_entries(&state, &slug).len(), 2, "someone else's removal does");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A run that read a row, waited for an event, then calls out and writes the row (§7.4 of the
+/// databases L4). Parked, it holds nothing on the row.
+fn waiting_tally_text(host: &str) -> String {
+    format!(
+        "flow paid-tally\nport 18191\ndatabase shop\n\nroute POST /hold (req) {{\n  row = shop.one(\"select n from counts where id = $1\", 1)\n  asked = http.get(\"{host}\", \"/fast\").body\n  respond {{ token: \"{{resume_token(paid)}}\", n: row.n, asked: asked }}\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body) }}).body\n  shop.exec(\"update counts set n = $1, note = $2 where id = $3\", row.n + 1, later, 1, expect: 1)\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
+    )
+}
+
+/// A resumed run checks what it shares at its commit as any run does: a program outside Holon
+/// changes the row it read while its resumed part calls out, so its commit finds the row changed,
+/// and it runs again from where it last waited, reading the row as it now is. The requests of
+/// both its parts are answered from its record, not sent again, its event too; and it checks
+/// offline. On SQLite, and on Postgres and MySQL when they are at hand.
+#[test]
+fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
+    let dir = std::env::temp_dir().join(format!("holon-resumed-row-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("counts.db");
+    let schema = "create table counts (id integer primary key, n integer not null, note varchar(16)); insert into counts (id, n) values (1, 0)";
+    let fresh = fresh_databases("resumed");
+    let mut engines: Vec<(&str, String)> = vec![("sqlite", file.display().to_string())];
+    engines.extend(fresh.iter().map(|db| (db.engine, db.url.clone())));
+    for (engine, url) in engines {
+        let (host, hits) = counting_server();
+        let state = if engine == "sqlite" { claims_state("") } else { server_with_database(&url) };
+        let bound = match engine {
+            "sqlite" => {
+                let body = serde_json::json!({ "name": "shop", "path": url, "access": "read-write", "schema": schema });
+                route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()))
+            }
+            _ => bind_shop(&state, Some(schema)),
+        };
+        assert_eq!(bound.status_code, 200, "{engine}");
+        let slug = deploy_text(&state, &waiting_tally_text(&host), &host);
+        let outside = |sql: &str| match engine {
+            "sqlite" => rusqlite::Connection::open(&url).unwrap().execute_batch(sql).unwrap(),
+            "postgres" => postgres::Client::connect(&url, postgres::NoTls).unwrap().batch_execute(sql).unwrap(),
+            _ => {
+                use mysql::prelude::Queryable;
+                mysql::Conn::new(mysql::Opts::from_url(&url).unwrap()).unwrap().query_drop(sql).unwrap()
+            }
+        };
+        let n = || match engine {
+            "sqlite" => rusqlite::Connection::open(&url).unwrap().query_row("select n from counts where id = 1", [], |r| r.get::<_, i64>(0)).unwrap(),
+            "postgres" => postgres::Client::connect(&url, postgres::NoTls).unwrap().query_one("select n from counts where id = 1", &[]).unwrap().get::<_, i32>(0) as i64,
+            _ => {
+                use mysql::prelude::Queryable;
+                mysql::Conn::new(mysql::Opts::from_url(&url).unwrap()).unwrap().query_first::<i64, _>("select n from counts where id = 1").unwrap().unwrap()
+            }
+        };
+
+        let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
+        assert_eq!(status, 200, "{engine}: {held}");
+        let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
+        // While it waits the row changes: it is read as it is when the run resumes.
+        outside("update counts set n = 10 where id = 1");
+        let paid = std::thread::scope(|s| {
+            let paid = s.spawn(|| data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""));
+            // And again while its resumed part calls out: its commit finds it changed.
+            std::thread::sleep(Duration::from_millis(150));
+            outside("update counts set n = 100 where id = 1");
+            paid.join().unwrap()
+        });
+        assert_eq!(paid.0, 200, "{engine}: {paid:?}");
+        assert_eq!(n(), 101, "{engine}: it ran again on 100, not over it");
+        assert_eq!((hits_of(&hits, "/fast"), hits_of(&hits, "/slow")), (1, 1), "{engine}: each request went out once");
+        let entries = log_entries(&state, &slug);
+        let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("{engine}: {entries:#?}"));
+        assert_eq!(resumed["retries"], 1, "{engine}: {resumed}");
+        assert!(resumed["error"].is_null(), "{engine}: {resumed}");
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        assert!(report.ok(), "{engine}: {}", verify::describe(&report, None));
+        // Every part re-runs: the token its first part answered with, and the request that
+        // carried it, are checked given what the log kept, and the resumed part that ran again too.
+        let matched = report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count();
+        assert_eq!(matched, 3, "{engine}: the resumed part that ran again re-runs offline: {}", verify::describe(&report, None));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same for a file: a resumed run whose file someone changed while it called out runs again
+/// on the file as it now is, and loses no line.
+#[test]
+fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-resumed-file-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lines.txt"), "first\n").unwrap();
+    let body = serde_json::json!({ "name": "ledger", "path": dir.display().to_string(), "access": "read-write" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = format!(
+        "flow paid-lines\nport 18192\nfolder ledger\n\nroute POST /hold (req) {{\n  before = ledger[\"lines.txt\"] ?? \"\"\n  respond {{ token: \"{{resume_token(paid)}}\", before: before }}\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body) }}).body\n  ledger[\"lines.txt\"] = \"{{before}}{{later}}\\n\"\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
+    assert_eq!(status, 200, "{held}");
+    let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
+    let paid = std::thread::scope(|s| {
+        let paid = s.spawn(|| data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""));
+        std::thread::sleep(Duration::from_millis(150));
+        std::fs::write(dir.join("lines.txt"), "first\nsecond\n").unwrap();
+        paid.join().unwrap()
+    });
+    assert_eq!(paid.0, 200, "{paid:?}");
+    assert_eq!(std::fs::read_to_string(dir.join("lines.txt")).unwrap(), "first\nsecond\nslow\n", "it ran again on the file as it now is");
+    assert_eq!(hits_of(&hits, "/slow"), 1, "its request went out once");
+    let entries = log_entries(&state, &slug);
+    let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap();
+    assert_eq!(resumed["retries"], 1, "{resumed}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A resumed run whose commit landed, the server stopping before it could forget the run, is
+/// resumed again by the same event: it reads the row its own commit wrote, so its check finds
+/// nothing changed, and its database has it marked done, so its commit applies nothing again.
+#[test]
+fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-resumed-done-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("counts.db");
+    let schema = "create table counts (id integer primary key, n integer not null, note varchar(16)); insert into counts (id, n) values (1, 0)";
+    let body = serde_json::json!({ "name": "shop", "path": file.display().to_string(), "access": "read-write", "schema": schema });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let slug = deploy_text(&state, &waiting_tally_text(&host), &host);
+    let (_, held, _) = data_call(&state, &slug, "POST", "/hold", "");
+    let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
+    let record = state.deployments.lock().unwrap()[&slug].parked.values().next().cloned().unwrap();
+    assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
+    // As if the server stopped once it had committed: the run is still parked.
+    state.deployments.lock().unwrap().get_mut(&slug).unwrap().parked.insert(record.run_id.clone(), record);
+    assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
+    let n: i64 = rusqlite::Connection::open(&file).unwrap().query_row("select n from counts where id = 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1, "applied once");
+    let entries = log_entries(&state, &slug);
+    let again = entries.iter().filter(|e| e["kind"] == "resume").nth(1).unwrap_or_else(|| panic!("{entries:#?}"));
+    assert!(again["error"].is_null() && again["retries"].is_null(), "committed at once, nothing written again: {again}");
+    assert_eq!(hits_of(&hits, "/slow"), 2, "its record of the first resume was lost with the stop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The approved-payout sample: a deposit while the payout waits for its approval goes ahead (the
+/// waiting run holds nothing), and the approved run pays from the balance as it then is; one while
+/// the payout is in flight waits for the row the run holds, and runs again after it. The payout
+/// went out once; no deposit is written over.
+#[test]
+fn approved_payout_keeps_the_deposits_made_while_it_waited() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-payout-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema = "create table accounts (id integer primary key, balance integer not null); insert into accounts values (1, 100); create table payouts (account integer not null, amount integer not null, status integer)";
+    let body = serde_json::json!({ "name": "bank", "path": dir.join("bank.db").display().to_string(), "access": "read-write", "schema": schema });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = include_str!("../../holon-author/samples/approved-payout.holon").replace("\"httpbin.org\", \"/anything/payouts\"", &format!("\"{host}\", \"/slow\""));
+    let slug = deploy_text(&state, &text, &host);
+    let balance = || serde_json::from_str::<serde_json::Value>(&data_call(&state, &slug, "GET", "/accounts/1", "").1).unwrap()["balance"].as_i64().unwrap();
+
+    let (status, asked, _) = data_call(&state, &slug, "POST", "/payout/1", r#"{"amount":30}"#);
+    assert_eq!(status, 202, "{asked}");
+    let approve = serde_json::from_str::<serde_json::Value>(&asked).unwrap()["approve"].as_str().unwrap().to_string();
+    assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":50}"#).0, 200, "a deposit while it waits goes ahead");
+    let approved = std::thread::scope(|s| {
+        let approved = s.spawn(|| data_call(&state, &slug, "POST", &approve, r#"{"by":"ops"}"#));
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0, 200, "and one while it pays");
+        approved.join().unwrap()
+    });
+    assert_eq!(approved.0, 200, "{approved:?}");
+    assert_eq!(balance(), 140, "100, and 50, and 20, less 30");
+    assert_eq!(hits_of(&hits, "/slow"), 1, "paid once");
+    let entries = log_entries(&state, &slug);
+    // Resumed, it held the account's row from its payout until it committed; the deposit that came
+    // meanwhile waited for it, found the balance changed, and ran again on it.
+    let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("{entries:#?}"));
+    assert!(resumed["claims"].as_array().unwrap().iter().any(|c| c["key"] == "bank/accounts[1]"), "{resumed}");
+    assert!(entries.iter().any(|e| e["route"] == "POST /deposit/:account" && e["retries"] == 1), "{entries:#?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── MongoDB (slice 7) ──
+
+/// The server compiles a flow's text with the editor's lowering, so a record literal must freeze
+/// as the editor's wasm freezes it, keys sorted: no dependency of this binary may turn on
+/// serde_json's `preserve_order` (bson 2, the MongoDB driver's default, does: Cargo.toml).
+#[test]
+fn a_record_literal_freezes_its_keys_sorted_as_the_editor_does() {
+    let v: serde_json::Value = serde_json::from_str(r#"{"k":1,"done":false}"#).unwrap();
+    assert_eq!(v.to_string(), r#"{"done":false,"k":1}"#, "serde_json keeps keys as written here: a dependency turned on preserve_order");
+    let text = "flow keys\nport 18199\n\nroute GET /k (req) {\n  respond req.json ?? { k: 1, done: false }\n}\n";
+    let unit = |t: &str| holon_author::agent::plan(t).unwrap_or_else(|e| panic!("{e}")).unit;
+    assert_eq!(unit(text), unit(&text.replace("k: 1, done: false", "done: false, k: 1")), "one record, written in either order, is one unit");
+}
+
+/// A fresh, empty MongoDB database for one test, on the replica set `HOLON_TEST_MONGODB` names (a
+/// URL with any database in its path), dropped when the test is done with it. None named: none,
+/// and it says so.
+fn fresh_mongo(tag: &str) -> Option<FreshMongo> {
+    let Ok(admin) = std::env::var("HOLON_TEST_MONGODB") else {
+        eprintln!("{tag}: skipped: set HOLON_TEST_MONGODB (a replica set's URL) to run it against MongoDB");
+        return None;
+    };
+    let name = format!("holon_{tag}_{:08x}", rand::random::<u32>());
+    let url = with_database(&admin, &name);
+    let client = mongodb::sync::Client::with_uri_str(&url).unwrap_or_else(|e| panic!("HOLON_TEST_MONGODB: {e}"));
+    Some(FreshMongo { url, db: client.database(&name) })
+}
+
+struct FreshMongo {
+    url: String,
+    db: mongodb::sync::Database,
+}
+
+impl FreshMongo {
+    fn notes(&self) -> mongodb::sync::Collection<mongodb::bson::Document> {
+        self.db.collection("notes")
+    }
+}
+
+impl Drop for FreshMongo {
+    fn drop(&mut self) {
+        let _ = self.db.drop().run();
+    }
+}
+
+fn bind_notes(state: &AppState) -> rouille::Response {
+    let body = serde_json::json!({ "name": "notes", "connection": "env:HOLON_SECRET_SHOP_URL", "access": "read-write" });
+    route(state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()))
+}
+
+/// The atlas-notes sample on a MongoDB replica set: notes inserted, found by owner and by tag,
+/// edited, marked done once (twice, the second finds no open note and answers 409), deleted; an
+/// `_id` taken already answers 409; a value that would be an operator fails the run with nothing
+/// written; every commit is marked once; and every run checks offline.
+#[test]
+fn atlas_notes_keeps_notes_as_documents_on_mongodb() {
+    let Some(db) = fresh_mongo("notes") else { return };
+    let state = server_with_database(&db.url);
+    let r = bind_notes(&state);
+    let status = r.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    let listed = body_json(route(&state, &req("GET", "/admin/databases", vec![])));
+    assert_eq!(listed[0]["engine"], "mongodb");
+    assert!(!listed.to_string().contains(&db.url), "the URL is never shown: {listed}");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/atlas-notes.holon"), "");
+    let call = |method: &str, path: &str, body: &str| {
+        let (status, body, _) = data_call(&state, &slug, method, path, body);
+        (status, body)
+    };
+    assert_eq!(call("POST", "/notes/ada", r#"{"id":"n1","text":"buy milk","tags":["home"]}"#).0, 201);
+    assert_eq!(call("POST", "/notes/ada", r#"{"id":"n2","text":"call bo"}"#).0, 201);
+    assert_eq!(call("POST", "/notes/bo", r#"{"id":"n3","text":"not ada's","tags":["home"]}"#).0, 201);
+    let (status, found) = call("GET", "/notes/ada", "");
+    assert_eq!(status, 200, "{found}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&found).unwrap(),
+        serde_json::json!([
+            { "_id": "n1", "owner": "ada", "text": "buy milk", "tags": ["home"], "done": false, "edits": 0 },
+            { "_id": "n2", "owner": "ada", "text": "call bo", "tags": [], "done": false, "edits": 0 },
+        ])
+    );
+    let (_, tagged) = call("GET", "/notes/ada/tagged/home", "");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&tagged).unwrap().as_array().map(Vec::len), Some(1), "{tagged}");
+    assert_eq!(call("PUT", "/notes/ada/n1", r#"{"text":"buy oat milk"}"#).0, 200);
+    let (status, edited) = call("PUT", "/notes/bo/n1", r#"{"text":"bo's edit"}"#);
+    assert_eq!(status, 409, "another owner's note matches nothing: {edited}");
+    assert!(edited.contains("matched 0 documents, not 1 document"), "{edited}");
+    let (status, done) = call("POST", "/notes/ada/n1/done", "");
+    assert_eq!((status, serde_json::from_str::<serde_json::Value>(&done).unwrap()), (200, serde_json::json!({ "done": "n1", "text": "buy oat milk" })));
+    assert_eq!(call("POST", "/notes/ada/n1/done", "").0, 404, "no open note: nothing to mark");
+    let (status, taken) = call("POST", "/notes/ada", r#"{"id":"n2","text":"again"}"#);
+    assert_eq!(status, 409, "{taken}");
+    assert!(taken.contains("a document with its _id is there already"), "{taken}");
+    // A value is data: a record with an operator in it fails the run, and nothing lands.
+    let (status, sneaky) = call("PUT", "/notes/ada/n2", r#"{"text":{"$set":{"owner":"mallory"}}}"#);
+    assert_eq!(status, 500, "{sneaky}");
+    let (status, sneaky) = call("POST", "/notes/ada", r#"{"id":{"$gt":""},"text":"x"}"#);
+    assert_eq!(status, 500, "{sneaky}");
+    assert_eq!(call("DELETE", "/notes/ada/n2", "").0, 204);
+    assert_eq!(call("DELETE", "/notes/ada/n2", "").0, 409, "deleted already");
+    let n2 = db.notes().find_one(mongodb::bson::doc! { "_id": "n2" }).run().unwrap();
+    assert!(n2.is_none());
+    let n1 = db.notes().find_one(mongodb::bson::doc! { "_id": "n1" }).run().unwrap().unwrap();
+    assert_eq!((n1.get_str("text").unwrap(), n1.get_bool("done").unwrap(), n1.get_i32("edits").unwrap()), ("buy oat milk", true, 1));
+    let marked = db.db.collection::<mongodb::bson::Document>("holon_commits").count_documents(mongodb::bson::doc! {}).run().unwrap();
+    assert_eq!(marked, 6, "three inserts, an edit, a done and a delete, each marked once");
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+}
+
+/// A document a run found that a program outside Holon changes before the run commits sends it
+/// round again, its call out answered from its record: it writes from the document as it is now,
+/// and the change outside isn't written over.
+#[test]
+fn a_document_that_changed_before_its_commit_runs_again() {
+    let Some(db) = fresh_mongo("again") else { return };
+    let (host, hits) = counting_server();
+    let state = server_with_database(&db.url);
+    assert_eq!(bind_notes(&state).status_code, 200);
+    db.notes().insert_one(mongodb::bson::doc! { "_id": "n1", "owner": "ada", "text": "first", "edits": 0 }).run().unwrap();
+    let text = format!(
+        "flow stamp\nport 18171\ndatabase notes\n\nroute POST /stamp/:id (req) {{\n  note = notes.find_one(\"notes\", {{ _id: req.params.id }})\n  r = http.get(\"{host}\", \"/slow\")\n  notes.update(\"notes\", {{ _id: note._id }}, {{ \"$set\": {{ text: \"{{note.text}} ({{r.body}})\" }} }}, expect: 1)\n  respond {{ was: note.text }}\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let outside = std::thread::scope(|s| {
+        let run = s.spawn(|| data_call(&state, &slug, "POST", "/stamp/n1", ""));
+        std::thread::sleep(Duration::from_millis(150));
+        db.notes().update_one(mongodb::bson::doc! { "_id": "n1" }, mongodb::bson::doc! { "$set": { "text": "changed outside" } }).run().unwrap();
+        run.join().unwrap()
+    });
+    assert_eq!((outside.0, outside.1.as_str()), (200, r#"{"was":"changed outside"}"#));
+    assert_eq!(hits_of(&hits, "/slow"), 1, "the call out answered from its record, not sent again");
+    let n1 = db.notes().find_one(mongodb::bson::doc! { "_id": "n1" }).run().unwrap().unwrap();
+    assert_eq!(n1.get_str("text").unwrap(), "changed outside (slow)");
+    let entries = log_entries(&state, &slug);
+    assert!(entries.iter().any(|e| e["retries"] == 1), "{entries:#?}");
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(verify::check(&export, None, &BTreeMap::new()).ok());
+}
+
+/// Two servers on one MongoDB, each stamping one note at the same moment: their own tables of
+/// claims can't see each other's, the database's `holon_claims` can. The first to call out holds
+/// the note until it commits, so the slow API is called once per stamp in turn, never twice at
+/// once for one note; notes apart never wait.
+#[test]
+fn two_servers_hold_one_document_through_mongodb() {
+    let Some(db) = fresh_mongo("claims") else { return };
+    let (host, hits) = counting_server();
+    let servers = [server_with_database(&db.url), server_with_database(&db.url)];
+    for s in &servers {
+        assert_eq!(bind_notes(s).status_code, 200);
+    }
+    db.notes().insert_one(mongodb::bson::doc! { "_id": "n1", "paid": false }).run().unwrap();
+    let text = format!(
+        "flow pay-note\nport 18172\ndatabase notes\n\nroute POST /pay/:id (req) {{\n  note = notes.find_one(\"notes\", {{ _id: req.params.id, paid: false }})\n  r = http.get(\"{host}\", \"/slow?note={{note._id}}\")\n  notes.update(\"notes\", {{ _id: note._id }}, {{ \"$set\": {{ paid: true, by: r.body }} }}, expect: 1)\n  respond {{ paid: note._id }}\n}}\n"
+    );
+    let slugs = [deploy_text(&servers[0], &text, &host), deploy_text(&servers[1], &text, &host)];
+    let (first, second) = std::thread::scope(|s| {
+        let first = s.spawn(|| data_call(&servers[0], &slugs[0], "POST", "/pay/n1", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let second = s.spawn(|| data_call(&servers[1], &slugs[1], "POST", "/pay/n1", ""));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [200, 404], "{} / {}", first.1, second.1);
+    assert_eq!(hits_of(&hits, "/slow"), 1, "one payment for one note, across servers");
+    let claims = db.db.collection::<mongodb::bson::Document>("holon_claims").count_documents(mongodb::bson::doc! { "h.0": { "$exists": true } }).run().unwrap();
+    assert_eq!(claims, 0, "every claim let go once its run was done");
+}
+
+/// A MongoDB database's run lock and claims, held in its `holon_claims` across two connections
+/// (two servers): exclusive keeps out everyone, shared keeps out only exclusive, and each holder
+/// lets go of its own.
+#[test]
+fn mongodb_holds_run_locks_shared_and_exclusive_across_servers() {
+    let Some(db) = fresh_mongo("locks") else { return };
+    let open = || Arc::new(mongo::Mongo::open(zeroize::Zeroizing::new(db.url.clone())).unwrap());
+    let (a, b) = (open(), open());
+    assert!(a.hold_run("run-a", true));
+    assert!(!b.hold_run("run-b", false), "exclusive keeps out a reader");
+    assert!(!b.hold_run("run-b", true), "and a writer");
+    a.let_go_run("run-a", true);
+    assert!(b.hold_run("run-b", false) && a.hold_run("run-c", false), "readers side by side");
+    assert!(!a.hold_run("run-d", true), "a writer waits for the readers");
+    b.let_go_run("run-b", false);
+    a.let_go_run("run-c", false);
+    assert!(a.hold_run("run-d", true));
+    a.let_go_run("run-d", true);
+    let row = |id: &str| claims::ClaimKey::Row { at: a.address.clone(), name: "notes".into(), table: "notes".into(), key: format!("[{id:?}]") };
+    let table = claims::ClaimKey::Table { at: a.address.clone(), name: "notes".into(), table: "notes".into() };
+    assert!(a.claim(&[row("n1")], "run-e").is_ok());
+    assert!(b.claim(&[row("n2")], "run-f").is_ok(), "documents apart never wait");
+    assert_eq!(b.claim(&[row("n1")], "run-g"), Err(row("n1")));
+    assert_eq!(b.claim(std::slice::from_ref(&table), "run-g"), Err(table.clone()), "a whole collection waits for its documents");
+    a.unclaim(&[row("n1")], "run-e");
+    b.unclaim(&[row("n2")], "run-f");
+    assert!(b.claim(std::slice::from_ref(&table), "run-g").is_ok());
+    b.unclaim(&[table], "run-g");
+}
+
+/// A MongoDB is bound by its connection, never with a schema; one a server can't reach says so,
+/// without its URL.
+#[test]
+fn a_mongodb_binds_without_a_schema() {
+    let Some(db) = fresh_mongo("bind") else { return };
+    let state = server_with_database(&db.url);
+    let body = serde_json::json!({ "name": "notes", "connection": "env:HOLON_SECRET_SHOP_URL", "access": "read-write", "schema": "create table t (a int)" });
+    let r = route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()));
+    let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
+    assert!(said.contains("has no schema to run"), "{said}");
+    let nowhere = server_with_database("mongodb://ada:hunter2@127.0.0.1:1/notes?serverSelectionTimeoutMS=500");
+    let r = bind_notes(&nowhere);
+    let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
+    assert!(said.contains("can't be reached") && !said.contains("hunter2"), "{said}");
+}
+
+/// A URL pasted with its provider's placeholder still in it (Atlas's `<db_password>`, another's
+/// `[YOUR-PASSWORD]`) is turned away before it is tried, saying so and showing none of the URL;
+/// the same characters percent-encoded, as a real password's are, are tried.
+#[test]
+fn a_connection_whose_password_is_still_a_placeholder_says_so() {
+    for url in [
+        "mongodb+srv://ada:<db_password>@cluster0.abc12.mongodb.net/notes?retryWrites=true",
+        "postgres://<username>:hunter2@db.example.com:5432/shop",
+        "postgresql://postgres:[YOUR-PASSWORD]@db.abc12.supabase.co:5432/postgres",
+    ] {
+        let r = bind_notes(&server_with_database(url));
+        let status = r.status_code;
+        let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
+        assert!(status >= 400 && said.contains("still a placeholder") && said.contains("env:HOLON_SECRET_SHOP_URL"), "{status} {said}");
+        assert!(!said.contains("example.com") && !said.contains("abc12") && !said.contains("hunter2"), "none of the URL: {said}");
+    }
+    let r = bind_notes(&server_with_database("mongodb://ada:%3Cpw%3E@127.0.0.1:1/notes?serverSelectionTimeoutMS=500"));
+    let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
+    assert!(said.contains("can't be reached") && !said.contains("placeholder"), "{said}");
 }
 
 /// A channel through a real socket (`docs/L4s/channels-L4.md`): a subscriber gets each pack a

@@ -326,6 +326,7 @@ export function DeployedPage({
   onDelete,
   onView,
   onChanged,
+  focus,
 }: {
   deployments: DeploymentEntry[];
   error: string;
@@ -337,6 +338,8 @@ export function DeployedPage({
   onDelete: (slug: string) => void;
   onView: (slug: string) => void;
   onChanged: () => void;
+  /** The card asked for (from the admin page): shown with its permissions open, again at each `n`. */
+  focus?: { slug: string; n: number } | null;
 }) {
   return (
     <div style={{ maxWidth: 760 }}>
@@ -366,6 +369,7 @@ export function DeployedPage({
           onView={() => onView(entry.slug)}
           onChanged={onChanged}
           result={triggerResults[entry.slug]}
+          focus={focus?.slug === entry.slug ? focus.n : undefined}
         />
       ))}
       <ActivityList version={deployments.map((d) => `${d.slug}:${d.status}:${d.unit}`).join(",")} />

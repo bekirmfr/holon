@@ -242,7 +242,12 @@ impl Channels {
         let mut fresh = Vec::new();
         for p in if parked { &entry.progress } else { &entry.performed } {
             let Some(name) = channel_named(&p.capability) else { continue };
-            let Some(json) = holon_core::stringify_json(&p.payload.clone().into_core()) else { continue };
+            // As the run sent it: a look-alike of a mark the log escaped is the subscriber's text.
+            let mut payload = p.payload.clone();
+            if entry.escaped {
+                crate::secrets::unescaped(&mut payload);
+            }
+            let Some(json) = holon_core::stringify_json(&payload.into_core()) else { continue };
             // One the run sent as it parked, settled again: matched one for one, so a pack the
             // rest of the run sends equal to it still goes.
             if let Some(i) = already.iter().position(|(n, j)| *n == name && *j == json) {
@@ -412,6 +417,9 @@ mod tests {
         let packs = Channels::default().packs_of(&entry, 7);
         assert_eq!(packs, [("u".to_string(), Pack { id: Some(PackId(7, 0)), json: "1".into() }), ("v".to_string(), Pack { id: Some(PackId(7, 1)), json: "\"hi\"".into() })]);
         assert_eq!(event_text(&packs[1].1), "id: 7.1\ndata: \"hi\"\n\n");
+        // A look-alike of a mark the log escaped goes out as the run sent it.
+        let escaped = LogEntry { performed: vec![sent("ChannelSend(\"u\")", Value::Text("‹‹token:paid›".into()))], escaped: true, ..Default::default() };
+        assert_eq!(Channels::default().packs_of(&escaped, 8)[0].1.json, "\"‹token:paid›\"");
         entry.error = Some("busy: …".into());
         assert!(Channels::default().packs_of(&entry, 7).is_empty());
     }

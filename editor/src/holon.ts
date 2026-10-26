@@ -188,6 +188,8 @@ export type WCapability =
   | "NetworkEgress"
   | { HttpRequest: string }
   | { FileWrite: string }
+  | { DbRead: string }
+  | { DbWrite: string }
   | { ChannelSend: string }
   | { ChannelRead: string }
   | "Spawn";

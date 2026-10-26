@@ -200,6 +200,11 @@ fn eval_at(
         UnitBody::Primitive { name } if name == "file_handle" => ask(primitives::file_handle_request(inputs, &unit.params), observer, path),
         UnitBody::Primitive { name } if name == "file_lines" => ask(primitives::file_lines_request(inputs, &unit.params), observer, path),
         UnitBody::Primitive { name } if name == "file_slice" => ask(primitives::file_slice_request(inputs, &unit.params), observer, path),
+        // A database read: the host answers it from the database as the run found it.
+        UnitBody::Primitive { name } if name == "db_query" => ask(primitives::db_query_request(inputs, &unit.params, false), observer, path),
+        UnitBody::Primitive { name } if name == "db_one" => ask(primitives::db_query_request(inputs, &unit.params, true), observer, path),
+        UnitBody::Primitive { name } if name == "db_find" => ask(primitives::db_find_request(inputs, &unit.params, false), observer, path),
+        UnitBody::Primitive { name } if name == "db_find_one" => ask(primitives::db_find_request(inputs, &unit.params, true), observer, path),
         UnitBody::Primitive { name } if name == "resume_token" => ask(primitives::resume_token_request(&unit.params), observer, path),
         // `coalesce` is the one leaf whose meaning is about absence: the first input that
         // arrived. The generic arm below would give the same answer today (it gathers present

@@ -1,0 +1,15 @@
+flow refund-once
+port 8151
+database shop
+
+route POST /refund/:id (req) {
+  order = shop.one("select id, total from orders where id = $1 and refunded = 0", req.params.id)
+  paid = http.post("httpbin.org", "/anything/refunds", headers: { "content-type": "application/json" }, body: json({ order: order.id, amount: order.total }))
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", order.id, expect: 1)
+  shop.exec("insert into refunds (order_id, amount, status) values ($1, $2, $3)", order.id, order.total, paid.status)
+  respond { refunded: order.total, payment: paid.status }, missing: 409
+}
+
+route GET /refunds/:id (req) {
+  respond shop.query("select amount, status from refunds where order_id = $1", req.params.id)
+}

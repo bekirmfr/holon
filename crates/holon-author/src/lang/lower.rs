@@ -75,7 +75,7 @@ pub fn lower(file: &File) -> R<Lowered> {
 
 /// Words a binding may not take: the keywords and nouns of the language, and the wiring form's.
 const RESERVED: &[&str] = &[
-    "flow", "port", "every", "browsers", "optional", "collection", "folder", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
+    "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
@@ -212,6 +212,9 @@ struct Lowerer<'a> {
     collections: HashSet<String>,
     /// The folders the header declares (`folder inbox`): read and written like collections.
     folders: HashSet<String>,
+    /// The databases the header declares (`database shop`): `shop.query(…)`, `shop.one(…)`,
+    /// `shop.exec(…)`.
+    databases: HashSet<String>,
     /// The channels the header declares (`channel updates`): sent on, and subscribed to as a
     /// route's answer.
     channels: HashSet<String>,
@@ -241,6 +244,7 @@ impl<'a> Lowerer<'a> {
         let js_defs = file.items.iter().filter_map(|i| if let Item::Js(j) = i { Some((j.name.text.clone(), j)) } else { None }).collect();
         let collections = file.headers.iter().filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let on_files = file.headers.iter().filter_map(|h| if let HeaderKind::OnFile(f) = &h.kind { Some(f.clone()) } else { None }).collect();
+        let databases = file.headers.iter().filter_map(|h| if let HeaderKind::Database(d) = &h.kind { Some(d.clone()) } else { None }).collect();
         let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let folders = file
             .headers
@@ -259,6 +263,7 @@ impl<'a> Lowerer<'a> {
             in_progress: HashSet::new(),
             collections,
             folders,
+            databases,
             channels,
             streamed: None,
             piping: None,
@@ -392,7 +397,7 @@ impl<'a> Lowerer<'a> {
                     Consent::Named { name, arg: Some(a) } => format!("{name}({a:?})"),
                     Consent::Named { name, arg: None } => name.clone(),
                 }),
-                HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
             }
         }
         if !optional.is_empty() {
@@ -485,6 +490,9 @@ impl<'a> Lowerer<'a> {
         }
         if let Some(s) = self.store(n) {
             return err(name.span, format!("\"{n}\" is a {}; a binding may not shadow it", s.kind));
+        }
+        if self.databases.contains(n) {
+            return err(name.span, format!("\"{n}\" is a database; a binding may not shadow it"));
         }
         if self.channels.contains(n) {
             return err(name.span, format!("\"{n}\" is a channel; a binding may not shadow it"));
@@ -853,7 +861,7 @@ impl<'a> Lowerer<'a> {
 
     fn check_name_free(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.channels.contains(n) || self.is_def(n) {
+        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name"));
         }
         Ok(())
@@ -864,7 +872,7 @@ impl<'a> Lowerer<'a> {
     /// collection or a holon.
     fn check_port_name(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.store(n).is_some() || self.channels.contains(n) || self.is_def(n) {
+        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
         }
         Ok(())
@@ -1187,23 +1195,10 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(acc)
             }
-            ExprKind::List(items) => match items.len() {
-                0 => self.node("const", &[("value".into(), "[]".into()), ("type".into(), "Json".into())], e.span),
-                1 => {
-                    let empty = self.node("const", &[("value".into(), "[]".into()), ("type".into(), "Json".into())], e.span)?;
-                    let item = self.expr(&items[0])?;
-                    self.node_with("append", &[], &[("list", empty), ("item", item)], e.span)
-                }
-                n => {
-                    let mut vals = Vec::new();
-                    for i in items {
-                        vals.push(self.expr(i)?);
-                    }
-                    let ports = Self::variadic_ports(&[WPort::new("a", WType::Any), WPort::new("b", WType::Any)], n);
-                    let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(vals).collect();
-                    self.node_with("list", &[], &inputs, e.span)
-                }
-            },
+            ExprKind::List(items) => {
+                let items: Vec<&Expr> = items.iter().collect();
+                self.list_of(&items, e.span)
+            }
             ExprKind::Not(x) => {
                 let v = self.expr(x)?;
                 self.node_with("not", &[], &[("v", v)], e.span)
@@ -1260,6 +1255,9 @@ impl<'a> Lowerer<'a> {
         }
         if let Some(s) = self.store(n) {
             return err(span, format!("\"{n}\" is a {}: read it as {n}[{}] or {n}.list(…)", s.kind, s.key));
+        }
+        if self.databases.contains(n) {
+            return err(span, format!("\"{n}\" is a database: read it as {n}.query(\"select …\") or {n}.one(…)"));
         }
         if self.channels.contains(n) {
             return err(span, format!("\"{n}\" is a channel: send on it with {n}.send(…); a route answers with respond {n}.subscribe()"));
@@ -1545,6 +1543,7 @@ impl<'a> Lowerer<'a> {
                 let (inputs, params) = leaf("store_write");
                 self.unit_call("store_write", &inputs, &params, &[("key".to_string(), key)], &args[1..], span)
             }
+            c if self.databases.contains(c) => self.db_call(c, method, args, span),
             c if let Some(store) = self.store(c) => {
                 let folder = store.kind == "folder";
                 let leaf_name = match method.text.as_str() {
@@ -1595,6 +1594,206 @@ impl<'a> Lowerer<'a> {
             }
             other => err(receiver.span, format!("\"{other}\" has no methods; write {other}.{} as a field, or call a leaf", method.text)),
         }
+    }
+
+    /// A list of values: `[]` a const, one item appended to it, more a `list`.
+    fn list_of(&mut self, items: &[&'a Expr], span: Span) -> R<Val> {
+        match items.len() {
+            0 => self.node("const", &[("value".into(), "[]".into()), ("type".into(), "Json".into())], span),
+            1 => {
+                let empty = self.node("const", &[("value".into(), "[]".into()), ("type".into(), "Json".into())], span)?;
+                let item = self.expr(items[0])?;
+                self.node_with("append", &[], &[("list", empty), ("item", item)], span)
+            }
+            n => {
+                let mut vals = Vec::new();
+                for i in items {
+                    vals.push(self.expr(i)?);
+                }
+                let ports = Self::variadic_ports(&[WPort::new("a", WType::Any), WPort::new("b", WType::Any)], n);
+                let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(vals).collect();
+                self.node_with("list", &[], &inputs, span)
+            }
+        }
+    }
+
+    /// `shop.query(sql, a, b)`, `shop.one(…)`, `shop.exec(…, expect: 1)`: the statement in
+    /// quotes first (its tables are the permission), then the values of its `$1`, `$2`, …, one
+    /// each, wired as a list.
+    fn db_call(&mut self, database: &str, method: &Name, args: &'a [Arg], span: Span) -> R<Val> {
+        let (leaf, write) = match method.text.as_str() {
+            "query" => ("db_query", false),
+            "one" => ("db_one", false),
+            "exec" => ("db_exec", true),
+            "find" | "find_one" | "insert" | "update" | "delete" => return self.document_call(database, method, args, span),
+            other => return err(method.span, format!("a database has no \"{other}\": query, one or exec (SQL), or find, find_one, insert, update or delete (a document database)")),
+        };
+        let Some(first) = args.first().filter(|a| a.name.is_none()) else {
+            return err(span, format!("{database}.{} takes the SQL first, in quotes: its tables are the permission the deployment asks for", method.text));
+        };
+        let ExprKind::Text(sql) = &first.value.kind else {
+            return err(first.value.span, "the SQL is written in quotes, as it is: its tables are the permission, and values go after it as $1, $2, …, never into it");
+        };
+        let tables = holon_core::sql::tables(sql, write).or_else(|why| err(first.value.span, format!("this SQL can't be sent: {why}")))?;
+        if tables.reads.is_empty() && tables.writes.is_empty() {
+            return err(first.value.span, "this SQL reads no table: what it selects, the flow can compute itself");
+        }
+        let mut params = vec![("database".to_string(), database.to_string()), ("sql".to_string(), sql.clone())];
+        let mut values: Vec<&'a Expr> = Vec::new();
+        for a in &args[1..] {
+            match &a.name {
+                None => values.push(&a.value),
+                Some(n) if n.text == "expect" && write => match &a.value.kind {
+                    ExprKind::Number { value, text } if value.fract() == 0.0 && *value >= 0.0 && *value < 1e9 => params.push(("expect".to_string(), text.clone())),
+                    _ => return err(a.value.span, "expect: is how many rows it must change, a whole number"),
+                },
+                Some(n) => {
+                    let takes = if write { "values, then expect:" } else { "values" };
+                    return err(n.span, format!("{database}.{} has no \"{}\": it takes the SQL, then its {takes}", method.text, n.text));
+                }
+            }
+        }
+        if values.len() != tables.params {
+            let wants = match tables.params {
+                0 => "no values".to_string(),
+                1 => "one value, for $1".to_string(),
+                n => format!("{n} values, for $1 to ${n}"),
+            };
+            return err(span, format!("the SQL takes {wants}; {} given", values.len()));
+        }
+        let list = self.list_of(&values, span)?;
+        let v = self.node(leaf, &params, span)?;
+        let Val::Out { id, .. } = &v else { unreachable!() };
+        let id = id.clone();
+        self.connect(&list, &id, "params", span)?;
+        Ok(self.out(&id))
+    }
+
+    /// `notes.find("notes", { owner: who }, sort: { at: -1 }, limit: 20)`, `find_one`, `insert`
+    /// (a document), `update` (a filter, then `{ "$set": … }`), `delete` (a filter): the collection
+    /// in quotes first (the permission), then record literals written in the call. Their keys and
+    /// operators, and every constant in them, are frozen into the leaf's templates (documents.rs);
+    /// each other value is a hole, `$1`, `$2`, … in the order written, its value wired in a list.
+    fn document_call(&mut self, database: &str, method: &Name, args: &'a [Arg], span: Span) -> R<Val> {
+        use holon_core::documents::{check, holes_in_order, Part};
+        let m = method.text.as_str();
+        let (leaf, parts): (&str, &[(&str, Part)]) = match m {
+            "find" => ("db_find", &[("filter", Part::Filter)]),
+            "find_one" => ("db_find_one", &[("filter", Part::Filter)]),
+            "insert" => ("db_insert", &[("document", Part::Document)]),
+            "update" => ("db_update", &[("filter", Part::Filter), ("update", Part::Update)]),
+            _ => ("db_delete", &[("filter", Part::Filter)]),
+        };
+        let positional: Vec<&'a Arg> = args.iter().filter(|a| a.name.is_none()).collect();
+        let Some(first) = positional.first() else {
+            return err(span, format!("{database}.{m} takes the collection first, in quotes: it is the permission the deployment asks for"));
+        };
+        let ExprKind::Text(collection) = &first.value.kind else {
+            return err(first.value.span, "the collection is written in quotes, as it is: it is the permission");
+        };
+        if !holon_core::documents::is_collection_name(collection) {
+            return err(first.value.span, "a collection is letters, digits, _, - and ., and never system.… (the server's) or holon_… (the host's)");
+        }
+        let given = &positional[1..];
+        // A find with no filter finds every document; every other call says what it selects.
+        let needed = if m == "find" || m == "find_one" { 0 } else { parts.len() };
+        if given.len() < needed || given.len() > parts.len() {
+            let wants: Vec<&str> = parts.iter().map(|(n, _)| *n).collect();
+            return err(span, format!("{database}.{m} takes the collection, then its {}", wants.join(", then its ")));
+        }
+        let mut params = vec![("database".to_string(), database.to_string()), ("collection".to_string(), collection.clone())];
+        let mut values: Vec<&'a Expr> = Vec::new();
+        let mut holes = std::collections::BTreeSet::new();
+        for (i, (name, part)) in parts.iter().enumerate() {
+            let text = match given.get(i) {
+                Some(a) => {
+                    let t = self.template(&a.value, &mut values, false)?;
+                    let (_, h) = check(*part, &t.text()).or_else(|why| err(a.value.span, format!("this {name} can't be sent: {why}")))?;
+                    holes.extend(h);
+                    t.text()
+                }
+                None => "{}".to_string(),
+            };
+            params.push((name.to_string(), text));
+        }
+        let write = matches!(m, "update" | "delete");
+        for a in args.iter().filter(|a| a.name.is_some()) {
+            let n = a.name.as_ref().expect("named");
+            match n.text.as_str() {
+                "sort" if m == "find" || m == "find_one" => {
+                    let t = self.template(&a.value, &mut values, true)?;
+                    check(Part::Sort, &t.text()).or_else(|why| err(a.value.span, format!("this sort can't be sent: {why}")))?;
+                    params.push(("sort".to_string(), t.text()));
+                }
+                "limit" if m == "find" => match &a.value.kind {
+                    ExprKind::Number { value, text } if value.fract() == 0.0 && *value >= 1.0 && *value <= 100_000.0 => params.push(("limit".to_string(), text.clone())),
+                    _ => return err(a.value.span, "limit: is how many documents at most, a whole number from 1 to 100000"),
+                },
+                "expect" if write => match &a.value.kind {
+                    ExprKind::Number { value, text } if value.fract() == 0.0 && *value >= 0.0 && *value < 1e9 => params.push(("expect".to_string(), text.clone())),
+                    _ => return err(a.value.span, format!("expect: is how many documents it must {}, a whole number", if m == "update" { "match" } else { "delete" })),
+                },
+                other => {
+                    let takes = match m {
+                        "find" => ", then sort: and limit:",
+                        "find_one" => ", then sort:",
+                        "update" | "delete" => ", then expect:",
+                        _ => "",
+                    };
+                    return err(n.span, format!("{database}.{m} has no \"{other}\": it takes the collection, its records{takes}"));
+                }
+            }
+        }
+        holes_in_order(&holes).or_else(|why| err(span, why))?;
+        let list = self.list_of(&values, span)?;
+        let v = self.node(leaf, &params, span)?;
+        let Val::Out { id, .. } = &v else { unreachable!() };
+        let id = id.clone();
+        self.connect(&list, &id, "params", span)?;
+        Ok(self.out(&id))
+    }
+
+    /// A record literal written in a document call, as a template: its keys, and its constants
+    /// (strings, numbers, true and false, and the lists and records of them), frozen; each other
+    /// value a hole numbered after those in `values`, which it joins. `constant`: a sort, which
+    /// has no holes.
+    fn template(&self, e: &'a Expr, values: &mut Vec<&'a Expr>, constant: bool) -> R<holon_core::documents::Tpl> {
+        use holon_core::documents::Tpl;
+        let ExprKind::Record { spread, .. } = &e.kind else {
+            return err(e.span, "a document call's filter, update, document and sort are records written in the call, { field: value, … }: their fields are the call's, never the data's");
+        };
+        if let Some(s) = spread {
+            return err(s.span, "a document call's record is written whole: a spread would let the data choose its fields");
+        }
+        fn walk<'a>(e: &'a Expr, values: &mut Vec<&'a Expr>, constant: bool) -> R<Tpl> {
+            Ok(match &e.kind {
+                ExprKind::Text(t) => Tpl::Text(t.clone()),
+                ExprKind::Number { text, .. } => Tpl::Number(text.clone()),
+                ExprKind::Bool(b) => Tpl::Bool(*b),
+                ExprKind::Paren(inner) => walk(inner, values, constant)?,
+                ExprKind::List(items) => Tpl::List(items.iter().map(|i| walk(i, values, constant)).collect::<R<_>>()?),
+                ExprKind::Record { spread: Some(s), .. } => return err(s.span, "a document call's record is written whole: a spread would let the data choose its fields"),
+                ExprKind::Record { spread: None, fields } => {
+                    let mut out: Vec<(String, Tpl)> = Vec::new();
+                    for (k, v) in fields {
+                        if out.iter().any(|(o, _)| *o == k.text) {
+                            return err(k.span, format!("\"{}\" is given twice", k.text));
+                        }
+                        out.push((k.text.clone(), walk(v, values, constant)?));
+                    }
+                    Tpl::Object(out)
+                }
+                _ if constant => return err(e.span, "a sort is the flow's: each field is 1 or -1, as written"),
+                _ => {
+                    values.push(e);
+                    if values.len() > 100 {
+                        return err(e.span, "a document call takes at most 100 values");
+                    }
+                    Tpl::Hole(values.len())
+                }
+            })
+        }
+        walk(e, values, constant)
     }
 
     /// A leaf or template placed with its arguments: positional ones are inputs in port order
@@ -2057,6 +2256,79 @@ pub(crate) mod tests {
         assert_eq!(error("folder inbox\nx = inbox.move(\"a\")"), (2, 11, "a folder has no \"move\": get, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
         assert_eq!(error("collection notes\nx = notes.file(\"a\")"), (2, 11, "a collection has no \"file\": get, put, delete or list".into()));
         assert_eq!(error("folder = 1"), (1, 8, "expected the folder's name, found \"=\"".into()));
+    }
+
+    #[test]
+    fn databases_take_their_sql_in_quotes_and_its_values_after_it() {
+        let d = compiled("database shop
+rows = shop.query(\"select id from orders where customer = $1 and total > $2\", \"ada\", 10)
+first = shop.one(\"select id from orders\")
+shop.exec(\"update stock set n = n - 1 where sku = $1\", rows, expect: 1)
+").doc;
+        let node = |leaf: &str| d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+        assert_eq!((node("db_query").param("database"), node("db_exec").param("expect")), ("shop", "1"));
+        assert_eq!(node("db_one").param("sql"), "select id from orders");
+        let into = |id: &str| d.edges.iter().find(|w| w.target == id && w.target_handle.as_deref() == Some("params")).map(|w| d.nodes.iter().find(|n| n.id == w.source).unwrap().data.name.clone());
+        assert_eq!(
+            [into(&node("db_query").id), into(&node("db_one").id), into(&node("db_exec").id)],
+            [Some("list".into()), Some("const".into()), Some("append".into())],
+            "its values wired as a list"
+        );
+        let error = |src: &str| error(&format!("database shop
+{src}")).2;
+        assert_eq!(error("x = shop.query(\"select id from t where a = $1 and b = $2\", 1)"), "the SQL takes 2 values, for $1 to $2; 1 given");
+        assert_eq!(error("x = shop.query(q)"), "the SQL is written in quotes, as it is: its tables are the permission, and values go after it as $1, $2, …, never into it");
+        assert!(error("x = shop.query(\"drop table t\")").starts_with("this SQL can't be sent: a read is a select"));
+        assert!(error("shop.exec(\"delete from t; delete from u\")").contains("more than one statement"));
+        assert_eq!(error("x = shop.query(\"select 1\")"), "this SQL reads no table: what it selects, the flow can compute itself");
+        assert_eq!(error("x = shop.query(\"select a from t\", expect: 1)"), "shop.query has no \"expect\": it takes the SQL, then its values");
+        assert_eq!(error("shop.exec(\"delete from t\", expect: -1)"), "expect: is how many rows it must change, a whole number");
+        assert_eq!(error("x = shop.pick(\"a\")"), "a database has no \"pick\": query, one or exec (SQL), or find, find_one, insert, update or delete (a document database)");
+        assert_eq!(error("x = shop"), "\"shop\" is a database: read it as shop.query(\"select …\") or shop.one(…)");
+        assert_eq!(error("shop = 1"), "\"shop\" is a database; a binding may not shadow it");
+    }
+
+    #[test]
+    fn document_calls_freeze_their_records_and_wire_each_computed_value_as_a_hole() {
+        let d = compiled("database notes
+route POST /n/:who (req) {
+  mine = notes.find(\"notes\", { owner: req.params.who, state: { \"$in\": [\"open\", req.json.also] } }, sort: { at: -1 }, limit: 20)
+  one = notes.find_one(\"notes\")
+  notes.insert(\"notes\", { owner: req.params.who, text: req.json.text, tags: [\"new\"], pinned: false })
+  notes.update(\"notes\", { _id: { \"$oid\": req.json.id } }, { \"$set\": { text: req.json.text }, \"$inc\": { edits: 1 } }, expect: 1)
+  notes.delete(\"notes\", { owner: req.params.who, done: true })
+  respond { mine: mine, one: one }
+}
+").doc;
+        let node = |leaf: &str| d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+        let find = node("db_find");
+        assert_eq!(
+            (find.param("collection"), find.param("filter"), find.param("sort"), find.param("limit")),
+            ("notes", r#"{"owner":$1,"state":{"$in":["open",$2]}}"#, r#"{"at":-1}"#, "20")
+        );
+        assert_eq!(node("db_find_one").param("filter"), "{}", "a find with no filter finds everything");
+        assert_eq!(node("db_insert").param("document"), r#"{"owner":$1,"text":$2,"tags":["new"],"pinned":false}"#);
+        let update = node("db_update");
+        assert_eq!((update.param("filter"), update.param("update"), update.param("expect")), (r#"{"_id":{"$oid":$1}}"#, r#"{"$set":{"text":$2},"$inc":{"edits":1}}"#, "1"));
+        assert_eq!(node("db_delete").param("filter"), r#"{"owner":$1,"done":true}"#);
+        let into = |id: &str| d.edges.iter().find(|w| w.target == id && w.target_handle.as_deref() == Some("params")).map(|w| d.nodes.iter().find(|n| n.id == w.source).unwrap().data.name.clone());
+        assert_eq!([into(&find.id), into(&node("db_find_one").id), into(&node("db_delete").id)], [Some("list".into()), Some("const".into()), Some("append".into())]);
+        let error = |src: &str| error(&format!("database notes
+{src}")).2;
+        assert_eq!(error("x = notes.find(c)"), "the collection is written in quotes, as it is: it is the permission");
+        assert!(error("x = notes.find(\"holon_claims\")").starts_with("a collection is letters"));
+        assert!(error("x = notes.find(\"notes\", f)").starts_with("a document call's filter, update, document and sort are records written in the call"));
+        assert!(error("x = notes.find(\"notes\", { ..f, a: 1 })").contains("a spread would let the data choose its fields"));
+        assert!(error("x = notes.find(\"notes\", { \"$where\": \"1\" })").contains("runs code on the database's server"));
+        assert!(error("notes.update(\"notes\", { a: 1 }, { a: 2 })").contains("isn't an update operator"));
+        assert!(error("notes.insert(\"notes\", { \"$set\": 1 })").contains("is an operator"));
+        assert_eq!(error("x = notes.find(\"notes\", {}, sort: { at: 2 })"), "this sort can't be sent: a sort's fields are each 1 or -1, written as they are: \"at\" isn't");
+        assert_eq!(error("x = notes.find(\"notes\", {}, sort: { at: k })"), "a sort is the flow's: each field is 1 or -1, as written");
+        assert_eq!(error("x = notes.find(\"notes\", {}, limit: 0)"), "limit: is how many documents at most, a whole number from 1 to 100000");
+        assert_eq!(error("notes.delete(\"notes\")"), "notes.delete takes the collection, then its filter");
+        assert_eq!(error("notes.update(\"notes\", {})"), "notes.update takes the collection, then its filter, then its update");
+        assert_eq!(error("x = notes.find_one(\"notes\", {}, limit: 1)"), "notes.find_one has no \"limit\": it takes the collection, its records, then sort:");
+        assert_eq!(error("notes.insert(\"notes\", {}, expect: 1)"), "notes.insert has no \"expect\": it takes the collection, its records");
     }
 
     #[test]

@@ -101,8 +101,9 @@ fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(Strin
 
 /// What the host does around a run that the manifest doesn't say (`docs/L4s/key-claims-L4.md`
 /// §3): a flow that calls out and both reads and writes a collection holds the keys it read in it
-/// from its first outbound request until it commits. Derived from the capabilities, as the host
-/// derives the claim; nothing to approve, so it is said apart from "it may".
+/// from its first outbound request until it commits; a table, its rows, and a folder, its files
+/// (`docs/L4s/databases-L4.md` §7.2). Derived from the capabilities, as the host derives the
+/// claim; nothing to approve, so it is said apart from "it may".
 pub(crate) fn while_it_runs(caps: &[String]) -> Vec<String> {
     if !caps.iter().any(|c| c.starts_with("HttpRequest(")) {
         return vec![];
@@ -110,13 +111,23 @@ pub(crate) fn while_it_runs(caps: &[String]) -> Vec<String> {
     let named = |kind: &str| -> Vec<String> {
         caps.iter().filter_map(|c| c.strip_prefix(kind)?.strip_prefix("(\"")?.strip_suffix("\")").map(str::to_string)).collect()
     };
-    let written = named("CollectionWrite");
-    let both: Vec<String> = named("CollectionRead").into_iter().filter(|n| written.contains(n)).collect();
-    if both.is_empty() {
-        return vec![];
+    let both = |read: &str, write: &str| -> String {
+        let written = named(write);
+        let both: Vec<String> = named(read).into_iter().filter(|n| written.contains(n)).map(|n| format!("\"{n}\"")).collect();
+        both.join(" and ")
+    };
+    let mut lines = vec![];
+    for (read, write, what, one) in [("CollectionRead", "CollectionWrite", "keys", "key"), ("DbRead", "DbWrite", "rows", "row"), ("FileRead", "FileWrite", "files", "file")] {
+        let names = both(read, write);
+        if !names.is_empty() {
+            lines.push(format!("  holds the {what} it reads in {names} from its first outbound call until it commits, so two runs on one {one} call out once"));
+        }
     }
-    let quoted: Vec<String> = both.iter().map(|n| format!("\"{n}\"")).collect();
-    vec!["while it runs:".into(), format!("  holds the keys it reads in {} from its first outbound call until it commits, so two runs on one key call out once", quoted.join(" and "))]
+    if lines.is_empty() {
+        return lines;
+    }
+    lines.insert(0, "while it runs:".into());
+    lines
 }
 
 /// What `check` finds wrong with a text that compiles: its server's mistakes, and why it has no
@@ -453,7 +464,13 @@ mod tests {
         assert!(r.out[..at].iter().any(|l| l.starts_with("  call https://")), "said after what it may do: {:?}", r.out);
         let shown = show("cache-aside.holon", crate::samples::sample("cache-aside").unwrap().text);
         assert!(shown.out.iter().any(|l| l == "  while it runs:"), "{:?}", shown.out);
-        for name in ["likes", "basket", "fetch-json"] {
+        let r = check("refund-once.holon", crate::samples::sample("refund-once").unwrap().text);
+        let at = r.out.iter().position(|l| l == "while it runs:").unwrap_or_else(|| panic!("{:?}", r.out));
+        assert_eq!(
+            r.out[at + 1],
+            "  holds the rows it reads in \"shop/orders\" and \"shop/refunds\" from its first outbound call until it commits, so two runs on one row call out once"
+        );
+        for name in ["likes", "basket", "fetch-json", "orders-api"] {
             let r = check(name, crate::samples::sample(name).unwrap().text);
             assert!(!r.out.iter().any(|l| l.contains("while it runs")), "{name}: {:?}", r.out);
         }

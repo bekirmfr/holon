@@ -274,7 +274,7 @@ impl Parser {
                 Tok::Eof => return Ok(file),
                 Tok::RBrace => return err(t.span.start, "a } without a block to close"),
                 Tok::Ident => match t.text.as_str() {
-                    "flow" | "port" | "every" | "interval" | "browsers" | "optional" | "collection" | "folder" | "channel" => {
+                    "flow" | "port" | "every" | "interval" | "browsers" | "optional" | "collection" | "folder" | "database" | "channel" => {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
@@ -314,6 +314,7 @@ impl Parser {
             }
             "collection" => HeaderKind::Collection(self.ident("the collection's name")?.text),
             "folder" => HeaderKind::Folder(self.ident("the folder's name")?.text),
+            "database" => HeaderKind::Database(self.ident("the database's name")?.text),
             "channel" => HeaderKind::Channel(self.ident("the channel's name")?.text),
             "on" => {
                 self.next();

@@ -33,6 +33,10 @@ const runDir = RUN_DIR;
 const holonHome = join(dir, "home");
 // CARGO_TARGET_DIR, when set, is where cargo put it (e.g. to build beside a dev server holding
 // target/debug's binary open).
+// The atlas-notes sample's MongoDB, when the environment names a replica set (CI does:
+// HOLON_TEST_MONGODB), in a database of the tests' own: the server fetches its URL from its
+// environment, as an admin's connection is.
+const mongo = process.env.HOLON_TEST_MONGODB?.replace(/^(mongodb(\+srv)?:\/\/[^/?]+)\/?[^?]*/, "$1/holon_e2e_notes");
 const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
 // Its policy lets a flow call plain HTTP and private addresses when its deploy asks: the
 // chat-proxy test points the sample at a stand-in upstream on loopback.
@@ -56,7 +60,7 @@ const server = spawn(
     "--policy", policy,
     "--dotenv", dotenv,
   ],
-  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "", HOLON_NO_FOLDER_DIALOG: "1" } },
+  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "", HOLON_NO_FOLDER_DIALOG: "1", ...(mongo ? { HOLON_SECRET_NOTES_URL: mongo } : {}) } },
 );
 
 // The folders the main one binds for flows to read and write (folders.rs): outside its data, as an
@@ -91,7 +95,7 @@ if (!fresh) {
     body: JSON.stringify({ code: SETUP_CODE, name: "e2e", password: "e2e-password-0123" }),
   });
   if (!res.ok) console.error(`e2e server: setting up its admin failed: ${await res.text()}`);
-  // The inbox-report, log-archive, journal, drop-box and file-audit samples' folders, bound as an admin binds
+  // The inbox-report, log-archive, journal, shared-ledger, drop-box and file-audit samples' folders, bound as an admin binds
   // them: the ones they only read, read-only; the journal's texts kept a week, the folder capped at
   // 64 KiB.
   const { token } = res.ok ? await res.json() : {};
@@ -102,6 +106,7 @@ if (!fresh) {
     { name: "logs", access: "read" },
     { name: "archive", access: "read-write" },
     { name: "journal", access: "read-write", keep: "bytes for 7d", cap: "64K" },
+    { name: "ledger", access: "read-write" },
     { name: "drop", access: "read" },
     { name: "receipts", access: "read-write" },
     { name: "outbox", access: "read" },
@@ -115,5 +120,48 @@ if (!fresh) {
       body: JSON.stringify({ name, path: join(folders, name), ...binding }),
     });
     if (!bound.ok) console.error(`e2e server: binding the folder ${name} failed: ${await bound.text()}`);
+  }
+  // The orders-api and refund-once samples' database (databases.rs), made by its schema as an admin binds it.
+  const shop = await fetch(`${base}/admin/databases`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: "shop",
+      path: join(folders, "shop.db"),
+      schema: "create table if not exists orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0); create table if not exists refunds (order_id integer not null, amount numeric not null, status integer)",
+    }),
+  });
+  if (!shop.ok) console.error(`e2e server: binding the database shop failed: ${await shop.text()}`);
+  // The ticket-numbers sample's, held for whole runs (an admin's setting: locks.rs).
+  const tickets = await fetch(`${base}/admin/databases`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: "tickets",
+      path: join(folders, "tickets.db"),
+      lock: "run",
+      schema: "create table if not exists counter (id integer primary key, n integer not null); insert or ignore into counter values (1, 0); create table if not exists issued (n integer primary key, holder text not null)",
+    }),
+  });
+  if (!tickets.ok) console.error(`e2e server: binding the database tickets failed: ${await tickets.text()}`);
+  // The approved-payout sample's: one account, a hundred in it.
+  const bank = await fetch(`${base}/admin/databases`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: "bank",
+      path: join(folders, "bank.db"),
+      schema: "create table if not exists accounts (id integer primary key, balance integer not null); insert or ignore into accounts values (1, 100); create table if not exists payouts (account integer not null, amount integer not null, status integer)",
+    }),
+  });
+  if (!bank.ok) console.error(`e2e server: binding the database bank failed: ${await bank.text()}`);
+  // The atlas-notes sample's, a MongoDB bound by its connection.
+  if (mongo) {
+    const notes = await fetch(`${base}/admin/databases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: "notes", connection: "env:HOLON_SECRET_NOTES_URL", access: "read-write" }),
+    });
+    if (!notes.ok) console.error(`e2e server: binding the database notes failed: ${await notes.text()}`);
   }
 }

@@ -1,0 +1,13 @@
+flow shared-ledger
+port 8140
+folder ledger
+
+route POST /lines (req) {
+  before = ledger["lines.txt"] ?? ""
+  ledger["lines.txt"] = "{before}{req.body}\n"
+  respond { added: req.body }
+}
+
+route GET /lines (req) {
+  respond ledger["lines.txt"], headers: { "content-type": "text/plain; charset=utf-8" }
+}

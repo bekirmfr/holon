@@ -27,7 +27,7 @@ use crate::wire::{WParam, WPort, WType};
 
 /// The words a binding may not take, as lower.rs holds them.
 const RESERVED: &[&str] = &[
-    "flow", "port", "every", "browsers", "optional", "collection", "folder", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
+    "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
 ];
@@ -220,6 +220,8 @@ pub struct Printer<'s> {
     collections: BTreeSet<String>,
     /// Every folder any leaf names (`folder inbox`).
     folders: BTreeSet<String>,
+    /// The databases any leaf names: the header declares them.
+    databases: BTreeSet<String>,
     /// Every channel any leaf names (`channel updates`).
     channels: BTreeSet<String>,
     /// The `on file` lines, in order, when the flow runs on files: folder, `deleted`, `matching`.
@@ -258,6 +260,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         blocks: vec![],
         collections: BTreeSet::new(),
         folders: BTreeSet::new(),
+        databases: BTreeSet::new(),
         channels: BTreeSet::new(),
         on_files: Vec::new(),
         ingress_chains: HashMap::new(),
@@ -301,6 +304,9 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     }
     for f in p.folders.iter().filter(|f| !p.on_files.iter().any(|(on, _, _)| on == *f)) {
         out.push(header(format!("folder {f}")));
+    }
+    for d in &p.databases {
+        out.push(header(format!("database {d}")));
     }
     for c in &p.channels {
         out.push(header(format!("channel {c}")));
@@ -421,15 +427,17 @@ fn consent(o: &str) -> String {
 }
 
 impl<'s> Printer<'s> {
-    /// Every collection, folder and channel any leaf names, the holons' leaves included.
+    /// Every collection, folder, database and channel any leaf names, the holons' leaves included.
     fn collect_collections(&mut self, nodes: &[Node]) -> Result<(), String> {
-        /// The param naming what a leaf reads or writes: a collection's, a folder's or a
-        /// channel's (a piped call's `pipe`).
+        /// The param naming what a leaf reads or writes: a collection's, a folder's, a
+        /// database's or a channel's (a piped call's `pipe`).
         fn named_by(leaf: &str) -> Option<&'static str> {
             if leaf.starts_with("collection_") {
                 Some("collection")
             } else if leaf.starts_with("file_") {
                 Some("folder")
+            } else if leaf.starts_with("db_") {
+                Some("database")
             } else if leaf.starts_with("channel_") {
                 Some("channel")
             } else if leaf == "http_stream" {
@@ -439,13 +447,14 @@ impl<'s> Printer<'s> {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
             if !name.is_empty() {
                 match param {
                     "collection" => &mut out.0,
                     "folder" => &mut out.1,
-                    _ => &mut out.2,
+                    "database" => &mut out.2,
+                    _ => &mut out.3,
                 }
                 .insert(name);
             }
@@ -474,7 +483,7 @@ impl<'s> Printer<'s> {
             }
         }
         let mut seen = HashSet::new();
-        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.channels));
+        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases), std::mem::take(&mut self.channels));
         for n in nodes {
             match &n.data.body {
                 PlacedBody::Primitive if named_by(&n.data.name).is_some() => {
@@ -488,7 +497,7 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders, self.channels) = out;
+        (self.collections, self.folders, self.databases, self.channels) = out;
         Ok(())
     }
 
@@ -559,7 +568,7 @@ impl<'s> Printer<'s> {
 
     fn request_name(&self, request: &Node) -> String {
         let n = self.bindings.get(&request.id).cloned().unwrap_or_else(|| "req".into());
-        if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) && !self.folders.contains(&n) && !self.channels.contains(&n) {
+        if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) && !self.folders.contains(&n) && !self.databases.contains(&n) && !self.channels.contains(&n) {
             n
         } else {
             "req".into()
@@ -612,7 +621,7 @@ impl<'s> Printer<'s> {
     }
 
     fn reserved(&self, n: &str) -> bool {
-        RESERVED.contains(&n) || interface_of(n).is_some() || templates::is_template(n) || self.collections.contains(n) || self.folders.contains(n) || self.channels.contains(n)
+        RESERVED.contains(&n) || interface_of(n).is_some() || templates::is_template(n) || self.collections.contains(n) || self.folders.contains(n) || self.databases.contains(n) || self.channels.contains(n)
     }
 
     /// `holon name(inputs) -> (outputs) { body }`, the body as the expand view opens it: the
@@ -1330,6 +1339,25 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let value = self.required(node, "value")?;
                 atom(format!("state.set({}, {value})", node.param("key")))
             }
+            "db_query" | "db_one" | "db_exec" if plain(node.param("database")) => match self.db_values(node)? {
+                Some(values) => {
+                    let method = &d.name["db_".len()..];
+                    let mut args = vec![quote(node.param("sql"))];
+                    args.extend(values);
+                    if !node.param("expect").is_empty() {
+                        args.push(format!("expect: {}", node.param("expect")));
+                    }
+                    atom(format!("{}.{method}({})", node.param("database"), args.join(", ")))
+                }
+                None => self.generic(node),
+            },
+            "db_find" | "db_find_one" | "db_insert" | "db_update" | "db_delete" if plain(node.param("database")) => match self.document_args(node)? {
+                Some(args) => {
+                    let method = &d.name["db_".len()..];
+                    atom(format!("{}.{method}({})", node.param("database"), args.join(", ")))
+                }
+                None => self.generic(node),
+            },
             "http_request" | "http_upload" | "http_stream" => {
                 let method = node.param("method").to_ascii_lowercase();
                 if !["get", "post", "put", "patch", "delete", "head"].contains(&method.as_str()) {
@@ -1504,6 +1532,140 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     /// `name(inputs…, param: value…)`: inputs positional up to the first unwired one, named after.
+    /// A database call's values, one for each `$n` of its SQL, when they are a list written in
+    /// place (`[]`, one appended to it, or a `list`) and as many as the SQL takes: as the text
+    /// writes them after the SQL. `None`: it prints as the leaf it is.
+    fn db_values(&mut self, node: &Node) -> Result<Option<Vec<String>>, String> {
+        let write = node.data.name == "db_exec";
+        let Ok(tables) = holon_core::sql::tables(node.param("sql"), write) else { return Ok(None) };
+        self.listed_values(node, tables.params)
+    }
+
+    /// A document call's arguments as the text writes them: the collection, its records with
+    /// their holes filled by the values listed in place (`$1` the first, and each once, in the
+    /// order the records are written), then `sort:`, `limit:` and `expect:`. `None`: it prints as
+    /// the leaf it is.
+    fn document_args(&mut self, node: &Node) -> Result<Option<Vec<String>>, String> {
+        use holon_core::documents::{parse, Tpl};
+        let name = node.data.name.as_str();
+        let collection = node.param("collection");
+        if !holon_core::documents::is_collection_name(collection) {
+            return Ok(None);
+        }
+        let parts: &[&str] = match name {
+            "db_insert" => &["document"],
+            "db_update" => &["filter", "update"],
+            _ => &["filter"],
+        };
+        let mut templates = Vec::new();
+        for part in parts {
+            let Ok(t) = parse(node.param(part)) else { return Ok(None) };
+            templates.push(t);
+        }
+        let sort = match node.param("sort") {
+            "" => None,
+            text => match parse(text) {
+                Ok(t) => Some(t),
+                Err(_) => return Ok(None),
+            },
+        };
+        // The holes in the order written: as the lowering numbers them, else it prints as a leaf.
+        fn holes(t: &Tpl, out: &mut Vec<usize>) {
+            match t {
+                Tpl::Hole(n) => out.push(*n),
+                Tpl::List(items) => items.iter().for_each(|i| holes(i, out)),
+                Tpl::Object(fields) => fields.iter().for_each(|(_, v)| holes(v, out)),
+                _ => {}
+            }
+        }
+        let mut order = Vec::new();
+        templates.iter().chain(&sort).for_each(|t| holes(t, &mut order));
+        if order.iter().enumerate().any(|(i, n)| *n != i + 1) || sort.as_ref().is_some_and(|t| !t.holes().is_empty()) {
+            return Ok(None);
+        }
+        // Each template must be one the text can write: no null, numbers as the language reads them.
+        fn written(t: &Tpl, values: &[String]) -> Option<String> {
+            Some(match t {
+                Tpl::Null => return None,
+                Tpl::Bool(b) => b.to_string(),
+                Tpl::Number(n) => {
+                    let digits = n.strip_prefix('-').unwrap_or(n);
+                    let mut halves = digits.splitn(2, '.');
+                    let whole = halves.next()?;
+                    let plain_number = !whole.is_empty() && whole.bytes().all(|b| b.is_ascii_digit()) && halves.next().is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()));
+                    if !plain_number {
+                        return None;
+                    }
+                    n.clone()
+                }
+                Tpl::Text(t) => quote(t),
+                Tpl::Hole(n) => values.get(n - 1)?.clone(),
+                Tpl::List(items) => format!("[{}]", items.iter().map(|i| written(i, values)).collect::<Option<Vec<_>>>()?.join(", ")),
+                Tpl::Object(fields) if fields.is_empty() => "{}".into(),
+                Tpl::Object(fields) => {
+                    // A keyword is fine as a key (`at: -1`), as in a record.
+                    let parts = fields.iter().map(|(k, v)| Some(format!("{}: {}", if plain(k) { k.clone() } else { quote(k) }, written(v, values)?))).collect::<Option<Vec<_>>>()?;
+                    format!("{{ {} }}", parts.join(", "))
+                }
+            })
+        }
+        let placeholders: Vec<String> = (0..order.len()).map(|_| String::new()).collect();
+        if templates.iter().chain(&sort).any(|t| written(t, &placeholders).is_none()) {
+            return Ok(None);
+        }
+        let Some(values) = self.listed_values(node, order.len())? else { return Ok(None) };
+        let mut args = vec![quote(collection)];
+        for (i, t) in templates.iter().enumerate() {
+            // A find's filter of everything is left out, as the text leaves it.
+            if i == 0 && matches!(name, "db_find" | "db_find_one") && matches!(t, Tpl::Object(f) if f.is_empty()) {
+                continue;
+            }
+            args.push(written(t, &values).expect("checked"));
+        }
+        if let Some(t) = &sort {
+            args.push(format!("sort: {}", written(t, &values).expect("checked")));
+        }
+        for named in ["limit", "expect"] {
+            if !node.param(named).is_empty() {
+                args.push(format!("{named}: {}", node.param(named)));
+            }
+        }
+        Ok(Some(args))
+    }
+
+    /// The values a call lists in place for its `count` holes: `[]`, one appended to it, or a
+    /// `list` of exactly `count`. `None` when they aren't written so.
+    fn listed_values(&mut self, node: &Node, count: usize) -> Result<Option<Vec<String>>, String> {
+        let empty = |c: &Node| c.param("type") == "Json" && c.param("value") == "[]";
+        let none = self.inline_source(node, "params", "const").filter(|c| empty(c));
+        let one = self.inline_source(node, "params", "append").filter(|a| self.inline_source(a, "list", "const").is_some_and(empty));
+        let several = self.inline_source(node, "params", "list");
+        let given = match (none, one, several) {
+            (Some(_), _, _) => 0,
+            (_, Some(_), _) => 1,
+            (_, _, Some(l)) => l.data.inputs.len(),
+            _ => return Ok(None),
+        };
+        if given != count {
+            return Ok(None);
+        }
+        let mut values = Vec::new();
+        if let Some(c) = none {
+            self.touch(c);
+        } else if let Some(a) = one {
+            let c = self.inline_source(a, "list", "const").expect("checked");
+            self.touch(a);
+            self.touch(c);
+            values.push(self.required(a, "item")?);
+        } else if let Some(l) = several {
+            self.touch(l);
+            for p in &l.data.inputs {
+                values.push(self.required(l, &p.name)?);
+            }
+        }
+        Ok(Some(values))
+    }
+
     fn generic(&mut self, node: &Node) -> Result<(String, u8), String> {
         let inputs: Vec<String> = node.data.inputs.iter().map(|p| p.name.clone()).collect();
         let params = self.p.changed_params(node);
@@ -1882,6 +2044,22 @@ mod tests {
 
     /// A value used once is written inline, inside an interpolated part too; when it holds a
     /// string of its own (`"{slice(sha256("{now}"), 0, 6)}"`), the text must still read back.
+    #[test]
+    fn document_calls_print_their_records_with_their_values_in_place() {
+        let src = "flow notes\nport 8160\ndatabase notes\n\nroute POST /n/:who (req) {\n  mine = notes.find(\"notes\", { owner: req.params.who, \"state.now\": { \"$in\": [\"open\", req.json.also] } }, sort: { at: -1 }, limit: 20)\n  everything = notes.find_one(\"notes\")\n  notes.insert(\"notes\", { owner: req.params.who, text: \"{req.json.text}!\", tags: [\"new\"], pinned: false })\n  notes.update(\"notes\", { _id: { \"$oid\": req.json.id } }, { \"$set\": { text: req.json.text } }, expect: 1)\n  notes.delete(\"notes\", { owner: req.params.who, done: true })\n  respond { mine: mine, everything: everything }\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("notes", &l.doc, &l.names);
+        for written in [
+            "notes.find(\"notes\", { owner: req.params.who, \"state.now\": { \"$in\": [\"open\", req.json.also] } }, sort: { at: -1 }, limit: 20)",
+            "notes.find_one(\"notes\")",
+            "notes.insert(\"notes\", { owner: req.params.who, text: \"{req.json.text}!\", tags: [\"new\"], pinned: false })",
+            "notes.update(\"notes\", { _id: { \"$oid\": req.json.id } }, { \"$set\": { text: req.json.text } }, expect: 1)",
+            "notes.delete(\"notes\", { owner: req.params.who, done: true })",
+        ] {
+            assert!(text.contains(written), "{written}\n{text}");
+        }
+    }
+
     #[test]
     fn a_string_inside_a_part_round_trips() {
         let src = "flow f\nport 8200\n\nroute GET /x/:id (req) {\n  seed = sha256(\"{random}:{now}:{req.params.id}\")\n  by = req.query.by ?? \"someone\"\n  respond \"{req.params.id}-{slice(seed, 0, 6)} via {by}\"\n}\n";

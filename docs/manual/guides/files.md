@@ -28,6 +28,8 @@ holon folder remove reports
 | `--keep hash` | the run log keeps a hash of what each run read, not the text |
 | `--keep 30d` | the log keeps the text for 30 days (`s`, `m`, `h` or `d`), then only its hash |
 | `--cap 10M` | a write that would take the folder's files past 10 MiB in all doesn't land |
+| `--shared` | other servers bind this folder too (a network share): their runs' writes exclude each other as one server's do |
+| `--lock run` | each run that touches it holds it for its whole length: shared to read, alone to write (below) |
 
 - A name is letters, digits, `-` and `_`, up to 64 characters.
 - `--for` lets two deployments use the same name for different folders: bind `inbox` for `acme`
@@ -79,6 +81,21 @@ route DELETE /reports/:name (req) {
 - Writes land together when the run finishes, with the run's state and collection writes, or not
   at all. A write that would take a capped folder past its cap doesn't land, and the run answers
   500.
+- Several deployments can read and write one folder. A run commits only if every file it read is
+  as it found it, and the check and the writes hold a lock on each file it read or writes (and on
+  the folder, for one it listed): a run of another deployment that wrote a file in between makes
+  it run again, never write over what that one wrote, and runs that touch different files never
+  wait for each other. The `shared-ledger` sample, deployed twice, shows it.
+- A run that reads a file of a folder it may write, and then calls out, holds the file from its
+  first outbound call until it commits (a listing, the whole folder): another run that read it
+  waits at its own first call, reads it again, and runs on what it finds, having sent nothing.
+  So two runs that fetch something to cache in one file fetch it once, across deployments.
+- A folder bound `--lock run` is held by each run that touches it from before it starts until it
+  commits, fails or waits: shared by runs whose flow only reads it, alone by one that may write
+  it. Every run that writes it then goes one at a time, for its whole length, across every
+  deployment bound to it (and, bound `--shared` too, every server: the lock is also an OS lock on
+  `.holon-tmp-run.lock` in it). For files a program outside Holon expects one writer for. A run
+  that would wait past `claim_wait_ms` is turned away (503), having done nothing.
 
 ## Big files
 
