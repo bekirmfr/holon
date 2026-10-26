@@ -127,8 +127,11 @@ jobs:
           cache-dependency-path: editor/package-lock.json
       - run: npm ci
         working-directory: editor
-      - run: npx playwright install --with-deps chromium
+      # Chromium and the system packages it needs (apt). It took half a minute, but once hung past
+      # twelve with no limit (a job's is six hours): each try gets five, and a second try follows.
+      - run: timeout 300 npx playwright install --with-deps chromium || timeout 300 npx playwright install --with-deps chromium
         working-directory: editor
+        timeout-minutes: 11
       - run: npx playwright test --fully-parallel --shard=${{ matrix.shard }}/2
         working-directory: editor
       - uses: actions/upload-artifact@v4
