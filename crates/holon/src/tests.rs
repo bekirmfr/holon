@@ -578,11 +578,12 @@ fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
 }
 
 /// A clock run's history is redacted as its log entry is: whoever may read the deployment reads
-/// it. Here the write of a secret into state is refused, but the run's outputs still hold it.
+/// it. Here the write of a secret into state is refused, but the run's outputs still hold it; and a
+/// write of something computed from it is refused too, its output withheld.
 #[test]
 fn a_clock_runs_history_never_shows_a_secret() {
     let state = test_state();
-    let plan = holon_author::agent::plan("flow leak\nevery 5s\n\nstate.k = secret.api_key\n").unwrap();
+    let plan = holon_author::agent::plan("flow leak\nevery 5s\n\nstate.k = secret.api_key\nstate.encoded = base64(secret.api_key)\n").unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
@@ -600,6 +601,9 @@ fn a_clock_runs_history_never_shows_a_secret() {
     assert!(history.contains("\"ticks\":[{"), "it ticked: {history}");
     assert!(!history.contains(value), "the history leaks it: {history}");
     assert!(history.contains("‹secret:api_key›"), "{history}");
+    assert!(!history.contains("c2tfbGl2ZV9rZXB0") && history.contains("‹withheld: computed from a secret›"), "{history}");
+    let current = body_json(route(&state, &req("GET", "/deployments/leak/state", vec![])));
+    assert!(current["state"].get("encoded").is_none(), "the derived write was refused: {current}");
     assert!(state.deployments.lock().unwrap()["leak"].history[0].outputs.iter().flatten().all(|o| !format!("{o:?}").contains(value)), "not kept either");
 }
 
@@ -3805,6 +3809,56 @@ route POST /go (req) {{
     // The export says no more than the log.
     let export = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     assert!(!export.contains("c2tfbGl2ZV9iYXNp") && !export.contains("MIIabc") && !export.contains("pk_private_value_123"));
+}
+
+/// What is computed from a secret isn't kept: a state, collection or channel write of it is
+/// refused, as a write of its value is (it would sit on disk, in every later snapshot, and in the
+/// channel's packs), while the run's other writes go through; and the run's answer, though the
+/// caller gets it, is withheld from the log, its output and its response body alike. Verify
+/// skips such a run rather than calling it changed.
+#[test]
+fn what_is_computed_from_a_secret_is_neither_kept_nor_logged() {
+    let state = claims_state("");
+    let text = r#"flow derived
+port 18144
+collection kept
+channel news
+
+route POST /go (req) {
+  token = "{req.body}:{base64(secret.api_key)}"
+  state.token = token
+  kept["k"] = token
+  news.send({ t: token })
+  state.plain = req.body
+  respond { echoed: token }
+}
+"#;
+    let slug = deploy_text(&state, text, "x");
+    let value = "sk_live_derived_secret_value";
+    let set = req("POST", &format!("/deployments/{slug}/secrets/api_key"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let encoded = "c2tfbGl2ZV9kZXJpdmVkX3NlY3JldF92YWx1ZQ==";
+    let (status, body, _) = data_call(&state, &slug, "POST", "/go", "hello");
+    assert_eq!((status, body), (200, format!(r#"{{"echoed":"hello:{encoded}"}}"#)), "the caller gets its answer");
+
+    let current = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/state"), vec![])));
+    assert!(current["state"].get("token").is_none(), "the derived write was refused: {current}");
+    assert!(current["state"].get("plain").is_some(), "the clean one went through: {current}");
+    let items = route(&state, &req("GET", &format!("/deployments/{slug}/collections/kept"), vec![]));
+    assert!(items.status_code == 404 || body_json(items)["items"].as_array().unwrap().is_empty(), "nothing put in the collection");
+
+    let entries = log_entries(&state, &slug);
+    let entry = entries.last().unwrap();
+    let performed: Vec<&str> = entry["performed"].as_array().unwrap().iter().map(|p| p["capability"].as_str().unwrap()).collect();
+    assert_eq!(performed, [r#"StateWrite("plain")"#], "no channel send to rebuild packs from: {entry}");
+    assert_eq!(entry["response_body"], "‹withheld: computed from a secret›", "{entry}");
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    assert!(!log.contains("c2tfbGl2ZV9kZXJp"), "base64 of the key: {log}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(matches!(report.reruns[..], [(0, verify::Rerun::Skipped(_))]), "{}", verify::describe(&report, None));
+    assert!(report.ok(), "{}", verify::describe(&report, None));
 }
 
 /// The read-call-write flows the claim tests run, calling `host` over plain HTTP.

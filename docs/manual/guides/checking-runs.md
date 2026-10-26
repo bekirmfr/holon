@@ -89,7 +89,9 @@ The log keeps such a node's outputs only when they can't give the secret away. A
 that holds the secret as it is gets the placeholder. But a value computed from the secret (base64
 of it for a Basic auth header, a field of a JSON secret, a slice) no longer holds it literally,
 so the log keeps no outputs for that node. An outbound request built from one is logged with
-those parts reading `‹withheld: computed from a secret›`.
+those parts reading `‹withheld: computed from a secret›`, and so are the run's own outputs, its
+response body and any other effect built from one. Such a value is never kept: a state,
+collection or channel write of it is refused, as a write of the secret itself is.
 
 Some runs can't be run again at all, and are counted, not failed: a run whose such node the log
 keeps no outputs for (computed from a secret, larger than 16 KiB, or deeper than the log's

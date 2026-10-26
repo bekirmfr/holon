@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.0-rc.26
+
+Nothing to redeploy: no unit is hashed differently, and deployments, logs and waiting runs from
+rc.25 load as they are. A flow that stores or sends to a channel something computed from a
+secret now has that write refused: keep a one-way form of it instead (`sha256`, `hmac_sha256`).
+
+- **What is computed from a secret is never kept.** A state, collection or channel write of a
+  value computed from a secret (base64 of it, a slice, a field of a JSON secret) is refused, as a
+  write of the secret itself was; the run's other writes go through. Its outputs, its response
+  body, any other effect built from one and a clock run's history read `‹withheld: computed from
+  a secret›` in the log; the caller still gets its answer. An effect doesn't say which node made
+  it, so a key written from such a value has all its writes in that run refused. One-way leaves,
+  true/false answers and HTTP answers still cut it, so no sample changes.
+- **A viewer stays a viewer.** `X-Holon-Role: agent` made anyone signed in an agent, and an agent
+  may save flows, deploy a version needing no new approval and call a deployment, so a viewer
+  could replace live code. Only an editor or an admin now steps down to an agent.
+
 ## 0.1.0-rc.25
 
 Nothing to redeploy: no unit is hashed differently, and deployments, logs and waiting runs from

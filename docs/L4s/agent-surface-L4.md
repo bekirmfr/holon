@@ -75,7 +75,8 @@ not JSON to be parsed: the same sentences `holon check` and the editor use.
    approval it hasn't had, worded for the person who will give it. It may not replace a flow
    someone else saved (flows.rs), and grants, run/pause/stop, deletes, secrets, the registry,
    `/fire`, `/trigger` and the admin panel are refused it. `holon mcp` sends every request with
-   `X-Holon-Role: agent`, which lowers whoever sends it to an agent, named `<sign-in> (agent)`:
+   `X-Holon-Role: agent`, which lowers an editor or admin who sends it to an agent (a viewer stays
+   a viewer: an agent may do more than read), named `<sign-in> (agent)`:
    through the run file the agent acts as `local:<user> (agent)`, so the activity log, the flows
    page and `deployed_by` tell its steps from the person's, and the server, not only the tools,
    keeps it from approving. That header is a promise its sender keeps: an agent with a shell can
