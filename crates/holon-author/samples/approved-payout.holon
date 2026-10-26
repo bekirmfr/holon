@@ -1,0 +1,26 @@
+flow approved-payout
+port 8153
+database bank
+
+route POST /payout/:account (req) {
+  account = bank.one("select id, balance from accounts where id = $1", req.params.account)
+  respond { approve: "/approve/{resume_token(approved)}", balance: account.balance }, status: 202
+  approved = await approved, expires: 1d
+  sent = http.post("httpbin.org", "/anything/payouts", headers: { "content-type": "application/json" }, body: json({ account: account.id, amount: req.json.amount, by: parse_json(approved.body).by }))
+  bank.exec("update accounts set balance = $1 where id = $2", account.balance - req.json.amount, account.id, expect: 1)
+  bank.exec("insert into payouts (account, amount, status) values ($1, $2, $3)", account.id, req.json.amount, sent.status)
+}
+
+route POST /approve/:token (req) resumes approved {
+  respond "approved"
+}
+
+route POST /deposit/:account (req) {
+  account = bank.one("select id, balance from accounts where id = $1", req.params.account)
+  bank.exec("update accounts set balance = $1 where id = $2", account.balance + req.json.amount, account.id, expect: 1)
+  respond { balance: account.balance + req.json.amount }
+}
+
+route GET /accounts/:account (req) {
+  respond bank.one("select balance from accounts where id = $1", req.params.account)
+}

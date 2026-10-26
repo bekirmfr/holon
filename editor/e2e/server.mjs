@@ -130,4 +130,15 @@ if (!fresh) {
     }),
   });
   if (!tickets.ok) console.error(`e2e server: binding the database tickets failed: ${await tickets.text()}`);
+  // The approved-payout sample's: one account, a hundred in it.
+  const bank = await fetch(`${base}/admin/databases`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: "bank",
+      path: join(folders, "bank.db"),
+      schema: "create table if not exists accounts (id integer primary key, balance integer not null); insert or ignore into accounts values (1, 100); create table if not exists payouts (account integer not null, amount integer not null, status integer)",
+    }),
+  });
+  if (!bank.ok) console.error(`e2e server: binding the database bank failed: ${await bank.text()}`);
 }

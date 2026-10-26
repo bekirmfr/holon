@@ -677,6 +677,21 @@ test("ticket-numbers, on a database held for whole runs, hands out twenty number
   await expect(page.getByText(join(FOLDERS, "tickets.db"), { exact: true }).locator("..")).toContainText("held for whole runs");
 });
 
+test("approved-payout waits for its approval holding nothing, and pays from the balance as it is then: a deposit made meanwhile is kept", async ({ page, request }) => {
+  await openSample(page, "Approved payout (a waiting run checks what it read)");
+  const base = `http://127.0.0.1:${await deploy(page)}`;
+  const before: number = (await (await request.get(`${base}/accounts/1`)).json()).balance;
+  const asked = await request.post(`${base}/payout/1`, { data: { amount: 30 } });
+  expect(asked.status()).toBe(202);
+  const { approve } = await asked.json();
+  expect(approve).toMatch(/^\/approve\/rt_/);
+  // While it waits, a deposit goes ahead: the waiting run holds nothing on the account.
+  const deposited = await request.post(`${base}/deposit/1`, { data: { amount: 50 } });
+  expect((await deposited.json()).balance).toBe(before + 50);
+  expect((await request.post(`${base}${approve}`, { data: { by: "e2e" }, timeout: 60_000 })).status()).toBe(200);
+  expect((await (await request.get(`${base}/accounts/1`)).json()).balance).toBe(before + 50 - 30);
+});
+
 test("drop-box runs once for a file dropped in its folder, sends it by handle, writes its receipt, and its runs verify", async ({ page, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
   const { existsSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");

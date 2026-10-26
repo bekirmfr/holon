@@ -2320,6 +2320,11 @@ fn a_slow_run_holds_up_no_other_and_retries_without_resending() {
     let log = body_json(route(&state, &req("GET", "/deployments/slow/log", vec![])));
     let retried: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|x| x["retries"].as_u64().unwrap_or(0)).collect();
     assert_eq!(retried.iter().sum::<u64>(), 1, "the slow run ran once more: {retried:?}");
+    // The run that ran again checks offline: the call its first try made is in its entry.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/slow/export", vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
 }
 
 /// A port nothing listens on just now.
@@ -4874,5 +4879,187 @@ fn a_file_a_run_deletes_starts_no_run() {
     std::fs::remove_file(dir.join("keep.txt")).unwrap();
     look();
     assert_eq!(log_entries(&state, &slug).len(), 2, "someone else's removal does");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A run that read a row, waited for an event, then calls out and writes the row (§7.4 of the
+/// databases L4). Parked, it holds nothing on the row.
+fn waiting_tally_text(host: &str) -> String {
+    format!(
+        "flow paid-tally\nport 18191\ndatabase shop\n\nroute POST /hold (req) {{\n  row = shop.one(\"select n from counts where id = $1\", 1)\n  asked = http.get(\"{host}\", \"/fast\").body\n  respond {{ token: \"{{resume_token(paid)}}\", n: row.n, asked: asked }}\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body) }}).body\n  shop.exec(\"update counts set n = $1, note = $2 where id = $3\", row.n + 1, later, 1, expect: 1)\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
+    )
+}
+
+/// A resumed run checks what it shares at its commit as any run does: a program outside Holon
+/// changes the row it read while its resumed part calls out, so its commit finds the row changed,
+/// and it runs again from where it last waited, reading the row as it now is. The requests of
+/// both its parts are answered from its record, not sent again, its event too; and it checks
+/// offline. On SQLite, and on Postgres and MySQL when they are at hand.
+#[test]
+fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
+    let dir = std::env::temp_dir().join(format!("holon-resumed-row-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("counts.db");
+    let schema = "create table counts (id integer primary key, n integer not null, note varchar(16)); insert into counts (id, n) values (1, 0)";
+    let fresh = fresh_databases("resumed");
+    let mut engines: Vec<(&str, String)> = vec![("sqlite", file.display().to_string())];
+    engines.extend(fresh.iter().map(|db| (db.engine, db.url.clone())));
+    for (engine, url) in engines {
+        let (host, hits) = counting_server();
+        let state = if engine == "sqlite" { claims_state("") } else { server_with_database(&url) };
+        let bound = match engine {
+            "sqlite" => {
+                let body = serde_json::json!({ "name": "shop", "path": url, "access": "read-write", "schema": schema });
+                route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()))
+            }
+            _ => bind_shop(&state, Some(schema)),
+        };
+        assert_eq!(bound.status_code, 200, "{engine}");
+        let slug = deploy_text(&state, &waiting_tally_text(&host), &host);
+        let outside = |sql: &str| match engine {
+            "sqlite" => rusqlite::Connection::open(&url).unwrap().execute_batch(sql).unwrap(),
+            "postgres" => postgres::Client::connect(&url, postgres::NoTls).unwrap().batch_execute(sql).unwrap(),
+            _ => {
+                use mysql::prelude::Queryable;
+                mysql::Conn::new(mysql::Opts::from_url(&url).unwrap()).unwrap().query_drop(sql).unwrap()
+            }
+        };
+        let n = || match engine {
+            "sqlite" => rusqlite::Connection::open(&url).unwrap().query_row("select n from counts where id = 1", [], |r| r.get::<_, i64>(0)).unwrap(),
+            "postgres" => postgres::Client::connect(&url, postgres::NoTls).unwrap().query_one("select n from counts where id = 1", &[]).unwrap().get::<_, i32>(0) as i64,
+            _ => {
+                use mysql::prelude::Queryable;
+                mysql::Conn::new(mysql::Opts::from_url(&url).unwrap()).unwrap().query_first::<i64, _>("select n from counts where id = 1").unwrap().unwrap()
+            }
+        };
+
+        let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
+        assert_eq!(status, 200, "{engine}: {held}");
+        let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
+        // While it waits the row changes: it is read as it is when the run resumes.
+        outside("update counts set n = 10 where id = 1");
+        let paid = std::thread::scope(|s| {
+            let paid = s.spawn(|| data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""));
+            // And again while its resumed part calls out: its commit finds it changed.
+            std::thread::sleep(Duration::from_millis(150));
+            outside("update counts set n = 100 where id = 1");
+            paid.join().unwrap()
+        });
+        assert_eq!(paid.0, 200, "{engine}: {paid:?}");
+        assert_eq!(n(), 101, "{engine}: it ran again on 100, not over it");
+        assert_eq!((hits_of(&hits, "/fast"), hits_of(&hits, "/slow")), (1, 1), "{engine}: each request went out once");
+        let entries = log_entries(&state, &slug);
+        let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("{engine}: {entries:#?}"));
+        assert_eq!(resumed["retries"], 1, "{engine}: {resumed}");
+        assert!(resumed["error"].is_null(), "{engine}: {resumed}");
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        assert!(report.ok(), "{engine}: {}", verify::describe(&report, None));
+        // Its first part answered with its token, which the log never holds; the rest re-run.
+        let matched = report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count();
+        assert_eq!(matched, 2, "{engine}: the resumed part that ran again re-runs offline: {}", verify::describe(&report, None));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same for a file: a resumed run whose file someone changed while it called out runs again
+/// on the file as it now is, and loses no line.
+#[test]
+fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-resumed-file-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lines.txt"), "first\n").unwrap();
+    let body = serde_json::json!({ "name": "ledger", "path": dir.display().to_string(), "access": "read-write" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = format!(
+        "flow paid-lines\nport 18192\nfolder ledger\n\nroute POST /hold (req) {{\n  before = ledger[\"lines.txt\"] ?? \"\"\n  respond {{ token: \"{{resume_token(paid)}}\", before: before }}\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body) }}).body\n  ledger[\"lines.txt\"] = \"{{before}}{{later}}\\n\"\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
+    assert_eq!(status, 200, "{held}");
+    let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
+    let paid = std::thread::scope(|s| {
+        let paid = s.spawn(|| data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""));
+        std::thread::sleep(Duration::from_millis(150));
+        std::fs::write(dir.join("lines.txt"), "first\nsecond\n").unwrap();
+        paid.join().unwrap()
+    });
+    assert_eq!(paid.0, 200, "{paid:?}");
+    assert_eq!(std::fs::read_to_string(dir.join("lines.txt")).unwrap(), "first\nsecond\nslow\n", "it ran again on the file as it now is");
+    assert_eq!(hits_of(&hits, "/slow"), 1, "its request went out once");
+    let entries = log_entries(&state, &slug);
+    let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap();
+    assert_eq!(resumed["retries"], 1, "{resumed}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A resumed run whose commit landed, the server stopping before it could forget the run, is
+/// resumed again by the same event: it reads the row its own commit wrote, so its check finds
+/// nothing changed, and its database has it marked done, so its commit applies nothing again.
+#[test]
+fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-resumed-done-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("counts.db");
+    let schema = "create table counts (id integer primary key, n integer not null, note varchar(16)); insert into counts (id, n) values (1, 0)";
+    let body = serde_json::json!({ "name": "shop", "path": file.display().to_string(), "access": "read-write", "schema": schema });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let slug = deploy_text(&state, &waiting_tally_text(&host), &host);
+    let (_, held, _) = data_call(&state, &slug, "POST", "/hold", "");
+    let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
+    let record = state.deployments.lock().unwrap()[&slug].parked.values().next().cloned().unwrap();
+    assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
+    // As if the server stopped once it had committed: the run is still parked.
+    state.deployments.lock().unwrap().get_mut(&slug).unwrap().parked.insert(record.run_id.clone(), record);
+    assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
+    let n: i64 = rusqlite::Connection::open(&file).unwrap().query_row("select n from counts where id = 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1, "applied once");
+    let entries = log_entries(&state, &slug);
+    let again = entries.iter().filter(|e| e["kind"] == "resume").nth(1).unwrap_or_else(|| panic!("{entries:#?}"));
+    assert!(again["error"].is_null() && again["retries"].is_null(), "committed at once, nothing written again: {again}");
+    assert_eq!(hits_of(&hits, "/slow"), 2, "its record of the first resume was lost with the stop");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The approved-payout sample: a deposit while the payout waits for its approval goes ahead (the
+/// waiting run holds nothing), and the approved run pays from the balance as it then is; one while
+/// the payout is in flight waits for the row the run holds, and runs again after it. The payout
+/// went out once; no deposit is written over.
+#[test]
+fn approved_payout_keeps_the_deposits_made_while_it_waited() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-payout-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema = "create table accounts (id integer primary key, balance integer not null); insert into accounts values (1, 100); create table payouts (account integer not null, amount integer not null, status integer)";
+    let body = serde_json::json!({ "name": "bank", "path": dir.join("bank.db").display().to_string(), "access": "read-write", "schema": schema });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = include_str!("../../holon-author/samples/approved-payout.holon").replace("\"httpbin.org\", \"/anything/payouts\"", &format!("\"{host}\", \"/slow\""));
+    let slug = deploy_text(&state, &text, &host);
+    let balance = || serde_json::from_str::<serde_json::Value>(&data_call(&state, &slug, "GET", "/accounts/1", "").1).unwrap()["balance"].as_i64().unwrap();
+
+    let (status, asked, _) = data_call(&state, &slug, "POST", "/payout/1", r#"{"amount":30}"#);
+    assert_eq!(status, 202, "{asked}");
+    let approve = serde_json::from_str::<serde_json::Value>(&asked).unwrap()["approve"].as_str().unwrap().to_string();
+    assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":50}"#).0, 200, "a deposit while it waits goes ahead");
+    let approved = std::thread::scope(|s| {
+        let approved = s.spawn(|| data_call(&state, &slug, "POST", &approve, r#"{"by":"ops"}"#));
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0, 200, "and one while it pays");
+        approved.join().unwrap()
+    });
+    assert_eq!(approved.0, 200, "{approved:?}");
+    assert_eq!(balance(), 140, "100, and 50, and 20, less 30");
+    assert_eq!(hits_of(&hits, "/slow"), 1, "paid once");
+    let entries = log_entries(&state, &slug);
+    // Resumed, it held the account's row from its payout until it committed; the deposit that came
+    // meanwhile waited for it, found the balance changed, and ran again on it.
+    let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("{entries:#?}"));
+    assert!(resumed["claims"].as_array().unwrap().iter().any(|c| c["key"] == "bank/accounts[1]"), "{resumed}");
+    assert!(entries.iter().any(|e| e["route"] == "POST /deposit/:account" && e["retries"] == 1), "{entries:#?}");
     let _ = std::fs::remove_dir_all(&dir);
 }

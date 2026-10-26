@@ -120,7 +120,7 @@ pub(crate) fn fire_with_state(
     waits: &mut RunWaits,
     resumed: Option<Resumed>,
 ) -> FiredRun {
-    let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, waits: &mut RunWaits, claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>)>| {
+    let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, waits: &mut RunWaits, claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>| {
         run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior, claim)
     };
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
@@ -132,48 +132,43 @@ pub(crate) fn fire_with_state(
         Ok(held) => held,
         Err(resource) => return turned_away(permit, inputs, extra_sourced, &nonce, &resource),
     };
-    // A resumed run is the same run it started as: pinned to the state it first read, run once,
-    // its writes landing on the live state when it finishes.
-    if let Some(r) = resumed {
-        let a = attempt(state.map(|_| r.state_before), &r.nonce, r.prior, waits, None);
-        let mut run = a.run;
-        if let Some(cell) = state {
-            let staged = folders::stage(waits.folders.as_ref(), &run.performed);
-            let mut live = cell.state.lock().unwrap();
-            match commit_locks(waits.folders.as_deref(), &[], &run.performed, limits) {
-                // Its databases' writes too, unchecked: a run marked done there applies nothing again.
-                Ok(_held) => match databases::commit(waits.folders.as_deref(), &run.run_id, &[], &run.performed, permit, limits, false, || {
-                    commit(&mut live, store, staged, &run.performed)
-                }) {
-                    databases::Commit::Done(mut failed, db) => {
-                        failed.extend(db);
-                        not_all_written(&mut run, failed);
-                    }
-                    databases::Commit::Again(why) | databases::Commit::Refused(why) => nothing_written(&mut run, &why),
-                },
-                Err(resource) => nothing_written(&mut run, &format!("its commit waited for {resource} past commit_wait_ms")),
-            }
-        }
-        return run;
-    }
+    // A resumed run is the same run it started as: pinned to the state it first read (its own
+    // deployment's cells and collections), its writes landing on the live state when it finishes,
+    // its earlier parts' requests answered from its record (`base`). What it shares with other
+    // deployments, files and databases, it reads as they are now, and checks at its commit as any
+    // run does (§7.4).
+    let (pinned, base) = match resumed {
+        Some(r) => (Some(r.state_before), r.prior),
+        None => (None, Vec::new()),
+    };
     let Some(cell) = state else {
-        return attempt(None, &nonce, Vec::new(), waits, None).run;
+        return attempt(None, &nonce, base, waits, None).run;
     };
     // Optimistic: run on a copy, no lock held, so runs of one deployment proceed side by side;
     // then commit only if everything it could have read is still as it found it. Otherwise run
-    // again from the state as it now is: the requests it already made are answered from its own
-    // record (`prior`), not sent again, and nothing it did is kept but its answer. A run about to
-    // call out first claims the keys it read and may write (claims.rs): one that finds them changed
-    // as it claims them runs again having sent nothing, and its commit never lands under another
-    // run's claim.
-    let mut prior = Vec::new();
+    // again from the state as it now is (a resumed run: from where it last waited, with fresh
+    // reads): the requests it already made are answered from its own record (`sent`), not sent
+    // again, and nothing it did is kept but its answer. A run about to call out first claims the
+    // keys it read and may write (claims.rs): one that finds them changed as it claims them runs
+    // again having sent nothing, and its commit never lands under another run's claim.
+    let mut sent: Vec<Round> = Vec::new();
     let mut records = Vec::new();
+    let prior = |sent: &[Round]| base.iter().chain(sent).cloned().collect::<Vec<Round>>();
     for retries in 0..OPTIMISTIC_ATTEMPTS {
-        waits.tokens.clear();
+        // Its resume tokens are derived from its id, which a fresh start changes; a resumed run's
+        // is its first's (and an old one's tokens are only in its record).
+        if pinned.is_none() {
+            waits.tokens.clear();
+        }
         // Copied in its own statement: a lock taken inside the call's arguments would be held
         // until the call returns, the whole run long.
-        let start = cell.state.lock().unwrap().clone();
-        let mut a = attempt(Some(start), &nonce, prior, waits, Some((cell, records)));
+        let start = match &pinned {
+            Some(s) => s.clone(),
+            None => cell.state.lock().unwrap().clone(),
+        };
+        let mut a = attempt(Some(start), &nonce, prior(&sent), waits, Some((cell, records, pinned.is_none())));
+        sent.append(&mut a.run.rounds);
+        a.run.rounds = sent.clone();
         if !a.overtaken {
             let written = claims::written_keys(&a.run.performed);
             if !cell.claims.wait_free(&written, &a.run.run_id, std::time::Instant::now() + limits.claim_wait) {
@@ -200,7 +195,7 @@ pub(crate) fn fire_with_state(
             // so a run of another deployment can't write them in between. One it can't lock in
             // time counts as changed: it runs again.
             match commit_locks(waits.folders.as_deref(), &a.run.reads, &a.run.performed, limits) {
-                Ok(_held) if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store, waits.folders.as_ref()) => {
+                Ok(_held) if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store, waits.folders.as_ref(), pinned.is_some()) => {
                     // Its databases' writes first, each in a transaction that checks what it read
                     // there; the rest lands while those are open.
                     let landed = databases::commit(waits.folders.as_deref(), &a.run.run_id, &a.run.reads, &a.run.performed, permit, limits, true, || {
@@ -237,13 +232,15 @@ pub(crate) fn fire_with_state(
             Some(c) => c.finish(),
             None => a.run.claims,
         };
-        prior = a.run.rounds;
     }
     // Contended that long: run once more holding the lock, so it can't be overtaken again. It
-    // claims nothing (it owns everything), once every claim before it is let go.
-    waits.tokens.clear();
-    if !cell.claims.wait_until_empty(std::time::Instant::now() + limits.claim_wait) {
-        eprintln!("holon: a run runs holding the state while a key is still claimed (claim_wait passed)");
+    // claims nothing (it owns everything), once every claim before it is let go (a resumed run's
+    // own state is pinned: no claim on it can change what it reads).
+    if pinned.is_none() {
+        waits.tokens.clear();
+        if !cell.claims.wait_until_empty(std::time::Instant::now() + limits.claim_wait) {
+            eprintln!("holon: a run runs holding the state while a key is still claimed (claim_wait passed)");
+        }
     }
     // A run of another deployment may hold a row, table, file or folder it may touch: it holds
     // them all, whole, for its whole run, once those are let go, so none calls out over them
@@ -267,7 +264,11 @@ pub(crate) fn fire_with_state(
         wanted.extend(f.all.databases.locks_on(&f.deployment, permit.databases_named()));
         f.all.locks.take(wanted, std::time::Instant::now() + limits.claim_wait).ok()
     });
-    let mut a = attempt(Some(live.clone()), &nonce, prior, waits, None);
+    let is_pinned = pinned.is_some();
+    let start = pinned.unwrap_or_else(|| live.clone());
+    let mut a = attempt(Some(start), &nonce, prior(&sent), waits, None);
+    sent.append(&mut a.run.rounds);
+    a.run.rounds = sent;
     let staged = folders::stage(waits.folders.as_ref(), &a.run.performed);
     // Its reads are checked under the folders' locks (taken now, if it couldn't hold them all
     // along), and one changed fails it: it is the last try.
@@ -276,7 +277,7 @@ pub(crate) fn fire_with_state(
         None => commit_locks(waits.folders.as_deref(), &a.run.reads, &a.run.performed, limits),
     };
     match commit_held {
-        Ok(_held) if still_as_read(&live, &live, &a.run.reads, permit, store, waits.folders.as_ref()) => {
+        Ok(_held) if still_as_read(a.start.as_ref().expect("a stateful run's start"), &live, &a.run.reads, permit, store, waits.folders.as_ref(), is_pinned) => {
             match databases::commit(waits.folders.as_deref(), &a.run.run_id, &a.run.reads, &a.run.performed, permit, limits, true, || {
                 commit(&mut live, store, staged, &a.run.performed)
             }) {
@@ -404,7 +405,9 @@ fn commit_locks(
 
 /// Whether `live` still holds everything a run that started from `start` could have read: each
 /// state cell it was granted (by its hash), and each collection and file read it made (asked
-/// again; a file as it now is on disk).
+/// again; a file as it now is on disk). A `pinned` run (a resumed one) is held to its first
+/// start's cells and collections, whatever they now are: only its file reads are checked.
+#[allow(clippy::too_many_arguments)]
 fn still_as_read(
     start: &State,
     live: &State,
@@ -412,12 +415,14 @@ fn still_as_read(
     permit: &Permit,
     store: &SharedStore,
     folders: Option<&Arc<folders::Scoped>>,
+    pinned: bool,
 ) -> bool {
     let cells: BTreeSet<&String> = start.iter().chain(live.iter()).map(|(k, _)| k).collect();
-    let cells_unchanged = cells
-        .into_iter()
-        .filter(|k| !k.starts_with('#') && permit.allows(&Capability::StateRead((*k).clone())))
-        .all(|k| start.hash_of(k) == live.hash_of(k));
+    let cells_unchanged = pinned
+        || cells
+            .into_iter()
+            .filter(|k| !k.starts_with('#') && permit.allows(&Capability::StateRead((*k).clone())))
+            .all(|k| start.hash_of(k) == live.hash_of(k));
     if !cells_unchanged {
         return false;
     }
@@ -429,7 +434,7 @@ fn still_as_read(
             return true;
         }
         if !matches!(&r.request, Value::Record(q) if q.contains_key("folder")) {
-            return now.answer(&r.request) == r.answer;
+            return pinned || now.answer(&r.request) == r.answer;
         }
         files.as_mut().is_none_or(|files| files.answer(&r.request, false).is_ok_and(|(answer, _)| answer == r.answer))
     })
@@ -480,7 +485,7 @@ fn run_attempt(
     waits: &mut RunWaits,
     nonce: &[u8; 16],
     prior: Vec<Round>,
-    claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>)>,
+    claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>,
 ) -> Attempt {
     let state_before = start.as_ref().map(State::values).unwrap_or_default();
     let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce);
@@ -530,11 +535,13 @@ fn run_attempt(
         files: folders::Readable::new(Arc::clone(f), permit),
         databases: databases::Readable::new(Arc::clone(f), permit),
     });
-    waits.claiming = claim.map(|(cell, records)| {
+    // A resumed run claims only what it shares (`own` false): its own collections it reads as
+    // they were when it started, which no claim on them now can change.
+    waits.claiming = claim.map(|(cell, records, own)| {
         claims::Claiming::new(
             Arc::clone(cell),
             store.clone(),
-            permit.collections_written(),
+            if own { permit.collections_written() } else { BTreeSet::new() },
             permit.collections_read(),
             shared,
             to_hex(&run_id),

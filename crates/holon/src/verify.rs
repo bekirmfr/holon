@@ -409,8 +409,10 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, res
     // Its outbound requests are answered from the record (the earlier parts', then its own), never
     // sent again.
     let prior: Vec<Round> = earlier.iter().flat_map(|e| &e.rounds).chain(&entry.rounds).map(round_of).collect();
+    // Its reads, its own first: a resumed part reads again what it shares (files, databases), and
+    // its last part's answers are the ones it finished with.
     let mut reads: Vec<(Vec<u32>, Value, Option<Value>)> = Vec::new();
-    for read in earlier.iter().flat_map(|e| &e.reads).chain(&entry.reads) {
+    for read in entry.reads.iter().chain(earlier.iter().rev().flat_map(|e| &e.reads)) {
         let answer = match texts.answer(read) {
             Ok(answer) => answer,
             Err(not) => return not,
@@ -452,7 +454,7 @@ fn rerun(entry: &LogEntry, line: &str, earlier: &[&LogEntry], texts: &Texts, res
         true => Rerun::Matched,
         false if hidden => Rerun::Skipped("it used a secret or a resume token, which the log never holds".into()),
         false if entry.retries > 0 => {
-            Rerun::Skipped("it ran again after what it read changed, and the log keeps only its last attempt".into())
+            Rerun::Skipped("it ran again after what it read changed, and its entry holds only its last attempt's requests (logged before entries held them all)".into())
         }
         false => Rerun::Differs(differs.join(", ")),
     }

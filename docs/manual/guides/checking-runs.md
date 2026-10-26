@@ -79,8 +79,8 @@ FAILED
 
 Some runs can't be run again, and are counted, not failed: a run that used a secret or a resume
 token (the log never holds their values), a run that failed (a budget ran out), a request no route
-took, a run that ran again after what it read changed, and a run that read a file whose text the
-export doesn't hold.
+took, a run logged before entries kept every attempt's requests that ran again after what it read
+changed, and a run that read a file whose text the export doesn't hold.
 
 ### Files
 

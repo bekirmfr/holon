@@ -1,13 +1,14 @@
 # Databases: SQL and documents as host resources, and how runs share what they write (L4)
 
-**Status:** slices 1 to 5 built (2026-10-26): commit locks per file, with intent locks on the
+**Status:** slices 1 to 6 built (2026-10-26): commit locks per file, with intent locks on the
 folder (`locks.rs`, §7.1); SQLite databases (`databases.rs`, the `database` header,
 `db_query`/`db_one`/`db_exec`, `DbLimits`, the commit transaction with `holon_commits`; sample
 `orders-api`, guide `docs/manual/guides/databases.md`); and claims on rows, tables, files and
 folders in the server's table (`claims.rs`, §7.2; sample `refund-once`); Postgres and MySQL
 (`engines.rs`, §8), with claims held in the database for several servers; and run locks, an
-admin's setting on a database or folder (`--lock run`, §7.3; sample `ticket-numbers`). A
-database's reads are logged whole: its `keep` (§5) isn't built. Slices 6 and 7 are design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
+admin's setting on a database or folder (`--lock run`, §7.3; sample `ticket-numbers`); and
+resumed runs that check what they share at their commit (§7.4; sample `approved-payout`). A
+database's reads are logged whole: its `keep` (§5) isn't built. Slice 7 is design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
 [host resources](host-resources-L4.md) (also design only: resources the host defines, their
 addresses and timeline) and [key claims](key-claims-L4.md) (built: `claims.rs`).
 
@@ -428,6 +429,27 @@ again **from where it last waited**, with fresh reads: the events delivered and 
 made are answered from its record (the parked record's `events` and `rounds`), as an optimistic
 run's `prior` is (§13, fork 10).
 
+- **Built (slice 6):** the resumed branch is gone: a resumed run goes through the optimistic loop
+  of `fire_with_state` as a fresh one does, `pinned` to the state it first read. Each attempt
+  starts from that state (its own cells and collections, as before), its earlier parts' rounds
+  and its events answered from its record, and reads its files and databases as they are then.
+  It claims only what it shares (rows, tables, files and folders it reads and may write; never
+  its own collections, which no claim can change under it), and its commit takes the commit
+  locks over its reads and writes, checks its file reads (`still_as_read`, which skips its cells
+  and collections when pinned) and runs its database reads again in the commit transaction, as
+  any run's. Changed, it runs again (four times, then once more holding everything it may touch,
+  as a fresh run does). Its resume tokens stay its first's: its id doesn't change.
+- **A database marked done** (`holon_commits`) needs nothing more: a run resumed again after its
+  commit landed (the server stopped before forgetting it) reads what its own commit wrote, so its
+  check finds nothing changed, and the mark keeps its writes from applying twice.
+- **Fixed on the way:** an attempt's rounds are only the requests it sent itself, so a run that
+  ran twice answered its third attempt from its second's rounds alone (empty, its first's
+  requests answered from its record), and sent its first's again; and its log entry held only its
+  last attempt's requests, so `verify` couldn't re-run it. Every attempt's rounds are now carried
+  to the next and kept in the entry: a run that ran again re-runs offline. And `verify` answers a
+  resumed part's reads from its own entry first, then its earlier parts': a file or row read
+  again on resume answers as the part that finished found it.
+
 ## 8. Engines
 
 | Engine | Client | Commit | Claims across servers |
@@ -488,6 +510,10 @@ end-to-end tests:
 - **slice 5, `ticket-numbers`:** numbered tickets from one counter row, on a database bound
   `--lock run`: twenty requests at once take twenty numbers one after the other, each run
   committing on its first try.
+- **slice 6, `approved-payout`:** a payout from an account balance that waits for its approval:
+  a deposit while it waits goes ahead, and the approved run pays from the balance as it then is,
+  holding the row from its payout to its commit; a change from outside Holon while the payout is
+  in flight sends it round again from the approval, the payout not sent twice.
 - **slice 7, `atlas-notes`:** notes kept in a MongoDB collection.
 
 ## 11. Tests

@@ -184,6 +184,41 @@ shows it beside `orders-api`, on the same database.
 - `holon check` says it, under `while it runs:`, and the run log lists each row held, how long it
   waited, and whether it found the row changed. A run waits `claim_wait_ms` at most (10 s).
 
+## Runs that wait
+
+A run that waits for an event (`await`) holds nothing while it waits: a row it read is anyone's
+to change until the event comes. When it does, the run goes on from where it waited, its own
+state as it first found it, and its databases and files **as they are now**: it reads them again.
+Its commit checks those reads as any run's does, and holds what it reads before it calls out, so
+if a row changed again in between, it runs again from where it waited, its requests and the
+event answered from its record, not sent or asked again.
+
+```holon
+flow approved-payout
+port 8153
+database bank
+
+route POST /payout/:account (req) {
+  account = bank.one("select id, balance from accounts where id = $1", req.params.account)
+  respond { approve: "/approve/{resume_token(approved)}", balance: account.balance }, status: 202
+  approved = await approved, expires: 1d
+  sent = http.post("httpbin.org", "/anything/payouts", headers: { "content-type": "application/json" }, body: json({ account: account.id, amount: req.json.amount, by: parse_json(approved.body).by }))
+  bank.exec("update accounts set balance = $1 where id = $2", account.balance - req.json.amount, account.id, expect: 1)
+  bank.exec("insert into payouts (account, amount, status) values ($1, $2, $3)", account.id, req.json.amount, sent.status)
+}
+
+route POST /approve/:token (req) resumes approved {
+  respond "approved"
+}
+```
+
+- A deposit made while the payout waits for its approval is kept: the approved run reads the
+  balance with the deposit in it.
+- One made while the payout is being sent waits for the row the run holds, and runs again on
+  the balance the run wrote.
+- One made by a program outside Holon at that moment is found by the run's commit: the run goes
+  round again from its approval, on the new balance, and its payout isn't sent again.
+
 ## Held for whole runs
 
 The check at commit, and holding what a run read before it calls out, let runs go side by side
