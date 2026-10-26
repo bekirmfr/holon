@@ -46,7 +46,10 @@ not JSON to be parsed: the same sentences `holon check` and the editor use.
    saves the flow (`POST /flows`, under the slug) and answers what a person must approve and
    where: the editor's flows page, which deploys it with the approval dialog it already has.
    After that, a new version that needs nothing more deploys from the agent at once, and one that
-   needs more goes back to the person. The host owner can pre-approve kinds of capability in the
+   needs more goes back to the person. A version whose code changed and that reads a secret
+   needs more too: the previous grant approved what the old code did with it. A required secret
+   sends it back to the person; an optional one deploys withheld (`revoked`, its reads refused)
+   until a person grants it back. An agent's deploy never starts a paused or stopped deployment. The host owner can pre-approve kinds of capability in the
    policy file, as today.
 2. **Refusals and missing secrets are said, not worked around.** A host refusal (a limit over its
    ceiling, plain HTTP where the policy forbids it) is the answer. Secrets are set by an admin

@@ -1044,6 +1044,12 @@ fn a_limit_can_be_lowered_without_a_redeploy_but_not_raised() {
     assert_eq!(view["status"], "running");
     assert_eq!(limits(&state).request_timeout, Duration::from_secs(60));
     assert_eq!(limits(&state).max_requests, 5, "the other lowered limit stays");
+
+    // A redeploy doesn't undo what the host lowered.
+    let redeployed = deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ack, "requirements": requirements }));
+    assert_eq!(redeployed.status_code, 200);
+    assert_eq!(limits(&state).max_requests, 5, "still lowered after a redeploy");
+    assert_eq!(limits(&state).request_timeout, Duration::from_secs(60), "what the deploy asked anew is granted");
 }
 
 /// The policy file read again holds every deployment to it at once: a ceiling lowered below what a

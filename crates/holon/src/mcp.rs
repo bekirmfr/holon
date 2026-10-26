@@ -856,6 +856,11 @@ mod tests {
         json_of(&person, "POST", "/deploy", ask(preview["needs_approval"].clone())).unwrap();
         let v2 = SLUGS_TEXT.replace("\"unsigned\"", "\"not signed\"");
         assert!(deploy(&agent, &v2, slug).unwrap().starts_with("Deployed \"agent-slugs\""));
+        // Its code changed, so the secret it can run without is withheld until a person grants it back.
+        let grant = json_of(&person, "GET", "/deployments/agent-slugs/grant", None).unwrap();
+        let receipt = json!("SecretRead(\"receipt_key\")");
+        assert!(!grant["grant"]["items"].as_array().unwrap().contains(&receipt), "{grant}");
+        assert!(grant["grant"]["revoked"].as_array().unwrap().contains(&receipt), "offered back: {grant}");
         let called = call(&agent, &json!({ "slug": "agent-slugs", "method": "POST", "path": "/slugs", "body": { "title": "Hi", "author": "Ada" } })).unwrap();
         assert!(called.starts_with("POST /slugs → 200"), "{called}");
         let listed = runs(&agent, "agent-slugs", 5).unwrap();
@@ -879,6 +884,44 @@ mod tests {
         let replaced = json_of(&agent, "POST", "/flows", Some(Body::Json(json!({ "name": "mine", "document": {} })))).unwrap_err();
         assert!(replaced.contains("saved by ada") && replaced.contains("doesn't replace"), "{replaced}");
         assert_eq!(person.send("POST", "/deployments/agent-slugs/stop", None).unwrap().0, 200);
+    }
+
+    /// An agent's new code never inherits a secret a person let the old code read (redaction
+    /// catches only the literal value, so the agent could read it out encoded), and an agent
+    /// never starts a deployment a person stopped by deploying over it.
+    #[test]
+    fn an_agent_neither_inherits_a_secret_nor_starts_a_stopped_deployment() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let v1 = "flow peek\nport 8231\n\nroute GET /k (req) {\n  respond { k: sha256(secret.api_key) }, missing: 400\n}\n";
+        let v2 = v1.replace("sha256", "base64");
+        // A person deploys the version that hashes the key, and sets the key.
+        let plan = agent::plan(v1).unwrap();
+        for unit in &plan.units {
+            agent.send("POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
+        }
+        let ask = |unit: &str, acknowledge: Value| Some(Body::Json(json!({ "slug": "peek", "unit": unit, "acknowledge": acknowledge, "document": plan.document })));
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": plan.unit })))).unwrap();
+        json_of(&person, "POST", "/deploy", ask(&plan.unit, preview["needs_approval"].clone())).unwrap();
+        json_of(&person, "POST", "/deployments/peek/secrets/api_key", Some(Body::Json(json!({ "value": "sk_live_not_for_agents" })))).unwrap();
+        // The agent's version that would read it out encoded waits for a person.
+        assert!(deploy(&agent, &v2, Some("peek")).unwrap().starts_with("Not deployed yet"));
+        let leaky = agent::plan(&v2).unwrap();
+        let preview = json_of(&agent, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": leaky.unit })))).unwrap();
+        assert_eq!(preview["needs_approval"], json!(["SecretRead(\"api_key\")"]), "{preview}");
+        let refused = json_of(&agent, "POST", "/deploy", ask(&leaky.unit, json!([]))).unwrap_err();
+        assert!(refused.contains("needs a person's approval") && refused.contains("SecretRead(\"api_key\")"), "{refused}");
+        let answered = json_of(&agent, "POST", "/deployments/peek/request", Some(Body::Json(json!({ "method": "GET", "url": "/k" })))).unwrap();
+        assert!(!answered.to_string().contains("c2tfbGl2ZV"), "the key isn't read out as base64: {answered}");
+        // The same code it may deploy again while it runs; once a person stops it, it stays stopped.
+        json_of(&agent, "POST", "/deploy", ask(&plan.unit, json!([]))).unwrap();
+        assert_eq!(person.send("POST", "/deployments/peek/stop", None).unwrap().0, 200);
+        let restarted = json_of(&agent, "POST", "/deploy", ask(&plan.unit, json!([]))).unwrap_err();
+        assert!(restarted.contains("is stopped") && restarted.contains("doesn't start"), "{restarted}");
+        assert_eq!(json_of(&person, "GET", "/deployments", None).unwrap()["deployments"][0]["status"], "stopped");
     }
 
     /// A deploy that needs approval saves the flow for a person, but never over a flow someone
