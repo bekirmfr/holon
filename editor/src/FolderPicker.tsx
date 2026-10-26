@@ -3,7 +3,7 @@
 // choice: when the editor runs on that machine, the OS's own folder dialog opens there; otherwise
 // (or "browse here instead") this lists the server's folders to click through.
 
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { browseFolders, pickFolder, type FolderListing } from "./server";
 
 const button: CSSProperties = { font: "inherit", fontSize: 12, padding: "4px 12px", borderRadius: 3, cursor: "pointer" };
@@ -17,15 +17,20 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
   // The OS's dialog is open on the server's machine, waiting for an answer.
   const [waiting, setWaiting] = useState(false);
 
+  // Only the newest listing asked for is shown, and typing in the field is newer than any: the
+  // home folder's, asked as it opens, may come back after a folder was typed or gone to.
+  const asked = useRef(0);
   const go = useCallback(async (path?: string) => {
+    const mine = ++asked.current;
     try {
       const l = await browseFolders(path);
+      if (mine !== asked.current) return null;
       setListing(l);
       setTyped(l.path);
       setError("");
       return l;
     } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
+      if (mine === asked.current) setError(String(e instanceof Error ? e.message : e));
       return null;
     }
   }, []);
@@ -33,8 +38,11 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
   useEffect(() => {
     let gone = false;
     (async () => {
-      // Where the path field points, else the home folder.
-      const l = (start.trim() && (await go(start.trim()))) || (await go());
+      // Where the path field points, else the home folder, unless a folder was typed meanwhile.
+      const before = asked.current;
+      const opened = start.trim() ? await go(start.trim()) : null;
+      const typedMeanwhile = asked.current !== before + (start.trim() ? 1 : 0);
+      const l = opened || (typedMeanwhile ? null : await go());
       if (gone || !l?.native) return;
       setWaiting(true);
       try {
@@ -108,7 +116,10 @@ export function FolderPicker({ start, onChoose, onClose }: { start: string; onCh
               <input
                 aria-label="folder to show"
                 value={typed}
-                onChange={(e) => setTyped(e.target.value)}
+                onChange={(e) => {
+                  asked.current++;
+                  setTyped(e.target.value);
+                }}
                 style={{ flex: 1, font: "inherit", fontSize: 12, color: "#e6eefb", background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 3, padding: "4px 6px" }}
               />
               <button type="submit" style={chip}>
