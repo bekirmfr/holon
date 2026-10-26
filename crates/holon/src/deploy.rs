@@ -538,7 +538,12 @@ pub(crate) fn handle_get_deployments(deployments: &Mutex<BTreeMap<String, Deploy
 pub(crate) fn handle_get_history(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
     let deployments = deployments.lock().unwrap();
     match deployments.get(slug) {
-        Some(dep) => Response::json(&HistoryBody { slug: slug.to_string(), ticks: dep.history.clone() }),
+        Some(dep) => {
+            // Redacted when kept; again here, against the secrets as they are now.
+            let mut reply = serde_json::to_value(HistoryBody { slug: slug.to_string(), ticks: dep.history.clone() }).unwrap_or_default();
+            Redactor::of(&dep.secrets).json(&mut reply);
+            Response::json(&reply)
+        }
         None => Response::empty_404(),
     }
 }

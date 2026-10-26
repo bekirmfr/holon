@@ -108,12 +108,11 @@ pub(crate) fn fire_one_clock_tick(
     log_run(deployments, &slug, entry);
     let FiredRun { outputs, performed, .. } = run;
 
-    println!(
-        "clock tick [{slug}] at {epoch_seconds}: outputs={outputs:?}, {} effect(s) performed",
-        performed.len()
-    );
+    // What it produced isn't printed: a secret or a resume token in it would land in the server's
+    // console, which nothing redacts.
+    println!("clock tick [{slug}] at {epoch_seconds}: {} effect(s) performed", performed.len());
 
-    let tick = TickEntry {
+    let mut tick = TickEntry {
         at_epoch_seconds: epoch_seconds,
         outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
         performed: performed
@@ -121,6 +120,9 @@ pub(crate) fn fire_one_clock_tick(
             .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
             .collect(),
     };
+    // Redacted as its log entry is: the history is read by whoever may read the deployment.
+    redact_tick(&mut tick, &Redactor::of(secrets));
+    redact_tick(&mut tick, &Redactor::tokens(&waits.tokens));
 
     {
         let mut deployments = deployments.lock().unwrap();
@@ -139,6 +141,15 @@ pub(crate) fn fire_one_clock_tick(
     }
 }
 
+/// Every value a tick's history keeps, redacted by `redactor`.
+fn redact_tick(tick: &mut TickEntry, redactor: &Redactor) {
+    for output in tick.outputs.iter_mut().flatten() {
+        redactor.svalue(output);
+    }
+    for performed in &mut tick.performed {
+        redactor.svalue(&mut performed.payload);
+    }
+}
 
 /// The clock scheduler — the one genuinely new runtime shape in this whole project: a thread
 /// that acts on its own, on a timer, with nobody asking. Spawned once at startup with its own

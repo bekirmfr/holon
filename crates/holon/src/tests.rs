@@ -577,6 +577,32 @@ fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
     assert_eq!(ticks.len(), 1);
 }
 
+/// A clock run's history is redacted as its log entry is: whoever may read the deployment reads
+/// it. Here the write of a secret into state is refused, but the run's outputs still hold it.
+#[test]
+fn a_clock_runs_history_never_shows_a_secret() {
+    let state = test_state();
+    let plan = holon_author::agent::plan("flow leak\nevery 5s\n\nstate.k = secret.api_key\n").unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let unit = parse_hash(&plan.unit).unwrap();
+    let body = serde_json::json!({ "slug": "leak", "unit": plan.unit, "interval_seconds": 5 });
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&body).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    assert_eq!(deploy_json(&state, "leak", unit, serde_json::json!({ "interval_seconds": 5, "acknowledge": asked })).status_code, 200);
+    let value = "sk_live_kept_off_the_history";
+    let set = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+    assert_eq!(route(&state, &req("POST", "/deployments/leak/secrets/api_key", set)).status_code, 200);
+
+    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now());
+    let history = String::from_utf8(body_bytes(route(&state, &req("GET", "/deployments/leak/history", vec![])))).unwrap();
+    assert!(history.contains("\"ticks\":[{"), "it ticked: {history}");
+    assert!(!history.contains(value), "the history leaks it: {history}");
+    assert!(history.contains("‹secret:api_key›"), "{history}");
+    assert!(state.deployments.lock().unwrap()["leak"].history[0].outputs.iter().flatten().all(|o| !format!("{o:?}").contains(value)), "not kept either");
+}
+
 #[test]
 fn deployments_history_for_unknown_slug_is_404() {
     let state = test_state();
