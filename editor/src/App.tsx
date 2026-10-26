@@ -159,6 +159,8 @@ function Canvas({
 
   // The last deploy or deployment error, shown in the toolbar and on the deployed page.
   const [deployError, setDeployError] = useState("");
+  // The deployment card asked for from the admin page's permissions, at its `n`th asking.
+  const [focus, setFocus] = useState<{ slug: string; n: number } | null>(null);
   // Where the docs tab is in the manual (null: its index): kept here, so it is where it was when
   // the tab shows again.
   const [manualAt, setManualAt] = useState<ManualAt | null>(null);
@@ -889,7 +891,15 @@ function Canvas({
               }}
             />
           )}
-          {shown === "admin" && me.role === "admin" && <AdminPage me={me.name} />}
+          {shown === "admin" && me.role === "admin" && (
+            <AdminPage
+              me={me.name}
+              onOpenDeployment={(slug) => {
+                setFocus((f) => ({ slug, n: (f?.n ?? 0) + 1 }));
+                start.openPage("deployed");
+              }}
+            />
+          )}
           {shown === "docs" && (
             <Suspense fallback={<div style={{ color: "#7e8ea8" }}>loading the manual…</div>}>
               <ManualPage at={manualAt} onGo={setManualAt} onTry={openText} />
@@ -933,6 +943,7 @@ function Canvas({
               onDelete={deploymentTable.onDelete}
               onView={onView}
               onChanged={refreshDeployments}
+              focus={focus}
             />
           )}
         </div>

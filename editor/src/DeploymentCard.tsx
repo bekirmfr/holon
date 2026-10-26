@@ -2,7 +2,7 @@
 // the state it ended with), and delete, which is only offered once it is stopped. Mirrors the
 // server's lifecycle.rs.
 
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { formatOutputs, summarizeState } from "./diagnostics";
 import { describeItem, permissionKind } from "./holon";
 import { KindBadge, ManifestSection } from "./Manifest";
@@ -50,6 +50,7 @@ export function DeploymentCard({
   onTriggerInputChange,
   onTrigger,
   result,
+  focus,
 }: {
   entry: DeploymentEntry;
   /** Run (optionally from a session or fresh), pause or stop. */
@@ -63,8 +64,15 @@ export function DeploymentCard({
   onTriggerInputChange: (v: string) => void;
   onTrigger: () => void;
   result?: { ok: true; result: TriggerResult } | { ok: false; message: string };
+  /** Asked for from elsewhere (the admin page's permissions): each new value brings the card into
+   *  view with its permissions open. */
+  focus?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const card = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focus !== undefined) card.current?.scrollIntoView({ block: "start" });
+  }, [focus]);
   const [sessions, setSessions] = useState<SessionEntry[] | null>(null);
   const [from, setFrom] = useState<string>("latest");
   const [msg, setMsg] = useState("");
@@ -90,7 +98,7 @@ export function DeploymentCard({
   const canTrigger = entry.triggers.includes("Ingress") && entry.status === "running";
 
   return (
-    <div style={{ borderTop: "1px solid #1b2a45", padding: "8px 0", fontSize: 11, display: "flex", flexDirection: "column", gap: 4 }}>
+    <div ref={card} aria-label={`deployment ${entry.slug}`} style={{ borderTop: "1px solid #1b2a45", padding: "8px 0", fontSize: 11, display: "flex", flexDirection: "column", gap: 4 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ color: look.color }} title={entry.status}>
           {look.mark}
@@ -178,7 +186,7 @@ export function DeploymentCard({
           getManifest(entry.slug).then((m) => ({ items: m.items, optional: m.optional, trigger: m.trigger, notGranted: m.not_granted, hash: m.hash }))
         }
       />
-      <Permissions slug={entry.slug} version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`} onChanged={onChanged} />
+      <Permissions slug={entry.slug} version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`} onChanged={onChanged} focus={focus} />
 
       {open &&
         (sessions ?? []).slice().reverse().map((s) => (
@@ -229,8 +237,11 @@ export function DeploymentCard({
 /** What the deployment is granted, with the host's controls: revoke an item, grant back one it
  *  asks for, and whether an uncovered grant pauses it or keeps it running. `version` changes when
  *  the deployment might have (its status or attention), so an open list follows. */
-function Permissions({ slug, version, onChanged }: { slug: string; version: string; onChanged: () => void }) {
+function Permissions({ slug, version, onChanged, focus }: { slug: string; version: string; onChanged: () => void; focus?: number }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (focus !== undefined) setOpen(true);
+  }, [focus]);
   const [view, setView] = useState<GrantView | null>(null);
   // Which items it can run without, and what starts it: from its manifest.
   const [kinds, setKinds] = useState<{ optional: string[]; trigger: string | null }>({ optional: [], trigger: null });

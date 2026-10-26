@@ -51,6 +51,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or("")) {
         return Some(response);
     }
+    // Who holds what (grants.rs): a server without accounts has deployments too.
+    if request.method() == "GET" && url == "/admin/grants" {
+        return Some(crate::grants::handle_get_admin_grants(state));
+    }
     let Some(accounts) = state.access.accounts() else { return Some(err(404, "this server has no accounts")) };
     let by = caller.name.as_deref().unwrap_or("");
     let method = request.method();

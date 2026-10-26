@@ -621,15 +621,39 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   expect(await again.text()).toContain("changed 0 rows, not 1 row");
   expect((await (await request.get(`${base}/order/${id}`)).json()).refunded).toBe(1);
 
-  // The admin page lists the database, and binds another, made by its schema.
+  // The admin page's resources list the database, its tables and who uses it, and bind another,
+  // made by its schema.
   await page.getByRole("button", { name: "admin", exact: true }).click();
+  const sections = page.getByRole("tablist", { name: "admin sections" });
+  await sections.getByRole("tab", { name: "resources" }).click();
   await expect(page.getByText(join(FOLDERS, "shop.db"), { exact: true })).toBeVisible();
+  await expect(page.getByLabel("shop's tables")).toContainText("tables: orders");
+  await expect(page.getByLabel("shop's tables")).not.toContainText("holon_commits");
   const scratch = join(FOLDERS, `scratch-${Date.now()}.db`);
   await page.getByLabel("database name").fill("scratch");
   await page.getByLabel("database path").fill(scratch);
   await page.getByLabel("database schema").fill("create table notes (id integer primary key, text text)");
   await page.getByRole("button", { name: "bind database" }).click();
   await expect(page.getByText(scratch, { exact: true })).toBeVisible();
+  await expect(page.getByLabel("scratch's tables")).toHaveText(/tables: notes/);
+  // A URL typed in where its secret's source goes is refused here, never sent.
+  await page.getByLabel("database path").fill("postgres://u:p@db.example/shop");
+  await expect(page.getByRole("button", { name: "bind database" })).toBeDisabled();
+  await page.getByLabel("database path").fill("");
+
+  // Permissions: the policy, read only, and who may touch the shop: orders-api, by table, with
+  // a link to its card, where its grant changes.
+  await sections.getByRole("tab", { name: "permissions" }).click();
+  await expect(page.getByRole("button", { name: "read the policy again" })).toBeVisible();
+  const shop = page.getByLabel("database shop", { exact: true });
+  await expect(shop).toContainText("orders-api");
+  await expect(shop).toContainText("writes orders");
+  await page.getByLabel("show what").selectOption("folders");
+  await expect(shop).toHaveCount(0);
+  await page.getByLabel("show what").selectOption("databases");
+  await shop.getByRole("button", { name: "card →" }).first().click();
+  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: /^deployed/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("deployment orders-api", { exact: true })).toContainText("permissions ▾");
 });
 
 test("refund-once, beside orders-api on one database, calls the payment API once for two refunds of one order at once", async ({ page, request }) => {
@@ -678,6 +702,7 @@ test("ticket-numbers, on a database held for whole runs, hands out twenty number
 
   // The admin page says the database is held for whole runs.
   await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
   await expect(page.getByText(join(FOLDERS, "tickets.db"), { exact: true }).locator("..")).toContainText("held for whole runs");
 });
 
@@ -784,6 +809,7 @@ test("the admin page's browse… lists the server's folders, and the one chosen 
   const { join } = await import("node:path");
   await page.goto("/");
   await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
   await page.getByRole("button", { name: "browse…" }).click();
   // The e2e server shows no OS dialog (HOLON_NO_FOLDER_DIALOG), so the editor lists the folders.
   const picker = page.getByRole("dialog", { name: "choose a folder" });

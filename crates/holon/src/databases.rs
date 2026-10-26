@@ -377,6 +377,32 @@ impl Databases {
         Ok(self.open.lock().unwrap().entry(at).or_insert(opened).clone())
     }
 
+    /// The tables of the database bound as `name` (for `deployment`, else the server's binding),
+    /// a MongoDB's collections, read now, Holon's own (`holon_…`) left out: what flows may be
+    /// granted of it. None: nothing is bound so.
+    pub(crate) fn tables(&self, name: &str, deployment: Option<&str>) -> Result<Option<Vec<String>>, String> {
+        let database = {
+            let bound = self.bound.read().unwrap();
+            match deployment {
+                Some(slug) => bound.deployments.get(slug).and_then(|d| d.get(name)).cloned(),
+                None => bound.server.get(name).cloned(),
+            }
+        };
+        let Some(database) = database else { return Ok(None) };
+        let mut tables = match self.connection(&database)? {
+            Open::Sqlite(c) => {
+                let conn = c.lock().unwrap();
+                let sql = "select name from sqlite_schema where type in ('table', 'view') and substr(name, 1, 7) != 'sqlite_' order by name";
+                let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+                stmt.query_map([], |r| r.get::<_, String>(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?
+            }
+            Open::Remote(r) => r.tables()?,
+            Open::Mongo(m) => m.collections()?,
+        };
+        tables.retain(|t| !t.starts_with("holon_"));
+        Ok(Some(tables))
+    }
+
     /// The Postgres, MySQL or MongoDB database open at `at`, if one is.
     fn shared_at(&self, at: &str) -> Option<Shared> {
         self.open.lock().unwrap().get(at).and_then(Open::shared)
@@ -1318,6 +1344,17 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
     }
     let name = url.strip_prefix("/admin/databases/")?;
     let deployment = request.get_param("deployment").filter(|d| !d.is_empty());
+    // `GET /admin/databases/<name>/tables`: its tables, read now.
+    if let Some(name) = name.strip_suffix("/tables") {
+        if method != "GET" {
+            return Some(Response::empty_404());
+        }
+        return Some(match all.tables(name, deployment.as_deref()) {
+            Ok(Some(tables)) => Response::json(&serde_json::json!({ "tables": tables })),
+            Ok(None) => err(404, format!("no database {name:?} is bound{}", deployment.map_or(String::new(), |d| format!(" for {d}")))),
+            Err(e) => err(502, format!("the database {name:?} couldn't be read: {e}")),
+        });
+    }
     if method != "DELETE" {
         return Some(Response::empty_404());
     }

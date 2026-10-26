@@ -14,7 +14,7 @@ async function saved(request: APIRequestContext, token: string, holds: (prefs: s
 
 test("the welcome opens on start until told not to; home keeps its panes", async ({ page, request, adminToken }) => {
   await page.goto("/");
-  const tabs = page.getByRole("tablist");
+  const tabs = page.getByRole("tablist", { name: "open tabs" });
   await expect(tabs.getByRole("tab", { name: "welcome" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByText(/^Welcome to Holon, e2e$/)).toBeVisible();
   await page.getByRole("button", { name: "▸ Secrets" }).click();
@@ -58,7 +58,7 @@ test("a welcome that loads late doesn't take you from a page you opened", async 
     await route.continue();
   });
   await page.goto("/");
-  const tabs = page.getByRole("tablist");
+  const tabs = page.getByRole("tablist", { name: "open tabs" });
   await page.getByRole("button", { name: "flows", exact: true }).click();
   await expect(tabs.getByRole("tab", { name: "flows" })).toHaveAttribute("aria-selected", "true");
   release();
@@ -69,7 +69,7 @@ test("a welcome that loads late doesn't take you from a page you opened", async 
 
 test("pages open in tabs of their own; every tab closes; with none open, home shows", async ({ page }) => {
   await page.goto("/");
-  const tabs = page.getByRole("tablist");
+  const tabs = page.getByRole("tablist", { name: "open tabs" });
   // No flow tab to begin with: home (and the welcome) only.
   await expect(tabs.getByRole("tab")).toHaveText([/^home/, /^welcome/]);
   await page.getByRole("button", { name: "admin", exact: true }).click();

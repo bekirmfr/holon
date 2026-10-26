@@ -123,6 +123,14 @@ impl Mongo {
         Ok(())
     }
 
+    /// Its collections, read now, MongoDB's own (`system.…`) left out.
+    pub(crate) fn collections(&self) -> Result<Vec<String>, String> {
+        let mut names = self.db.list_collection_names().run().map_err(|e| format!("{} didn't list its collections: {}", self.address, said(&e)))?;
+        names.retain(|n| !n.starts_with("system."));
+        names.sort();
+        Ok(names)
+    }
+
     fn collection(&self, name: &str) -> Collection<Document> {
         let options = CollectionOptions::builder().read_concern(ReadConcern::majority()).write_concern(WriteConcern::majority()).build();
         self.db.collection_with_options(name, options)

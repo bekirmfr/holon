@@ -518,9 +518,67 @@ run's `prior` is (§13, fork 10).
   commit's wait for its locks.
 - **The timeline** (host-resources §5, design): `read`, `write` and `claim` rows under
   `db:<id>/<table>`, each pointing to its run.
-- **The editor:** the deploy dialog lists tables (through `describe.rs`); the inspector shows a
-  query node's rows for the selected run; the admin page defines database resources, the
-  connection by secret source only.
+- **The inspector** shows a query node's rows for the selected run.
+
+### 9.1 Where permissions are shown
+
+Permissions answer three questions, each asked by someone else. Today the editor asks them in
+three places, and a database adds to each rather than moving them:
+
+| Question | Who asks | Where, today | With databases |
+|---|---|---|---|
+| What may this flow do? | whoever deploys | the deploy dialog (`useDeployFlow.ts`: what it asks against `already_granted`) | its tables, in `describe.rs`'s words; nothing new to build |
+| What is this deployment granted? | an admin, about one flow | the deployment card's grant panel (`DeploymentCard.tsx`, `GET`/`POST /deployments/<slug>/grant`, `grants.rs`): revoke, grant back, keep running, the last changes | the same panel, the same controls, on `DbRead`/`DbWrite` lines |
+| What does this host allow at all? | an admin, about the server | `holon.toml`, read by the editor only as the deploy bar's limit placeholders and disabled fields (`DeployBar.tsx`, `GET /permissions`) | the admin page's **permissions** (below) |
+
+The admin page (`AdminPage.tsx`) has people, API tokens, folders and the identity provider, under
+"who uses this server, and how they get in". It grows two sections and, past that length, small
+tabs: **people and sign-in** (people, API tokens, the identity provider), **resources** and
+**permissions**.
+
+**Resources** (replacing "folders"): what exists on this host, one row per resource, its kind
+first.
+
+- A folder's row is today's (`/admin/folders`, `folders.rs`): name, path (chosen with
+  `FolderPicker.tsx`), access, keep, cap, the server or one deployment.
+- A database's row: name and engine; the connection, chosen as a secret source (`env:` or
+  `vault:`), never typed in as a value; access and keep; the server or one deployment; the tables
+  read at bind, with "read the schema again"; and the lock (§7.3), commit by default, run as a
+  choice that says its cost where it's set ("every run that writes it goes one at a time, across
+  every deployment bound to it").
+- Rebinding or unbinding is a grant change for each deployment bound to it (§2), so the row says
+  which deployments that pauses before it's done.
+
+**Permissions:** what the host allows, and who holds what.
+
+- **The policy,** read-only to start (it lives in `holon.toml`): what's granted without asking
+  (`auto`, as `DbRead(*)` would be), each limit's default and ceiling (`DbLimits` among them),
+  plain HTTP and private addresses, and "read the policy again" (`POST /permissions/reload`,
+  `handle_post_permissions_reload`, which holds every deployment to it at once). Editing the
+  policy here is a later choice: today the file is its one source.
+- **Who may touch what,** the reverse of the deployment card. Today, to answer "who may write
+  `shop/orders`?" an admin opens every card. Here each resource lists the deployments granted it,
+  by table for a database and by file access for a folder, read or write, each linking to its
+  card; a filter by capability kind answers the same for `HttpRequest` hosts and secrets. Built
+  from each deployment's grant (`grant_view`), so it needs one new read, `GET /admin/grants`,
+  and no new state.
+- **Nothing is changed here.** Revoking and granting back stay on the card, the one place that
+  calls `POST /deployments/<slug>/grant`; this view links to it. One panel that changes a grant
+  means one set of controls to keep right.
+- **Built:** the admin page's three tabs (`AdminPage.tsx`). Each database's tables (each
+  MongoDB's collections) come from `GET /admin/databases/<name>/tables[?deployment=]`
+  (`Databases::tables`), read when the resources show and again on "read the schema again",
+  `holon_`'s own and the engine's left out. Who holds what is `GET /admin/grants` (`grants.rs`:
+  each deployment's status, items and revoked items) turned round in the editor
+  (`holdings.ts`), through the binding each deployment sees (its own, else the server's), so a
+  deployment that bound its own `shop` isn't listed under the server's. The kinds no resource
+  answers (hosts, secrets, ingress, a database name nothing binds) are listed by item, and
+  "card →" opens the deployed page with that card's permissions open. A URL typed where a
+  database's secret source goes is refused in the page and never sent.
+- **Not built: rebinding as a grant change** (§2). Unbinding pauses nothing: a deployment bound to
+  it keeps running and its calls fail ("isn't bound") until the name is bound again, and binding
+  it again changes what its next runs reach without asking. The row's unbind and rebind say
+  exactly that, naming the deployments that use it, and stop there.
 
 ## 10. Samples
 

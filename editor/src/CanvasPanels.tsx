@@ -52,7 +52,7 @@ export function FlowTabs({
   pages: { key: string; label: string; active: boolean; onSelect: () => void; onClose?: () => void }[];
 }) {
   return (
-    <div className="hl-tabs" role="tablist">
+    <div className="hl-tabs" role="tablist" aria-label="open tabs">
       {pages.map((p) => (
         <div
           key={p.key}

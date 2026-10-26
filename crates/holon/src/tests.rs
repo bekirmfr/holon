@@ -4066,6 +4066,64 @@ fn bind_shop(state: &AppState, schema: Option<&str>) -> rouille::Response {
     route(state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()))
 }
 
+/// The admin page's resources and permissions (databases-L4 §9.1): a bound database's tables are
+/// read on asking, Holon's own left out, and who holds what is each deployment's grant, a revoked
+/// item among its revoked, changed only on its card.
+#[test]
+fn an_admin_sees_each_databases_tables_and_who_holds_what() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-holds-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({
+        "name": "shop",
+        "path": dir.join("shop.db").display().to_string(),
+        "schema": "create table orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0); create view big as select * from orders where total > 100",
+    });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let tables = body_json(route(&state, &req("GET", "/admin/databases/shop/tables", vec![])));
+    assert_eq!(tables["tables"], serde_json::json!(["big", "orders"]), "holon_commits is Holon's: {tables}");
+    assert_eq!(route(&state, &req("GET", "/admin/databases/nope/tables", vec![])).status_code, 404);
+    assert_eq!(route(&state, &req("GET", "/admin/databases/shop/tables?deployment=other", vec![])).status_code, 404, "bound for the server, not for other");
+    assert_eq!(route(&state, &req("POST", "/admin/databases/shop/tables", vec![])).status_code, 404);
+
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/orders-api.holon"), "");
+    let held = body_json(route(&state, &req("GET", "/admin/grants", vec![])));
+    let entry = held.as_array().unwrap().iter().find(|d| d["slug"] == slug.as_str()).unwrap_or_else(|| panic!("{held}"));
+    assert_eq!(entry["status"], "running", "{entry}");
+    let items: Vec<&str> = entry["items"].as_array().unwrap().iter().filter_map(|i| i.as_str()).collect();
+    assert!(items.contains(&"DbRead(\"shop/orders\")") && items.contains(&"DbWrite(\"shop/orders\")"), "{items:?}");
+    assert_eq!(entry["revoked"], serde_json::json!([]));
+    assert_eq!(change_grant(&state, &slug, serde_json::json!({ "revoke": ["DbWrite(\"shop/orders\")"] })).status_code, 200);
+    let held = body_json(route(&state, &req("GET", "/admin/grants", vec![])));
+    let entry = held.as_array().unwrap().iter().find(|d| d["slug"] == slug.as_str()).unwrap();
+    assert_eq!(entry["revoked"], serde_json::json!(["DbWrite(\"shop/orders\")"]), "{entry}");
+    assert_eq!(entry["status"], "paused", "a required item revoked pauses it: {entry}");
+    assert!(entry["attention"].as_str().is_some_and(|a| !a.is_empty()), "{entry}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Each engine lists its tables as a flow names them, Holon's own left out: Postgres's and
+/// MySQL's from the schema, a MongoDB's collections as documents are written to them.
+#[test]
+fn each_engine_lists_its_tables_without_holons_own() {
+    for db in fresh_databases("tables") {
+        let (engine, url) = (db.engine, db.url.clone());
+        let state = server_with_database(&url);
+        let r = bind_shop(&state, Some(&shop_schema(engine)));
+        let status = r.status_code;
+        assert_eq!(status, 200, "{engine}: {}", String::from_utf8_lossy(&body_bytes(r)));
+        let tables = body_json(route(&state, &req("GET", "/admin/databases/shop/tables", vec![])));
+        assert_eq!(tables["tables"], serde_json::json!(["orders", "refunds"]), "{engine}: {tables}");
+    }
+    let Some(db) = fresh_mongo("tables") else { return };
+    let state = server_with_database(&db.url);
+    assert_eq!(bind_notes(&state).status_code, 200);
+    let tables = || body_json(route(&state, &req("GET", "/admin/databases/notes/tables", vec![])))["tables"].clone();
+    assert_eq!(tables(), serde_json::json!([]), "holon_commits and holon_claims are Holon's");
+    db.notes().insert_one(mongodb::bson::doc! { "_id": "n1" }).run().unwrap();
+    assert_eq!(tables(), serde_json::json!(["notes"]));
+}
+
 /// The orders-api sample runs on Postgres and MySQL with its text unchanged, the binding a
 /// connection instead of a file: its totals are exact (text), its refund's `expect` holds, every
 /// run is marked done in the database once, and every run checks offline.

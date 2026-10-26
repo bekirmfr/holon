@@ -269,6 +269,22 @@ impl Remote {
         kept.map_err(|e| format!("can't keep {COMMITS_TABLE} in it: {e}"))
     }
 
+    /// Its tables and views as a flow names them (another schema's as `schema.table`), read now.
+    pub(crate) fn tables(&self) -> Result<Vec<String>, String> {
+        let mut c = self.conn()?;
+        match c.inner() {
+            Conn::Pg(p) => {
+                let sql = "select case when table_schema = current_schema() then table_name::text else table_schema || '.' || table_name end \
+                           from information_schema.tables where table_schema not in ('pg_catalog', 'information_schema') order by 1";
+                Ok(p.query(sql, &[]).map_err(|e| pg_said(&e))?.iter().map(|r| r.get::<_, String>(0)).collect())
+            }
+            Conn::My(m) => {
+                use mysql::prelude::Queryable;
+                m.query("select table_name from information_schema.tables where table_schema = database() order by 1").map_err(|e| my_said(&e))
+            }
+        }
+    }
+
     /// The columns of `table`'s primary key, in order and in lower case; none for a table without
     /// one, or one that isn't there.
     pub(crate) fn primary_key(&self, table: &str) -> Option<Vec<String>> {

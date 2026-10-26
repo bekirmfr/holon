@@ -55,6 +55,27 @@ fn grant_view(dep: &Deployment) -> serde_json::Value {
     })
 }
 
+/// `GET /admin/grants` — who holds what: each deployment's granted items and those revoked since,
+/// with its status and why it can't run, if it can't. The admin page's permissions turn it round,
+/// by resource (`docs/L4s/databases-L4.md` §9.1); a grant changes only on its deployment's card
+/// (`POST /deployments/<slug>/grant`).
+pub(crate) fn handle_get_admin_grants(state: &AppState) -> Response {
+    let table = state.deployments.lock().unwrap();
+    let held: Vec<serde_json::Value> = table
+        .iter()
+        .map(|(slug, dep)| {
+            serde_json::json!({
+                "slug": slug,
+                "status": dep.life.status,
+                "attention": dep.attention,
+                "items": dep.grant.items,
+                "revoked": dep.grant.revoked,
+            })
+        })
+        .collect();
+    Response::json(&held)
+}
+
 /// `POST /deployments/<slug>/grant` — change what it is granted:
 /// `{"revoke": [item], "grant": [item], "lower": {limit: n}, "keep_running": bool}`, every part
 /// optional. Applied whole or not at all; answers with the grant as it now is.
