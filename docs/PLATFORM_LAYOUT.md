@@ -191,10 +191,15 @@ it, §4.2.1):
   the path input) would need its possible hosts declared as a requirement; a host the deployment
   wasn't granted is refused at perform time.
 - **No private destinations.** Loopback, link-local, private, CGNAT and metadata ranges (127/8,
-  10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, ::1, fc00::/7, fe80::/10) are refused after
+  10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, ::1, fc00::/7, fe80::/10, and NAT64's
+  64:ff9b::/96, an IPv4 address behind it) are refused after
   DNS resolution, against the address actually connected to, and again on every redirect. This is
   OWASP's SSRF guidance; it also stops DNS rebinding, since the check is on the resolved address.
 - **HTTPS only**, with certificate verification; plain HTTP is a per-host opt-out.
+- **The host frames the message.** ✅ A flow doesn't set `Host` (another virtual host on the
+  granted server, never granted itself), the length or framing (`Content-Length`,
+  `Transfer-Encoding`, `TE`, `Trailer`, `Expect`), the connection (`Connection`, `Keep-Alive`,
+  `Upgrade`) or any `Proxy-*` header. A request that sets one answers `bad_header` and isn't sent.
 
 **Limits** (numbers: a flow asks for what it needs, the host grants within its ceilings, §4.2.1).
 Host defaults follow what the systems a flow talks to already expect:

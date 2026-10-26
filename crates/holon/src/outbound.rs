@@ -102,6 +102,20 @@ impl<R: Read> Read for Hashing<R> {
     }
 }
 
+/// Headers a flow doesn't set: the host writes them from the granted URL and the body it sends.
+/// `Host` names the site behind the address: one set by the flow would reach another virtual host
+/// on the granted server, never granted itself. The rest frame the message or the connection (a
+/// length that isn't the body's would carry a second request on it).
+const HOST_HEADERS: &[&str] = &["host", "content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer", "upgrade", "expect"];
+
+/// The first header in `headers` a flow may not set, if any.
+pub(crate) fn refused_header(headers: &BTreeMap<String, Value>) -> Option<&str> {
+    headers.keys().map(String::as_str).find(|name| {
+        let lower = name.to_ascii_lowercase();
+        HOST_HEADERS.contains(&lower.as_str()) || lower.starts_with("proxy-")
+    })
+}
+
 pub(crate) fn failure(error: &str, message: impl Into<String>) -> Value {
     Value::Record(BTreeMap::from([
         ("status".to_string(), Value::Number(0.0)),
@@ -186,6 +200,9 @@ impl Outbound {
             return failure("too_large", format!("the request body is over {} bytes", limits.max_request_bytes));
         }
         let Some(mut target) = parse_url(url) else { return failure("bad_url", url.to_string()) };
+        if let Some(name) = refused_header(headers) {
+            return failure("bad_header", format!("{name} is the host's to set, from the granted URL and the body it sends"));
+        }
 
         let allow_private = self.allow_private;
         let agent = ureq::AgentBuilder::new()
@@ -210,12 +227,7 @@ impl Outbound {
                 return refused;
             }
             let mut call = agent.request(&method, &self.url(&target));
-            let file = matches!(body, Some(Body::File(_)));
             for (name, value) in headers {
-                // A file's length is its own: what the flow says can't make it send more or less.
-                if file && (name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("transfer-encoding")) {
-                    continue;
-                }
                 if let Value::Text(v) = value {
                     call = call.set(name, v);
                 }
@@ -391,6 +403,7 @@ pub(crate) fn is_private(ip: IpAddr) -> bool {
                 || v6.is_multicast()
                 || (first & 0xfe00) == 0xfc00 // fc00::/7, unique local
                 || (first & 0xffc0) == 0xfe80 // fe80::/10, link-local
+                || v6.segments()[..6] == [0x64, 0xff9b, 0, 0, 0, 0] // 64:ff9b::/96, NAT64: an IPv4 address behind it
         }
     }
 }
@@ -491,6 +504,15 @@ mod tests {
         // Granted and plain HTTP allowed, but 127.0.0.1 is a private address.
         let public_only = Outbound { allow_private: false, ..local(&addr) };
         assert_eq!(error(&public_only, &format!("https://{addr}/")), text("blocked_address"));
+        // A header that would steer it past what was granted: another virtual host on the granted
+        // server, a length that isn't the body's. Refused before anything is sent.
+        for header in ["Host", "content-length", "Transfer-Encoding", "Connection", "Proxy-Authorization"] {
+            let mut asked = request("GET", &format!("https://{addr}/"), "");
+            if let Value::Record(r) = &mut asked {
+                r.insert("headers".into(), Value::Record(BTreeMap::from([(header.to_string(), text("jenkins.internal"))])));
+            }
+            assert_eq!(field(&local(&addr).perform(&asked, &limits), "error"), &text("bad_header"), "{header}");
+        }
         // Credentials in a URL, or another scheme, are not URLs it sends.
         assert_eq!(error(&local(&addr), &format!("https://u:p@{addr}/")), text("bad_url"));
         assert_eq!(error(&local(&addr), "ftp://a.com/"), text("bad_url"));
@@ -560,9 +582,12 @@ mod tests {
         let limits = Limits::request_run();
         let bytes = b"a,b\n1,2\n".to_vec();
         let file = Bytes(bytes.clone(), blake3::hash(&bytes).to_hex().to_string());
+        let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&file), &limits, None);
+        assert_eq!(field(&out, "status"), &Value::Number(200.0), "{out:?}");
+        // A file's length is its own: what the flow says can't make it send more or less.
         let headers = BTreeMap::from([("content-length".to_string(), Value::Text("1".into()))]);
         let out = o.send("PUT", &format!("https://{addr}/up"), &headers, Body::File(&file), &limits, None);
-        assert_eq!(field(&out, "status"), &Value::Number(200.0), "{out:?}");
+        assert_eq!(field(&out, "error"), &Value::Text("bad_header".into()), "{out:?}");
         let changed = Bytes(bytes.clone(), blake3::hash(b"other").to_hex().to_string());
         let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&changed), &limits, None);
         assert_eq!(field(&out, "error"), &Value::Text("changed".into()));
@@ -573,7 +598,7 @@ mod tests {
 
     #[test]
     fn private_addresses_are_recognised() {
-        for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1"] {
+        for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1", "64:ff9b::a9fe:a9fe"] {
             assert!(is_private(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["8.8.8.8", "1.1.1.1", "172.32.0.1", "100.128.0.1", "2606:4700::1111"] {
