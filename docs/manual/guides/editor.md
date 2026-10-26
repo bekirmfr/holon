@@ -18,7 +18,9 @@ and **sign out**.
 ## Pages and tabs
 
 The header has **new** (a new flow), **flows**, **deployed**, **docs** and, for admins, **admin**.
-Each page opens in a tab, before the flow tabs; every tab closes with its ×.
+Each page opens in a tab, before the flow tabs; every tab closes with its ×. **new** opens an
+untitled canvas at once; the flow is named when you first save or deploy it. A name another saved
+flow or a deployment already has asks before that one is replaced.
 
 - **home** is shown when no flow is open. **customize** adds, moves and removes its panes:
   recent flows, deployments, activity, samples, notes and a getting-started checklist. Your panes

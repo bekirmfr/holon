@@ -55,6 +55,12 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if request.method() == "GET" && url == "/admin/grants" {
         return Some(crate::grants::handle_get_admin_grants(state));
     }
+    // The variables an env secret can name (secret_sources.rs), for the deploy settings to offer:
+    // names only, and only to an admin, who alone sets secrets (`/admin/…`, access.rs).
+    if url == "/admin/secrets/env" && request.method() == "GET" {
+        let (names, dotenv) = state.secrets.env_names();
+        return Some(Response::json(&serde_json::json!({ "names": names, "dotenv": dotenv })));
+    }
     let Some(accounts) = state.access.accounts() else { return Some(err(404, "this server has no accounts")) };
     let by = caller.name.as_deref().unwrap_or("");
     let method = request.method();

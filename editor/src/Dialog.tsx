@@ -59,7 +59,12 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     (ask.kind === "prompt" ? input.current : ok.current)?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close(false);
-      if (e.key === "Enter") close(true);
+      // Handled here, so the same Enter can't also press the button of a dialog that opens next
+      // (a prompt's answer followed by a confirm would otherwise accept it unread).
+      if (e.key === "Enter") {
+        e.preventDefault();
+        close(true);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

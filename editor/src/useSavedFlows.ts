@@ -99,6 +99,8 @@ export function useSavedFlows({
     if (!name) {
       name = await dialog.prompt("Flow name (letters, digits, - and _ only):");
       if (!name) return;
+      // A draft named now (New opens untitled) mustn't quietly replace a flow saved under that name.
+      if (savedFlowTimes.has(name) && !(await dialog.confirm(`A flow named "${name}" is saved already. Replace it with this one?`, "Replace"))) return;
       setFlowName(name);
     }
     let carried: ReturnType<typeof documentUnits>;
@@ -125,7 +127,7 @@ export function useSavedFlows({
         setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
       })
       .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
-  }, [flowName, nodes, edges, getViewport, ev, settings, source, dialog, placedElsewhereOk, setFlowName, setSaveMsg, setSavedKey, setSavedOnServer]);
+  }, [flowName, nodes, edges, getViewport, ev, settings, source, dialog, savedFlowTimes, placedElsewhereOk, setFlowName, setSaveMsg, setSavedKey, setSavedOnServer]);
 
   // Place the newest saved version of a holon over the one placed from an older save: same place,
   // and its wires kept to the ports the new version still has.

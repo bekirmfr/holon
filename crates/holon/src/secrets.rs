@@ -220,6 +220,12 @@ impl SecretStore {
         }
     }
 
+    /// The `HOLON_SECRET_…` names an env secret can be read from, and the dotenv file read, never
+    /// a value (`Sources::names`).
+    pub(crate) fn env_names(&self) -> (Vec<String>, Option<String>) {
+        self.sources.names()
+    }
+
     /// This store, resolving references against `sources`.
     #[cfg(test)]
     pub(crate) fn with_sources(mut self, sources: Sources) -> SecretStore {

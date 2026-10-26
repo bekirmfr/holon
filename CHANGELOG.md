@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **An env secret is picked from a list.** Under ⚙ → secrets, **env** offers the server's
+  `HOLON_SECRET_…` names (its environment and its `--dotenv` file), the one the secret's name
+  suggests chosen; **another name…** types one. Opening ⚙ reads the dotenv file again, so a line
+  just added is offered and can be set at once. The names (never values) come from
+  `GET /admin/secrets/env`, for admins only.
+- **New opens a draft.** **new** opens an untitled canvas without asking anything; the flow is
+  named on its first save or deploy. A name another saved flow or a deployment already has asks
+  before that one is replaced.
+
 ## 0.1.0-rc.26
 
 Nothing to redeploy: no unit is hashed differently, and deployments, logs and waiting runs from

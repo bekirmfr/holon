@@ -240,6 +240,10 @@ mod tests {
         assert_eq!(call(&access, "GET", "/admin/users", Some(&bob)), Err(403));
         assert_eq!(call(&access, "POST", "/deployments/a/secrets/k", Some(&ada)), Ok(Some("ada".into())));
         assert_eq!(call(&access, "GET", "/admin/users", Some(&ada)), Ok(Some("ada".into())));
+        // The variables an env secret can name: only for whoever sets secrets.
+        assert_eq!(call(&access, "GET", "/admin/secrets/env", Some(&cy)), Err(403));
+        assert_eq!(call(&access, "GET", "/admin/secrets/env", Some(&bob)), Err(403));
+        assert_eq!(call(&access, "GET", "/admin/secrets/env", Some(&ada)), Ok(Some("ada".into())));
         assert_eq!(call(&access, "GET", "/health", None), Ok(None));
     }
 

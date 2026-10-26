@@ -77,11 +77,10 @@ test("pages open in tabs of their own; every tab closes; with none open, home sh
   await expect(page.getByLabel("new person's name")).toBeVisible();
   await page.getByRole("button", { name: "deployed", exact: true }).click();
   await expect(tabs.getByRole("tab", { name: "deployed" })).toHaveAttribute("aria-selected", "true");
-  // A flow's tab has the palette; a page's doesn't.
+  // A flow's tab has the palette; a page's doesn't. New asks nothing: an untitled draft, named on save.
   await page.getByRole("button", { name: "new", exact: true }).click();
-  await page.locator('[aria-modal="true"] input').fill("tabbed");
-  await page.keyboard.press("Enter");
-  await expect(page.locator(".hl-tab--active")).toContainText("tabbed");
+  await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
+  await expect(page.locator(".hl-tab--active")).toContainText("untitled");
   await expect(page.locator(".hl-work .hl-palette")).toBeVisible();
   await tabs.getByRole("tab", { name: "admin" }).click();
   await expect(page.locator(".hl-palette")).toHaveCount(0);

@@ -102,6 +102,20 @@ impl Sources {
         Ok(())
     }
 
+    /// The `HOLON_SECRET_…` names an env secret can be read from here, never a value: the
+    /// server's environment and its dotenv file, the file read again first so that a line just
+    /// added is there. Also the dotenv file's path, if the server was given one.
+    pub(crate) fn names(&self) -> (Vec<String>, Option<String>) {
+        if let Err(e) = self.reload() {
+            eprintln!("holon: {e}");
+        }
+        let mut names: std::collections::BTreeSet<String> = self.dotenv.lock().unwrap().keys().filter(|k| k.starts_with(ENV_PREFIX)).cloned().collect();
+        if self.process_env {
+            names.extend(std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).filter(|k| k.starts_with(ENV_PREFIX)));
+        }
+        (names.into_iter().collect(), self.dotenv_path.as_ref().map(|p| p.display().to_string()))
+    }
+
     fn var(&self, name: &str) -> Option<Zeroizing<String>> {
         if self.process_env
             && let Ok(v) = std::env::var(name)
@@ -187,6 +201,22 @@ mod tests {
         assert_eq!(get("B").as_deref(), Some("quoted # kept"));
         assert_eq!(get("C").as_deref(), Some("single"));
         assert_eq!(vars.len(), 3);
+    }
+
+    #[test]
+    fn the_names_an_env_secret_can_use_are_listed_never_their_values() {
+        let path = std::env::temp_dir().join(format!("holon-names-{}.env", std::process::id()));
+        std::fs::write(&path, "HOLON_SECRET_GEMINI_API_KEY=AIza-value\nVAULT_TOKEN=t0ken\n").unwrap();
+        let sources = Sources { dotenv_path: Some(path.clone()), dotenv: Mutex::new(BTreeMap::new()), process_env: false };
+        let (names, file) = sources.names();
+        assert_eq!(names, ["HOLON_SECRET_GEMINI_API_KEY"], "only the names a secret can use");
+        assert_eq!(file.as_deref(), Some(path.display().to_string().as_str()));
+        // A line just added is listed, and readable, without waiting for the next refresh.
+        std::fs::write(&path, "HOLON_SECRET_GEMINI_API_KEY=AIza-value\nHOLON_SECRET_SLACK_URL=https://hooks\n").unwrap();
+        assert_eq!(sources.names().0, ["HOLON_SECRET_GEMINI_API_KEY", "HOLON_SECRET_SLACK_URL"]);
+        assert_eq!(*sources.fetch(&Reference::parse("env:HOLON_SECRET_SLACK_URL").unwrap()).unwrap(), "https://hooks");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(Sources::none().names(), (Vec::new(), None));
     }
 
     #[test]

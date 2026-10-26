@@ -83,6 +83,8 @@ export function useDeployFlow({
     if (!name) {
       name = await dialog.prompt("Name this flow first (letters, digits, - and _ only). Its deployment takes the name:");
       if (!name) return;
+      // A draft named now (New opens untitled) mustn't quietly replace what runs under that name.
+      if (deployments.some((d) => d.slug === name) && !(await dialog.confirm(`"${name}" is deployed already. Update it with this flow?`, "Update"))) return;
       setFlowName(name);
     }
     let hash: string;
