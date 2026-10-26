@@ -106,17 +106,24 @@ pub fn module_limits_of(root: &Unit, resolver: &impl Resolver) -> BTreeMap<Strin
     out
 }
 
-fn collect(unit: &Unit, resolver: &impl Resolver, acc: &mut Option<ModuleLimits>) {
-    if let UnitBody::Module { .. } = &unit.body
-        && let Ok(l) = module_limits(&unit.params)
-    {
-        let m = acc.get_or_insert(ModuleLimits { fuel: 0, memory: 0 });
-        m.fuel = m.fuel.max(l.fuel);
-        m.memory = m.memory.max(l.memory);
-    }
-    for h in crate::inspect::child_refs(unit) {
-        if let Some(u) = resolver.resolve(&h) {
-            collect(u, resolver, acc);
+/// Each unit of the closure once, with a stack: as `capabilities` walks it.
+fn collect(root: &Unit, resolver: &impl Resolver, acc: &mut Option<ModuleLimits>) {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(unit) = stack.pop() {
+        if let UnitBody::Module { .. } = &unit.body
+            && let Ok(l) = module_limits(&unit.params)
+        {
+            let m = acc.get_or_insert(ModuleLimits { fuel: 0, memory: 0 });
+            m.fuel = m.fuel.max(l.fuel);
+            m.memory = m.memory.max(l.memory);
+        }
+        for h in crate::inspect::child_refs(unit) {
+            if seen.insert(h)
+                && let Some(u) = resolver.resolve(&h)
+            {
+                stack.push(u);
+            }
         }
     }
 }

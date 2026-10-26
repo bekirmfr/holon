@@ -38,7 +38,7 @@
 
 /// What a primitive or composite *is*, with respect to effects.
 ///
-use crate::{Param, Resolver, Unit, UnitBody};
+use crate::{Hash, Param, Resolver, Unit, UnitBody};
 use std::collections::BTreeSet;
 
 /// The non-`Pure` variants are the three ways purity ends, in increasing
@@ -513,7 +513,32 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
     }
 }
 
-fn collect_caps(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capability>) {
+/// Every unit of the closure contributes once, however many references reach it, walked with a
+/// stack rather than recursion: a closure is anyone's who can stage it, and neither a chain nested
+/// deep nor a diamond of shared children may cost more than the units it holds.
+fn collect_caps(root: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capability>) {
+    let mut seen: BTreeSet<Hash> = BTreeSet::new();
+    let mut stack: Vec<&Unit> = vec![root];
+    while let Some(unit) = stack.pop() {
+        unit_caps(unit, acc);
+        // (2) Every reference — a composite's children and the `fn` param — via the shared
+        //     `child_refs` (the one definition of what a unit references). A capability routed
+        //     through a reference cannot hide; an unresolvable reference fails closed rather than
+        //     being read as inert data.
+        for h in crate::inspect::child_refs(unit) {
+            if !seen.insert(h) {
+                continue;
+            }
+            match resolver.resolve(&h) {
+                Some(u) => stack.push(u),
+                None => saturate_caps(acc),
+            }
+        }
+    }
+}
+
+/// What `unit` itself contributes to its closure's capabilities, its references aside.
+fn unit_caps(unit: &Unit, acc: &mut BTreeSet<Capability>) {
     // (1) This unit's own leaf contribution, if it is a primitive: its capability
     //     manifest, read from its name **and its own params** (the state-cell leaves'
     //     key lives there). A pure leaf's ∅ contributes nothing; an unknown leaf, or a
@@ -533,17 +558,6 @@ fn collect_caps(unit: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capabi
     //      endpoints' handlers contribute the rest through (2).
     if crate::declaration_of(unit) == Some("server") {
         acc.insert(Capability::NetworkIngress);
-    }
-
-    // (2) Every reference — a composite's children and the `fn` param — via the shared
-    //     `child_refs` (the one definition of what a unit references). A capability routed
-    //     through a reference cannot hide; an unresolvable reference fails closed rather than
-    //     being read as inert data.
-    for h in crate::inspect::child_refs(unit) {
-        match resolver.resolve(&h) {
-            Some(u) => collect_caps(u, resolver, acc),
-            None => saturate_caps(acc),
-        }
     }
 }
 
@@ -728,6 +742,32 @@ mod tests {
         assert!(!fx.is_pure());
         assert!(fx.contains(Kind::Sink));
         assert_eq!(fx.len(), 1);
+    }
+
+    #[test]
+    fn a_closure_costs_its_units_however_it_shares_or_nests_them() {
+        // Each level reaches the one below twice (as a child, and as a `map`'s `fn`): 2^300
+        // paths over 901 units. A walk that followed every path wouldn't finish.
+        let mut store = MapResolver::new();
+        let mut below = store.insert(prim("clock")).unwrap();
+        for _ in 0..300 {
+            let child = store.insert(composite(vec![below])).unwrap();
+            let mapped = store.insert(map_over(&below)).unwrap();
+            below = store.insert(composite(vec![child, mapped])).unwrap();
+        }
+        let top = composite(vec![below]);
+        let caps = capabilities(&top, &store);
+        assert!(caps.contains(Capability::Clock));
+        assert_eq!(caps.len(), 1);
+        // A deep chain of single references, walked on a small stack.
+        let mut store = MapResolver::new();
+        let mut below = store.insert(prim("clock")).unwrap();
+        for _ in 0..20_000 {
+            below = store.insert(composite(vec![below])).unwrap();
+        }
+        let top = composite(vec![below]);
+        let caps = std::thread::Builder::new().stack_size(256 * 1024).spawn(move || capabilities(&top, &store)).unwrap().join().unwrap();
+        assert!(caps.contains(Capability::Clock));
     }
 
     #[test]

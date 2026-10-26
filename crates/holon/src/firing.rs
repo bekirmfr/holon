@@ -496,7 +496,7 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
     };
     let resolver = match materialize_closure(store, root_hash) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return e.response(),
     };
     let Some(root_unit) = resolver.resolve(&root_hash) else {
         return err(404, "no unit stored at that hash — stage or publish it first");

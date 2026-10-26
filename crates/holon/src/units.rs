@@ -152,21 +152,89 @@ pub(crate) fn handle_post_fork(registry: &Mutex<Registry<SharedStore>>, request:
 /// `eval`/`verify_entry` already treat an unresolved reference as "nothing evaluable" and fail
 /// closed on it, so this doesn't need its own dangling-reference error path; it just doesn't
 /// promise more than the store actually has.
-pub(crate) fn materialize_closure(store: &SharedStore, root: Hash) -> Result<MapResolver, StoreError> {
+///
+/// A closure past [`MAX_CLOSURE_UNITS`] units, or nested deeper than [`MAX_CLOSURE_DEPTH`], is
+/// refused ([`Closure::TooBig`]): evaluating one recurses a level per nested unit, and its units
+/// are anyone's who can stage them.
+pub(crate) fn materialize_closure(store: &SharedStore, root: Hash) -> Result<MapResolver, Closure> {
     let mut resolver = MapResolver::new();
-    let mut seen = BTreeSet::new();
+    // Each unit's references, as it was fetched: the depth below is measured over these.
+    let mut refs: BTreeMap<Hash, Vec<Hash>> = BTreeMap::new();
     let mut queue = vec![root];
     while let Some(h) = queue.pop() {
-        if !seen.insert(h) {
+        if refs.contains_key(&h) {
             continue;
         }
-        let Some(unit) = store.get(&h)? else {
+        let Some(unit) = store.get(&h).map_err(Closure::Store)? else {
             continue;
         };
-        queue.extend(child_refs(&unit));
-        resolver.insert(unit).map_err(StoreError::Encode)?;
+        if refs.len() >= MAX_CLOSURE_UNITS {
+            return Err(Closure::TooBig(format!("its closure has more than {MAX_CLOSURE_UNITS} units")));
+        }
+        let children = child_refs(&unit);
+        queue.extend(children.iter().copied());
+        refs.insert(h, children);
+        resolver.insert(unit).map_err(|e| Closure::Store(StoreError::Encode(e)))?;
+    }
+    let depth = closure_depth(root, &refs);
+    if depth > MAX_CLOSURE_DEPTH {
+        return Err(Closure::TooBig(format!("it nests more than {MAX_CLOSURE_DEPTH} units deep")));
     }
     Ok(resolver)
+}
+
+/// The most units a closure holds.
+pub(crate) const MAX_CLOSURE_UNITS: usize = 20_000;
+/// The deepest a closure nests, its root and leaves counted: far past any flow written, and well
+/// inside the stack of the threads that run one.
+pub(crate) const MAX_CLOSURE_DEPTH: usize = 64;
+
+/// Why a closure isn't materialized.
+#[derive(Debug)]
+pub(crate) enum Closure {
+    Store(StoreError),
+    /// Past the bounds above: a request's fault, a 400 where one asked for it.
+    TooBig(String),
+}
+
+impl Closure {
+    /// As an answer: a closure past the bounds is the caller's to fix, a store error the host's.
+    pub(crate) fn response(&self) -> Response {
+        match self {
+            Closure::TooBig(why) => err(400, format!("this unit is too big to run: {why}")),
+            Closure::Store(e) => err(500, format!("store error while materializing closure: {e:?}")),
+        }
+    }
+}
+
+/// The longest chain of references from `root` down, in units (`root` alone is 1); a reference
+/// not fetched counts as a leaf. Iterative, each unit measured once: content hashes make the
+/// graph acyclic, and a diamond of shared children costs nothing twice.
+pub(crate) fn closure_depth(root: Hash, refs: &BTreeMap<Hash, Vec<Hash>>) -> usize {
+    let children = |h: &Hash| refs.get(h).map_or(&[][..], Vec::as_slice);
+    let mut depth: BTreeMap<Hash, usize> = BTreeMap::new();
+    // The chain being walked, each unit with the next of its references to look at.
+    let mut path: Vec<(Hash, usize)> = vec![(root, 0)];
+    while let Some(&(h, next)) = path.last() {
+        match children(&h).get(next) {
+            Some(&c) => {
+                path.last_mut().unwrap().1 += 1;
+                if !depth.contains_key(&c) {
+                    if path.len() > MAX_CLOSURE_DEPTH {
+                        // Past the bound along this chain already: no need to walk the rest.
+                        return path.len() + 1;
+                    }
+                    path.push((c, 0));
+                }
+            }
+            None => {
+                let below = children(&h).iter().map(|c| depth[c]).max().unwrap_or(0);
+                depth.insert(h, below + 1);
+                path.pop();
+            }
+        }
+    }
+    depth[&root]
 }
 
 /// `GET /cache/<key>` — the trustless read: re-executes the cached computation against a
@@ -187,7 +255,7 @@ pub(crate) fn handle_get_cache(cache: &Mutex<SharedCache>, store: &SharedStore, 
     };
     let resolver = match materialize_closure(store, unit_hash) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return e.response(),
     };
     let cache = cache.lock().unwrap();
     match cache.get_verified(&key, &resolver) {

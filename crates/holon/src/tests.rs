@@ -4849,3 +4849,44 @@ fn no_folder_is_or_holds_what_the_server_keeps_beside_its_files() {
     std::fs::create_dir_all(&elsewhere).unwrap();
     bind(&elsewhere).unwrap();
 }
+
+#[test]
+fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
+    let state = test_state();
+    let mut store = state.store.clone();
+    // Every sample's closure, nested well inside the bound: room for flows bigger than these.
+    let mut deepest = (0, "");
+    for sample in holon_author::samples::samples() {
+        let plan = holon_author::agent::plan(sample.text).unwrap();
+        for bytes in &plan.units {
+            store.put(&decode_preimage(bytes).unwrap()).unwrap();
+        }
+        let root = parse_hash(&plan.unit).unwrap();
+        materialize_closure(&state.store, root).unwrap();
+        let mut refs = BTreeMap::new();
+        let mut queue = vec![root];
+        while let Some(h) = queue.pop() {
+            if let Some(u) = store.get(&h).unwrap().filter(|_| !refs.contains_key(&h)) {
+                queue.extend(child_refs(&u));
+                refs.insert(h, child_refs(&u));
+            }
+        }
+        deepest = deepest.max((crate::units::closure_depth(root, &refs), sample.name));
+    }
+    assert!(deepest.0 * 2 <= crate::units::MAX_CLOSURE_DEPTH, "{deepest:?}");
+
+    // A chain nested one past the bound: refused, a 400 where a deploy asks.
+    let mut below = store.put(&Unit { params: vec![], ..holon_core::interface_of("clock").unwrap() }).unwrap();
+    let wrap = |child: Hash| Unit { body: UnitBody::Composite { children: vec![child], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] };
+    for _ in 0..crate::units::MAX_CLOSURE_DEPTH {
+        below = store.put(&wrap(below)).unwrap();
+    }
+    let Err(e) = materialize_closure(&state.store, below) else { panic!("a closure past the bound is refused") };
+    assert!(matches!(&e, crate::units::Closure::TooBig(why) if why.contains("more than 64 units deep")), "{e:?}");
+    let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "deep", "unit": to_hex(&below) })).unwrap()));
+    assert_eq!(deployed.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("too big to run"));
+    // One level less is materialized.
+    let inside = match store.get(&below).unwrap().unwrap().body { UnitBody::Composite { children, .. } => children[0], _ => unreachable!() };
+    materialize_closure(&state.store, inside).unwrap();
+}

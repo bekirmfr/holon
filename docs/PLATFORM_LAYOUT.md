@@ -797,6 +797,10 @@ public data plane**, not for an open marketplace.
 
 **Deferred: these only matter when running other people's units (they return when the marketplace does).**
 - Exponential closure walks (`collect_caps`, `refork`, `instantiate`, `eval` on doubling DAGs).
+  ✅ Partly: `capabilities` and `module_limits_of` visit each unit once, with a stack. The server
+  refuses a closure past 20,000 units or nested past 64 (`units.rs`, a 400 at deploy), since eval
+  recurses a level per nested composite. `refork`, `instantiate` and eval's time on a doubling
+  DAG within those bounds remain.
 - The decoder accepts non-canonical bytes, so `encode(decode(b)) ≠ b`.
 - `refork` silently does a partial fork when a re-hash fails.
 - The memo key folds ±0 while `to_text` doesn't (parked cache only). ✅ Fixed: `to_text` and `json_stringify` print `-0` as `0` (§4.5).

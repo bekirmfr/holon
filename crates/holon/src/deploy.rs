@@ -128,7 +128,7 @@ pub(crate) fn handle_post_deploy(
 
     let resolver = match materialize_closure(store, unit_hash) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return e.response(),
     };
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         return err(404, "no unit stored at that hash — stage or publish it first");
@@ -373,7 +373,7 @@ pub(crate) fn handle_post_deploy_preview(
     };
     let resolver = match materialize_closure(store, unit_hash) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return e.response(),
     };
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         return err(404, "no unit stored at that hash — stage or publish it first");
@@ -510,7 +510,7 @@ pub(crate) fn handle_get_permission_view(
     }
     let resolver = match materialize_closure(store, unit) {
         Ok(r) => r,
-        Err(e) => return err(500, format!("store error while materializing closure: {e:?}")),
+        Err(e) => return e.response(),
     };
     let Some(root) = resolver.resolve(&unit) else { return err(500, "deployed unit no longer resolves in the store") };
     let manifest = Manifest::new(capabilities(root, &resolver).deployed(scheduled).iter(), grant.requirements.clone().with_module_limits(root, &resolver));

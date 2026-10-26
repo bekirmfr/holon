@@ -962,6 +962,39 @@ mod tests {
     }
 
     #[test]
+    fn a_composite_nested_as_deep_as_a_host_runs_fits_half_a_threads_stack() {
+        // The server refuses closures nested past 64 units (`MAX_CLOSURE_DEPTH`) because eval
+        // recurses a level per nested composite; its threads have 2 MiB. 64 levels in 1 MiB,
+        // unoptimized, leaves the rest for the host around it.
+        let mut r = MapResolver::new();
+        // `add`, `add2` around it, 61 wrappers, the top: 64 units deep.
+        let inner = add2(&mut r);
+        let mut below = r.insert(inner).unwrap();
+        for _ in 0..61 {
+            let wrap = composite(
+                vec![nport("x"), nport("y")],
+                Type::Number,
+                vec![below],
+                vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
+            );
+            below = r.insert(wrap).unwrap();
+        }
+        let top = composite(
+            vec![nport("x"), nport("y")],
+            Type::Number,
+            vec![below],
+            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
+        );
+        let out = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(move || eval(&top, &[Some(num(10.0)), Some(num(5.0))], &r).into_vec())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(out, vec![Some(num(15.0))]);
+    }
+
+    #[test]
     fn none_propagates() {
         // subtract is binary; one operand absent ⇒ compute None ⇒ output None.
         let mut r = MapResolver::new();
