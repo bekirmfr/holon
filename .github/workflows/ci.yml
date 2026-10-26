@@ -127,11 +127,25 @@ jobs:
           cache-dependency-path: editor/package-lock.json
       - run: npm ci
         working-directory: editor
-      # Chromium and the system packages it needs (apt). It took half a minute, but once hung past
-      # twelve with no limit (a job's is six hours): each try gets five, and a second try follows.
-      - run: timeout 300 npx playwright install --with-deps chromium || timeout 300 npx playwright install --with-deps chromium
+      # Chromium alone (seconds). Each try gets five minutes and a second try follows: an install
+      # once hung past twelve, with no limit short of the job's six hours.
+      - run: timeout 300 npx playwright install chromium || timeout 300 npx playwright install chromium
         working-directory: editor
         timeout-minutes: 11
+      # Its system packages from apt only if it can't start without them: one launch is Playwright's
+      # own check of the system, which names what is missing. The runner image has had every library
+      # (a trial without apt passed, 6a3db69 on ci-no-apt), and apt's fonts were what waited on
+      # Ubuntu's mirror; if the image drops one, this installs it (fonts and all) and goes on.
+      - name: Chromium's system packages, only if it can't start without them
+        run: |
+          if node -e "require('@playwright/test').chromium.launch().then((b) => b.close())"; then
+            echo "Chromium starts: no system packages needed"
+          else
+            echo "Chromium can't start without its system packages: installing them"
+            timeout 300 npx playwright install-deps chromium || timeout 300 npx playwright install-deps chromium
+          fi
+        working-directory: editor
+        timeout-minutes: 12
       - run: npx playwright test --fully-parallel --shard=${{ matrix.shard }}/2
         working-directory: editor
       - uses: actions/upload-artifact@v4
