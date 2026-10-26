@@ -1591,25 +1591,39 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         let (status, missing) = (node.param("status"), node.param("missing"));
         let body = self.arg(node, "body")?.map(|(t, _)| t);
         let headers = if node.param("headers") == "true" { self.arg(node, "headers")?.map(|(t, _)| t) } else { None };
+        let wired = if node.param("status_input") == "true" { self.arg(node, "status")?.map(|(t, _)| t) } else { None };
         let mut parts = Vec::new();
         match body {
             Some(b) => parts.push(b),
-            None if status == "204" && missing == "404" && headers.is_none() => return Ok("respond 204".into()),
-            None => parts.push(format!("status: {status}")),
+            None if status == "204" && missing == "404" && headers.is_none() && wired.is_none() => return Ok("respond 204".into()),
+            None => parts.push(format!("status: {}", wired.clone().unwrap_or_else(|| status.to_string()))),
         }
         if let Some(h) = headers {
             parts.push(format!("headers: {h}"));
         }
-        if status != "200" && parts.first().is_some_and(|p| !p.starts_with("status:")) {
-            parts.push(format!("status: {status}"));
+        // The body of a streamed call: the reply forwards it (the text says so), with the call's
+        // status, which the text leaves unsaid.
+        let streamed = self.source_id(node, "body").map(|id| self.g.node(&id)).is_some_and(|f| {
+            f.data.name == "field" && f.param("name") == "body" && self.source_id(f, "record").is_some_and(|c| self.g.node(&c).data.name == "http_stream" && self.g.node(&c).param("pipe").is_empty())
+        });
+        match wired {
+            Some(s) if streamed => {
+                let own = parts.first().and_then(|b| b.strip_suffix(".body")).is_some_and(|call| s == format!("{call}.status"));
+                if !own {
+                    return Err(format!("a streamed reply answers with its call's status, not {s}"));
+                }
+            }
+            Some(s) if !parts.first().is_some_and(|p| p.starts_with("status:")) => parts.push(format!("status: {s}")),
+            Some(_) => {}
+            None => {
+                if status != "200" && parts.first().is_some_and(|p| !p.starts_with("status:")) {
+                    parts.push(format!("status: {status}"));
+                }
+            }
         }
         if missing != "404" {
             parts.push(format!("missing: {missing}"));
         }
-        // The body of a streamed call: the reply forwards it (the text says so).
-        let streamed = self.source_id(node, "body").map(|id| self.g.node(&id)).is_some_and(|f| {
-            f.data.name == "field" && f.param("name") == "body" && self.source_id(f, "record").is_some_and(|c| self.g.node(&c).data.name == "http_stream" && self.g.node(&c).param("pipe").is_empty())
-        });
         if streamed {
             parts.push("stream: true".into());
         }

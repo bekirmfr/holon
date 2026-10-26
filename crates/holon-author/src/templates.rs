@@ -12,7 +12,9 @@
 //!   wire is what makes a route one connected group even when the handler never looks at the
 //!   request, e.g. a listing. Status 204 has no body input. With `headers: true` it has a third
 //!   input, a record of response headers (`content-type` for a page, `location` for a redirect),
-//!   put in the envelope as `headers`; without it, the data plane's content type stands. When
+//!   put in the envelope as `headers`; without it, the data plane's content type stands. With
+//!   `status_input: true` its last input is the status, in place of the `status` param (a
+//!   streamed reply's, its call's status). When
 //!   the body input is absent (a lookup that found nothing), it answers its `missing` status
 //!   instead (404 by default) with `{"error": …}`. A respond node without `missing` (placed before
 //!   it existed) answers nothing, sent as a 500.
@@ -96,6 +98,9 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
             if frozen_value(params, "headers") == Some("true") {
                 inputs.push(WPort::new("headers", Record));
             }
+            if frozen_value(params, "status_input") == Some("true") {
+                inputs.push(WPort::new("status", Number));
+            }
             Interface { inputs, outputs: vec![WPort::new("response", Record)], hidden_inputs: false }
         }
         _ => return None,
@@ -107,7 +112,7 @@ pub fn defaults(name: &str) -> Option<Vec<WParam>> {
     let f = WParam::frozen;
     Some(match name {
         "request" => vec![f("method", "GET"), f("path", "/"), f("resume", "")],
-        "respond" => vec![f("status", "200"), f("missing", "404"), f("headers", "false")],
+        "respond" => vec![f("status", "200"), f("missing", "404"), f("headers", "false"), f("status_input", "false")],
         "stripe_verify" => vec![f("tolerance", "300")],
         _ => return None,
     })
@@ -333,15 +338,25 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
             let with_headers = frozen_value(params, "headers") == Some("true");
             let has_body = inputs.iter().any(|p| p.name == "body");
             let mut leaf = |prim: &str, p: Vec<Param>| add_leaf(store, prim, p, None);
-            let mut children = vec![
-                leaf("record", vec![])?,
-                leaf("const", vec![frozen("value", status), frozen("type", "Number")])?,
-                leaf("with_field", vec![frozen("name", "status")])?,
-            ];
-            let mut edges = vec![e(0, 0, 2, 0), e(1, 0, 2, 1)];
+            // The status: the param's, or (`status_input: true`) the last input's, so a streamed
+            // reply answers with its call's status.
+            let wired = inputs.iter().position(|p| p.name == "status").map(|i| i as u32);
+            let mut children = vec![leaf("record", vec![])?];
+            let mut edges = Vec::new();
+            match wired {
+                Some(port) => {
+                    children.push(leaf("with_field", vec![frozen("name", "status")])?);
+                    edges.extend([e(0, 0, 1, 0), e(B, port, 1, 1)]);
+                }
+                None => {
+                    children.push(leaf("const", vec![frozen("value", status), frozen("type", "Number")])?);
+                    children.push(leaf("with_field", vec![frozen("name", "status")])?);
+                    edges.extend([e(0, 0, 2, 0), e(1, 0, 2, 1)]);
+                }
+            }
             // Input 0, the request, is deliberately left unread (see the module doc). The envelope
             // grows field by field: status, the body when there is one, the headers when asked.
-            let mut last: u32 = 2;
+            let mut last = children.len() as u32 - 1;
             if has_body {
                 children.push(leaf("with_field", vec![frozen("name", "body")])?);
                 let k = children.len() as u32 - 1;
@@ -414,6 +429,15 @@ mod tests {
         let plain = build("respond", &[f("status", "200"), f("missing", "404")], &mut store).unwrap();
         let no_flag = build("respond", &[f("status", "200"), f("missing", "404"), f("headers", "false")], &mut store).unwrap();
         assert_eq!(plain, no_flag);
+        // `status_input: true` adds the status as the last input, in place of the param's const;
+        // without it (or false), the unit it always was.
+        let wired = build("respond", &[f("status", "200"), f("missing", "404"), f("headers", "true"), f("status_input", "true")], &mut store).unwrap();
+        assert_eq!(names(&wired.inputs), ["request", "body", "headers", "status"]);
+        let (children, edges) = parts(&wired);
+        assert!(children.iter().all(|c| prim_name(&store, c) != "const"), "the status is the input's, not a const");
+        assert!(edges.contains(&e(BOUNDARY, 3, 1, 1)), "the status input feeds the first with_field");
+        let unflagged = build("respond", &[f("status", "200"), f("missing", "404"), f("headers", "false"), f("status_input", "false")], &mut store).unwrap();
+        assert_eq!(plain, unflagged);
         let with = build("respond", &[f("status", "303"), f("missing", "400"), f("headers", "true")], &mut store).unwrap();
         let (children, _) = parts(&with);
         assert_eq!(children.len(), 6, "record, status, with_field status, with_field body, with_field headers, the fallback");
@@ -443,7 +467,7 @@ mod tests {
             let u = build("respond", &params, &mut store).unwrap();
             assert!(parts(&u).0.iter().all(|c| prim_name(&store, c) != "default"));
         }
-        assert_eq!(defaults("respond").unwrap(), [f("status", "200"), f("missing", "404"), f("headers", "false")]);
+        assert_eq!(defaults("respond").unwrap(), [f("status", "200"), f("missing", "404"), f("headers", "false"), f("status_input", "false")]);
     }
 
     #[test]

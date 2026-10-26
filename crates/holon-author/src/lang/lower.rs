@@ -662,12 +662,17 @@ impl<'a> Lowerer<'a> {
             _ => return err(span, "respond belongs in a route"),
         };
         let (mut status, mut missing, mut body, mut headers): (Option<String>, Option<String>, Option<&Expr>, Option<&Expr>) = (None, None, None, None);
+        // A status that isn't a number written out: computed, it feeds the respond's status input.
+        let mut status_from: Option<&Expr> = None;
         let mut stream = false;
         let positional: Vec<&Arg> = args.iter().filter(|a| a.name.is_none()).collect();
         for a in args.iter().filter(|a| a.name.is_some()) {
             let n = a.name.as_ref().unwrap();
             match n.text.as_str() {
-                "status" => status = Some(self.status_text(&a.value)?),
+                "status" => match &a.value.kind {
+                    ExprKind::Number { .. } => status = Some(self.status_text(&a.value)?),
+                    _ => status_from = Some(&a.value),
+                },
                 "missing" => missing = Some(self.status_text(&a.value)?),
                 "body" => body = Some(&a.value),
                 "headers" => headers = Some(&a.value),
@@ -692,16 +697,20 @@ impl<'a> Lowerer<'a> {
             }
             [_, second, ..] => return err(second.value.span, "respond takes one body; status: and missing: are named"),
         }
-        // A streamed reply is the upstream's answer as it arrives: its status (200) and content type
-        // are sent before the run is over, so nothing the run computes can set them. `missing:` is
-        // still the answer of a run whose call was never made (an input absent).
+        // A streamed reply is the upstream's answer as it arrives: its status and content type are
+        // the call's, sent before the run is over, so nothing the run computes can set them. A call
+        // that fails (not 2xx) forwards nothing, and the reply is its answer, whole, with its status:
+        // the respond's status is wired from the call's. `missing:` is still the answer of a run
+        // whose call was never made (an input absent).
+        let mut streamed_status = None;
         if stream {
             if let Some(a) = args.iter().find(|a| a.name.as_ref().is_some_and(|n| ["status", "headers"].contains(&n.text.as_str()))) {
-                return err(a.value.span, "a streamed reply answers 200 with its call's content type: it takes no status: or headers:");
+                return err(a.value.span, "a streamed reply answers with its call's status and content type: it takes no status: or headers:");
             }
             let Some(id) = body.and_then(|b| self.streamed_call(b)) else {
                 return err(body.map_or(span, |b| b.span), "only a streamed call's body can be streamed: respond sent.body, stream: true, with sent = http.post(…, stream: true)");
             };
+            streamed_status = Some(id.clone());
             self.streamed = Some(id);
         }
         // A subscription is the whole answer: the stream of the channel's packs, always a 200.
@@ -731,9 +740,20 @@ impl<'a> Lowerer<'a> {
             Some(h) => Some((self.expr(h)?, h.span)),
             None => None,
         };
+        let status_val = match (status_from, streamed_status) {
+            (Some(s), _) => Some((self.expr(s)?, s.span)),
+            (None, Some(call)) => {
+                let record = self.out(&call);
+                Some((self.node_with("field", &[("name".into(), "status".into())], &[("record", record)], span)?, span))
+            }
+            (None, None) => None,
+        };
         let mut params = vec![("status".to_string(), status), ("missing".to_string(), missing)];
         if headers_val.is_some() {
             params.push(("headers".to_string(), "true".to_string()));
+        }
+        if status_val.is_some() {
+            params.push(("status_input".to_string(), "true".to_string()));
         }
         let node = self.node("respond", &params, span)?;
         let Val::Out { id, .. } = &node else { unreachable!() };
@@ -744,6 +764,9 @@ impl<'a> Lowerer<'a> {
         }
         if let Some((v, at)) = headers_val {
             self.connect(&v, &id, "headers", at)?;
+        }
+        if let Some((v, at)) = status_val {
+            self.connect(&v, &id, "status", at)?;
         }
         if let FrameKind::Route { responded, .. } = &mut self.frame().kind {
             *responded = Some(span);
@@ -2196,5 +2219,29 @@ pub(crate) mod tests {
         assert_eq!(error("x = 1\ny = match x { \"add\" -> 1, \"add\" -> 2 }\n"), (2, 27, "\"add\" is matched twice; the second arm could never be chosen".into()));
         assert_eq!(error("x = 1\ny = match x { 1, 2 -> 1, 1.0 -> 2 }\n"), (2, 26, "1.0 is matched twice; the second arm could never be chosen".into()));
         assert_eq!(error("match = 1\n").2, "expected an expression, found \"=\"");
+    }
+
+    /// A streamed reply answers with its call's status: the respond's status input, wired from
+    /// the call's `status`. A computed `status:` is the same input, and a number written out the
+    /// param, as before.
+    #[test]
+    fn a_respond_takes_a_computed_status_on_its_status_input() {
+        let into = |d: &FlowDocument, node: &str, port: &str| {
+            d.edges.iter().find(|w| w.target == node && w.target_handle.as_deref() == Some(port)).map(|w| w.source.clone())
+        };
+        let streamed = compiled("port 8200\nroute POST /ask (req) {\n  sent = http.post(\"a.com\", \"/x\", body: req.json, stream: true)\n  respond sent.body, stream: true\n}\n").doc;
+        let respond = streamed.nodes.iter().find(|n| n.data.name == "respond").unwrap();
+        assert_eq!((respond.param("status_input"), respond.param("status")), ("true", "200"));
+        let field = streamed.nodes.iter().find(|n| Some(&n.id) == into(&streamed, &respond.id, "status").as_ref()).unwrap();
+        let call = streamed.nodes.iter().find(|n| n.data.name == "http_stream").unwrap();
+        assert_eq!((field.data.name.as_str(), field.param("name")), ("field", "status"));
+        assert_eq!(into(&streamed, &field.id, "record"), Some(call.id.clone()));
+        let computed = compiled("port 8200\nroute POST /a (req) {\n  respond { ok: false }, status: req.json.code, missing: 400\n}\n").doc;
+        let respond = computed.nodes.iter().find(|n| n.data.name == "respond").unwrap();
+        assert_eq!((respond.param("status_input"), respond.param("missing")), ("true", "400"));
+        assert!(into(&computed, &respond.id, "status").is_some());
+        let written = compiled("port 8200\nroute POST /a (req) {\n  respond { ok: true }, status: 201\n}\n").doc;
+        let respond = written.nodes.iter().find(|n| n.data.name == "respond").unwrap();
+        assert_eq!((respond.param("status_input"), respond.param("status")), ("false", "201"));
     }
 }

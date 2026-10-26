@@ -398,10 +398,13 @@ Where the code differs from the design above, and why.
   changed the hash of every flow with a call. `http.post(…, stream: true)` lowers to it (`stream:`
   last); its request is `http_request`'s plus `stream: true`, which tells the performer
   (`folders::Sender`) to forward it through the run's `outbound::Forwarder`, once per run.
-- **A streamed reply is 200 with the upstream's content type,** `cache-control: no-cache` and
+- **A streamed reply has the upstream's status and content type,** `cache-control: no-cache` and
   `x-accel-buffering: no`; it takes no `status:` or `headers:`, but takes `missing:`, the answer
   of a run whose call was never made (an input absent). A non-2xx upstream forwards nothing and
-  the reply is sent whole at the end, as the design says.
+  the reply is sent whole at the end, as the design says, with the call's status: the lowering
+  wires `sent.status` to the respond's status input (`status_input: true`, the respond template's
+  only when asked), so a refused key reaches the caller as the 401 it was, not a 200 the page
+  can't read, and the log and a replay say the same.
 - **Chunk timing is not logged** (no `chunks`, `first_byte_us`): the exchange is logged whole, as
   any call's, and replays.
 - **A waiting run's progress (slice 3)** is the sends among its settled outputs when it parks,

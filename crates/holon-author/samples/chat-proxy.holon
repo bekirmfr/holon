@@ -22,6 +22,11 @@ document.getElementById("ask").onsubmit = async (e) => {
   const prompt = e.target.elements.prompt.value;
   out.textContent = "";
   const r = await fetch("/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt }) });
+  // Not an event stream: the model's API refused (a bad key, a limit), and says why.
+  if (!(r.headers.get("content-type") || "").startsWith("text/event-stream")) {
+    out.textContent = "the model's API answered " + r.status + ": " + (await r.text());
+    return;
+  }
   const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
   let rest = "";
   for (;;) {

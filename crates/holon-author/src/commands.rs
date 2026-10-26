@@ -549,6 +549,10 @@ route POST /t (req) {
         let text = "flow chat\nport 8200\ncollection said\n\nroute POST /ask (req) {\n  sent = http.post(\"api.example.com\", \"/v1/chat\", body: req.json, stream: true)\n  said[as_text(now)] = sent.body\n  respond sent.body, stream: true\n}\n";
         assert_eq!(check("chat.holon", text).code, 0, "{:?}", check("chat.holon", text).err);
         assert_eq!(fmt("chat.holon", text).unwrap(), text);
+        // A computed status, written as it was.
+        let computed = "flow codes\nport 8200\n\nroute POST /a (req) {\n  respond { ok: false }, status: req.json.code, missing: 400\n}\n";
+        assert_eq!(check("codes.holon", computed).code, 0, "{:?}", check("codes.holon", computed).err);
+        assert_eq!(fmt("codes.holon", computed).unwrap(), computed);
     }
 
     #[test]

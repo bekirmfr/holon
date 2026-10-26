@@ -499,6 +499,12 @@ data: ${JSON.stringify(data)}
     req.on("data", (c) => (body += c));
     req.on("end", async () => {
       asked.push(`${req.headers["x-api-key"]} ${JSON.parse(body).messages[0].content}`);
+      // A key it doesn't know is refused, as the API does: a 401 and why, not an event stream.
+      if (req.headers["x-api-key"] === "sk-e2e-revoked") {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }));
+        return;
+      }
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(event({ type: "message_start", message: { id: "msg_e2e" } }));
       res.write(event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Rivers run" } }));
@@ -558,6 +564,15 @@ data: ${JSON.stringify(data)}
     const heard = () => chat.evaluate(() => (window as unknown as { heard: string[] }).heard);
     await expect.poll(heard).toContainEqual(JSON.stringify({ prompt: "the room", said: "Rivers run to the sea." }));
     expect((await heard()).slice(0, -1).map((piece) => JSON.parse(piece)).join("")).toContain('"text":"Rivers run"');
+    // A key the API refuses: nothing is forwarded, and the reply is the refusal with its status,
+    // which the page shows.
+    expect((await request.post(`${SERVER}/deployments/chat-proxy/secrets/anthropic_api_key`, { data: { value: "sk-e2e-revoked" }, headers: { Authorization: `Bearer ${adminToken}` } })).ok()).toBe(true);
+    await chat.reload();
+    await chat.locator("input[name=prompt]").fill("refused");
+    await chat.getByRole("button", { name: "Ask" }).click();
+    await expect(chat.locator("#said")).toContainText("the model's API answered 401");
+    await expect(chat.locator("#said")).toContainText("invalid x-api-key");
+    expect((await request.post(`http://127.0.0.1:${port}/chat`, { data: { prompt: "refused" } })).status()).toBe(401);
     await chat.close();
   } finally {
     release();

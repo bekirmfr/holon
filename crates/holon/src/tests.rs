@@ -4510,6 +4510,40 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
     assert!(entry["performed"].to_string().contains("CollectionWrite"), "the whole answer stored: {entry}");
 }
 
+/// A streamed call that fails (not 2xx) forwards nothing: the reply is its answer, whole, with
+/// its status (the respond's status input, wired from the call's), so the caller sees the 401 and
+/// the error, and the log says the same.
+#[test]
+fn a_streamed_reply_whose_call_fails_answers_with_its_status() {
+    use std::io::{Read, Write};
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = upstream.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
+        let answer = format!("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        stream.write_all(answer.as_bytes()).unwrap();
+    });
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let port = free_port();
+    let text = format!("flow chat\nport {port}\n\nroute POST /ask (req) {{\n  sent = http.post(\"{host}\", \"/v1\", body: req.json, stream: true)\n  respond sent.body, stream: true\n}}\n");
+    let slug = deploy_text(&state, &text, &host);
+    sync_listeners(&state);
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.write_all(b"POST /ask HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    let entry = log_entries(&state, &slug).into_iter().find(|e| e["route"] == "POST /ask").unwrap();
+    assert!(answer.starts_with("HTTP/1.1 401") && answer.contains("invalid x-api-key"), "{answer}\n{entry}");
+    assert_eq!(entry["status"], 401);
+}
+
 /// A piped call (`docs/L4s/channels-L4.md` §8, slice 3): its upstream's pieces go to the
 /// channel's subscribers as they arrive, each a text pack without an id (never kept), while the
 /// run goes on; the packs it sends once it is over follow, with ids.

@@ -547,8 +547,11 @@ answers, `respond sent.body, stream: true`: once the upstream answers 2xx, the c
 with the upstream's content type and each piece as it arrives (a model's tokens, here), before the
 run is over. The flow still gets the whole answer when it ends, and goes on with it as with any
 call's: `answer`, a js holon, reads the text out of the events, and the run stores it. Nothing
-the run computes can change what was sent, so a streamed reply takes no `status:` or `headers:`;
-`missing:` is the answer of a run whose call was never made (no prompt). A run that fails after
+the run computes can change what was sent, so a streamed reply takes no `status:` or `headers:`:
+its status is the call's (the respond's status input, wired from `sent.status`). A call that
+fails (not 2xx: a bad key, a limit) forwards nothing, and the reply is its answer, whole, with
+that status, so the caller sees the 401 and why. `missing:` is the answer of a run whose call
+was never made (no prompt). A run that fails after
 the first piece ends an event stream with `event: error`. The log keeps the whole answer, as for
 any call, so the run replays.
 
@@ -759,7 +762,8 @@ Rules the table implies:
   for; a host from a wire is an error that says so.
 - A streamed call is a route's, and the route answers with it: `stream:` comes last, takes
   `true` or `false`, sends a body (not a `file:`), and a route makes one; its `respond` is
-  `respond sent.body, stream: true`, without `status:` or `headers:`. A streamed call the route
+  `respond sent.body, stream: true`, without `status:` or `headers:` (its status is the call's,
+  `sent.status`, wired to the respond's status input). A streamed call the route
   doesn't answer with, or `stream: true` on anything but a streamed call's body, is an error that
   says so. The call is `HttpRequest(host)`, as any other.
 - A piped call, `updates.pipe(http.post(…))`, takes one http call, sending a body (no `stream:`
@@ -1003,13 +1007,16 @@ and the block's nodes. Every `respond` and every use of `req` wires into the sam
 which is what makes the block one route (`find_routes` works by connectivity, unchanged).
 
 ```
-respond_args = expr ("," "status" ":" number)? ("," "missing" ":" number)? ("," "stream" ":" bool)?
+respond_args = expr ("," "status" ":" (number | expr))? ("," "missing" ":" number)? ("," "stream" ":" bool)?
              | number                                # a status alone: no body (204)
              | "status" ":" number
 ```
 
 - `respond body, status: 200, missing: 404` is the `respond` template; `status` and `missing`
-  default as the catalog's defaults do. `respond updates.subscribe()` answers with a channel's
+  default as the catalog's defaults do. A status that isn't a number written out (`status:
+  req.json.code`) is computed: the template's `status_input: true` gives it a status input,
+  wired from that expression, in place of the param (a respond without it is the unit it always
+  was). A number out of 100–599 there answers 500. `respond updates.subscribe()` answers with a channel's
   packs (§5.4): the subscription is the body, and the server streams it. `respond sent.body,
   stream: true` forwards a streamed call's answer as it arrives (§5.4). `respond 204`, a bare status with nothing after it, is
   `respond{status: 204}` with no body input; to answer a literal number as a body, write
