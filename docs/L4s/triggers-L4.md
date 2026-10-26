@@ -469,8 +469,9 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
     declarations.
   - `is_clock` becomes "has an `every` handler, or is an old clock flow".
   - Arrivals are watched from the `on_file` children as well as the old leaves.
-  - "Declares no driver capability" stays, for a flow with no handler at all; its message says
-    "trigger".
+  - "Declares no driver capability" stays, for a flow with no handler at all. Its message says
+    "trigger" and what to write: "nothing would ever start a run: to run it by hand, put it in
+    an `action run (input) { … }`" (fork 14). No handler is added for the author.
   - `interval_seconds` is accepted only for an old clock flow. For a flow with `every` blocks it
     is refused: "this flow's clocks are in its text".
 - **The six `server.is_none()` tests** (§1, persistence) become "has an `every` handler, or is
@@ -551,6 +552,10 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
 - **The deployed page** lists a running deployment's actions as the same rows, so an operator
   runs them without opening the flow. Today's "request body" box becomes the row of the old
   form's unnamed action, labelled **run**.
+- **A flow with no trigger** shows deploy greyed, "nothing would start a run", with a quick fix,
+  **make it runnable by hand**. It wraps the flow's top-level statements in `action run (input) {
+  … }` and, when the flow computes a value, ends the block with `respond` of it. The author can
+  rename the action before deploying (fork 14).
 - **The approval** (and `holon check`) show an old by-hand flow's `NetworkIngress` as "can be
   run by hand", not "receive requests" (`holon-author/src/describe.rs` 43, which both use): a
   label only, so no hash or grant changes.
@@ -583,7 +588,7 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
 | 1. Every sink takes its trigger | the `trigger` input on the seventeen sinks (the catalog, `docs/manual/language/leaves.md` blessed by `crates/holon-author/tests/manual.rs`, the wasm parity checks in `holon-wasm/src/lib.rs`), the lowering's tie, `after`, a holon's `trigger` port, the old forms' ties, the migration of saved graphs, the canvas's trigger ports and quick fix | `counter`: a route that counts its hits with no wire to the request in its text, and records the last id `after` the put |
 | 2. Clock blocks | `every … { }`, `declare=every`, deploy and the manifest's triggers, a `next_due` per handler, the log label, verify and replay by label, "tick now" | `ticker` without its action: a page that adds each tick as it arrives |
 | 3. File blocks | `on file … (f) { }`, `declare=on_file`, arrivals for servers, the handle as an input | `drop-board` (new, beside today's `drop-box`): files dropped in a folder show on a live page (`on file drop (f)` sends on a channel, `GET /live` subscribes) |
-| 4. Actions | `action … (x) { }`, `declare=action`, `Action(name)`, `/trigger/<slug>/<name>`, `LogEntry.by`, the agents' actions in the grant, the run rows in the handlers panel and on the deployed page | `ticker`'s `reset`, the flow at the top of this L4 |
+| 4. Actions | `action … (x) { }`, `declare=action`, `Action(name)`, `/trigger/<slug>/<name>`, `LogEntry.by`, the agents' actions in the grant, the run rows in the handlers panel and on the deployed page, the no-trigger error naming `action run` and its quick fix | `ticker`'s `reset`, the flow at the top of this L4 |
 | 5. The docs | LANGUAGE §5.1, §5.11, §5.12, the manual, the actions page | — |
 | 6. Flow calls (later) | a flow runs another's action, by its grant | a shop that runs `billing`'s `charge` |
 
@@ -661,6 +666,20 @@ each other.
 13. **Which people may run an action.** Editors and admins, as `/trigger` today, or admins only.
     *Pick: editors and admins.* Editors deploy, and an action is code they could change; a flow
     whose actions only admins should run is a case for a per-action rule later, not the default.
+14. **A flow with no trigger.** Bind it to a generic action so it deploys, or keep refusing it.
+    *Decided in review (§11): keep refusing it, and say what to write.*
+    - An action that nobody wrote would give the flow "can be run by hand" in its approval
+      without anyone choosing it. That is the hidden membership fork 1 removed.
+    - A flow with no trigger is a holon, made to be placed in other flows (`flowAsNode`,
+      `canvasOps.ts` 222), and binding it would make every such flow look runnable.
+    - A pure one, run with nothing, computes the same value each time. Running it is worth
+      something only when it reads or writes, and then it is an action, written as one:
+      `action run (input) { respond summarize(input) }`.
+
+    The deploy error names that form and the editor offers it as a quick fix (§5, §7). It is
+    not called `tick`, which is a clock's word. A file of only holon definitions, with nothing
+    placed, is refused today as "the canvas is empty" (`holon-author/src/flow.rs` 159). A library
+    of holons is outside this L4.
 
 ## 11. Decided in review
 
@@ -675,7 +694,8 @@ The first review (2026-10-26) settled:
 - **A flow calling another is a grant** on the caller, approved by someone who could run that
   action themselves (§9, slice 6). It comes after the first slices.
 - **A flow still needs at least one trigger.** A flow without any is a holon, placed in other
-  flows; deploy keeps refusing it (§1).
+  flows; deploy keeps refusing it (§1). On 2026-10-27: no action is bound for the author. The
+  error and a quick fix offer `action run (input) { … }` (fork 14).
 - **Every sink takes its trigger** (fork 1, §3), on 2026-10-27: a `trigger` input on every sink,
   wired by the lowering, written `after x` when it is something else. A holon with a sink gets the
   same port. Membership stays "everything wired to its trigger".
