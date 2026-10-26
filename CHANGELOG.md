@@ -1,7 +1,42 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.27
 
+Nothing to redeploy: no unit is hashed differently (every sample rc.26 compiles hashes as it
+did), and deployments, logs and waiting runs from rc.26 load as they are. A server that binds no
+database runs as before; `--databases` (default `~/.holon/data/databases.json`) is where it keeps
+the ones an admin binds.
+
+- **Databases.** A flow names a database an admin binds on the host (`database shop`), never
+  where it is: a SQLite file, or a Postgres, MySQL or MongoDB (Atlas included) database whose URL
+  the server fetches from a secret's source (`env:HOLON_SECRET_SHOP_URL`, `vault:…`), never typed
+  in, stored or shown. `shop.query(sql, v…)`, `shop.one(…)` and `shop.exec(…, expect: n)` take
+  SQL, its values as `$1`, `$2`, …; a MongoDB takes record literals (`notes.find("notes", { … })`,
+  `find_one`, `insert`, `update`, `delete`), whose shapes are frozen at deploy so a request's
+  values never become operators. Each table or collection a flow touches is its own permission
+  (`DbRead("shop/orders")`, `DbWrite(…)`). A run's writes land when it finishes, in one
+  transaction, only if what it read is as it read it; otherwise it runs again. Bind one with
+  `holon database add shop ~/shop.db --schema "create table …"` (`--read-only`, `--for <slug>`,
+  `--lock run`) or the admin page. A connection URL whose password is still a placeholder
+  (Atlas's `<db_password>`) is refused when it's bound. Samples `orders-api`, `refund-once`,
+  `ticket-numbers`, `approved-payout` and `atlas-notes`; the guide is
+  `docs/manual/guides/databases.md`.
+- **Runs that share what they write.** Runs of several deployments that write one file commit
+  one at a time, so none writes over another (sample `shared-ledger`). A run that reads a row or
+  file it may write and then calls out holds it until it commits, so two refunds of one order at
+  once pay once (`refund-once`); on Postgres, MySQL and MongoDB that holds across servers. An admin
+  can hold a database or folder for each run's whole length (`--lock run`), for a counter or a
+  queue (`ticket-numbers`). A run that waited (`await`) checks what it shares when it finishes, and
+  runs again from where it last waited if it changed (`approved-payout`).
+- **The admin page has tabs**: people and sign-in; resources (folders and databases, each
+  database's tables, which deployments use each); and permissions (the host's policy, read only,
+  with "read the policy again", and who may touch what, by table and file, each linked to its
+  deployment's card, where its grant changes).
+- **verify trusts only the marks the server wrote.** The log writes `‹secret:name›` and
+  `‹token:name›` in place of values it never holds; a caller's text that looks like one is now
+  escaped as it is logged, so verify computes with it instead of taking the log's word. A request
+  that carried a real secret or token (a resume route's path, a bearer token) keeps the run id the
+  log holds, and the report says so; before, verify said such a run's id differed.
 - **An env secret is picked from a list.** Under ⚙ → secrets, **env** offers the server's
   `HOLON_SECRET_…` names (its environment and its `--dotenv` file), the one the secret's name
   suggests chosen; **another name…** types one. Opening ⚙ reads the dotenv file again, so a line
