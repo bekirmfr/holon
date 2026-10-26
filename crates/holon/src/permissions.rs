@@ -631,9 +631,14 @@ impl Grant {
 
     /// Why the deployment can't run under this grant and the policy in force, if it can't: it
     /// needs required items it isn't granted (unless it keeps running without them), or the host
-    /// no longer grants what it asks for. Optional items it lacks never stop it.
+    /// no longer grants what it asks for. Optional items it lacks never stop it. Its trigger
+    /// always does: the host supplies what starts a run (a request's body, the time), never asking
+    /// the permit, so a deployment running without it would go on being started.
     pub(crate) fn attention(&self, manifest: &Manifest, policy: &Policy) -> Option<String> {
         let missing: Vec<String> = self.missing(manifest).into_iter().filter(|i| !manifest.is_optional(i)).collect();
+        if let Some(trigger) = manifest.trigger().filter(|t| missing.iter().any(|i| i == t)) {
+            return Some(format!("{trigger} starts its runs and isn't granted; grant it back, or deploy it again to approve"));
+        }
         if !missing.is_empty() && !self.keep_running {
             return Some(format!(
                 "it needs {} it isn't granted; grant it back, or deploy it again to approve",
@@ -921,6 +926,11 @@ mod tests {
         grant.items.remove("SecretRead(\"token\")");
         assert!(grant.attention(&m, &policy).unwrap().contains("SecretRead(\"token\")"), "required: it pauses");
         assert!(!grant.attention(&m, &policy).unwrap().contains("receipt"), "the optional one isn't named");
+        grant.keep_running = true;
+        assert_eq!(grant.attention(&m, &policy), None, "kept running, its reads refused");
+        // Its trigger the host supplies without asking the permit: without it, it always pauses.
+        grant.items.remove("NetworkIngress");
+        assert!(grant.attention(&m, &policy).unwrap().contains("NetworkIngress starts its runs"), "kept running or not");
 
         // Its trigger can't be optional, nor can something it doesn't use.
         assert!(policy.refuses(&manifest(&caps, optional(&["NetworkIngress"]))).unwrap().contains("starts its runs"));

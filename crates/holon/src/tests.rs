@@ -4825,3 +4825,27 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
     assert_eq!(done[1], r#"data: {"said":"Rivers run to the sea."}"#);
     assert!(asked.join().unwrap().starts_with("HTTP/1.1 202"));
 }
+
+#[test]
+fn no_folder_is_or_holds_what_the_server_keeps_beside_its_files() {
+    let dir = unique_temp_path("server-files");
+    let deployments = format!("{dir}/data/deployments.json");
+    let (logs, keys, env) = (format!("{dir}/data/deployments.logs"), format!("{dir}/keys"), format!("{dir}/conf"));
+    for d in [&logs, &keys, &env] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(format!("{keys}/secrets.key"), "").unwrap();
+    std::fs::write(format!("{env}/.env"), "").unwrap();
+    let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{keys}/secrets.key")));
+    let memory = ":memory:".to_string();
+    let own = server_files(&[&deployments, &memory], &deployments, Some(&format!("{env}/.env")), &key);
+    let folders = crate::folders::Folders::open(":memory:", &own).unwrap();
+    let bind = |path: &str| folders.bind("x", path, crate::folders::FolderAccess::Read, crate::folders::Keep::Bytes, None, None);
+    // The flow logs beside the deployments file, the folder of the secrets key, the `.env`'s.
+    for path in [&logs, &keys, &env] {
+        assert!(bind(path).unwrap_err().contains("own data"), "{path}");
+    }
+    let elsewhere = format!("{dir}/inbox");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    bind(&elsewhere).unwrap();
+}

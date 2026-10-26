@@ -160,7 +160,8 @@ The **activity** list at the bottom says who did what, and when.
 Admins manage, from here:
 
 - **people**: add someone with a role (they get a link to set their password, good once, for
-  seven days), change a role, reset a password, disable, or remove;
+  seven days), change a role, reset a password (their sessions end and the old password stops
+  working at once), disable, or remove;
 - **API tokens**, for scripts, CI and agents on other machines: each with a role, shown once;
 - **folders**: the named folders flows may use ([Files on the host](files.md));
 - **signing in through an identity provider** (OpenID Connect): its issuer and client id.

@@ -231,6 +231,21 @@ use scheduler::*;
 use units::*;
 use wire::*;
 
+/// The server's own files, which no folder may be or hold: those it was given (`files`), what it
+/// keeps beside its deployments file (the flow logs, the arrivals it noted, the heads it
+/// published), the `.env` it reads secrets from, and the secrets key's file.
+fn server_files(files: &[&String], deployments: &str, dotenv: Option<&str>, key: &sealing::KeySource) -> Vec<PathBuf> {
+    let mut own: Vec<PathBuf> = files.iter().filter(|p| p.as_str() != ":memory:").map(PathBuf::from).collect();
+    if deployments != ":memory:" {
+        own.extend(["logs", "arrivals", "heads"].map(|beside| Path::new(deployments).with_extension(beside)));
+    }
+    own.extend(dotenv.map(PathBuf::from));
+    if let sealing::KeySource::File(path) = key {
+        own.push(path.clone());
+    }
+    own
+}
+
 /// Any concrete `Store` backend, boxed so the server picks one at startup without the rest of
 /// the file branching on which. `Store`'s own trait shape (no generics, no `Self`-returning
 /// methods) is already object-safe — this isn't a new abstraction, just `dyn` over the one
@@ -911,7 +926,7 @@ fn serve(args: Vec<String>) {
     };
     let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
     let secrets_key = sealing::KeySource::parse(secrets_key_arg.as_deref(), &secrets_arg).unwrap_or_else(|e| refuse_to_start(e));
-    let sources = secret_sources::Sources::new(dotenv_arg.map(std::path::PathBuf::from)).unwrap_or_else(|e| refuse_to_start(e));
+    let sources = secret_sources::Sources::new(dotenv_arg.clone().map(std::path::PathBuf::from)).unwrap_or_else(|e| refuse_to_start(e));
     let secrets = Arc::new(SecretStore::open(&secrets_arg, &secrets_key, sources).unwrap_or_else(|e| refuse_to_start(e)));
     {
         // References are read again every minute: a value changed or revoked where it is kept
@@ -925,11 +940,12 @@ fn serve(args: Vec<String>) {
         });
     }
     // The folders an admin bound (folders.rs): never the server's own files, nor what holds them.
-    let mut own: Vec<PathBuf> = [&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &accounts_arg, &host_key_arg]
-        .into_iter()
-        .filter(|p| p.as_str() != ":memory:")
-        .map(PathBuf::from)
-        .collect();
+    let mut own = server_files(
+        &[&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &accounts_arg, &host_key_arg],
+        &deployments_arg,
+        dotenv_arg.as_deref(),
+        &secrets_key,
+    );
     own.extend(local::holon_home());
     let folders = folders::Folders::open(&folders_arg, &own).unwrap_or_else(|e| refuse_to_start(e));
     // The texts of files runs read are kept beside the content store (blobs.rs).

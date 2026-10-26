@@ -116,7 +116,8 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 new: String,
             }
             return respond(body::<Change>(request).and_then(|c| {
-                accounts.change_password(by, &c.current, &c.new).map_err(fail)?;
+                let asking = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim);
+                accounts.change_password(by, &c.current, &c.new, asking).map_err(fail)?;
                 Ok(Response::empty_204())
             }));
         }
