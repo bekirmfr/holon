@@ -109,7 +109,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
 | `--secrets-key os\|env:VAR\|file:PATH` | where the secrets file's key is kept (default: the OS key store) |
 | `--new-secrets-key` | print a fresh key for `--secrets-key env:VAR`, and exit |
-| `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from |
+| `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from, again every minute while the server runs ([Secrets from a `.env` file](../guides/deploying.md#secrets-from-a-env-file)) |
 | `--editor DIR` | serve the editor from `DIR` instead of the built-in one (or `HOLON_EDITOR`) |
 | `--policy PATH` | the policy file (default `holon.toml` in the data folder) |
 | `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:` |

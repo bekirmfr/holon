@@ -582,6 +582,8 @@ data: ${JSON.stringify(data)}
     release();
     await expect(chat.locator("#said")).toHaveText("Rivers run to the sea.");
     expect(asked).toEqual([`${key} a line about rivers`]);
+    // Listed on the page as soon as the answer ends, with no reload.
+    await expect(chat.locator("#past li").first()).toHaveText("a line about riversRivers run to the sea.");
     // The run had the whole answer: stored, and listed on the page.
     await expect(async () => {
       await chat.reload();
@@ -668,6 +670,8 @@ test("gemini-chat forwards Gemini's streamed answer as it arrives, and says so w
     await chat.getByRole("button", { name: "Ask" }).click();
     await expect(chat.locator("#said")).toHaveText("Rivers run to the sea.");
     expect(asked).toEqual(["e2e-key gemini-3.5-flash-lite a line about rivers"]);
+    // Listed on the page as soon as the answer ends, with no reload.
+    await expect(chat.locator("#past li").first()).toHaveText("a line about riversRivers run to the sea.");
     // The run had the whole answer: stored, and listed on the page.
     await expect(async () => {
       await chat.reload();
