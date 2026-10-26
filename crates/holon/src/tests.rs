@@ -1242,6 +1242,9 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     assert!(!listed.to_string().contains(value), "never the value: {listed}");
     // A source other than a value: refused when it can't be read, never added half-set.
     let from = |f: &str| route(&state, &req("POST", "/deployments/s/secrets/other", serde_json::to_vec(&serde_json::json!({ "from": f })).unwrap()));
+    // What an env secret can name here: none in this server's (empty) environment.
+    let env: serde_json::Value = serde_json::from_slice(&body_bytes(route(&state, &req("GET", "/admin/secrets/env", vec![])))).unwrap();
+    assert_eq!(env, serde_json::json!({ "names": [], "dotenv": null }));
     let refused = from("env:HOLON_SECRET_NOT_SET_ANYWHERE");
     assert_eq!(refused.status_code, 400);
     assert!(String::from_utf8(body_bytes(refused)).unwrap().contains("isn't set"));

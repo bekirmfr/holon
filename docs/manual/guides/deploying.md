@@ -122,16 +122,21 @@ Add the options you usually start it with. If something else starts the server f
 shortcut, a startup task, a service), add `--dotenv …` there. A file that doesn't exist yet reads
 as empty, so you can name it before you create it.
 
-**Pointing a secret at it.** Under **⚙ → secrets**, choose **env** for the secret and give the
-variable: `env:HOLON_SECRET_GEMINI_API_KEY` for `secret.gemini_api_key`. The editor suggests the
-name: the secret's name in capitals, after `HOLON_SECRET_`.
+**Pointing a secret at it.** Under **⚙ → secrets**, choose **env** for the secret, then the
+variable from the list: every `HOLON_SECRET_…` name in the file and in the server's environment,
+never their values. The one the secret's name suggests is chosen for you
+(`HOLON_SECRET_GEMINI_API_KEY` for `secret.gemini_api_key`: the name in capitals, after
+`HOLON_SECRET_`). Opening ⚙ reads the file again, so a line you just added is in the list. Choose
+**another name…** to type one the list doesn't have. The list is shown to admins only, as only an
+admin sets secrets.
 
 **How it is served.**
 
 - The server reads the file when it starts, then again every minute. An edit reaches the runs
   within a minute.
 - If the editor answers "HOLON_SECRET_… isn't set in the server's environment or its dotenv
-  file", the server hasn't read your edit yet: wait a minute, and set it again.
+  file", the server hasn't read your edit yet: close ⚙ and open it again, which reads the file,
+  and set it again.
 - If the same name is also an environment variable of the server, that one wins, as with other
   `.env` tools.
 - Holon keeps only the reference (`env:HOLON_SECRET_GEMINI_API_KEY`), never the value: the value

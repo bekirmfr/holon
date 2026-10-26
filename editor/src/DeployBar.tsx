@@ -8,6 +8,7 @@ import { createPortal } from "react-dom";
 import { describeItem, manifestTrigger } from "./holon";
 import {
   deleteSecret,
+  getEnvSecretNames,
   getPermissions,
   getSecretHistory,
   listSecrets,
@@ -134,6 +135,12 @@ export function DeployBar({
     if (slug) listSecrets(slug).then(setSecrets).catch(() => setSecrets([]));
   };
   useEffect(reloadSecrets, [open, slug]);
+  // The env variables a secret can name, for an admin (the server re-reads its dotenv file, so a
+  // line just added shows); anyone else gets none and types the name.
+  const [envNames, setEnvNames] = useState<string[]>([]);
+  useEffect(() => {
+    if (open) getEnvSecretNames().then((r) => setEnvNames(r.names)).catch(() => setEnvNames([]));
+  }, [open]);
   const req = settings.requirements;
   const noPlainHttp = policy !== null && !policy.allow_plain_http;
   const hasPlainHttp = (req?.plain_http ?? []).length > 0;
@@ -299,7 +306,7 @@ export function DeployBar({
                 </span>
               )}
               {secretNames.map((name) => (
-                <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} onChanged={reloadSecrets} />
+                <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} envNames={envNames} onChanged={reloadSecrets} />
               ))}
             </div>
           </div>,
@@ -322,6 +329,9 @@ const KINDS: { kind: Kind; label: string; placeholder: (name: string, isSet: boo
   { kind: "vault", label: "vault", placeholder: () => "secret/path#field", title: "a HashiCorp Vault KV v2 field, read with the server's VAULT_ADDR / VAULT_TOKEN" },
 ];
 
+/** The env row's choice that types a name the server didn't list. */
+const OTHER = " other";
+
 const when = (epoch: number) => new Date(epoch * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
 const sourceLabel = (source: string) => (source === "local" ? "sealed here" : source);
 
@@ -330,11 +340,14 @@ const sourceLabel = (source: string) => (source === "local" ? "sealed here" : so
  * has no value), a way to set a new version (a value, an env variable, a Vault field), and its
  * history, from which an older version can be rolled back to.
  */
-function SecretRow({ slug, name, info, onChanged }: { slug: string | null; name: string; info?: SecretInfo; onChanged: () => void }) {
+function SecretRow({ slug, name, info, envNames, onChanged }: { slug: string | null; name: string; info?: SecretInfo; envNames: string[]; onChanged: () => void }) {
   const kindOf = (source?: string): Kind => (source?.startsWith("env:") ? "env" : source?.startsWith("vault:") ? "vault" : "value");
   const [kind, setKind] = useState<Kind>(kindOf(info?.source));
   const [text, setText] = useState("");
   const [msg, setMsg] = useState("");
+  // An env variable is picked from the server's names when it has some; "another name…" types one.
+  const [typing, setTyping] = useState(false);
+  const picking = kind === "env" && envNames.length > 0 && !typing;
   const [history, setHistory] = useState<SecretHistory | null>(null);
   // The row follows where the secret comes from once that's known (the list loads after it).
   useEffect(() => {
@@ -385,7 +398,9 @@ function SecretRow({ slug, name, info, onChanged }: { slug: string | null; name:
             const next = e.target.value as Kind;
             setKind(next);
             // An env variable's name is suggested from the secret's; a value is never carried over.
-            setText(next === "env" ? KINDS[1].placeholder(name, false) : "");
+            const suggested = KINDS[1].placeholder(name, false);
+            setText(next !== "env" ? "" : envNames.length === 0 || envNames.includes(suggested) ? suggested : "");
+            setTyping(false);
           }}
           disabled={!slug}
           title={k.title}
@@ -397,6 +412,25 @@ function SecretRow({ slug, name, info, onChanged }: { slug: string | null; name:
             </option>
           ))}
         </select>
+        {picking ? (
+          <select
+            value={text}
+            disabled={!slug}
+            onChange={(e) => (e.target.value === OTHER ? (setTyping(true), setText("")) : setText(e.target.value))}
+            title="a HOLON_SECRET_… variable of the server's environment or its --dotenv file"
+            style={{ ...base, padding: "3px 4px", width: 158 }}
+          >
+            <option value="" disabled>
+              choose a variable…
+            </option>
+            {envNames.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+            <option value={OTHER}>another name…</option>
+          </select>
+        ) : (
         <input
           type={kind === "value" ? "password" : "text"}
           // Not a sign-in: a browser's saved login would fill this, and its name the field before.
@@ -411,6 +445,7 @@ function SecretRow({ slug, name, info, onChanged }: { slug: string | null; name:
           title={k.title}
           style={{ ...input, width: 150 }}
         />
+        )}
         <button style={base} disabled={!slug || !text.trim()} onClick={save}>
           set
         </button>

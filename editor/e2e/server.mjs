@@ -38,6 +38,9 @@ const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug
 // chat-proxy test points the sample at a stand-in upstream on loopback.
 const policy = join(dir, "holon.toml");
 writeFileSync(policy, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n");
+// Its dotenv file (secret_sources.rs): the variables ⚙ offers an env secret; the tests add lines.
+const dotenv = join(dir, "secrets.env");
+writeFileSync(dotenv, "HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n");
 const server = spawn(
   binary,
   [
@@ -51,6 +54,7 @@ const server = spawn(
     "--host-key", join(dir, "host.key"),
     "--accounts", join(dir, "accounts.json"),
     "--policy", policy,
+    "--dotenv", dotenv,
   ],
   { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "", HOLON_NO_FOLDER_DIALOG: "1" } },
 );

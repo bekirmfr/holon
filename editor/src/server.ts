@@ -295,6 +295,10 @@ export async function listSecrets(slug: string): Promise<SecretInfo[]> {
   return (await asJson<{ secrets: SecretInfo[] }>(res)).secrets;
 }
 
+/** `GET /admin/secrets/env` (admins only) — the `HOLON_SECRET_…` names an env secret can be read
+ *  from: the server's environment and its dotenv file, read again first. Names, never values. */
+export const getEnvSecretNames = async () => asJson<{ names: string[]; dotenv: string | null }>(await api(`${BASE}/admin/secrets/env`));
+
 const secretUrl = (slug: string, name: string) => `${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`;
 
 /** Set a secret, as a new version: a value (sent to the server, sealed there, never sent back),

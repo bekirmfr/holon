@@ -5,7 +5,7 @@
 // developer's deployments on the samples' ports are left alone, plus 100 for each slot past the
 // first (ports.mjs), so runs side by side don't meet.
 
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 
@@ -701,6 +701,37 @@ test("cache-aside answers a name it has from its collection without the fetch, w
   await expect(skipped.filter({ hasText: "http_request" })).toHaveCount(1);
   await skipped.filter({ hasText: "http_request" }).locator(".hl-node__title").click();
   await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("not run: the coalesce after it already had a value");
+});
+
+test("an env secret is picked from the server's HOLON_SECRET_… names, its dotenv file read again for each", async ({ page, request, adminToken }) => {
+  // Names only, to an admin: the e2e server's dotenv file (server.mjs) has one, beside a name it doesn't offer.
+  const env = (await (await request.get(`${SERVER}/admin/secrets/env`, { headers: { Authorization: `Bearer ${adminToken}` } })).json()) as { names: string[]; dotenv: string };
+  expect(env.names).toContain("HOLON_SECRET_GEMINI_API_KEY");
+  expect(env.names).not.toContain("VAULT_TOKEN");
+  // A line added while the server runs is offered the next time ⚙ opens, with no restart.
+  const added = `HOLON_SECRET_E2E_${Date.now().toString(36).toUpperCase()}`;
+  appendFileSync(env.dotenv, `${added}=e2e-added-value\n`);
+
+  await openSample(page, "Gemini chat (a streamed reply, free tier)");
+  // What the row sets is caught here: the gemini-chat test sets this secret on the same server.
+  let posted: unknown = null;
+  await page.route(`${SERVER}/deployments/gemini-chat/secrets/gemini_api_key`, (route) =>
+    route.request().method() === "POST" ? ((posted = route.request().postDataJSON()), route.fulfill({ json: { version: 1 } })) : route.continue(),
+  );
+  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "deploy settings" });
+  await settings.locator("select", { has: page.locator('option[value="vault"]') }).selectOption("env");
+  // The variable the secret's name suggests is chosen; the one just added is there too.
+  const names = settings.locator("select", { has: page.locator("option", { hasText: "another name…" }) });
+  await expect(names).toHaveValue("HOLON_SECRET_GEMINI_API_KEY");
+  await expect(names.locator("option")).toContainText([added, "HOLON_SECRET_GEMINI_API_KEY"]);
+  await names.selectOption(added);
+  await settings.getByRole("button", { name: "set", exact: true }).click();
+  await expect(settings).toContainText("version 1 set");
+  expect(posted).toEqual({ from: `env:${added}` });
+  // A name the server doesn't list is typed.
+  await names.selectOption({ label: "another name…" });
+  await expect(settings.getByPlaceholder("HOLON_SECRET_GEMINI_API_KEY")).toBeVisible();
 });
 
 test("calc's match answers the chosen arm or 400 when it has no value, and view mode shows the other arms as not run", async ({ page, request }) => {
