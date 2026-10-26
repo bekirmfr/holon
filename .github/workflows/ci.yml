@@ -54,8 +54,6 @@ jobs:
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
           version: v0.15.0
-        with:
-          version: v0.15.0
       - run: wasm-pack test --node crates/holon-wasm
         # It downloads wasm-bindgen and wasm-opt; a stalled download fails here, not after 6 h.
         timeout-minutes: 10
