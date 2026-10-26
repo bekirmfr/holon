@@ -131,7 +131,8 @@ the other opens nothing.
 A secret's source can be `env` (`HOLON_SECRET_<NAME>` in the server's environment, or in the
 `--dotenv` file; the real environment wins) or `vault` (`mount/path#field`, from HashiCorp Vault
 KV v2 at `VAULT_ADDR`, with `VAULT_TOKEN` and `VAULT_NAMESPACE`). Both are read again every
-minute; a value that can't be read is kept for five minutes at most.
+minute; a value that can't be read is kept for five minutes at most. [Secrets from a `.env`
+file](../guides/deploying.md#secrets-from-a-env-file) says where the file goes and what it holds.
 
 ## Deployed flows' servers
 

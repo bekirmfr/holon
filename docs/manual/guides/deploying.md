@@ -68,8 +68,8 @@ has a source:
 
 - **value**: typed in, sealed on the server (AES-256-GCM, its key in the OS key store by default).
   It is never shown again.
-- **env**: read from an environment variable of the server, `HOLON_SECRET_<NAME>` (or a `.env`
-  file given with `holon serve --dotenv`).
+- **env**: read from an environment variable of the server, `HOLON_SECRET_<NAME>`, or from a
+  `.env` file the server reads (see [Secrets from a `.env` file](#secrets-from-a-env-file)).
 - **vault**: read from HashiCorp Vault (KV v2), as `mount/path#field`, with `VAULT_ADDR` and
   `VAULT_TOKEN` in the server's environment.
 
@@ -85,6 +85,71 @@ gets it, so don't.
 
 Until a secret is set, the nodes that read it have no value, and what depends on them doesn't
 run.
+
+### Secrets from a `.env` file
+
+A `.env` file keeps your keys in a file on the server's machine, outside Holon. You can add or
+change one without restarting the server.
+
+**Where it goes.** Anywhere you like: the server reads only the file you name when you start it.
+`~/.holon/secrets.env` (on Windows, `C:\Users\<you>\.holon\secrets.env`) keeps it with Holon's
+other files and out of any repository. Give the path in full: a relative one is read from the
+folder the server was started in.
+
+**What goes in it.** One `HOLON_SECRET_<NAME>=value` line per key:
+
+```
+# Gemini, for the gemini-chat sample
+HOLON_SECRET_GEMINI_API_KEY=AIza...
+HOLON_SECRET_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+```
+
+- Blank lines and lines starting with `#` are skipped, and so is a line without `=`.
+- An `export ` in front of a line is allowed.
+- A value in matching single or double quotes is taken as it is, `#` included. An unquoted value
+  ends at ` #` (a space, then `#`).
+- Only `HOLON_SECRET_…` names can be used by a flow's secret. The file may hold other lines
+  (`VAULT_ADDR` and `VAULT_TOKEN` for vault secrets are read from it too), but no secret can name
+  them.
+
+**Starting the server with it.** This is the only restart you need:
+
+```bash
+holon serve --dotenv ~/.holon/secrets.env
+```
+
+Add the options you usually start it with. If something else starts the server for you (a
+shortcut, a startup task, a service), add `--dotenv …` there. A file that doesn't exist yet reads
+as empty, so you can name it before you create it.
+
+**Pointing a secret at it.** Under **⚙ → secrets**, choose **env** for the secret and give the
+variable: `env:HOLON_SECRET_GEMINI_API_KEY` for `secret.gemini_api_key`. The editor suggests the
+name: the secret's name in capitals, after `HOLON_SECRET_`.
+
+**How it is served.**
+
+- The server reads the file when it starts, then again every minute. An edit reaches the runs
+  within a minute.
+- If the editor answers "HOLON_SECRET_… isn't set in the server's environment or its dotenv
+  file", the server hasn't read your edit yet: wait a minute, and set it again.
+- If the same name is also an environment variable of the server, that one wins, as with other
+  `.env` tools.
+- Holon keeps only the reference (`env:HOLON_SECRET_GEMINI_API_KEY`), never the value: the value
+  stays in your file, and in the server's memory while it runs.
+- A run gets the value as it was at the last read. It never shows in the log, the editor or an
+  export (`‹secret:name›`).
+- If you remove a line, or the file can't be read, runs keep the last value for five minutes at
+  most, and the secrets list says why. After that, the secret has no value until it can be read
+  again. To revoke a key, take it out of the file, and also revoke it where it was issued.
+- A value shorter than six characters isn't used, as with a typed-in one.
+
+**Keeping it safe.** The file holds your keys in plain text: keep it readable only by you (or by
+the account the server runs as), and out of any repository. The server counts the file among its
+own: a folder that holds it can't be bound as a [named folder](files.md), so no flow can read it
+as a file.
+
+For values that should never sit in a file on the server, use a typed-in value (sealed on the
+server) or **vault**.
 
 ## Optional permissions
 
