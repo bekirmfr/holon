@@ -130,6 +130,12 @@ pub struct LogEntry {
     /// deployment's own port names nobody.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// Whether text the run had looked like a mark the log writes in place of a value it never
+    /// holds (`‹secret:name›`, `‹token:name›`), and was escaped: each `‹` of its own before one
+    /// written twice, so that a mark is only ever one the log wrote (`secrets::write_marked`).
+    /// Absent when nothing was, and in entries logged before look-alikes were escaped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub escaped: bool,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -575,6 +581,7 @@ mod tests {
             retries: 0,
             claims: vec![],
             by: None,
+            escaped: false,
         }
     }
 

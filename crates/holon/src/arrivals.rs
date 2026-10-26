@@ -383,9 +383,8 @@ fn fire_one_arrival(
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
-    Redactor::tokens(&waits.tokens).entry(&mut entry);
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, slug, entry);
+    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
     println!("{} file [{slug}] {folder}/{name}: {} effect(s) performed", event.name(), run.performed.len());
     record_trigger(deployments, slug, false);
     if state.is_some() || parked_any {

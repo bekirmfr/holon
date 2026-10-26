@@ -58,6 +58,7 @@ notes-api: 42 runs, runs 1 to 42
   head: 3f9c2a7be01d is the newest run's
   re-ran 42 runs: each produced what its log entry says
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret or a resume token (not computed again)
+  2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
 ok
 ```
 
@@ -83,6 +84,18 @@ node stands in, as in the editor's replay, and the rest of the run is checked ag
 answer built from a signature, the effects, the status. The report says which runs were checked
 that way, and for how many nodes. What such a node produced is taken from the log, not checked:
 a run whose signature check the log says passed is checked as if it had.
+
+A run's id is made from what it received. When that held a secret or a token (a bearer token
+equal to a secret, a resume link's token in its path), the id can't be made again either: the log
+keeps the run id it has, and the report lists those runs. That is taken from the log too, but
+nothing is lost: the id binds nothing a forger couldn't compute, and the chain and the head are
+what catch an entry that was changed.
+
+Only placeholders the server wrote are taken that way. A caller who sends text that looks like
+one (`‹token:paid›` in a body) gets it logged escaped (`‹‹token:paid›`, with `"escaped": true` on
+the entry), and `verify` reads it back as the text it was and computes with it like any other:
+the run id and every node are checked. A channel's subscribers get it as it was sent. Entries
+logged before this was escaped read every look-alike as a placeholder, as they did then.
 
 The log keeps such a node's outputs only when they can't give the secret away. A one-way leaf
 (`sha256`, `hmac_sha256`, `secure_equals`) or a Boolean answer gives nothing of it away. A value

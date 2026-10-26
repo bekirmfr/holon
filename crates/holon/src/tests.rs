@@ -3740,6 +3740,63 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     assert_eq!(report.given, BTreeMap::from([(0, 1)]));
 }
 
+/// A caller who sends text that looks like a placeholder (`‹token:paid›`) gets nothing taken as
+/// given: the log escapes it (only a mark the log wrote reads as one), and verify computes the
+/// run's id and every node from it again. The caller's answer, and the request as the run saw it,
+/// are the text it sent. Rewritten everywhere, the answer differs: nothing stood in for it.
+#[test]
+fn a_look_alike_of_a_placeholder_is_computed_with_not_taken_as_given() {
+    let state = claims_state("");
+    let text = "flow echo\nport 18198\n\nroute POST /echo (req) {\n  respond \"got {req.body}\"\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let (status, answer, _) = data_call(&state, &slug, "POST", "/echo", "‹token:paid›");
+    assert_eq!((status, answer.as_str()), (200, "got ‹token:paid›"), "the caller gets what it sent");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/echo/export", vec![])))).unwrap();
+    assert_eq!(export.lines.len(), 1);
+    assert!(export.lines[0].contains("got ‹‹token:paid›") && export.lines[0].contains("\"escaped\":true"), "{}", export.lines[0]);
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+    assert!(report.given.is_empty() && report.ids_given.is_empty(), "nothing taken as given: {}", verify::describe(&report, None));
+    assert!(!verify::describe(&report, None).contains("given"), "{}", verify::describe(&report, None));
+
+    let line = export.lines[0].replace("got ‹‹token:paid›", "got ‹‹token:other›");
+    assert_ne!(line, export.lines[0]);
+    let head = recorder::line_hash(&line);
+    let forged = verify::Export { lines: vec![line], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&forged, Some(&head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Differs("its outputs".into()))], "{}", verify::describe(&report, None));
+}
+
+/// A run that received a real secret or a real token was given its id from the value, which the
+/// log never holds: verify keeps the log's run id for it and says so, and checks the rest. Here a
+/// bearer token equal to a secret, and a resume route's token in its path.
+#[test]
+fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
+    let state = claims_state("");
+    let value = "tok_live_abcdef123";
+    let set = req("POST", "/deployments/gate/secrets/api_token", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let text = "flow gate\nport 18197\ncollection seen\n\nroute POST /me (req) {\n  ok = secure_equals(req.body, \"Bearer {secret.api_token}\")\n  respond \"/paid/{resume_token(paid)}\" when ok, missing: 401\n  paid = await paid, expires: 1h\n  seen[\"last\"] = { at: req.path, via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let (status, link, _) = data_call(&state, &slug, "POST", "/me", &format!("Bearer {value}"));
+    assert_eq!(status, 200, "{link}");
+    let (status, thanks, _) = data_call(&state, &slug, "GET", &link, "");
+    assert_eq!((status, thanks.as_str()), (200, "thanks"));
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/gate/export", vec![])))).unwrap();
+    let token = &link["/paid/".len()..];
+    assert!(export.lines.iter().all(|l| !l.contains(value) && !l.contains(token)), "the log holds neither");
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let seqs: Vec<u64> = report.reruns.iter().map(|(seq, _)| *seq).collect();
+    assert!(seqs.len() >= 3, "the request, the resume and the resumed part: {seqs:?}");
+    let resume = export.lines.iter().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find(|e| e["route"] == "GET /paid/:token").unwrap();
+    assert!(report.ids_given.contains(&0), "the request carried the secret: {}", verify::describe(&report, None));
+    assert!(report.ids_given.contains(&resume["seq"].as_u64().unwrap()), "the resume carried the token: {}", verify::describe(&report, None));
+    assert!(verify::describe(&report, None).contains("checked given the run id the log kept"), "{}", verify::describe(&report, None));
+}
+
 // ── key claims: a key read before a call is held until the run commits ───────────────────────
 // (docs/L4s/key-claims-L4.md §10)
 

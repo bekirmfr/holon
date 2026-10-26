@@ -199,13 +199,13 @@ fn serve_flow(
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
-    Redactor::tokens(&waits.tokens).entry(&mut entry);
+    let mut tokens = Redactor::tokens(&waits.tokens);
     // A resume route's request carries the token it delivers (in its URL): redacted too.
     if let Some((_, name, _, token)) = &resume {
-        Redactor::tokens(&BTreeMap::from([(name.clone(), token.clone())])).entry(&mut entry);
+        tokens = tokens.and(Redactor::tokens(&BTreeMap::from([(name.clone(), token.clone())])));
     }
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, slug, entry);
+    log_run(deployments, slug, entry, tokens);
     if state.is_some() || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
