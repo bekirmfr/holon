@@ -9,7 +9,9 @@
 //! - **literal**: the value may hold the secret as it is (a record built with it, a concatenation,
 //!   a field read back out): redaction finds it there;
 //! - **derived**: the value may hold something computed from it: the log keeps no outputs for
-//!   that node, and an outbound request built from it is logged with those parts withheld.
+//!   that node, and an outbound request built from it is logged with those parts withheld. An
+//!   effect it reaches is refused if it would keep it (a state, collection or channel write, as a
+//!   secret's value is), else logged withheld; so are the run's outputs and its answer.
 //!
 //! What cuts the chain: a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), a Boolean
 //! answer, and an outbound request's response (what the far side said, not what was sent). A
@@ -17,7 +19,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use holon_core::{child_refs, Hash, Resolver, Type, Unit, UnitBody, BOUNDARY};
+use holon_core::{capabilities, capabilities_of, child_refs, Capability, Hash, Resolver, Type, Unit, UnitBody, BOUNDARY};
+
+/// What the log shows in place of something computed from a secret.
+pub(crate) const WITHHELD: &str = "‹withheld: computed from a secret›";
 
 /// How much of a secret a value may carry.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
@@ -57,6 +62,10 @@ pub(crate) struct SecretFed {
     /// Nodes whose insides aren't followed (a `map` or `fold` over a function, a module, a level
     /// past [`MAX_DEPTH`]) that a secret reaches: everything under them counts as derived.
     opaque: Vec<Vec<u32>>,
+    /// The effects whose payload may be computed from a secret: a sink fed one, and every effect
+    /// a node not followed could make. An effect carries no node, only its capability, so a write
+    /// to a key counts as derived when any such sink writes that key.
+    effects: std::collections::BTreeSet<Capability>,
 }
 
 impl SecretFed {
@@ -72,6 +81,17 @@ impl SecretFed {
     /// Whether a secret reaches nothing in the run.
     pub(crate) fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.opaque.is_empty()
+    }
+
+    /// Whether an effect with `capability` may carry something computed from a secret.
+    pub(crate) fn derives_effect(&self, capability: &Capability) -> bool {
+        self.effects.contains(capability)
+    }
+
+    /// Whether the run's output `port` (a request's answer is its first) may be computed from a
+    /// secret.
+    pub(crate) fn derives_output(&self, port: usize) -> bool {
+        self.opaque.iter().any(Vec::is_empty) || self.nodes.get(&[][..]).is_some_and(|(_, outs)| outs.get(port) == Some(&Taint::Derived))
     }
 
     fn under_opaque(&self, path: &[u32]) -> bool {
@@ -150,15 +170,21 @@ impl<R: Resolver> Walk<'_, R> {
                 // secret, or is handed one, may compute anything with it.
                 let applies_secret = child_refs(unit).iter().any(|r| self.holds(r));
                 if applies_secret || (!child_refs(unit).is_empty() && most > Taint::Clean) {
-                    fed.opaque.push(path.clone());
+                    self.opaque(unit, path, fed);
                     vec![Taint::Derived; unit.outputs.len()]
                 } else {
+                    // A sink fed something computed from a secret: its effect carries it.
+                    if outputs.contains(&Taint::Derived)
+                        && let Some(caps) = capabilities_of(name, &unit.params)
+                    {
+                        fed.effects.extend(caps.iter().filter(|c| !c.is_sourced()));
+                    }
                     outputs
                 }
             }
             UnitBody::Module { .. } => {
                 if most > Taint::Clean {
-                    fed.opaque.push(path.clone());
+                    self.opaque(unit, path, fed);
                     vec![Taint::Derived; unit.outputs.len()]
                 } else {
                     vec![Taint::Clean; unit.outputs.len()]
@@ -172,6 +198,13 @@ impl<R: Resolver> Walk<'_, R> {
         outputs
     }
 
+    /// A node whose insides aren't followed: everything under it is derived, and so is every
+    /// effect it could make.
+    fn opaque(&mut self, unit: &Unit, path: &[u32], fed: &mut SecretFed) {
+        fed.opaque.push(path.to_vec());
+        fed.effects.extend(capabilities(unit, self.resolver).iter().filter(|c| !c.is_sourced()));
+    }
+
     fn composite(&mut self, unit: &Unit, children: &[Hash], edges: &[holon_core::Edge], inputs: &[Taint], path: &mut Vec<u32>, fed: &mut SecretFed) -> Vec<Taint> {
         let derived = vec![Taint::Derived; unit.outputs.len()];
         // Nothing tainted comes in and nothing inside reads a secret: nothing to follow.
@@ -179,17 +212,17 @@ impl<R: Resolver> Walk<'_, R> {
             return vec![Taint::Clean; unit.outputs.len()];
         }
         if path.len() >= MAX_DEPTH {
-            fed.opaque.push(path.clone());
+            self.opaque(unit, path, fed);
             return derived;
         }
         let Some(order) = topo_order(children.len(), edges) else {
-            fed.opaque.push(path.clone());
+            self.opaque(unit, path, fed);
             return derived;
         };
         let mut outs: Vec<Option<Vec<Taint>>> = vec![None; children.len()];
         for ci in order {
             let Some(child) = self.resolver.resolve(&children[ci]) else {
-                fed.opaque.push(path.clone());
+                self.opaque(unit, path, fed);
                 return derived;
             };
             let mut child_inputs = vec![Taint::Clean; child.inputs.len()];
@@ -248,7 +281,6 @@ fn topo_order(n: usize, edges: &[holon_core::Edge]) -> Option<Vec<usize>> {
 /// What a logged outbound request shows when the node that made it was fed something computed
 /// from a secret: the parts built from it (its path, headers or body) withheld.
 pub(crate) fn withhold_request(request: &mut holon_core::Value, path: &[u32], fed: &SecretFed) {
-    const WITHHELD: &str = "‹withheld: computed from a secret›";
     let holon_core::Value::Record(r) = request else { return };
     let derived = |port: usize| fed.input(path, port) == Taint::Derived;
     // An `http_request`'s inputs: its path, its headers, its body (an upload's file handle).
@@ -319,6 +351,51 @@ mod tests {
         assert_eq!(fed.input(&[3], 1), Taint::Derived);
         assert_eq!(fed.input(&[3], 0), Taint::Clean);
         assert!(fed.derives(&[]), "the root's first output is derived");
+    }
+
+    /// `secret → base64` into a state write and the answer, `secret → hmac` into another write: the
+    /// first write and the answer carry what is computed from it, the second doesn't.
+    #[test]
+    fn the_effects_and_outputs_a_secret_reaches_are_known() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let b64 = leaf(&mut r, "base64", vec![]);
+        let hmac = leaf(&mut r, "hmac_sha256", vec![]);
+        let kept = leaf(&mut r, "store_write", vec![Param::frozen("key", "kept")]);
+        let signed = leaf(&mut r, "store_write", vec![Param::frozen("key", "signed")]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, b64, hmac, kept, signed],
+                edges: vec![
+                    e(0, 0, 1, 0),
+                    e(1, 0, 3, 0),
+                    e(0, 0, 2, 0),
+                    e(BOUNDARY, 0, 2, 1),
+                    e(2, 0, 4, 0),
+                    e(1, 0, BOUNDARY, 0),
+                    e(BOUNDARY, 0, BOUNDARY, 1),
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "message".into(), ty: Type::Text }],
+            outputs: vec![Port { name: "answer".into(), ty: Type::Any }, Port { name: "echo".into(), ty: Type::Any }],
+        };
+        let fed = SecretFed::of(&root, &r);
+        assert!(fed.derives_effect(&Capability::StateWrite("kept".into())));
+        assert!(!fed.derives_effect(&Capability::StateWrite("signed".into())), "an hmac cuts it");
+        assert!(!fed.derives_effect(&Capability::SecretRead("k".into())), "reading it is no effect of what's computed");
+        assert!(fed.derives_output(0));
+        assert!(!fed.derives_output(1));
+    }
+
+    /// A node whose insides aren't followed counts every effect it could make, and every output.
+    #[test]
+    fn a_node_not_followed_derives_all_it_could_do() {
+        let mut fed = SecretFed::default();
+        assert!(!fed.derives_output(0));
+        fed.opaque.push(vec![]);
+        assert!(fed.derives_output(0) && fed.derives_output(3));
     }
 
     #[test]

@@ -359,8 +359,9 @@ fn run_attempt(
         host.performed.clear();
     }
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
-    // carrying a secret's value, which would put it on disk and in every later snapshot, and a copy
-    // from a folder the deployment doesn't read (a handle is only a record: one can be made up).
+    // carrying a secret's value, or something computed from one (taint.rs), which would put it on
+    // disk and in every later snapshot, and a copy from a folder the deployment doesn't read (a
+    // handle is only a record: one can be made up).
     let reads_folders = permit.folders_handed();
     host.performed.retain(|(cap, payload)| {
         if !permit.allows(cap) {
@@ -373,11 +374,15 @@ fn run_attempt(
             eprintln!("holon: refused {cap:?}: a copy from the folder {from:?}, which this deployment doesn't read");
             return false;
         }
-        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::ChannelSend(key) = cap
-            && let Some(name) = secrets::secret_in(payload, secrets)
-        {
-            eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
-            return false;
+        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::ChannelSend(key) = cap {
+            if let Some(name) = secrets::secret_in(payload, secrets) {
+                eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
+                return false;
+            }
+            if secret_fed.derives_effect(cap) {
+                eprintln!("holon: refused to store or send in {key:?} what is computed from a secret");
+                return false;
+            }
         }
         // A subscription is a route's answer, read from its response, never performed.
         !matches!(cap, Capability::ChannelRead(_))
@@ -394,9 +399,9 @@ fn run_attempt(
     // go out as it parks, held to the same grant, secrets and limits as any run's.
     let mut progress = if outcome.waiting.is_empty() || outcome.error.is_some() { Vec::new() } else { channels::settled_sends(&outcome.outputs) };
     progress.retain(|(cap, payload)| {
-        let sends = permit.allows(cap) && secrets::secret_in(payload, secrets).is_none();
+        let sends = permit.allows(cap) && secrets::secret_in(payload, secrets).is_none() && !secret_fed.derives_effect(cap);
         if !sends {
-            eprintln!("holon: refused {cap:?} as the run waits: not granted, or carrying a secret");
+            eprintln!("holon: refused {cap:?} as the run waits: not granted, or carrying a secret or what is computed from one");
         }
         sends
     });
@@ -575,6 +580,26 @@ fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::
     timeline
 }
 
+/// `value` as the log keeps it, or the withheld mark when it may be computed from a secret.
+fn withheld_or(derived: bool, value: &Value) -> SValue {
+    if derived { SValue::from_core(&Value::Text(taint::WITHHELD.into())) } else { SValue::from_core(value) }
+}
+
+/// A run's outputs as its log entry and history keep them (`shown`: how each looks there), each
+/// that may be computed from a secret withheld.
+pub(crate) fn logged_outputs(run: &FiredRun, shown: impl Fn(&Value) -> Value) -> Vec<Option<SValue>> {
+    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or(run.secret_fed.derives_output(port), &shown(v)))).collect()
+}
+
+/// What a run performed as its log entry and history keep it (`shown`: how each payload looks
+/// there), each payload that may be computed from a secret withheld.
+pub(crate) fn logged_performed(run: &FiredRun, shown: impl Fn(&Capability, &Value) -> Value) -> Vec<PerformedEntry> {
+    run.performed
+        .iter()
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.secret_fed.derives_effect(c), &shown(c, p)) })
+        .collect()
+}
+
 /// A round as the log keeps it: each request's parts computed from a secret withheld.
 fn logged_round(round: &Round, fed: &taint::SecretFed) -> recorder::LoggedRound {
     if fed.is_empty() {
@@ -608,12 +633,8 @@ pub(crate) fn run_entry(
         request: None,
         sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
         state_before: run.state_before.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
-        outputs: run.outputs.iter().map(|o| o.as_ref().map(|v| SValue::from_core(&folders::loggable_output(v)))).collect(),
-        performed: run
-            .performed
-            .iter()
-            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(&folders::loggable(c, p)) })
-            .collect(),
+        outputs: logged_outputs(run, folders::loggable_output),
+        performed: logged_performed(run, folders::loggable),
         response_body: None,
         error: run.error.clone(),
         timeline: without_secret_derived(without_kept_files(&run.timeline, &run.reads, &run.performed), &run.secret_fed),
@@ -626,7 +647,7 @@ pub(crate) fn run_entry(
         progress: run
             .progress
             .iter()
-            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: SValue::from_core(p) })
+            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.secret_fed.derives_effect(c), p) })
             .collect(),
         events: BTreeMap::new(),
         retries: run.retries,

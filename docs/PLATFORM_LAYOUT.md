@@ -368,11 +368,18 @@ only the editor.
   in its manifest, granted by the host); a run reads only the secrets it was granted, and its run
   id doesn't include them. Every literal occurrence of a value is redacted, as `‹secret:name›`,
   from the flow log and from what the control plane says about a deployment (state, sessions,
-  `/trigger` and "send live" replies); a replay substitutes the same placeholder. A state write
-  carrying a secret's value is refused, so one never reaches the state store, snapshots or disk.
-  Values under 6 characters are refused (too short to redact reliably), and a value transformed
-  before it's logged (hashed, encoded, sliced) can't be recognised. A flow may still send a secret
-  where it is meant to go: an outbound request's header, or its own response to a caller.
+  `/trigger` and "send live" replies); a replay substitutes the same placeholder. A state,
+  collection or channel write carrying a secret's value is refused, so one never reaches the state
+  store, snapshots, a channel's packs or disk. Values under 6 characters are refused (too short to
+  redact reliably). A value transformed before it's logged (encoded, sliced, a field of a JSON
+  secret) can't be recognised, so the graph is followed instead (`taint.rs`): what a secret reaches
+  through anything but a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`) or a Boolean
+  answer counts as computed from it. A write of that is refused as the value's is; any other effect
+  carrying it, the run's outputs and its response body are logged as
+  `‹withheld: computed from a secret›`. An effect carries no node, so this goes by capability: a
+  key written anywhere in the run from such a value has all its writes in that run refused. A flow
+  may still send a secret where it is meant to go: an outbound request's header, or its own
+  response to a caller.
   - **Sealed at rest** ✅ (`sealing.rs`): each value is AES-256-GCM sealed, bound to its
     deployment, name and version, under a master key kept apart from the file: the OS key store
     by default (Credential Manager, Keychain), else `--secrets-key env:VAR` (a container, or a

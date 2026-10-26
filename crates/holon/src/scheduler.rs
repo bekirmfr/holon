@@ -106,19 +106,16 @@ pub(crate) fn fire_one_clock_tick(
     Redactor::tokens(&waits.tokens).entry(&mut entry);
     let parked_any = !entry.parked.is_empty();
     log_run(deployments, &slug, entry);
-    let FiredRun { outputs, performed, .. } = run;
 
     // What it produced isn't printed: a secret or a resume token in it would land in the server's
     // console, which nothing redacts.
-    println!("clock tick [{slug}] at {epoch_seconds}: {} effect(s) performed", performed.len());
+    println!("clock tick [{slug}] at {epoch_seconds}: {} effect(s) performed", run.performed.len());
 
+    // What may be computed from a secret withheld, as in its log entry.
     let mut tick = TickEntry {
         at_epoch_seconds: epoch_seconds,
-        outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
-        performed: performed
-            .into_iter()
-            .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
-            .collect(),
+        outputs: logged_outputs(&run, Value::clone),
+        performed: logged_performed(&run, |_, p| p.clone()),
     };
     // Redacted as its log entry is: the history is read by whoever may read the deployment.
     redact_tick(&mut tick, &Redactor::of(secrets));

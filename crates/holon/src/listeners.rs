@@ -124,6 +124,8 @@ fn serve_flow(
     }
 
     let mut ran: Option<LogEntry> = None;
+    // Whether its answer may be computed from a secret: the log keeps it withheld then.
+    let mut answer_derived = false;
     let mut waits = RunWaits { folders: Some(folders), forward, channels: Some(channels), ..Default::default() };
     let mut parked: Result<Vec<String>, String> = Ok(Vec::new());
     // A module in the flow runs through the engine; everything else resolves as before.
@@ -137,6 +139,7 @@ fn serve_flow(
             let unit = hash_unit(endpoint).unwrap_or([0; 32]);
             parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
             let mut entry = run_entry("request", started, sourced, &run);
+            answer_derived = run.secret_fed.derives_output(0);
             entry.route = Some(route.to_string());
             entry.request = Some(SValue::from_core(&req));
             ran = Some(entry);
@@ -178,7 +181,7 @@ fn serve_flow(
     entry.method = Some(method.to_string());
     entry.url = Some(raw_url.to_string());
     entry.status = Some(answer.status);
-    entry.response_body = Some(recorder::body_text(&answer.body));
+    entry.response_body = Some(if answer_derived { crate::taint::WITHHELD.to_string() } else { recorder::body_text(&answer.body) });
     entry.by = request.by.clone();
     match parked {
         Ok(names) => entry.parked = names,
