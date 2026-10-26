@@ -59,7 +59,8 @@ pub enum HeaderKind {
     /// `folder inbox`: a folder an admin binds on the host, used as `inbox[name]`.
     Folder(String),
     /// `database shop`: a database an admin binds on the host, used as `shop.query("select …")`,
-    /// `shop.one(…)` and `shop.exec(…)`.
+    /// `shop.one(…)` and `shop.exec(…)`, or, a document database, `notes.find("notes", { … })`,
+    /// `find_one`, `insert`, `update` and `delete`.
     Database(String),
     /// `on file inbox`: a run for each file new or changed in the folder (or removed from it,
     /// `deleted`; only names matching a glob, `matching "*.csv"`), which it declares too; the run

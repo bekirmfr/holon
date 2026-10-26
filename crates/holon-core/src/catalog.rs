@@ -62,6 +62,9 @@ pub const GENESIS: &[&str] = &[
     // databases the host binds: rows a statement reads, one row, and a write when the run
     // finishes (3)
     "db_query", "db_one", "db_exec",
+    // and a document database's: documents a filter finds, one document, and an insert, an update
+    // and a delete when the run finishes (5)
+    "db_find", "db_find_one", "db_insert", "db_update", "db_delete",
     // sink — performed (1)
     "egress",
 ];
@@ -311,6 +314,35 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("database", "db"), Param::frozen("sql", "delete from t where false"), Param::frozen("expect", "")],
             Effect,
         ),
+        // A document database's (MongoDB): `collection` (frozen) is the capability, as a SQL
+        // statement's tables are; `filter`, `update`, `document` and `sort` are frozen templates
+        // (documents.rs), JSON whose holes, `$1`, `$2`, …, are the `params` list's values. A find
+        // answers documents as records; `limit` is how many at most ("": all).
+        "db_find" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("filter", "{}"), Param::frozen("sort", ""), Param::frozen("limit", "")],
+            Type::List(Box::new(Type::Record)),
+        ),
+        "db_find_one" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("filter", "{}"), Param::frozen("sort", "")],
+            Type::Record,
+        ),
+        "db_insert" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("document", "{}")],
+            Effect,
+        ),
+        "db_update" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("filter", "{}"), Param::frozen("update", "{\"$set\":{}}"), Param::frozen("expect", "")],
+            Effect,
+        ),
+        "db_delete" => prim(
+            vec![port("params", Type::list_any())],
+            vec![Param::frozen("database", "db"), Param::frozen("collection", "items"), Param::frozen("filter", "{}"), Param::frozen("expect", "")],
+            Effect,
+        ),
 
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
@@ -365,8 +397,9 @@ mod tests {
         // (file_read, file_list, file_write, file_delete, file_handle, file_lines, file_slice,
         // file_copy), and a folder's trigger and a file as a request's body (file_arrival,
         // http_upload), and the create-only pair (file_create, file_create_copy), and the
-        // database kit (db_query, db_one, db_exec).
-        assert_eq!(GENESIS.len(), 86);
+        // database kit (db_query, db_one, db_exec), and the document kit (db_find, db_find_one,
+        // db_insert, db_update, db_delete).
+        assert_eq!(GENESIS.len(), 91);
     }
 
     #[test]

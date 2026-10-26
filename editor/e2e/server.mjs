@@ -32,6 +32,10 @@ const runDir = join(tmpdir(), "holon-e2e-run");
 const holonHome = join(dir, "home");
 // CARGO_TARGET_DIR, when set, is where cargo put it (e.g. to build beside a dev server holding
 // target/debug's binary open).
+// The atlas-notes sample's MongoDB, when the environment names a replica set (CI does:
+// HOLON_TEST_MONGODB), in a database of the tests' own: the server fetches its URL from its
+// environment, as an admin's connection is.
+const mongo = process.env.HOLON_TEST_MONGODB?.replace(/^(mongodb(\+srv)?:\/\/[^/?]+)\/?[^?]*/, "$1/holon_e2e_notes");
 const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
 const server = spawn(
   binary,
@@ -46,7 +50,7 @@ const server = spawn(
     "--host-key", join(dir, "host.key"),
     "--accounts", join(dir, "accounts.json"),
   ],
-  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "", HOLON_NO_FOLDER_DIALOG: "1" } },
+  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "", HOLON_NO_FOLDER_DIALOG: "1", ...(mongo ? { HOLON_SECRET_NOTES_URL: mongo } : {}) } },
 );
 
 // The folders the main one binds for flows to read and write (folders.rs): outside its data, as an
@@ -141,4 +145,13 @@ if (!fresh) {
     }),
   });
   if (!bank.ok) console.error(`e2e server: binding the database bank failed: ${await bank.text()}`);
+  // The atlas-notes sample's, a MongoDB bound by its connection.
+  if (mongo) {
+    const notes = await fetch(`${base}/admin/databases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: "notes", connection: "env:HOLON_SECRET_NOTES_URL", access: "read-write" }),
+    });
+    if (!notes.ok) console.error(`e2e server: binding the database notes failed: ${await notes.text()}`);
+  }
 }

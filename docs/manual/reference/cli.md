@@ -178,13 +178,13 @@ holon database remove NAME [--for SLUG]
 ```
 
 Binds a name flows use (`database shop`) to a SQLite file on the server's machine (`PATH`), or
-to a Postgres or MySQL database whose URL the server fetches from `SOURCE`
+to a Postgres, MySQL or MongoDB database whose URL the server fetches from `SOURCE`
 (`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`), never storing or showing it. Needs an
 admin; each takes `--server PORT|URL`. See [Databases on the host](../guides/databases.md).
 
 | Option | |
 |---|---|
-| `--schema SQL`, `--schema-file FILE` | run it first, creating a SQLite file if there is none |
+| `--schema SQL`, `--schema-file FILE` | run it first, creating a SQLite file if there is none (not for a MongoDB) |
 | `--read-only` | flows may read it, not write it |
 | `--lock run` | each run that touches it holds it for its whole length, shared to read, alone to write |
 | `--for SLUG` | for that deployment only |

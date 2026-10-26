@@ -1333,6 +1333,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
                 None => self.generic(node),
             },
+            "db_find" | "db_find_one" | "db_insert" | "db_update" | "db_delete" if plain(node.param("database")) => match self.document_args(node)? {
+                Some(args) => {
+                    let method = &d.name["db_".len()..];
+                    atom(format!("{}.{method}({})", node.param("database"), args.join(", ")))
+                }
+                None => self.generic(node),
+            },
             "http_request" | "http_upload" => {
                 let method = node.param("method").to_ascii_lowercase();
                 if !["get", "post", "put", "patch", "delete", "head"].contains(&method.as_str()) {
@@ -1506,6 +1513,104 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     fn db_values(&mut self, node: &Node) -> Result<Option<Vec<String>>, String> {
         let write = node.data.name == "db_exec";
         let Ok(tables) = holon_core::sql::tables(node.param("sql"), write) else { return Ok(None) };
+        self.listed_values(node, tables.params)
+    }
+
+    /// A document call's arguments as the text writes them: the collection, its records with
+    /// their holes filled by the values listed in place (`$1` the first, and each once, in the
+    /// order the records are written), then `sort:`, `limit:` and `expect:`. `None`: it prints as
+    /// the leaf it is.
+    fn document_args(&mut self, node: &Node) -> Result<Option<Vec<String>>, String> {
+        use holon_core::documents::{parse, Tpl};
+        let name = node.data.name.as_str();
+        let collection = node.param("collection");
+        if !holon_core::documents::is_collection_name(collection) {
+            return Ok(None);
+        }
+        let parts: &[&str] = match name {
+            "db_insert" => &["document"],
+            "db_update" => &["filter", "update"],
+            _ => &["filter"],
+        };
+        let mut templates = Vec::new();
+        for part in parts {
+            let Ok(t) = parse(node.param(part)) else { return Ok(None) };
+            templates.push(t);
+        }
+        let sort = match node.param("sort") {
+            "" => None,
+            text => match parse(text) {
+                Ok(t) => Some(t),
+                Err(_) => return Ok(None),
+            },
+        };
+        // The holes in the order written: as the lowering numbers them, else it prints as a leaf.
+        fn holes(t: &Tpl, out: &mut Vec<usize>) {
+            match t {
+                Tpl::Hole(n) => out.push(*n),
+                Tpl::List(items) => items.iter().for_each(|i| holes(i, out)),
+                Tpl::Object(fields) => fields.iter().for_each(|(_, v)| holes(v, out)),
+                _ => {}
+            }
+        }
+        let mut order = Vec::new();
+        templates.iter().chain(&sort).for_each(|t| holes(t, &mut order));
+        if order.iter().enumerate().any(|(i, n)| *n != i + 1) || sort.as_ref().is_some_and(|t| !t.holes().is_empty()) {
+            return Ok(None);
+        }
+        // Each template must be one the text can write: no null, numbers as the language reads them.
+        fn written(t: &Tpl, values: &[String]) -> Option<String> {
+            Some(match t {
+                Tpl::Null => return None,
+                Tpl::Bool(b) => b.to_string(),
+                Tpl::Number(n) => {
+                    let digits = n.strip_prefix('-').unwrap_or(n);
+                    let mut halves = digits.splitn(2, '.');
+                    let whole = halves.next()?;
+                    let plain_number = !whole.is_empty() && whole.bytes().all(|b| b.is_ascii_digit()) && halves.next().is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()));
+                    if !plain_number {
+                        return None;
+                    }
+                    n.clone()
+                }
+                Tpl::Text(t) => quote(t),
+                Tpl::Hole(n) => values.get(n - 1)?.clone(),
+                Tpl::List(items) => format!("[{}]", items.iter().map(|i| written(i, values)).collect::<Option<Vec<_>>>()?.join(", ")),
+                Tpl::Object(fields) if fields.is_empty() => "{}".into(),
+                Tpl::Object(fields) => {
+                    // A keyword is fine as a key (`at: -1`), as in a record.
+                    let parts = fields.iter().map(|(k, v)| Some(format!("{}: {}", if plain(k) { k.clone() } else { quote(k) }, written(v, values)?))).collect::<Option<Vec<_>>>()?;
+                    format!("{{ {} }}", parts.join(", "))
+                }
+            })
+        }
+        let placeholders: Vec<String> = (0..order.len()).map(|_| String::new()).collect();
+        if templates.iter().chain(&sort).any(|t| written(t, &placeholders).is_none()) {
+            return Ok(None);
+        }
+        let Some(values) = self.listed_values(node, order.len())? else { return Ok(None) };
+        let mut args = vec![quote(collection)];
+        for (i, t) in templates.iter().enumerate() {
+            // A find's filter of everything is left out, as the text leaves it.
+            if i == 0 && matches!(name, "db_find" | "db_find_one") && matches!(t, Tpl::Object(f) if f.is_empty()) {
+                continue;
+            }
+            args.push(written(t, &values).expect("checked"));
+        }
+        if let Some(t) = &sort {
+            args.push(format!("sort: {}", written(t, &values).expect("checked")));
+        }
+        for named in ["limit", "expect"] {
+            if !node.param(named).is_empty() {
+                args.push(format!("{named}: {}", node.param(named)));
+            }
+        }
+        Ok(Some(args))
+    }
+
+    /// The values a call lists in place for its `count` holes: `[]`, one appended to it, or a
+    /// `list` of exactly `count`. `None` when they aren't written so.
+    fn listed_values(&mut self, node: &Node, count: usize) -> Result<Option<Vec<String>>, String> {
         let empty = |c: &Node| c.param("type") == "Json" && c.param("value") == "[]";
         let none = self.inline_source(node, "params", "const").filter(|c| empty(c));
         let one = self.inline_source(node, "params", "append").filter(|a| self.inline_source(a, "list", "const").is_some_and(empty));
@@ -1516,7 +1621,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             (_, _, Some(l)) => l.data.inputs.len(),
             _ => return Ok(None),
         };
-        if given != tables.params {
+        if given != count {
             return Ok(None);
         }
         let mut values = Vec::new();
@@ -1893,6 +1998,22 @@ mod tests {
 
     /// A value used once is written inline, inside an interpolated part too; when it holds a
     /// string of its own (`"{slice(sha256("{now}"), 0, 6)}"`), the text must still read back.
+    #[test]
+    fn document_calls_print_their_records_with_their_values_in_place() {
+        let src = "flow notes\nport 8160\ndatabase notes\n\nroute POST /n/:who (req) {\n  mine = notes.find(\"notes\", { owner: req.params.who, \"state.now\": { \"$in\": [\"open\", req.json.also] } }, sort: { at: -1 }, limit: 20)\n  everything = notes.find_one(\"notes\")\n  notes.insert(\"notes\", { owner: req.params.who, text: \"{req.json.text}!\", tags: [\"new\"], pinned: false })\n  notes.update(\"notes\", { _id: { \"$oid\": req.json.id } }, { \"$set\": { text: req.json.text } }, expect: 1)\n  notes.delete(\"notes\", { owner: req.params.who, done: true })\n  respond { mine: mine, everything: everything }\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("notes", &l.doc, &l.names);
+        for written in [
+            "notes.find(\"notes\", { owner: req.params.who, \"state.now\": { \"$in\": [\"open\", req.json.also] } }, sort: { at: -1 }, limit: 20)",
+            "notes.find_one(\"notes\")",
+            "notes.insert(\"notes\", { owner: req.params.who, text: \"{req.json.text}!\", tags: [\"new\"], pinned: false })",
+            "notes.update(\"notes\", { _id: { \"$oid\": req.json.id } }, { \"$set\": { text: req.json.text } }, expect: 1)",
+            "notes.delete(\"notes\", { owner: req.params.who, done: true })",
+        ] {
+            assert!(text.contains(written), "{written}\n{text}");
+        }
+    }
+
     #[test]
     fn a_string_inside_a_part_round_trips() {
         let src = "flow f\nport 8200\n\nroute GET /x/:id (req) {\n  seed = sha256(\"{random}:{now}:{req.params.id}\")\n  by = req.query.by ?? \"someone\"\n  respond \"{req.params.id}-{slice(seed, 0, 6)} via {by}\"\n}\n";

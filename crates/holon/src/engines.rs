@@ -39,7 +39,8 @@ use zeroize::Zeroizing;
 use crate::claims::ClaimKey;
 use crate::databases::{COMMITS_TABLE, Gather};
 
-/// The table on a MySQL database whose rows' locks are the claims several servers hold.
+/// The table on a MySQL database whose rows' locks are the claims several servers hold (and the
+/// collection on a MongoDB one whose documents are: mongo.rs).
 pub(crate) const CLAIMS_TABLE: &str = "holon_claims";
 
 /// How long an idle connection is trusted without being asked whether it is still there.
@@ -446,14 +447,14 @@ impl Remote {
 
 /// One lock in the database a claim takes: a name (the table, or the table and a row's key) and
 /// whether it is exclusive.
-type Lock = (String, bool);
+pub(crate) type Lock = (String, bool);
 
 /// The name of a database's run lock (§7.3): one no table's name is, so it is no claim's.
-const RUN_LOCK: &str = "\u{0}run";
+pub(crate) const RUN_LOCK: &str = "\u{0}run";
 
 /// A row: its table shared and itself exclusive; a whole table: exclusive; a new row: its table
 /// shared. So a row waits for its table and the same row, never another row.
-fn locks_of(key: &ClaimKey) -> Vec<Lock> {
+pub(crate) fn locks_of(key: &ClaimKey) -> Vec<Lock> {
     match key {
         ClaimKey::Row { table, key, .. } => vec![(table.clone(), false), (format!("{table}\u{0}{key}"), true)],
         ClaimKey::Table { table, .. } => vec![(table.clone(), true)],
@@ -463,7 +464,7 @@ fn locks_of(key: &ClaimKey) -> Vec<Lock> {
 }
 
 /// A lock's name hashed: a Postgres advisory lock's number, a MySQL claims row's key.
-fn lock_id(name: &str) -> [u8; 16] {
+pub(crate) fn lock_id(name: &str) -> [u8; 16] {
     let hash = blake3::hash(format!("holon\u{0}{name}").as_bytes());
     hash.as_bytes()[..16].try_into().expect("16 of 32")
 }

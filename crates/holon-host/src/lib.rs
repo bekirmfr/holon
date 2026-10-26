@@ -99,6 +99,25 @@ fn parse_sink(sink: &str, payload: &Value) -> (String, Vec<Param>) {
             (name.to_string(), vec![Param::frozen("collection", collection)])
         }
         Some((name, folder)) if name.starts_with("file_") => (name.to_string(), vec![Param::frozen("folder", folder)]),
+        // A document database's write names the database; its collection and templates are the
+        // payload's, as the leaf built it (`{update: <collection>, filter, change, …}`).
+        Some((name, database)) if matches!(name, "db_insert" | "db_update" | "db_delete") => {
+            let Value::Record(write) = payload else { return (name.to_string(), Vec::new()) };
+            let text = |k: &str| match write.get(k) {
+                Some(Value::Text(t)) => t.as_str(),
+                _ => "",
+            };
+            let mut params = vec![Param::frozen("database", database), Param::frozen("collection", text(name.trim_start_matches("db_")))];
+            for (param, field) in [("document", "document"), ("filter", "filter"), ("update", "change")] {
+                if write.contains_key(field) {
+                    params.push(Param::frozen(param, text(field)));
+                }
+            }
+            if let Some(Value::Number(n)) = write.get("expect") {
+                params.push(Param::frozen("expect", n.to_string()));
+            }
+            (name.to_string(), params)
+        }
         // A database's write names the database; the tables are its statement's, which the
         // payload carries as the leaf built it.
         Some((name, database)) if name.starts_with("db_") => {

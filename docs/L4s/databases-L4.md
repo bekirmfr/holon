@@ -7,8 +7,9 @@ folder (`locks.rs`, §7.1); SQLite databases (`databases.rs`, the `database` hea
 folders in the server's table (`claims.rs`, §7.2; sample `refund-once`); Postgres and MySQL
 (`engines.rs`, §8), with claims held in the database for several servers; and run locks, an
 admin's setting on a database or folder (`--lock run`, §7.3; sample `ticket-numbers`); and
-resumed runs that check what they share at their commit (§7.4; sample `approved-payout`). A
-database's reads are logged whole: its `keep` (§5) isn't built. Slice 7 is design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
+resumed runs that check what they share at their commit (§7.4; sample `approved-payout`); and
+MongoDB, Atlas included (`mongo.rs`, `documents.rs`; slice 7, sample `atlas-notes`). A
+database's reads are logged whole: its `keep` (§5) isn't built. Written 2026-10-25, against `main` at 6ee0c58. Builds on
 [host resources](host-resources-L4.md) (also design only: resources the host defines, their
 addresses and timeline) and [key claims](key-claims-L4.md) (built: `claims.rs`).
 
@@ -223,6 +224,18 @@ shop.exec("update stock set n = n - $1 where sku = $2 and n >= $1", qty, sku, ex
 - **MongoDB** has its own leaves (`db_find`, `db_find_one`, `db_insert`, `db_update`,
   `db_delete`), the collection a frozen parameter, the filter or update a JSON literal with `$1`,
   `$2` placeholders (slice 7).
+- **Built (slice 7):** the language writes them as record literals,
+  `notes.find("notes", { owner: req.params.owner }, sort: { at: -1 }, limit: 20)`, and the
+  lowering freezes each record into a template (core's `documents.rs`): JSON whose holes, in the
+  order written, are the computed values, wired as the `params` list; `fmt` prints the records
+  back from the templates. A record from a value or a spread is refused at compile, so the
+  flow's fields and operators are fixed when it deploys; the host fills each hole as data and
+  fails a run whose value is a record with a `$` field. Refused in any template: `$where`,
+  `$function`, `$accumulator`; an update is update operators only, a document has no top-level
+  operator, a sort is fields of `1`/`-1` with no hole, and the holes of a call's templates
+  together are `$1` to `$n`. `{ "$oid": … }`, `$date`, `$numberDecimal` and `$numberLong` make a
+  value that type. A collection is `[A-Za-z0-9_.-]`, never `system.…` nor `holon_…`. Its
+  capabilities: a find `DbRead("notes/notes")`, an insert `DbWrite`, an update or delete both.
 
 ## 4. What the manifest says
 
@@ -462,6 +475,21 @@ run's `prior` is (§13, fork 10).
 - **SQLite first:** no network, no service to run in CI, one file the host already knows how to
   confine. It gives queries, indexes and a store several deployments share on day one.
 - **MongoDB through the driver,** not HTTP: MongoDB retired Atlas's HTTP Data API.
+- **Built (slice 7):** the official `mongodb` crate (its blocking API, rustls on ring;
+  `mongodb+srv://` resolved by its DNS client), on bson 3: bson 2 turns on serde_json's
+  `preserve_order` for the whole build, which would freeze a record literal compiled by the
+  server in another key order than the editor's (a test in the binary says so). Bound as Postgres is, by a secret source, never
+  with a schema; one bound read-write or `--lock run` must be a replica set or a sharded
+  cluster. The commit is a transaction (snapshot reads, majority writes): its finds run again in
+  it, its writes applied with `expect` checked against what an update matched or a delete
+  deleted, the run marked in `holon_commits`; a write conflict, or a commit whose result is
+  unknown, sends the run round again, and a duplicate `_id` refuses it as an unmet `expect`
+  does. A document it only read that a program outside Holon changes between the check and the
+  commit isn't seen (snapshot isolation; Holon's own runs are held off by claims). Claims and the
+  run lock are documents in `holon_claims`, one per lock, holding their holders with a lease
+  (30 s, the server's clock): taken by one atomic pipeline update that drops expired holders and
+  adds this one if it fits, renewed by a thread while held. A filter's `_id` (an insert's
+  document's) is the row a claim holds, else the collection.
 - **Databases with an HTTP API** stay reachable through `http.*`, unchanged.
 - **Built (slice 4):** `postgres` (sync, TLS by rustls with the public CAs) and `mysql` (pure
   Rust, rustls). A binding's connection is a secret source (`env:HOLON_SECRET_…`, `vault:…`),

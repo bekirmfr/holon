@@ -160,6 +160,7 @@ mod deploy;
 mod editor;
 mod durable;
 mod engines;
+mod mongo;
 mod firing;
 mod fixtures;
 mod grants;

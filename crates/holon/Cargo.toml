@@ -53,6 +53,12 @@ tokio-postgres-rustls = { version = "0.14", default-features = false, features =
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 mysql = { version = "28", default-features = false, features = ["minimal-rust", "rustls-tls-ring"] }
+# The MongoDB databases an admin binds (mongo.rs), Atlas's `mongodb+srv://` addresses included: the
+# official driver, its blocking API, TLS by rustls on ring. On bson 3, not the default bson 2:
+# bson 2 turns on serde_json's `preserve_order` for the whole build, and then a record literal
+# lowered here would keep its keys as written, where the editor's wasm sorts them (two hashes for
+# one flow; main.rs's test says so).
+mongodb = { version = "3.9", default-features = false, features = ["compat-3-3-0", "bson-3", "rustls-tls", "dns-resolver", "sync"] }
 # `holon uninstall` removes its own executable, which Windows won't do directly.
 self-replace = "1"
 serde = { version = "1", features = ["derive"] }

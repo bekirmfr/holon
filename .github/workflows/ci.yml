@@ -24,8 +24,12 @@ jobs:
     env:
       HOLON_TEST_POSTGRES: postgres://postgres:holon@127.0.0.1:5432/postgres
       HOLON_TEST_MYSQL: mysql://root:holon@127.0.0.1:3306/mysql
+      HOLON_TEST_MONGODB: mongodb://127.0.0.1:27017/holontest?replicaSet=rs0
     steps:
       - uses: actions/checkout@v4
+      # The MongoDB they may be too (mongo.rs): a one-node replica set, since a commit is a
+      # transaction. Started by hand: a service container can't be given --replSet.
+      - run: bash .github/start-mongodb.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -92,8 +96,12 @@ jobs:
   #    deploys through the consent screen; requests replay exactly in view mode.
   e2e:
     runs-on: ubuntu-latest
+    # The atlas-notes sample's MongoDB (editor/e2e/server.mjs binds it).
+    env:
+      HOLON_TEST_MONGODB: mongodb://127.0.0.1:27017/holontest?replicaSet=rs0
     steps:
       - uses: actions/checkout@v4
+      - run: bash .github/start-mongodb.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

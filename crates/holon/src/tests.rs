@@ -5063,3 +5063,221 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     assert!(entries.iter().any(|e| e["route"] == "POST /deposit/:account" && e["retries"] == 1), "{entries:#?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── MongoDB (slice 7) ──
+
+/// The server compiles a flow's text with the editor's lowering, so a record literal must freeze
+/// as the editor's wasm freezes it, keys sorted: no dependency of this binary may turn on
+/// serde_json's `preserve_order` (bson 2, the MongoDB driver's default, does: Cargo.toml).
+#[test]
+fn a_record_literal_freezes_its_keys_sorted_as_the_editor_does() {
+    let v: serde_json::Value = serde_json::from_str(r#"{"k":1,"done":false}"#).unwrap();
+    assert_eq!(v.to_string(), r#"{"done":false,"k":1}"#, "serde_json keeps keys as written here: a dependency turned on preserve_order");
+    let text = "flow keys\nport 18199\n\nroute GET /k (req) {\n  respond req.json ?? { k: 1, done: false }\n}\n";
+    let unit = |t: &str| holon_author::agent::plan(t).unwrap_or_else(|e| panic!("{e}")).unit;
+    assert_eq!(unit(text), unit(&text.replace("k: 1, done: false", "done: false, k: 1")), "one record, written in either order, is one unit");
+}
+
+/// A fresh, empty MongoDB database for one test, on the replica set `HOLON_TEST_MONGODB` names (a
+/// URL with any database in its path), dropped when the test is done with it. None named: none,
+/// and it says so.
+fn fresh_mongo(tag: &str) -> Option<FreshMongo> {
+    let Ok(admin) = std::env::var("HOLON_TEST_MONGODB") else {
+        eprintln!("{tag}: skipped: set HOLON_TEST_MONGODB (a replica set's URL) to run it against MongoDB");
+        return None;
+    };
+    let name = format!("holon_{tag}_{:08x}", rand::random::<u32>());
+    let url = with_database(&admin, &name);
+    let client = mongodb::sync::Client::with_uri_str(&url).unwrap_or_else(|e| panic!("HOLON_TEST_MONGODB: {e}"));
+    Some(FreshMongo { url, db: client.database(&name) })
+}
+
+struct FreshMongo {
+    url: String,
+    db: mongodb::sync::Database,
+}
+
+impl FreshMongo {
+    fn notes(&self) -> mongodb::sync::Collection<mongodb::bson::Document> {
+        self.db.collection("notes")
+    }
+}
+
+impl Drop for FreshMongo {
+    fn drop(&mut self) {
+        let _ = self.db.drop().run();
+    }
+}
+
+fn bind_notes(state: &AppState) -> rouille::Response {
+    let body = serde_json::json!({ "name": "notes", "connection": "env:HOLON_SECRET_SHOP_URL", "access": "read-write" });
+    route(state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()))
+}
+
+/// The atlas-notes sample on a MongoDB replica set: notes inserted, found by owner and by tag,
+/// edited, marked done once (twice, the second finds no open note and answers 409), deleted; an
+/// `_id` taken already answers 409; a value that would be an operator fails the run with nothing
+/// written; every commit is marked once; and every run checks offline.
+#[test]
+fn atlas_notes_keeps_notes_as_documents_on_mongodb() {
+    let Some(db) = fresh_mongo("notes") else { return };
+    let state = server_with_database(&db.url);
+    let r = bind_notes(&state);
+    let status = r.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    let listed = body_json(route(&state, &req("GET", "/admin/databases", vec![])));
+    assert_eq!(listed[0]["engine"], "mongodb");
+    assert!(!listed.to_string().contains(&db.url), "the URL is never shown: {listed}");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/atlas-notes.holon"), "");
+    let call = |method: &str, path: &str, body: &str| {
+        let (status, body, _) = data_call(&state, &slug, method, path, body);
+        (status, body)
+    };
+    assert_eq!(call("POST", "/notes/ada", r#"{"id":"n1","text":"buy milk","tags":["home"]}"#).0, 201);
+    assert_eq!(call("POST", "/notes/ada", r#"{"id":"n2","text":"call bo"}"#).0, 201);
+    assert_eq!(call("POST", "/notes/bo", r#"{"id":"n3","text":"not ada's","tags":["home"]}"#).0, 201);
+    let (status, found) = call("GET", "/notes/ada", "");
+    assert_eq!(status, 200, "{found}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&found).unwrap(),
+        serde_json::json!([
+            { "_id": "n1", "owner": "ada", "text": "buy milk", "tags": ["home"], "done": false, "edits": 0 },
+            { "_id": "n2", "owner": "ada", "text": "call bo", "tags": [], "done": false, "edits": 0 },
+        ])
+    );
+    let (_, tagged) = call("GET", "/notes/ada/tagged/home", "");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&tagged).unwrap().as_array().map(Vec::len), Some(1), "{tagged}");
+    assert_eq!(call("PUT", "/notes/ada/n1", r#"{"text":"buy oat milk"}"#).0, 200);
+    let (status, edited) = call("PUT", "/notes/bo/n1", r#"{"text":"bo's edit"}"#);
+    assert_eq!(status, 409, "another owner's note matches nothing: {edited}");
+    assert!(edited.contains("matched 0 documents, not 1 document"), "{edited}");
+    let (status, done) = call("POST", "/notes/ada/n1/done", "");
+    assert_eq!((status, serde_json::from_str::<serde_json::Value>(&done).unwrap()), (200, serde_json::json!({ "done": "n1", "text": "buy oat milk" })));
+    assert_eq!(call("POST", "/notes/ada/n1/done", "").0, 404, "no open note: nothing to mark");
+    let (status, taken) = call("POST", "/notes/ada", r#"{"id":"n2","text":"again"}"#);
+    assert_eq!(status, 409, "{taken}");
+    assert!(taken.contains("a document with its _id is there already"), "{taken}");
+    // A value is data: a record with an operator in it fails the run, and nothing lands.
+    let (status, sneaky) = call("PUT", "/notes/ada/n2", r#"{"text":{"$set":{"owner":"mallory"}}}"#);
+    assert_eq!(status, 500, "{sneaky}");
+    let (status, sneaky) = call("POST", "/notes/ada", r#"{"id":{"$gt":""},"text":"x"}"#);
+    assert_eq!(status, 500, "{sneaky}");
+    assert_eq!(call("DELETE", "/notes/ada/n2", "").0, 204);
+    assert_eq!(call("DELETE", "/notes/ada/n2", "").0, 409, "deleted already");
+    let n2 = db.notes().find_one(mongodb::bson::doc! { "_id": "n2" }).run().unwrap();
+    assert!(n2.is_none());
+    let n1 = db.notes().find_one(mongodb::bson::doc! { "_id": "n1" }).run().unwrap().unwrap();
+    assert_eq!((n1.get_str("text").unwrap(), n1.get_bool("done").unwrap(), n1.get_i32("edits").unwrap()), ("buy oat milk", true, 1));
+    let marked = db.db.collection::<mongodb::bson::Document>("holon_commits").count_documents(mongodb::bson::doc! {}).run().unwrap();
+    assert_eq!(marked, 6, "three inserts, an edit, a done and a delete, each marked once");
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+}
+
+/// A document a run found that a program outside Holon changes before the run commits sends it
+/// round again, its call out answered from its record: it writes from the document as it is now,
+/// and the change outside isn't written over.
+#[test]
+fn a_document_that_changed_before_its_commit_runs_again() {
+    let Some(db) = fresh_mongo("again") else { return };
+    let (host, hits) = counting_server();
+    let state = server_with_database(&db.url);
+    assert_eq!(bind_notes(&state).status_code, 200);
+    db.notes().insert_one(mongodb::bson::doc! { "_id": "n1", "owner": "ada", "text": "first", "edits": 0 }).run().unwrap();
+    let text = format!(
+        "flow stamp\nport 18171\ndatabase notes\n\nroute POST /stamp/:id (req) {{\n  note = notes.find_one(\"notes\", {{ _id: req.params.id }})\n  r = http.get(\"{host}\", \"/slow\")\n  notes.update(\"notes\", {{ _id: note._id }}, {{ \"$set\": {{ text: \"{{note.text}} ({{r.body}})\" }} }}, expect: 1)\n  respond {{ was: note.text }}\n}}\n"
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let outside = std::thread::scope(|s| {
+        let run = s.spawn(|| data_call(&state, &slug, "POST", "/stamp/n1", ""));
+        std::thread::sleep(Duration::from_millis(150));
+        db.notes().update_one(mongodb::bson::doc! { "_id": "n1" }, mongodb::bson::doc! { "$set": { "text": "changed outside" } }).run().unwrap();
+        run.join().unwrap()
+    });
+    assert_eq!((outside.0, outside.1.as_str()), (200, r#"{"was":"changed outside"}"#));
+    assert_eq!(hits_of(&hits, "/slow"), 1, "the call out answered from its record, not sent again");
+    let n1 = db.notes().find_one(mongodb::bson::doc! { "_id": "n1" }).run().unwrap().unwrap();
+    assert_eq!(n1.get_str("text").unwrap(), "changed outside (slow)");
+    let entries = log_entries(&state, &slug);
+    assert!(entries.iter().any(|e| e["retries"] == 1), "{entries:#?}");
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(verify::check(&export, None, &BTreeMap::new()).ok());
+}
+
+/// Two servers on one MongoDB, each stamping one note at the same moment: their own tables of
+/// claims can't see each other's, the database's `holon_claims` can. The first to call out holds
+/// the note until it commits, so the slow API is called once per stamp in turn, never twice at
+/// once for one note; notes apart never wait.
+#[test]
+fn two_servers_hold_one_document_through_mongodb() {
+    let Some(db) = fresh_mongo("claims") else { return };
+    let (host, hits) = counting_server();
+    let servers = [server_with_database(&db.url), server_with_database(&db.url)];
+    for s in &servers {
+        assert_eq!(bind_notes(s).status_code, 200);
+    }
+    db.notes().insert_one(mongodb::bson::doc! { "_id": "n1", "paid": false }).run().unwrap();
+    let text = format!(
+        "flow pay-note\nport 18172\ndatabase notes\n\nroute POST /pay/:id (req) {{\n  note = notes.find_one(\"notes\", {{ _id: req.params.id, paid: false }})\n  r = http.get(\"{host}\", \"/slow?note={{note._id}}\")\n  notes.update(\"notes\", {{ _id: note._id }}, {{ \"$set\": {{ paid: true, by: r.body }} }}, expect: 1)\n  respond {{ paid: note._id }}\n}}\n"
+    );
+    let slugs = [deploy_text(&servers[0], &text, &host), deploy_text(&servers[1], &text, &host)];
+    let (first, second) = std::thread::scope(|s| {
+        let first = s.spawn(|| data_call(&servers[0], &slugs[0], "POST", "/pay/n1", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let second = s.spawn(|| data_call(&servers[1], &slugs[1], "POST", "/pay/n1", ""));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [200, 404], "{} / {}", first.1, second.1);
+    assert_eq!(hits_of(&hits, "/slow"), 1, "one payment for one note, across servers");
+    let claims = db.db.collection::<mongodb::bson::Document>("holon_claims").count_documents(mongodb::bson::doc! { "h.0": { "$exists": true } }).run().unwrap();
+    assert_eq!(claims, 0, "every claim let go once its run was done");
+}
+
+/// A MongoDB database's run lock and claims, held in its `holon_claims` across two connections
+/// (two servers): exclusive keeps out everyone, shared keeps out only exclusive, and each holder
+/// lets go of its own.
+#[test]
+fn mongodb_holds_run_locks_shared_and_exclusive_across_servers() {
+    let Some(db) = fresh_mongo("locks") else { return };
+    let open = || Arc::new(mongo::Mongo::open(zeroize::Zeroizing::new(db.url.clone())).unwrap());
+    let (a, b) = (open(), open());
+    assert!(a.hold_run("run-a", true));
+    assert!(!b.hold_run("run-b", false), "exclusive keeps out a reader");
+    assert!(!b.hold_run("run-b", true), "and a writer");
+    a.let_go_run("run-a", true);
+    assert!(b.hold_run("run-b", false) && a.hold_run("run-c", false), "readers side by side");
+    assert!(!a.hold_run("run-d", true), "a writer waits for the readers");
+    b.let_go_run("run-b", false);
+    a.let_go_run("run-c", false);
+    assert!(a.hold_run("run-d", true));
+    a.let_go_run("run-d", true);
+    let row = |id: &str| claims::ClaimKey::Row { at: a.address.clone(), name: "notes".into(), table: "notes".into(), key: format!("[{id:?}]") };
+    let table = claims::ClaimKey::Table { at: a.address.clone(), name: "notes".into(), table: "notes".into() };
+    assert!(a.claim(&[row("n1")], "run-e").is_ok());
+    assert!(b.claim(&[row("n2")], "run-f").is_ok(), "documents apart never wait");
+    assert_eq!(b.claim(&[row("n1")], "run-g"), Err(row("n1")));
+    assert_eq!(b.claim(std::slice::from_ref(&table), "run-g"), Err(table.clone()), "a whole collection waits for its documents");
+    a.unclaim(&[row("n1")], "run-e");
+    b.unclaim(&[row("n2")], "run-f");
+    assert!(b.claim(std::slice::from_ref(&table), "run-g").is_ok());
+    b.unclaim(&[table], "run-g");
+}
+
+/// A MongoDB is bound by its connection, never with a schema; one a server can't reach says so,
+/// without its URL.
+#[test]
+fn a_mongodb_binds_without_a_schema() {
+    let Some(db) = fresh_mongo("bind") else { return };
+    let state = server_with_database(&db.url);
+    let body = serde_json::json!({ "name": "notes", "connection": "env:HOLON_SECRET_SHOP_URL", "access": "read-write", "schema": "create table t (a int)" });
+    let r = route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap()));
+    let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
+    assert!(said.contains("has no schema to run"), "{said}");
+    let nowhere = server_with_database("mongodb://ada:hunter2@127.0.0.1:1/notes?serverSelectionTimeoutMS=500");
+    let r = bind_notes(&nowhere);
+    let said = String::from_utf8_lossy(&body_bytes(r)).to_string();
+    assert!(said.contains("can't be reached") && !said.contains("hunter2"), "{said}");
+}

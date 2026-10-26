@@ -544,6 +544,35 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             }
             Some(Value::Effect { sink: format!("db_exec:{database}"), payload: Box::new(Value::Record(exec)) })
         }
+        // A document database's writes when the run finishes: `{insert: <collection>, document,
+        // params}`, `{update: …, filter, change, params, expect}`, `{delete: …, filter, params,
+        // expect}`, the templates as their text. The host fills their holes and sends them in the
+        // run's commit transaction there.
+        "db_insert" | "db_update" | "db_delete" => {
+            let database = crate::kind::ident(params, "database")?;
+            let [params_in @ Value::List(_)] = inputs else { return None };
+            if contains_effect(params_in) {
+                return None;
+            }
+            let text = |name: &str| params.iter().find(|p| p.name() == name).and_then(|p| p.value()).map(|v| Value::Text(v.to_string()));
+            let verb = name.trim_start_matches("db_");
+            let mut write = BTreeMap::from([(verb.to_string(), text("collection")?), ("params".to_string(), (*params_in).clone())]);
+            match verb {
+                "insert" => {
+                    write.insert("document".to_string(), text("document")?);
+                }
+                _ => {
+                    write.insert("filter".to_string(), text("filter")?);
+                    if verb == "update" {
+                        write.insert("change".to_string(), text("update")?);
+                    }
+                    if let Some(n) = crate::kind::expect_of(params)? {
+                        write.insert("expect".to_string(), Value::Number(n as f64));
+                    }
+                }
+            }
+            Some(Value::Effect { sink: format!("{name}:{database}"), payload: Box::new(Value::Record(write)) })
+        }
 
         _ => None, // unknown name, or a driver/state boundary unit handled by the host
     }
@@ -650,6 +679,32 @@ pub(crate) fn db_query_request(inputs: &[Option<Value>], params: &[Param], one: 
         ("params".to_string(), list.clone()),
         ("one".to_string(), Value::Boolean(one)),
     ])))
+}
+
+/// What a `db_find` or `db_find_one` asks the host: `{database, find: <collection>, filter,
+/// params, one}`, and `sort` and `limit` when it has them, the templates as their text; `one` when
+/// it answers the first document alone.
+pub(crate) fn db_find_request(inputs: &[Option<Value>], params: &[Param], one: bool) -> Option<Value> {
+    let database = crate::kind::ident(params, "database")?;
+    let text = |name: &str| params.iter().find(|p| p.name() == name).and_then(|p| p.value());
+    let [Some(list @ Value::List(_))] = inputs else { return None };
+    if contains_effect(list) {
+        return None;
+    }
+    let mut asked = BTreeMap::from([
+        ("database".to_string(), Value::Text(database)),
+        ("find".to_string(), Value::Text(text("collection")?.to_string())),
+        ("filter".to_string(), Value::Text(text("filter")?.to_string())),
+        ("params".to_string(), list.clone()),
+        ("one".to_string(), Value::Boolean(one)),
+    ]);
+    if let Some(sort) = text("sort").filter(|s| !s.is_empty()) {
+        asked.insert("sort".to_string(), Value::Text(sort.to_string()));
+    }
+    if !one && let Some(n) = crate::kind::limit_of(params)? {
+        asked.insert("limit".to_string(), Value::Number(n as f64));
+    }
+    Some(Value::Record(asked))
 }
 
 /// What a `file_handle` asks the host: `{folder: <name>, handle: <file name>}`.

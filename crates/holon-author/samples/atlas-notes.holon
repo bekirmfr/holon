@@ -1,0 +1,32 @@
+flow atlas-notes
+port 8154
+database notes
+
+route POST /notes/:owner (req) {
+  notes.insert("notes", { _id: req.json.id, owner: req.params.owner, text: req.json.text, tags: req.json.tags ?? [], done: false, edits: 0 })
+  respond { added: req.json.id }, status: 201
+}
+
+route GET /notes/:owner (req) {
+  respond notes.find("notes", { owner: req.params.owner, done: false }, sort: { _id: 1 }, limit: 50)
+}
+
+route GET /notes/:owner/tagged/:tag (req) {
+  respond notes.find("notes", { owner: req.params.owner, tags: { "$in": [req.params.tag] } }, sort: { _id: 1 })
+}
+
+route PUT /notes/:owner/:id (req) {
+  notes.update("notes", { _id: req.params.id, owner: req.params.owner }, { "$set": { text: req.json.text }, "$inc": { edits: 1 } }, expect: 1)
+  respond { edited: req.params.id }
+}
+
+route POST /notes/:owner/:id/done (req) {
+  note = notes.find_one("notes", { _id: req.params.id, owner: req.params.owner, done: false })
+  notes.update("notes", { _id: note._id }, { "$set": { done: true } }, expect: 1)
+  respond { done: note._id, text: note.text }
+}
+
+route DELETE /notes/:owner/:id (req) {
+  notes.delete("notes", { _id: req.params.id, owner: req.params.owner }, expect: 1)
+  respond 204
+}

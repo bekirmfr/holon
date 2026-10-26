@@ -1,13 +1,14 @@
 # Databases on the host
 
-A flow can read and write a SQL database, but only one an admin has bound to a name, and only by
+A flow can read and write a database, but only one an admin has bound to a name, and only by
 that name. The flow says `database shop`; the admin decides that `shop` is `/srv/shop.db`, or the
 shop's Postgres, and what its tables are. The flow never sees where it is, runs no DDL, and is
-granted each table its SQL touches, no more.
+granted each table its SQL touches (each collection its calls name), no more.
 
 A database is a SQLite file on the server's machine, or a Postgres or MySQL database the server
-connects to. The flow's text is the same on each. MongoDB is designed
-(`docs/L4s/databases-L4.md`) and not here yet.
+connects to: the flow's SQL is the same on each. Or it is a MongoDB (a cluster on MongoDB Atlas,
+or a replica set of your own), which a flow calls with records instead of SQL
+([Documents](#documents-mongodb)).
 
 ## Binding a database
 
@@ -68,6 +69,27 @@ holon database add ledger vault:secret/payments/ledger#url --read-only
 - A writable MySQL database also gets a table `holon_claims` (see
   [Calling out](#calling-out-between-a-read-and-a-write)).
 
+### MongoDB
+
+A MongoDB is bound the same way, by where its URL is fetched from: Atlas's `mongodb+srv://`
+address, or `mongodb://` for one of your own. The URL names the database.
+
+```sh
+export HOLON_SECRET_NOTES_URL='mongodb+srv://notes:…@cluster0.example.mongodb.net/notes'
+holon serve
+holon database add notes env:HOLON_SECRET_NOTES_URL
+```
+
+- No `--schema`: a collection is made as documents are written to it, and its indexes (a unique
+  one, say) are made in MongoDB, by the admin.
+- A run's writes land in one transaction, which needs a replica set or a sharded cluster: Atlas
+  always is one; a server of your own runs with `--replSet` (a replica set of one node is fine).
+  A database bound read-write, or set to `--lock run`, is checked for one when it is bound.
+- It gets two collections, `holon_commits` and `holon_claims`, which flows can't read or write; a
+  flow's collection is letters, digits, `_`, `-` and `.`, and never `system.…`.
+- TLS as the URL says (`mongodb+srv://` always has it), checked against the public CAs. The user
+  needs only `readWrite` on the database (`read` for one bound `--read-only`).
+
 ## Reading and writing
 
 ```holon
@@ -104,6 +126,51 @@ route GET /orders/:customer (req) { respond shop.query("select id, total, refund
   (`::text`).
 - Reads are of the database as the run began; writes land when it finishes, all of them or none.
 
+### Documents (MongoDB)
+
+```holon
+flow atlas-notes
+port 8154
+database notes
+
+route GET /notes/:owner (req) {
+  respond notes.find("notes", { owner: req.params.owner, done: false }, sort: { _id: 1 }, limit: 50)
+}
+
+route PUT /notes/:owner/:id (req) {
+  notes.update("notes", { _id: req.params.id, owner: req.params.owner }, { "$set": { text: req.json.text }, "$inc": { edits: 1 } }, expect: 1)
+  respond { edited: req.params.id }
+}
+```
+
+| Written | Is |
+|---|---|
+| `db.find("coll", { … }, sort: { … }, limit: n)` | the documents the filter selects, as a list of records, as the run began (no filter: all of them) |
+| `db.find_one("coll", { … }, sort: { … })` | the first, or no value when there is none (a route answers 404) |
+| `db.insert("coll", { … })` | add the document when the run finishes |
+| `db.update("coll", { filter }, { "$set": { … } }, expect: n)` | apply the update (`$set`, `$inc`, `$push`, … ) to the documents the filter selects |
+| `db.delete("coll", { filter }, expect: n)` | delete the documents the filter selects |
+
+- The collection is written in quotes, as SQL is, because it is what the deployment is granted:
+  `notes.find("notes", …)` asks `DbRead("notes/notes")`; an insert, `DbWrite`; an update or a
+  delete, both.
+- The filter, the update, the document and the sort are **records written in the call**: their
+  fields and operators (`$in`, `$gt`, `$set`, …) are the flow's, fixed when it is deployed, and
+  each value computed from the request goes in as data, never as an operator. A record given as a
+  value with a field starting with `$` (a request's `{"$ne": null}`) fails the run, and nothing it
+  did lands. A record from a value (`notes.find("notes", f)`) or a spread is an error that says
+  so, and so are `$where`, `$function` and `$accumulator`, which run code on the server; an update
+  is operators only, a sort fields of `1` and `-1`.
+- `expect: n` on an update counts the documents its filter matched, on a delete those it
+  deleted: else nothing the run wrote lands, and a route answers 409. An insert whose `_id` is
+  there already answers 409 too.
+- Values cross as JSON does: a whole number as an integer, a record as a document, a list as an
+  array, no value as `null`. `{ "$oid": v }`, `{ "$date": v }`, `{ "$numberDecimal": v }` and
+  `{ "$numberLong": v }` make `v` an id, a date (RFC 3339 text), an exact decimal or a long.
+- Back, a document is a record by field: an id as its hex, a date as RFC 3339 text (UTC), a
+  decimal as text, a long past 2^53 as text, bytes as hex; a `null` field is missing. A field of
+  another type fails the read, saying to leave it out.
+
 ## When runs touch the same rows
 
 A run's reads and its writes are one step. When the run finishes, the server opens a transaction
@@ -138,6 +205,11 @@ commit, and the one that can't runs again. A deadlock, or a lock not had within
 program made, as long as it was made before the check: on MySQL what the check read stays locked
 until the commit; on Postgres, a program that writes in the milliseconds between them isn't
 seen.
+
+On MongoDB the commit is a transaction too, reading a snapshot: a document it writes that another
+writer changed since makes MongoDB end it, and the run goes round again. A document it only reads
+that a program outside Holon changes in the milliseconds between the check and the commit isn't
+seen; Holon's own runs, of any server, are held off by claims ([below](#calling-out-between-a-read-and-a-write)).
 
 ## Calling out between a read and a write
 
@@ -180,6 +252,10 @@ shows it beside `orders-api`, on the same database.
 - On Postgres and MySQL, across servers too: the rows are held in the database itself (Postgres
   advisory locks; on MySQL, locks on rows of `holon_claims`), on a connection of their own, so
   a server that stops lets go of them with its connection.
+- On MongoDB the same, in the database's `holon_claims` collection: a document a filter names by
+  `_id` (an insert, by its document's `_id`) is held alone, any other call holds the collection.
+  Each is held with a 30-second lease the server renews while the run lasts, so a server that
+  stops lets go within 30 seconds.
 - A run that never calls out holds nothing; one that only reads a table holds nothing in it.
 - `holon check` says it, under `while it runs:`, and the run log lists each row held, how long it
   waited, and whether it found the row changed. A run waits `claim_wait_ms` at most (10 s).
@@ -235,8 +311,8 @@ holon database add tickets ~/tickets.db --lock run --schema-file tickets.sql
   database, alone if it may write it (what its manifest says, not what one run happens to do).
   It holds it until it commits, fails or waits for an event.
 - So **every run that writes it goes one at a time, for its whole length**, across every
-  deployment bound to it, and on Postgres or MySQL across every server (the lock is held in the
-  database, as claims are). Runs that only read it go side by side, after any writer.
+  deployment bound to it, and on Postgres, MySQL or MongoDB across every server (the lock is held
+  in the database, as claims are). Runs that only read it go side by side, after any writer.
 - A run that would wait past `claim_wait_ms` (10 s) for it is turned away: a request answers 503
   naming the database, a clock tick is skipped; both are in the run log, and nothing was sent.
 - Nothing in the flow changes: the same text runs on a database held only across commits.

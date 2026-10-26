@@ -7,6 +7,8 @@
 import type { Page } from "@playwright/test";
 import { expect, FOLDERS, RUN_DIR, SERVER, test } from "./fixtures";
 
+const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
+
 /** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. */
 async function openSample(page: Page, title: string) {
   await page.goto("/");
@@ -65,6 +67,8 @@ test("every sample opens from the flows page and deploys", async ({ page, reques
   const samples = titles.filter((t) => t.trim().length > 0);
   expect(samples.length).toBeGreaterThan(5);
   for (const title of samples) {
+    // Its database is a MongoDB, bound only where the environment names one (CI does).
+    if (title === ATLAS_NOTES && !process.env.HOLON_TEST_MONGODB) continue;
     await test.step(title, async () => {
       await openSample(page, title);
       await deploy(page);
@@ -690,6 +694,23 @@ test("approved-payout waits for its approval holding nothing, and pays from the 
   expect((await deposited.json()).balance).toBe(before + 50);
   expect((await request.post(`${base}${approve}`, { data: { by: "e2e" }, timeout: 60_000 })).status()).toBe(200);
   expect((await (await request.get(`${base}/accounts/1`)).json()).balance).toBe(before + 50 - 30);
+});
+
+test("atlas-notes keeps notes as documents in a MongoDB: found by owner and tag, marked done once, and a value never an operator", async ({ page, request }) => {
+  test.skip(!process.env.HOLON_TEST_MONGODB, "set HOLON_TEST_MONGODB (a replica set's URL) to run it against MongoDB");
+  await openSample(page, ATLAS_NOTES);
+  const base = `http://127.0.0.1:${await deploy(page)}`;
+  const owner = `e2e-${Date.now()}`;
+  expect((await request.post(`${base}/notes/${owner}`, { data: { id: `${owner}-1`, text: "buy milk", tags: ["home"] } })).status()).toBe(201);
+  expect((await request.post(`${base}/notes/${owner}`, { data: { id: `${owner}-2`, text: "call bo" } })).status()).toBe(201);
+  const found = await (await request.get(`${base}/notes/${owner}`)).json();
+  expect(found.map((n: { text: string }) => n.text)).toEqual(["buy milk", "call bo"]);
+  expect(await (await request.get(`${base}/notes/${owner}/tagged/home`)).json()).toHaveLength(1);
+  expect((await request.post(`${base}/notes/${owner}/${owner}-1/done`)).status()).toBe(200);
+  expect((await request.post(`${base}/notes/${owner}/${owner}-1/done`)).status()).toBe(404);
+  // A value is data: a record with an operator in it fails the run, and nothing lands.
+  expect((await request.put(`${base}/notes/${owner}/${owner}-2`, { data: { text: { $set: { owner: "mallory" } } } })).status()).toBe(500);
+  expect((await (await request.get(`${base}/notes/${owner}`)).json())[0].text).toBe("call bo");
 });
 
 test("drop-box runs once for a file dropped in its folder, sends it by handle, writes its receipt, and its runs verify", async ({ page, adminToken }) => {

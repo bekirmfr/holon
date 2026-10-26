@@ -338,7 +338,9 @@ route POST /order/:id/refund (req) {
 ```
 
 The tables its SQL names are what it asks for (`DbWrite("shop/orders")`); `expect: 1` makes the
-refund happen once, and a second answers 409. See
+refund happen once, and a second answers 409. A MongoDB is called with records instead, its
+fields and operators written in the call and each value passed in as data:
+`notes.find("notes", { owner: req.params.owner })`. See
 [Databases on the host](../guides/databases.md).
 
 ## Where to next

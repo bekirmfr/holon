@@ -303,7 +303,7 @@ pub(crate) fn fire_with_state(
 /// runs of other servers. Let go when dropped.
 struct RunLocked {
     _guards: Vec<locks::Guard>,
-    remote: Vec<(Arc<engines::Remote>, bool)>,
+    remote: Vec<(databases::Shared, bool)>,
     holder: String,
 }
 

@@ -1459,7 +1459,8 @@ impl<'a> Lowerer<'a> {
             "query" => ("db_query", false),
             "one" => ("db_one", false),
             "exec" => ("db_exec", true),
-            other => return err(method.span, format!("a database has no \"{other}\": query, one or exec")),
+            "find" | "find_one" | "insert" | "update" | "delete" => return self.document_call(database, method, args, span),
+            other => return err(method.span, format!("a database has no \"{other}\": query, one or exec (SQL), or find, find_one, insert, update or delete (a document database)")),
         };
         let Some(first) = args.first().filter(|a| a.name.is_none()) else {
             return err(span, format!("{database}.{} takes the SQL first, in quotes: its tables are the permission the deployment asks for", method.text));
@@ -1500,6 +1501,133 @@ impl<'a> Lowerer<'a> {
         let id = id.clone();
         self.connect(&list, &id, "params", span)?;
         Ok(self.out(&id))
+    }
+
+    /// `notes.find("notes", { owner: who }, sort: { at: -1 }, limit: 20)`, `find_one`, `insert`
+    /// (a document), `update` (a filter, then `{ "$set": … }`), `delete` (a filter): the collection
+    /// in quotes first (the permission), then record literals written in the call. Their keys and
+    /// operators, and every constant in them, are frozen into the leaf's templates (documents.rs);
+    /// each other value is a hole, `$1`, `$2`, … in the order written, its value wired in a list.
+    fn document_call(&mut self, database: &str, method: &Name, args: &'a [Arg], span: Span) -> R<Val> {
+        use holon_core::documents::{check, holes_in_order, Part};
+        let m = method.text.as_str();
+        let (leaf, parts): (&str, &[(&str, Part)]) = match m {
+            "find" => ("db_find", &[("filter", Part::Filter)]),
+            "find_one" => ("db_find_one", &[("filter", Part::Filter)]),
+            "insert" => ("db_insert", &[("document", Part::Document)]),
+            "update" => ("db_update", &[("filter", Part::Filter), ("update", Part::Update)]),
+            _ => ("db_delete", &[("filter", Part::Filter)]),
+        };
+        let positional: Vec<&'a Arg> = args.iter().filter(|a| a.name.is_none()).collect();
+        let Some(first) = positional.first() else {
+            return err(span, format!("{database}.{m} takes the collection first, in quotes: it is the permission the deployment asks for"));
+        };
+        let ExprKind::Text(collection) = &first.value.kind else {
+            return err(first.value.span, "the collection is written in quotes, as it is: it is the permission");
+        };
+        if !holon_core::documents::is_collection_name(collection) {
+            return err(first.value.span, "a collection is letters, digits, _, - and ., and never system.… (the server's) or holon_… (the host's)");
+        }
+        let given = &positional[1..];
+        // A find with no filter finds every document; every other call says what it selects.
+        let needed = if m == "find" || m == "find_one" { 0 } else { parts.len() };
+        if given.len() < needed || given.len() > parts.len() {
+            let wants: Vec<&str> = parts.iter().map(|(n, _)| *n).collect();
+            return err(span, format!("{database}.{m} takes the collection, then its {}", wants.join(", then its ")));
+        }
+        let mut params = vec![("database".to_string(), database.to_string()), ("collection".to_string(), collection.clone())];
+        let mut values: Vec<&'a Expr> = Vec::new();
+        let mut holes = std::collections::BTreeSet::new();
+        for (i, (name, part)) in parts.iter().enumerate() {
+            let text = match given.get(i) {
+                Some(a) => {
+                    let t = self.template(&a.value, &mut values, false)?;
+                    let (_, h) = check(*part, &t.text()).or_else(|why| err(a.value.span, format!("this {name} can't be sent: {why}")))?;
+                    holes.extend(h);
+                    t.text()
+                }
+                None => "{}".to_string(),
+            };
+            params.push((name.to_string(), text));
+        }
+        let write = matches!(m, "update" | "delete");
+        for a in args.iter().filter(|a| a.name.is_some()) {
+            let n = a.name.as_ref().expect("named");
+            match n.text.as_str() {
+                "sort" if m == "find" || m == "find_one" => {
+                    let t = self.template(&a.value, &mut values, true)?;
+                    check(Part::Sort, &t.text()).or_else(|why| err(a.value.span, format!("this sort can't be sent: {why}")))?;
+                    params.push(("sort".to_string(), t.text()));
+                }
+                "limit" if m == "find" => match &a.value.kind {
+                    ExprKind::Number { value, text } if value.fract() == 0.0 && *value >= 1.0 && *value <= 100_000.0 => params.push(("limit".to_string(), text.clone())),
+                    _ => return err(a.value.span, "limit: is how many documents at most, a whole number from 1 to 100000"),
+                },
+                "expect" if write => match &a.value.kind {
+                    ExprKind::Number { value, text } if value.fract() == 0.0 && *value >= 0.0 && *value < 1e9 => params.push(("expect".to_string(), text.clone())),
+                    _ => return err(a.value.span, format!("expect: is how many documents it must {}, a whole number", if m == "update" { "match" } else { "delete" })),
+                },
+                other => {
+                    let takes = match m {
+                        "find" => ", then sort: and limit:",
+                        "find_one" => ", then sort:",
+                        "update" | "delete" => ", then expect:",
+                        _ => "",
+                    };
+                    return err(n.span, format!("{database}.{m} has no \"{other}\": it takes the collection, its records{takes}"));
+                }
+            }
+        }
+        holes_in_order(&holes).or_else(|why| err(span, why))?;
+        let list = self.list_of(&values, span)?;
+        let v = self.node(leaf, &params, span)?;
+        let Val::Out { id, .. } = &v else { unreachable!() };
+        let id = id.clone();
+        self.connect(&list, &id, "params", span)?;
+        Ok(self.out(&id))
+    }
+
+    /// A record literal written in a document call, as a template: its keys, and its constants
+    /// (strings, numbers, true and false, and the lists and records of them), frozen; each other
+    /// value a hole numbered after those in `values`, which it joins. `constant`: a sort, which
+    /// has no holes.
+    fn template(&self, e: &'a Expr, values: &mut Vec<&'a Expr>, constant: bool) -> R<holon_core::documents::Tpl> {
+        use holon_core::documents::Tpl;
+        let ExprKind::Record { spread, .. } = &e.kind else {
+            return err(e.span, "a document call's filter, update, document and sort are records written in the call, { field: value, … }: their fields are the call's, never the data's");
+        };
+        if let Some(s) = spread {
+            return err(s.span, "a document call's record is written whole: a spread would let the data choose its fields");
+        }
+        fn walk<'a>(e: &'a Expr, values: &mut Vec<&'a Expr>, constant: bool) -> R<Tpl> {
+            Ok(match &e.kind {
+                ExprKind::Text(t) => Tpl::Text(t.clone()),
+                ExprKind::Number { text, .. } => Tpl::Number(text.clone()),
+                ExprKind::Bool(b) => Tpl::Bool(*b),
+                ExprKind::Paren(inner) => walk(inner, values, constant)?,
+                ExprKind::List(items) => Tpl::List(items.iter().map(|i| walk(i, values, constant)).collect::<R<_>>()?),
+                ExprKind::Record { spread: Some(s), .. } => return err(s.span, "a document call's record is written whole: a spread would let the data choose its fields"),
+                ExprKind::Record { spread: None, fields } => {
+                    let mut out: Vec<(String, Tpl)> = Vec::new();
+                    for (k, v) in fields {
+                        if out.iter().any(|(o, _)| *o == k.text) {
+                            return err(k.span, format!("\"{}\" is given twice", k.text));
+                        }
+                        out.push((k.text.clone(), walk(v, values, constant)?));
+                    }
+                    Tpl::Object(out)
+                }
+                _ if constant => return err(e.span, "a sort is the flow's: each field is 1 or -1, as written"),
+                _ => {
+                    values.push(e);
+                    if values.len() > 100 {
+                        return err(e.span, "a document call takes at most 100 values");
+                    }
+                    Tpl::Hole(values.len())
+                }
+            })
+        }
+        walk(e, values, constant)
     }
 
     /// A leaf or template placed with its arguments: positional ones are inputs in port order
@@ -1989,9 +2117,52 @@ shop.exec(\"update stock set n = n - 1 where sku = $1\", rows, expect: 1)
         assert_eq!(error("x = shop.query(\"select 1\")"), "this SQL reads no table: what it selects, the flow can compute itself");
         assert_eq!(error("x = shop.query(\"select a from t\", expect: 1)"), "shop.query has no \"expect\": it takes the SQL, then its values");
         assert_eq!(error("shop.exec(\"delete from t\", expect: -1)"), "expect: is how many rows it must change, a whole number");
-        assert_eq!(error("x = shop.find(\"a\")"), "a database has no \"find\": query, one or exec");
+        assert_eq!(error("x = shop.pick(\"a\")"), "a database has no \"pick\": query, one or exec (SQL), or find, find_one, insert, update or delete (a document database)");
         assert_eq!(error("x = shop"), "\"shop\" is a database: read it as shop.query(\"select …\") or shop.one(…)");
         assert_eq!(error("shop = 1"), "\"shop\" is a database; a binding may not shadow it");
+    }
+
+    #[test]
+    fn document_calls_freeze_their_records_and_wire_each_computed_value_as_a_hole() {
+        let d = compiled("database notes
+route POST /n/:who (req) {
+  mine = notes.find(\"notes\", { owner: req.params.who, state: { \"$in\": [\"open\", req.json.also] } }, sort: { at: -1 }, limit: 20)
+  one = notes.find_one(\"notes\")
+  notes.insert(\"notes\", { owner: req.params.who, text: req.json.text, tags: [\"new\"], pinned: false })
+  notes.update(\"notes\", { _id: { \"$oid\": req.json.id } }, { \"$set\": { text: req.json.text }, \"$inc\": { edits: 1 } }, expect: 1)
+  notes.delete(\"notes\", { owner: req.params.who, done: true })
+  respond { mine: mine, one: one }
+}
+").doc;
+        let node = |leaf: &str| d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+        let find = node("db_find");
+        assert_eq!(
+            (find.param("collection"), find.param("filter"), find.param("sort"), find.param("limit")),
+            ("notes", r#"{"owner":$1,"state":{"$in":["open",$2]}}"#, r#"{"at":-1}"#, "20")
+        );
+        assert_eq!(node("db_find_one").param("filter"), "{}", "a find with no filter finds everything");
+        assert_eq!(node("db_insert").param("document"), r#"{"owner":$1,"text":$2,"tags":["new"],"pinned":false}"#);
+        let update = node("db_update");
+        assert_eq!((update.param("filter"), update.param("update"), update.param("expect")), (r#"{"_id":{"$oid":$1}}"#, r#"{"$set":{"text":$2},"$inc":{"edits":1}}"#, "1"));
+        assert_eq!(node("db_delete").param("filter"), r#"{"owner":$1,"done":true}"#);
+        let into = |id: &str| d.edges.iter().find(|w| w.target == id && w.target_handle.as_deref() == Some("params")).map(|w| d.nodes.iter().find(|n| n.id == w.source).unwrap().data.name.clone());
+        assert_eq!([into(&find.id), into(&node("db_find_one").id), into(&node("db_delete").id)], [Some("list".into()), Some("const".into()), Some("append".into())]);
+        let error = |src: &str| error(&format!("database notes
+{src}")).2;
+        assert_eq!(error("x = notes.find(c)"), "the collection is written in quotes, as it is: it is the permission");
+        assert!(error("x = notes.find(\"holon_claims\")").starts_with("a collection is letters"));
+        assert!(error("x = notes.find(\"notes\", f)").starts_with("a document call's filter, update, document and sort are records written in the call"));
+        assert!(error("x = notes.find(\"notes\", { ..f, a: 1 })").contains("a spread would let the data choose its fields"));
+        assert!(error("x = notes.find(\"notes\", { \"$where\": \"1\" })").contains("runs code on the database's server"));
+        assert!(error("notes.update(\"notes\", { a: 1 }, { a: 2 })").contains("isn't an update operator"));
+        assert!(error("notes.insert(\"notes\", { \"$set\": 1 })").contains("is an operator"));
+        assert_eq!(error("x = notes.find(\"notes\", {}, sort: { at: 2 })"), "this sort can't be sent: a sort's fields are each 1 or -1, written as they are: \"at\" isn't");
+        assert_eq!(error("x = notes.find(\"notes\", {}, sort: { at: k })"), "a sort is the flow's: each field is 1 or -1, as written");
+        assert_eq!(error("x = notes.find(\"notes\", {}, limit: 0)"), "limit: is how many documents at most, a whole number from 1 to 100000");
+        assert_eq!(error("notes.delete(\"notes\")"), "notes.delete takes the collection, then its filter");
+        assert_eq!(error("notes.update(\"notes\", {})"), "notes.update takes the collection, then its filter, then its update");
+        assert_eq!(error("x = notes.find_one(\"notes\", {}, limit: 1)"), "notes.find_one has no \"limit\": it takes the collection, its records, then sort:");
+        assert_eq!(error("notes.insert(\"notes\", {}, expect: 1)"), "notes.insert has no \"expect\": it takes the collection, its records");
     }
 
     #[test]

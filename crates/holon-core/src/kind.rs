@@ -306,6 +306,11 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // followed classifies as nothing, and fails closed.
         "db_query" | "db_one" => db_tables(params, false)?,
         "db_exec" => db_tables(params, true)?,
+        // A document database's collection, a frozen param as a statement's tables are: a find
+        // reads it; an insert writes it; an update and a delete read what their filter selects and
+        // write it. Each template is checked for what its part may say (documents.rs), and one that
+        // can't be fails closed.
+        "db_find" | "db_find_one" | "db_insert" | "db_update" | "db_delete" => db_collection(name, params)?,
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.
@@ -358,6 +363,63 @@ fn db_tables(params: &[Param], write: bool) -> Option<Vec<Capability>> {
     let reads = tables.reads.iter().map(|t| Capability::DbRead(format!("{database}/{t}")));
     let writes = tables.writes.iter().map(|t| Capability::DbWrite(format!("{database}/{t}")));
     Some(reads.chain(writes).collect())
+}
+
+/// The collection a document database leaf reads and writes, as capabilities naming the database
+/// and the collection (`DbRead("notes/notes")`), once each of its templates says only what its
+/// part may (documents.rs).
+fn db_collection(name: &str, params: &[Param]) -> Option<Vec<Capability>> {
+    use crate::documents::{check, is_collection_name, Part};
+    let database = ident(params, "database")?;
+    let collection = params.iter().find(|p| p.name() == "collection")?.value()?;
+    if !is_collection_name(collection) {
+        return None;
+    }
+    let mut holes = std::collections::BTreeSet::new();
+    let mut template = |param: &str, part: Part| -> Option<()> {
+        let text = params.iter().find(|p| p.name() == param)?.value()?;
+        holes.extend(check(part, text).ok()?.1);
+        Some(())
+    };
+    let optional = |param: &str| params.iter().find(|p| p.name() == param).map_or(Some(""), |p| p.value());
+    let at = format!("{database}/{collection}");
+    let caps = match name {
+        "db_find" | "db_find_one" => {
+            template("filter", Part::Filter)?;
+            match optional("sort")? {
+                "" => {}
+                text => check(Part::Sort, text).ok().map(|_| ())?,
+            }
+            if name == "db_find" {
+                limit_of(params)?;
+            }
+            vec![Capability::DbRead(at)]
+        }
+        "db_insert" => {
+            template("document", Part::Document)?;
+            vec![Capability::DbWrite(at)]
+        }
+        _ => {
+            template("filter", Part::Filter)?;
+            if name == "db_update" {
+                template("update", Part::Update)?;
+            }
+            expect_of(params)?;
+            vec![Capability::DbRead(at.clone()), Capability::DbWrite(at)]
+        }
+    };
+    crate::documents::holes_in_order(&holes).ok()?;
+    Some(caps)
+}
+
+/// How many documents a `db_find` answers at most: `Some(None)` for all (`limit` absent or ""),
+/// `Some(Some(n))` for `n` from 1 to 100000; `None` (fail closed) for anything else.
+pub(crate) fn limit_of(params: &[Param]) -> Option<Option<u64>> {
+    match params.iter().find(|p| p.name() == "limit").map(|p| p.value()) {
+        None | Some(Some("")) => Some(None),
+        Some(Some(n)) if n.len() <= 6 && n.bytes().all(|b| b.is_ascii_digit()) => n.parse().ok().filter(|n| (1..=100_000).contains(n)).map(Some),
+        Some(_) => None,
+    }
 }
 
 /// The rows a `db_exec` must change: `Some(None)` for any number (`expect` absent or ""),
@@ -684,6 +746,34 @@ mod tests {
         assert!(capabilities_of("db_query", &[Param::frozen("database", "a/b"), Param::frozen("sql", "select 1")]).is_none(), "a database is a name");
         assert_eq!(DbRead("x".into()).kind(), Kind::State);
         assert!(DbRead("x".into()).is_sourced() && !DbWrite("x".into()).is_sourced());
+    }
+
+    #[test]
+    fn document_leaves_name_their_collection_once_their_templates_check() {
+        use Capability::{DbRead, DbWrite};
+        let caps = |name: &str, params: &[(&str, &str)]| {
+            let mut all = vec![Param::frozen("database", "notes"), Param::frozen("collection", "notes")];
+            for (k, v) in params {
+                all.retain(|p| p.name() != *k);
+                all.push(Param::frozen(*k, *v));
+            }
+            capabilities_of(name, &all).map(|c| c.iter().collect::<Vec<_>>())
+        };
+        let read = Some(vec![DbRead("notes/notes".into())]);
+        assert_eq!(caps("db_find", &[("filter", r#"{"owner":$1}"#), ("sort", r#"{"at":-1}"#), ("limit", "20")]), read);
+        assert_eq!(caps("db_find_one", &[("filter", r#"{"_id":$1}"#)]), read);
+        assert_eq!(caps("db_insert", &[("document", r#"{"owner":$1,"text":$2}"#)]), Some(vec![DbWrite("notes/notes".into())]));
+        assert_eq!(caps("db_update", &[("filter", r#"{"_id":$1}"#), ("update", r#"{"$set":{"text":$2}}"#), ("expect", "1")]), Some(vec![DbRead("notes/notes".into()), DbWrite("notes/notes".into())]));
+        assert_eq!(caps("db_delete", &[("filter", r#"{"owner":$1}"#)]), Some(vec![DbRead("notes/notes".into()), DbWrite("notes/notes".into())]));
+        assert_eq!(caps("db_find", &[("filter", r#"{"$where":"true"}"#)]), None, "no code on the server");
+        assert_eq!(caps("db_find", &[("filter", "{}"), ("limit", "0")]), None, "a limit is a whole number above 0");
+        assert_eq!(caps("db_find", &[("filter", "{}"), ("sort", r#"{"at":$1}"#)]), None, "a sort is the flow's");
+        assert_eq!(caps("db_update", &[("filter", "{}"), ("update", r#"{"text":$1}"#)]), None, "an update is operators");
+        assert_eq!(caps("db_insert", &[("document", r#"{"$set":{}}"#)]), None, "a document is data");
+        assert_eq!(caps("db_delete", &[("filter", "{}"), ("expect", "many")]), None, "expect is a whole number");
+        assert_eq!(caps("db_update", &[("filter", r#"{"_id":$1}"#), ("update", r#"{"$set":{"text":$3}}"#)]), None, "holes skip none");
+        assert_eq!(caps("db_find", &[("collection", "holon_claims"), ("filter", "{}")]), None, "the host's collections");
+        assert_eq!(caps("db_find", &[("collection", "system.users"), ("filter", "{}")]), None, "the server's");
     }
 
     #[test]

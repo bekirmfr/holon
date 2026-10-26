@@ -554,6 +554,37 @@ table, a file read the file, a listing the folder. These are held in the server'
 resource's real address, so two deployments bound to one database exclude each other. Design:
 `docs/L4s/databases-L4.md` §7.2.
 
+### atlas-notes: documents
+
+```holon
+flow atlas-notes
+port 8154
+database notes
+
+route GET /notes/:owner/tagged/:tag (req) {
+  respond notes.find("notes", { owner: req.params.owner, tags: { "$in": [req.params.tag] } }, sort: { _id: 1 })
+}
+
+route POST /notes/:owner/:id/done (req) {
+  note = notes.find_one("notes", { _id: req.params.id, owner: req.params.owner, done: false })
+  notes.update("notes", { _id: note._id }, { "$set": { done: true } }, expect: 1)
+  respond { done: note._id, text: note.text }
+}
+```
+
+A database an admin binds to a MongoDB (`mongodb+srv://…`, fetched as a secret is: `mongo.rs`) is
+called with records instead of SQL: `find`, `find_one`, `insert`, `update` and `delete`, the
+collection in quotes first (the grant, as a statement's tables are), then record literals written
+in the call. The lowering freezes each one's shape into the leaf as a **template**, JSON whose
+values may be holes (core's `documents.rs`): every key, operator and constant is the flow's, and
+each other value is a hole, `$1`, `$2`, … in the order written, wired as the leaf's `params` list.
+So `{ owner: req.params.owner, tags: { "$in": [req.params.tag] } }` is the frozen
+`{"owner":$1,"tags":{"$in":[$2]}}`, and a request can never add an operator: the host fills each
+hole with its value as data, and a record value with a `$` field fails the run. A record from a
+value, or a spread, is an error that says so; `$where`, `$function` and `$accumulator` are refused
+anywhere, an update is update operators only, a sort fields of `1` and `-1`. `fmt` writes the
+records back from the templates, the values in place.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -718,6 +749,11 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `shop.query(sql, v…)` (`shop` a declared database, `sql` a text literal) | `db_query{database: shop, sql}(list(v…))` | the rows, as the run began |
 | `shop.one(sql, v…)` | `db_one{database: shop, sql}(list(v…))` | the first row, or no value |
 | `shop.exec(sql, v…, expect: n)` | `db_exec{database: shop, sql, expect: n}(list(v…))` | run the statement when the run finishes (only if it changes `n` rows) |
+| `notes.find(c, { … }, sort: { … }, limit: n)` (`c` a text literal, each record written in the call) | `db_find{database: notes, collection: c, filter, sort, limit}(list(v…))`, the records frozen as templates, `v…` their computed values | the documents, as the run began (no filter: all) |
+| `notes.find_one(c, { … }, sort: { … })` | `db_find_one{database: notes, collection: c, filter, sort}(list(v…))` | the first document, or no value |
+| `notes.insert(c, { … })` | `db_insert{database: notes, collection: c, document}(list(v…))` | add the document when the run finishes |
+| `notes.update(c, { … }, { "$set": … }, expect: n)` | `db_update{database: notes, collection: c, filter, update, expect: n}(list(v…))` | update what the filter selects when the run finishes (only if it matches `n`) |
+| `notes.delete(c, { … }, expect: n)` | `db_delete{database: notes, collection: c, filter, expect: n}(list(v…))` | delete what the filter selects when the run finishes (only if it deletes `n`) |
 | `http.get(host, path, headers: h, body: b)` and `post`, `put`, `patch`, `delete`, `head` | `http_request{method, host}(path, h, b)` | a call to that host |
 | `http.put(host, path, headers: h, file: f)` (`f` a handle), any method | `http_upload{method, host}(path, h, f)` | a call sending the file's bytes, streamed by the server |
 | `stripe.verify(req, secret, now, tolerance: d)` | the `stripe_verify` template | a verified Stripe event |
