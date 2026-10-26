@@ -85,6 +85,10 @@ route DELETE /reports/:name (req) {
   the folder, for one it listed): a run of another deployment that wrote a file in between makes
   it run again, never write over what that one wrote, and runs that touch different files never
   wait for each other. The `shared-ledger` sample, deployed twice, shows it.
+- A run that reads a file of a folder it may write, and then calls out, holds the file from its
+  first outbound call until it commits (a listing, the whole folder): another run that read it
+  waits at its own first call, reads it again, and runs on what it finds, having sent nothing.
+  So two runs that fetch something to cache in one file fetch it once, across deployments.
 
 ## Big files
 

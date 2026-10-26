@@ -785,6 +785,11 @@ impl Permit {
         self.named("DbRead")
     }
 
+    /// The tables it may write, as `shop/orders`.
+    pub(crate) fn tables_written(&self) -> BTreeSet<String> {
+        self.named("DbWrite")
+    }
+
     /// The databases it may read or write, by name.
     pub(crate) fn databases_named(&self) -> BTreeSet<String> {
         let tables = self.named("DbRead").into_iter().chain(self.named("DbWrite"));

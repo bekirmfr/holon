@@ -96,6 +96,48 @@ nothing (here or anywhere else), and answers 409.
 The same transaction inserts the run's id into `holon_commits`, so a database says itself which
 runs landed in it.
 
+## Calling out between a read and a write
+
+Running again is safe for what a run writes, not for what it sends: a run that read an order,
+called a payment API and then found the order changed would have paid twice by the time it ran
+again. So a run that reads a row it may write, and then calls out, **holds the row** from its
+first outbound call until it commits. Another run that read the same row waits at its own first
+call; when the row is let go, it reads it again, and runs again on what it finds, having sent
+nothing.
+
+```holon
+flow refund-once
+port 8151
+database shop
+
+route POST /refund/:id (req) {
+  order = shop.one("select id, total from orders where id = $1 and refunded = 0", req.params.id)
+  paid = http.post("httpbin.org", "/anything/refunds", headers: { "content-type": "application/json" }, body: json({ order: order.id, amount: order.total }))
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", order.id, expect: 1)
+  shop.exec("insert into refunds (order_id, amount, status) values ($1, $2, $3)", order.id, order.total, paid.status)
+  respond { refunded: order.total, payment: paid.status }, missing: 409
+}
+
+route GET /refunds/:id (req) {
+  respond shop.query("select amount, status from refunds where order_id = $1", req.params.id)
+}
+```
+
+Two refunds of one order at once call the payment API once: the second finds the order refunded,
+its query answers no row, nothing after it runs, and it answers 409. The `refund-once` sample
+shows it beside `orders-api`, on the same database.
+
+- A read whose `where` sets the table's whole primary key equal to values (`id = $1`, with other
+  conditions joined by `and`) holds that row. Any other read of a table it may write (a range, a
+  join, a count) holds the whole table, which waits for every row under it.
+- An insert waits only for a run holding the whole table; one that gives the primary key waits
+  for that row too.
+- Holding is across deployments: every deployment bound to the database sees the same rows held,
+  whatever name it knows the database by.
+- A run that never calls out holds nothing; one that only reads a table holds nothing in it.
+- `holon check` says it, under `while it runs:`, and the run log lists each row held, how long it
+  waited, and whether it found the row changed. A run waits `claim_wait_ms` at most (10 s).
+
 ## Limits
 
 | Name | Is | Default | Ceiling |

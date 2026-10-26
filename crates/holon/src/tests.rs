@@ -3898,6 +3898,86 @@ fn two_deployments_counting_in_one_row_lose_no_count() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Two refunds of one order at the same moment, from two deployments bound to one database: the
+/// first to call out holds the order's row (it read it and may write it) until it commits, so the
+/// payment API is called once; the second waits, finds the order refunded, and sends nothing
+/// (docs/L4s/databases-L4.md §7.2). Orders apart never wait for each other.
+#[test]
+fn two_deployments_refunding_one_order_call_the_payment_api_once() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-refunds-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema = "create table orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0); create table refunds (order_id integer not null, amount numeric not null, status integer); insert into orders (customer, total) values ('ada', 5), ('bo', 7), ('cy', 9)";
+    let body = serde_json::json!({ "name": "shop", "path": dir.join("shop.db").display().to_string(), "schema": schema });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = include_str!("../../holon-author/samples/refund-once.holon").replace("\"httpbin.org\", \"/anything/refunds\"", &format!("\"{host}\", \"/slow\"")).replace("port 8151", "port 18151");
+    let a = deploy_text(&state, &text, &host);
+    let b = deploy_text(&state, &text.replace("flow refund-once", "flow refund-once-2").replace("port 18151", "port 18152"), &host);
+    let race = |id: u32| -> Vec<u16> {
+        std::thread::scope(|s| {
+            let first = s.spawn(|| data_call(&state, &a, "POST", &format!("/refund/{id}"), ""));
+            std::thread::sleep(Duration::from_millis(60));
+            let second = s.spawn(|| data_call(&state, &b, "POST", &format!("/refund/{id}"), ""));
+            let mut statuses = vec![first.join().unwrap().0, second.join().unwrap().0];
+            statuses.sort();
+            statuses
+        })
+    };
+    assert_eq!(race(1), [200, 409]);
+    assert_eq!(hits_of(&hits, "/slow"), 1, "one payment for one order");
+    let (_, refunds, _) = data_call(&state, &a, "GET", "/refunds/1", "");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&refunds).unwrap(), serde_json::json!([{ "amount": 5, "status": 200 }]));
+    let waited = log_entries(&state, &b);
+    let claim = waited.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "shop/orders[1]").unwrap_or_else(|| panic!("{waited:#?}"));
+    assert!(claim["waited_ms"].as_f64().unwrap() > 100.0 && claim["overtaken"] == true, "it waited for the first's row: {claim}");
+
+    // Two orders at once: neither waits for the other's row.
+    let statuses: Vec<u16> = std::thread::scope(|s| {
+        let state = &state;
+        let calls = [(&a, 2), (&b, 3)].map(|(slug, id)| s.spawn(move || data_call(state, slug, "POST", &format!("/refund/{id}"), "").0));
+        calls.into_iter().map(|c| c.join().unwrap()).collect()
+    });
+    assert_eq!(statuses, [200, 200]);
+    assert_eq!(hits_of(&hits, "/slow"), 3);
+    for (slug, key) in [(&a, "shop/orders[2]"), (&b, "shop/orders[3]")] {
+        let entries = log_entries(&state, slug);
+        let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == key).unwrap_or_else(|| panic!("{entries:#?}"));
+        assert!(claim["overtaken"] == false && claim["waited_ms"].as_f64().unwrap() < 250.0, "its own row, taken at once: {claim}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two deployments that read a file of one folder, call out, and write it, at once: the first to
+/// call out holds the file, the second waits, finds it written, and sends nothing; another file
+/// never waits.
+#[test]
+fn two_deployments_caching_into_one_file_call_out_once() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-memo-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({ "name": "memos", "path": dir.display().to_string() });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let text = format!(
+        "flow memo\nport 18161\nfolder memos\n\nroute POST /memo/:name (req) {{\n  memo = memos[req.params.name] ?? http.get(\"{host}\", \"/slow\").body\n  memos[req.params.name] = memo\n  respond memo\n}}\n"
+    );
+    let a = deploy_text(&state, &text, &host);
+    let b = deploy_text(&state, &text.replace("flow memo", "flow memo-2").replace("port 18161", "port 18162"), &host);
+    let (first, second) = std::thread::scope(|s| {
+        let first = s.spawn(|| data_call(&state, &a, "POST", "/memo/x.txt", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let second = s.spawn(|| data_call(&state, &b, "POST", "/memo/x.txt", ""));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert_eq!((first.0, second.0, first.1.as_str(), second.1.as_str()), (200, 200, "slow", "slow"));
+    assert_eq!(hits_of(&hits, "/slow"), 1, "one fetch for one file");
+    let entries = log_entries(&state, &b);
+    let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "memos/x.txt").unwrap_or_else(|| panic!("{entries:#?}"));
+    assert_eq!(claim["overtaken"], true, "{claim}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A flow reads and writes files in the folders an admin bound, by name: deploying waits for the
 /// binding, a write lands whole when the run commits, a name that leaves its folder fails the run
 /// with nothing written, and the log keeps a write by its hash. The runs check offline: a small

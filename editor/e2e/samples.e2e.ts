@@ -628,6 +628,24 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   await expect(page.getByText(scratch, { exact: true })).toBeVisible();
 });
 
+test("refund-once, beside orders-api on one database, calls the payment API once for two refunds of one order at once", async ({ page, request }) => {
+  await openSample(page, "Orders API (a database on the host)");
+  const orders = `http://127.0.0.1:${await deploy(page)}`;
+  await openSample(page, "Refund once (two requests, one payment)");
+  const refunds = `http://127.0.0.1:${await deploy(page)}`;
+  const customer = `e2e-refund-${Date.now()}`;
+  expect((await request.post(`${orders}/orders`, { data: { customer, total: 5 } })).status()).toBe(201);
+  const [order] = await (await request.get(`${orders}/orders/${customer}`)).json();
+  // The two at once: one holds the order's row from its call out until it commits; the other
+  // waits, finds the order refunded, and sends nothing.
+  const both = await Promise.all([request.post(`${refunds}/refund/${order.id}`, { timeout: 60_000 }), request.post(`${refunds}/refund/${order.id}`, { timeout: 60_000 })]);
+  expect(both.map((r) => r.status()).sort()).toEqual([200, 409]);
+  const made = await (await request.get(`${refunds}/refunds/${order.id}`)).json();
+  expect(made).toHaveLength(1);
+  expect(made[0].amount).toBe(5);
+  expect((await (await request.get(`${orders}/order/${order.id}`)).json()).refunded).toBe(1);
+});
+
 test("drop-box runs once for a file dropped in its folder, sends it by handle, writes its receipt, and its runs verify", async ({ page, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
   const { existsSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");

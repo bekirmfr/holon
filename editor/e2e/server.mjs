@@ -107,14 +107,14 @@ if (!fresh) {
     });
     if (!bound.ok) console.error(`e2e server: binding the folder ${name} failed: ${await bound.text()}`);
   }
-  // The orders-api sample's database (databases.rs), made by its schema as an admin binds it.
+  // The orders-api and refund-once samples' database (databases.rs), made by its schema as an admin binds it.
   const shop = await fetch(`${base}/admin/databases`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({
       name: "shop",
       path: join(folders, "shop.db"),
-      schema: "create table orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0)",
+      schema: "create table if not exists orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0); create table if not exists refunds (order_id integer not null, amount numeric not null, status integer)",
     }),
   });
   if (!shop.ok) console.error(`e2e server: binding the database shop failed: ${await shop.text()}`);

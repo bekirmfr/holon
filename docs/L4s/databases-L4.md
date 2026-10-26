@@ -1,10 +1,11 @@
 # Databases: SQL and documents as host resources, and how runs share what they write (L4)
 
-**Status:** slices 1 and 2 built (2026-10-26): commit locks per file, with intent locks on the
-folder (`locks.rs`, §7.1), and SQLite databases (`databases.rs`, the `database` header,
+**Status:** slices 1 to 3 built (2026-10-26): commit locks per file, with intent locks on the
+folder (`locks.rs`, §7.1); SQLite databases (`databases.rs`, the `database` header,
 `db_query`/`db_one`/`db_exec`, `DbLimits`, the commit transaction with `holon_commits`; sample
-`orders-api`, guide `docs/manual/guides/databases.md`). A database's reads are logged whole: its
-`keep` (§5) isn't built. Slices 3 to 7 are design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
+`orders-api`, guide `docs/manual/guides/databases.md`); and claims on rows, tables, files and
+folders in the server's table (`claims.rs`, §7.2; sample `refund-once`). A database's reads are
+logged whole: its `keep` (§5) isn't built. Slices 4 to 7 are design. Written 2026-10-25, against `main` at 6ee0c58. Builds on
 [host resources](host-resources-L4.md) (also design only: resources the host defines, their
 addresses and timeline) and [key claims](key-claims-L4.md) (built: `claims.rs`).
 
@@ -363,6 +364,14 @@ The same rule as `Claiming::keys_of` (what a run read in what it may write), on 
   hash of the address, or for SQLite and MongoDB a `holon_claims` table with a lease, so a server
   that stops lets go.
 - **`while_it_runs`** (`commands.rs`) says them too: rows for a database, files for a folder.
+- **Built (slice 3):** the table is `Folders::claims`, keyed by each resource's real address (a
+  database's file, a file's path in lower case) so one database bound under two names is one.
+  The primary key is read from the database (`pragma_table_info`) when a run claims; core's
+  `sql::pins` finds the columns a `where` sets equal to parameters. A key's values compare as a
+  claim normalizes them (`7` and `"7"` are one row). An insert that doesn't give its primary key
+  writes `ClaimKey::NewRow`, which waits for a claim on its table but not on its rows. The last
+  try holds every table and folder it may touch for its whole run. Not built: claims in the
+  database itself, for several servers (`holon_claims`, advisory locks), which come with slice 4.
 
 ### 7.3 Run locks (an admin's setting)
 

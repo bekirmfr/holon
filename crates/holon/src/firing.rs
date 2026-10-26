@@ -172,6 +172,13 @@ pub(crate) fn fire_with_state(
             if !cell.claims.wait_free(&written, &a.run.run_id, std::time::Instant::now() + limits.claim_wait) {
                 eprintln!("holon: run {} commits over a key another run still holds (claim_wait passed)", a.run.run_id);
             }
+            // The same for the rows and files it writes, which a run of another deployment may hold.
+            if let Some(f) = waits.folders.as_deref() {
+                let shared = claims::shared_written_keys(f, &a.run.performed);
+                if !shared.is_empty() && !f.all.claims.wait_free(&shared, &a.run.run_id, std::time::Instant::now() + limits.claim_wait) {
+                    eprintln!("holon: run {} commits over a row or file another run still holds (claim_wait passed)", a.run.run_id);
+                }
+            }
             // Its files are written beside their names before any lock is taken: under the locks,
             // what is left is the check and a rename.
             let staged = folders::stage(waits.folders.as_ref(), &a.run.performed);
@@ -225,6 +232,20 @@ pub(crate) fn fire_with_state(
     if !cell.claims.wait_until_empty(std::time::Instant::now() + limits.claim_wait) {
         eprintln!("holon: a run runs holding the state while a key is still claimed (claim_wait passed)");
     }
+    // A run of another deployment may hold a row, table, file or folder it may touch: it holds
+    // them all, whole, for its whole run, once those are let go, so none calls out over them
+    // meanwhile.
+    let shared = waits.folders.clone();
+    let holder = format!("last:{}", nonce.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let _claimed = shared.as_deref().and_then(|f| {
+        let keys = claims::whole_of(f, permit);
+        if keys.is_empty() {
+            return None;
+        }
+        claims::Hold::take(&f.all.claims, keys, holder, std::time::Instant::now() + limits.claim_wait)
+            .map_err(|key| eprintln!("holon: a run runs holding the state while {key} is still claimed (claim_wait passed)"))
+            .ok()
+    });
     let mut live = cell.state.lock().unwrap();
     // Nothing of its own deployment changes under it, but a shared folder or database can: it holds
     // every one it may read or write for its whole length too, as a claim is waited for.
@@ -428,13 +449,22 @@ fn run_attempt(
     let mut timer = recorder::Timer::new();
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
-    // What this attempt will hold before it sends anything: the keys it reads that it may write.
+    // What this attempt will hold before it sends anything: the keys it reads that it may write,
+    // in its collections and in the folders and databases other deployments share.
+    let shared = waits.folders.as_ref().map(|f| claims::SharedReads {
+        folders: Arc::clone(f),
+        tables_written: permit.tables_written(),
+        folders_written: permit.folders_written(),
+        files: folders::Readable::new(Arc::clone(f), permit),
+        databases: databases::Readable::new(Arc::clone(f), permit),
+    });
     waits.claiming = claim.map(|(cell, records)| {
         claims::Claiming::new(
             Arc::clone(cell),
             store.clone(),
             permit.collections_written(),
             permit.collections_read(),
+            shared,
             to_hex(&run_id),
             limits.claim_wait,
             records,

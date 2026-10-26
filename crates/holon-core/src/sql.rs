@@ -20,7 +20,7 @@
 //!   placeholders (`?`, `:name`); comments some engines read as code (`#`, `--x`, `/*!`); a
 //!   string with a backslash (engines differ on what it escapes).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What a statement touches, by table, and how many parameters it takes (the highest `$n`).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -57,6 +57,106 @@ pub fn tables(sql: &str, write: bool) -> Result<Tables, String> {
     }
     scan.found.params = tokens.iter().filter_map(|t| if let Tok::Param(n) = t.tok { Some(n) } else { None }).max().unwrap_or(0);
     Ok(scan.found)
+}
+
+/// The one table a statement touches, and the columns it pins to one value each, as `column = $n`
+/// (or `$n = column`) joined by `and` at the top of its `where`; for an insert, the columns its
+/// one row of values gives as `$n`. Column → the parameter's number. None when it touches more
+/// than one table, is a union, or has an `or` there: a host claims the row a pinned primary key
+/// names, and the whole table otherwise (docs/L4s/databases-L4.md §7.2).
+pub fn pins(sql: &str, write: bool) -> Option<(String, BTreeMap<String, usize>)> {
+    let found = tables(sql, write).ok()?;
+    let mut touched = found.reads.iter().chain(&found.writes).collect::<BTreeSet<_>>().into_iter();
+    let (Some(table), None) = (touched.next(), touched.next()) else { return None };
+    let tokens = tokenize(sql).ok()?;
+    let column = |t: &[Token]| -> Option<String> {
+        let name = |t: &Token| match &t.tok {
+            Tok::Word(_) => Some(t.lower.clone()),
+            Tok::Quoted(q) => Some(q.to_lowercase()),
+            _ => None,
+        };
+        match t {
+            [c] => name(c),
+            [_, dot, c] if dot.is(".") => name(c),
+            _ => None,
+        }
+    };
+    // Each token's depth in parentheses.
+    let mut depth = 0usize;
+    let depths: Vec<usize> = tokens
+        .iter()
+        .map(|t| {
+            if t.is(")") {
+                depth = depth.saturating_sub(1);
+            }
+            let d = depth;
+            if t.is("(") {
+                depth += 1;
+            }
+            d
+        })
+        .collect();
+    let top = |w: &str| tokens.iter().zip(&depths).position(|(t, d)| *d == 0 && t.is_word(w));
+    let mut pinned = BTreeMap::new();
+    if tokens.first().is_some_and(|t| t.is_word("insert") || t.is_word("replace")) {
+        // insert into t (a, b) values ($1, $2): one row, each column from one parameter.
+        let values = top("values")?;
+        let open = tokens.iter().position(|t| t.is("(")).filter(|&o| o < values);
+        let Some(open) = open else { return Some((table.clone(), pinned)) };
+        let names: Vec<Option<String>> = tokens[open + 1..].split(|t| t.is(")")).next()?.split(|t| t.is(",")).map(column).collect();
+        let close = (values + 2..tokens.len()).find(|&j| tokens[j].is(")") && depths[j] == 0)?;
+        if tokens.get(close + 1).is_some_and(|t| t.is(",")) {
+            return None;
+        }
+        let given: Vec<&[Token]> = tokens[values + 2..close].split(|t| t.is(",")).collect();
+        if !tokens.get(values + 1)?.is("(") || given.len() != names.len() {
+            return None;
+        }
+        for (name, value) in names.into_iter().zip(given) {
+            if let (Some(name), [Token { tok: Tok::Param(n), .. }]) = (name, value) {
+                pinned.insert(name, *n);
+            }
+        }
+        return Some((table.clone(), pinned));
+    }
+    if ["union", "except", "intersect"].iter().any(|w| top(w).is_some()) {
+        return None;
+    }
+    let Some(start) = top("where") else { return Some((table.clone(), pinned)) };
+    const ENDS: &[&str] = &["group", "order", "limit", "offset", "having", "window", "returning", "for", "fetch"];
+    let end = (start + 1..tokens.len()).find(|&j| depths[j] == 0 && tokens[j].word().is_some_and(|w| ENDS.contains(&w))).unwrap_or(tokens.len());
+    // Its conjuncts, split at each top-level `and` that isn't a `between`'s.
+    let mut conjuncts: Vec<&[Token]> = Vec::new();
+    let (mut from, mut between) = (start + 1, false);
+    for j in start + 1..end {
+        if depths[j] > 0 {
+            continue;
+        }
+        match tokens[j].word() {
+            Some("or") => return None,
+            Some("between") => between = true,
+            Some("and") if between => between = false,
+            Some("and") => {
+                conjuncts.push(&tokens[from..j]);
+                from = j + 1;
+            }
+            _ => {}
+        }
+    }
+    conjuncts.push(&tokens[from..end]);
+    for c in conjuncts {
+        let Some(eq) = c.iter().position(|t| t.is("=")) else { continue };
+        let (left, right) = (&c[..eq], &c[eq + 1..]);
+        let pin = match (left, right) {
+            (l, [Token { tok: Tok::Param(n), .. }]) => column(l).map(|c| (c, *n)),
+            ([Token { tok: Tok::Param(n), .. }], r) => column(r).map(|c| (c, *n)),
+            _ => None,
+        };
+        if let Some((c, n)) = pin {
+            pinned.insert(c, n);
+        }
+    }
+    Some((table.clone(), pinned))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -686,6 +786,26 @@ mod tests {
         assert_eq!(read("select 'from secret' as s from t -- from other\n").0, set(&["t"]));
         assert_eq!(read("select /* join secret */ x from t;").0, set(&["t"]));
         assert_eq!(read("select 'it''s' from t").0, set(&["t"]));
+    }
+
+    #[test]
+    fn a_where_pins_the_columns_it_sets_equal_to_parameters() {
+        let pins = |sql: &str, write: bool| pins(sql, write).map(|(t, p)| (t, p.into_iter().collect::<Vec<_>>()));
+        let pinned = |t: &str, p: &[(&str, usize)]| Some((t.to_string(), p.iter().map(|(c, n)| (c.to_string(), *n)).collect::<Vec<_>>()));
+        assert_eq!(pins("select id, total from orders where id = $1 and refunded = 0", false), pinned("orders", &[("id", 1)]));
+        assert_eq!(pins("select * from orders o where $2 = o.id and o.shop = $1 order by id limit 1", false), pinned("orders", &[("id", 2), ("shop", 1)]));
+        assert_eq!(pins("update orders set refunded = 1 where id = $1 and refunded = 0", true), pinned("orders", &[("id", 1)]));
+        assert_eq!(pins("delete from orders where \"Id\" = $3", true), pinned("orders", &[("id", 3)]));
+        assert_eq!(pins("select * from t where at between $1 and $2 and id = $3", false), pinned("t", &[("id", 3)]));
+        assert_eq!(pins("select * from t where (a = $1 or b = $2) and id = $3", false), pinned("t", &[("id", 3)]), "a group is one more condition");
+        assert_eq!(pins("select * from t where id > $1", false), pinned("t", &[]), "a range pins nothing");
+        assert_eq!(pins("select count(*) from t", false), pinned("t", &[]));
+        assert_eq!(pins("insert into refunds (order_id, amount, note) values ($1, $2, 'x')", true), pinned("refunds", &[("amount", 2), ("order_id", 1)]));
+        assert_eq!(pins("insert into t values ($1, $2)", true), pinned("t", &[]), "no column list: nothing known");
+        assert_eq!(pins("insert into t (a) values ($1), ($2)", true), None, "two rows");
+        assert_eq!(pins("select * from t where id = $1 or id = $2", false), None);
+        assert_eq!(pins("select * from a join b on a.id = b.id where a.id = $1", false), None, "two tables");
+        assert_eq!(pins("select * from t where id = $1 union select * from t where id = $2", false), None);
     }
 
     #[test]

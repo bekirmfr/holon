@@ -524,6 +524,35 @@ orders …` `DbWrite("shop/orders")`; the values after it are `$1`, `$2`, …, a
 The commit re-reads what the run read in the same transaction as its writes, and marks the run
 in the database's `holon_commits`. Design: `docs/L4s/databases-L4.md`.
 
+### refund-once: a row held while a run calls out
+
+```
+flow refund-once
+port 8151
+database shop
+
+route POST /refund/:id (req) {
+  order = shop.one("select id, total from orders where id = $1 and refunded = 0", req.params.id)
+  paid = http.post("httpbin.org", "/anything/refunds", headers: { "content-type": "application/json" }, body: json({ order: order.id, amount: order.total }))
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", order.id, expect: 1)
+  shop.exec("insert into refunds (order_id, amount, status) values ($1, $2, $3)", order.id, order.total, paid.status)
+  respond { refunded: order.total, payment: paid.status }, missing: 409
+}
+
+route GET /refunds/:id (req) {
+  respond shop.query("select amount, status from refunds where order_id = $1", req.params.id)
+}
+```
+
+A run that reads a row it may write and then calls out holds the row (`claims.rs`:
+`ClaimKey::Row`) from its first outbound call until it commits, as a collection's key is held: the
+second of two refunds at once waits at `http.post`, reads the order again when it is let go, finds
+no row, and runs again sending nothing. The row is the one a `where` pins by the table's whole
+primary key (core's `sql::pins`, the key read from the database); any other read holds the
+table, a file read the file, a listing the folder. These are held in the server's table, by the
+resource's real address, so two deployments bound to one database exclude each other. Design:
+`docs/L4s/databases-L4.md` §7.2.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.

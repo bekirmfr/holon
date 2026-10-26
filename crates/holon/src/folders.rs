@@ -180,6 +180,10 @@ pub(crate) struct Folders {
     /// The commit locks on its folders and databases, every deployment's runs in one table
     /// (locks.rs).
     pub(crate) locks: locks::Locks,
+    /// The claims on rows, tables, files and folders, every deployment's runs in one table: a
+    /// run that read one it may write holds it from its first outbound call until it commits
+    /// (claims.rs).
+    pub(crate) claims: claims::Claims,
     /// The databases bound on this server (databases.rs): the host's other resources a flow
     /// names, seen through a deployment's [`Scoped`] as its folders are.
     pub(crate) databases: databases::Databases,
@@ -232,6 +236,7 @@ impl Folders {
             bound: RwLock::new(Bound::default()),
             blobs: blobs::Blobs::memory(),
             locks: locks::Locks::default(),
+            claims: claims::Claims::default(),
             databases: databases::Databases::memory(),
         }
     }
@@ -688,6 +693,61 @@ impl Scoped {
             }
         }
         wanted
+    }
+
+    /// The claim a read of a folder this deployment may write takes: its file (read whole, by
+    /// handle or by range), or the whole folder (a listing). None for any other read, or a folder
+    /// it can't write or that isn't bound.
+    pub(crate) fn claim_of_read(&self, request: &Value, written: &BTreeSet<String>) -> Option<claims::ClaimKey> {
+        let Value::Record(q) = request else { return None };
+        let folder = text(q, "folder").filter(|f| written.contains(*f))?;
+        let file = ["read", "handle"].iter().find_map(|k| text(q, k)).or_else(|| {
+            ["lines", "slice"].iter().find_map(|k| match q.get(*k) {
+                Some(Value::Record(span)) => text(span, "name"),
+                _ => None,
+            })
+        });
+        match file {
+            Some(file) => self.file_claim(folder, file),
+            None => self.folder_claim(folder),
+        }
+    }
+
+    /// The claims the files a run writes, copies or deletes take: none waits for its own.
+    pub(crate) fn claims_of_writes(&self, performed: &[(Capability, Value)]) -> Vec<claims::ClaimKey> {
+        let mut keys = Vec::new();
+        for (cap, payload) in performed {
+            let Capability::FileWrite(folder) = cap else { continue };
+            let file = match payload {
+                Value::Text(name) => Some(name.as_str()),
+                Value::Record(file) => text(file, "name"),
+                _ => None,
+            };
+            keys.extend(match file {
+                Some(file) => self.file_claim(folder, file),
+                None => self.folder_claim(folder),
+            });
+        }
+        keys
+    }
+
+    /// Every folder it may read or write, whole.
+    pub(crate) fn whole_claims(&self, read: &BTreeSet<String>, written: &BTreeSet<String>) -> Vec<claims::ClaimKey> {
+        read.union(written).filter_map(|name| self.folder_claim(name)).collect()
+    }
+
+    /// The claim on the folder this deployment sees as `name`, by its real path, in lower case.
+    fn folder_claim(&self, name: &str) -> Option<claims::ClaimKey> {
+        let folder = self.get(name)?;
+        Some(claims::ClaimKey::Folder { at: folder.path.display().to_string().to_lowercase(), name: name.to_string() })
+    }
+
+    /// The claim on file `file` of the folder this deployment sees as `name`, by its path in lower
+    /// case (as its commit lock is: `file_locks`).
+    fn file_claim(&self, name: &str, file: &str) -> Option<claims::ClaimKey> {
+        let folder = self.get(name)?;
+        let at = folder.path.join(file.replace('/', std::path::MAIN_SEPARATOR_STR));
+        Some(claims::ClaimKey::File { at: at.display().to_string().to_lowercase(), name: name.to_string(), file: file.to_string() })
     }
 
     /// The locks a run takes for its whole length when it is run holding its deployment's state

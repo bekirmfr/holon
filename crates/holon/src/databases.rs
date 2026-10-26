@@ -24,6 +24,7 @@ use rouille::{Request, Response};
 use rusqlite::types::{Value as Sql, ValueRef};
 use rusqlite::{Connection, OpenFlags};
 
+use crate::claims::ClaimKey;
 use crate::folders::FolderAccess;
 use crate::http::{err, read_body};
 use crate::permissions::{DbLimits, Manifest, Permit};
@@ -280,6 +281,101 @@ fn names_in(reads: &[collections::Read], performed: &[(Capability, Value)]) -> B
         _ => None,
     });
     read.chain(written).collect()
+}
+
+// ── claims (docs/L4s/databases-L4.md §7.2) ──
+
+/// The claims a database read takes on each table it reads that this deployment may write
+/// (`written`, as `shop/orders`): the row its `where` pins by the table's whole primary key, or
+/// else the whole table.
+pub(crate) fn claims_of_read(folders: &folders::Scoped, request: &Value, written: &BTreeSet<String>) -> Vec<ClaimKey> {
+    let Value::Record(q) = request else { return Vec::new() };
+    let (Some(Value::Text(name)), Some(Value::Text(sql)), Some(Value::List(params))) = (q.get("database"), q.get("query"), q.get("params")) else {
+        return Vec::new();
+    };
+    claims_on(folders, name, sql, params, false).into_iter().filter(|k| written.contains(&format!("{name}/{}", table_of_key(k)))).collect()
+}
+
+/// The claims the statements a run sends take: the row each one's `where` pins (for an insert,
+/// the row its values name), or the whole table.
+pub(crate) fn claims_of_writes(folders: &folders::Scoped, performed: &[(Capability, Value)]) -> Vec<ClaimKey> {
+    let mut keys = Vec::new();
+    for (cap, payload) in performed {
+        let (Capability::DbWrite(t), Value::Record(e)) = (cap, payload) else { continue };
+        let (Some(Value::Text(sql)), Some(Value::List(params))) = (e.get("sql"), e.get("params")) else { continue };
+        keys.extend(claims_on(folders, t.split('/').next().unwrap_or(t), sql, params, true));
+    }
+    keys
+}
+
+/// Every table a deployment may read or write, whole.
+pub(crate) fn tables_of(folders: &folders::Scoped, permit: &Permit) -> Vec<ClaimKey> {
+    let tables: BTreeSet<String> = permit.tables_read().into_iter().chain(permit.tables_written()).collect();
+    tables
+        .iter()
+        .filter_map(|t| {
+            let (name, table) = t.split_once('/')?;
+            let d = folders.all.databases.resolve(&folders.deployment, name)?;
+            Some(ClaimKey::Table { at: d.path.display().to_string(), name: name.to_string(), table: table.to_string() })
+        })
+        .collect()
+}
+
+fn table_of_key(k: &ClaimKey) -> &str {
+    match k {
+        ClaimKey::Row { table, .. } | ClaimKey::Table { table, .. } | ClaimKey::NewRow { table, .. } => table,
+        _ => "",
+    }
+}
+
+/// The keys a statement on the database `name` takes: on each table it reads (`write`: writes),
+/// its row when the statement pins the table's primary key, else the table; an insert that
+/// doesn't name its row, a new row of the table.
+fn claims_on(folders: &folders::Scoped, name: &str, sql: &str, params: &[Value], write: bool) -> Vec<ClaimKey> {
+    let Some(d) = folders.all.databases.resolve(&folders.deployment, name) else { return Vec::new() };
+    let Ok(tables) = holon_core::sql::tables(sql, write) else { return Vec::new() };
+    let at = d.path.display().to_string();
+    let insert = write && sql.trim_start().get(..6).is_some_and(|w| w.eq_ignore_ascii_case("insert") || w.eq_ignore_ascii_case("replac"));
+    let row = holon_core::sql::pins(sql, write).and_then(|(table, pinned)| {
+        let key = primary_key(folders, &d, &table)?;
+        let values: Option<Vec<serde_json::Value>> = key.iter().map(|c| pinned.get(c).and_then(|n| params.get(n - 1)).map(claim_value)).collect();
+        Some((table, serde_json::Value::Array(values?).to_string()))
+    });
+    let touched = if write { &tables.writes } else { &tables.reads };
+    touched
+        .iter()
+        .map(|table| {
+            let (at, name, table) = (at.clone(), name.to_string(), table.clone());
+            match &row {
+                Some((t, key)) if *t == table => ClaimKey::Row { at, name, table, key: key.clone() },
+                _ if insert => ClaimKey::NewRow { at, name, table },
+                _ => ClaimKey::Table { at, name, table },
+            }
+        })
+        .collect()
+}
+
+/// The columns of `table`'s primary key, in order and in lower case; none for a table without
+/// one, or one that isn't there.
+fn primary_key(folders: &folders::Scoped, d: &Database, table: &str) -> Option<Vec<String>> {
+    let conn = folders.all.databases.connection(d).ok()?;
+    let conn = conn.lock().unwrap();
+    let (schema, table) = table.split_once('.').unwrap_or(("main", table));
+    let mut stmt = conn.prepare("select lower(name) from pragma_table_info(?1, ?2) where pk > 0 order by pk").ok()?;
+    let columns: Vec<String> = stmt.query_map(rusqlite::params![table, schema], |r| r.get(0)).ok()?.collect::<Result<_, _>>().ok()?;
+    (!columns.is_empty()).then_some(columns)
+}
+
+/// A key's value as a claim compares it: a whole number, from a number or a text that is one;
+/// any other text in lower case. Two values a column could hold as one row are one key.
+fn claim_value(v: &Value) -> serde_json::Value {
+    match v {
+        Value::Number(n) if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 => serde_json::json!(*n as i64),
+        Value::Text(t) if t.trim().parse::<i64>().is_ok() => serde_json::json!(t.trim().parse::<i64>().unwrap()),
+        Value::Text(t) => serde_json::json!(t.to_lowercase()),
+        Value::Boolean(b) => serde_json::json!(i64::from(*b)),
+        other => serde_json::json!(holon_core::stringify_json(other).unwrap_or_default().to_lowercase()),
+    }
 }
 
 // ── values ──
@@ -860,6 +956,55 @@ mod tests {
         assert_eq!(dbs.resolve("billing", "shop").unwrap().access, FolderAccess::Read, "a deployment's own binding wins");
         assert!(dbs.unbind("shop", Some("billing")).unwrap());
         drop((conn, dbs));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A read that pins a table's whole primary key claims its row; any other, the table; an
+    /// insert claims the row it names, or a new row (docs/L4s/databases-L4.md §7.2). A table the
+    /// deployment can't write is never claimed.
+    #[test]
+    fn a_primary_key_read_claims_its_row_and_any_other_the_table() {
+        let dir = temp("claims");
+        let dbs = Databases::open(":memory:", &[]).unwrap();
+        let file = dir.join("shop.db");
+        let schema = "create table orders (id integer primary key, customer text); create table lines (order_id integer, n integer, primary key (order_id, n)); create table notes (text text)";
+        dbs.bind("shop", file.to_str().unwrap(), FolderAccess::ReadWrite, Some(schema), None).unwrap();
+        let folders = folders::Scoped::new(Arc::new(folders::Folders::memory().with_databases(dbs)), "d");
+        let written: BTreeSet<String> = ["shop/orders", "shop/lines", "shop/notes"].map(String::from).into();
+        let read = |sql: &str, params: Vec<Value>| -> Vec<String> {
+            let mut request = BTreeMap::new();
+            request.insert("database".to_string(), Value::Text("shop".into()));
+            request.insert("query".to_string(), Value::Text(sql.into()));
+            request.insert("params".to_string(), Value::List(params));
+            claims_of_read(&folders, &Value::Record(request), &written).iter().map(ToString::to_string).collect()
+        };
+        let n = |x: f64| Value::Number(x);
+        assert_eq!(read("select * from orders where id = $1 and customer = $2", vec![Value::Text("7".into()), Value::Text("ada".into())]), ["shop/orders[7]"]);
+        assert_eq!(read("select * from orders where id = $1", vec![n(7.0)]), ["shop/orders[7]"], "7 and \"7\" are one row");
+        assert_eq!(read("select * from orders where customer = $1", vec![Value::Text("ada".into())]), ["shop/orders[*]"]);
+        assert_eq!(read("select * from orders where id > $1", vec![n(1.0)]), ["shop/orders[*]"]);
+        assert_eq!(read("select * from lines where order_id = $1 and n = $2", vec![n(7.0), n(2.0)]), ["shop/lines[7,2]"]);
+        assert_eq!(read("select * from lines where order_id = $1", vec![n(7.0)]), ["shop/lines[*]"], "half a key is the table");
+        assert_eq!(read("select * from notes where rowid = $1", vec![n(1.0)]), ["shop/notes[*]"], "no primary key: the table");
+        assert_eq!(read("select * from orders o join lines l on l.order_id = o.id where o.id = $1", vec![n(7.0)]), ["shop/lines[*]", "shop/orders[*]"]);
+        let only_orders: BTreeSet<String> = ["shop/orders".to_string()].into();
+        let mut request = BTreeMap::new();
+        request.insert("database".to_string(), Value::Text("shop".into()));
+        request.insert("query".to_string(), Value::Text("select * from orders o join lines l on l.order_id = o.id".into()));
+        request.insert("params".to_string(), Value::List(vec![]));
+        let keys: Vec<String> = claims_of_read(&folders, &Value::Record(request), &only_orders).iter().map(ToString::to_string).collect();
+        assert_eq!(keys, ["shop/orders[*]"], "a table it can't write is never claimed");
+        let exec = |sql: &str, params: Vec<Value>| -> Vec<String> {
+            let mut payload = BTreeMap::new();
+            payload.insert("sql".to_string(), Value::Text(sql.into()));
+            payload.insert("params".to_string(), Value::List(params));
+            claims_of_writes(&folders, &[(Capability::DbWrite("shop/orders".into()), Value::Record(payload))]).iter().map(ToString::to_string).collect()
+        };
+        assert_eq!(exec("update orders set customer = $2 where id = $1", vec![n(7.0), Value::Text("b".into())]), ["shop/orders[7]"]);
+        assert_eq!(exec("insert into orders (id, customer) values ($1, $2)", vec![n(9.0), Value::Text("b".into())]), ["shop/orders[9]"]);
+        assert_eq!(exec("insert into orders (customer) values ($1)", vec![Value::Text("b".into())]), ["shop/orders[new]"]);
+        assert_eq!(exec("delete from orders where customer = $1", vec![Value::Text("b".into())]), ["shop/orders[*]"]);
+        drop(folders);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -63,7 +63,7 @@ can change both columns ([Server configuration](server.md#the-policy)).
 | `request_timeout_ms` | time for an outbound request | 30000 | 300000 |
 | `run_budget_ms` | time a request's run may take | 25000 | 900000 |
 | `clock_run_budget_ms` | time a clock run, or a run on a new file, may take | 60000 | 900000 |
-| `claim_wait_ms` | time a run waits for a key another run holds | 10000 | 60000 |
+| `claim_wait_ms` | time a run waits for a key, row or file another run holds | 10000 | 60000 |
 | `commit_wait_ms` | time a run's commit waits for the locks on files (or a folder, or a database) another run's commit holds | 2000 | 30000 |
 | `max_requests` | outbound requests per run | 50 | 1000 |
 | `per_host_concurrency` | outbound requests to one host at once | 6 | 32 |
