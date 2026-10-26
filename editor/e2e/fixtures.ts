@@ -1,17 +1,24 @@
-// The tests against the main test server (7520) start signed in as its admin: e2e/server.mjs
-// sets that server up with a known setup code and this admin, and every page here begins with
-// that admin's session in the browser, as signing in leaves it (server.ts's holon.session).
+// The tests against the main test server start signed in as its admin: e2e/server.mjs sets that
+// server up with a known setup code and this admin, and every page here begins with that admin's
+// session in the browser, as signing in leaves it (server.ts's holon.session). Ports, and the
+// folder of run files, are the run's slot's (ports.mjs).
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as base, expect } from "@playwright/test";
+import { PORTS, RUN_DIR, SAMPLE_SHIFT } from "./ports.mjs";
 
-export const SERVER = "http://127.0.0.1:7520";
-/** Where the test servers write their run files (local.rs), never the developer's ~/.holon/run. */
-export const RUN_DIR = join(tmpdir(), "holon-e2e-run");
+export { PORTS, RUN_DIR, SAMPLE_SHIFT };
+export const SERVER = `http://127.0.0.1:${PORTS.server}`;
+/** The server left as installed, for the accounts tests (accounts.e2e.ts). */
+export const FRESH = `http://127.0.0.1:${PORTS.fresh}`;
+/** The editor pointed at it. */
+export const FRESH_EDITOR = `http://localhost:${PORTS.accountsEditor}`;
+/** The stand-in identity provider (mock-oidc.mjs). */
+export const ISSUER = `http://127.0.0.1:${PORTS.oidc}`;
 /** The folders the main test server binds (server.mjs) for the inbox-report and log-archive samples: outside its
  *  data, as an admin binds them. */
-export const FOLDERS = join(tmpdir(), "holon-e2e-folders-7520");
+export const FOLDERS = join(tmpdir(), `holon-e2e-folders-${PORTS.server}`);
 export const ADMIN = { name: "e2e", password: "e2e-password-0123" };
 
 export const test = base.extend<{ adminToken: string }>({

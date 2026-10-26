@@ -1,10 +1,10 @@
 // An isolated Holon server (`holon serve`) for the end-to-end tests: its store, deployments, flows, secrets and
-// keys in a fresh temporary folder, its control plane on 127.0.0.1:7520, so it never touches a
+// keys in a fresh temporary folder, its control plane on 127.0.0.1:7520 (the slot's, ports.mjs), so it never touches a
 // developer's own server or state, and everything it wrote goes when it stops. Built first and
 // run as its own binary (not through `cargo run`), so stopping it stops the server itself.
 //
 // Its setup code is fixed (HOLON_SETUP_CODE), and once it answers it is set up with the tests'
-// admin (fixtures.ts). `node e2e/server.mjs --fresh` starts another on 7521 left as installed,
+// admin (fixtures.ts). `node e2e/server.mjs --fresh` starts another on 7521 (likewise) left as installed,
 // not set up: the accounts tests (accounts.e2e.ts) set it up through the editor, and sign in
 // through the stand-in identity provider (mock-oidc.mjs) once its admin panel says to.
 
@@ -13,9 +13,10 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PORTS, RUN_DIR } from "./ports.mjs";
 
 const fresh = process.argv.includes("--fresh");
-const port = fresh ? 7521 : 7520;
+const port = fresh ? PORTS.fresh : PORTS.server;
 export const SETUP_CODE = "E2E0-SETUP";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 execFileSync("cargo", ["build", "-p", "holon"], { cwd: root, stdio: "inherit" });
@@ -26,8 +27,8 @@ for (const old of readdirSync(tmpdir()).filter((d) => d.startsWith(`holon-e2e-${
   rmSync(join(tmpdir(), old), { recursive: true, force: true });
 }
 const dir = mkdtempSync(join(tmpdir(), `holon-e2e-${port}-`));
-// Its run file (local.rs) goes beside the other test server's, not into ~/.holon/run (fixtures.ts).
-const runDir = join(tmpdir(), "holon-e2e-run");
+// Its run file (local.rs) goes beside the other test server's, not into ~/.holon/run (ports.mjs).
+const runDir = RUN_DIR;
 // Its own ~/.holon, so nothing it doesn't name (its policy, say) is read from the real one.
 const holonHome = join(dir, "home");
 // CARGO_TARGET_DIR, when set, is where cargo put it (e.g. to build beside a dev server holding

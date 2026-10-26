@@ -1,13 +1,15 @@
 // A stand-in identity provider for the end-to-end tests: just enough OpenID Connect for the
-// editor to sign in through it and holon-server to check what it signs. On 127.0.0.1:7530, it
-// publishes its discovery document and its key (an RSA key made at startup, never kept), shows a
-// page to pick who to sign in as (no passwords: it is a test fixture), and trades the code for an
-// ID token once the PKCE verifier matches. Nothing here is fit for anything but tests.
+// editor to sign in through it and holon-server to check what it signs. On 127.0.0.1:7530 (the
+// slot's, ports.mjs), it publishes its discovery document and its key (an RSA key made at startup,
+// never kept), shows a page to pick who to sign in as (no passwords: it is a test fixture), and
+// trades the code for an ID token once the PKCE verifier matches. Nothing here is fit for anything
+// but tests.
 
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
+import { PORTS } from "./ports.mjs";
 
-const PORT = 7530;
+const PORT = PORTS.oidc;
 const ISSUER = `http://127.0.0.1:${PORT}`;
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "e2e", alg: "RS256", use: "sig" };

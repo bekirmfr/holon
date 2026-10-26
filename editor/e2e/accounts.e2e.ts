@@ -1,13 +1,12 @@
 // Accounts, from installing a server onwards (holon-server's accounts.rs, access.rs, auth.rs; the
-// editor's AuthGate.tsx, AdminPage.tsx), on a server left as installed (7521) and the editor
-// pointed at it (5274): set up with the code it prints, people invited and joining by link,
+// editor's AuthGate.tsx, AdminPage.tsx), on a server left as installed (7521 on slot 0, ports.mjs)
+// and the editor pointed at it (5274): set up with the code it prints, people invited and joining by link,
 // each role doing what it may, an API token, and signing in through an identity provider set
 // in the admin panel (the stand-in on 7530). In order: each step builds on the one before.
 
 import { expect, test, type Browser, type Page } from "@playwright/test";
+import { FRESH as SERVER, FRESH_EDITOR as EDITOR, ISSUER } from "./fixtures";
 
-const EDITOR = "http://localhost:5274";
-const SERVER = "http://127.0.0.1:7521";
 const PASSWORD = "a long enough password";
 
 test.describe.configure({ mode: "serial" });
@@ -135,21 +134,21 @@ test("signing in through the identity provider an admin set, matched by email", 
   await fill(ada, "password", PASSWORD);
   await ada.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
   await ada.getByRole("button", { name: "admin", exact: true }).click();
-  await ada.getByLabel("issuer").fill("http://127.0.0.1:7530");
+  await ada.getByLabel("issuer").fill(ISSUER);
   await ada.getByLabel("client id").fill("holon-e2e");
   await ada.getByRole("button", { name: "turn on" }).click();
-  await expect(ada.getByText("on: http://127.0.0.1:7530 as holon-e2e")).toBeVisible();
+  await expect(ada.getByText(`on: ${ISSUER} as holon-e2e`)).toBeVisible();
 
   const cy = await someoneElse(browser);
   await cy.goto(EDITOR);
-  await cy.getByRole("button", { name: "sign in through 127.0.0.1:7530" }).click();
+  await cy.getByRole("button", { name: `sign in through ${new URL(ISSUER).host}` }).click();
   await cy.getByRole("link", { name: "sign in as cy@example.com" }).click();
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
 
   // Someone the provider vouches for, without an account here, is refused.
   const eve = await someoneElse(browser);
   await eve.goto(EDITOR);
-  await eve.getByRole("button", { name: "sign in through 127.0.0.1:7530" }).click();
+  await eve.getByRole("button", { name: `sign in through ${new URL(ISSUER).host}` }).click();
   await eve.getByRole("link", { name: "sign in as eve@example.com" }).click();
   await expect(eve.getByRole("form", { name: "sign in" }).getByRole("alert")).toContainText("has no account here");
 });
