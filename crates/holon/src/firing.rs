@@ -562,6 +562,8 @@ fn run_attempt(
     });
     // A file as a request's body is sent from a folder the deployment reads.
     let forward = waits.forward.clone();
+    let (slug, run, chain) = (waits.slug.clone().unwrap_or_default(), waits.run_id.clone().unwrap_or_default(), waits.chain.clone());
+    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain };
     let sender = folders::Sender {
         outbound: &permit.outbound,
         folders: waits.folders.clone(),
@@ -569,6 +571,7 @@ fn run_attempt(
         forward: forward.as_ref(),
         channels: waits.channels.clone(),
         sends: permit.channels_sent(),
+        calls: Some(&caller),
     };
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);

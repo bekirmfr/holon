@@ -99,6 +99,12 @@ impl Limits {
 /// every outcome is a response. `&self` and `Sync`, so a round's requests can go out at once.
 pub trait Performer: Sync {
     fn perform(&self, request: &Value, limits: &Limits) -> Value;
+
+    /// The same, told the path of the node that asks (in the run's root unit), for a performer
+    /// that answers by what the node was fed. It answers as `perform` does unless it says otherwise.
+    fn perform_at(&self, _path: &[u32], request: &Value, limits: &Limits) -> Value {
+        self.perform(request, limits)
+    }
 }
 
 /// One request a run made, and what came back.
@@ -386,6 +392,9 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
 }
 
 /// Perform a round's requests: hosts in parallel, at most `per_host_concurrency` at once to each.
+/// A call to another flow's action (`{flow, action, input}`) is grouped by the flow, and made one
+/// at a time, in the order of the nodes that ask: it changes things there, so two calls to one
+/// flow don't race.
 fn perform_all(
     pending: Vec<(Vec<u32>, Value)>,
     performer: &impl Performer,
@@ -399,18 +408,23 @@ fn perform_all(
     let us = |t: Instant| t.duration_since(started).as_secs_f64() * 1e6;
     let mut exchanges: Vec<Exchange> = std::thread::scope(|scope| {
         let per_host: Vec<_> = by_host
-            .into_values()
-            .map(|requests| {
+            .into_iter()
+            .map(|(host, mut requests)| {
+                let one_at_a_time = host.starts_with(FLOW_GROUP);
+                if one_at_a_time {
+                    requests.sort_by(|a, b| a.0.cmp(&b.0));
+                }
                 scope.spawn(move || {
                     let mut done = Vec::new();
-                    for batch in requests.chunks(limits.per_host_concurrency.max(1)) {
+                    let width = if one_at_a_time { 1 } else { limits.per_host_concurrency.max(1) };
+                    for batch in requests.chunks(width) {
                         std::thread::scope(|inner| {
                             let handles: Vec<_> = batch
                                 .iter()
                                 .map(|(path, request)| {
                                     inner.spawn(move || {
                                         let t0 = Instant::now();
-                                        let response = performer.perform(request, limits);
+                                        let response = performer.perform_at(path, request, limits);
                                         Exchange {
                                             path: path.clone(),
                                             request: request.clone(),
@@ -435,8 +449,16 @@ fn perform_all(
     exchanges
 }
 
-/// The `host[:port]` of a request's URL, for grouping.
+/// What a group of calls to one flow's actions is called, beside the hosts the others are grouped by.
+const FLOW_GROUP: &str = "flow:";
+
+/// The `host[:port]` of a request's URL, for grouping; `flow:<name>` for a call to a flow.
 fn host_of(request: &Value) -> String {
+    if let Value::Record(r) = request
+        && let (Some(Value::Text(flow)), Some(Value::Text(_))) = (r.get("flow"), r.get("action"))
+    {
+        return format!("{FLOW_GROUP}{flow}");
+    }
     let url = match request {
         Value::Record(r) => match r.get("url") {
             Some(Value::Text(u)) => u.as_str(),
@@ -798,5 +820,46 @@ mod tests {
         assert_eq!(exchanges.len(), 7);
         assert!(*counting.peak.lock().unwrap() <= 3, "peak {}", counting.peak.lock().unwrap());
         assert_eq!(exchanges.iter().map(|x| x.path[0]).collect::<Vec<_>>(), (0..7).collect::<Vec<_>>());
+    }
+
+    /// Calls to one flow's actions change things there: they go one at a time, in the order of the
+    /// nodes that ask, however many the host's concurrency allows (docs/L4s/triggers-L4.md §9).
+    #[test]
+    fn calls_to_one_flow_go_one_at_a_time_in_order() {
+        struct Ordered {
+            now: Mutex<usize>,
+            peak: Mutex<usize>,
+            seen: Mutex<Vec<String>>,
+        }
+        impl Performer for Ordered {
+            fn perform(&self, request: &Value, _: &Limits) -> Value {
+                let Value::Record(r) = request else { panic!() };
+                {
+                    let mut n = self.now.lock().unwrap();
+                    *n += 1;
+                    let mut p = self.peak.lock().unwrap();
+                    *p = (*p).max(*n);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+                *self.now.lock().unwrap() -= 1;
+                let Some(Value::Text(action)) = r.get("action") else { panic!() };
+                self.seen.lock().unwrap().push(action.clone());
+                record(&[("answer", Value::Number(1.0))])
+            }
+        }
+        let call = |flow: &str, action: &str| record(&[("flow", txt(flow)), ("action", txt(action)), ("input", record(&[]))]);
+        // Asked out of order: the nodes' paths say the order.
+        let pending = vec![
+            (vec![2], call("billing", "c")),
+            (vec![0], call("billing", "a")),
+            (vec![1], call("billing", "b")),
+        ];
+        let performer = Ordered { now: Mutex::new(0), peak: Mutex::new(0), seen: Mutex::new(vec![]) };
+        let exchanges = perform_all(pending, &performer, &Limits::request_run(), Instant::now());
+        assert_eq!(exchanges.len(), 3);
+        assert_eq!(*performer.peak.lock().unwrap(), 1, "one at a time");
+        assert_eq!(*performer.seen.lock().unwrap(), ["a", "b", "c"], "in the order of the nodes");
+        assert_eq!(host_of(&call("billing", "a")), "flow:billing");
+        assert_eq!(host_of(&call("ledger", "a")), "flow:ledger", "a group for each flow");
     }
 }

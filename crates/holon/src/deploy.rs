@@ -739,7 +739,7 @@ pub(crate) fn handle_post_trigger(
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
     let started = started_now();
-    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
 
@@ -786,51 +786,105 @@ pub(crate) fn handle_post_action(
     by: Option<&str>,
     agent: bool,
 ) -> Response {
-    let (action, state, permit, vault, folders, channels) = {
-        let deployments = deployments.lock().unwrap();
-        let Some(dep) = deployments.get(slug) else { return Response::empty_404() };
-        if dep.life.status != Status::Running {
-            return err(409, format!("{slug:?} is {}", status_word(dep.life.status)));
-        }
-        let Some(action) = dep.server.as_ref().and_then(|s| s.action(name)) else {
-            return err(404, format!("{slug:?} has no action {name:?}"));
-        };
-        // An agent runs only what its grant lets agents run, as a person granted it.
-        if agent && !dep.grant.items.contains(&format!("AgentRuns({name:?})")) {
-            return err(403, format!("agents may not run {slug:?}'s action {name:?}: a person lets them, under \"agents may run\" in its deploy settings, and approves it"));
-        }
-        (action.clone(), dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
-    };
     let bytes = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
     };
-    let Ok(text) = String::from_utf8(bytes) else { return err(400, "what is sent to an action is JSON, and this isn't UTF-8 text") };
-    let input = if text.trim().is_empty() {
-        Value::Record(Default::default())
-    } else {
-        match holon_core::parse_json(&text) {
-            Some(v) => v,
-            None => return err(400, "what is sent to an action is JSON, and this isn't"),
+    let input = String::from_utf8(bytes).map_err(|_| "what is sent to an action is JSON, and this isn't UTF-8 text".to_string()).and_then(|text| {
+        if text.trim().is_empty() {
+            Ok(Value::Record(Default::default()))
+        } else {
+            holon_core::parse_json(&text).ok_or_else(|| "what is sent to an action is JSON, and this isn't".to_string())
         }
+    });
+    let ran = run_action(store, deployments, deployments_path, slug, name, input, by, agent, &[]);
+    if ran.status == 404 && ran.reply.is_null() {
+        return Response::empty_404();
+    }
+    Response::json(&ran.reply).with_status_code(ran.status)
+}
+
+/// What running an action came to: the reply a caller over HTTP gets, and, for a flow's call, the
+/// answer as a value and the run's number (docs/L4s/triggers-L4.md §9).
+pub(crate) struct ActionRan {
+    pub(crate) status: u16,
+    /// `{answer, seq}`; a run that waits, `{answer: null, seq, waiting: true}`; why it didn't run,
+    /// `{error}`; no deployment, `null` with a 404.
+    pub(crate) reply: serde_json::Value,
+    /// What it answered, as the reply says it (redacted as it is): none for an action that only
+    /// writes, or that didn't run.
+    pub(crate) answer: Option<Value>,
+    /// The run's number in the deployment's log, when it ran.
+    pub(crate) seq: Option<u64>,
+    /// It parked at an `await`: the run goes on when the event arrives.
+    pub(crate) waiting: bool,
+    /// Why it didn't answer, in words.
+    pub(crate) error: Option<String>,
+    /// Which refusal or failure it was, for a flow's call to say as `error`.
+    pub(crate) why: Option<&'static str>,
+}
+
+impl ActionRan {
+    fn refused(status: u16, why: &'static str, message: impl Into<String>) -> ActionRan {
+        let message = message.into();
+        ActionRan { status, reply: serde_json::json!({ "error": message }), answer: None, seq: None, waiting: false, error: Some(message), why: Some(why) }
+    }
+}
+
+/// Run the deployment `slug`'s action `name` with `input` (or why that isn't one: a 400), as `by`,
+/// and say what came of it. `chain` is the flows whose calls led here, the first being the caller
+/// that started it (empty for a person's or an agent's run): the run carries it, so a flow called
+/// down a chain can't call one already in it, and the chain can't run past `max_call_depth`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_action(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    slug: &str,
+    name: &str,
+    input: Result<Value, String>,
+    by: Option<&str>,
+    agent: bool,
+    chain: &[String],
+) -> ActionRan {
+    let (action, state, permit, vault, folders, channels) = {
+        let deployments = deployments.lock().unwrap();
+        let Some(dep) = deployments.get(slug) else {
+            return ActionRan { status: 404, reply: serde_json::Value::Null, answer: None, seq: None, waiting: false, error: Some(format!("no deployment {slug:?}")), why: Some("not_found") };
+        };
+        if dep.life.status != Status::Running {
+            return ActionRan::refused(409, "not_running", format!("{slug:?} is {}", status_word(dep.life.status)));
+        }
+        let Some(action) = dep.server.as_ref().and_then(|s| s.action(name)) else {
+            return ActionRan::refused(404, "no_action", format!("{slug:?} has no action {name:?}"));
+        };
+        // An agent runs only what its grant lets agents run, as a person granted it.
+        if agent && !dep.grant.items.contains(&format!("AgentRuns({name:?})")) {
+            return ActionRan::refused(403, "refused", format!("agents may not run {slug:?}'s action {name:?}: a person lets them, under \"agents may run\" in its deploy settings, and approves it"));
+        }
+        (action.clone(), dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
+    };
+    let input = match input {
+        Ok(input) => input,
+        Err(why) => return ActionRan::refused(400, "bad_input", why),
+    };
+    let failed_to_start = |message: String| {
+        record_trigger(deployments, slug, true);
+        ActionRan::refused(500, "failed", message)
     };
     let resolver = match materialize_closure(store, action.handler) {
         Ok(r) => r,
-        Err(e) => {
-            record_trigger(deployments, slug, true);
-            return err(500, format!("store error while materializing closure: {e:?}"));
-        }
+        Err(e) => return failed_to_start(format!("store error while materializing closure: {e:?}")),
     };
     let Some(handler) = resolver.resolve(&action.handler) else {
-        record_trigger(deployments, slug, true);
-        return err(500, "the action's handler no longer resolves in the store");
+        return failed_to_start("the action's handler no longer resolves in the store".into());
     };
 
     let epoch_seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, Value::Number(rand::random::<f64>()))];
     let started = started_now();
     let inputs = [Some(input.clone())];
-    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
 
@@ -862,13 +916,18 @@ pub(crate) fn handle_post_action(
     if state.is_some() || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
+    let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq: Some(seq), waiting, error, why };
     if error {
-        return err(500, format!("the action failed: its run log says why (entry {seq})"));
+        let message = format!("the action failed: its run log says why (entry {seq})");
+        return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
     }
     if parked_any {
-        return Response::json(&serde_json::json!({ "answer": null, "seq": seq, "waiting": true })).with_status_code(202);
+        return ran(202, serde_json::json!({ "answer": null, "seq": seq, "waiting": true }), None, true, None, Some("waiting"));
     }
-    let Some(answer_json) = answer_json else { return err(500, "the action's answer has no JSON form") };
+    let Some(answer_json) = answer_json else {
+        let message = "the action's answer has no JSON form".to_string();
+        return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
+    };
     let answer: serde_json::Value = if run.secret_fed.derives_output(0) {
         serde_json::Value::String(crate::taint::WITHHELD.to_string())
     } else {
@@ -877,7 +936,11 @@ pub(crate) fn handle_post_action(
     let mut reply = if (200..300).contains(&status) { serde_json::json!({ "answer": answer, "seq": seq }) } else { answer };
     Redactor::of(&vault).json(&mut reply);
     Redactor::tokens(&waits.tokens).json(&mut reply);
-    Response::json(&reply).with_status_code(status)
+    // What a flow's call is answered with: the reply's answer, as it was redacted.
+    let said = reply.get("answer").filter(|a| !a.is_null()).and_then(|a| holon_core::parse_json(&a.to_string()));
+    let message = (!(200..300).contains(&status)).then(|| format!("the action answered {status}"));
+    let why = message.as_ref().map(|_| "failed");
+    ran(status, reply, said, false, message, why)
 }
 
 /// `GET /deployments/<slug>/log?after=<seq>&limit=<n>` — the flow log past `after` (all of it
