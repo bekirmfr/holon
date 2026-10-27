@@ -14,6 +14,9 @@
 //! - The file records a check value derived from the key (never the key), so a wrong key is
 //!   told apart from a damaged file, and neither ever starts the server on an empty store that
 //!   would overwrite the real one.
+//! - A value's fingerprint, which the log shows in its place, is keyed by another key derived
+//!   from the master key: the same value has the same one, and without the key a guess can't be
+//!   checked against it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -29,12 +32,15 @@ pub(crate) type MasterKey = Zeroizing<[u8; 32]>;
 pub(crate) struct Sealer {
     cipher: Aes256Gcm,
     check: String,
+    /// What fingerprints are keyed by: derived from the master key, never it.
+    prints: Zeroizing<[u8; 32]>,
 }
 
 impl Sealer {
     pub(crate) fn new(key: &MasterKey) -> Sealer {
         let check = blake3::keyed_hash(key, b"holon secrets key check").to_hex()[..16].to_string();
-        Sealer { cipher: Aes256Gcm::new(key.as_slice().into()), check }
+        let prints = Zeroizing::new(blake3::derive_key("holon secrets fingerprints", key.as_slice()));
+        Sealer { cipher: Aes256Gcm::new(key.as_slice().into()), check, prints }
     }
 
     /// A sealer under a fresh key that is never stored: an in-memory store's.
@@ -45,6 +51,12 @@ impl Sealer {
     /// The value the file records to recognise this key by. It reveals nothing about the key.
     pub(crate) fn check(&self) -> &str {
         &self.check
+    }
+
+    /// `value`'s fingerprint: 8 hex, keyed by this key, so the log can tell which value a run had
+    /// without holding it.
+    pub(crate) fn fingerprint(&self, value: &str) -> String {
+        blake3::keyed_hash(&self.prints, value.as_bytes()).to_hex()[..8].to_string()
     }
 
     /// `plain` sealed for `context` (slug, name and version): (nonce, ciphertext), hex.

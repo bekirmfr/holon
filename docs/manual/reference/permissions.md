@@ -54,6 +54,10 @@ Without `PrivateAddresses`, a call is refused when the host resolves to a privat
 (loopback, the private ranges, link-local and cloud metadata addresses, and their IPv6 forms),
 checked after DNS, on every redirect.
 
+A redirect is followed only to a host the deployment may call. To another host than the first,
+only `content-type`, `accept`, `accept-language` and `user-agent` go along: the flow's other
+headers (`authorization`, an API key) stay with the host they were meant for.
+
 ## Limits
 
 A deployment runs within limits. Each has a default, which is granted without asking, and a

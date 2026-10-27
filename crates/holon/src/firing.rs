@@ -95,6 +95,10 @@ pub(crate) struct FiredRun {
     pub(crate) claims: Vec<claims::ClaimRecord>,
     /// The nodes a secret reaches (taint.rs): what its log entry keeps none of, or withholds.
     pub(crate) secret_fed: taint::SecretFed,
+    /// The secrets it was given, by name: the version and fingerprint of each (`v3 #a1b2c3d4`).
+    pub(crate) secrets: BTreeMap<String, String>,
+    /// The credentials its calls answered to requests that held a secret (`secrets::answered_tokens`).
+    pub(crate) answered: recorder::AnswerTokens,
 }
 
 /// How many times a run is tried without holding its state's lock before it runs holding it.
@@ -519,12 +523,16 @@ fn run_attempt(
     sourced.extend_from_slice(extra_sourced);
     // The secrets it was granted. Not part of the run's input record (nor its id): a log never
     // holds them, and a replay stands a placeholder in.
-    for (name, value) in secrets.lock().unwrap().current.iter() {
+    let mut given = BTreeMap::new();
+    let vault = secrets.lock().unwrap();
+    for (name, value) in vault.current.iter() {
         let cap = Capability::SecretRead(name.clone());
         if permit.allows(&cap) {
             sourced.push((cap, Value::Text(value.to_string())));
+            given.extend(vault.shown.get(name).map(|shown| (name.clone(), shown.clone())));
         }
     }
+    drop(vault);
 
     // Which nodes compute with a secret it was granted, for its log entry.
     let secret_fed = if sourced.iter().any(|(c, _)| matches!(c, Capability::SecretRead(_))) {
@@ -581,6 +589,10 @@ fn run_attempt(
     if failed_read.is_some() {
         host.performed.clear();
     }
+    // The credentials the calls that sent a secret were answered with: kept out of the log by
+    // their value, and out of what is written, as the secret is.
+    let answered = secrets::answered_tokens(&outcome.rounds, secrets, &secret_fed);
+    let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| s.contains(v.as_str()))).map(|(name, _)| name.clone());
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, or something computed from one (taint.rs), which would put it on
     // disk and in every later snapshot, and a copy from a folder the deployment doesn't read (a
@@ -597,13 +609,19 @@ fn run_attempt(
             eprintln!("holon: refused {cap:?}: a copy from the folder {from:?}, which this deployment doesn't read");
             return false;
         }
-        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) = cap {
+        // A file too: another deployment that reads it logs its text, redacted only of its own
+        // secrets, and a part of it read is kept as it is.
+        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::FileWrite(key) = cap {
             if let Some(name) = secrets::secret_in(payload, secrets) {
                 eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
                 return false;
             }
             if secret_fed.derives_effect(cap) {
                 eprintln!("holon: refused to store or send in {key:?} what is computed from a secret");
+                return false;
+            }
+            if let Some(name) = holds_answered(payload) {
+                eprintln!("holon: refused to store or send in {key:?} the credential a call answered ({name})");
                 return false;
             }
         }
@@ -622,7 +640,7 @@ fn run_attempt(
     // go out as it parks, held to the same grant, secrets and limits as any run's.
     let mut progress = if outcome.waiting.is_empty() || outcome.error.is_some() { Vec::new() } else { channels::settled_sends(&outcome.outputs) };
     progress.retain(|(cap, payload)| {
-        let sends = permit.allows(cap) && secrets::secret_in(payload, secrets).is_none() && !secret_fed.derives_effect(cap);
+        let sends = permit.allows(cap) && secrets::secret_in(payload, secrets).is_none() && !secret_fed.derives_effect(cap) && holds_answered(payload).is_none();
         if !sends {
             eprintln!("holon: refused {cap:?} as the run waits: not granted, or carrying a secret or what is computed from one");
         }
@@ -654,6 +672,8 @@ fn run_attempt(
         retries: 0,
         claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
         secret_fed,
+        secrets: given,
+        answered: recorder::AnswerTokens(answered),
     };
     Attempt { run, start, overtaken }
 }
@@ -748,7 +768,8 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
 /// `tokens` (the run's), in one pass, so that the log's marks are only ever its own.
 pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor) {
     if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
-        tokens.and(Redactor::of(&dep.secrets)).entry(&mut entry);
+        let answered = std::mem::take(&mut entry.answered);
+        tokens.and(Redactor::of(&dep.secrets)).and(Redactor::answers(&answered.0, &dep.secrets)).entry(&mut entry);
         entry.session = dep.life.sessions.last().map_or(0, |s| s.number);
         // Its packs go out as it is logged: the run is over and its writes have landed, and what
         // a subscriber gets is what the log holds (channels.rs).
@@ -885,6 +906,8 @@ pub(crate) fn run_entry(
             })
             .collect(),
         by: None,
+        secrets: run.secrets.clone(),
+        answered: run.answered.clone(),
         escaped: false,
         reads: run
             .reads
@@ -934,6 +957,8 @@ impl FiredRun {
             retries: 0,
             claims: vec![],
             secret_fed: taint::SecretFed::default(),
+            secrets: BTreeMap::new(),
+            answered: recorder::AnswerTokens::default(),
         }
     }
 }

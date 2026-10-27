@@ -77,6 +77,9 @@ function decode(s: string): string {
   }
 }
 
+/** Response headers a handler's answer doesn't set: how the reply is framed (data.rs `FRAMING`). */
+const FRAMING = ["content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer", "upgrade"];
+
 /** How data.rs would answer a handler's output 0: the status, the envelope's headers (if any),
  *  and the body value. */
 export function responseOf(output: WValue | null | undefined): {
@@ -91,14 +94,15 @@ export function responseOf(output: WValue | null | undefined): {
     const field = (name: string) => output.value.find(([k]) => k === name)?.[1];
     const status = field("status");
     if (status && status.type === "Number") {
-      const ok = Number.isInteger(status.value) && status.value >= 100 && status.value <= 599;
+      // As the server (data.rs): no interim status, and the reply's framing is the host's.
+      const ok = Number.isInteger(status.value) && status.value >= 200 && status.value <= 599;
       if (!ok) return fail("the handler returned an invalid status");
       const h = field("headers");
       const headers: [string, string][] = [];
       if (h && h.type === "Record") {
         for (const [k, v] of h.value) {
           if (v.type !== "Text") return fail("response header values must be text");
-          headers.push([k.toLowerCase(), v.value]);
+          if (!FRAMING.includes(k.toLowerCase())) headers.push([k.toLowerCase(), v.value]);
         }
       } else if (h) return fail("response headers must be a record");
       return { status: status.value, headers, body: field("body") ?? null };

@@ -31,6 +31,8 @@ export type ReplayInput = {
   state_before: Record<string, WValue>;
   /** A resumed part's delivered events, by waiting point. */
   events?: Record<string, WValue>;
+  /** The secrets the run was given: the version and fingerprint its marks name (`v3 #a1b2c3d4`). */
+  secrets?: Record<string, string>;
 };
 
 /** What one node computed: its inputs as they arrived, and its outputs. `recorded`: the outputs
@@ -546,7 +548,11 @@ export function replay(
     // A token is a credential: the log has it redacted, and so does the replay.
     if (primitive && name === "resume_token") return { inputs, outputs: [{ type: "Text", value: `‹token:${param("await")}›` }] };
     // The editor never has a secret's value: a placeholder stands in, as the log shows it.
-    if (primitive && name === "secret") return { inputs, outputs: [{ type: "Text", value: `‹secret:${param("name")}›` }] };
+    if (primitive && name === "secret") {
+      const secret = param("name");
+      const shown = entry.secrets?.[secret];
+      return { inputs, outputs: [{ type: "Text", value: `‹secret:${secret}${shown ? ` ${shown}` : ""}›` }] };
+    }
     if (primitive && ["http_request", "http_upload", "http_stream", "flow_call", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
       // Answered from the record, never the network, the store or the disk: a replay is offline
       // and exact, and shows the collection or folder as the run found it, whatever it holds now.

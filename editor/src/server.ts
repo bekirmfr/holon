@@ -619,6 +619,8 @@ export type LogEntry = {
   parked?: string[];
   /** For a resumed part: the events delivered so far, by waiting point. */
   events?: Record<string, WValue>;
+  /** The secrets the run was given: the version and fingerprint their marks name (`v3 #a1b2c3d4`). */
+  secrets?: Record<string, string>;
 };
 
 /** The requests one round made: each node (by its path in the run's root unit), its request,

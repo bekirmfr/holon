@@ -366,11 +366,15 @@ only the editor.
   versions and sources).
   A flow references a secret by name (a `secret` source node, capability `SecretRead("stripe_key")`
   in its manifest, granted by the host); a run reads only the secrets it was granted, and its run
-  id doesn't include them. Every literal occurrence of a value is redacted, as `‹secret:name›`,
+  id doesn't include them. Every literal occurrence of a value is redacted, as `‹secret:name v3 #a1b2c3d4›` (its version and
+  a fingerprint keyed by a key derived from the master key; each run's entry records the versions it was
+  given, which verify and the editor's replay stand in again),
   from the flow log and from what the control plane says about a deployment (state, sessions,
   `/trigger` and "send live" replies); a replay substitutes the same placeholder. A state,
-  collection or channel write carrying a secret's value is refused, so one never reaches the state
-  store, snapshots, a channel's packs or disk. Values under 6 characters are refused (too short to
+  collection, database, channel or file write carrying a secret's value is refused, so one never
+  reaches the state store, snapshots, a channel's packs, a file another deployment reads, or disk.
+  A part of a file read that holds one isn't kept in the log, and a file text that holds one isn't
+  shipped in an export. Values under 6 characters are refused (too short to
   redact reliably). A value transformed before it's logged (encoded, sliced, a field of a JSON
   secret) can't be recognised, so the graph is followed instead (`taint.rs`): what a secret reaches
   through anything but a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`) or a Boolean
@@ -379,7 +383,12 @@ only the editor.
   `‹withheld: computed from a secret›`. An effect carries no node, so this goes by capability: a
   key written anywhere in the run from such a value has all its writes in that run refused. A flow
   may still send a secret where it is meant to go: an outbound request's header, or its own
-  response to a caller.
+  response to a caller. A credential a call answers with to a request that held a secret (an
+  OAuth exchange's `access_token`, `refresh_token`, `id_token`, …: `ANSWER_FIELDS` in
+  `secrets.rs`) is redacted by its value as `‹token:answer access_token #a1b2c3d4›` and refused
+  the writes a secret is, rather than treating every answer to such a call as computed from the
+  secret, which would withhold most of what a flow does with an API and leave verify nothing to
+  check.
   - **Sealed at rest** ✅ (`sealing.rs`): each value is AES-256-GCM sealed, bound to its
     deployment, name and version, under a master key kept apart from the file: the OS key store
     by default (Credential Manager, Keychain), else `--secrets-key env:VAR` (a container, or a

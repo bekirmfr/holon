@@ -120,6 +120,8 @@ route GET /orders/:customer (req) { respond shop.query("select id, total, refund
   `DbWrite("shop/orders")`. SQL from a value is an error that says so, and so is a statement that
   names no table.
 - Values go in after the SQL, as `$1`, `$2`, …; never into its text. The count must match.
+- A name that needs quoting is quoted `"…"`, not `[…]`: brackets are code, as Postgres reads them
+  (`array[…]`, `tags[1]`), so what is inside them counts toward the tables too.
 - A number crosses as a number, `true`/`false` as 1/0 (as `true`/`false` to a Postgres boolean),
   no value as `null`, a record or list as its JSON text. A column that is `null` is a missing
   field; an integer past 2^53 comes back as text, a blob as hex.

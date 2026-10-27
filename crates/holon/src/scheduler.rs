@@ -174,6 +174,7 @@ pub(crate) fn fire_one_clock_tick(
     // Redacted as its log entry is: the history is read by whoever may read the deployment.
     redact_tick(&mut tick, &Redactor::of(secrets));
     redact_tick(&mut tick, &Redactor::tokens(&waits.tokens));
+    redact_tick(&mut tick, &Redactor::answers(&run.answered.0, secrets));
 
     {
         let mut deployments = deployments.lock().unwrap();

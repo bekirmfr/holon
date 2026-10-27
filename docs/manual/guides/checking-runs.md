@@ -104,13 +104,26 @@ of it for a Basic auth header, a field of a JSON secret, a slice) no longer hold
 so the log keeps no outputs for that node. An outbound request built from one is logged with
 those parts reading `‹withheld: computed from a secret›`, and so are the run's own outputs, its
 response body and any other effect built from one. Such a value is never kept: a state,
-collection or channel write of it is refused, as a write of the secret itself is.
+collection, database, channel or file write of it is refused, as a write of the secret itself is.
+A part of a file a run read that holds a secret isn't kept in the log, and a file text that holds
+one isn't shipped in the export: verify asks for the file, as it does for a folder that keeps
+hashes. Given it, such a run differs, since the log holds the secret's placeholder where the file
+holds its value.
+
+A credential a call answers with is kept out the same way when the request held a secret (an
+OAuth token exchange): a value under `access_token`, `refresh_token`, `id_token`, `session_token`,
+`token`, `client_secret`, `api_key`, `secret` or `password` in a JSON answer reads
+`‹token:answer access_token #a1b2c3d4›` wherever it appears in the run, with a fingerprint like a
+secret's. The run still sends it on, and checks, since the log's request holds the same mark. A
+write of it to state, a collection, a database, a channel or a file is refused, so a flow can't
+cache one; a run that tried is counted as one that wrote a secret's value. The same answer to a
+request that held no secret is an ordinary value. Only those field names are recognised.
 
 Some runs can't be run again at all, and are counted, not failed: a run whose such node the log
 keeps no outputs for (computed from a secret, larger than 16 KiB, or deeper than the log's
 timeline records), a run that
 failed (a budget ran out), a request no route took, a run logged before entries kept every
-attempt's requests that ran again after what it read changed, and a run that read a file whose text the export doesn't hold.
+attempt's requests that ran again after what it read changed, a run that read a file whose text the export doesn't hold, and a run that wrote a secret's value (which the server refused).
 
 ### Files
 

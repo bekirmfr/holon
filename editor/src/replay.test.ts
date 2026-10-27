@@ -284,6 +284,13 @@ describe("secrets in a replay", () => {
     expect(traces.get("s")?.outputs).toEqual([{ type: "Text", value: "‹secret:api_key›" }]);
   });
 
+  it("carry the version and fingerprint the run's entry names, as the log's marks do", () => {
+    const nodes = [n("s", "secret", [], ["out"], [frozen("name", "api_key")])];
+    const entry = { kind: "tick", route: null, request: null, sourced: [], state_before: {}, secrets: { api_key: "v3 #a1b2c3d4" } };
+    const { traces } = replay(nodes, [], entry, evalNode);
+    expect(traces.get("s")?.outputs).toEqual([{ type: "Text", value: "‹secret:api_key v3 #a1b2c3d4›" }]);
+  });
+
   it("feed a node the run's own recorded outputs, so what follows replays true", () => {
     // secret → verify (computes with it) → count: a signature check, then what depends on it.
     // Recomputed from the placeholder, verify would be wrong; the log says what it produced.

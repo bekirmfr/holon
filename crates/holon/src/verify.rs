@@ -87,8 +87,8 @@ pub(crate) fn handle_get_export(
             Some(Err(_)) => return err(400, "max_files_bytes is a number of bytes"),
         }
     };
-    let (lines, head) = match deployments.lock().unwrap().get(slug) {
-        Some(dep) => (dep.log.lines(), dep.log.head().to_string()),
+    let (lines, head, redactor) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (dep.log.lines(), dep.log.head().to_string(), crate::secrets::Redactor::of(&dep.secrets)),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     let mut units = BTreeMap::new();
@@ -101,6 +101,9 @@ pub(crate) fn handle_get_export(
             continue;
         }
         match folders::kept_text(folders, store, blob) {
+            // A text holding one of the deployment's secrets isn't shipped: it is as if the
+            // server didn't keep it, and verify asks for the file instead.
+            Ok(Some(text)) if redactor.holds(&text) => not_kept += 1,
             Ok(Some(text)) => {
                 let size = text.len() as u64;
                 if held.saturating_add(size) > budget {
@@ -444,9 +447,11 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
     let mut sourced: Vec<(Capability, Value)> =
         state.iter().map(|(k, v)| (Capability::StateRead(k.clone()), v.clone())).collect();
     sourced.extend(extra.iter().cloned());
+    // With the version and fingerprint the run was given (an entry from before names none).
     for cap in caps.iter() {
         if let Capability::SecretRead(name) = cap {
-            sourced.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &name))));
+            let shown = entry.secrets.get(&name).map_or(name.clone(), |shown| format!("{name} {shown}"));
+            sourced.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &shown))));
         }
     }
 
@@ -490,6 +495,16 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
     given.nodes = observer.stood_in.len();
+    // A write of a secret's value is refused where it runs (firing.rs), and run again here with
+    // its placeholder it can't be told from one that was performed (a file's text, logged by
+    // hash, differs too): the run isn't checked.
+    let keeps = |c: &holon_core::Capability| {
+        use holon_core::Capability::*;
+        matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | FileWrite(_))
+    };
+    if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {
+        return Rerun::Skipped("it wrote a secret's value, which the server refuses: not run again".into());
+    }
 
     // What it produced, as the log would write it, to compare with what the log wrote.
     let outputs: Vec<Option<SValue>> =
@@ -645,7 +660,8 @@ impl Observer for Asserting {
 }
 
 /// The placeholders of values the log never holds, as a run being checked has them. Each mark the
-/// log wrote (`‹secret:name›`, `‹token:name›`) stands in as `‹<tag>|secret:name›`, with a tag
+/// log wrote (`‹secret:name v3 #a1b2c3d4›`, `‹token:name›`) stands in as
+/// `‹<tag>|secret:name v3 #a1b2c3d4›`, with a tag
 /// made for this check, and so does each secret and token the run gets again: text a caller sent
 /// that only looks like a mark (which the log escaped, `secrets::write_marked`) is read back as
 /// the text it was, and computed with like any other.
@@ -700,6 +716,20 @@ impl Marks {
             *s = secrets::write_marked(&pieces).0;
         });
         v
+    }
+
+    /// Whether `v` carries a secret's placeholder anywhere, a record's keys included.
+    fn carries_secret(&self, v: &Value) -> bool {
+        // A credential a call answered to a request that held a secret (`secrets::answered_tokens`)
+        // is refused a write as the secret is.
+        let secret = |t: &str| t.contains(&format!("{}secret:", self.start)) || t.contains(&format!("{}token:answer ", self.start));
+        match v {
+            Value::Text(t) => secret(t),
+            Value::List(items) => items.iter().any(|v| self.carries_secret(v)),
+            Value::Record(fields) => fields.iter().any(|(k, v)| secret(k) || self.carries_secret(v)),
+            Value::Sum { payload, .. } | Value::Effect { payload, .. } => self.carries_secret(payload),
+            Value::Number(_) | Value::Boolean(_) => false,
+        }
     }
 
     /// Whether `v` carries a placeholder anywhere.

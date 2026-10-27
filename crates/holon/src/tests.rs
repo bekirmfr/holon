@@ -602,7 +602,7 @@ fn a_clock_runs_history_never_shows_a_secret() {
     let history = String::from_utf8(body_bytes(route(&state, &req("GET", "/deployments/leak/history", vec![])))).unwrap();
     assert!(history.contains("\"ticks\":[{"), "it ticked: {history}");
     assert!(!history.contains(value), "the history leaks it: {history}");
-    assert!(history.contains("‹secret:api_key›"), "{history}");
+    assert!(history.contains("‹secret:api_key v1 #"), "{history}");
     assert!(!history.contains("c2tfbGl2ZV9rZXB0") && history.contains("‹withheld: computed from a secret›"), "{history}");
     let current = body_json(route(&state, &req("GET", "/deployments/leak/state", vec![])));
     assert!(current["state"].get("encoded").is_none(), "the derived write was refused: {current}");
@@ -1277,7 +1277,10 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     let log = body_json(route(&state, &req("GET", "/deployments/s/log", vec![])));
     let produced: Vec<serde_json::Value> = log["entries"][0]["timeline"].as_array().unwrap().iter().filter_map(|t| t.get("outputs").cloned()).collect();
     assert!(produced.contains(&serde_json::json!([{ "type": "Boolean", "value": true }])), "{produced:?}");
-    assert!(produced.contains(&serde_json::json!([{ "type": "Text", "value": "‹secret:api_key›" }])), "{produced:?}");
+    // Marked with the version and fingerprint the entry says the run was given.
+    let given = log["entries"][0]["secrets"]["api_key"].as_str().unwrap_or_default().to_string();
+    assert!(given.starts_with("v3 #"), "the version the test set last: {log}");
+    assert!(produced.contains(&serde_json::json!([{ "type": "Text", "value": format!("‹secret:api_key {given}›") }])), "{produced:?}");
 
     // Nowhere in what the control plane says about it.
     for url in ["/deployments/s/log", "/deployments/s/state", "/deployments/s/sessions", "/deployments/s/secrets", "/deployments/s/grant"] {
@@ -3826,6 +3829,8 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
                         "slow"
                     }
                     "/name" => "k",
+                    // What a token exchange answers.
+                    "/token" => r#"{"access_token":"tok_live_abcdef123456","token_type":"bearer","expires_in":3600}"#,
                     _ => "fast",
                 };
                 let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
@@ -3872,10 +3877,84 @@ route POST /go (req) {{
     assert!(!log.contains("MIIabc"), "the escaped key: {log}");
     assert!(!log.contains("pk_private_value_123") && !log.contains("bot@x.iam"), "fields of the JSON secret: {log}");
     assert!(log.contains("‹withheld: computed from a secret›"), "the derived parts say they were withheld: {log}");
-    assert!(log.contains("‹secret:pem›"), "the escaped key is redacted where it stands: {log}");
+    assert!(log.contains("‹secret:pem v1 #"), "the escaped key is redacted where it stands: {log}");
     // The export says no more than the log.
     let export = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     assert!(!export.contains("c2tfbGl2ZV9iYXNp") && !export.contains("MIIabc") && !export.contains("pk_private_value_123"));
+}
+
+/// A token a call answers to a request that held a secret (an OAuth exchange) is as good as the
+/// secret until it expires: kept out of the log by its value, with a fingerprint like a secret's,
+/// and out of state, as a secret is. What the caller needs it for still works: the run sends it
+/// on, the log shows the same mark there, and the run checks; a run that tried to keep it is
+/// skipped by verify, its write refused. The same answer to a request with no secret is clean.
+#[test]
+fn a_token_a_call_answers_with_a_secret_is_kept_out_of_the_log_and_out_of_state() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let text = format!(
+        r#"flow oauth
+port 18150
+
+route POST /call (req) {{
+  got = http.post("{host}", "/token", headers: {{ "x-client-secret": secret.client_secret }}, body: req.body)
+  parsed = json_parse(got.body)
+  used = http.get("{host}", "/name", headers: {{ authorization: parsed.access_token }})
+  respond {{ used: used.status, expires: parsed.expires_in }}
+}}
+
+route POST /cache (req) {{
+  got = http.post("{host}", "/token", headers: {{ "x-client-secret": secret.client_secret }}, body: req.body)
+  parsed = json_parse(got.body)
+  state.cached = parsed.access_token
+  state.expires = parsed.expires_in
+  respond "cached"
+}}
+
+route POST /open (req) {{
+  got = http.post("{host}", "/token", body: req.body)
+  parsed = json_parse(got.body)
+  state.open_token = parsed.access_token
+  respond "open"
+}}
+"#
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let set = req("POST", &format!("/deployments/{slug}/secrets/client_secret"), serde_json::to_vec(&serde_json::json!({ "value": "cs_live_client_secret_1" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let token = "tok_live_abcdef123456";
+
+    let (status, body, _) = data_call(&state, &slug, "POST", "/call", "grant");
+    assert_eq!((status, body.as_str()), (200, r#"{"expires":3600,"used":200}"#), "the run used the token");
+    let (status, body, _) = data_call(&state, &slug, "POST", "/cache", "grant");
+    assert_eq!((status, body.as_str()), (200, "cached"));
+    data_call(&state, &slug, "POST", "/open", "grant");
+
+    let current = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/state"), vec![])));
+    assert!(current["state"].get("cached").is_none(), "the token's write was refused: {current}");
+    assert!(current["state"].get("expires").is_some(), "its other write went through: {current}");
+    assert!(current["state"].get("open_token").is_some(), "a token from a call that sent no secret is an ordinary answer: {current}");
+
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    let entries = log_entries(&state, &slug);
+    let line = |at: usize| entries[at].to_string();
+    assert!(!line(0).contains(token) && !line(1).contains(token), "the token is not in the log: {log}");
+    assert!(line(2).contains(token), "a token no secret fetched is an ordinary value: {}", line(2));
+    let mark = |l: &str| {
+        let at = l.find("‹token:answer access_token #").unwrap_or_else(|| panic!("the token's mark: {l}"));
+        l[at..l[at..].find('›').map(|e| at + e + '›'.len_utf8()).unwrap()].to_string()
+    };
+    let (m0, m1) = (mark(&line(0)), mark(&line(1)));
+    assert_eq!(m0, m1, "the same token reads the same in both runs");
+    assert!(line(0).matches(&m0).count() >= 2, "in the answer, and where the run sent it on: {}", line(0));
+
+    // Exported, the run that used it checks, and the one that tried to keep it is skipped.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(!export.lines[0].contains(token) && !export.lines[1].contains(token));
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert_eq!(report.reruns[0], (0, verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    assert!(matches!(&report.reruns[1], (1, verify::Rerun::Skipped(why)) if why.contains("wrote a secret's value")), "{}", verify::describe(&report, None));
+    assert!(report.ok(), "{}", verify::describe(&report, None));
 }
 
 /// What is computed from a secret isn't kept: a state, collection or channel write of it is
@@ -5017,6 +5096,181 @@ fn a_run_past_its_file_limits_fails_and_says_which() {
 
 fn route_status(state: &AppState, body: &serde_json::Value) -> u16 {
     route(state, &req("POST", "/admin/folders", serde_json::to_vec(body).unwrap())).status_code
+}
+
+/// How a reply is framed is the host's to say: a flow's (or an upstream's, passed on) length,
+/// transfer encoding and connection headers are dropped, its other headers kept; and an interim
+/// status (1xx) isn't an answer, even one computed where the language can't see it.
+#[test]
+fn a_reply_is_framed_by_the_host() {
+    let state = claims_state("");
+    let text = r#"flow framed
+port 18148
+
+route GET /a (req) {
+  respond "HTTP/1.1 200 OK", status: 200, headers: { "content-length": "0", "Transfer-Encoding": "chunked", connection: "keep-alive", upgrade: "h2c", "x-kept": "yes" }
+}
+
+route GET /b (req) {
+  switching = 100 + 1
+  respond "", status: switching, headers: { upgrade: "websocket" }
+}
+"#;
+    let slug = deploy_text(&state, text, "x");
+    let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/a", vec![]));
+    assert_eq!((r.status, r.body.as_slice()), (200, &b"HTTP/1.1 200 OK"[..]));
+    let names: Vec<&str> = r.headers.iter().map(|(k, _)| k.as_str()).collect();
+    assert!(names.contains(&"x-kept"), "{names:?}");
+    for framing in ["content-length", "transfer-encoding", "connection", "upgrade"] {
+        assert!(!names.contains(&framing), "{framing}: {names:?}");
+    }
+    assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/b", vec![])).status, 500);
+}
+
+/// Which value of a secret a run had shows in the log without the value: each entry names the
+/// version and the keyed fingerprint of the secrets it was given, and its marks say the same. A
+/// run before a rotation and one after read differently, both still check after it (the entry
+/// holds what it needs, not the vault), and so does an entry logged before marks named versions.
+#[test]
+fn a_run_shows_which_secret_value_it_had_and_still_checks_after_it_rotates() {
+    let state = claims_state("");
+    let set = |value: &str| {
+        let body = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+        assert_eq!(route(&state, &req("POST", "/deployments/rotor/secrets/signing_key", body)).status_code, 200);
+    };
+    set("whsec_first_123456");
+    let text = "flow rotor\nport 18149\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    assert_eq!(data_call(&state, &slug, "POST", "/sign", "hello").0, 200);
+    set("whsec_second_654321");
+    assert_eq!(data_call(&state, &slug, "POST", "/sign", "hello").0, 200);
+
+    let entries = log_entries(&state, &slug);
+    let given: Vec<String> = entries.iter().map(|e| e["secrets"]["signing_key"].as_str().unwrap_or_default().to_string()).collect();
+    assert!(given[0].starts_with("v1 #") && given[1].starts_with("v2 #"), "{given:?}");
+    assert_ne!(given[0], given[1].replace("v2", "v1"), "another value, another fingerprint");
+    for (entry, given) in entries.iter().zip(&given) {
+        let line = entry.to_string();
+        assert!(line.contains(&format!("‹secret:signing_key {given}›")), "the mark names it: {line}");
+        assert!(!line.contains("whsec_first") && !line.contains("whsec_second"), "{line}");
+    }
+
+    // Exported after the rotation: both runs check, as what each was given, not the vault's now.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched), (1, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+
+    // An entry from before: no versions in it, its marks bare. Rechained, it checks as it did.
+    let mut v: serde_json::Value = serde_json::from_str(&export.lines[0]).unwrap();
+    v.as_object_mut().unwrap().remove("secrets");
+    let bare = v.to_string().replace(&format!(" {}›", given[0]), "›");
+    assert!(bare.contains("‹secret:signing_key›") && !bare.contains(&given[0]), "{bare}");
+    let head = recorder::line_hash(&bare);
+    let old = verify::Export { lines: vec![bare], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&old, Some(&head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+}
+
+/// A secret used as a record's key (a map from API keys to accounts) is redacted in the log as a
+/// value is, and the run still checks: verify reads the key's mark back as its placeholder.
+#[test]
+fn a_secret_as_a_key_is_redacted_and_the_run_checks() {
+    let state = claims_state("");
+    let text = r#"flow tenants
+port 18147
+
+route GET /who (req) {
+  tenants = insert({}, secret.partner_key, "acme")
+  respond { tenant: lookup(tenants, req.headers["x-api-key"]) ?? "nobody" }
+}
+"#;
+    let slug = deploy_text(&state, text, "x");
+    let value = "pk_live_partner_key_value";
+    let set = req("POST", &format!("/deployments/{slug}/secrets/partner_key"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &data::DataRequest { method: "GET".into(), url: "/who".into(), headers: vec![("x-api-key".into(), value.into())], body: vec![], by: None });
+    assert_eq!((r.status, String::from_utf8(r.body).unwrap()), (200, r#"{"tenant":"acme"}"#.to_string()));
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    assert!(!log.contains(value), "{log}");
+    assert!(log.contains("‹secret:partner_key v1 #"), "{log}");
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+}
+
+/// A file is kept out of a secret's way as a state write is: a write of a secret, or of something
+/// computed from one, is refused; a part of a file read that holds one isn't kept in the log (a
+/// mark there would no longer prove it part of the file); and a file text that holds one isn't
+/// shipped in the export. Verify asks for the file instead of failing, and skips the refused writes.
+#[test]
+fn a_secret_stays_out_of_files_and_of_what_the_log_keeps_of_them() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-file-secrets-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (logs, out) = (dir.join("logs"), dir.join("out"));
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    let value = "sk_live_file_secret_value";
+    let mut text: String = (0..400).map(|i| format!("line {i} of a config\n")).collect();
+    text.push_str(&format!("key = {value}\nend\n"));
+    std::fs::write(logs.join("app.conf"), &text).unwrap();
+    let bind = |name: &str, path: &Path, access: &str| {
+        let body = serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access, "keep": "bytes" });
+        route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code
+    };
+    assert_eq!(bind("logs", &logs, "read"), 200);
+    assert_eq!(bind("out", &out, "read-write"), 200);
+    let flow = r#"flow filer
+port 18146
+folder logs
+folder out
+
+route POST /lit (req) {
+  out["lit.txt"] = "{req.body}:{secret.api_key}"
+  respond { ok: true }
+}
+
+route POST /der (req) {
+  out["der.txt"] = "{req.body}:{base64(secret.api_key)}"
+  respond { ok: true }
+}
+
+route GET /tail/:name (req) {
+  respond logs.lines(req.params.name, from: -2, limit: 2)
+}
+
+route GET /whole/:name (req) {
+  respond logs[req.params.name]
+}
+"#;
+    let slug = deploy_text(&state, flow, "");
+    let set = req("POST", &format!("/deployments/{slug}/secrets/api_key"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+
+    assert_eq!(data_call(&state, &slug, "POST", "/lit", "a").0, 200);
+    assert_eq!(data_call(&state, &slug, "POST", "/der", "a").0, 200);
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "neither write landed");
+
+    let (status, tail, _) = data_call(&state, &slug, "GET", "/tail/app.conf", "");
+    assert_eq!(status, 200, "{tail}");
+    assert!(tail.contains(value), "the caller gets what it read: {tail}");
+    let (status, whole, _) = data_call(&state, &slug, "GET", "/whole/app.conf", "");
+    assert_eq!((status, whole.len()), (200, text.len()), "{whole}");
+
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    assert!(!log.contains(value), "{log}");
+    let entries = log_entries(&state, &slug);
+    let tail_read = &entries.iter().find(|e| e["route"] == "GET /tail/:name").unwrap()["reads"][0]["file"];
+    assert!(tail_read["range"].is_object() && tail_read["range"]["text"].is_null(), "the part read isn't kept: {tail_read}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(!serde_json::to_string(&export).unwrap().contains(value), "the export ships no text holding it");
+    assert!(export.files_not_kept >= 1, "the whole file's text is counted as not kept");
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    let skipped = report.reruns.iter().filter(|(_, r)| matches!(r, verify::Rerun::Skipped(_))).count();
+    assert!(skipped >= 2, "the two reads are asked for the file: {:?}", report.reruns);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A file too big to read whole is read by handle and by range: its last lines and first bytes

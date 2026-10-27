@@ -94,7 +94,8 @@ and the agent tells you so. In the editor:
    **⚙ → secrets**.
 
 From then on, a new version that asks for nothing more deploys from the agent at once. A version
-that asks for something new (another host, another secret) is saved for you again. So is a
+that asks for something new (another host, another secret, a site in its `browsers` line whose
+pages it doesn't answer yet) is saved for you again. So is a
 version whose code changed and that reads a secret: what a secret is used for is the code, so a
 person approves it again. A secret the flow marks optional doesn't hold it up: the version
 deploys with that secret withheld (its reads refused), and you grant it back from the

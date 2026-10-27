@@ -44,6 +44,9 @@ pub struct Subscribe {
     pub kept: bool,
 }
 
+/// Response headers a flow's answer doesn't set: how the reply is framed, which the host says.
+const FRAMING: &[&str] = &["content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer", "upgrade"];
+
 /// The subscription `v` asks for, if it is one (`channel_subscribe`'s effect).
 fn subscription(v: &Value) -> Option<Subscribe> {
     let Value::Effect { sink, payload } = v else { return None };
@@ -170,7 +173,8 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
     let (status, mut headers, body) = match output {
         Value::Record(fields) if matches!(fields.get("status"), Some(Value::Number(_))) => {
             let Some(Value::Number(n)) = fields.get("status") else { unreachable!() };
-            if n.fract() != 0.0 || !(100.0..=599.0).contains(n) {
+            // Not 1xx: an interim answer (101 switches the connection to another protocol).
+            if n.fract() != 0.0 || !(200.0..=599.0).contains(n) {
                 return DataResponse::json_error(500, "the handler returned an invalid status");
             }
             let headers = match fields.get("headers") {
@@ -181,7 +185,13 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
                         let Value::Text(v) = v else {
                             return DataResponse::json_error(500, "response header values must be text");
                         };
-                        out.push((k.to_ascii_lowercase(), v.clone()));
+                        // How the reply is framed is the host's to say: a length that isn't the
+                        // body's would make the rest of the body read as another response. An
+                        // upstream's own (a proxy passing its headers on) is dropped, not refused.
+                        let k = k.to_ascii_lowercase();
+                        if !FRAMING.contains(&k.as_str()) {
+                            out.push((k, v.clone()));
+                        }
                     }
                     out
                 }

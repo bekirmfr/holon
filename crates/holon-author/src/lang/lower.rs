@@ -988,8 +988,8 @@ impl<'a> Lowerer<'a> {
 
     fn status_text(&self, e: &Expr) -> R<String> {
         match &e.kind {
-            ExprKind::Number { value, text } if (100.0..600.0).contains(value) && value.fract() == 0.0 => Ok(text.clone()),
-            _ => err(e.span, "a status is a number from 100 to 599"),
+            ExprKind::Number { value, text } if (200.0..600.0).contains(value) && value.fract() == 0.0 => Ok(text.clone()),
+            _ => err(e.span, "a status is a number from 200 to 599"),
         }
     }
 
@@ -2750,7 +2750,8 @@ pub(crate) mod tests {
         assert_eq!(error("route GET /a (req) {\n  respond 1\n  respond 2\n}"), (3, 3, "more than one respond in the route (the first is on line 2)".into()));
         assert_eq!(error("route GET /a (req) {\n  x = 1\n}"), (1, 7, "the route answers nothing: add a respond (or an effect, answered 204)".into()));
         assert_eq!(error("route GET /a (req) {\n  respond 1, 2\n}"), (2, 14, "respond takes one body; status: and missing: are named".into()));
-        assert_eq!(error("route GET /a (req) {\n  respond 1, status: 700\n}"), (2, 22, "a status is a number from 100 to 599".into()));
+        assert_eq!(error("route GET /a (req) {\n  respond 1, status: 700\n}"), (2, 22, "a status is a number from 200 to 599".into()));
+        assert_eq!(error("route GET /a (req) {\n  respond 1, status: 101\n}"), (2, 22, "a status is a number from 200 to 599".into()), "not an interim one");
         assert_eq!(error("route GET /a (req) {\n  respond \"x\", status: 204\n}"), (2, 11, "a 204 answers with no body".into()));
         assert_eq!(error("route GET /a (req) {\n  1 + 1\n  respond 2\n}"), (2, 3, "a value nobody uses: bind it, or remove it".into()));
         // A write that reads nothing of the request is tied to it by its trigger: a route counts

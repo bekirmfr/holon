@@ -273,9 +273,9 @@ route METHOD /path (req) [resumes NAME] {
 |---|---|
 | `respond body` | 200 with `body`: text as plain text, anything else as JSON |
 | `respond body, status: 201` | that status |
-| `respond body, status: code` | a status computed by the flow (a number from 100 to 599) |
+| `respond body, status: code` | a status computed by the flow (a number from 200 to 599) |
 | `respond body, missing: 404` | 404 when `body` has no value (the default is 404) |
-| `respond body, headers: { "content-type": "text/html; charset=utf-8" }` | with those headers (a record of texts) |
+| `respond body, headers: { "content-type": "text/html; charset=utf-8" }` | with those headers (a record of texts); how the reply is framed (`content-length`, `transfer-encoding`, `connection`, …) is the host's, and those are dropped |
 | `respond 204` | the status alone, no body |
 | `respond body: 42` | a literal number as the body |
 
