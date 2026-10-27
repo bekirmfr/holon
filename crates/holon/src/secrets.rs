@@ -667,7 +667,13 @@ impl Redactor {
         match v {
             SValue::Text(s) => *s = self.text(s),
             SValue::List(xs) => xs.iter_mut().for_each(|x| self.svalue(x)),
-            SValue::Record(fields) => fields.iter_mut().for_each(|(_, x)| self.svalue(x)),
+            SValue::Record(fields) => {
+                for (k, x) in fields.iter_mut() {
+                    *k = self.text(k);
+                    self.svalue(x);
+                }
+                fields.sort_by(|a, b| a.0.cmp(&b.0));
+            }
             SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => self.svalue(payload),
             SValue::Number(_) | SValue::Boolean(_) => {}
         }
@@ -767,12 +773,19 @@ impl Redactor {
     }
 }
 
-/// Each text in `v`, in place (not a record's keys).
+/// Each text in `v`, in place, a record's keys included (a secret can be a key: a map from API
+/// keys to accounts), each record kept in key order after.
 pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
     match v {
         SValue::Text(s) => f(s),
         SValue::List(xs) => xs.iter_mut().for_each(|x| texts_mut(x, f)),
-        SValue::Record(fields) => fields.iter_mut().for_each(|(_, x)| texts_mut(x, f)),
+        SValue::Record(fields) => {
+            for (k, x) in fields.iter_mut() {
+                f(k);
+                texts_mut(x, f);
+            }
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+        }
         SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => texts_mut(payload, f),
         SValue::Number(_) | SValue::Boolean(_) => {}
     }
@@ -1064,6 +1077,15 @@ mod tests {
         let mut j = serde_json::json!({ "sk_123456": ["token sk_123456"] });
         r.json(&mut j);
         assert_eq!(j, serde_json::json!({ "‹secret:key›": ["token ‹secret:key›"] }));
+        // A key too, in a reply and in the log, the record kept in key order.
+        let keyed = || SValue::Record(vec![("a".into(), SValue::Text("x".into())), ("sk_123456".into(), SValue::Text("acme".into()))]);
+        let redacted = SValue::Record(vec![("a".into(), SValue::Text("x".into())), ("‹secret:key›".into(), SValue::Text("acme".into()))]);
+        let mut v = keyed();
+        r.svalue(&mut v);
+        assert_eq!(v, redacted);
+        let mut v = keyed();
+        assert!(!r.logged_svalue(&mut v));
+        assert_eq!(v, redacted, "the log writes the key's mark");
     }
 
     /// In a log entry, a run's own text that reads like a mark is escaped (each `‹` before one

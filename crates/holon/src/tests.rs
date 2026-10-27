@@ -5017,6 +5017,33 @@ fn route_status(state: &AppState, body: &serde_json::Value) -> u16 {
     route(state, &req("POST", "/admin/folders", serde_json::to_vec(body).unwrap())).status_code
 }
 
+/// A secret used as a record's key (a map from API keys to accounts) is redacted in the log as a
+/// value is, and the run still checks: verify reads the key's mark back as its placeholder.
+#[test]
+fn a_secret_as_a_key_is_redacted_and_the_run_checks() {
+    let state = claims_state("");
+    let text = r#"flow tenants
+port 18147
+
+route GET /who (req) {
+  tenants = insert({}, secret.partner_key, "acme")
+  respond { tenant: lookup(tenants, req.headers["x-api-key"]) ?? "nobody" }
+}
+"#;
+    let slug = deploy_text(&state, text, "x");
+    let value = "pk_live_partner_key_value";
+    let set = req("POST", &format!("/deployments/{slug}/secrets/partner_key"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &data::DataRequest { method: "GET".into(), url: "/who".into(), headers: vec![("x-api-key".into(), value.into())], body: vec![], by: None });
+    assert_eq!((r.status, String::from_utf8(r.body).unwrap()), (200, r#"{"tenant":"acme"}"#.to_string()));
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    assert!(!log.contains(value), "{log}");
+    assert!(log.contains("‹secret:partner_key›"), "{log}");
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+}
+
 /// A file is kept out of a secret's way as a state write is: a write of a secret, or of something
 /// computed from one, is refused; a part of a file read that holds one isn't kept in the log (a
 /// mark there would no longer prove it part of the file); and a file text that holds one isn't
