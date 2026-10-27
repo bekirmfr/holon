@@ -697,7 +697,10 @@ around it reaches it as an input after the item (§5.9).
   holon's outputs) `route`
   `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`, and the
   wiring form's `node` `at` `in` `out` `interval`. Keywords are valid after a dot (`req.in`) and
-  as record keys (`{ in: 1 }`).
+  as record keys (`{ in: 1 }`). A few words are keywords only where they open a handler or end a
+  statement: `action` before a name and `(` (elsewhere it is the `action` template's name), `on
+  file` (with `deleted` and `matching`) at the start of a line, and `after` after a statement
+  (§5.11). `on` and `after` are names elsewhere.
 - **Nouns:** `req` (the name a route gives its request; any identifier works), `secret`, `state`,
   `now`, `random`, `ingress`, `http`, `stripe`, and every declared collection and folder. `secret`, `state`,
   `http` and `stripe` are namespaces: they take a dot. The nouns are reserved like keywords.
@@ -731,22 +734,62 @@ a binary operator or a comma. Semicolons are not used.
 file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
           | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
-          | "folder" ident | "on" "file" ident ["deleted"] ["matching" string]
+          | "folder" ident | "database" ident | "on" fileline
           | "channel" ident
-item      = holon | route | statement | wiring        # wiring: the netlist form, §10
+fileline  = "file" ident ["deleted"] ["matching" string]
+item      = holon | handler | statement | wiring      # wiring: the netlist form, §10
+handler   = route                                     # a route, §5.2 and §5.11
+          | "every" duration block                    # a clock
+          | "on" fileline "(" ident ")" block         # a file handler
+          | "action" ident "(" ident ")" block        # an action, run by hand
 ```
 
-Headers are the flow's deploy settings, exactly as today (`Settings`): `every 10s` is `interval`
-10. `collection notes` declares a name for the body (§5.4); several may be declared, one per line.
-`folder inbox` declares a folder the same way. `on file inbox` declares it too, and makes `ingress`
-the handle of the file that starts each run (`file_arrival{folder: inbox}`); only in a flow
-without routes. `deleted` makes it for files removed from the folder (`on: deleted`), and
-`matching "<glob>"` for the names that match (`*` and `?` within a folder, `**/` any number of
-folders, letters either case). A flow may have several, each a different line: `ingress` is then
-the `coalesce` of their `file_arrival`s in the order written, whichever started the run.
-`channel updates` declares a channel, sent on with `updates.send(v)` (or a call's answer piped to
-it, `updates.pipe(http.post(…))`) and subscribed to as a route's answer, `respond updates.subscribe()`. Statements at the top level are the body of a flow without routes (§5.12); with routes, only
-bindings of literals are allowed at the top level (§5.11).
+Headers are the flow's deploy settings, exactly as today (`Settings`), and its names for the
+outside world. `collection notes` declares a name for the body (§5.4); several may be declared, one
+per line. `folder inbox` declares a folder the same way, `database shop` a database on the host,
+and `channel updates` a channel, sent on with `updates.send(v)` (or a call's answer piped to it,
+`updates.pipe(http.post(…))`) and subscribed to as a route's answer, `respond updates.subscribe()`.
+
+**Handlers start runs.** A flow has one or more, each a block of its own, and each block is
+everything tied to its trigger (§5.11): a statement in it tied to nothing is an error, as is a
+block that does nothing.
+
+- **A route,** `route GET /path (req) { … }`, runs on each request to the flow's port, `req` the
+  request (§5.11).
+- **A clock,** `every 2s { … }`, runs every 2 seconds, with no input: `now` in it is the time of
+  the run. Its period is a whole number of seconds, from `1s` to `366d`; one block per period.
+- **A file handler,** `on file inbox (f) { … }`, runs for each file new or changed in the folder
+  `inbox` (which the line declares, as `folder inbox` would), once the file stops changing; `f` is
+  its handle (`.name`, `.size`, `.hash`, `.folder`, `.event`). `deleted` makes it for files
+  removed from the folder, and `matching "<glob>"` for the names that match (`*` and `?` within a
+  folder, `**/` any number of folders, letters either case). One block per line.
+- **An action,** `action reset (input) { … }`, runs when someone runs it by its name, `input` what
+  they sent (a JSON value; `{}` when they sent nothing). `respond v` gives its answer, a value
+  alone (a route's `status:`, `missing:`, `headers:` and `stream:` are not an action's), at most
+  once; an action that only writes answers nothing. Its name is a name (letters, digits and `_`),
+  one block per name. The network never reaches one: a person runs it from the editor, the deployed
+  page or a script (`POST /trigger/<slug>/<name>` on the holon server, as an editor or an admin),
+  and an agent only one a person lets agents run, in the flow's deploy settings.
+
+`respond` is a route's and an action's: a clock's or a file's run answers nobody. In a block,
+`ingress` is refused: an `on file` block and an action name what they receive (`f.name`, not
+`ingress.name`), and a clock receives nothing. With handlers, only bindings of literals are allowed
+at the top level (§5.11), and the statements go in the blocks.
+
+**The one-handler form.** With no handler, the top-level statements are the flow (§5.12), and a
+header says what starts it. `every 10s` is `interval` 10: the flow runs every 10 seconds. `on file
+inbox` makes `ingress` the handle of the file that starts each run (`file_arrival{folder: inbox}`),
+with `deleted` and `matching` as above; a flow may have several, each a different line, and
+`ingress` is then the `coalesce` of their `file_arrival`s in the order written, whichever started
+the run. A flow with neither that reads `ingress` is run by hand, `ingress` the text it was sent
+(`POST /trigger/<slug>`): the form an action was before it had a name. These headers are the
+one-handler form's alone: beside any handler, an `every` or `on file` line is an error that names
+the block to write instead (`every 10s { … }`, `on file inbox (f) { … }`).
+
+**A flow nothing would start** (no handler, no `every` or `on file` header, no `ingress`) is a holon,
+made to be placed in other flows (§5.8). It checks, and deploy refuses it, naming the form to
+write: to run it by hand, put its statements in `action run (input) { … }`. The editor's quick fix,
+**make it runnable by hand**, writes that block, ending it with `respond` of the value it computes.
 
 ### 5.2 Definitions and statements
 
