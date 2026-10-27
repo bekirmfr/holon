@@ -304,6 +304,9 @@ export type Requirements = {
   /** Capabilities it can run without: one not granted leaves it running with those calls
    *  refused, where a required one pauses it. Never its trigger (permissions.rs). */
   optional?: string[];
+  /** The actions agents may run (`action reset`'s `reset`): each is `AgentRuns("reset")`, a
+   *  grant a person approves and can take back. A person runs any of them either way. */
+  agents?: string[];
 };
 
 /** `POST /deploy/preview` — what deploying would ask for, without deploying. */

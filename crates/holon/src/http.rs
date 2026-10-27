@@ -302,7 +302,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         && method == "POST" {
             // `/trigger/<slug>/<name>` runs one of its actions by hand.
             if let Some((slug, name)) = slug.split_once('/') {
-                return handle_post_action(&state.store, &state.deployments, &state.deployments_path, slug, name, request, by);
+                return handle_post_action(&state.store, &state.deployments, &state.deployments_path, slug, name, request, by, agent);
             }
             return handle_post_trigger(&state.store, &state.deployments, &state.deployments_path, slug, request);
         }

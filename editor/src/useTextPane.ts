@@ -209,6 +209,19 @@ export function useTextPane({
   );
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
 
+  // A quick fix that rewrites the flow's text (make it runnable by hand): the text as typed, or
+  // the canvas written as text, rewritten and applied as a formatted edit is. Throws why the
+  // rewrite doesn't apply.
+  const rewrite = useCallback(
+    (f: (text: string) => string) => {
+      const current = text.open && text.typed && text.value !== null && text.key === key ? text.value : printHolon(flow.name, canvasDoc(), ev);
+      onEdit(f(current), true);
+    },
+    // canvasDoc reads live.current, as of the call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [text.open, text.typed, text.value, text.key, key, flow.name, ev, onEdit],
+  );
+
   // In view mode: the deployed version's text, read only.
   const viewText = useMemo(() => {
     if (!viewing || !text.open) return null;
@@ -296,6 +309,7 @@ export function useTextPane({
   return {
     open: text.open,
     toggle,
+    rewrite,
     pane: {
       text: viewing ? (viewText ?? "") : (text.value ?? ""),
       readOnly: viewing,

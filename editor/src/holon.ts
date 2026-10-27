@@ -13,6 +13,7 @@ import init, {
   Evaluator,
   build_preimage,
   describe_item,
+  describe_item_of,
   manifest_items,
   manifest_trigger,
   permission_kind,
@@ -270,16 +271,17 @@ export function compatible(src: WType, dst: WType): boolean {
 
 /** A manifest item (a capability's consent name, `HttpRequest("a.com")`, or a requirement,
  *  `Limit(max_requests=80)`) as a person reads it on the consent screen; one it doesn't know is
- *  shown as it is. Core's words (holon-author's describe.rs), as `holon check` prints them. */
-export function describeItem(item: string): string {
-  return describe_item(item);
+ *  shown as it is. Core's words (holon-author's describe.rs), as `holon check` prints them.
+ *  `byHand`: the flow has no routes, so its `NetworkIngress` is "can be run by hand". */
+export function describeItem(item: string, byHand = false): string {
+  return byHand ? describe_item_of(item, true) : describe_item(item);
 }
 
 /** A manifest's items: the capabilities (consent names), then what the deploy settings ask
  *  beyond the host's defaults, sorted as the server sorts them. */
 export function manifestItems(
   capabilities: string[],
-  requirements?: { limits?: Record<string, number>; plain_http?: string[]; private_addresses?: boolean },
+  requirements?: { limits?: Record<string, number>; plain_http?: string[]; private_addresses?: boolean; agents?: string[] },
 ): string[] {
   return manifest_items(capabilities, requirements ?? null);
 }

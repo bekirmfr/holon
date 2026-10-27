@@ -103,6 +103,8 @@ export function DeployBar({
   capabilities,
   clocks = [],
   fileFolders = [],
+  startsNothing = false,
+  onMakeRunnable,
 }: {
   /** This flow's deployment, if it has one. */
   entry: DeploymentEntry | undefined;
@@ -124,6 +126,10 @@ export function DeployBar({
   clocks?: string[];
   /** The folders its file handlers (`on file` blocks) watch: what starts them is never optional. */
   fileFolders?: string[];
+  /** Nothing would start a run (no route, clock, file handler or action): deploy is greyed. */
+  startsNothing?: boolean;
+  /** The quick fix for that: its statements put in `action run (input) { … }`. */
+  onMakeRunnable?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
@@ -153,21 +159,36 @@ export function DeployBar({
   const hasPlainHttp = (req?.plain_http ?? []).length > 0;
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
-  const title = entry
-    ? "deploy the canvas as it is now; the deployment keeps its state and sessions"
-    : "deploy this flow, named after it";
+  const title = startsNothing
+    ? "nothing would start a run: it is a holon, placed in other flows. To run it by hand, put it in an action"
+    : entry
+      ? "deploy the canvas as it is now; the deployment keeps its state and sessions"
+      : "deploy this flow, named after it";
+  const off = busy || startsNothing;
 
   return (
     <span style={{ display: "inline-flex", gap: 6, alignItems: "center", position: "relative" }}>
       <button
         onClick={onDeploy}
-        disabled={busy}
+        disabled={off}
         title={title}
-        style={{ ...primary, opacity: busy ? 0.5 : 1, cursor: busy ? "default" : "pointer" }}
+        style={{ ...primary, opacity: off ? 0.5 : 1, cursor: off ? "default" : "pointer" }}
       >
         {label}
         {outOfDate && <span title="the canvas has changed since it was deployed"> •</span>}
       </button>
+      {startsNothing && (
+        <>
+          <span style={{ color: "#e0c36f", fontSize: 11 }} title={title}>
+            nothing would start a run
+          </span>
+          {onMakeRunnable && (
+            <button style={base} onClick={onMakeRunnable} title="put its statements in action run (input) { … }, which a person runs by hand; rename it before deploying">
+              make it runnable by hand
+            </button>
+          )}
+        </>
+      )}
       {entry && look && (
         <>
           <span style={{ color: look.color, fontSize: 11 }} title={`session ${entry.session}`}>
@@ -316,6 +337,7 @@ export function DeployBar({
                 style={{ justifySelf: "start" }}
               />
               <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} />
+              <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} />
               {secretNames.length > 0 && (
                 <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
                   secrets{slug ? "" : " (name the flow first)"}
@@ -563,6 +585,52 @@ function OptionalPermissions({
               <input type="checkbox" checked={optional.includes(item)} onChange={(e) => toggle(item, e.target.checked)} />
               <span style={{ color: optional.includes(item) ? "#7e8ea8" : "#e0c36f" }}>{optional.includes(item) ? "optional" : "required"}</span>
             </span>
+          </label>
+        );
+      })}
+    </>
+  );
+}
+
+/** The names of a flow's actions, from its capabilities (`Action("reset")` is `reset`). */
+export function actionNames(capabilities: string[]): string[] {
+  return capabilities.flatMap((c) => {
+    const m = /^Action\((".*")\)$/.exec(c);
+    return m ? [JSON.parse(m[1]) as string] : [];
+  });
+}
+
+/**
+ * Which of the flow's actions agents may run (permissions.rs: `agents`). Each one ticked is asked
+ * for as `AgentRuns("reset")`, which a person approves; unticked, an agent is refused it. One
+ * ticked that the flow no longer has is shown so it can be cleared (deploy refuses it).
+ */
+function AgentsMayRun({ capabilities, settings, setSettings }: { capabilities: string[]; settings: FlowSettings; setSettings: (s: FlowSettings) => void }) {
+  const agents = settings.requirements?.agents ?? [];
+  const actions = actionNames(capabilities);
+  const listed = [...new Set([...actions, ...agents])].sort();
+  if (listed.length === 0) return null;
+  const toggle = (name: string, on: boolean) => {
+    const next = on ? [...agents, name] : agents.filter((x) => x !== name);
+    setSettings({ ...settings, requirements: { ...settings.requirements, agents: next.length > 0 ? next.sort() : undefined } });
+  };
+  return (
+    <>
+      <span
+        style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }}
+        title="a person runs any action; an agent only those ticked here, once a person approves it"
+      >
+        agents may run
+      </span>
+      {listed.map((name) => {
+        const unused = !actions.includes(name);
+        return (
+          <label key={name} style={{ display: "contents" }} title={`AgentRuns(${JSON.stringify(name)})`}>
+            <span style={{ color: unused ? "#e0916f" : undefined }}>
+              action {name}
+              {unused ? " (no longer in the flow)" : ""}
+            </span>
+            <input type="checkbox" aria-label={`agents may run ${name}`} checked={agents.includes(name)} onChange={(e) => toggle(name, e.target.checked)} style={{ justifySelf: "start" }} />
           </label>
         );
       })}

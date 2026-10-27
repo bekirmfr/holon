@@ -73,7 +73,7 @@ import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccountMenu, AuthGate, type Me } from "./AuthGate";
 import { AdminPage } from "./AdminPage";
 import { HomePage } from "./HomePage";
-import { compileHolon, printHolon, sourceLineOf } from "./holonText";
+import { compileHolon, printHolon, runnableByHand, sourceLineOf } from "./holonText";
 import { TextPane } from "./TextPane";
 import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
@@ -410,7 +410,7 @@ function Canvas({
       const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
       const scheduled = (doc.server?.interval ?? "").trim() !== "" && server.endpoints.length === 0 && server.clocks.length === 0 && server.files.length === 0 && server.actions.length === 0;
       const caps = ev.deployed_capability_names(hash, scheduled) as string[];
-      return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
+      return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps), byHand: server.endpoints.length === 0 };
     },
     [ev, byName],
   );
@@ -424,20 +424,30 @@ function Canvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port]);
 
-  // What the canvas's flow would ask for, by consent name (empty while it doesn't derive): the
+  // What the canvas's flow would ask for, by consent name (null while it doesn't derive): the
   // deploy settings offer each one but its trigger as something it can run without.
-  const flowCapabilities = useMemo(() => {
+  const flowCaps = useMemo(() => {
     try {
       const { nodes: ns, edges: es } = live.current;
+      if (ns.length === 0) return null;
       const hash = flowUnitHash(ns, es, ev, settings.port);
       const scheduled = settings.interval.trim() !== "" && derived.endpoints.length === 0 && derived.clocks.length === 0 && derived.files.length === 0 && derived.actions.length === 0;
       return ((ev.deployed_capability_names(hash, scheduled) as string[])).sort();
     } catch {
-      return [];
+      return null;
     }
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port, settings.interval, derived]);
+  const flowCapabilities = useMemo(() => flowCaps ?? [], [flowCaps]);
+  // Nothing would start a run: no route, clock, file handler or action, nor the old forms'
+  // `ingress`, interval or `on file` (docs/L4s/triggers-L4.md fork 14). Deploy is greyed, with
+  // the quick fix. Not said of a canvas that doesn't derive: that has its own error.
+  const startsNothing =
+    flowCaps !== null &&
+    derived.endpoints.length + derived.clocks.length + derived.files.length + derived.actions.length === 0 &&
+    settings.interval.trim() === "" &&
+    !flowCaps.some((c) => c === "NetworkIngress" || c.startsWith("FileArrival("));
 
   // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to
@@ -830,6 +840,15 @@ function Canvas({
                   capabilities={flowCapabilities}
                   clocks={derived.clocks.map((c) => c.label)}
                   fileFolders={derived.files.map((f) => f.folder)}
+                  startsNothing={startsNothing}
+                  onMakeRunnable={() => {
+                    try {
+                      textPane.rewrite(runnableByHand);
+                      setDeployError("");
+                    } catch (e) {
+                      setDeployError(`can't make it runnable by hand: ${e instanceof Error ? e.message : String(e)}`);
+                    }
+                  }}
                 />
               }
               saveMsg={saveMsg}
@@ -866,6 +885,9 @@ function Canvas({
                 errors={derived.errors}
                 liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
                 tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
+                role={me.role}
+                outOfDate={outOfDate === true}
+                onViewRun={(seq) => flowName && onView(flowName, seq)}
               />
             </Panel>
           )}
@@ -969,6 +991,7 @@ function Canvas({
               onView={onView}
               onChanged={refreshDeployments}
               focus={focus}
+              role={me.role}
             />
           )}
         </div>

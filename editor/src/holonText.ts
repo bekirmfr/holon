@@ -5,7 +5,7 @@
 // wasm bridge: the same code the command line runs. Both of its forms are read; the expression
 // form is written.
 
-import { compile_holon, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes } from "../wasm/holon_wasm.js";
+import { compile_holon, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes, holon_runnable_by_hand } from "../wasm/holon_wasm.js";
 import { knownNames, restoreDocument } from "./docUnits";
 import type { Evaluator } from "./holon";
 import type { FlowDocument } from "./server";
@@ -125,6 +125,9 @@ export const textCompletions = (
 
 /** The text as `holon fmt` writes it; throws why it can't be. */
 export const textFormatted = (text: string): string => holon_format(text);
+/** The quick fix **make it runnable by hand**: a flow nothing would start, its statements put in
+ *  `action run (input) { … }` (editing.rs). Throws why it doesn't apply. */
+export const runnableByHand = (text: string): string => holon_runnable_by_hand(text);
 
 /** The text's colours, in order: each stretch with what it is (editing.rs's `Class`, lowercase). */
 export const textColours = (text: string): (Stretch & { class: string })[] => holon_highlight(text);

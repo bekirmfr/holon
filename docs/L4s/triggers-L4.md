@@ -534,13 +534,23 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
   logged as the entry's `request`. The answer is `{answer, seq}`: the respond's body (`null` for
   an action that only writes) and the run's log entry; a respond's `missing` answers with its own
   status and error. `/trigger/<slug>` on a flow with actions names the way in. Deploy takes a flow
-  of actions alone, and refuses an action's `Action(name)` marked optional. Agents stay refused
-  `/trigger/…` (access.rs) until the grant names the actions they may run (slice 4b).
+  of actions alone, and refuses an action's `Action(name)` marked optional.
+  As built in slice 4b: agents may POST `/trigger/<slug>/<name>` (access.rs), and the handler
+  refuses one (403) unless the deployment's grant holds `AgentRuns("<name>")`. A flow with no
+  trigger is refused as "nothing would start a run: it has no route, clock, file handler or
+  action. To run it by hand, put it in an `action run (input) { … }`".
 - **Who may run an action is its grant**, whoever asks. There are no access modifiers:
   - **a person:** an editor or an admin, as `/trigger` allows today (fork 13); a viewer may not;
   - **an agent:** only an action the deployment's grant lets agents run. The approval lists each
     action with "agents may run it", off unless a person ticks it, and changing it is a grant
     change, as an optional permission is;
+  - As built in slice 4b: the deploy settings' `requirements.agents` (⚙ → **agents may run**, a
+    box per action) asks for `AgentRuns("reset")`, a manifest item a person approves ("let agents
+    run its action reset"). It is always optional (manifest.rs `permission_kind`): taking it back
+    refuses agents again and leaves the flow running. Deploy refuses an `agents` name that is not
+    one of its actions. An agent's deploy from text sends what the text says, which can't say
+    `agents`, so an agent's redeploy drops them, as it drops `plain_http`: a person ticks them
+    again. `holon mcp` gains **run** (slug, action, input), which runs an action as the agent;
   - **another flow:** only through its own grant (§9, slice 6);
   - **the network:** never. The data plane serves routes only.
 - **Persistence** adds nothing new on disk: the handlers are re-derived from the unit at load, as
@@ -594,20 +604,38 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
   - As built in slice 4a: one box for what to send, under the action rows (not remembered per
     action), the answer under it with its run's number, and the command beside it; the run is in
     view mode's log under its label (`action reset`), which replays it over its block. A viewer's
-    refusal shows as the answer. The greyed row for viewers, the boxes per action, the note when
-    the canvas has changes not deployed, and the deployed page's rows are slice 4b's.
+    refusal shows as the answer.
+  - As built in slice 4b: the rows are `ActionRows.tsx`, shared with the deployed page. Each
+    action has its own box (kept while the panel is open, not across reloads), its answer with
+    its run's number and **view run**, which opens view mode with that run selected, and its
+    command. A viewer sees the rows with **run** greyed and "an editor or an admin runs this" in
+    place of the box. "runs the deployed version: the canvas has changes not deployed" shows
+    above them when the canvas has changed.
   - Beside **run**, the command a script would use, to copy:
     `curl -X POST <server>/trigger/<slug>/reset -H "Authorization: Bearer $HOLON_TOKEN" -d '…'`.
 - **The deployed page** lists a running deployment's actions as the same rows, so an operator
   runs them without opening the flow. Today's "request body" box becomes the row of the old
   form's unnamed action, labelled **run**.
+  As built in slice 4b: a deployment's actions come from its triggers' labels (`action reset`);
+  the old form's box reads "what to send" and its button **run**, and neither shows for a viewer.
 - **A flow with no trigger** shows deploy greyed, "nothing would start a run", with a quick fix,
   **make it runnable by hand**. It wraps the flow's top-level statements in `action run (input) {
   … }` and, when the flow computes a value, ends the block with `respond` of it. The author can
   rename the action before deploying (fork 14).
+  As built in slice 4b: `holon-author/src/editing.rs` `runnable_by_hand` moves the top-level
+  statements' lines into the block (headers and holons stay where they are), answers the last
+  statement (`respond` of an expression, or of the last binding's name) when that compiles, and
+  writes the result as `fmt` does; what was sent is `sent` when the flow already names `input`.
+  It refuses a flow with a trigger, one that reads `ingress` (run by hand already) and one with
+  no statements. The editor applies it as a formatted edit of the text (`useTextPane`'s
+  `rewrite`), so undo takes it back. `holon check` says "nothing would start a run: it is a
+  holon, placed in other flows. To run it by hand, put it in an `action run (input) { … }`" as a
+  note, not a problem: a holon is still a text worth checking.
 - **The approval** (and `holon check`) show an old by-hand flow's `NetworkIngress` as "can be
   run by hand", not "receive requests" (`holon-author/src/describe.rs` 43, which both use): a
   label only, so no hash or grant changes.
+  As built in slice 4b: `describe_item_of(item, by_hand)`, by hand meaning no routes; the deploy
+  dialog, the flows page's manifest and the deployed page's manifest and permissions use it.
 - **The flows page** shows a flow's triggers beside its name: ":8129 · every 2s · 1 action". Today
   only its collapsed "may" section, opened, marks the permission that starts runs with a "trigger"
   badge (`Pages.tsx` 193–196, `Manifest.tsx` 53). The deployed page, which lists a deployment's triggers

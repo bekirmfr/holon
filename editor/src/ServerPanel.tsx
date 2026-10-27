@@ -16,8 +16,9 @@ import {
   type EndpointDraft,
   type Method,
 } from "./endpoint";
-import { actionUrl, runAction, sendRequest, ServerError, tickNow, type HttpResponse } from "./server";
+import { sendRequest, ServerError, tickNow, type HttpResponse, type Role } from "./server";
 import type { ActionDraft, ClockDraft, FileDraft } from "./canvasOps";
+import { ActionRows } from "./ActionRows";
 
 const field: CSSProperties = {
   font: "inherit",
@@ -98,6 +99,9 @@ export function ServerPanel({
   errors,
   liveSlug,
   tickSlug = "",
+  role,
+  outOfDate = false,
+  onViewRun,
 }: {
   ev: Evaluator;
   /** The routes the canvas declares, each already built into an endpoint unit. */
@@ -114,22 +118,18 @@ export function ServerPanel({
   errors: string[];
   /** The flow's server deployment, for "send live"; empty when it isn't deployed. */
   liveSlug: string;
+  /** Who is signed in: a viewer sees the actions, never runs one. */
+  role?: Role;
+  /** The canvas has changes not deployed (an action runs the deployed version). */
+  outOfDate?: boolean;
+  /** Open view mode on a run an action made. */
+  onViewRun?: (seq: number) => void;
 }) {
   const [req, setReq] = useState<TesterRequest>({ method: "GET", url: "/", headers: "", body: "" });
   const [result, setResult] = useState<TesterResult | null>(null);
   const [sending, setSending] = useState(false);
   const [open, setOpen] = useState(true);
   const [ticked, setTicked] = useState("");
-  // What to send the actions (JSON; empty is {}), and what the last one run answered.
-  const [sent, setSent] = useState("");
-  const [ran, setRan] = useState<{ name: string; text: string; ok: boolean } | null>(null);
-
-  const run = (name: string) => {
-    setRan({ name, text: "running…", ok: true });
-    runAction(tickSlug, name, sent)
-      .then((r) => setRan({ name, text: r.waiting ? `waiting (run ${r.seq})` : `${JSON.stringify(r.answer)} (run ${r.seq})`, ok: true }))
-      .catch((err: unknown) => setRan({ name, text: err instanceof Error ? err.message : String(err), ok: false }));
-  };
 
   const tick = (clock: string) => {
     setTicked(`${clock}: ticking…`);
@@ -207,42 +207,7 @@ export function ServerPanel({
           <span style={{ flex: 1, color: "#e6eefb" }}>{f.label.slice("on file ".length)}</span>
         </div>
       ))}
-      {actions.map((a) => (
-        <div key={a.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <span style={{ color: "#6fd3e0", ...label }}>action</span>
-          <span style={{ flex: 1, color: "#e6eefb" }}>{a.name}</span>
-          <button
-            style={{ ...button, opacity: tickSlug ? 1 : 0.4 }}
-            disabled={!tickSlug}
-            title={tickSlug ? "run this action once, now, on the deployment, with what to send below" : "deploy the flow to run it"}
-            onClick={() => run(a.name)}
-          >
-            run
-          </button>
-        </div>
-      ))}
-      {actions.length > 0 && (
-        <>
-          <textarea
-            value={sent}
-            onChange={(e) => setSent(e.target.value)}
-            placeholder={'what to send, as JSON (empty is {})\n{"to": 0}'}
-            aria-label="what to send the action"
-            rows={2}
-            style={{ ...field, resize: "vertical" }}
-          />
-          {ran && (
-            <div style={{ color: ran.ok ? "#9ad29f" : "#e0916f", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-              {ran.name}: {ran.text}
-            </div>
-          )}
-          {tickSlug && (
-            <code style={{ color: "#6f86a8", fontSize: 10, wordBreak: "break-all" }} title="the same run from a terminal">
-              curl -X POST {actionUrl(tickSlug, ran?.name ?? actions[0].name)} -H "Authorization: Bearer $HOLON_TOKEN" -d '{sent.trim() || "{}"}'
-            </code>
-          )}
-        </>
-      )}
+      <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
       {endpoints.map((e) => (
         <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <span style={{ color: "#6fd3e0", ...label }}>{e.method}</span>

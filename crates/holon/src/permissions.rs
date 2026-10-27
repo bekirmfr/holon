@@ -263,6 +263,10 @@ pub(crate) struct Requirements {
     /// trigger ([`Manifest::trigger`]) is never optional.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub(crate) optional: BTreeSet<String>,
+    /// The actions agents may run (`action reset`'s `reset`), each an item a person grants,
+    /// `AgentRuns("reset")`: off unless asked for, and taken back like any grant.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) agents: BTreeSet<String>,
 }
 
 impl Requirements {
@@ -300,7 +304,7 @@ impl Manifest {
     /// `PrivateAddresses`).
     pub(crate) fn items(&self) -> BTreeSet<String> {
         let r = &self.requirements;
-        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses)
+        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses, &r.agents)
     }
 
     /// The manifest's content hash: equal manifests, equal hashes. Which items are optional is

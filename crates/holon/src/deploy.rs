@@ -92,7 +92,7 @@ fn approval_needed(
 /// (`interval_seconds`: nothing tells you "every 3600 seconds" from structure alone). A unit
 /// without routes deployed with an interval runs on the clock, so `Clock` is in its manifest
 /// whether or not it reads the time (core's `Capabilities::deployed`). A unit with no trigger is
-/// refused — nothing would ever trigger it. A repeat slug is a redeploy, not an error (the L4's Fork 2): the unit, triggers
+/// refused — nothing would start a run. A repeat slug is a redeploy, not an error (the L4's Fork 2): the unit, triggers
 /// and schedule are replaced, but the slug's **state is kept** (see the insert below).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_post_deploy(
@@ -160,7 +160,7 @@ pub(crate) fn handle_post_deploy(
     if !is_ingress && !is_clock && !has_clocks && !has_actions && !arrivals.watches() {
         return err(
             400,
-            "this unit declares no driver capability (NetworkIngress, Clock, FileArrival or Action) — nothing would ever trigger it",
+            "nothing would start a run: it has no route, clock, file handler or action. To run it by hand, put it in an `action run (input) { … }`",
         );
     }
     if has_clocks && body.interval_seconds.is_some() {
@@ -177,6 +177,10 @@ pub(crate) fn handle_post_deploy(
         if body.requirements.optional.contains(&named) {
             return err(400, format!("{named} starts this flow's {}: it can't be optional", f.label));
         }
+    }
+    // Agents may run only actions it has.
+    if let Some(name) = body.requirements.agents.iter().find(|n| server.as_ref().is_none_or(|s| s.action(n).is_none())) {
+        return err(400, format!("agents may run {name:?}, but it has no action {name:?}"));
     }
     // Nor its actions'.
     for a in server.iter().flat_map(|s| &s.actions) {
@@ -769,7 +773,9 @@ pub(crate) fn handle_post_trigger(
 /// body as JSON (nothing is `{}`). Its handler alone runs, logged as a trigger run under its label
 /// (`action reset`) with what was sent and who ran it. The answer is `{answer, seq}`: the
 /// respond's body (`null` for an action that only writes) and the run's log entry. A respond's
-/// error (its `missing`) answers with its status; a run that failed, with why in its log.
+/// error (its `missing`) answers with its status; a run that failed, with why in its log. An
+/// `agent` runs only an action its grant lets agents run (`AgentRuns("reset")`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_post_action(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
@@ -778,6 +784,7 @@ pub(crate) fn handle_post_action(
     name: &str,
     request: &Request,
     by: Option<&str>,
+    agent: bool,
 ) -> Response {
     let (action, state, permit, vault, folders, channels) = {
         let deployments = deployments.lock().unwrap();
@@ -788,6 +795,10 @@ pub(crate) fn handle_post_action(
         let Some(action) = dep.server.as_ref().and_then(|s| s.action(name)) else {
             return err(404, format!("{slug:?} has no action {name:?}"));
         };
+        // An agent runs only what its grant lets agents run, as a person granted it.
+        if agent && !dep.grant.items.contains(&format!("AgentRuns({name:?})")) {
+            return err(403, format!("agents may not run {slug:?}'s action {name:?}: a person lets them, under \"agents may run\" in its deploy settings, and approves it"));
+        }
         (action.clone(), dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
     };
     let bytes = match read_body(request) {

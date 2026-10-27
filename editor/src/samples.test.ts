@@ -23,11 +23,11 @@ import {
 } from "./composites";
 import { foldLevels } from "./CompositeOverlay";
 import { documentUnits, knownNames, nameOf, restoreDocument } from "./docUnits";
-import { manifestItems, manifestTrigger, permissionKind } from "./holon";
+import { describeItem, manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { buildSample, samples } from "./samples";
-import { bindingsOf, compileHolon } from "./holonText";
+import { bindingsOf, compileHolon, runnableByHand } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
 import { restoreUnits } from "./docUnits";
@@ -117,6 +117,28 @@ describe("sample flows", () => {
     const gemini = derive("gemini-chat").caps;
     expect(gemini).toContain('HttpRequest("generativelanguage.googleapis.com")');
     expect(gemini).toContain('SecretRead("gemini_api_key")');
+    // An action agents may run is a grant of its own, which a person can take back without
+    // pausing the flow.
+    const ticker = derive("ticker").caps;
+    expect(ticker).toContain('Action("reset")');
+    expect(manifestItems(ticker, { agents: ["reset"] })).toContain('AgentRuns("reset")');
+    expect(manifestItems(ticker)).not.toContain('AgentRuns("reset")');
+    expect(permissionKind('AgentRuns("reset")', [], manifestTrigger(ticker)).kind).toBe("optional");
+    expect(describeItem('AgentRuns("reset")')).toBe("let agents run its action reset");
+    // An old flow run by hand (no routes, `ingress`) says so where a server receives requests.
+    expect(describeItem("NetworkIngress", true)).toBe("can be run by hand");
+    expect(describeItem("NetworkIngress")).toBe("receive requests");
+  });
+
+  it("make a flow nothing would start runnable by hand: an action, run through the real core", () => {
+    const fixed = runnableByHand("flow sums\n\nstate.last = 3\n1 + 2\n");
+    expect(fixed).toContain("action run (input) {");
+    expect(fixed).toContain("respond 1 + 2");
+    const ev = new Evaluator();
+    const { doc } = compileHolon(fixed, ev);
+    const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, "8080");
+    expect(server.actions.map((a) => a.name)).toEqual(["run"]);
+    expect(() => runnableByHand("flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n")).toThrow(/trigger already/);
   });
 
   it("tell required permissions from optional ones, the trigger always required", () => {

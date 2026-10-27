@@ -8,7 +8,7 @@ import { describeItem, permissionKind } from "./holon";
 
 /** What a manifest view shows: its items, which it can run without and what starts it, and on a
  *  deployment the ones not granted. */
-export type ManifestView = { items: string[]; optional?: string[]; trigger?: string | null; notGranted?: string[]; hash?: string };
+export type ManifestView = { items: string[]; optional?: string[]; trigger?: string | null; notGranted?: string[]; hash?: string; byHand?: boolean };
 
 /** "required" or "optional", with why on hover: the same badge in the manifest and permissions. */
 export function KindBadge({ item, optional, trigger }: { item: string; optional?: string[]; trigger?: string | null }) {
@@ -48,7 +48,7 @@ export function ManifestSection({ load, version = "" }: { load: () => Promise<Ma
       {open &&
         view?.items.map((item) => (
           <div key={item} style={{ ...row, color: missing.has(item) ? "#e0916f" : "#9fb4d4" }} title={item}>
-            <span style={{ flex: 1 }}>• {describeItem(item)}</span>
+            <span style={{ flex: 1 }}>• {describeItem(item, view.byHand)}</span>
             {missing.has(item) && <span>not granted</span>}
             {!item.startsWith("Limit(") && <KindBadge item={item} optional={view.optional} trigger={view.trigger} />}
           </div>

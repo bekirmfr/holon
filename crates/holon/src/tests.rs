@@ -559,7 +559,8 @@ fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
 
     let unscheduled = deploy_json(&state, "beats", unit, serde_json::json!({}));
     assert_eq!(unscheduled.status_code, 400);
-    assert!(String::from_utf8_lossy(&body_bytes(unscheduled)).contains("nothing would ever trigger it"));
+    let said = String::from_utf8_lossy(&body_bytes(unscheduled)).into_owned();
+    assert!(said.contains("nothing would start a run") && said.contains("action run (input)"), "{said}");
 
     let body = serde_json::json!({ "slug": "beats", "unit": plan.unit, "interval_seconds": 5 });
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&body).unwrap())));

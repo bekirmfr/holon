@@ -13,7 +13,7 @@
 use holon_core::{capabilities, consent_name, MapResolver, Resolver};
 
 use crate::composites::Names;
-use crate::describe::describe_item;
+use crate::describe::describe_item_of;
 use crate::flow::{derive_server, flow_unit, DerivedServer};
 use crate::lang::ast::Pos;
 use crate::lang::{self, Lowered};
@@ -86,6 +86,23 @@ fn port_of(c: &Lowered) -> &str {
 pub(crate) fn scheduled(c: &Lowered, server: &DerivedServer) -> bool {
     server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
 }
+
+/// Nothing would start a run of it: no route, clock, file handler or action, nor the old forms'
+/// `ingress`, `every` or `on file`. It is a holon, placed in other flows; deploy refuses it
+/// (docs/L4s/triggers-L4.md fork 14).
+pub fn starts_nothing(c: &Lowered, store: &mut MapResolver) -> bool {
+    let (server, unit) = derive(c, store);
+    let caps = unit.map(|(_, caps)| caps).unwrap_or_default();
+    server.endpoints.is_empty()
+        && server.clocks.is_empty()
+        && server.files.is_empty()
+        && server.actions.is_empty()
+        && !scheduled(c, &server)
+        && !caps.iter().any(|c| c == "NetworkIngress" || c.starts_with("FileArrival("))
+}
+
+/// What `check` says of a flow nothing would start.
+pub const STARTS_NOTHING: &str = "nothing would start a run: it is a holon, placed in other flows. To run it by hand, put it in an `action run (input) { … }`";
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
 fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
@@ -181,11 +198,16 @@ pub fn check(file: &str, source: &str) -> Report {
         Err(e) => (vec![], Default::default(), vec![e]),
     };
     out.push(if caps.is_empty() && modules.is_empty() { "it only computes: it reads and changes nothing outside" } else { "it may:" }.into());
-    out.extend(caps.iter().map(|c| format!("  {}", describe_item(c))));
+    // A flow with no routes that reads `ingress` is run by hand: its NetworkIngress says so.
+    let by_hand = server.endpoints.is_empty();
+    out.extend(caps.iter().map(|c| format!("  {}", describe_item_of(c, by_hand))));
     if let (Some(fuel), Some(memory)) = (modules.get(holon_core::FUEL_LIMIT), modules.get(holon_core::MEMORY_LIMIT)) {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }
     out.extend(while_it_runs(&caps));
+    if problems.is_empty() && starts_nothing(&c, &mut store) {
+        out.push(STARTS_NOTHING.into());
+    }
     problems.splice(0..0, server.errors);
     // The flow has no unit because of its routes' errors: each said once.
     let mut seen = std::collections::BTreeSet::new();

@@ -129,6 +129,32 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
   expect(Object.values(document.bindings ?? {})).toEqual(expect.arrayContaining(["name", "id"]));
 });
 
+test("a flow nothing would start can't deploy; made runnable by hand, it deploys and runs as an action", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "new", exact: true }).click();
+  const canvas = page.locator(".hl-canvas");
+  await canvas.getByRole("button", { name: "text off" }).click();
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText("flow by-hand\n\ntotal = 1 + 2\n");
+  await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
+  // The quick fix puts its statements in an action, answering the value it computes.
+  await canvas.getByRole("button", { name: "make it runnable by hand" }).click();
+  await expect(page.getByRole("region", { name: "Text" })).toContainText("action run (input) {");
+  await expect(page.getByRole("region", { name: "Text" })).toContainText("respond total");
+  await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);
+  // Deployed under a name of its own (asked, as for any new flow), its action answers.
+  await canvas.getByRole("button", { name: /^deploy/ }).click();
+  await page.locator('[aria-modal="true"]').locator("input").fill(`by-hand-${Date.now()}`);
+  await page.keyboard.press("Enter");
+  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
+  await page.getByRole("dialog").getByRole("button", { name: /^(Approve and deploy|Deploy)$/ }).click();
+  expect((await deployed).status()).toBe(200);
+  await page.getByRole("button", { name: "run", exact: true }).click();
+  await expect(page.getByText(/^run: 3 \(run \d+\)/)).toBeVisible();
+});
+
 test("hello-api answers, and its run replays exactly in view mode", async ({ page, request }) => {
   await openSample(page, "Hello API");
   const port = await deploy(page);
@@ -459,9 +485,10 @@ test("counter counts its hits with no wire to the request, and records the last 
   expect(await (await request.get(`http://127.0.0.1:${port}/last`)).text()).toBe(who);
 });
 
-test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, its action sets it by hand, and each run replays exactly", async ({ page, request }) => {
+test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, its action sets it by hand, from the editor and the deployed page, and each run replays exactly", async ({ page, request }) => {
   await openSample(page, "Ticker (a clock beside routes)");
-  const port = await deploy(page);
+  // Agents may run its action, as its deploy settings ask: a grant of its own.
+  const port = await deploy(page, SAMPLE_SHIFT, (settings) => settings.getByLabel("agents may run reset").check());
   const count = async () => Number(await (await request.get(`http://127.0.0.1:${port}/count`)).text());
   // Its every block runs on the scheduler, every 2 seconds, with no request to start it.
   await expect.poll(count, { timeout: 15_000 }).toBeGreaterThan(0);
@@ -477,16 +504,24 @@ test("ticker's clock ticks beside its routes: its count grows on its own, tick n
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
   // Its action, run by hand from the server panel with what to send, sets the count: the clock
   // goes on from there.
-  await page.getByLabel("what to send the action").fill('{"to": 1000}');
+  await page.getByLabel("what to send reset").fill('{"to": 1000}');
   await page.getByRole("button", { name: "run", exact: true }).click();
-  await expect(page.getByText(/^reset: \{"set":1000,"was":\d+\} \(run \d+\)$/)).toBeVisible();
+  await expect(page.getByText(/^reset: \{"set":1000,"was":\d+\} \(run \d+\)/)).toBeVisible();
   const reset = await count();
   expect(reset >= 1000 && reset < 1010, `${reset}`).toBe(true);
-  // Its run is logged under its label, and view mode replays it over its block.
-  await viewNewestRun(page);
-  await page.locator(".hl-view__bottom").getByText("action reset", { exact: true }).first().click();
+  // Its run is logged under its label: view run opens view mode on it, replayed over its block.
+  await page.getByRole("button", { name: "view run" }).click();
   await expect(page.locator(".hl-view__bottom")).toContainText(/· action reset · session/);
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
+  // The deployed page runs it too, without opening the flow; its grant lets agents run it.
+  await page.getByRole("button", { name: "deployed", exact: true }).click();
+  const card = page.getByLabel("deployment ticker");
+  await card.getByLabel("what to send reset").fill('{"to": 5}');
+  await card.getByRole("button", { name: "run", exact: true }).click();
+  await expect(card.getByText(/^reset: \{"set":5,"was":\d+\} \(run \d+\)/)).toBeVisible();
+  expect(await count()).toBeLessThan(1000);
+  await card.getByText(/^manifest ▸/).click();
+  await expect(card).toContainText("let agents run its action reset");
 });
 
 test("drop-board's file handlers run beside its routes: a file dropped in, and one removed, show on its page, and a file's run replays exactly", async ({ page, browser }) => {

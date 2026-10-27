@@ -16,7 +16,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("give that code up to {} MiB of memory per call", n / (1024 * 1024));
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 16] = [
+    let named: [(&str, Say); 18] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -24,6 +24,8 @@ pub fn describe_item(item: &str) -> String {
         ("CollectionWrite", |a| format!("put and delete items of its collection \"{a}\"")),
         ("FileRead", |a| format!("read files in the folder \"{a}\"")),
         ("FileArrival", |a| format!("run on each file new, changed or removed in the folder \"{a}\" (as its on file lines say), and pass it on")),
+        ("Action", |a| format!("can be run by hand: {a}")),
+        ("AgentRuns", |a| format!("let agents run its action {a}")),
         ("FileWrite", |a| format!("write, copy into and delete files in the folder \"{a}\"")),
         ("DbRead", |a| table_of(a, "read")),
         ("DbWrite", |a| table_of(a, "insert, update and delete rows of")),
@@ -52,6 +54,16 @@ pub fn describe_item(item: &str) -> String {
     .to_string()
 }
 
+/// `item` in words, for a flow run by hand (one with no routes) when `by_hand`: its
+/// `NetworkIngress` is "can be run by hand", not "receive requests" (a label only, so no hash or
+/// grant changes; docs/L4s/triggers-L4.md §7).
+pub fn describe_item_of(item: &str, by_hand: bool) -> String {
+    if by_hand && item == "NetworkIngress" {
+        return "can be run by hand".into();
+    }
+    describe_item(item)
+}
+
 /// A database capability's argument (`shop/orders`) said as what it lets a flow do: `read table
 /// "orders" of database "shop"`.
 fn table_of(arg: &str, verb: &str) -> String {
@@ -76,6 +88,11 @@ mod tests {
         assert_eq!(describe_item("Limit(module_fuel=200000000)"), "run code it carries (a js node) for up to 200000000 instructions per call, reaching nothing outside");
         assert_eq!(describe_item("Limit(module_memory=16777216)"), "give that code up to 16 MiB of memory per call");
         assert_eq!(describe_item("NetworkIngress"), "receive requests");
+        assert_eq!(super::describe_item_of("NetworkIngress", true), "can be run by hand");
+        assert_eq!(super::describe_item_of("NetworkIngress", false), "receive requests");
+        assert_eq!(super::describe_item_of("Clock", true), "read the clock");
+        assert_eq!(describe_item(r#"Action("reset")"#), "can be run by hand: reset");
+        assert_eq!(describe_item(r#"AgentRuns("reset")"#), "let agents run its action reset");
         assert_eq!(describe_item("Something(new)"), "Something(new)");
     }
 }
