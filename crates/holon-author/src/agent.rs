@@ -488,26 +488,38 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
 
 // ── the reference ───────────────────────────────────────────────────────────────────────────
 
-const GUIDE: &str = r#"Holon: flows written as text. A flow is a small service (routes, or a clock), built from pure
-parts. Holon derives what it may do from the text itself, runs only what is granted, and keeps a
-record of every run that replays exactly.
+const GUIDE: &str = r#"Holon: flows written as text. A flow is a small service (routes, clocks, actions), built from
+pure parts. Holon derives what it may do from the text itself, runs only what is granted, and
+keeps a record of every run that replays exactly.
 
 A FILE
   flow notes-api            its name (what it deploys as)
-  port 8102                 a flow with routes: the port its server answers on
-  every 10s                 a flow without routes: how often it runs
+  port 8102                 the port its routes answer on
   collection notes          a named store of items, used as notes[key]
   optional secret.key       a permission it can run without
 
-ROUTES
+HANDLERS (each starts runs; a flow has one or more, each a block)
   route GET /notes/:id (req) {
     respond notes[req.params.id]
   }
   req.params.id, req.query.after, req.headers.authorization, req.body (text), req.json (parsed)
   respond <body>, status: 201, missing: 400   (missing: the status when the body has no value)
   respond 204                                  (a status alone, no body)
-  A route is everything wired to its request: every statement in it must use req, directly or
-  through a binding.
+
+  every 10s { state.last = now }               a clock: now is the time of the tick
+  on file inbox (f) { … }                      each new file in the folder inbox, f its handle
+  action reset (input) {                       run by hand, by name: input is what was sent
+    state.count = input.to ?? 0                (JSON; {} for nothing), never from the network
+    respond { set: input.to ?? 0 }             its answer: a value alone, or none
+  }
+
+  A block is everything tied to its trigger. Its writes and calls are tied to it, though they
+  needn't read it; `state.seen = id after found` ties one to a value instead (it writes only when
+  found has a value). A statement tied to nothing is an error. At the top level, beside handlers,
+  only bindings of literals.
+  Without handlers, the top-level statements are the flow, one run of all of it: `every 10s` or
+  `on file inbox` in the header starts it. A flow nothing starts is a holon: to run it by hand,
+  put it in `action run (input) { … }`.
 
 BINDINGS AND VALUES
   name = expression          one form, everywhere; a binding used twice is one node
@@ -840,7 +852,7 @@ mod tests {
     #[test]
     fn the_reference_lists_the_language_every_leaf_and_the_samples() {
         let all = reference(None).unwrap();
-        assert!(all.contains("ROUTES") && all.contains("  concat(") && all.contains("  hello-api: "), "{all}");
+        assert!(all.contains("HANDLERS") && all.contains("  concat(") && all.contains("  hello-api: "), "{all}");
         assert!(reference(Some("coalesce")).unwrap().starts_with("coalesce("));
         assert!(reference(Some("respond")).unwrap().contains("(a template)"));
         assert!(reference(Some("likes")).unwrap().contains("collection likes"));
