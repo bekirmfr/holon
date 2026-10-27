@@ -237,6 +237,12 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     if let Some(i) = plan.interval_seconds {
         body["interval_seconds"] = json!(i);
     }
+    if let Some(b) = &plan.browsers {
+        // The plan keeps the origins on one line (`https://a.example *`); the deploy request
+        // takes them one by one, as the editor sends them. The preview gets them too: answering
+        // pages from a new site is a person's to approve.
+        body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
+    }
     let preview = json_of(api, "POST", "/deploy/preview", Some(Body::Json(body.clone())))?;
     if let Some(why) = preview.get("refused").and_then(Value::as_str) {
         return Err(format!("this server won't run it: {why}"));
@@ -259,11 +265,6 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     }
     body["acknowledge"] = json!([]);
     body["document"] = plan.document.clone();
-    if let Some(b) = &plan.browsers {
-        // The plan keeps the origins on one line (`https://a.example *`); the deploy request
-        // takes them one by one, as the editor sends them.
-        body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
-    }
     json_of(api, "POST", "/deploy", Some(Body::Json(body)))?;
     let entry = json_of(api, "GET", "/deployments", None)?
         .get("deployments")
@@ -884,6 +885,36 @@ mod tests {
         let replaced = json_of(&agent, "POST", "/flows", Some(Body::Json(json!({ "name": "mine", "document": {} })))).unwrap_err();
         assert!(replaced.contains("saved by ada") && replaced.contains("doesn't replace"), "{replaced}");
         assert_eq!(person.send("POST", "/deployments/agent-slugs/stop", None).unwrap().0, 200);
+    }
+
+    /// Which sites' pages a flow answers (`browsers`) is a person's to widen: a page from a new one
+    /// reads what the flow answers, in its visitor's browser. An agent's version that keeps them,
+    /// or answers fewer, deploys; one that adds a site waits for a person.
+    #[test]
+    fn an_agent_doesnt_open_a_flow_to_new_sites() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let text = "flow sites\nport 8232\nbrowsers https://app.example\n\nroute GET /hi (req) {\n  respond \"hi\"\n}\n";
+        let plan = agent::plan(text).unwrap();
+        for unit in &plan.units {
+            json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
+        }
+        let ask = |browsers: Value, acknowledge: Value| Some(Body::Json(json!({ "slug": "sites", "unit": plan.unit, "acknowledge": acknowledge, "document": plan.document, "browsers": browsers })));
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "sites", "unit": plan.unit })))).unwrap();
+        json_of(&person, "POST", "/deploy", ask(json!(["https://app.example"]), preview["needs_approval"].clone())).unwrap();
+        assert!(deploy(&agent, &text.replace("\"hi\"", "\"hello\""), Some("sites")).unwrap().starts_with("Deployed \"sites\""), "the same sites");
+        let wider = deploy(&agent, &text.replace("browsers https://app.example", "browsers https://app.example, https://other.example"), Some("sites")).unwrap();
+        assert!(wider.starts_with("Not deployed yet") && wider.contains("answer web pages from https://other.example"), "{wider}");
+        let any = json_of(&agent, "POST", "/deploy", ask(json!(["*"]), json!([]))).unwrap_err();
+        assert!(any.contains("needs a person's approval") && any.contains("Browser(\"*\")"), "{any}");
+        let browsers = |state: &AppState| state.deployments.lock().unwrap().get("sites").map(|d| d.browsers.clone());
+        assert_eq!(browsers(&state), Some(vec!["https://app.example".to_string()]), "as the person left it");
+        json_of(&agent, "POST", "/deploy", ask(json!([]), json!([]))).unwrap();
+        assert_eq!(browsers(&state), Some(vec![]), "answering fewer is the agent's to do");
+        assert_eq!(person.send("POST", "/deployments/sites/stop", None).unwrap().0, 200);
     }
 
     /// An agent's new code never inherits a secret a person let the old code read (redaction
