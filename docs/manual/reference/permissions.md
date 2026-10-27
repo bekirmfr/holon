@@ -12,8 +12,9 @@ the editor show).
 
 | Name | Shown as | From |
 |---|---|---|
-| `NetworkIngress` | receive requests | a `route` |
-| `Clock` | read the clock | `now`, or `every` (a flow on a clock runs on it) |
+| `NetworkIngress` | receive requests | a `route`; in a flow without handlers that reads `ingress`, shown as "can be run by hand" |
+| `Clock` | read the clock | `now`, or `every` (a clock starts runs) |
+| `Action("name")` | can be run by hand: name | `action name (input) { … }` |
 | `Random` | use randomness | `random` |
 | `HttpRequest("host")` | call https://host | `http.get("host", …)`, `http.post(…)`, …; the host is written in the text |
 | `SecretRead("name")` | read the secret "name" | `secret.name` |
@@ -28,10 +29,12 @@ the editor show).
 | `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on file f` |
 | `Await("e")` | wait for an event "e" and continue later | `await e` |
 
-A flow's trigger is one of them: `NetworkIngress` for a flow with routes, `FileArrival` for one
-`on file`, `Clock` for one with `every`. A flow with `every` and no routes asks for `Clock` even if
-it never reads `now`, because the clock starts its runs. A deploy with no trigger is refused, and
-the trigger can't be optional.
+A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes, `Clock`
+for an `every` block (or an `every` header), `FileArrival` for each folder an `on file` watches,
+`Action("name")` for each action, and `NetworkIngress` for a flow without handlers that reads
+`ingress`, run by hand. A flow with a clock asks for `Clock` even if it never reads `now`, because
+the clock starts its runs. A deploy with no trigger is refused, saying how to run it by hand, and
+none of a flow's triggers can be optional.
 
 A few leaves the language doesn't write have items of their own: `NetworkEgress` (send outbound
 messages), `SecretAccess` (read secrets) and `Spawn` (start processes).
@@ -98,7 +101,27 @@ optional secret.slack_webhook_path
 ```
 
 The deploy dialog marks it optional, and a deployment may be granted it or not. Without it, the
-nodes that need it have no value. The trigger can't be optional.
+nodes that need it have no value. A trigger can't be optional.
+
+## Who may run an action
+
+An action is never reached from the network: the flow's port answers only its routes. It runs
+when someone runs it by its name, from the editor's [server panel](../guides/editor.md#the-server-panel), the
+[deployed page](../guides/editor.md#the-deployed-page), or
+`POST /trigger/<slug>/<name>` on the holon server, its body the JSON the action receives
+(nothing is `{}`). On a server with accounts, an editor or an admin may run one, and a viewer may
+not. A flow without handlers that reads `ingress` runs the same way, by `POST /trigger/<slug>`.
+
+An agent may run an action only when a person has let it:
+
+| Name | Shown as | |
+|---|---|---|
+| `AgentRuns("name")` | let agents run its action name | the deploy settings' **agents may run**, one per action |
+
+It is always optional: without it the flow runs as it would, and only an agent is refused
+("agents may not run …"). Like any item, it is approved by a person, never by an agent, and can be
+taken back while the deployment runs. An agent runs it with `holon mcp`'s `run` tool, or `POST
+/trigger/<slug>/<name>` as an agent; it never runs a flow by hand that has no action.
 
 ## How an item is decided
 
