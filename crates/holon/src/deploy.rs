@@ -44,11 +44,18 @@ pub(crate) fn is_valid_slug(s: &str) -> bool {
 }
 
 /// The slug's current grant and unit, if it is deployed.
-fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> (Option<Grant>, Option<Hash>) {
+fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> (Option<Grant>, Option<Hash>, Vec<String>) {
     match deployments.lock().unwrap().get(slug) {
-        Some(d) => (Some(d.grant.clone()), Some(d.unit)),
-        None => (None, None),
+        Some(d) => (Some(d.grant.clone()), Some(d.unit), d.browsers.clone()),
+        None => (None, None, Vec::new()),
     }
+}
+
+/// The origins `browsers` answers pages from that the slug's deployment doesn't yet, as items a
+/// person approves for an agent (`Browser("https://app.example")`): a page from there, in its
+/// visitor's browser, then reads what the flow answers.
+fn browsers_added(browsers: &[String], previous: &[String]) -> Vec<String> {
+    browsers.iter().filter(|o| !previous.iter().any(|p| p == "*" || p == *o)).map(|o| format!("Browser({o:?})")).collect()
 }
 
 /// What deploying `unit` needs a person to approve (what policy and the previous grant don't
@@ -166,8 +173,11 @@ pub(crate) fn handle_post_deploy(
     if let Some(why) = policy.refuses(&manifest).or_else(|| seen.refuses(&manifest)) {
         return err(400, format!("this host can't grant that: {why}"));
     }
-    let (previous, previous_unit) = previous_of(deployments, &body.slug);
-    let (needed, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
+    let (previous, previous_unit, previous_browsers) = previous_of(deployments, &body.slug);
+    let (mut needed, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
+    if agent {
+        needed.extend(browsers_added(&body.browsers, &previous_browsers));
+    }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
     if agent && !missing.is_empty() {
         return err(
@@ -383,8 +393,11 @@ pub(crate) fn handle_post_deploy_preview(
     // As the deploy will derive it: on a schedule, it runs on the clock.
     let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
     let manifest = Manifest::new(capabilities(root_unit, &resolver).deployed(scheduled).iter(), body.requirements.with_module_limits(root_unit, &resolver));
-    let (previous, previous_unit) = previous_of(deployments, &body.slug);
-    let (needs, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
+    let (previous, previous_unit, previous_browsers) = previous_of(deployments, &body.slug);
+    let (mut needs, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
+    if agent {
+        needs.extend(browsers_added(&body.browsers, &previous_browsers));
+    }
     let items = manifest.items();
     let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
     Response::json(&serde_json::json!({
@@ -713,12 +726,13 @@ pub(crate) fn handle_post_trigger(
     }
     let parked_any = !entry.parked.is_empty();
     log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
-    let FiredRun { outputs, performed, .. } = run;
+    let FiredRun { outputs, performed, answered, .. } = run;
     if state.is_some() || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
 
     let redactor = Redactor::of(&vault);
+    let answers = Redactor::answers(&answered.0, &vault);
     let mut reply = serde_json::to_value(FireResponseBody {
         outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
         performed: performed
@@ -728,6 +742,7 @@ pub(crate) fn handle_post_trigger(
     })
     .unwrap_or_default();
     redactor.json(&mut reply);
+    answers.json(&mut reply);
     Response::json(&reply)
 }
 

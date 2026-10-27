@@ -327,8 +327,8 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
         _ => {
             let status = frozen_value(params, "status").unwrap_or("");
             let n: u32 = status.parse().unwrap_or(0);
-            if !digits(status, 3, 3) || !(100..=599).contains(&n) {
-                return Err(format!("status \"{status}\" is not an HTTP status (100–599)"));
+            if !digits(status, 3, 3) || !(200..=599).contains(&n) {
+                return Err(format!("status \"{status}\" is not an HTTP status a reply can have (200–599)"));
             }
             let missing = frozen_value(params, "missing").unwrap_or("");
             let m: u32 = missing.parse().unwrap_or(0);

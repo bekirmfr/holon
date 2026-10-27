@@ -130,12 +130,31 @@ pub struct LogEntry {
     /// deployment's own port names nobody.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// The secrets the run was given, by name: the version and fingerprint its marks name
+    /// (`v3 #a1b2c3d4`, `‹secret:name v3 #a1b2c3d4›`), so which value it had shows even where it
+    /// logged none, and `holon verify` stands in the same marks. Absent in entries logged before.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, String>,
     /// Whether text the run had looked like a mark the log writes in place of a value it never
     /// holds (`‹secret:name›`, `‹token:name›`), and was escaped: each `‹` of its own before one
     /// written twice, so that a mark is only ever one the log wrote (`secrets::write_marked`).
     /// Absent when nothing was, and in entries logged before look-alikes were escaped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub escaped: bool,
+    /// The credentials its calls answered, until the entry is logged (`log_run`): not part of it.
+    #[serde(skip)]
+    pub answered: AnswerTokens,
+}
+
+/// The credentials a run's calls answered, name and value, on their way to the redactor that
+/// keeps them out of the log (`secrets::answered_tokens`): never serialized, never printed.
+#[derive(Clone, Default)]
+pub struct AnswerTokens(pub Vec<(String, String)>);
+
+impl std::fmt::Debug for AnswerTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AnswerTokens({} kept out of sight)", self.0.len())
+    }
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -581,7 +600,9 @@ mod tests {
             retries: 0,
             claims: vec![],
             by: None,
+            secrets: BTreeMap::new(),
             escaped: false,
+            answered: AnswerTokens::default(),
         }
     }
 

@@ -19,6 +19,8 @@
 //!   effects and to answer the same each time; the time (`current_timestamp`: pass it in); other
 //!   placeholders (`?`, `:name`); comments some engines read as code (`#`, `--x`, `/*!`); a
 //!   string with a backslash (engines differ on what it escapes).
+//! - **Brackets are code,** as Postgres reads them (`array[…]`, `tags[1]`), so a subquery inside
+//!   them is scanned like any other; a name is quoted `"…"` (or `` `…` ``), not SQLite's `[…]`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -84,7 +86,6 @@ pub fn positional(sql: &str) -> Result<(String, Vec<usize>), String> {
                 i = j + 1;
             }
             b'"' | b'`' => i = skip_to(i + 1, &s[i..=i]),
-            b'[' => i = skip_to(i + 1, b"]"),
             b'-' if s.get(i + 1) == Some(&b'-') => i = skip_to(i, b"\n"),
             b'/' if s.get(i + 1) == Some(&b'*') => i = skip_to(i + 2, b"*/"),
             b'$' => {
@@ -246,7 +247,7 @@ fn said(t: &Token) -> String {
     }
 }
 
-const PUNCT: &[&str] = &["::", "<=", ">=", "<>", "!=", "||", "->>", "->", "(", ")", ",", ".", ";", "*", "=", "<", ">", "+", "-", "/", "%", "&", "|", "~", "^", "!"];
+const PUNCT: &[&str] = &["::", "<=", ">=", "<>", "!=", "||", "->>", "->", "(", ")", "[", "]", ",", ".", ";", "*", "=", "<", ">", "+", "-", "/", "%", "&", "|", "~", "^", "!"];
 
 fn tokenize(sql: &str) -> Result<Vec<Token>, String> {
     let s = sql.as_bytes();
@@ -291,8 +292,10 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, String> {
                 }
             }
             out.push(Token { tok: Tok::Str, lower: String::new() });
-        } else if c == b'"' || c == b'`' || c == b'[' {
-            let close = if c == b'[' { b']' } else { c };
+        } else if c == b'"' || c == b'`' {
+            // A quoted name. Not `[`: Postgres reads brackets as code (an array, a subscript),
+            // so what is inside them is scanned as code.
+            let close = c;
             let start = i + 1;
             let Some(len) = s[start..].iter().position(|&b| b == close) else { return Err("a quoted name isn't closed".into()) };
             let name = &sql[start..start + len];
@@ -765,6 +768,16 @@ mod tests {
         assert_eq!(read("select * from (a join b on a.x = b.y) left join c on true").0, set(&["a", "b", "c"]));
         assert_eq!(read("select * from t where f in (1, 2), x").0, set(&["t"]), "a comma past where starts no table");
         assert_eq!(read("select * from (values (1), (2)) as v(n)").0, set(&[]));
+    }
+
+    /// Postgres reads brackets as code: a subquery in an array or a subscript reads its table.
+    #[test]
+    fn a_subquery_in_brackets_reads_its_table() {
+        assert_eq!(read("select array[(select password from users limit 1)] from orders").0, set(&["orders", "users"]));
+        assert_eq!(read("select id from orders where tags[(select count(*) from users)] is not null").0, set(&["orders", "users"]));
+        assert_eq!(read("select tags[1], tags[$1] from orders").0, set(&["orders"]));
+        assert_eq!(write("insert into orders (tags) values (array[(select password from users limit 1)])"), (set(&["users"]), set(&["orders"])));
+        assert!(refused("select * from [orders]", false).contains("expected a table"), "SQLite's [name] isn't a name here");
     }
 
     #[test]
