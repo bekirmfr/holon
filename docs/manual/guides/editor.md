@@ -77,7 +77,15 @@ the panel.
 
 ### The server panel
 
-The **server** panel at the bottom left lists the flow's routes. **test** opens a request
+The **server** panel at the bottom left lists what starts the flow's runs: its clocks (`every 2s`),
+its file handlers (`on file inbox`), its actions and its routes, with a count when it is folded.
+**tick now** by a clock runs it once, now, on the deployment. Each action has a box for what to
+send it, as JSON, and **run**: the answer shows under it with the run's number, and **view run**
+opens that run. A viewer sees the actions and can't run them
+([Actions](actions.md)). When the canvas has changes not deployed, a run uses the deployed version,
+and the panel says so.
+
+**test** opens a request
 tester: pick a method, a path (`/todos/1?full=1`), headers and a body, then **send local** or
 **send live**. Local runs the flow as it is on the canvas, in your browser, with nothing from
 outside: no stored state, no secrets, no calls, so what needs them has no value. Live sends the
@@ -106,9 +114,13 @@ digits, `-` and `_`.
 
 The deploy bar (edit mode, in the toolbar) has **deploy** (or **update**, with **•** when the
 canvas differs from what is deployed), the deployment's state and port, **pause**, **resume**,
-**stop** and **run**, and **⚙** for its settings: port, interval, limits, secrets and optional
-permissions. Deploying shows what the flow may do and asks you to approve what isn't granted yet.
-[Deploying and permissions](deploying.md) covers it in full.
+**stop** and **run**, and **⚙** for its settings: port, interval, limits, secrets, optional
+permissions and which actions agents may run. Deploying shows what the flow may do and asks you
+to approve what isn't granted yet. [Deploying and permissions](deploying.md) covers it in full.
+
+A flow with no route, clock, file handler or action, and no `ingress`, starts nothing, so
+**deploy** is greyed and says why. **make it runnable by hand** next to it puts the flow's
+statements in an `action run (input) { … }` block, answering what it computes.
 
 ## View mode: replaying runs
 
@@ -118,7 +130,8 @@ too.)
 
 The **run** pane at the bottom has two tabs:
 
-- **Log**: the runs, newest last, with their route, status and time. **● live** follows the
+- **Log**: the runs, newest last, with what started each (its route, or `every 2s`, `on file
+  inbox`, `action reset`), its status and time. **● live** follows the
   newest; picking one turns it off. A run's details show its request, what it read, what it did,
   its answer and its outbound calls. Above the list, the chain bar says **chain unbroken** (or
   where it breaks), the log's **head**, and **export runs**
@@ -145,9 +158,11 @@ and after the run, or after the step you are on.
 
 ## The deployed page
 
-Every deployment, as a card: its state, port, triggers and who deployed it, with **pause**,
-**resume**, **stop**, **run** (from the latest state, fresh, or a kept session), **view**, and
-**delete** once stopped. Its folds:
+Every deployment, as a card: its state, port, triggers (`Http :8156`, `every 2s`, `on file inbox`,
+`action reset`) and who deployed it, with **pause**, **resume**, **stop**, **run** (from the
+latest state, fresh, or a kept session), **view**, and **delete** once stopped. A running
+deployment with actions shows a row for each, with its box and **run**, as the server panel does
+([Actions](actions.md)). Its folds:
 
 - **sessions ▸**: each session's runs, errors and state; **restore** starts from one.
 - **⏸ N waiting ▸**: runs parked at an `await`.

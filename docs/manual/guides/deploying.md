@@ -18,8 +18,10 @@ Pressing **deploy** in the editor (or an agent's `deploy`):
 4. shows you both, and deploys when you approve.
 
 The deployment takes the flow's name (its slug). A server flow's routes answer on its `port` at
-once; a clock flow's first run is at once, then every interval; a flow `on file` runs for each
-file that arrives from then on.
+once; a clock (an `every` block, or a clock flow's `every` header) first runs at once, then every
+period; a file handler (`on file`) runs for each file that arrives from then on; an action runs
+when someone runs it ([Actions](actions.md)). A flow with none of these, and no route, is refused:
+it would start nothing.
 
 ## The approval dialog
 
@@ -50,11 +52,12 @@ open and deploy ([Working with agents](agents.md)).
 |---|---|
 | port | the port a server flow answers on (the text's `port` line) |
 | web pages from | origins whose web pages may call the routes from a browser (CORS): `*`, or `https://site`; the text's `browsers` line |
-| interval (s) | how often a clock flow runs (the text's `every` line) |
+| interval (s) | how often a clock flow runs (the text's `every` line). A flow with `every` blocks has its periods in the text and shows them here instead, `clocks every 2s`: it takes no interval |
 | needs | limits for this deployment, each blank for the host's default: timeouts, run budgets, requests per run, sizes, redirects, the longest `await`, runs waiting at once |
 | plain HTTP to | hosts it may call over plain `http://` (only if the policy allows plain HTTP at all) |
 | private addresses | whether it may call this machine and its network (only if the policy allows it) |
 | permissions | which of its optional needs to grant |
+| agents may run | for a flow with actions, a box for each: ticked, an agent may run it, which asks for `AgentRuns("name")` ([Who may run an action](../reference/permissions.md#who-may-run-an-action)) |
 | secrets | the secrets it reads, each set, replaced or removed |
 
 A limit above the host's default needs approval; one above the host's ceiling can't be granted.
@@ -203,8 +206,10 @@ can narrow it:
 - **revoke** an item: from now on, the server refuses that effect. Revoking something optional
   makes those parts absent, and the flow carries on. Revoking something required **pauses** the
   deployment, unless **keep running when something required is revoked** is ticked: then those
-  calls fail and the rest runs. What starts its runs (receiving requests, its schedule, a
-  folder's new files) always pauses it when revoked, ticked or not.
+  calls fail and the rest runs. What starts its runs always pauses it when revoked, ticked or
+  not: the first it has of receiving requests, a folder's new files, its schedule and an action.
+  A flow with several kinds of handler (routes and a clock, say) has the others' triggers as
+  ordinary required items.
 - **grant back** restores a revoked item.
 - a limit can be **lowered**. Raising one needs a new deploy, and approval.
 
