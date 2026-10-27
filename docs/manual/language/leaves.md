@@ -789,3 +789,7 @@ Answers the route's request: body as the response, with the status set on the no
 ### `stripe_verify`
 
 Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time with each v1 signature (any one matching passes, as while a secret is rolled), the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it.
+
+### `every`
+
+A clock: a run every seconds set on the node, with now, the time of the tick. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.

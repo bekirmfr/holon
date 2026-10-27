@@ -407,7 +407,8 @@ function Canvas({
       restoreDocument(doc, ev);
       const port = doc.server?.port ?? DEFAULT_SETTINGS.port;
       const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
-      const scheduled = (doc.server?.interval ?? "").trim() !== "" && deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port).endpoints.length === 0;
+      const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
+      const scheduled = (doc.server?.interval ?? "").trim() !== "" && server.endpoints.length === 0 && server.clocks.length === 0;
       const caps = ev.deployed_capability_names(hash, scheduled) as string[];
       return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
     },
@@ -429,7 +430,7 @@ function Canvas({
     try {
       const { nodes: ns, edges: es } = live.current;
       const hash = flowUnitHash(ns, es, ev, settings.port);
-      const scheduled = settings.interval.trim() !== "" && derived.endpoints.length === 0;
+      const scheduled = settings.interval.trim() !== "" && derived.endpoints.length === 0 && derived.clocks.length === 0;
       return ((ev.deployed_capability_names(hash, scheduled) as string[])).sort();
     } catch {
       return [];
@@ -827,6 +828,7 @@ function Canvas({
                   slug={flowName}
                   secretNames={secretNames}
                   capabilities={flowCapabilities}
+                  clocks={derived.clocks.map((c) => c.label)}
                 />
               }
               saveMsg={saveMsg}
@@ -857,8 +859,10 @@ function Canvas({
                 key={flowName ?? ""}
                 ev={ev}
                 endpoints={derived.endpoints}
+                clocks={derived.clocks}
                 errors={derived.errors}
                 liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
+                tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
               />
             </Panel>
           )}

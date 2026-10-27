@@ -13,7 +13,7 @@ export type Graph = { nodes: PrimitiveNodeType[]; edges: Edge[] };
 export type Synced = { graph: Graph; names: Map<string, string>; toCanvas: Map<string, string> };
 
 /** JSON with each object's keys in order: the same value says the same, however it was built. */
-const stable = (v: unknown): string =>
+export const stable = (v: unknown): string =>
   Array.isArray(v) ? `[${v.map(stable).join(",")}]` : v !== null && typeof v === "object" ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`).join(",")}}` : JSON.stringify(v);
 
 /** What a node is, apart from its wiring, its params and its place. */

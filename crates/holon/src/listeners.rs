@@ -232,7 +232,7 @@ pub(crate) fn sync_listeners(state: &AppState) {
         .unwrap()
         .iter()
         .filter(|(_, d)| d.life.status != Status::Stopped)
-        .filter_map(|(slug, d)| d.server.as_ref().map(|s| (slug.clone(), s.port)))
+        .filter_map(|(slug, d)| d.server.as_ref().and_then(|s| s.port).map(|port| (slug.clone(), port)))
         .collect();
     let mut running = listeners.lock().unwrap();
     running.retain(|slug, (port, stop)| {

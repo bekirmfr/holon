@@ -274,7 +274,10 @@ impl Parser {
                 Tok::Eof => return Ok(file),
                 Tok::RBrace => return err(t.span.start, "a } without a block to close"),
                 Tok::Ident => match t.text.as_str() {
-                    "flow" | "port" | "every" | "interval" | "browsers" | "optional" | "collection" | "folder" | "database" | "channel" => {
+                    // `every 2s {` opens a clock handler; `every 2s` alone is the old header.
+                    "every" if self.peek_at(2).tok == Tok::LBrace => file.items.push(Item::Every(self.every()?)),
+                    // A header's word before `.` is a node's name in the wiring form (`every.now -> …`).
+                    "flow" | "port" | "every" | "interval" | "browsers" | "optional" | "collection" | "folder" | "database" | "channel" if self.peek_at(1).tok != Tok::Dot => {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
@@ -502,6 +505,19 @@ impl Parser {
         };
         let (body, end) = self.block()?;
         Ok(RouteDef { method, path, request, resumes, body, span: head.span.to(end) })
+    }
+
+    /// `every 2s { … }`.
+    fn every(&mut self) -> R<EveryDef> {
+        let head = self.next();
+        let t = self.next();
+        let seconds = match t.tok {
+            Tok::Duration(seconds) => seconds,
+            Tok::Number => t.text.parse().map_err(|_| ParseError { pos: t.span.start, message: format!("{} is not a number", t.text) })?,
+            _ => return err(t.span.start, format!("expected how often, like 10s or 5m, found {}", describe(&t))),
+        };
+        let (body, end) = self.block()?;
+        Ok(EveryDef { seconds, text: t.text, head: head.span.to(t.span), body, span: head.span.to(end) })
     }
 
     /// `{ statements }`, and the span of the closing brace.

@@ -347,6 +347,16 @@ impl AppState {
     }
 }
 
+impl Deployment {
+    /// Fire on the scheduler's next pass: its interval, if it has one, and each of its clocks.
+    fn arm_clocks(&mut self, now: SystemTime) {
+        if self.interval_seconds.is_some() {
+            self.next_due = Some(now);
+        }
+        self.clock_due = self.server.as_ref().map(|s| vec![now; s.clocks.len()]).unwrap_or_default();
+    }
+}
+
 /// slug → (port, stop signal) of each running data-plane listener.
 type Listeners = BTreeMap<String, (u16, dataplane::Stop)>;
 
@@ -363,6 +373,9 @@ struct Deployment {
     triggers: Vec<String>,
     interval_seconds: Option<u64>,
     next_due: Option<SystemTime>,
+    /// When each of its server's clocks (`server.clocks`, in order) fires next: due at deploy,
+    /// at load and when it runs again, then a period after each tick.
+    clock_due: Vec<SystemTime>,
     /// A bounded ring buffer (last 20) of clock ticks — see the L4's Fork 2: logged to stdout
     /// *and* kept here, retrievable via `GET /deployments/<slug>/history`, so a standing
     /// deployment is checkable after the fact, not just while someone happens to be watching

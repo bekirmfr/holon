@@ -101,6 +101,7 @@ export function DeployBar({
   slug,
   secretNames,
   capabilities,
+  clocks = [],
 }: {
   /** This flow's deployment, if it has one. */
   entry: DeploymentEntry | undefined;
@@ -117,6 +118,9 @@ export function DeployBar({
   slug: string | null;
   /** The secret names the canvas reads. */
   secretNames: string[];
+  /** Its clocks' labels (`every 2s`), when it has `every` nodes: their periods are on the
+   *  canvas, so it takes no interval. */
+  clocks?: string[];
 }) {
   const [open, setOpen] = useState(false);
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
@@ -252,13 +256,22 @@ export function DeployBar({
                 onChange={(e) => setSettings({ ...settings, browsers: e.target.value })}
                 style={input}
               />
-              <span title="how often a flow without routes runs on the clock, in seconds">interval (s)</span>
-              <input
-                value={settings.interval}
-                placeholder="clock flows"
-                onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
-                style={input}
-              />
+              {clocks.length > 0 ? (
+                <>
+                  <span title="its every nodes: each runs its group on its own period">clocks</span>
+                  <span style={{ color: "#e6eefb" }}>{clocks.join(", ")}</span>
+                </>
+              ) : (
+                <>
+                  <span title="how often a flow without routes runs on the clock, in seconds">interval (s)</span>
+                  <input
+                    value={settings.interval}
+                    placeholder="clock flows"
+                    onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
+                    style={input}
+                  />
+                </>
+              )}
               <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="what it needs beyond its graph; the host must grant it">
                 needs (blank: this host's default)
               </span>
@@ -299,7 +312,7 @@ export function DeployBar({
                 onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
                 style={{ justifySelf: "start" }}
               />
-              <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} />
+              <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} />
               {secretNames.length > 0 && (
                 <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
                   secrets{slug ? "" : " (name the flow first)"}
@@ -506,14 +519,18 @@ function OptionalPermissions({
   capabilities,
   settings,
   setSettings,
+  clocked,
 }: {
   capabilities: string[];
   settings: FlowSettings;
   setSettings: (s: FlowSettings) => void;
+  /** It has clocks (`every` nodes): the clock starts them, so it is never optional. */
+  clocked: boolean;
 }) {
   const optional = settings.requirements?.optional ?? [];
   const trigger = manifestTrigger(capabilities);
-  const listed = [...new Set([...capabilities.filter((c) => c !== trigger), ...optional])].sort();
+  const starts = (c: string) => c === trigger || (clocked && c === "Clock");
+  const listed = [...new Set([...capabilities.filter((c) => !starts(c)), ...optional])].sort();
   if (listed.length === 0) return null;
   const toggle = (item: string, on: boolean) => {
     const next = on ? [...optional, item] : optional.filter((x) => x !== item);

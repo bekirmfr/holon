@@ -578,6 +578,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "first bind the folders (an admin): holon folder add inbox ~/holon-inbox --read-only, holon folder add outbox ~/holon-outbox --read-only and holon folder add audit ~/holon-audit; deploy, then copy a .csv into ~/holon-inbox, delete a file from it, or drop any file into ~/holon-outbox: within two seconds ~/holon-audit/<folder>/ holds an entry for each change; a .txt dropped into the inbox starts nothing",
         text: include_str!("../samples/file-audit.holon"),
     },
+    Sample {
+        name: "ticker",
+        title: "Ticker (a clock beside routes)",
+        description: "A flow with a clock of its own beside its routes: every 2 seconds (an every block) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the block). Its page lists each tick as it arrives; GET /count answers the count.",
+        shows: &["every blocks", "a clock beside routes", "now in a block", "channels", "state across runs"],
+        port: Some("8156"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far",
+        text: include_str!("../samples/ticker.holon"),
+    },
 ];
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
-// The server panel: the routes this flow declares (derived from its request nodes, see
-// derive.ts), and a request tester to try them, locally or against the flow's deployment.
+// The server panel: the routes and clocks this flow declares (derived from its request and every
+// nodes, see derive.ts), a request tester to try the routes, locally or against the flow's
+// deployment, and "tick now" for a deployed clock.
 // Deploying is the header's job (DeployBar), for the whole flow.
 
 import { useState, type CSSProperties } from "react";
@@ -14,7 +15,8 @@ import {
   type EndpointDraft,
   type Method,
 } from "./endpoint";
-import { sendRequest, ServerError, type HttpResponse } from "./server";
+import { sendRequest, ServerError, tickNow, type HttpResponse } from "./server";
+import type { ClockDraft } from "./canvasOps";
 
 const field: CSSProperties = {
   font: "inherit",
@@ -89,12 +91,18 @@ function showBody(body: string): string {
 export function ServerPanel({
   ev,
   endpoints,
+  clocks = [],
   errors,
   liveSlug,
+  tickSlug = "",
 }: {
   ev: Evaluator;
   /** The routes the canvas declares, each already built into an endpoint unit. */
   endpoints: EndpointDraft[];
+  /** The clocks the canvas declares (its `every` nodes' groups). */
+  clocks?: ClockDraft[];
+  /** The flow's running deployment, for "tick now"; empty when it isn't running. */
+  tickSlug?: string;
   /** Why a request node's group couldn't become a route. */
   errors: string[];
   /** The flow's server deployment, for "send live"; empty when it isn't deployed. */
@@ -104,6 +112,14 @@ export function ServerPanel({
   const [result, setResult] = useState<TesterResult | null>(null);
   const [sending, setSending] = useState(false);
   const [open, setOpen] = useState(true);
+  const [ticked, setTicked] = useState("");
+
+  const tick = (clock: string) => {
+    setTicked(`${clock}: ticking…`);
+    tickNow(tickSlug, clock)
+      .then((t) => setTicked(`${clock}: ticked, ${t.performed.length} effect${t.performed.length === 1 ? "" : "s"} performed`))
+      .catch((err: unknown) => setTicked(`${clock}: ${err instanceof Error ? err.message : String(err)}`));
+  };
 
   const sendLocal = () => setResult(answerLocally(ev, endpoints, req));
 
@@ -145,14 +161,29 @@ export function ServerPanel({
         onClick={() => setOpen(!open)}
         title={open ? "collapse" : "expand"}
       >
-        server {open ? "▾" : `▸ ${endpoints.length} route${endpoints.length === 1 ? "" : "s"}`}
+        server {open ? "▾" : `▸ ${endpoints.length} route${endpoints.length === 1 ? "" : "s"}${clocks.length > 0 ? `, ${clocks.length} clock${clocks.length === 1 ? "" : "s"}` : ""}`}
       </div>
       {open && (
         <>
 
-      {endpoints.length === 0 && errors.length === 0 && (
+      {endpoints.length === 0 && clocks.length === 0 && errors.length === 0 && (
         <div>drop a request node (palette, http) and wire it to a respond node to add a route</div>
       )}
+      {clocks.map((c) => (
+        <div key={c.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <span style={{ color: "#6fd3e0", ...label }}>every</span>
+          <span style={{ flex: 1, color: "#e6eefb" }}>{c.label.slice("every ".length)}</span>
+          <button
+            style={{ ...button, opacity: tickSlug ? 1 : 0.4 }}
+            disabled={!tickSlug}
+            title={tickSlug ? "run this clock's group once, now, on the deployment" : "deploy the flow to tick it"}
+            onClick={() => tick(c.label)}
+          >
+            tick now
+          </button>
+        </div>
+      ))}
+      {ticked && <div style={{ color: "#9fb4d4" }}>{ticked}</div>}
       {endpoints.map((e) => (
         <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <span style={{ color: "#6fd3e0", ...label }}>{e.method}</span>

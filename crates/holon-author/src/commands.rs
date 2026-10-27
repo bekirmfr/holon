@@ -81,10 +81,10 @@ fn port_of(c: &Lowered) -> &str {
     c.doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or_default()
 }
 
-/// Whether the flow deploys on a schedule: `every`, and no routes. It then runs on the clock, so
+/// Whether the flow deploys on a schedule: `every`, and no routes or clock blocks. It then runs on the clock, so
 /// what it may do includes the clock (core's `Capabilities::deployed`), as the deploy will ask.
 pub(crate) fn scheduled(c: &Lowered, server: &DerivedServer) -> bool {
-    server.endpoints.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
+    server.endpoints.is_empty() && server.clocks.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
 }
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
@@ -141,7 +141,8 @@ pub(crate) fn problems(c: &Lowered, store: &mut MapResolver) -> Vec<String> {
     problems
 }
 
-/// `holon check`: compiled, its routes, its unit and what it may do; each problem on stderr.
+/// `holon check`: compiled, its routes and clocks, its unit and what it may do; each problem on
+/// stderr.
 pub fn check(file: &str, source: &str) -> Report {
     let mut store = MapResolver::new();
     let c = match compile(file, source, &mut store) {
@@ -154,6 +155,10 @@ pub fn check(file: &str, source: &str) -> Report {
         let port = port_of(&c);
         out.push(format!("a server on :{}", if port.is_empty() { "?" } else { port }));
         out.extend(server.endpoints.iter().map(|e| format!("  {} {}", e.method, e.path)));
+    }
+    if !server.clocks.is_empty() {
+        out.push(if server.endpoints.is_empty() { "a server of clocks, listening on no port" } else { "and its clocks" }.into());
+        out.extend(server.clocks.iter().map(|c| format!("  {}", c.label)));
     }
     let (caps, modules, mut problems) = match unit {
         Ok((hash, caps)) => {
@@ -229,6 +234,10 @@ pub fn show(file: &str, source: &str) -> Report {
     if !server.endpoints.is_empty() {
         out.push("  routes".into());
         out.extend(server.endpoints.iter().map(|e| format!("    {} {}", e.method, e.path)));
+    }
+    if !server.clocks.is_empty() {
+        out.push("  clocks".into());
+        out.extend(server.clocks.iter().map(|c| format!("    {}", c.label)));
     }
     if let Ok((_, caps)) = &unit {
         out.extend(while_it_runs(caps).iter().map(|l| format!("  {l}")));
@@ -428,6 +437,18 @@ mod tests {
         assert_eq!(js_position("SyntaxError: x at line 2, col 13 (native)"), Some((2, 13)));
         assert_eq!(js_position("TypeError: y (unknown at :3:9)\n    at <main> (unknown at :3:9)"), Some((3, 9)));
         assert_eq!(js_position("the source isn't a function"), None);
+    }
+
+    /// A flow's clocks (its `every` blocks) are listed after its routes, and a flow of clocks alone
+    /// says it listens on no port; `show` lists them too.
+    #[test]
+    fn check_and_show_list_its_clocks() {
+        let r = check("t.holon", "flow t\nport 8080\n\nevery 2s {\n  state.n = 1\n}\n\nroute GET / (req) {\n  respond 1\n}\n");
+        assert_eq!(r.code, 0, "{r:?}");
+        assert_eq!(r.out[1..5], ["a server on :8080", "  GET /", "and its clocks", "  every 2s"]);
+        let r = check("b.holon", "flow b\n\nevery 1h {\n  state.n = now\n}\n");
+        assert_eq!(r.out[1..3], ["a server of clocks, listening on no port", "  every 1h"]);
+        assert!(show("b.holon", "flow b\n\nevery 1h {\n  state.n = now\n}\n").out[1..3] == ["  clocks", "    every 1h"]);
     }
 
     #[test]

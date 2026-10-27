@@ -93,7 +93,21 @@ pub enum Item {
     Holon(HolonDef),
     Js(JsDef),
     Route(RouteDef),
+    Every(EveryDef),
     Stmt(Stmt),
+}
+
+/// `every 2s { body }`: a clock handler, a run every period (docs/L4s/triggers-L4.md §2). `now`
+/// in it is the time of the tick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EveryDef {
+    /// The period in seconds, and as written.
+    pub seconds: f64,
+    pub text: String,
+    /// `every 2s`.
+    pub head: Span,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 /// `holon name(inputs) -> outputs js [fuel N] [memory N] { body }`: a holon whose body is

@@ -58,6 +58,61 @@ pub fn components(ids: &[&str], wires: &[Wire]) -> Vec<Vec<String>> {
     groups
 }
 
+/// One clock handler of the server: its `every` node, its period, and every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ClockGroup {
+    pub seconds: u64,
+    /// `every 2s`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "everyId")]
+    pub every_id: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
+/// What a node is the trigger of, when it is one: a route's request, a clock's tick.
+fn trigger_label(n: &Node) -> Option<String> {
+    if n.is_template("request") {
+        Some(format!("{} {}", n.param("method"), n.param("path")))
+    } else if n.is_template("every") {
+        Some(match crate::templates::period(n.param("seconds")) {
+            Ok(s) => holon_core::clock_label(s),
+            Err(_) => format!("every {}", n.param("seconds")),
+        })
+    } else {
+        None
+    }
+}
+
+/// The clock handlers the flow declares (each connected group holding an `every` node and no
+/// request), and why any can't be one. A group holding two triggers is `find_routes`'s to say.
+pub fn find_clocks(nodes: &[Node], wires: &[Wire]) -> (Vec<ClockGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let (mut clocks, mut errors): (Vec<ClockGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [every] = triggers.as_slice() else { continue };
+        if !every.is_template("every") {
+            continue;
+        }
+        let seconds = match crate::templates::period(every.param("seconds")) {
+            Ok(s) => s,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = holon_core::clock_label(seconds);
+        if clocks.iter().any(|c| c.seconds == seconds) {
+            errors.push(format!("{label} is written twice: one clock per period"));
+            continue;
+        }
+        clocks.push(ClockGroup { seconds, label, every_id: every.id.clone(), node_ids: ids });
+    }
+    (clocks, errors)
+}
+
 /// The routes the flow declares, and why any group can't be one. Groups without a request node
 /// are not part of the server (helpers, scratch work) and are skipped silently.
 pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<String>) {
@@ -73,6 +128,12 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
     let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     for ids in components(&node_ids, wires) {
         let requests: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| n.is_template("request")).collect();
+        // Two triggers in one group: a node can't belong to two handlers.
+        let triggers: Vec<String> = ids.iter().filter_map(|id| trigger_label(by_id[id.as_str()])).collect();
+        if triggers.len() > 1 && requests.len() < triggers.len() {
+            errors.push(format!("{} are wired together: one trigger per handler", triggers.join(" and ")));
+            continue;
+        }
         let req = match requests.as_slice() {
             [] => continue,
             [one] => *one,
@@ -161,6 +222,44 @@ pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<Encap
     Ok(EncapSpec { promote, expose: responses.into_iter().chain(effects).collect() })
 }
 
+/// Narrow core's proposed boundary for one clock's group to what a clock handler is: no inputs
+/// (a tick has none: every input a node needs must be wired) and its effects as outputs.
+pub fn clock_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    let input_name = |child: u32, port: u32| group[child as usize].data.inputs.get(port as usize).map(|p| p.name.as_str());
+    let promote: Vec<_> =
+        spec.promote.into_iter().filter(|p| !is_optional_input(group[p.child as usize], input_name(p.child, p.port))).collect();
+    if let Some(p) = promote.first() {
+        let n = group[p.child as usize];
+        let port = input_name(p.child, p.port).map(String::from).unwrap_or_else(|| p.port.to_string());
+        return Err(format!("{label}: {} · {port} is not wired", n.data.name));
+    }
+    if let Some(n) = group.iter().find(|n| n.is_template("respond") || n.is_template("request")) {
+        return Err(format!("{label}: {} is a route's; a clock answers nobody", n.data.name));
+    }
+    let is_effect =
+        |child: u32, port: u32| group[child as usize].data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect);
+    let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_effect(x.child, x.port)).collect();
+    if expose.is_empty() {
+        return Err(format!("{label}: it does nothing: write something (state, a collection, a channel)"));
+    }
+    Ok(EncapSpec { promote, expose })
+}
+
+/// Wrap a clock's handler as a clock handler unit (core's `read_clock`): no inputs, each of its
+/// effects an output, `declare = "every"` and `seconds`.
+pub fn clock_unit(handler: Hash, outputs: &[Port], seconds: u64) -> Unit {
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![handler],
+            edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
+        },
+        params: vec![frozen("declare", "every"), frozen("seconds", &seconds.to_string())],
+        inputs: vec![],
+        outputs: outputs.to_vec(),
+    }
+}
+
 /// A waiting point's name: what a `resume` route may name.
 fn is_wait_name(s: &str) -> bool {
     (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
@@ -217,15 +316,15 @@ pub fn endpoint_unit(handler: Hash, inputs: &[Port], outputs: &[Port], method: &
     })
 }
 
-/// A server unit over the given endpoints. Core's `read_server` re-checks everything on deploy.
-pub fn server_unit(endpoints: Vec<Hash>, port: u16) -> Unit {
+/// A server unit over the given endpoints and clock handlers, in that order, with `port` when it
+/// has a route. Core's `read_server` re-checks everything on deploy.
+pub fn server_unit(handlers: Vec<Hash>, port: Option<u16>) -> Unit {
     let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
-    Unit {
-        body: UnitBody::Composite { children: endpoints, edges: vec![] },
-        params: vec![frozen("declare", "server"), frozen("port", &port.to_string())],
-        inputs: vec![],
-        outputs: vec![],
+    let mut params = vec![frozen("declare", "server")];
+    if let Some(port) = port {
+        params.push(frozen("port", &port.to_string()));
     }
+    Unit { body: UnitBody::Composite { children: handlers, edges: vec![] }, params, inputs: vec![], outputs: vec![] }
 }
 
 #[cfg(test)]
@@ -396,7 +495,7 @@ mod tests {
 
     #[test]
     fn a_server_is_a_wireless_composite_of_endpoints_with_its_port() {
-        let u = server_unit(vec![[1; 32], [2; 32]], 8080);
+        let u = server_unit(vec![[1; 32], [2; 32]], Some(8080));
         assert_eq!(u.body, UnitBody::Composite { children: vec![[1; 32], [2; 32]], edges: vec![] });
         let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
         assert_eq!(u.params, [frozen("declare", "server"), frozen("port", "8080")]);

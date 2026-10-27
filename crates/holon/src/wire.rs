@@ -319,6 +319,9 @@ pub(crate) struct DeploymentEntry {
 #[derive(Serialize, Clone)]
 pub(crate) struct TickEntry {
     pub(crate) at_epoch_seconds: u64,
+    /// Which of its server's clocks ticked (`every 2s`); absent for a flow on an interval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) label: Option<String>,
     pub(crate) outputs: Vec<Option<SValue>>,
     pub(crate) performed: Vec<PerformedEntry>,
 }

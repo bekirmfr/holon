@@ -23,13 +23,15 @@ pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool 
     })
 }
 
-/// What a deployment shows as its triggers: a server's port, or plain `Ingress` for a unit that
-/// takes requests some other way, plus `Clock` for a clock-driven one (`clock` is false for a
-/// server, which the scheduler never fires). Deploy and reload both derive it here.
+/// What a deployment shows as its triggers: a server's port and its clocks (`every 2s`), or plain
+/// `Ingress` for a unit that takes requests some other way, plus `Clock` for a flow on an
+/// interval (`clock` is false for a server, whose clocks are its own). Deploy and reload both
+/// derive it here.
 pub(crate) fn trigger_labels(server: Option<&Server>, ingress: bool, clock: bool) -> Vec<String> {
     let mut triggers = Vec::new();
     if let Some(s) = server {
-        triggers.push(format!("Http :{}", s.port));
+        triggers.extend(s.port.map(|port| format!("Http :{port}")));
+        triggers.extend(s.clocks.iter().map(|c| c.label.clone()));
     } else if ingress {
         triggers.push("Ingress".to_string());
     }
@@ -149,12 +151,21 @@ pub(crate) fn handle_post_deploy(
     let caps = capabilities(root_unit, &resolver).deployed(body.interval_seconds.is_some() && server.is_none());
     let is_ingress = caps.contains(Capability::NetworkIngress);
     let is_clock = caps.contains(Capability::Clock) && server.is_none();
+    let has_clocks = server.as_ref().is_some_and(|s| !s.clocks.is_empty());
     let arrivals = Arc::new(arrivals::Watch::open(deployments_path, &body.slug, &caps, holon_core::file_triggers(root_unit, &resolver)));
-    if !is_ingress && !is_clock && !arrivals.watches() {
+    if !is_ingress && !is_clock && !has_clocks && !arrivals.watches() {
         return err(
             400,
             "this unit declares no driver capability (NetworkIngress, Clock or FileArrival) — nothing would ever trigger it",
         );
+    }
+    if has_clocks && body.interval_seconds.is_some() {
+        return err(400, "this flow's clocks are in its text (its `every` blocks): it takes no interval_seconds");
+    }
+    // What starts its clocks' runs is never optional, beside routes too (the manifest names one
+    // trigger, `NetworkIngress`, then).
+    if has_clocks && body.requirements.optional.contains("Clock") {
+        return err(400, "Clock starts this flow's clocks (its `every` blocks): it can't be optional");
     }
 
     // Deploy is a request (permissions.rs): the manifest is what the unit's graph derives plus
@@ -233,9 +244,9 @@ pub(crate) fn handle_post_deploy(
         if let Some(s) = &server
             && let Some((other, _)) = deployments
                 .iter()
-                .find(|(other, d)| **other != body.slug && d.server.as_ref().is_some_and(|o| o.port == s.port))
+                .find(|(other, d)| **other != body.slug && s.port.is_some() && d.server.as_ref().is_some_and(|o| o.port == s.port))
         {
-            return err(409, format!("port {} is already served by deployment {other:?}", s.port));
+            return err(409, format!("port {} is already served by deployment {other:?}", s.port.unwrap_or_default()));
         }
         // A redeploy keeps the slug's state: shipping a fix must never wipe the data the
         // previous version wrote. The *same* `Arc` is carried over (not a copy), so a fire still
@@ -298,6 +309,7 @@ pub(crate) fn handle_post_deploy(
                 triggers: triggers.clone(),
                 interval_seconds,
                 next_due,
+                clock_due: server.as_ref().map(|s| vec![SystemTime::now(); s.clocks.len()]).unwrap_or_default(),
                 history: Vec::new(),
                 state,
                 server,
@@ -331,7 +343,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         triggers: dep.triggers.clone(),
         interval_seconds: dep.interval_seconds,
         has_state: dep.state.is_some(),
-        port: dep.server.as_ref().map(|s| s.port),
+        port: dep.server.as_ref().and_then(|s| s.port),
         status: dep.life.status,
         session: dep.life.sessions.last().map_or(0, |s| s.number),
         sessions: dep.life.sessions.len(),
@@ -865,9 +877,7 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
                     *arc.state.lock().unwrap() = restored.unwrap_or_default();
                 }
                 // A clock deployment fires on its next pass once running again.
-                if dep.interval_seconds.is_some() {
-                    dep.next_due = Some(SystemTime::now());
-                }
+                dep.arm_clocks(SystemTime::now());
             }),
         };
         if let Err(e) = result {

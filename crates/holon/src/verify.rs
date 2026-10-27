@@ -387,9 +387,22 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
         return Rerun::Differs(format!("its unit {} isn't in the export", &entry.unit[..12.min(entry.unit.len())]));
     };
 
-    // What it ran: a request's endpoint, with the request; anything else, the whole unit.
-    let (root, inputs) = match &entry.route {
-        Some(route) => {
+    // What it ran: a request's endpoint, with the request; a clock's tick, that clock's handler
+    // alone; anything else, the whole unit.
+    let clock = match &entry.route {
+        Some(label) if entry.kind == "tick" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.clocks.into_iter().find(|c| c.label == *label))
+        }
+        _ => None,
+    };
+    let (root, inputs) = match (&entry.route, clock) {
+        (Some(label), Some(clock)) => {
+            let Some(root) = resolver.resolve(&clock.handler) else {
+                return Rerun::Differs(format!("the handler of {label:?} isn't in the export"));
+            };
+            (root, Vec::new())
+        }
+        (Some(route), None) => {
             let Ok(server) = read_server(deployed, resolver) else {
                 return Rerun::Differs("it names a route, but its unit isn't a server".into());
             };
@@ -402,7 +415,7 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
             };
             (root, vec![entry.request.as_ref().map(|r| marks.read(r, entry.escaped))])
         }
-        None => (deployed, Vec::new()),
+        (None, _) => (deployed, Vec::new()),
     };
 
     let mut extra = Vec::new();

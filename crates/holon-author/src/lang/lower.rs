@@ -171,6 +171,8 @@ enum FrameKind {
     Flow { has_routes: bool },
     /// A route's block: its request node, and where it responded.
     Route { request: String, responded: Option<Span> },
+    /// An `every` block: its tick node, whose `now` is the time of the tick.
+    Every { tick: String },
     /// A holon's block: its declared outputs, in order, and what each is bound to.
     Holon { declared: Vec<String>, bound: HashMap<String, (Val, Span)>, effects: Vec<(Val, Span)> },
     /// A function's body: the names it uses from around it, in first use, each with its value
@@ -237,6 +239,8 @@ struct Lowerer<'a> {
     /// Each route's request node, the nodes its block placed, and its header's span: a route is
     /// everything wired to its request, so a node left unwired to it would silently fall out.
     routes: Vec<(String, Vec<String>, Span)>,
+    /// Each `every` block's tick node, the nodes it placed, and its header's span, likewise.
+    ticks: Vec<(String, Vec<String>, Span)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -276,6 +280,7 @@ impl<'a> Lowerer<'a> {
             spans: BTreeMap::new(),
             lambdas: 0,
             routes: vec![],
+            ticks: vec![],
         }
     }
 
@@ -306,7 +311,22 @@ impl<'a> Lowerer<'a> {
                 return err(name.span, format!("there is a holon \"{}\" already", name.text));
             }
         }
-        let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_)));
+        // A flow of handlers (routes, `every` blocks) keeps its statements in them.
+        let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_) | Item::Every(_)));
+        let blocks: Vec<&EveryDef> = file.items.iter().filter_map(|i| if let Item::Every(e) = i { Some(e) } else { None }).collect();
+        if !blocks.is_empty()
+            && let Some(h) = file.headers.iter().find(|h| matches!(h.kind, HeaderKind::Every { .. } | HeaderKind::Interval(_)))
+        {
+            return err(h.span, "a flow with `every` blocks has its clocks in them: put the clock's statements in an `every … { … }` block");
+        }
+        for (i, b) in blocks.iter().enumerate() {
+            if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
+                return err(b.head, format!("{} is written twice: one block per period", b.text));
+            }
+        }
+        if let (Some(h), false) = (file.headers.iter().find(|h| matches!(h.kind, HeaderKind::OnFile(_))), blocks.is_empty()) {
+            return err(h.span, "a flow with `every` blocks runs on its clocks: `on file` is for a flow of its own, whose runs start with a new file");
+        }
         let on_file: Vec<&Header> = file.headers.iter().filter(|h| matches!(h.kind, HeaderKind::OnFile(_))).collect();
         for (i, h) in on_file.iter().enumerate() {
             let HeaderKind::OnFile(f) = &h.kind else { continue };
@@ -343,8 +363,10 @@ impl<'a> Lowerer<'a> {
             }
         }
         for i in &file.items {
-            if let Item::Route(r) = i {
-                self.route(r)?;
+            match i {
+                Item::Route(r) => self.route(r)?,
+                Item::Every(e) => self.every(e)?,
+                _ => {}
             }
         }
         // Holons and js nodes nobody placed are still defined (and checked).
@@ -379,6 +401,13 @@ impl<'a> Lowerer<'a> {
             if let Some(stray) = created.iter().find(|id| !group.contains(id)) {
                 let span = self.spans.get(stray).copied().unwrap_or(*head);
                 return err(span, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own");
+            }
+        }
+        for (tick, created, head) in &self.ticks {
+            let Some(group) = groups.iter().find(|g| g.contains(tick)) else { continue };
+            if let Some(stray) = created.iter().find(|id| !group.contains(id)) {
+                let span = self.spans.get(stray).copied().unwrap_or(*head);
+                return err(span, "this isn't wired to the tick, so it isn't part of the block (a block is everything wired to its trigger): write something with it, or use now in it");
             }
         }
         Ok(Lowered { name, doc, names: self.names, spans: self.spans })
@@ -904,6 +933,32 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// `every 2s { … }`: a clock handler. Its tick node is its trigger, `now` in it the tick's time,
+    /// and its sinks are tied to it (docs/L4s/triggers-L4.md §2, §3).
+    fn every(&mut self, e: &'a EveryDef) -> R<()> {
+        let seconds = if e.seconds.fract() == 0.0 && e.seconds >= 1.0 { number_text(e.seconds) } else { String::new() };
+        crate::templates::period(&seconds).or_else(|_| err(e.head, format!("every {}: a clock runs every whole number of seconds, from 1s to 366d", e.text)))?;
+        let tick = self.node("every", &[("seconds".to_string(), seconds)], e.head)?;
+        let Val::Out { id, .. } = &tick else { unreachable!() };
+        let id = id.clone();
+        let mut frame = Frame::new(FrameKind::Every { tick: id.clone() });
+        frame.created.push(id.clone());
+        self.frames.push(frame);
+        for s in &e.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: a clock answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        let tied = self.tie_block(&tick, e.head)?;
+        let frame = self.frames.pop().expect("the block's frame");
+        if !tied {
+            return err(e.head, "the block does nothing: write something in it (state, a collection, a channel)");
+        }
+        self.ticks.push((id, frame.created, e.head));
+        Ok(())
+    }
+
     fn check_name_free(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
         if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
@@ -1219,6 +1274,8 @@ impl<'a> Lowerer<'a> {
             ExprKind::Secret(n) => self.node("secret", &[("name".into(), n.clone())], e.span),
             ExprKind::State(k) => self.node("store_read", &[("key".into(), k.clone())], e.span),
             ExprKind::Noun(Noun::Ingress) => self.ingress(e.span),
+            // In an `every` block, `now` is the time of its tick.
+            ExprKind::Noun(Noun::Now) if let FrameKind::Every { tick } = &self.cur().kind => Ok(self.out(&tick.clone())),
             ExprKind::Noun(n) => self.node(if *n == Noun::Now { "clock" } else { "random" }, &[], e.span),
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
             ExprKind::Method { receiver, method, args } => self.method(receiver, method, args, e.span),
@@ -2305,6 +2362,44 @@ pub(crate) mod tests {
         assert_eq!(ins("twice"), ["n"]);
         // `after` on a statement with nothing to tie is said.
         assert!(error("route GET /a (req) {\n  n = 1 after req\n  respond n\n}").2.contains("this statement makes none"));
+    }
+
+    /// `every 2s { … }` is a clock handler: its tick node, everything wired to it, its sinks tied
+    /// to the tick, and `now` in it the tick's time (docs/L4s/triggers-L4.md §2, §3).
+    #[test]
+    fn every_blocks_are_clock_handlers_tied_to_their_tick() {
+        let d = compiled("channel ticks\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n  ticks.send(now)\n}\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n").doc;
+        let every = d.nodes.iter().find(|n| n.is_template("every")).expect("the tick");
+        assert_eq!(every.param("seconds"), "2");
+        assert!(!d.nodes.iter().any(|n| n.data.name == "clock"), "now in a block is the tick's");
+        let from = |leaf: &str, input: &str| {
+            let n = d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+            d.edges.iter().find(|w| w.target == n.id && w.input() == input).map(|w| (w.source.clone(), w.output().to_string()))
+        };
+        let tick = Some((every.id.clone(), "now".to_string()));
+        assert_eq!(from("store_write", TRIGGER), tick, "the write is tied to the tick");
+        assert_eq!(from("channel_send", TRIGGER), tick);
+        assert_eq!(from("channel_send", "pack"), tick, "now");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!((server.endpoints.len(), server.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>()), (1, vec!["every 2s"]));
+        // A flow of clocks alone is a server with no port.
+        let d = compiled("every 1h {\n  state.n = (state.n ?? 0) + 1\n}\n").doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.routes.len(), read.clocks[0].seconds), (None, 0, 3600));
+
+        assert_eq!(error("every 2s {\n  respond 1\n}"), (2, 3, "respond belongs in a route: a clock answers nobody".into()));
+        assert_eq!(error("every 2s {\n  n = now\n}").2, "the block does nothing: write something in it (state, a collection, a channel)");
+        assert_eq!(error("every 1.5s {\n  state.n = 1\n}").2, "every 1.5s: a clock runs every whole number of seconds, from 1s to 366d");
+        assert_eq!(error("every 2s {\n  state.a = now\n}\nevery 2s {\n  state.b = now\n}").2, "2s is written twice: one block per period");
+        assert!(error("every 10s\nevery 2s {\n  state.n = now\n}").2.starts_with("a flow with `every` blocks has its clocks in them"));
+        // A write that reads nothing of the tick is still the block's: tied to it.
+        let d = compiled("every 2s {\n  state.n = 1\n}\n").doc;
+        assert!(d.edges.iter().any(|w| w.source.starts_with("every") && w.input() == TRIGGER));
     }
 
     #[test]

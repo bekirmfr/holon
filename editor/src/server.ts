@@ -728,6 +728,17 @@ export async function sendRequest(slug: string, request: HttpRequest): Promise<H
   return asJson<HttpResponse>(res);
 }
 
+/** `POST /deployments/<slug>/tick` — that clock of a deployed flow (its label, `every 2s`) ticks
+ *  now, its next tick a period later; answers the tick's history entry. */
+export async function tickNow(slug: string, clock: string): Promise<{ at_epoch_seconds: number; label?: string; performed: unknown[] }> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/tick`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clock }),
+  });
+  return asJson(res);
+}
+
 /** `GET /deployments/<slug>/state` — a stateful deployment's current keyed state. Throws
  *  {@link ServerError} — 400 if the slug exists but was never stateful, 404 if it doesn't
  *  exist at all; two different failures, two different statuses, not one glossed-over "empty". */

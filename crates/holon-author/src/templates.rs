@@ -1,4 +1,4 @@
-//! HTTP node templates: `request`, `respond` and `stripe_verify`. They are not new primitives.
+//! Node templates: `request`, `respond`, `stripe_verify` and `every`. They are not new primitives.
 //! Each is a small composite of genesis leaves (field, json_parse, record, with_field, const,
 //! default, …), rebuilt from the node's params whenever it is hashed, the same way a primitive
 //! node is rebuilt from its catalog entry.
@@ -30,6 +30,10 @@
 //!   while a secret is being rolled), any one matching passes: each piece is compared with
 //!   `v1=<expected>` in constant time, folded into whether any matched.
 //!
+//! - `every` (param: seconds) is a clock handler's trigger (docs/L4s/triggers-L4.md §2): a run
+//!   every `seconds`, the group wired to it its unit. No inputs; one output, `now`, the time of the
+//!   tick (a `clock` leaf), which its sinks are tied to.
+//!
 //! A template's units are part of every flow's identity that uses it: a change here changes the
 //! hash of each such flow.
 
@@ -39,7 +43,15 @@ use serde::Serialize;
 use crate::wire::{frozen_value, WParam, WPort, WType};
 
 /// The templates, in palette order.
-pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify"];
+pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify", "every"];
+
+/// A clock handler's period, read from its `seconds`: whole seconds, 1 up to core's `MAX_PERIOD`.
+pub fn period(seconds: &str) -> Result<u64, String> {
+    match seconds.trim().parse::<u64>() {
+        Ok(s) if (1..=holon_core::MAX_PERIOD).contains(&s) => Ok(s),
+        _ => Err(format!("every \"{seconds}\": a clock runs every whole number of seconds, from 1s to 366d")),
+    }
+}
 
 pub fn is_template(name: &str) -> bool {
     TEMPLATES.contains(&name)
@@ -53,6 +65,9 @@ pub fn describe(name: &str) -> Option<&'static str> {
         }
         "respond" => {
             "Answers the route's request: body as the response, with the status set on the node (a record or list is sent as JSON). When body didn't arrive, it answers the missing status instead (404 unless set) with an error."
+        }
+        "every" => {
+            "A clock: a run every seconds set on the node, with now, the time of the tick. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
         }
         "stripe_verify" => {
             "Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time with each v1 signature (any one matching passes, as while a secret is rolled), the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it."
@@ -87,6 +102,7 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
             ],
             hidden_inputs: true,
         },
+        "every" => Interface { inputs: vec![], outputs: vec![WPort::new("now", Number)], hidden_inputs: false },
         "stripe_verify" => Interface {
             inputs: vec![request(), WPort::new("secret", Text), WPort::new("now", Number)],
             outputs: vec![WPort::new("event", Any), WPort::new("verified", Boolean)],
@@ -114,6 +130,7 @@ pub fn defaults(name: &str) -> Option<Vec<WParam>> {
         "request" => vec![f("method", "GET"), f("path", "/"), f("resume", "")],
         "respond" => vec![f("status", "200"), f("missing", "404"), f("headers", "false"), f("status_input", "false")],
         "stripe_verify" => vec![f("tolerance", "300")],
+        "every" => vec![f("seconds", "10")],
         _ => return None,
     })
 }
@@ -321,6 +338,12 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
                 e(17, 0, B, 1),
             ];
             Ok(composite(children, edges, inputs, outputs))
+        }
+
+        "every" => {
+            period(frozen_value(params, "seconds").unwrap_or(""))?;
+            let clock = add_leaf(store, "clock", vec![], None)?;
+            Ok(composite(vec![clock], vec![e(0, 0, B, 0)], inputs, outputs))
         }
 
         // respond

@@ -635,7 +635,11 @@ fn collect_caps(root: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capabi
         //     `child_refs` (the one definition of what a unit references). A capability routed
         //     through a reference cannot hide; an unresolvable reference fails closed rather than
         //     being read as inert data.
+        let server = crate::declaration_of(unit) == Some("server");
         for h in crate::inspect::child_refs(unit) {
+            if server && resolver.resolve(&h).is_some_and(|c| crate::declaration_of(c) == Some("endpoint")) {
+                acc.insert(Capability::NetworkIngress);
+            }
             if !seen.insert(h) {
                 continue;
             }
@@ -664,11 +668,9 @@ fn unit_caps(unit: &Unit, acc: &mut BTreeSet<Capability>) {
         }
     }
 
-    // (1b) A server declaration listens for requests: the inbound side of its manifest. Its
-    //      endpoints' handlers contribute the rest through (2).
-    if crate::declaration_of(unit) == Some("server") {
-        acc.insert(Capability::NetworkIngress);
-    }
+    // (1b) A server declaration with a route listens for requests: the inbound side of its
+    //      manifest (`collect_caps`, which sees its children; a server of clocks alone listens for
+    //      none). Its handlers contribute the rest through (2).
 }
 
 #[cfg(test)]

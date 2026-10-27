@@ -20,7 +20,7 @@ use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, TRIGGE
 use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
-use crate::routes::{components, find_routes};
+use crate::routes::{components, find_clocks, find_routes};
 use crate::templates;
 use crate::text::restore;
 use crate::wire::{WParam, WPort, WType};
@@ -396,9 +396,9 @@ pub(crate) fn js_statement(store: &MapResolver, unit: &holon_core::Unit, hname: 
 }
 
 /// `nodes` and `wires` without the ties the text doesn't write: a trigger fed by its block's
-/// trigger (a route's request, a holon's own `trigger`, or the pass-through the lowering places
-/// when that feeds several, which goes too, with its `true`). What's left on a trigger is
-/// written `after`.
+/// trigger (a route's request, an `every` block's tick, a holon's own `trigger`, or the
+/// pass-through the lowering places when that feeds several, which goes too, with its `true`).
+/// What's left on a trigger is written `after`.
 fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (Vec<&Node>, Vec<(Src, String, String)>) {
     let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
     // The last wire into an input is the one that counts, as `Group` keeps it: a holon's
@@ -416,7 +416,7 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (
     let tie = |src: &Src, input: &str| {
         input == TRIGGER
             && (own_trigger(src)
-                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || passes_trigger(id)))
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || passes_trigger(id)))
     };
     // A pass-through that feeds only ties goes, with the `true` it holds.
     let mut gone: HashSet<String> = HashSet::new();
@@ -543,13 +543,16 @@ impl<'s> Printer<'s> {
         Ok(())
     }
 
-    /// The top of the flow: its routes, a flow without routes as statements, and whatever the
-    /// expression form can't spell in the wiring form.
+    /// The top of the flow: its handlers (routes, `every` blocks) in the order of their nodes, a
+    /// flow without any as statements, and whatever the expression form can't spell in the wiring
+    /// form.
     fn flow_body(&mut self, doc: &FlowDocument) -> Result<Vec<Line>, String> {
-        let (routes, errors) = find_routes(&doc.nodes, &doc.edges);
-        let has_request = doc.nodes.iter().any(|n| n.is_template("request"));
+        let (routes, mut errors) = find_routes(&doc.nodes, &doc.edges);
+        let (clocks, clock_errors) = find_clocks(&doc.nodes, &doc.edges);
+        errors.extend(clock_errors);
+        let has_trigger = doc.nodes.iter().any(|n| n.is_template("request") || n.is_template("every"));
         let mut lines: Vec<Line> = Vec::new();
-        if !has_request {
+        if !has_trigger {
             // One block, the flow's own.
             let group = self.group_of(doc.nodes.iter().collect(), &doc.edges, vec![]);
             if !expressible(&group.nodes, &group.incoming, None) {
@@ -563,7 +566,33 @@ impl<'s> Printer<'s> {
         let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let mut routed: HashSet<String> = HashSet::new();
         let mut stray_routes: Vec<String> = Vec::new();
-        for r in &routes {
+        let position: HashMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        let first = |node_ids: &[String]| node_ids.iter().map(|id| position[id.as_str()]).min().unwrap_or(usize::MAX);
+        let mut handlers: Vec<(usize, Result<&crate::routes::RouteGroup, &crate::routes::ClockGroup>)> =
+            routes.iter().map(|r| (first(&r.node_ids), Ok(r))).chain(clocks.iter().map(|c| (first(&c.node_ids), Err(c)))).collect();
+        handlers.sort_by_key(|(at, _)| *at);
+        for (_, handler) in handlers {
+            let r = match handler {
+                Ok(r) => r,
+                Err(c) => {
+                    let nodes: Vec<&Node> = c.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+                    let group = self.group_of(nodes, &doc.edges, vec![]);
+                    if !expressible(&group.nodes, &group.incoming, Some(&c.every_id)) {
+                        stray_routes.push(format!("{}: an input isn't wired, so the block is written as nodes and wires", c.label));
+                        continue;
+                    }
+                    if !lines.is_empty() {
+                        lines.push((String::new(), vec![]));
+                    }
+                    lines.push((format!("every {} {{", holon_core::period_text(c.seconds)), vec![c.every_id.clone()]));
+                    let mut body = Block::new(self, &group, "  ", None);
+                    body.tick = Some(c.every_id.clone());
+                    lines.extend(body.statements()?);
+                    lines.push(("}".into(), vec![]));
+                    routed.extend(c.node_ids.iter().cloned());
+                    continue;
+                }
+            };
             let nodes: Vec<&Node> = r.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
             let request = by_id[r.request_id.as_str()];
             let group = self.group_of(nodes, &doc.edges, vec![]);
@@ -871,6 +900,8 @@ struct Block<'p, 's, 'g> {
     indent: &'static str,
     /// The route's request node and its name, in a route.
     request: Option<(String, String)>,
+    /// The block's tick node, in an `every` block: it is `now` there.
+    tick: Option<String>,
     /// A holon's or function's inputs, by name.
     inputs: HashSet<String>,
     bound: HashMap<String, String>,
@@ -901,7 +932,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         if let Some((_, name)) = &request {
             used.insert(name.clone());
         }
-        let mut b = Block { p, g, indent, request, inputs: HashSet::new(), bound: HashMap::new(), used, touched: vec![], nest: indent.into(), absorbed: HashSet::new() };
+        let mut b = Block { p, g, indent, request, tick: None, inputs: HashSet::new(), bound: HashMap::new(), used, touched: vec![], nest: indent.into(), absorbed: HashSet::new() };
         for n in &g.nodes {
             let Some(m) = b.match_shape(n) else { continue };
             b.absorbed.extend(m.parts.iter().map(|n| n.id.clone()));
@@ -918,7 +949,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
 
     /// Whether `node` may fold into an expression: no name of its own, and one output.
     fn free(&self, node: &Node) -> bool {
-        !(self.is_request(&node.id) || node.is_template("respond") || node.data.name == "await" || self.bound.contains_key(&node.id) || self.p.bindings.contains_key(&node.id))
+        !(self.is_request(&node.id) || self.is_tick(&node.id) || node.is_template("respond") || node.data.name == "await" || self.bound.contains_key(&node.id) || self.p.bindings.contains_key(&node.id))
             && node.data.outputs.len() == 1
     }
 
@@ -1064,6 +1095,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         self.request.as_ref().is_some_and(|(r, _)| r == id)
     }
 
+    fn is_tick(&self, id: &str) -> bool {
+        self.tick.as_deref() == Some(id)
+    }
+
     /// Whether `node`'s one output prints inline at its one consumer. A node the text named keeps
     /// its binding: fmt keeps an author's names.
     fn inline(&self, node: &Node) -> bool {
@@ -1107,7 +1142,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         let order = self.g.order.clone();
         for id in &order {
             let node = self.g.node(id);
-            if self.is_request(id) || self.pass_through(node).is_some() {
+            if self.is_request(id) || self.is_tick(id) || self.pass_through(node).is_some() {
                 continue;
             }
             self.touched.clear();
@@ -1224,6 +1259,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     && req == id
                 {
                     return Ok((if output == "request" { name.clone() } else { format!("{name}.{output}") }, ATOM));
+                }
+                if self.is_tick(id) {
+                    return Ok(("now".into(), ATOM));
                 }
                 if let Some(name) = self.bound.get(id).cloned() {
                     let node = self.g.node(id);

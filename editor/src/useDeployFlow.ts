@@ -92,7 +92,7 @@ export function useDeployFlow({
     let trace = derived.trace;
     try {
       if (derived.errors.length > 0) throw new Error(derived.errors.join("; "));
-      if (derived.endpoints.length > 0) {
+      if (derived.endpoints.length > 0 || derived.clocks.length > 0) {
         if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it under ⚙)`);
         hash = derived.serverHash;
         isServer = true;

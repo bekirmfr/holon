@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, it, expect } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
-import { collectionsAtStep, diagnose, executionOrder, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
+import { collectionsAtStep, diagnose, executionOrder, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
@@ -118,6 +118,21 @@ describe("replay", () => {
     expect(traces.get("k")?.outputs).toEqual([num(42)]);
     expect(traces.get("s")?.outputs).toEqual([null]);
     expect(runGroup(nodes, edges, { ...entry, route: "DELETE /x" })).toEqual([]);
+  });
+
+  it("runs a clock's tick over its every node's group, the tick the time it ticked", () => {
+    const tick: ReplayInput = { kind: "tick", route: "every 2m", request: null, sourced: [["Clock", num(120)]], state_before: {} };
+    const canvas = [
+      n("e", "every", [], ["now"], [frozen("seconds", "120")], "Template"),
+      n("w", "store_write", ["value", "trigger"], ["out"], [frozen("key", "at")]),
+      n("o", "every", [], ["now"], [frozen("seconds", "2")], "Template"),
+      n("x", "store_write", ["value", "trigger"], ["out"], [frozen("key", "other")]),
+    ];
+    const wires = [wire("e", "now", "w", "value"), wire("e", "now", "w", "trigger"), wire("o", "now", "x", "value"), wire("o", "now", "x", "trigger")];
+    expect(runGroup(canvas, wires, tick)).toEqual(["e", "w"]);
+    expect(runGroup(canvas, wires, { ...tick, route: "every 5s" })).toEqual([]);
+    expect(replay(canvas, wires, tick, evalNode).traces.get("e")?.outputs).toEqual([num(120)]);
+    expect([2, 120, 3600, 86_400, 90].map(periodText)).toEqual(["2s", "2m", "1h", "1d", "90s"]);
   });
 });
 

@@ -37,11 +37,16 @@ export function traceOfUnit(hash: string, group: PrimitiveNodeType[], ev: Evalua
   return ev.trace_of(hash, group);
 }
 
-/** The server a canvas declares: its endpoints, why any route can't be one, the server unit's
- *  hash once every route is sound and `portText` is a port, and the trace from each route's
- *  stored children to canvas nodes. */
+/** One clock of the derived server (an `every` node's group): its period, its label (`every 2s`)
+ *  and its handler unit's hash. */
+export type ClockDraft = { seconds: number; label: string; hash: string };
+
+/** The server a canvas declares: its endpoints and clocks, why any handler can't be one, the
+ *  server unit's hash once every handler is sound (and `portText` is a port, with a route), and
+ *  the trace from each handler's stored children to canvas nodes, by its route or label. */
 export type DerivedServer = {
   endpoints: EndpointDraft[];
+  clocks: ClockDraft[];
   errors: string[];
   serverHash: string | null;
   trace: Record<string, string[]>;

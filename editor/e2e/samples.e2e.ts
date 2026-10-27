@@ -459,6 +459,23 @@ test("counter counts its hits with no wire to the request, and records the last 
   expect(await (await request.get(`http://127.0.0.1:${port}/last`)).text()).toBe(who);
 });
 
+test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, and a tick replays exactly", async ({ page, request }) => {
+  await openSample(page, "Ticker (a clock beside routes)");
+  const port = await deploy(page);
+  const count = async () => Number(await (await request.get(`http://127.0.0.1:${port}/count`)).text());
+  // Its every block runs on the scheduler, every 2 seconds, with no request to start it.
+  await expect.poll(count, { timeout: 15_000 }).toBeGreaterThan(0);
+  const before = await count();
+  await page.getByRole("button", { name: "tick now" }).click();
+  await expect(page.getByText(/^every 2s: ticked, 2 effects performed$/)).toBeVisible();
+  expect(await count()).toBeGreaterThan(before);
+  // The newest run is a tick, named by its clock, and view mode replays it over its block.
+  await page.getByRole("button", { name: "tick now" }).click();
+  await expect(page.getByText(/^every 2s: ticked/)).toBeVisible();
+  await viewNewestRun(page);
+  await expect(page.locator(".hl-view__bottom")).toContainText("every 2s");
+});
+
 test("basket reads a price inside a mapped function, per item, and its run replays exactly", async ({ page, request }) => {
   await openSample(page, "Basket (a collection read inside a function)");
   const port = await deploy(page);

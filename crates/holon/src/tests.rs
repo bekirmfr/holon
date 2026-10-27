@@ -2658,7 +2658,7 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
 
     // A restart reloads it as a server, with its items.
     let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
-    assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
+    assert_eq!(reloaded["todo-api"].server.as_ref().and_then(|s| s.port), Some(18080));
     assert_eq!(reloaded["todo-api"].triggers, vec!["Http :18080"], "labelled as when it was deployed");
     let todos = reloaded["todo-api"].state.as_ref().unwrap().state.lock().unwrap().get("todos").unwrap().clone();
     assert!(matches!(todos, Value::Record(ref items) if items.len() == 1));
@@ -6092,4 +6092,69 @@ fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
     // One level less is materialized.
     let inside = match store.get(&below).unwrap().unwrap().body { UnitBody::Composite { children, .. } => children[0], _ => unreachable!() };
     materialize_closure(&state.store, inside).unwrap();
+}
+
+/// A flow's `every` block is a clock of its server: it ticks on its own period beside the routes,
+/// each run logged and kept in the history under its label, and its runs verify offline. A flow
+/// of clocks alone listens on no port; its clocks are in its text, so it takes no interval.
+#[test]
+fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
+    let mut state = claims_state("");
+    let path = unique_temp_path("clock-blocks");
+    state.deployments_path = path.clone();
+    let text = "flow ticks\nport 18257\n\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n}\n\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
+    assert_eq!(triggers, ["Http :18257", "every 2s"]);
+
+    let t0 = SystemTime::now();
+    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0);
+    assert_eq!(data_call(&state, &slug, "GET", "/n", "").1, "1", "due at deploy");
+    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0 + Duration::from_secs(1));
+    assert_eq!(data_call(&state, &slug, "GET", "/n", "").1, "1", "not before its period");
+    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0 + Duration::from_secs(3));
+    assert_eq!(data_call(&state, &slug, "GET", "/n", "").1, "2");
+
+    let ticks: Vec<serde_json::Value> = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "tick").collect();
+    assert_eq!(ticks.len(), 2);
+    assert!(ticks.iter().all(|e| e["route"] == "every 2s"), "{ticks:?}");
+    let history = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/history"), vec![])));
+    assert_eq!(history["ticks"][0]["label"], "every 2s");
+
+    // Tick now (the editor's): that clock ticks once, at once; one it doesn't have is not found.
+    let tick = |clock: &str| route(&state, &req("POST", &format!("/deployments/{slug}/tick"), serde_json::to_vec(&serde_json::json!({ "clock": clock })).unwrap()));
+    let r = tick("every 2s");
+    assert_eq!(r.status_code, 200);
+    assert_eq!(body_json(r)["label"], "every 2s");
+    assert_eq!(data_call(&state, &slug, "GET", "/n", "").1, "3");
+    assert_eq!(tick("every 9s").status_code, 404);
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 7, "three ticks and four requests");
+
+    // Clocks alone: no port, and no interval besides the text's.
+    let alone = deploy_text(&state, "flow beats\n\nevery 1h {\n  state.n = (state.n ?? 0) + 1\n}\n", "127.0.0.1:9");
+    let (triggers, unit, port) = {
+        let deployments = state.deployments.lock().unwrap();
+        let d = &deployments[&alone];
+        (d.triggers.clone(), d.unit, d.server.as_ref().map(|s| s.port))
+    };
+    assert_eq!((triggers, port), (vec!["every 1h".to_string()], Some(None)));
+    let r = deploy_json(&state, &alone, unit, serde_json::json!({ "interval_seconds": 5 }));
+    assert_eq!(r.status_code, 400);
+    let why = String::from_utf8_lossy(&body_bytes(r)).to_string();
+    assert!(why.contains("clocks are in its text"), "{why}");
+    // What starts its clocks can't be optional, beside routes too.
+    let ticks_unit = state.deployments.lock().unwrap()[&slug].unit;
+    let r = deploy_json(&state, &slug, ticks_unit, serde_json::json!({ "requirements": { "optional": ["Clock"] } }));
+    assert_eq!(r.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(r)).contains("it can't be optional"));
+
+    for s in [&slug, &alone] {
+        route(&state, &req("POST", &format!("/deployments/{s}/stop"), vec![]));
+        route(&state, &req("DELETE", &format!("/deployments/{s}"), vec![]));
+    }
+    let _ = std::fs::remove_file(&path);
 }

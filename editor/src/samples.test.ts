@@ -43,7 +43,7 @@ beforeAll(() => {
 });
 
 /** What deploying `sample` asks for, by consent name, or why it can't deploy. */
-function derive(name: string): { caps: string[]; endpoints: number } {
+function derive(name: string): { caps: string[]; endpoints: number; clocks: number } {
   const sample = samples().find((s) => s.name === name)!;
   const doc = buildSample(sample, new Evaluator());
   const nodes = doc.nodes as PrimitiveNodeType[];
@@ -53,9 +53,10 @@ function derive(name: string): { caps: string[]; endpoints: number } {
   restoreUnits(doc, ev);
   // The unit deploying it would deploy (and the flows page derives a saved flow's manifest from).
   const hash = flowUnitHash(nodes, edges, ev, sample.port ?? "8080");
-  const endpoints = sample.port ? deriveServer(nodes, edges, ev, sample.port).endpoints.length : 0;
+  const server = deriveServer(nodes, edges, ev, sample.port ?? "");
+  const endpoints = sample.port ? server.endpoints.length : 0;
   const caps = (ev.capability_names(hash) as string[]).sort();
-  return { caps, endpoints };
+  return { caps, endpoints, clocks: server.clocks.length };
 }
 
 describe("sample flows", () => {
@@ -72,9 +73,10 @@ describe("sample flows", () => {
   for (const s of samples()) {
     it(`${s.name} builds, derives, and asks for exactly what it uses`, () => {
       const doc = buildSample(s, new Evaluator());
-      const requests = (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.name === "request" && n.data.body.kind === "Template");
-      const { caps, endpoints } = derive(s.name);
-      expect(endpoints).toBe(requests.length);
+      const template = (name: string) => (doc.nodes as PrimitiveNodeType[]).filter((n) => n.data.name === name && n.data.body.kind === "Template");
+      const { caps, endpoints, clocks } = derive(s.name);
+      expect(endpoints).toBe(template("request").length);
+      expect(clocks, "each every block a clock").toBe(template("every").length);
       expect(caps.some((c) => c.includes("<unknown>") || c.includes("Spawn")), `${s.name} saturated: ${caps}`).toBe(false);
       for (const secret of s.secrets ?? []) expect(caps).toContain(`SecretRead("${secret.name}")`);
       // What it can run without is something it uses, and never what starts it.

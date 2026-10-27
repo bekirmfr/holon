@@ -396,6 +396,9 @@ same thing, and no node belongs to a handler by a field you can't see.
   a sink.
 - **A tick's value is its time.** The `every` block's trigger node is a `now` read (the `clock`
   leaf), so sinks have something to tie to without the handler taking an input (fork 8 stands).
+  As built in slice 2, it is the `every` template: the `clock` leaf with the period as its
+  `seconds`, and `now` in the block reads its output. The printer writes its group back as the
+  block, the ties left out.
 - **The old forms stay untied** (as built in slice 1). A clock flow, a file flow, a by-hand flow
   and a flow of top-level statements are each one run of the whole canvas, so their sinks run
   with it through the open trigger below, as they did. Their ties come with the blocks of slices
@@ -491,7 +494,12 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
   seconds", "run when a file settles in inbox", "can be run by hand: reset".
 - **The clock** keeps a `next_due` per `every` handler, keyed by its period. A tick fires that
   handler's unit with no inputs, and logs a `"tick"` with the handler's label. The old form keeps
-  its one `next_due` from the deploy setting.
+  its one `next_due` from the deploy setting. As built in slice 2: `Deployment.clock_due`, one per
+  `server.clocks`, due at deploy, at load and when it runs again; the label is the entry's
+  `route` and the history entry's `label`; a flow with clocks refuses `interval_seconds` and a
+  `Clock` marked optional (the manifest still names one trigger: `NetworkIngress` beside routes);
+  a server of clocks alone has no `port` and listens on none. **Tick now** is
+  `POST /deployments/<slug>/tick` with `{"clock": "every 2s"}`.
 - **Arrivals** drop the `server.is_none()` filter (arrivals.rs 299) and fire handlers, not the
   whole unit. A file fires each handler it matches with the handle as its input, logged as a
   `"file"` with the handler's label. The seen-set stays one per deployment, keyed by folder and

@@ -10,7 +10,7 @@ use holon_core::{
 use serde::Serialize;
 
 use crate::canvas::{Node, PlacedBody, Wire};
-use crate::routes::{endpoint_unit, find_routes, is_optional_input, route_spec, server_unit};
+use crate::routes::{clock_spec, clock_unit, endpoint_unit, find_clocks, find_routes, is_optional_input, route_spec, server_unit};
 use crate::wire::WPort;
 use crate::{templates, to_hex};
 
@@ -85,12 +85,22 @@ pub struct EndpointDraft {
     pub hash: String,
 }
 
-/// The server a flow declares: its endpoints, why any route can't be one, the server unit's hash
-/// once every route is sound and the port is a port, and, for each route, which node each of its
-/// handler's stored children is.
+/// One clock handler of the derived server: its period, its label (`every 2s`), and the clock
+/// handler unit's hash.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ClockDraft {
+    pub seconds: u64,
+    pub label: String,
+    pub hash: String,
+}
+
+/// The server a flow declares: its endpoints and clocks, why any handler can't be one, the server
+/// unit's hash once every handler is sound (and the port is a port, with a route), and, for each
+/// handler by its label, which node each of its stored children is.
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
 pub struct DerivedServer {
     pub endpoints: Vec<EndpointDraft>,
+    pub clocks: Vec<ClockDraft>,
     pub errors: Vec<String>,
     #[serde(rename = "serverHash")]
     pub server_hash: Option<String>,
@@ -134,14 +144,40 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
             Err(e) => errors.push(format!("{label}: {e}")),
         }
     }
-    let server_hash = match port_of(port) {
-        Some(port) if !endpoints.is_empty() && errors.is_empty() => {
-            let hashes = endpoints.iter().map(|e| parse_hash(&e.hash).expect("hashes made here")).collect();
+    let (groups, clock_errors) = find_clocks(nodes, wires);
+    errors.extend(clock_errors);
+    let mut clocks = Vec::new();
+    for c in groups {
+        let group: Vec<&Node> = c.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+        let clock = (|| -> Result<Result<Hash, String>, String> {
+            let (children, edges) = group_of(&group, wires, store)?;
+            let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
+            let spec = match clock_spec(proposed, &group, &c.label) {
+                Ok(spec) => spec,
+                Err(e) => return Ok(Err(e)),
+            };
+            let handler = derive_and_freeze(children, edges, &spec, store).map_err(|e| e.to_string())?;
+            trace.insert(c.label.clone(), trace_of(&handler, &group));
+            let outputs = handler.outputs.clone();
+            let handler = put(store, handler)?;
+            Ok(Ok(put(store, clock_unit(handler, &outputs, c.seconds))?))
+        })();
+        match clock {
+            Ok(Ok(hash)) => clocks.push(ClockDraft { seconds: c.seconds, label: c.label, hash: to_hex(&hash) }),
+            Ok(Err(e)) => errors.push(e),
+            Err(e) => errors.push(format!("{}: {e}", c.label)),
+        }
+    }
+    // A port only with a route: a flow of clocks listens on none.
+    let port = if endpoints.is_empty() { Some(None) } else { port_of(port).map(Some) };
+    let server_hash = match port {
+        Some(port) if !(endpoints.is_empty() && clocks.is_empty()) && errors.is_empty() => {
+            let hashes = endpoints.iter().map(|e| &e.hash).chain(clocks.iter().map(|c| &c.hash)).map(|h| parse_hash(h).expect("hashes made here")).collect();
             put(store, server_unit(hashes, port)).ok().map(|h| to_hex(&h))
         }
         _ => None,
     };
-    DerivedServer { endpoints, errors, server_hash, trace }
+    DerivedServer { endpoints, clocks, errors, server_hash, trace }
 }
 
 /// The unit a flow deploys as, stored: its server when it has routes, else the whole flow grouped
@@ -151,7 +187,7 @@ pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: 
     if !derived.errors.is_empty() {
         return Err(derived.errors.join("; "));
     }
-    if !derived.endpoints.is_empty() {
+    if !derived.endpoints.is_empty() || !derived.clocks.is_empty() {
         let hash = derived.server_hash.ok_or_else(|| format!("\"{port}\" is not a port (set it under ⚙)"))?;
         return Ok(parse_hash(&hash).expect("a hash made here"));
     }
