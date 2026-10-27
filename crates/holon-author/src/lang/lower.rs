@@ -335,10 +335,15 @@ impl<'a> Lowerer<'a> {
         }
         let blocks: Vec<&EveryDef> = file.items.iter().filter_map(|i| if let Item::Every(e) = i { Some(e) } else { None }).collect();
         let file_blocks: Vec<&OnFileDef> = file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o) } else { None }).collect();
-        if !(blocks.is_empty() && file_blocks.is_empty())
+        if has_routes
             && let Some(h) = file.headers.iter().find(|h| matches!(h.kind, HeaderKind::Every { .. } | HeaderKind::Interval(_)))
         {
-            return err(h.span, "a flow with `every` or `on file` blocks has its clocks in them: put the clock's statements in an `every … { … }` block");
+            // The header is the one-handler form's clock: beside handlers it would start nothing.
+            if !(blocks.is_empty() && file_blocks.is_empty()) {
+                return err(h.span, "a flow with `every` or `on file` blocks has its clocks in them: put the clock's statements in an `every … { … }` block");
+            }
+            let beside = if file.items.iter().any(|i| matches!(i, Item::Route(_))) { "routes" } else { "actions" };
+            return err(h.span, format!("this `every` line is the clock of a flow without handlers: beside {beside}, put the clock's statements in an `every … {{ … }}` block"));
         }
         for (i, b) in blocks.iter().enumerate() {
             if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
@@ -355,11 +360,12 @@ impl<'a> Lowerer<'a> {
                 return err(b.head, format!("{} is written twice: one block per line", file_label(&b.on)));
             }
         }
+        // The header is the one-handler form's file line: beside handlers, the file's run is a block.
         if let Some(h) = file.headers.iter().find(|h| matches!(h.kind, HeaderKind::OnFile(_)))
-            && !(blocks.is_empty() && file_blocks.is_empty())
+            && has_routes
         {
             let HeaderKind::OnFile(f) = &h.kind else { unreachable!() };
-            return err(h.span, format!("a flow with blocks has its triggers in them: put the file's statements in an `{} (f) {{ … }}` block, reading the file as f", file_label(f)));
+            return err(h.span, format!("a flow with handlers has its triggers in them: put the file's statements in an `{} (f) {{ … }}` block, reading the file as f", file_label(f)));
         }
         let on_file: Vec<&Header> = file.headers.iter().filter(|h| matches!(h.kind, HeaderKind::OnFile(_))).collect();
         for (i, h) in on_file.iter().enumerate() {
@@ -372,9 +378,6 @@ impl<'a> Lowerer<'a> {
             if on_file[..i].iter().any(|o| o.kind == h.kind) {
                 return err(h.span, "this `on file` line is written twice");
             }
-        }
-        if let (Some(h), true) = (on_file.first(), has_routes) {
-            return err(h.span, "a flow with routes runs on requests: `on file` is for a flow without routes, whose runs start with a new file");
         }
         self.frames.push(Frame::new(FrameKind::Flow { has_routes }));
         // Top-level statements first (the wiring form's nodes, a flow's body, literal constants),
@@ -1523,6 +1526,7 @@ impl<'a> Lowerer<'a> {
         // In an `on file` block the file has its own name, in an action what was sent.
         let block = self.frames.iter().rev().take_while(|f| !matches!(f.kind, FrameKind::Holon { .. })).find_map(|f| match &f.kind {
             FrameKind::OnFile { file } => Some(format!("in an `on file` block the file is {file}: use {file} in place of ingress")),
+            FrameKind::Every { .. } => Some("a clock's run receives nothing: `now` in it is the time of the tick (ingress is a flow's run by hand)".to_string()),
             FrameKind::Action { input, .. } => Some(format!("in an action what was sent is {input}: use {input} in place of ingress")),
             _ => None,
         });
@@ -2536,6 +2540,16 @@ pub(crate) mod tests {
         assert_eq!(error("every 1.5s {\n  state.n = 1\n}").2, "every 1.5s: a clock runs every whole number of seconds, from 1s to 366d");
         assert_eq!(error("every 2s {\n  state.a = now\n}\nevery 2s {\n  state.b = now\n}").2, "2s is written twice: one block per period");
         assert!(error("every 10s\nevery 2s {\n  state.n = now\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
+        assert_eq!(error("every 2s {\n  state.n = ingress\n}").2, "a clock's run receives nothing: `now` in it is the time of the tick (ingress is a flow's run by hand)");
+        // The header form's clock beside handlers would start nothing: refused, naming the block.
+        assert_eq!(
+            error("every 10s\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}").2,
+            "this `every` line is the clock of a flow without handlers: beside routes, put the clock's statements in an `every … { … }` block"
+        );
+        assert_eq!(
+            error("every 10s\n\naction reset (input) {\n  state.n = 0\n}").2,
+            "this `every` line is the clock of a flow without handlers: beside actions, put the clock's statements in an `every … { … }` block"
+        );
         // A write that reads nothing of the tick is still the block's: tied to it.
         let d = compiled("every 2s {\n  state.n = 1\n}\n").doc;
         assert!(d.edges.iter().any(|w| w.source.starts_with("every") && w.input() == TRIGGER));
@@ -2572,6 +2586,9 @@ pub(crate) mod tests {
         assert_eq!(error("action a (input) {\n  respond 1, status: 201\n}").2, "an action answers with a value alone: status:, missing:, headers: and stream: are a route's");
         assert_eq!(error("action a (input) {\n  n = input\n}").2, "the action does nothing: respond with something, or write something (state, a collection, a channel)");
         assert_eq!(error("action a (input) {\n  state.n = ingress\n}").2, "in an action what was sent is input: use input in place of ingress");
+        // An `on file` line beside actions: they are blocks, and the file's run goes in one too.
+        assert!(error("on file inbox\n\naction a (input) {\n  state.n = 0\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file inbox (f) { … }` block"));
+        assert!(error("on file inbox\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file inbox (f) { … }` block"));
         assert_eq!(error("action a (x) {\n  state.a = x\n}\naction a (y) {\n  state.b = y\n}").2, "action a is written twice: one block per name");
         assert_eq!(error("action a (input) {\n  respond 1\n  respond 2\n}").2, "more than one respond in the action (the first is on line 2)");
         // An answer that reads nothing of what was sent is still the action's.
@@ -2616,7 +2633,7 @@ pub(crate) mod tests {
         assert_eq!(error("on file a (f) {\n  state.n = ingress\n}").2, "in an `on file` block the file is f: use f in place of ingress");
         assert_eq!(error("on file a (f) {\n  state.a = f\n}\non file a (g) {\n  state.b = g\n}").2, "on file a is written twice: one block per line");
         assert!(error("on file a matching \"a**\" (f) {\n  state.a = f\n}").2.contains("isn't a pattern of names"));
-        assert!(error("on file b\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with blocks has its triggers in them: put the file's statements in an `on file b (f) { … }` block"));
+        assert!(error("on file b\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file b (f) { … }` block"));
         assert!(error("every 10s\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
         // The header form is unchanged: `ingress` is the file.
         assert!(leaves(&compiled("on file inbox\nstate.n = ingress.name\n").doc).contains(&"file_arrival".to_string()));
@@ -2769,7 +2786,7 @@ route POST /n/:who (req) {
         assert_eq!(error("on file inbox\nx = 1\n").2, "`on file` starts a run for each new file, and the run reads it as `ingress`: use `ingress` (its .name, say)");
         assert!(error("on file a\non file a\nx = ingress\n").2.contains("written twice"));
         assert!(error("on file a matching \"a**\"\nx = ingress\n").2.contains("isn't a pattern of names"));
-        assert!(error("port 8000\non file a\nroute GET /x (req) {\n  respond 1\n}\n").2.contains("for a flow without routes"));
+        assert!(error("port 8000\non file a\nroute GET /x (req) {\n  respond 1\n}\n").2.contains("put the file's statements in an `on file a (f) { … }` block"));
         assert_eq!(error("folder a\nh = a.file(\"x\")\nr = http.put(\"h.example.com\", \"/\", body: \"t\", file: h)\n").2, "a call sends a body or a file, not both");
         assert!(leaves(&compiled("on = 1\nx = on + 1\n").doc).contains(&"add".to_string()), "on is still a name elsewhere");
     }

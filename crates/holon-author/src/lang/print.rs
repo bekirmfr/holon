@@ -279,7 +279,10 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         if !s.port.is_empty() {
             out.push(header(format!("port {}", param_value(&s.port))));
         }
-        if !s.interval.is_empty() {
+        // The header form's clock, for a flow without handlers; beside them an interval left in
+        // the settings starts nothing, and the text says only what runs.
+        let handlers = doc.nodes.iter().any(|n| ["request", "every", "on_file", "action"].iter().any(|t| n.is_template(t)));
+        if !s.interval.is_empty() && !handlers {
             out.push(header(format!("every {}", duration(&s.interval))));
         }
         if let Some(b) = s.browsers.as_ref().filter(|b| !b.is_empty()) {
@@ -2092,6 +2095,21 @@ mod tests {
 
     fn printed(name: Option<&str>, doc: &FlowDocument, bindings: &BTreeMap<String, String>) -> String {
         print(name, doc, &mut MapResolver::new(), &Names::new(), bindings).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// An interval left in a flow's settings beside its handlers starts nothing: the text leaves
+    /// it out (the lowering refuses an `every` line there), and a flow without handlers keeps it.
+    #[test]
+    fn an_interval_beside_handlers_is_not_printed() {
+        for src in ["flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n", "flow f\n\naction reset (input) {\n  state.n = 0\n}\n"] {
+            let mut doc = compile(src).unwrap_or_else(|e| panic!("{e}")).doc;
+            doc.server.as_mut().expect("its settings").interval = "10".into();
+            let text = printed(Some("f"), &doc, &BTreeMap::new());
+            assert!(!text.contains("every 10s"), "{text}");
+            compile(&text).unwrap_or_else(|e| panic!("it compiles: {e}\n{text}"));
+        }
+        let clock = compile("flow f\nevery 10s\n\nstate.n = now\n").unwrap_or_else(|e| panic!("{e}")).doc;
+        assert!(printed(Some("f"), &clock, &BTreeMap::new()).contains("every 10s"));
     }
 
     /// A `js` node (docs/L4s/js-node-L4.md): its body prints back verbatim, a `}` in a string or a
