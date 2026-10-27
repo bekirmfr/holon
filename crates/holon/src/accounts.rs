@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -178,6 +178,13 @@ fn password_matches(password: &str, hash: &str) -> bool {
     PasswordHash::new(hash).is_ok_and(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok())
 }
 
+/// A hash no password is checked against to sign in, made as an account's is: checking against
+/// it takes as long as checking against theirs.
+fn stand_in_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| hash_password("no account has this password").unwrap_or_default())
+}
+
 /// A setup code a person can type: 8 letters and digits that can't be misread, as `XXXX-XXXX`.
 fn new_setup_code() -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -286,7 +293,11 @@ impl Accounts {
             tries.checking += 1;
         }
         let account = self.book.lock().unwrap().users.iter().find(|u| u.name == name).cloned();
-        let ok = account.as_ref().is_some_and(|a| !a.disabled && a.password.as_deref().is_some_and(|h| password_matches(password, h)));
+        let hash = account.as_ref().filter(|a| !a.disabled).and_then(|a| a.password.as_deref());
+        // A name with no account (or no password yet, or disabled) is refused as slowly as a wrong
+        // password, so how long a refusal takes doesn't say which names are accounts.
+        let matches = password_matches(password, hash.unwrap_or(stand_in_hash()));
+        let ok = hash.is_some() && matches;
         let mut failures = self.failures.lock().unwrap();
         let tries = failures.entry(name.to_string()).or_default();
         tries.checking -= 1;
@@ -617,6 +628,17 @@ mod tests {
         }
         assert!(a.sign_in("ada", PW).unwrap_err().contains("too many"), "locked, even with the right one");
         assert!(a.sign_in("nobody", PW).unwrap_err().contains("don't match"), "an unknown name says the same");
+    }
+
+    /// A name with no account is refused by the same work as a wrong password: the stand-in hash
+    /// is argon2 with an account's parameters.
+    #[test]
+    fn an_unknown_name_is_checked_like_a_wrong_password() {
+        let (stand_in, real) = (PasswordHash::new(stand_in_hash()).unwrap(), hash_password(PW).unwrap());
+        let real = PasswordHash::new(&real).unwrap();
+        assert_eq!((stand_in.algorithm, stand_in.version, &stand_in.params), (real.algorithm, real.version, &real.params));
+        let (a, _) = set_up();
+        assert!(a.sign_in("nobody", "no account has this password").unwrap_err().contains("don't match"));
     }
 
     /// Wrong passwords sent at once are counted before they are checked: no more than
