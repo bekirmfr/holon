@@ -5017,6 +5017,35 @@ fn route_status(state: &AppState, body: &serde_json::Value) -> u16 {
     route(state, &req("POST", "/admin/folders", serde_json::to_vec(body).unwrap())).status_code
 }
 
+/// How a reply is framed is the host's to say: a flow's (or an upstream's, passed on) length,
+/// transfer encoding and connection headers are dropped, its other headers kept; and an interim
+/// status (1xx) isn't an answer, even one computed where the language can't see it.
+#[test]
+fn a_reply_is_framed_by_the_host() {
+    let state = claims_state("");
+    let text = r#"flow framed
+port 18148
+
+route GET /a (req) {
+  respond "HTTP/1.1 200 OK", status: 200, headers: { "content-length": "0", "Transfer-Encoding": "chunked", connection: "keep-alive", upgrade: "h2c", "x-kept": "yes" }
+}
+
+route GET /b (req) {
+  switching = 100 + 1
+  respond "", status: switching, headers: { upgrade: "websocket" }
+}
+"#;
+    let slug = deploy_text(&state, text, "x");
+    let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/a", vec![]));
+    assert_eq!((r.status, r.body.as_slice()), (200, &b"HTTP/1.1 200 OK"[..]));
+    let names: Vec<&str> = r.headers.iter().map(|(k, _)| k.as_str()).collect();
+    assert!(names.contains(&"x-kept"), "{names:?}");
+    for framing in ["content-length", "transfer-encoding", "connection", "upgrade"] {
+        assert!(!names.contains(&framing), "{framing}: {names:?}");
+    }
+    assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/b", vec![])).status, 500);
+}
+
 /// A secret used as a record's key (a map from API keys to accounts) is redacted in the log as a
 /// value is, and the run still checks: verify reads the key's mark back as its placeholder.
 #[test]

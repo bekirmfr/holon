@@ -104,6 +104,18 @@ describe("responseOf", () => {
     });
     expect(responseOf(null).status).toBe(500);
     expect(responseOf({ type: "Record", value: [["status", num(99)]] }).status).toBe(500);
+    expect(responseOf({ type: "Record", value: [["status", num(101)]] }).status, "no interim status").toBe(500);
+    const framed: WValue = {
+      type: "Record",
+      value: [
+        ["Content-Length", { type: "Text", value: "0" }],
+        ["connection", { type: "Text", value: "close" }],
+        ["x-kept", { type: "Text", value: "yes" }],
+      ],
+    };
+    expect(responseOf({ type: "Record", value: [["headers", framed], ["status", num(200)]] }).headers).toEqual([
+      ["x-kept", "yes"],
+    ]);
     expect(
       responseOf({ type: "Record", value: [["headers", item], ["status", num(200)]] }).status,
       "header values must be text",
