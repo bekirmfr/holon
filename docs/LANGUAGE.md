@@ -79,7 +79,7 @@ same graph are the same unit.
 | js holons | `holon name(inputs) -> outputs js [fuel N] [memory N] { JavaScript }`: a holon whose body is JavaScript, run by an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
 | Routes | `route METHOD /path (req) [resumes name] { … }`; `respond` is a statement wired to the request implicitly | §5.11 |
-| Flows without routes | The top-level statements are the one unit | §5.12 |
+| Flows without handlers | The top-level statements are the one unit, started as its headers say | §5.12 |
 | Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
 | Hash | The lowered DAG's. Binding names, holon names, layout and comments are not in it | §7 |
 | Layout | Not in the text. Positions live in the flow document; import lays out automatically | §8 |
@@ -289,7 +289,7 @@ same leaves the assignment forms lower to. The route never mentions `put` or `sa
 Effect outputs nobody reads, so they are exposed and performed. `slugify` is placed twice and is
 one unit, one hash.
 
-### heartbeat: a flow without routes
+### heartbeat: a flow without handlers
 
 ```
 flow heartbeat
@@ -299,7 +299,7 @@ state.last_beat = now
 state.beats = (state.beats ?? 0) + 1
 ```
 
-No routes, so the top-level statements are the one unit the clock fires (§5.12). `state.beats` on
+No handlers, so the top-level statements are the one unit the clock fires (§5.12). `state.beats` on
 the right is `store_read{key: beats}`, the run's starting value; the assignment is
 `store_write{key: beats}`, committed when the run finishes. Which is why the line means exactly
 what it says.
@@ -1229,13 +1229,25 @@ every sink placed in it:
   they run with it, as they always did. The wiring form (§10) ties nothing it doesn't write as a
   wire.
 
-### 5.12 Flows without routes
+### 5.12 Flows without handlers
 
-With no `route` in the file, the top-level statements are the flow: a clock flow (`every`), a flow
-that runs on new files (`on file`), or a flow placed as a holon in another. They lower to the whole canvas grouped as one composite,
-exactly `flow_unit`'s existing rule. The flow's outputs are its unused values, which is why a
-non-Effect expression statement is allowed here and only here: it is an output. `respond` is an
-error.
+With no handler in the file, the top-level statements are the flow, and each run is a run of all
+of it. Its headers say what starts one (§5.1): `every 10s` a clock, `on file inbox` each new file
+(its handle `ingress`), and, with neither, reading `ingress` makes it a flow run by hand. A flow
+with none of the three starts nothing: it is a holon, to place in another flow (§5.8), and deploy
+refuses it.
+
+- **It lowers to the whole canvas grouped as one composite,** exactly `flow_unit`'s existing rule.
+  There are no blocks for a binding to wire together, so a top-level binding of anything is allowed
+  (`n = (state.n ?? 0) + 1`), not only a literal's.
+- **Its sinks are left open** (§5.11): no trigger is wired, and they run with the run. `after x`
+  still ties a statement's sinks to `x`, as in a block: `state.last = now after saved` writes once
+  the put `saved` has its result.
+- **Its outputs are its unused values,** so nothing in it is tied to nothing, and a non-Effect
+  expression statement is allowed here and only here: it is an output. `fmt` writes one as a
+  binding under a generated name (`1 + 2` comes back as `add_2 = 1 + 2`).
+- **`respond` is an error:** a run of the whole flow answers nobody. A flow that answers has a
+  route or an action.
 
 ## 6. Semantics
 
