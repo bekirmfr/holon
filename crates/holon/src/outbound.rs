@@ -372,7 +372,22 @@ fn transport_failure(t: &ureq::Transport) -> Value {
             _ => "transport",
         }
     };
-    failure(error, text)
+    failure(error, without_url(t))
+}
+
+/// What went wrong, without the URL ureq puts first: its path and query may hold what is computed
+/// from a secret (a key in the query), and the message is logged as the call's answer.
+fn without_url(t: &ureq::Transport) -> String {
+    let mut said = t.kind().to_string();
+    if let Some(m) = t.message() {
+        said = format!("{said}: {m}");
+    }
+    let mut source: Option<&dyn std::error::Error> = std::error::Error::source(t);
+    while let Some(s) = source {
+        said = format!("{said}: {s}");
+        source = s.source();
+    }
+    said
 }
 
 /// Whether `ip` is somewhere a flow must not reach by default: this machine, its network, or a
@@ -558,6 +573,20 @@ mod tests {
         let none = Limits { max_redirects: 0, ..Limits::request_run() };
         let out = o.perform(&request("GET", &format!("https://{hop}/start"), ""), &none);
         assert_eq!(field(&out, "error"), &Value::Text("too_many_redirects".into()));
+    }
+
+    /// A call that fails on the way (nothing listening) says why without its URL: the path and
+    /// query may hold what is computed from a secret, and the failure is logged as the answer.
+    #[test]
+    fn a_failed_call_says_why_without_its_url() {
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = closed.local_addr().unwrap().to_string();
+        drop(closed);
+        let out = local(&addr).perform(&request("GET", &format!("https://{addr}/v1/x?key=c2tfbGl2ZV9rZXk"), ""), &Limits::request_run());
+        assert_eq!(field(&out, "error"), &Value::Text("connect".into()), "{out:?}");
+        let Value::Text(message) = field(&out, "message") else { panic!("{out:?}") };
+        assert!(!message.contains("c2tfbGl2ZV9rZXk") && !message.contains("/v1/x"), "{message}");
+        assert!(!message.is_empty());
     }
 
     /// A file body from memory.
