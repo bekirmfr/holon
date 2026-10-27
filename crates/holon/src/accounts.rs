@@ -114,12 +114,21 @@ pub(crate) struct Who {
     pub(crate) role: Role,
 }
 
+/// A name's sign-ins: wrong passwords since its last lock, when it was locked, and how many are
+/// being checked now (each counts as wrong until it is known not to be).
+#[derive(Default)]
+struct Tries {
+    wrong: u32,
+    locked: Option<Instant>,
+    checking: u32,
+}
+
 pub(crate) struct Accounts {
     path: Option<PathBuf>,
     book: Mutex<Book>,
     /// The one-time code that creates the first admin, while there is none.
     setup_code: Mutex<Option<String>>,
-    failures: Mutex<HashMap<String, (u32, Option<Instant>)>>,
+    failures: Mutex<HashMap<String, Tries>>,
     /// The identity provider, discovered from `book.oidc` (oidc.rs).
     oidc: RwLock<Option<crate::oidc::Oidc>>,
     /// The local token's hash and who it is (local.rs): made when the server starts, good as that
@@ -264,25 +273,36 @@ impl Accounts {
     pub(crate) fn sign_in(&self, name: &str, password: &str) -> Result<(String, Account), String> {
         let refused = || "that name and password don't match an account here".to_string();
         {
-            let failures = self.failures.lock().unwrap();
-            if let Some((_, Some(until))) = failures.get(name)
-                && until.elapsed() < LOCKED_FOR
-            {
+            let mut failures = self.failures.lock().unwrap();
+            let tries = failures.entry(name.to_string()).or_default();
+            if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
                 return Err("too many wrong passwords: wait a minute, then try again".into());
             }
+            // The ones still being checked count too, so sign-ins sent at once can't try more
+            // than MAX_FAILURES passwords before the lock.
+            if tries.wrong + tries.checking >= MAX_FAILURES {
+                return Err("too many sign-ins at once: wait a moment, then try again".into());
+            }
+            tries.checking += 1;
         }
         let account = self.book.lock().unwrap().users.iter().find(|u| u.name == name).cloned();
         let ok = account.as_ref().is_some_and(|a| !a.disabled && a.password.as_deref().is_some_and(|h| password_matches(password, h)));
+        let mut failures = self.failures.lock().unwrap();
+        let tries = failures.entry(name.to_string()).or_default();
+        tries.checking -= 1;
         if !ok {
-            let mut failures = self.failures.lock().unwrap();
-            let entry = failures.entry(name.to_string()).or_insert((0, None));
-            entry.0 += 1;
-            if entry.0 >= MAX_FAILURES {
-                *entry = (0, Some(Instant::now()));
+            tries.wrong += 1;
+            if tries.wrong >= MAX_FAILURES {
+                (tries.wrong, tries.locked) = (0, Some(Instant::now()));
             }
             return Err(refused());
         }
-        self.failures.lock().unwrap().remove(name);
+        if tries.checking == 0 {
+            failures.remove(name);
+        } else {
+            (tries.wrong, tries.locked) = (0, None);
+        }
+        drop(failures);
         let account = account.unwrap();
         let token = self.change(|book| Ok(Self::start_session(book, &account.name)))?;
         Ok((token, account))
@@ -597,6 +617,27 @@ mod tests {
         }
         assert!(a.sign_in("ada", PW).unwrap_err().contains("too many"), "locked, even with the right one");
         assert!(a.sign_in("nobody", PW).unwrap_err().contains("don't match"), "an unknown name says the same");
+    }
+
+    /// Wrong passwords sent at once are counted before they are checked: no more than
+    /// MAX_FAILURES of them are tried before the name locks.
+    #[test]
+    fn wrong_passwords_sent_at_once_lock_a_name_as_soon() {
+        let (a, _) = set_up();
+        let start = std::sync::Barrier::new(16);
+        let tried = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..16)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        a.sign_in("ada", "wrong password!").unwrap_err()
+                    })
+                })
+                .collect();
+            runs.into_iter().map(|r| r.join().unwrap()).filter(|e| e.contains("don't match")).count()
+        });
+        assert_eq!(tried, MAX_FAILURES as usize, "each refused one waited on five being checked");
+        assert!(a.sign_in("ada", PW).unwrap_err().contains("too many"), "and then it is locked");
     }
 
     #[test]
