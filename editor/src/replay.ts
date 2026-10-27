@@ -289,7 +289,7 @@ export function nodeExchanges(
   );
 }
 
-/** What each `http_request` (or `http_upload`, `http_stream`) node was answered, from the run's record: the last answer it got,
+/** What each `http_request` (or `http_upload`, `http_stream`, `flow_call`) node was answered, from the run's record: the last answer it got,
  *  which is the one its final round used. Replay feeds these back instead of calling anything. */
 export function recordedResponses(exchanges: NodeExchange[]): Map<string, WValue> {
   const out = new Map<string, WValue>();
@@ -547,7 +547,7 @@ export function replay(
     if (primitive && name === "resume_token") return { inputs, outputs: [{ type: "Text", value: `‹token:${param("await")}›` }] };
     // The editor never has a secret's value: a placeholder stands in, as the log shows it.
     if (primitive && name === "secret") return { inputs, outputs: [{ type: "Text", value: `‹secret:${param("name")}›` }] };
-    if (primitive && ["http_request", "http_upload", "http_stream", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
+    if (primitive && ["http_request", "http_upload", "http_stream", "flow_call", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
       // Answered from the record, never the network, the store or the disk: a replay is offline
       // and exact, and shows the collection or folder as the run found it, whatever it holds now.
       return { inputs, outputs: [responses.get(id) ?? null] };
@@ -719,6 +719,12 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
 
 /** Why an outbound call's answer counts as a failure, if it does. */
 function whyFailed(response: WValue | null): string | null {
+  // A call to another flow's action answers `{answer, run}`, or `{error, message}` when it didn't run.
+  const failed = textOf(fieldOf(response, "error"));
+  if (failed && fieldOf(response, "status") === null) {
+    const message = textOf(fieldOf(response, "message"));
+    return `the call failed: ${failed}${message ? ` (${message})` : ""}`;
+  }
   const status = fieldOf(response, "status");
   if (status?.type !== "Number") return null;
   if (status.value === 0) {
@@ -766,7 +772,7 @@ export function diagnose(
       issues.set(id, { role: "starved", reason: `${fellBack ? "fell back: " : "didn't run: "}${from} never arrived` });
       continue;
     }
-    if ((n.data.name === "http_request" || n.data.name === "http_upload" || n.data.name === "http_stream") && n.data.body.kind === "Primitive") {
+    if ((n.data.name === "http_request" || n.data.name === "http_upload" || n.data.name === "http_stream" || n.data.name === "flow_call") && n.data.body.kind === "Primitive") {
       const why = whyFailed(trace.outputs[0] ?? null);
       if (why) {
         issues.set(id, { role: "origin", reason: why });

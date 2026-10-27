@@ -125,6 +125,14 @@ describe("sample flows", () => {
     expect(manifestItems(ticker)).not.toContain('AgentRuns("reset")');
     expect(permissionKind('AgentRuns("reset")', [], manifestTrigger(ticker)).kind).toBe("optional");
     expect(describeItem('AgentRuns("reset")')).toBe("let agents run its action reset");
+    // Running another flow's action is a permission naming the flow and the action: the shop's
+    // approval says so, and the flow it calls is the sample billing.
+    const shop = derive("shop").caps;
+    expect(shop).toContain('RunsAction("billing/charge")');
+    expect(shop).toContain('RunsAction("billing/refund")');
+    expect(manifestTrigger(shop)).toBe("NetworkIngress");
+    expect(describeItem('RunsAction("billing/charge")')).toBe("run the action charge of the flow billing");
+    expect(derive("billing").caps).toContain('Action("charge")');
     // An old flow run by hand (no routes, `ingress`) says so where a server receives requests.
     expect(describeItem("NetworkIngress", true)).toBe("can be run by hand");
     expect(describeItem("NetworkIngress")).toBe("receive requests");

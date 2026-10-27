@@ -524,6 +524,45 @@ test("ticker's clock ticks beside its routes: its count grows on its own, tick n
   await expect(card).toContainText("let agents run its action reset");
 });
 
+test("shop runs billing's actions: an order calls billing and stores what it answered, a refund undoes it, a stopped billing answers 502, and the order's run replays exactly", async ({ page, request }) => {
+  // billing first: the shop's calls need it deployed.
+  await openSample(page, "Billing (actions another flow runs)");
+  const billing = await deploy(page);
+  await openSample(page, "Shop (a flow calling another's actions)", false);
+  // The shop asks to run billing's actions, which its approval says in words.
+  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
+  await page.getByRole("dialog", { name: "deploy settings" }).getByRole("button", { name: "done" }).click();
+  const shop = await deploy(page);
+  const at = (port: number | null, path: string) => `http://127.0.0.1:${port}${path}`;
+  const id = `o-${Date.now()}`;
+  const placed = await request.post(at(shop, "/orders"), { data: { id, amount: 5 } });
+  expect(placed.status()).toBe(201);
+  expect(await placed.json()).toEqual({ id, total: 6 });
+  expect(await (await request.get(at(shop, `/orders/${id}`))).json()).toEqual({ amount: 5, total: 6 });
+  // The charge is billing's own: its page reads it back.
+  expect(await (await request.get(at(billing, `/charges/${id}`))).json()).toEqual({ amount: 5, fee: 1 });
+  // A refund runs billing's other action, which only writes.
+  expect((await request.delete(at(shop, `/orders/${id}`))).status()).toBe(204);
+  expect((await request.get(at(billing, `/charges/${id}`))).status()).toBe(404);
+  // The shop's run replays exactly, the call answered from its record.
+  await request.post(at(shop, "/orders"), { data: { id: `${id}-again`, amount: 7 } });
+  await viewNewestRun(page);
+  await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
+  await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
+  // Its manifest names what it may run.
+  await page.getByRole("button", { name: "deployed", exact: true }).click();
+  const shopCard = page.getByLabel("deployment shop");
+  await shopCard.getByText(/^manifest ▸/).click();
+  await expect(shopCard).toContainText("run the action charge of the flow billing");
+  // A billing that isn't running can't be called: the call answers why, and the order isn't stored.
+  const billingCard = page.getByLabel("deployment billing");
+  await billingCard.getByRole("button", { name: "stop", exact: true }).click();
+  await expect(billingCard).toContainText("stopped");
+  const lost = `${id}-lost`;
+  expect((await request.post(at(shop, "/orders"), { data: { id: lost, amount: 1 } })).status()).toBe(502);
+  expect((await request.get(at(shop, `/orders/${lost}`))).status()).toBe(404);
+});
+
 test("drop-board's file handlers run beside its routes: a file dropped in, and one removed, show on its page, and a file's run replays exactly", async ({ page, browser }) => {
   const { rmSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");

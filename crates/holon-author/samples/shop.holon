@@ -1,0 +1,20 @@
+flow shop
+port 8159
+collection orders
+calls billing
+
+route POST /orders (req) {
+  paid = billing.charge({ id: req.json.id, amount: req.json.amount })
+  orders[req.json.id] = { amount: req.json.amount, total: paid.answer.total }
+  respond paid.answer, status: 201, missing: 502
+}
+
+route DELETE /orders/:id (req) {
+  billing.refund({ id: req.params.id })
+  delete orders[req.params.id]
+  respond 204
+}
+
+route GET /orders/:id (req) {
+  respond orders[req.params.id]
+}
