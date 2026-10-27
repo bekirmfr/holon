@@ -7,7 +7,11 @@
 //! - A **clock handler** is a composite with no inputs, its outputs the effects of one tick,
 //!   carrying `declare = "every"` and `seconds`: the host runs it every `seconds`
 //!   (docs/L4s/triggers-L4.md §4).
-//! - A **server** is a composite whose children are endpoints and clock handlers, with no wiring
+//! - A **file handler** is a composite with no inputs, its outputs the effects of one file's run,
+//!   carrying `declare = "on_file"`, `folder`, and `on` (`deleted`) and `matching` when given: the
+//!   host runs it for each file its trigger starts. The file's handle is sourced, as a
+//!   `file_arrival` leaf's is (docs/L4s/triggers-L4.md §4, as built).
+//! - A **server** is a composite whose children are endpoints, clock handlers and file handlers, with no wiring
 //!   and no ports, carrying `declare = "server"`, and `port` when it has a route. Its hash is the
 //!   hash of the whole flow.
 //!
@@ -17,7 +21,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{Hash, Resolver, Type, Unit, UnitBody};
+use crate::{FileTrigger, Hash, Resolver, Type, Unit, UnitBody};
 
 /// The methods an endpoint may declare.
 pub const METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -53,12 +57,24 @@ pub struct Clock {
     pub handler: Hash,
 }
 
+/// One file handler of a server, as declared: a run for each file its trigger starts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileHandler {
+    pub trigger: FileTrigger,
+    /// How the log and the editor name it: `on file inbox`.
+    pub label: String,
+    /// The handler unit's hash (the server's child), which a file evaluates with no inputs, the
+    /// file's handle sourced.
+    pub handler: Hash,
+}
+
 /// A server unit, read and checked. `port` is there when it has a route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Server {
     pub port: Option<u16>,
     pub routes: Vec<Route>,
     pub clocks: Vec<Clock>,
+    pub files: Vec<FileHandler>,
 }
 
 /// The longest period a clock handler may have: 366 days, in seconds.
@@ -88,6 +104,26 @@ pub fn read_clock(unit: &Unit) -> Option<u64> {
     frozen(unit, "seconds")?.parse::<u64>().ok().filter(|s| (1..=MAX_PERIOD).contains(s))
 }
 
+/// A file handler's trigger, if `unit` is one: `declare = "on_file"`, a folder's name, `on`
+/// absent, `new` or `deleted`, `matching` absent or a glob, a composite with no inputs.
+pub fn read_file_handler(unit: &Unit) -> Option<FileTrigger> {
+    if !matches!(unit.body, UnitBody::Composite { .. }) || declaration_of(unit) != Some("on_file") || !unit.inputs.is_empty() {
+        return None;
+    }
+    let folder = crate::kind::ident(&unit.params, "folder")?;
+    let deleted = match frozen(unit, "on") {
+        None | Some("new") => false,
+        Some("deleted") => true,
+        Some(_) => return None,
+    };
+    let matching = match frozen(unit, "matching") {
+        None | Some("") => String::new(),
+        Some(g) if crate::is_glob(g) => g.to_string(),
+        Some(_) => return None,
+    };
+    Some(FileTrigger { folder, deleted, matching })
+}
+
 /// Why a unit is not a well-formed server. `child` is the index of the offending endpoint.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeclError {
@@ -103,7 +139,9 @@ pub enum DeclError {
     DuplicateRoute { method: String, path: String },
     /// Two clock handlers with the same period.
     DuplicateClock { seconds: u64 },
-    /// No route and no clock: nothing would start a run.
+    /// Two file handlers with the same folder, `on` and `matching`.
+    DuplicateFileHandler { label: String },
+    /// No route, clock or file handler: nothing would start a run.
     NoHandlers,
 }
 
@@ -131,6 +169,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
 
     let mut routes: Vec<Route> = Vec::with_capacity(children.len());
     let mut clocks: Vec<Clock> = Vec::new();
+    let mut files: Vec<FileHandler> = Vec::new();
     for (i, hash) in children.iter().enumerate() {
         let child = i as u32;
         let endpoint = resolver.resolve(hash).ok_or(DeclError::UnresolvedEndpoint { child })?;
@@ -140,6 +179,14 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
                 return Err(DeclError::DuplicateClock { seconds });
             }
             clocks.push(Clock { seconds, label: clock_label(seconds), handler: *hash });
+            continue;
+        }
+        if declaration_of(endpoint) == Some("on_file") {
+            let trigger = read_file_handler(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
+            if files.iter().any(|f| f.trigger == trigger) {
+                return Err(DeclError::DuplicateFileHandler { label: trigger.label() });
+            }
+            files.push(FileHandler { label: trigger.label(), trigger, handler: *hash });
             continue;
         }
         let (method, path) = read_endpoint(endpoint).map_err(|e| match e {
@@ -168,10 +215,10 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
         };
         routes.push(Route { method, path, segments, endpoint: *hash, resume });
     }
-    if routes.is_empty() && clocks.is_empty() {
+    if routes.is_empty() && clocks.is_empty() && files.is_empty() {
         return Err(DeclError::NoHandlers);
     }
-    // A port only for a server with a route: a flow of clocks listens on none.
+    // A port only for a server with a route: a flow of clocks and files listens on none.
     let port = match frozen(unit, "port") {
         None if routes.is_empty() => None,
         text => match text.unwrap_or("").parse::<u16>() {
@@ -179,7 +226,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             _ => return Err(DeclError::BadPort(text.unwrap_or("").to_string())),
         },
     };
-    Ok(Server { port, routes, clocks })
+    Ok(Server { port, routes, clocks, files })
 }
 
 /// Why a unit is not a well-formed endpoint.
@@ -419,6 +466,39 @@ mod tests {
         }
         assert_eq!(clock_label(MAX_PERIOD), "every 366d");
         assert_eq!(read_server(&Unit { params: vec![Param::frozen("declare", "server")], ..server("", vec![]) }, &r), Err(DeclError::NoHandlers));
+    }
+
+    fn file_handler(r: &mut MapResolver, params: &[(&str, &str)]) -> Hash {
+        let h = r.insert(handler()).unwrap();
+        let mut ps = vec![Param::frozen("declare", "on_file")];
+        ps.extend(params.iter().map(|(k, v)| Param::frozen(*k, *v)));
+        r.insert(Unit { body: UnitBody::Composite { children: vec![h], edges: vec![] }, params: ps, inputs: vec![], outputs: vec![] }).unwrap()
+    }
+
+    /// A server's file handlers (its `on file` blocks) are children beside its endpoints, each
+    /// named by its line; one alone has no port (docs/L4s/triggers-L4.md §4).
+    #[test]
+    fn a_server_holds_file_handlers_each_named_by_its_line() {
+        let mut r = MapResolver::new();
+        let drop = file_handler(&mut r, &[("folder", "drop")]);
+        let gone = file_handler(&mut r, &[("folder", "drop"), ("on", "deleted")]);
+        let csv = file_handler(&mut r, &[("folder", "drop"), ("matching", "*.csv")]);
+        let alone = Unit { params: vec![Param::frozen("declare", "server")], ..server("", vec![drop, gone, csv]) };
+        let s = read_server(&alone, &r).unwrap();
+        assert_eq!((s.port, s.routes.len(), s.clocks.len()), (None, 0, 0));
+        let labels: Vec<&str> = s.files.iter().map(|f| f.label.as_str()).collect();
+        assert_eq!(labels, ["on file drop", "on file drop deleted", "on file drop matching \"*.csv\""]);
+        assert_eq!(s.files[1].trigger, FileTrigger { folder: "drop".into(), deleted: true, matching: String::new() });
+        assert_eq!(s.files[0].handler, drop);
+
+        let e = endpoint(&mut r, "GET", "/a");
+        assert_eq!(read_server(&server("80", vec![e, drop]), &r).unwrap().files.len(), 1);
+        // One handler per line; a folder is a name, `on` new or deleted, `matching` a glob.
+        assert_eq!(read_server(&server("80", vec![e, drop, drop]), &r), Err(DeclError::DuplicateFileHandler { label: "on file drop".into() }));
+        for bad in [&[("folder", "../x")][..], &[], &[("folder", "a"), ("on", "moved")], &[("folder", "a"), ("matching", "a**")]] {
+            let f = file_handler(&mut r, bad);
+            assert_eq!(read_server(&server("80", vec![e, f]), &r), Err(DeclError::BadEndpointShape { child: 1 }), "{bad:?}");
+        }
     }
 
     #[test]

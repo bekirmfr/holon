@@ -22,6 +22,19 @@ impl FileTrigger {
     pub fn starts(&self, deleted: bool, name: &str) -> bool {
         self.deleted == deleted && (self.matching.is_empty() || glob_matches(&self.matching, name))
     }
+
+    /// How the log and the editor name a file handler on this trigger: `on file inbox`, `on file
+    /// inbox deleted`, `on file inbox matching "*.csv"`, as the text writes its block.
+    pub fn label(&self) -> String {
+        let mut label = format!("on file {}", self.folder);
+        if self.deleted {
+            label.push_str(" deleted");
+        }
+        if !self.matching.is_empty() {
+            label.push_str(&format!(" matching {:?}", self.matching));
+        }
+        label
+    }
 }
 
 /// Every `file_arrival` in `unit`'s closure, once each, in order.

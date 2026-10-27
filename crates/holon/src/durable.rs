@@ -383,7 +383,7 @@ impl ParkedRun {
             inputs: inputs.iter().map(|i| i.as_ref().map(SValue::from_core)).collect(),
             sourced: sourced
                 .iter()
-                .filter(|(c, _)| matches!(c, Capability::Clock | Capability::Random | Capability::NetworkIngress))
+                .filter(|(c, _)| matches!(c, Capability::Clock | Capability::Random | Capability::NetworkIngress | Capability::FileArrival(_)))
                 .map(|(c, v)| (format!("{c:?}"), SValue::from_core(v)))
                 .collect(),
             state_refs,

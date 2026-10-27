@@ -41,7 +41,7 @@ const runLabel = (e: LogEntry) =>
       : e.kind === "tick"
         ? (e.route ?? "clock tick")
         : e.kind === "file"
-          ? fileRun(e.sourced.find(([cap]) => cap.startsWith("FileArrival("))?.[1])
+          ? `${fileRun(e.sourced.find(([cap]) => cap.startsWith("FileArrival("))?.[1])}${e.route ? ` (${e.route})` : ""}`
           : "trigger";
 /** A file run's label: what happened to which file (`deleted file a.csv`). */
 const fileRun = (handle: WValue | undefined) => `${text(field(handle, "event")) || "new"} file ${text(field(handle, "name")) || ""}`.trim();

@@ -387,17 +387,20 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
         return Rerun::Differs(format!("its unit {} isn't in the export", &entry.unit[..12.min(entry.unit.len())]));
     };
 
-    // What it ran: a request's endpoint, with the request; a clock's tick, that clock's handler
-    // alone; anything else, the whole unit.
+    // What it ran: a request's endpoint, with the request; a clock's tick or a file's run, that
+    // handler alone (the file's handle among the sourced values); anything else, the whole unit.
     let clock = match &entry.route {
         Some(label) if entry.kind == "tick" => {
-            read_server(deployed, resolver).ok().and_then(|s| s.clocks.into_iter().find(|c| c.label == *label))
+            read_server(deployed, resolver).ok().and_then(|s| s.clocks.into_iter().find(|c| c.label == *label)).map(|c| c.handler)
+        }
+        Some(label) if entry.kind == "file" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.files.into_iter().find(|f| f.label == *label)).map(|f| f.handler)
         }
         _ => None,
     };
     let (root, inputs) = match (&entry.route, clock) {
-        (Some(label), Some(clock)) => {
-            let Some(root) = resolver.resolve(&clock.handler) else {
+        (Some(label), Some(handler)) => {
+            let Some(root) = resolver.resolve(&handler) else {
                 return Rerun::Differs(format!("the handler of {label:?} isn't in the export"));
             };
             (root, Vec::new())

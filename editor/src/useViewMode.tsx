@@ -157,8 +157,9 @@ export function useViewMode(input: ViewModeInput) {
     if (selectedRun.kind === "request" && respond && selectedRun.outputs.length > 0) {
       verdict = JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(selectedRun.outputs[0]);
     }
-    // A clock's tick answers nobody: it reproduces when each node gives what the log says it gave.
-    if (selectedRun.kind === "tick" && selectedRun.route) {
+    // A clock's tick or a file handler's run answers nobody: it reproduces when each node gives
+    // what the log says it gave.
+    if ((selectedRun.kind === "tick" || selectedRun.kind === "file") && selectedRun.route) {
       const recorded = [...nodeOutputs(selectedRun, viewTrace)].filter(([id]) => run.traces.has(id));
       if (recorded.length > 0) verdict = recorded.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs));
     }

@@ -793,3 +793,7 @@ Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA25
 ### `every`
 
 A clock: a run every seconds set on the node, with now, the time of the tick. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
+
+### `on_file`
+
+A file handler: a run for each file that settles in the folder set on the node (or, on: deleted, is removed from it), its name matching the glob matching if set, with file, its handle {folder, name, size, hash, modified, event}. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.

@@ -81,10 +81,10 @@ fn port_of(c: &Lowered) -> &str {
     c.doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or_default()
 }
 
-/// Whether the flow deploys on a schedule: `every`, and no routes or clock blocks. It then runs on the clock, so
+/// Whether the flow deploys on a schedule: `every`, and no routes or handler blocks. It then runs on the clock, so
 /// what it may do includes the clock (core's `Capabilities::deployed`), as the deploy will ask.
 pub(crate) fn scheduled(c: &Lowered, server: &DerivedServer) -> bool {
-    server.endpoints.is_empty() && server.clocks.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
+    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
 }
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
@@ -159,6 +159,11 @@ pub fn check(file: &str, source: &str) -> Report {
     if !server.clocks.is_empty() {
         out.push(if server.endpoints.is_empty() { "a server of clocks, listening on no port" } else { "and its clocks" }.into());
         out.extend(server.clocks.iter().map(|c| format!("  {}", c.label)));
+    }
+    if !server.files.is_empty() {
+        let alone = server.endpoints.is_empty() && server.clocks.is_empty();
+        out.push(if alone { "a server of file handlers, listening on no port" } else { "and its file handlers" }.into());
+        out.extend(server.files.iter().map(|f| format!("  {}", f.label)));
     }
     let (caps, modules, mut problems) = match unit {
         Ok((hash, caps)) => {
@@ -238,6 +243,10 @@ pub fn show(file: &str, source: &str) -> Report {
     if !server.clocks.is_empty() {
         out.push("  clocks".into());
         out.extend(server.clocks.iter().map(|c| format!("    {}", c.label)));
+    }
+    if !server.files.is_empty() {
+        out.push("  files".into());
+        out.extend(server.files.iter().map(|f| format!("    {}", f.label)));
     }
     if let Ok((_, caps)) = &unit {
         out.extend(while_it_runs(caps).iter().map(|l| format!("  {l}")));

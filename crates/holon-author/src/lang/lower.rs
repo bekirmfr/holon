@@ -89,6 +89,11 @@ fn alias(name: &str) -> &str {
     }
 }
 
+/// An `on file` line as the log names its handler: `on file inbox deleted`.
+fn file_label(f: &FileOn) -> String {
+    holon_core::FileTrigger { folder: f.folder.clone(), deleted: f.deleted, matching: f.matching.clone().unwrap_or_default() }.label()
+}
+
 /// Whether an `http_stream` node pipes its answer to a channel (`updates.pipe(…)`), rather than
 /// forwarding it to the route's caller.
 fn piped(d: &crate::canvas::NodeData) -> bool {
@@ -173,6 +178,8 @@ enum FrameKind {
     Route { request: String, responded: Option<Span> },
     /// An `every` block: its tick node, whose `now` is the time of the tick.
     Every { tick: String },
+    /// An `on file` block: the name of the file's handle, which `ingress` would be in the old form.
+    OnFile { file: String },
     /// A holon's block: its declared outputs, in order, and what each is bound to.
     Holon { declared: Vec<String>, bound: HashMap<String, (Val, Span)>, effects: Vec<(Val, Span)> },
     /// A function's body: the names it uses from around it, in first use, each with its value
@@ -204,6 +211,10 @@ impl Frame {
         Frame { kind, env: HashMap::new(), wiring_in: vec![], wiring_out: vec![], written: HashMap::new(), shared: HashMap::new(), created: vec![], wiring_form: false }
     }
 }
+
+/// A handler block's trigger node, the nodes it placed, its header's span, and how a stray's
+/// error names the trigger and what to use of it (`the tick`, `now`).
+type Block = (String, Vec<String>, Span, (&'static str, String));
 
 struct Lowerer<'a> {
     b: FlowBuilder,
@@ -239,8 +250,8 @@ struct Lowerer<'a> {
     /// Each route's request node, the nodes its block placed, and its header's span: a route is
     /// everything wired to its request, so a node left unwired to it would silently fall out.
     routes: Vec<(String, Vec<String>, Span)>,
-    /// Each `every` block's tick node, the nodes it placed, and its header's span, likewise.
-    ticks: Vec<(String, Vec<String>, Span)>,
+    /// Each `every` or `on file` block, likewise.
+    ticks: Vec<Block>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -259,6 +270,7 @@ impl<'a> Lowerer<'a> {
                 HeaderKind::OnFile(f) => Some(f.folder.clone()),
                 _ => None,
             })
+            .chain(file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o.on.folder.clone()) } else { None }))
             .collect();
         Lowerer {
             b: FlowBuilder::new(),
@@ -311,21 +323,35 @@ impl<'a> Lowerer<'a> {
                 return err(name.span, format!("there is a holon \"{}\" already", name.text));
             }
         }
-        // A flow of handlers (routes, `every` blocks) keeps its statements in them.
-        let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_) | Item::Every(_)));
+        // A flow of handlers (routes, `every` and `on file` blocks) keeps its statements in them.
+        let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_) | Item::Every(_) | Item::OnFile(_)));
         let blocks: Vec<&EveryDef> = file.items.iter().filter_map(|i| if let Item::Every(e) = i { Some(e) } else { None }).collect();
-        if !blocks.is_empty()
+        let file_blocks: Vec<&OnFileDef> = file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o) } else { None }).collect();
+        if !(blocks.is_empty() && file_blocks.is_empty())
             && let Some(h) = file.headers.iter().find(|h| matches!(h.kind, HeaderKind::Every { .. } | HeaderKind::Interval(_)))
         {
-            return err(h.span, "a flow with `every` blocks has its clocks in them: put the clock's statements in an `every … { … }` block");
+            return err(h.span, "a flow with `every` or `on file` blocks has its clocks in them: put the clock's statements in an `every … { … }` block");
         }
         for (i, b) in blocks.iter().enumerate() {
             if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
                 return err(b.head, format!("{} is written twice: one block per period", b.text));
             }
         }
-        if let (Some(h), false) = (file.headers.iter().find(|h| matches!(h.kind, HeaderKind::OnFile(_))), blocks.is_empty()) {
-            return err(h.span, "a flow with `every` blocks runs on its clocks: `on file` is for a flow of its own, whose runs start with a new file");
+        for (i, b) in file_blocks.iter().enumerate() {
+            if let Some(g) = &b.on.matching
+                && !holon_core::is_glob(g)
+            {
+                return err(b.head, format!("{g:?} isn't a pattern of names: `*` and `?` within a folder, `**/` for any folders, `/` between them"));
+            }
+            if file_blocks[..i].iter().any(|o| o.on == b.on) {
+                return err(b.head, format!("{} is written twice: one block per line", file_label(&b.on)));
+            }
+        }
+        if let Some(h) = file.headers.iter().find(|h| matches!(h.kind, HeaderKind::OnFile(_)))
+            && !(blocks.is_empty() && file_blocks.is_empty())
+        {
+            let HeaderKind::OnFile(f) = &h.kind else { unreachable!() };
+            return err(h.span, format!("a flow with blocks has its triggers in them: put the file's statements in an `{} (f) {{ … }}` block, reading the file as f", file_label(f)));
         }
         let on_file: Vec<&Header> = file.headers.iter().filter(|h| matches!(h.kind, HeaderKind::OnFile(_))).collect();
         for (i, h) in on_file.iter().enumerate() {
@@ -366,6 +392,7 @@ impl<'a> Lowerer<'a> {
             match i {
                 Item::Route(r) => self.route(r)?,
                 Item::Every(e) => self.every(e)?,
+                Item::OnFile(o) => self.on_file(o)?,
                 _ => {}
             }
         }
@@ -403,11 +430,11 @@ impl<'a> Lowerer<'a> {
                 return err(span, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own");
             }
         }
-        for (tick, created, head) in &self.ticks {
+        for (tick, created, head, (what, use_)) in &self.ticks {
             let Some(group) = groups.iter().find(|g| g.contains(tick)) else { continue };
             if let Some(stray) = created.iter().find(|id| !group.contains(id)) {
                 let span = self.spans.get(stray).copied().unwrap_or(*head);
-                return err(span, "this isn't wired to the tick, so it isn't part of the block (a block is everything wired to its trigger): write something with it, or use now in it");
+                return err(span, format!("this isn't wired to {what}, so it isn't part of the block (a block is everything wired to its trigger): write something with it, or use {use_} in it"));
             }
         }
         Ok(Lowered { name, doc, names: self.names, spans: self.spans })
@@ -955,7 +982,43 @@ impl<'a> Lowerer<'a> {
         if !tied {
             return err(e.head, "the block does nothing: write something in it (state, a collection, a channel)");
         }
-        self.ticks.push((id, frame.created, e.head));
+        self.ticks.push((id, frame.created, e.head, ("the tick", "now".into())));
+        Ok(())
+    }
+
+    /// `on file inbox (f) { … }`: a file handler. Its `on_file` node is its trigger, `f` in it the
+    /// file's handle, and its sinks are tied to it (docs/L4s/triggers-L4.md §2, §3).
+    fn on_file(&mut self, o: &'a OnFileDef) -> R<()> {
+        let mut params = vec![("folder".to_string(), o.on.folder.clone())];
+        if o.on.deleted {
+            params.push(("on".into(), "deleted".into()));
+        }
+        if let Some(m) = &o.on.matching {
+            params.push(("matching".into(), m.clone()));
+        }
+        let file = self.node("on_file", &params, o.head)?;
+        let Val::Out { id, .. } = &file else { unreachable!() };
+        let id = id.clone();
+        // A handle: written to a folder, it is copied; sent, it goes by handle.
+        self.arrivals.insert(id.clone());
+        self.names.insert(id.clone(), o.file.text.clone());
+        self.check_name_free(&o.file)?;
+        let mut frame = Frame::new(FrameKind::OnFile { file: o.file.text.clone() });
+        frame.created.push(id.clone());
+        frame.env.insert(o.file.text.clone(), file.clone());
+        self.frames.push(frame);
+        for s in &o.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: a file's run answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        let tied = self.tie_block(&file, o.head)?;
+        let frame = self.frames.pop().expect("the block's frame");
+        if !tied {
+            return err(o.head, "the block does nothing: write something in it (a folder, state, a channel)");
+        }
+        self.ticks.push((id, frame.created, o.head, ("the file", o.file.text.clone())));
         Ok(())
     }
 
@@ -1390,6 +1453,14 @@ impl<'a> Lowerer<'a> {
     /// files, the file's handle: its `on file` line's `file_arrival`, or with several, whichever
     /// started the run (a `coalesce` of them, in the order written: only that one has a value).
     fn ingress(&mut self, span: Span) -> R<Val> {
+        // In an `on file` block the file has its own name.
+        let block = self.frames.iter().rev().take_while(|f| !matches!(f.kind, FrameKind::Holon { .. })).find_map(|f| match &f.kind {
+            FrameKind::OnFile { file } => Some(file.clone()),
+            _ => None,
+        });
+        if let Some(file) = block {
+            return err(span, format!("in an `on file` block the file is {file}: use {file} in place of ingress"));
+        }
         let mut chain: Option<Val> = None;
         for f in self.on_files.clone() {
             let mut params = vec![("folder".to_string(), f.folder)];
@@ -2396,10 +2467,54 @@ pub(crate) mod tests {
         assert_eq!(error("every 2s {\n  n = now\n}").2, "the block does nothing: write something in it (state, a collection, a channel)");
         assert_eq!(error("every 1.5s {\n  state.n = 1\n}").2, "every 1.5s: a clock runs every whole number of seconds, from 1s to 366d");
         assert_eq!(error("every 2s {\n  state.a = now\n}\nevery 2s {\n  state.b = now\n}").2, "2s is written twice: one block per period");
-        assert!(error("every 10s\nevery 2s {\n  state.n = now\n}").2.starts_with("a flow with `every` blocks has its clocks in them"));
+        assert!(error("every 10s\nevery 2s {\n  state.n = now\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
         // A write that reads nothing of the tick is still the block's: tied to it.
         let d = compiled("every 2s {\n  state.n = 1\n}\n").doc;
         assert!(d.edges.iter().any(|w| w.source.starts_with("every") && w.input() == TRIGGER));
+    }
+
+    /// `on file drop (f) { … }` is a file handler: its `on_file` node, everything wired to it,
+    /// its sinks tied to the file, and `f` the file's handle (docs/L4s/triggers-L4.md §2, §3).
+    #[test]
+    fn on_file_blocks_are_file_handlers_tied_to_their_file() {
+        let src = "folder done\nchannel drops\non file drop (f) {\n  drops.send(f.name)\n  done[f.name] = f\n}\non file drop deleted matching \"*.csv\" (gone) {\n  state.last = gone.name\n}\nroute GET /n (req) {\n  respond state.last\n}\n";
+        let d = compiled(src).doc;
+        let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_file")).collect();
+        assert_eq!(on.iter().map(|n| (n.param("folder"), n.param("on"), n.param("matching"))).collect::<Vec<_>>(), [("drop", "new", ""), ("drop", "deleted", "*.csv")]);
+        assert!(!d.nodes.iter().any(|n| n.data.name == "file_arrival"), "f in a block is its on_file node's");
+        let from = |leaf: &str, input: &str| {
+            let n = d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+            d.edges.iter().find(|w| w.target == n.id && w.input() == input).map(|w| (w.source.clone(), w.output().to_string()))
+        };
+        let file = Some((on[0].id.clone(), "file".to_string()));
+        assert_eq!(from("channel_send", TRIGGER), file, "the send is tied to the file");
+        assert_eq!(from("file_copy", "from"), file, "f is a handle: written to a folder, it is copied");
+        assert_eq!(from("store_write", TRIGGER), Some((on[1].id.clone(), "file".to_string())));
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        let labels: Vec<&str> = server.files.iter().map(|f| f.label.as_str()).collect();
+        assert_eq!((server.endpoints.len(), labels), (1, vec!["on file drop", "on file drop deleted matching \"*.csv\""]));
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.files.len()), (Some(8080), 2));
+        assert!(holon_core::capabilities(unit, &store).contains(holon_core::Capability::FileArrival("drop".into())));
+        // A flow of file handlers alone listens on no port.
+        let d = compiled("on file drop (f) {\n  state.n = f.size\n}\n").doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
+
+        assert_eq!(error("on file a (f) {\n  respond 1\n}"), (2, 3, "respond belongs in a route: a file's run answers nobody".into()));
+        assert_eq!(error("on file a (f) {\n  n = f.name\n}").2, "the block does nothing: write something in it (a folder, state, a channel)");
+        assert_eq!(error("on file a (f) {\n  state.n = ingress\n}").2, "in an `on file` block the file is f: use f in place of ingress");
+        assert_eq!(error("on file a (f) {\n  state.a = f\n}\non file a (g) {\n  state.b = g\n}").2, "on file a is written twice: one block per line");
+        assert!(error("on file a matching \"a**\" (f) {\n  state.a = f\n}").2.contains("isn't a pattern of names"));
+        assert!(error("on file b\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with blocks has its triggers in them: put the file's statements in an `on file b (f) { … }` block"));
+        assert!(error("every 10s\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
+        // The header form is unchanged: `ingress` is the file.
+        assert!(leaves(&compiled("on file inbox\nstate.n = ingress.name\n").doc).contains(&"file_arrival".to_string()));
     }
 
     #[test]

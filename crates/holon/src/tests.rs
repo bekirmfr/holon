@@ -6094,6 +6094,65 @@ fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
     materialize_closure(&state.store, inside).unwrap();
 }
 
+/// A flow's `on file` blocks are file handlers of its server (the drop-board sample): a file
+/// that settles in the folder runs the handler for new files alone, one removed runs the one for
+/// deleted files, each logged under its label with the file's handle; a route reads what they
+/// wrote, and their runs verify offline. What starts them can't be optional.
+#[test]
+fn a_servers_file_handlers_run_alone_for_their_lines_beside_its_routes_and_verify() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-file-blocks-{}-{}", std::process::id(), rand::random::<u32>()));
+    let board = dir.join("board");
+    std::fs::create_dir_all(&board).unwrap();
+    assert_eq!(route_status(&state, &serde_json::json!({ "name": "board", "path": board.display().to_string(), "access": "read" })), 200);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/drop-board.holon"), "");
+    // A server's handlers are in its unit's canonical order, by hash.
+    let mut triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
+    triggers.sort();
+    assert_eq!(triggers, ["Http :8157", "on file board", "on file board deleted"]);
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    let runs = || -> Vec<(String, String)> {
+        log_entries(&state, &slug)
+            .iter()
+            .filter(|e| e["kind"] == "file")
+            .map(|e| (e["route"].as_str().unwrap_or_default().to_string(), e["performed"].to_string()))
+            .collect()
+    };
+
+    std::fs::write(board.join("a.csv"), "x,1\n").unwrap();
+    look();
+    let got = runs();
+    assert_eq!(got.iter().map(|(r, _)| r.as_str()).collect::<Vec<_>>(), ["on file board"], "the handler for new files, alone: {got:?}");
+    assert!(got[0].1.contains("a.csv") && got[0].1.contains("new"), "it sent the file's name and event: {got:?}");
+    let (status, page, _) = data_call(&state, &slug, "GET", "/", "");
+    assert!(status == 200 && page.contains("1 files dropped so far"), "the count is the server's state, the routes' too: {page}");
+
+    std::fs::remove_file(board.join("a.csv")).unwrap();
+    look();
+    let got = runs();
+    assert_eq!(got.iter().map(|(r, _)| r.as_str()).collect::<Vec<_>>(), ["on file board", "on file board deleted"], "{got:?}");
+    assert!(got[1].1.contains("deleted"), "{got:?}");
+    let entry = log_entries(&state, &slug).into_iter().rfind(|e| e["kind"] == "file").unwrap();
+    assert!(entry["sourced"].as_array().unwrap().iter().any(|p| p[0] == "FileArrival(\"board\")"), "the handle is sourced: {entry:?}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 2, "{}", verify::describe(&report, None));
+
+    // What starts its file handlers can't be optional.
+    let unit = state.deployments.lock().unwrap()[&slug].unit;
+    let r = deploy_json(&state, &slug, unit, serde_json::json!({ "requirements": { "optional": ["FileArrival(\"board\")"] } }));
+    assert_eq!(r.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(r)).contains("it can't be optional"));
+    route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![]));
+    route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A flow's `every` block is a clock of its server: it ticks on its own period beside the routes,
 /// each run logged and kept in the history under its label, and its runs verify offline. A flow
 /// of clocks alone listens on no port; its clocks are in its text, so it takes no interval.

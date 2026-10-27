@@ -399,6 +399,10 @@ same thing, and no node belongs to a handler by a field you can't see.
   As built in slice 2, it is the `every` template: the `clock` leaf with the period as its
   `seconds`, and `now` in the block reads its output. The printer writes its group back as the
   block, the ties left out.
+- **A file's value is its handle.** As built in slice 3, an `on file` block's trigger node is the
+  `on_file` template: the `file_arrival` leaf with the block's line as its `folder`, `on` and
+  `matching`, its one output `file` what the parameter names. Its sinks are tied to it, and the
+  printer writes its group back as the block.
 - **The old forms stay untied** (as built in slice 1). A clock flow, a file flow, a by-hand flow
   and a flow of top-level statements are each one run of the whole canvas, so their sinks run
   with it through the open trigger below, as they did. Their ties come with the blocks of slices
@@ -448,7 +452,12 @@ The flow's unit stays a composite of handler units with no edges and no ports, s
 - **a clock handler:** `declare=every`, `seconds` (the period), no inputs, the handler's effects as
   outputs;
 - **a file handler:** `declare=on_file`, `folder`, and `on` and `matching` when given. One input,
-  `file: Record`, the handle; its effects as outputs;
+  `file: Record`, the handle; its effects as outputs. As built in slice 3 it has **no inputs**,
+  as a clock handler has none: the handle is its `on_file` node's `file_arrival` leaf, sourced as
+  `FileArrival(folder)` as the old form's is. So its capability and its watch come from the leaf
+  (`file_triggers`), a waiting run keeps the handle among its sourced values (the widened filter,
+  durable.rs 386), and verify reruns it with the logged handle, as it reruns a tick with its
+  time. The three points below are what an input would have needed instead;
 - **an action handler:** `declare=action`, `name`. One input, what was sent; its answer, then its
   effects, as outputs (the order an endpoint's are in).
 
@@ -479,7 +488,12 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
   - The capabilities are the union over the handlers, and the triggers come from the
     declarations.
   - `is_clock` becomes "has an `every` handler, or is an old clock flow".
-  - Arrivals are watched from the `on_file` children as well as the old leaves.
+  - Arrivals are watched from the `on_file` children as well as the old leaves. As built in
+    slice 3: the `on_file` template's leaf is in the closure, so the watch is opened as before.
+    A look fires, for a server, each file handler whose line is for the file, alone, logged as a
+    `"file"` run under its label (`on file inbox`); the old form still fires the whole unit. A
+    server lists its handlers' labels among its triggers in place of `Files inbox`, and refuses
+    a handler's `FileArrival(folder)` marked optional.
   - "Declares no driver capability" stays, for a flow with no handler at all. Its message says
     "trigger" and what to write: "nothing would ever start a run: to run it by hand, put it in
     an `action run (input) { … }`" (fork 14). No handler is added for the author.

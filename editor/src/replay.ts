@@ -215,10 +215,10 @@ export type NodeTiming = {
 };
 
 /** Which of the deployed flow's traces places a run's steps, and how deep they sit: a request's
- *  route, or a clock's label (`every 2s`), one level down, inside its handler unit; else the whole
- *  flow's (`"*"`), at the top. */
+ *  route, or a clock's or file handler's label (`every 2s`, `on file inbox`), one level down,
+ *  inside its handler unit; else the whole flow's (`"*"`), at the top. */
 function placedBy(entry: { kind: string; route: string | null }): { key: string; depth: 1 | 2 } {
-  const handler = entry.kind === "request" || (entry.kind === "tick" && !!entry.route);
+  const handler = entry.kind === "request" || ((entry.kind === "tick" || entry.kind === "file") && !!entry.route);
   return handler ? { key: entry.route ?? "", depth: 2 } : { key: "*", depth: 1 };
 }
 
@@ -392,12 +392,25 @@ export function periodText(seconds: number): string {
   return `${seconds}s`;
 }
 
+/** An `on_file` node's label, as the log names its handler's runs: `on file inbox`, `on file
+ *  inbox deleted`, `on file inbox matching "*.csv"` (core's `FileTrigger::label`). */
+export function fileLabel(params: ReplayNode["data"]["params"]): string {
+  const matching = frozen(params, "matching") ?? "";
+  return `on file ${frozen(params, "folder") ?? ""}${frozen(params, "on") === "deleted" ? " deleted" : ""}${matching ? ` matching ${JSON.stringify(matching)}` : ""}`;
+}
+
 /**
  * Which nodes a run touched: for a request, the group holding the request node of its route
  * (`"GET /todos/:id"`); for a clock's tick, the group holding its `every` node (`"every 2s"`);
- * for anything else (a flow's tick, a trigger), the whole canvas.
+ * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`); for
+ * anything else (a flow's tick, a trigger, a flow of `on file` lines), the whole canvas.
  */
 export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: ReplayInput): string[] {
+  if (entry.kind === "file" && entry.route) {
+    const onFile = nodes.find((n) => n.data.name === "on_file" && n.data.body.kind === "Template" && fileLabel(n.data.params) === entry.route);
+    if (!onFile) return [];
+    return components(nodes, edges).find((ids) => ids.includes(onFile.id)) ?? [];
+  }
   if (entry.kind === "tick" && entry.route) {
     const every = nodes.find(
       (n) => n.data.name === "every" && n.data.body.kind === "Template" && `every ${periodText(Number(frozen(n.data.params, "seconds")))}` === entry.route,
@@ -520,6 +533,8 @@ export function replay(
     if (primitive && name === "ingress") return { inputs, outputs: [sourced.get("NetworkIngress") ?? null] };
     // The new file that started the run: its handle, as the log keeps it.
     if (primitive && name === "file_arrival") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
+    // A file handler's file: its handle, likewise.
+    if (node.data.body.kind === "Template" && name === "on_file") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
     // A waiting point answers with the event the log says was delivered, if any.
     if (primitive && name === "await") return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
     // A token is a credential: the log has it redacted, and so does the replay.

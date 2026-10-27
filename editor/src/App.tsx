@@ -408,7 +408,7 @@ function Canvas({
       const port = doc.server?.port ?? DEFAULT_SETTINGS.port;
       const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
       const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
-      const scheduled = (doc.server?.interval ?? "").trim() !== "" && server.endpoints.length === 0 && server.clocks.length === 0;
+      const scheduled = (doc.server?.interval ?? "").trim() !== "" && server.endpoints.length === 0 && server.clocks.length === 0 && server.files.length === 0;
       const caps = ev.deployed_capability_names(hash, scheduled) as string[];
       return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
     },
@@ -430,7 +430,7 @@ function Canvas({
     try {
       const { nodes: ns, edges: es } = live.current;
       const hash = flowUnitHash(ns, es, ev, settings.port);
-      const scheduled = settings.interval.trim() !== "" && derived.endpoints.length === 0 && derived.clocks.length === 0;
+      const scheduled = settings.interval.trim() !== "" && derived.endpoints.length === 0 && derived.clocks.length === 0 && derived.files.length === 0;
       return ((ev.deployed_capability_names(hash, scheduled) as string[])).sort();
     } catch {
       return [];
@@ -829,6 +829,7 @@ function Canvas({
                   secretNames={secretNames}
                   capabilities={flowCapabilities}
                   clocks={derived.clocks.map((c) => c.label)}
+                  fileFolders={derived.files.map((f) => f.folder)}
                 />
               }
               saveMsg={saveMsg}
@@ -860,6 +861,7 @@ function Canvas({
                 ev={ev}
                 endpoints={derived.endpoints}
                 clocks={derived.clocks}
+                files={derived.files}
                 errors={derived.errors}
                 liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
                 tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}

@@ -476,6 +476,29 @@ test("ticker's clock ticks beside its routes: its count grows on its own, tick n
   await expect(page.locator(".hl-view__bottom")).toContainText("every 2s");
 });
 
+test("drop-board's file handlers run beside its routes: a file dropped in, and one removed, show on its page, and a file's run replays exactly", async ({ page, browser }) => {
+  const { rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  await openSample(page, "Drop board (files on a live page)");
+  const port = await deploy(page);
+  // The server panel lists its file handlers beside its routes.
+  await expect(page.getByText("board deleted", { exact: true })).toBeVisible();
+  const board = await browser.newPage();
+  const subscribed = board.waitForResponse((r) => new URL(r.url()).pathname === "/live");
+  await board.goto(`http://127.0.0.1:${port}/`);
+  await subscribed;
+  // A file that settles in the folder runs the block for new files; removed, the one for deleted.
+  const name = `dropped-${Date.now()}.txt`;
+  writeFileSync(join(FOLDERS, "board", name), "hello");
+  await expect(board.locator("li.new").first()).toHaveText(`new ${name} (5 bytes)`, { timeout: 15_000 });
+  rmSync(join(FOLDERS, "board", name));
+  await expect(board.locator("li.new").first()).toHaveText(`deleted ${name}`, { timeout: 15_000 });
+  await board.close();
+  // The newest run is the deleted file's, named by its line, and view mode replays it over its block.
+  await viewNewestRun(page);
+  await expect(page.locator(".hl-view__bottom")).toContainText(`deleted file ${name} (on file board deleted)`);
+});
+
 test("basket reads a price inside a mapped function, per item, and its run replays exactly", async ({ page, request }) => {
   await openSample(page, "Basket (a collection read inside a function)");
   const port = await deploy(page);

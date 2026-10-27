@@ -70,7 +70,27 @@ pub struct ClockGroup {
     pub node_ids: Vec<String>,
 }
 
-/// What a node is the trigger of, when it is one: a route's request, a clock's tick.
+/// One file handler of the server: its `on_file` node, its line, and every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FileGroup {
+    pub folder: String,
+    pub deleted: bool,
+    pub matching: String,
+    /// `on file inbox`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "onFileId")]
+    pub on_file_id: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
+impl FileGroup {
+    pub fn trigger(&self) -> holon_core::FileTrigger {
+        holon_core::FileTrigger { folder: self.folder.clone(), deleted: self.deleted, matching: self.matching.clone() }
+    }
+}
+
+/// What a node is the trigger of, when it is one: a route's request, a clock's tick, a file.
 fn trigger_label(n: &Node) -> Option<String> {
     if n.is_template("request") {
         Some(format!("{} {}", n.param("method"), n.param("path")))
@@ -78,6 +98,11 @@ fn trigger_label(n: &Node) -> Option<String> {
         Some(match crate::templates::period(n.param("seconds")) {
             Ok(s) => holon_core::clock_label(s),
             Err(_) => format!("every {}", n.param("seconds")),
+        })
+    } else if n.is_template("on_file") {
+        Some(match crate::templates::file_trigger(&n.data.params) {
+            Ok(t) => t.label(),
+            Err(_) => format!("on file {}", n.param("folder")),
         })
     } else {
         None
@@ -111,6 +136,37 @@ pub fn find_clocks(nodes: &[Node], wires: &[Wire]) -> (Vec<ClockGroup>, Vec<Stri
         clocks.push(ClockGroup { seconds, label, every_id: every.id.clone(), node_ids: ids });
     }
     (clocks, errors)
+}
+
+/// The file handlers the flow declares (each connected group holding an `on_file` node and no
+/// other trigger), and why any can't be one.
+pub fn find_files(nodes: &[Node], wires: &[Wire]) -> (Vec<FileGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let (mut files, mut errors): (Vec<FileGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [on_file] = triggers.as_slice() else { continue };
+        if !on_file.is_template("on_file") {
+            continue;
+        }
+        let t = match crate::templates::file_trigger(&on_file.data.params) {
+            Ok(t) => t,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = t.label();
+        if files.iter().any(|f| f.trigger() == t) {
+            errors.push(format!("{label} is written twice: one block per line"));
+            continue;
+        }
+        files.push(FileGroup { folder: t.folder, deleted: t.deleted, matching: t.matching, label, on_file_id: on_file.id.clone(), node_ids: ids });
+    }
+    // In the order they are written.
+    files.sort_by_key(|f| node_ids.iter().position(|id| *id == f.on_file_id));
+    (files, errors)
 }
 
 /// The routes the flow declares, and why any group can't be one. Groups without a request node
@@ -225,6 +281,17 @@ pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<Encap
 /// Narrow core's proposed boundary for one clock's group to what a clock handler is: no inputs
 /// (a tick has none: every input a node needs must be wired) and its effects as outputs.
 pub fn clock_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a clock")
+}
+
+/// A file handler's boundary, as a clock's: no inputs (the file's handle is its `on_file` node's)
+/// and its effects as outputs.
+pub fn file_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a file's run")
+}
+
+/// A handler with no caller to answer: no inputs, its effects as outputs. `who` says which kind.
+fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str) -> Result<EncapSpec, String> {
     let input_name = |child: u32, port: u32| group[child as usize].data.inputs.get(port as usize).map(|p| p.name.as_str());
     let promote: Vec<_> =
         spec.promote.into_iter().filter(|p| !is_optional_input(group[p.child as usize], input_name(p.child, p.port))).collect();
@@ -234,7 +301,7 @@ pub fn clock_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<Encap
         return Err(format!("{label}: {} · {port} is not wired", n.data.name));
     }
     if let Some(n) = group.iter().find(|n| n.is_template("respond") || n.is_template("request")) {
-        return Err(format!("{label}: {} is a route's; a clock answers nobody", n.data.name));
+        return Err(format!("{label}: {} is a route's; {who} answers nobody", n.data.name));
     }
     let is_effect =
         |child: u32, port: u32| group[child as usize].data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect);
@@ -255,6 +322,29 @@ pub fn clock_unit(handler: Hash, outputs: &[Port], seconds: u64) -> Unit {
             edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
         },
         params: vec![frozen("declare", "every"), frozen("seconds", &seconds.to_string())],
+        inputs: vec![],
+        outputs: outputs.to_vec(),
+    }
+}
+
+/// Wrap a file handler's handler as a file handler unit (core's `read_file_handler`): no inputs,
+/// each of its effects an output, `declare = "on_file"`, `folder`, and `on` and `matching` when
+/// given.
+pub fn file_unit(handler: Hash, outputs: &[Port], trigger: &holon_core::FileTrigger) -> Unit {
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    let mut params = vec![frozen("declare", "on_file"), frozen("folder", &trigger.folder)];
+    if trigger.deleted {
+        params.push(frozen("on", "deleted"));
+    }
+    if !trigger.matching.is_empty() {
+        params.push(frozen("matching", &trigger.matching));
+    }
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![handler],
+            edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
+        },
+        params,
         inputs: vec![],
         outputs: outputs.to_vec(),
     }
@@ -316,7 +406,7 @@ pub fn endpoint_unit(handler: Hash, inputs: &[Port], outputs: &[Port], method: &
     })
 }
 
-/// A server unit over the given endpoints and clock handlers, in that order, with `port` when it
+/// A server unit over the given endpoints, clock handlers and file handlers, in that order, with `port` when it
 /// has a route. Core's `read_server` re-checks everything on deploy.
 pub fn server_unit(handlers: Vec<Hash>, port: Option<u16>) -> Unit {
     let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };

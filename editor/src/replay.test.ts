@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, it, expect } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
-import { collectionsAtStep, diagnose, executionOrder, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
+import { collectionsAtStep, diagnose, executionOrder, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
@@ -133,6 +133,23 @@ describe("replay", () => {
     expect(runGroup(canvas, wires, { ...tick, route: "every 5s" })).toEqual([]);
     expect(replay(canvas, wires, tick, evalNode).traces.get("e")?.outputs).toEqual([num(120)]);
     expect([2, 120, 3600, 86_400, 90].map(periodText)).toEqual(["2s", "2m", "1h", "1d", "90s"]);
+  });
+
+  it("runs a file handler's run over its on_file node's group, the file its handle", () => {
+    const handle: WValue = { type: "Record", value: [["name", { type: "Text", value: "a.csv" }]] } as unknown as WValue;
+    const run: ReplayInput = { kind: "file", route: "on file drop deleted", request: null, sourced: [['FileArrival("drop")', handle]], state_before: {} };
+    const canvas = [
+      n("f", "on_file", [], ["file"], [frozen("folder", "drop"), frozen("on", "new"), frozen("matching", "")], "Template"),
+      n("w", "store_write", ["value", "trigger"], ["out"], [frozen("key", "new")]),
+      n("g", "on_file", [], ["file"], [frozen("folder", "drop"), frozen("on", "deleted"), frozen("matching", "")], "Template"),
+      n("x", "store_write", ["value", "trigger"], ["out"], [frozen("key", "gone")]),
+    ];
+    const wires = [wire("f", "file", "w", "value"), wire("f", "file", "w", "trigger"), wire("g", "file", "x", "value"), wire("g", "file", "x", "trigger")];
+    expect(runGroup(canvas, wires, run)).toEqual(["g", "x"]);
+    expect(runGroup(canvas, wires, { ...run, route: "on file drop" })).toEqual(["f", "w"]);
+    expect(runGroup(canvas, wires, { ...run, route: 'on file drop matching "*.csv"' })).toEqual([]);
+    expect(replay(canvas, wires, run, evalNode).traces.get("g")?.outputs).toEqual([handle]);
+    expect(fileLabel([frozen("folder", "in"), frozen("matching", "*.csv")])).toBe('on file in matching "*.csv"');
   });
 });
 

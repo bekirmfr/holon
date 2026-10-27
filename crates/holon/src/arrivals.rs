@@ -17,6 +17,10 @@
 //!   changes again), nor does one they deleted, so a flow may write into the folder it watches
 //!   without starting itself.
 //! - **A deleted file is forgotten:** one put back under its name is new again.
+//! - **A server's file handlers** (`on file inbox (f) { … }` blocks, docs/L4s/triggers-L4.md §5)
+//!   each run alone, for a file their line is for: a file two lines are for starts a run of each.
+//!   The run is the handler's, logged under its label (`on file inbox`), its handle sourced as
+//!   the old form's is.
 
 use std::path::PathBuf;
 
@@ -215,8 +219,9 @@ impl Watch {
     }
 }
 
-/// A deployment that watches folders: its slug, unit, state, permit, secrets, folders and watch.
-type Watching = (String, Hash, Option<DeploymentState>, Arc<Permit>, Vault, Arc<folders::Scoped>, Arc<Watch>);
+/// A deployment that watches folders: its slug, unit, state, permit, secrets, folders and watch,
+/// and a server's file handlers (none for a flow of `on file` lines: the whole unit runs).
+type Watching = (String, Hash, Option<DeploymentState>, Arc<Permit>, Vault, Arc<folders::Scoped>, Arc<Watch>, Option<Vec<holon_core::FileHandler>>);
 
 /// One look at every running deployment's watched folders, each deployment on its own thread:
 /// the runs new files start, one after another, before it returns.
@@ -296,9 +301,10 @@ fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>
         .lock()
         .unwrap()
         .iter()
-        .filter(|(_, d)| d.arrivals.watches() && d.life.status == Status::Running && d.server.is_none())
+        .filter(|(_, d)| d.arrivals.watches() && d.life.status == Status::Running)
         .map(|(slug, d)| {
-            (slug.clone(), d.unit, d.state.clone(), Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders), Arc::clone(&d.arrivals))
+            let handlers = d.server.as_ref().map(|s| s.files.clone());
+            (slug.clone(), d.unit, d.state.clone(), Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders), Arc::clone(&d.arrivals), handlers)
         })
         .collect();
     // The folders each looks at: by their paths, those that may have changed.
@@ -307,20 +313,29 @@ fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>
     };
     let due: Option<BTreeSet<PathBuf>> = notices.map(|n| n.changed(&watching.iter().flat_map(|w| paths(&w.5, &w.6).into_values()).collect()));
     thread::scope(|scope| {
-        for (slug, unit, state, permit, secrets, files, watch) in watching {
+        for (slug, unit, state, permit, secrets, files, watch, handlers) in watching {
             let at = paths(&files, &watch);
             let due = due.as_ref();
             scope.spawn(move || {
                 let may_have_changed = |f: &str| due.is_none_or(|due| at.get(f).is_none_or(|p| due.contains(p)));
                 for (folder, name, event) in watch.look(&files, MAX_RUNS_PER_LOOK, may_have_changed) {
-                    fire_one_arrival(store, deployments, deployments_path, &slug, unit, state.as_ref(), &permit, &secrets, &files, (&folder, &name, event));
+                    let deleted = matches!(event, Event::Deleted(_));
+                    let Some(handlers) = &handlers else {
+                        fire_one_arrival(store, deployments, deployments_path, &slug, unit, None, state.as_ref(), &permit, &secrets, &files, (&folder, &name, event));
+                        continue;
+                    };
+                    // A server: each handler whose line is for the file, alone.
+                    for h in handlers.iter().filter(|h| h.trigger.folder == folder && h.trigger.starts(deleted, &name)) {
+                        fire_one_arrival(store, deployments, deployments_path, &slug, unit, Some(h), state.as_ref(), &permit, &secrets, &files, (&folder, &name, event));
+                    }
                 }
             });
         }
     });
 }
 
-/// One run for file `name` of `folder`: its handle is what arrived, or what was removed.
+/// One run for file `name` of `folder`: its handle is what arrived, or what was removed. With
+/// `handler`, the run is that file handler's alone, logged under its label.
 #[allow(clippy::too_many_arguments)]
 fn fire_one_arrival(
     store: &SharedStore,
@@ -328,6 +343,7 @@ fn fire_one_arrival(
     deployments_path: &str,
     slug: &str,
     unit_hash: Hash,
+    handler: Option<&holon_core::FileHandler>,
     state: Option<&DeploymentState>,
     permit: &Permit,
     secrets: &Vault,
@@ -362,6 +378,9 @@ fn fire_one_arrival(
             return;
         }
     };
+    // A server's file handler runs alone: its unit is the run's.
+    let unit_hash = handler.map_or(unit_hash, |h| h.handler);
+    let label = handler.map(|h| h.label.clone());
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         eprintln!("new file [{slug}]: deployed unit no longer resolves in the store");
         record_trigger(deployments, slug, true);
@@ -379,13 +398,15 @@ fn fire_one_arrival(
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state, &extra_sourced, permit, true, secrets, &mut waits, None);
     let mut entry = run_entry("file", started, &extra_sourced, &run);
-    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "file", None, &[], &extra_sourced, &run, &waits) {
+    entry.route = label.clone();
+    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "file", label.clone(), &[], &extra_sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
     log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
-    println!("{} file [{slug}] {folder}/{name}: {} effect(s) performed", event.name(), run.performed.len());
+    let which = label.as_ref().map(|l| format!(" {l}")).unwrap_or_default();
+    println!("{} file [{slug}]{which} {folder}/{name}: {} effect(s) performed", event.name(), run.performed.len());
     record_trigger(deployments, slug, false);
     if state.is_some() || parked_any {
         persist_deployments(deployments_path, deployments, store);

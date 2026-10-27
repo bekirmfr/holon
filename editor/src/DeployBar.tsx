@@ -102,6 +102,7 @@ export function DeployBar({
   secretNames,
   capabilities,
   clocks = [],
+  fileFolders = [],
 }: {
   /** This flow's deployment, if it has one. */
   entry: DeploymentEntry | undefined;
@@ -121,6 +122,8 @@ export function DeployBar({
   /** Its clocks' labels (`every 2s`), when it has `every` nodes: their periods are on the
    *  canvas, so it takes no interval. */
   clocks?: string[];
+  /** The folders its file handlers (`on file` blocks) watch: what starts them is never optional. */
+  fileFolders?: string[];
 }) {
   const [open, setOpen] = useState(false);
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
@@ -312,7 +315,7 @@ export function DeployBar({
                 onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
                 style={{ justifySelf: "start" }}
               />
-              <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} />
+              <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} />
               {secretNames.length > 0 && (
                 <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
                   secrets{slug ? "" : " (name the flow first)"}
@@ -520,16 +523,19 @@ function OptionalPermissions({
   settings,
   setSettings,
   clocked,
+  fileFolders,
 }: {
   capabilities: string[];
   settings: FlowSettings;
   setSettings: (s: FlowSettings) => void;
   /** It has clocks (`every` nodes): the clock starts them, so it is never optional. */
   clocked: boolean;
+  /** The folders its file handlers watch: a file there starts them, so that is never optional. */
+  fileFolders: string[];
 }) {
   const optional = settings.requirements?.optional ?? [];
   const trigger = manifestTrigger(capabilities);
-  const starts = (c: string) => c === trigger || (clocked && c === "Clock");
+  const starts = (c: string) => c === trigger || (clocked && c === "Clock") || fileFolders.some((f) => c === `FileArrival(${JSON.stringify(f)})`);
   const listed = [...new Set([...capabilities.filter((c) => !starts(c)), ...optional])].sort();
   if (listed.length === 0) return null;
   const toggle = (item: string, on: boolean) => {

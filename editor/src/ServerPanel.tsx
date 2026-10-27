@@ -16,7 +16,7 @@ import {
   type Method,
 } from "./endpoint";
 import { sendRequest, ServerError, tickNow, type HttpResponse } from "./server";
-import type { ClockDraft } from "./canvasOps";
+import type { ClockDraft, FileDraft } from "./canvasOps";
 
 const field: CSSProperties = {
   font: "inherit",
@@ -92,6 +92,7 @@ export function ServerPanel({
   ev,
   endpoints,
   clocks = [],
+  files = [],
   errors,
   liveSlug,
   tickSlug = "",
@@ -101,6 +102,8 @@ export function ServerPanel({
   endpoints: EndpointDraft[];
   /** The clocks the canvas declares (its `every` nodes' groups). */
   clocks?: ClockDraft[];
+  /** The file handlers the canvas declares (its `on_file` nodes' groups). */
+  files?: FileDraft[];
   /** The flow's running deployment, for "tick now"; empty when it isn't running. */
   tickSlug?: string;
   /** Why a request node's group couldn't become a route. */
@@ -161,12 +164,12 @@ export function ServerPanel({
         onClick={() => setOpen(!open)}
         title={open ? "collapse" : "expand"}
       >
-        server {open ? "▾" : `▸ ${endpoints.length} route${endpoints.length === 1 ? "" : "s"}${clocks.length > 0 ? `, ${clocks.length} clock${clocks.length === 1 ? "" : "s"}` : ""}`}
+        server {open ? "▾" : `▸ ${endpoints.length} route${endpoints.length === 1 ? "" : "s"}${clocks.length > 0 ? `, ${clocks.length} clock${clocks.length === 1 ? "" : "s"}` : ""}${files.length > 0 ? `, ${files.length} file handler${files.length === 1 ? "" : "s"}` : ""}`}
       </div>
       {open && (
         <>
 
-      {endpoints.length === 0 && clocks.length === 0 && errors.length === 0 && (
+      {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && errors.length === 0 && (
         <div>drop a request node (palette, http) and wire it to a respond node to add a route</div>
       )}
       {clocks.map((c) => (
@@ -184,6 +187,12 @@ export function ServerPanel({
         </div>
       ))}
       {ticked && <div style={{ color: "#9fb4d4" }}>{ticked}</div>}
+      {files.map((f) => (
+        <div key={f.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each file its line is for, in the folder ${f.folder} on the host`}>
+          <span style={{ color: "#6fd3e0", ...label }}>on file</span>
+          <span style={{ flex: 1, color: "#e6eefb" }}>{f.label.slice("on file ".length)}</span>
+        </div>
+      ))}
       {endpoints.map((e) => (
         <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <span style={{ color: "#6fd3e0", ...label }}>{e.method}</span>

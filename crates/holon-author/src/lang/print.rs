@@ -20,7 +20,7 @@ use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, TRIGGE
 use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
-use crate::routes::{components, find_clocks, find_routes};
+use crate::routes::{components, find_clocks, find_files, find_routes};
 use crate::templates;
 use crate::text::restore;
 use crate::wire::{WParam, WPort, WType};
@@ -303,7 +303,9 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     for c in &p.collections {
         out.push(header(format!("collection {c}")));
     }
-    for f in p.folders.iter().filter(|f| !p.on_files.iter().any(|(on, _, _)| on == *f)) {
+    // A folder an `on file` line or block names is declared by it.
+    let blocks: Vec<&str> = doc.nodes.iter().filter(|n| n.is_template("on_file")).map(|n| n.param("folder")).collect();
+    for f in p.folders.iter().filter(|f| !p.on_files.iter().any(|(on, _, _)| on == *f) && !blocks.contains(&f.as_str())) {
         out.push(header(format!("folder {f}")));
     }
     for d in &p.databases {
@@ -396,7 +398,7 @@ pub(crate) fn js_statement(store: &MapResolver, unit: &holon_core::Unit, hname: 
 }
 
 /// `nodes` and `wires` without the ties the text doesn't write: a trigger fed by its block's
-/// trigger (a route's request, an `every` block's tick, a holon's own `trigger`, or the
+/// trigger (a route's request, an `every` block's tick, an `on file` block's file, a holon's own `trigger`, or the
 /// pass-through the lowering places when that feeds several, which goes too, with its `true`).
 /// What's left on a trigger is written `after`.
 fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (Vec<&Node>, Vec<(Src, String, String)>) {
@@ -416,7 +418,7 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (
     let tie = |src: &Src, input: &str| {
         input == TRIGGER
             && (own_trigger(src)
-                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || passes_trigger(id)))
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || passes_trigger(id)))
     };
     // A pass-through that feeds only ties goes, with the `true` it holds.
     let mut gone: HashSet<String> = HashSet::new();
@@ -543,14 +545,16 @@ impl<'s> Printer<'s> {
         Ok(())
     }
 
-    /// The top of the flow: its handlers (routes, `every` blocks) in the order of their nodes, a
+    /// The top of the flow: its handlers (routes, `every` and `on file` blocks) in the order of their nodes, a
     /// flow without any as statements, and whatever the expression form can't spell in the wiring
     /// form.
     fn flow_body(&mut self, doc: &FlowDocument) -> Result<Vec<Line>, String> {
         let (routes, mut errors) = find_routes(&doc.nodes, &doc.edges);
         let (clocks, clock_errors) = find_clocks(&doc.nodes, &doc.edges);
         errors.extend(clock_errors);
-        let has_trigger = doc.nodes.iter().any(|n| n.is_template("request") || n.is_template("every"));
+        let (files, file_errors) = find_files(&doc.nodes, &doc.edges);
+        errors.extend(file_errors);
+        let has_trigger = doc.nodes.iter().any(|n| n.is_template("request") || n.is_template("every") || n.is_template("on_file"));
         let mut lines: Vec<Line> = Vec::new();
         if !has_trigger {
             // One block, the flow's own.
@@ -568,13 +572,47 @@ impl<'s> Printer<'s> {
         let mut stray_routes: Vec<String> = Vec::new();
         let position: HashMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
         let first = |node_ids: &[String]| node_ids.iter().map(|id| position[id.as_str()]).min().unwrap_or(usize::MAX);
-        let mut handlers: Vec<(usize, Result<&crate::routes::RouteGroup, &crate::routes::ClockGroup>)> =
-            routes.iter().map(|r| (first(&r.node_ids), Ok(r))).chain(clocks.iter().map(|c| (first(&c.node_ids), Err(c)))).collect();
+        enum Handler<'r> {
+            Route(&'r crate::routes::RouteGroup),
+            Clock(&'r crate::routes::ClockGroup),
+            File(&'r crate::routes::FileGroup),
+        }
+        let mut handlers: Vec<(usize, Handler)> = routes
+            .iter()
+            .map(|r| (first(&r.node_ids), Handler::Route(r)))
+            .chain(clocks.iter().map(|c| (first(&c.node_ids), Handler::Clock(c))))
+            .chain(files.iter().map(|f| (first(&f.node_ids), Handler::File(f))))
+            .collect();
         handlers.sort_by_key(|(at, _)| *at);
         for (_, handler) in handlers {
             let r = match handler {
-                Ok(r) => r,
-                Err(c) => {
+                Handler::Route(r) => r,
+                Handler::File(f) => {
+                    let nodes: Vec<&Node> = f.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+                    let group = self.group_of(nodes, &doc.edges, vec![]);
+                    if !expressible(&group.nodes, &group.incoming, Some(&f.on_file_id)) {
+                        stray_routes.push(format!("{}: an input isn't wired, so the block is written as nodes and wires", f.label));
+                        continue;
+                    }
+                    if !lines.is_empty() {
+                        lines.push((String::new(), vec![]));
+                    }
+                    let name = self.handle_name(by_id[f.on_file_id.as_str()], "f");
+                    let mut head = format!("on file {}", f.folder);
+                    if f.deleted {
+                        head.push_str(" deleted");
+                    }
+                    if !f.matching.is_empty() {
+                        head.push_str(&format!(" matching {}", quote(&f.matching)));
+                    }
+                    lines.push((format!("{head} ({name}) {{"), vec![f.on_file_id.clone()]));
+                    let mut body = Block::new(self, &group, "  ", Some((f.on_file_id.clone(), name)));
+                    lines.extend(body.statements()?);
+                    lines.push(("}".into(), vec![]));
+                    routed.extend(f.node_ids.iter().cloned());
+                    continue;
+                }
+                Handler::Clock(c) => {
                     let nodes: Vec<&Node> = c.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
                     let group = self.group_of(nodes, &doc.edges, vec![]);
                     if !expressible(&group.nodes, &group.incoming, Some(&c.every_id)) {
@@ -638,11 +676,17 @@ impl<'s> Printer<'s> {
     }
 
     fn request_name(&self, request: &Node) -> String {
-        let n = self.bindings.get(&request.id).cloned().unwrap_or_else(|| "req".into());
+        self.handle_name(request, "req")
+    }
+
+    /// The name a block's trigger goes by (a route's request, an `on file` block's file): the
+    /// text's, or `fallback` when it has none it can keep.
+    fn handle_name(&self, request: &Node, fallback: &str) -> String {
+        let n = self.bindings.get(&request.id).cloned().unwrap_or_else(|| fallback.into());
         if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) && !self.folders.contains(&n) && !self.databases.contains(&n) && !self.channels.contains(&n) {
             n
         } else {
-            "req".into()
+            fallback.into()
         }
     }
 
@@ -898,7 +942,8 @@ struct Block<'p, 's, 'g> {
     p: &'p mut Printer<'s>,
     g: &'g Group<'g>,
     indent: &'static str,
-    /// The route's request node and its name, in a route.
+    /// The route's request node and its name, in a route; in an `on file` block, its `on_file`
+    /// node and the file's name.
     request: Option<(String, String)>,
     /// The block's tick node, in an `every` block: it is `now` there.
     tick: Option<String>,
@@ -1239,7 +1284,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// started the run).
     fn copies_a_handle(&self, node: &Node) -> bool {
         match self.g.incoming.get(&(node.id.clone(), "from".to_string())) {
-            Some(Src::Node { id, .. }) => ["file_handle", "file_arrival"].contains(&self.g.node(id).data.name.as_str()) || self.p.ingress_chains.contains_key(id),
+            Some(Src::Node { id, .. }) => ["file_handle", "file_arrival"].contains(&self.g.node(id).data.name.as_str()) || self.g.node(id).is_template("on_file") || self.p.ingress_chains.contains_key(id),
             _ => false,
         }
     }
@@ -1258,7 +1303,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 if let Some((req, name)) = &self.request
                     && req == id
                 {
-                    return Ok((if output == "request" { name.clone() } else { format!("{name}.{output}") }, ATOM));
+                    return Ok((if output == "request" || output == "file" { name.clone() } else { format!("{name}.{output}") }, ATOM));
                 }
                 if self.is_tick(id) {
                     return Ok(("now".into(), ATOM));
@@ -2165,6 +2210,17 @@ mod tests {
         assert!(text.contains("on file drop matching \"**/*.csv\"\non file drop deleted\non file inbox\nfolder done\n"), "{text}");
         assert!(!text.contains("file_arrival") && !text.contains("coalesce"), "each chain is ingress: {text}");
         assert!(text.contains(".create("), "{text}");
+    }
+
+    /// `on file` blocks print back as written, in order, each with its file's name; the folder a
+    /// block names is declared by it, so a write into it adds no `folder` line, and a handle
+    /// written to a folder is a copy.
+    #[test]
+    fn on_file_blocks_print_back_as_written() {
+        let src = "flow sort\nport 8080\nfolder done\n\non file drop matching \"*.csv\" (sheet) {\n  done[sheet.name] = sheet\n  drop[\"seen/{sheet.name}\"] = \"seen\"\n}\n\non file drop deleted (f) {\n  state.last = f.name\n}\n\nroute GET /last (req) {\n  respond state.last\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("sort", &l.doc, &l.names);
+        assert_eq!(text, src);
     }
 
     /// A value used once is written inline, inside an interpolated part too; when it holds a

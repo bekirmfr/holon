@@ -152,7 +152,7 @@ pub(crate) fn load_deployments(
             caps.contains(Capability::NetworkIngress),
             caps.contains(Capability::Clock) && server.is_none(),
         );
-        triggers.extend(arrivals.labels());
+        triggers.extend(arrivals.labels().filter(|_| server.is_none()));
         let next_due = record.interval_seconds.filter(|_| server.is_none()).map(|_| SystemTime::now());
         let clock_due = server.as_ref().map(|s| vec![SystemTime::now(); s.clocks.len()]).unwrap_or_default();
 

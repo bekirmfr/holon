@@ -23,7 +23,8 @@ pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool 
     })
 }
 
-/// What a deployment shows as its triggers: a server's port and its clocks (`every 2s`), or plain
+/// What a deployment shows as its triggers: a server's port, its clocks (`every 2s`) and its file
+/// handlers (`on file inbox`), or plain
 /// `Ingress` for a unit that takes requests some other way, plus `Clock` for a flow on an
 /// interval (`clock` is false for a server, whose clocks are its own). Deploy and reload both
 /// derive it here.
@@ -32,6 +33,7 @@ pub(crate) fn trigger_labels(server: Option<&Server>, ingress: bool, clock: bool
     if let Some(s) = server {
         triggers.extend(s.port.map(|port| format!("Http :{port}")));
         triggers.extend(s.clocks.iter().map(|c| c.label.clone()));
+        triggers.extend(s.files.iter().map(|f| f.label.clone()));
     } else if ingress {
         triggers.push("Ingress".to_string());
     }
@@ -167,6 +169,13 @@ pub(crate) fn handle_post_deploy(
     if has_clocks && body.requirements.optional.contains("Clock") {
         return err(400, "Clock starts this flow's clocks (its `every` blocks): it can't be optional");
     }
+    // Nor is what starts its file handlers' runs.
+    for f in server.iter().flat_map(|s| &s.files) {
+        let named = format!("FileArrival({:?})", f.trigger.folder);
+        if body.requirements.optional.contains(&named) {
+            return err(400, format!("{named} starts this flow's {}: it can't be optional", f.label));
+        }
+    }
 
     // Deploy is a request (permissions.rs): the manifest is what the unit's graph derives plus
     // what its author declares; policy refuses what it never grants, grants what it grants
@@ -236,7 +245,8 @@ pub(crate) fn handle_post_deploy(
     let next_due = interval_seconds.map(|_| SystemTime::now());
 
     let mut triggers = trigger_labels(server.as_ref(), is_ingress, is_clock);
-    triggers.extend(arrivals.labels());
+    // A server's file handlers are named by their lines, among its triggers already.
+    triggers.extend(arrivals.labels().filter(|_| server.is_none()));
     let is_state = derives_state(caps.iter());
 
     {

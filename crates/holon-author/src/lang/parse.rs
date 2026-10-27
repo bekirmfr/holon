@@ -281,6 +281,10 @@ impl Parser {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
+                    // `on file inbox (f) {` opens a file handler; `on file inbox` alone is the old header.
+                    "on" if self.peek_at(1).tok == Tok::Ident && self.peek_at(1).text == "file" && self.on_file_block_ahead() => {
+                        file.items.push(Item::OnFile(self.on_file()?))
+                    }
                     "on" if self.peek_at(1).tok == Tok::Ident && self.peek_at(1).text == "file" => {
                         let h = self.header()?;
                         file.headers.push(h);
@@ -319,22 +323,7 @@ impl Parser {
             "folder" => HeaderKind::Folder(self.ident("the folder's name")?.text),
             "database" => HeaderKind::Database(self.ident("the database's name")?.text),
             "channel" => HeaderKind::Channel(self.ident("the channel's name")?.text),
-            "on" => {
-                self.next();
-                let folder = self.ident("the folder whose new files start a run")?.text;
-                let deleted = self.is_word("deleted");
-                if deleted {
-                    self.next();
-                }
-                let matching = if self.is_word("matching") {
-                    self.next();
-                    let t = self.expect(&Tok::Str, "the names to start runs for, quoted: \"*.csv\"")?;
-                    Some(self.unescape(&t)?)
-                } else {
-                    None
-                };
-                HeaderKind::OnFile(FileOn { folder, deleted, matching })
-            }
+            "on" => HeaderKind::OnFile(self.file_on()?),
             "optional" => HeaderKind::Optional(self.consent()?),
             _ => {
                 let mut origins = Vec::new();
@@ -505,6 +494,40 @@ impl Parser {
         };
         let (body, end) = self.block()?;
         Ok(RouteDef { method, path, request, resumes, body, span: head.span.to(end) })
+    }
+
+    /// After `on`: `file inbox [deleted] [matching "…"]`.
+    fn file_on(&mut self) -> R<FileOn> {
+        self.next();
+        let folder = self.ident("the folder whose new files start a run")?.text;
+        let deleted = self.is_word("deleted");
+        if deleted {
+            self.next();
+        }
+        let matching = if self.is_word("matching") {
+            self.next();
+            let t = self.expect(&Tok::Str, "the names to start runs for, quoted: \"*.csv\"")?;
+            Some(self.unescape(&t)?)
+        } else {
+            None
+        };
+        Ok(FileOn { folder, deleted, matching })
+    }
+
+    /// Whether the `on file` line here goes on to a `(`: a block, not the header.
+    fn on_file_block_ahead(&self) -> bool {
+        (2..).map(|k| &self.peek_at(k).tok).take_while(|t| !matches!(t, Tok::Newline | Tok::Eof)).any(|t| *t == Tok::LParen)
+    }
+
+    /// `on file inbox [deleted] [matching "…"] (f) { … }`.
+    fn on_file(&mut self) -> R<OnFileDef> {
+        let head = self.next();
+        let on = self.file_on()?;
+        self.expect(&Tok::LParen, "\"(\" and a name for the file")?;
+        let file = self.ident("a name for the file")?;
+        let close = self.expect(&Tok::RParen, "\")\"")?;
+        let (body, end) = self.block()?;
+        Ok(OnFileDef { on, file, head: head.span.to(close.span), body, span: head.span.to(end) })
     }
 
     /// `every 2s { … }`.

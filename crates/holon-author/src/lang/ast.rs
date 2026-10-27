@@ -94,7 +94,21 @@ pub enum Item {
     Js(JsDef),
     Route(RouteDef),
     Every(EveryDef),
+    OnFile(OnFileDef),
     Stmt(Stmt),
+}
+
+/// `on file inbox [deleted] [matching "…"] (f) { body }`: a file handler, a run for each file the
+/// line starts (docs/L4s/triggers-L4.md §2). `f` in it is the file's handle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnFileDef {
+    pub on: FileOn,
+    /// The name of the file's handle.
+    pub file: Name,
+    /// `on file inbox … (f)`.
+    pub head: Span,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 /// `every 2s { body }`: a clock handler, a run every period (docs/L4s/triggers-L4.md §2). `now`

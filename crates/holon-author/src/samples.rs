@@ -591,6 +591,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far",
         text: include_str!("../samples/ticker.holon"),
     },
+    Sample {
+        name: "drop-board",
+        title: "Drop board (files on a live page)",
+        description: "A flow with file handlers beside its routes: each file that settles in a folder on the host (an on file board (f) block, f the file's handle) counts in its state and goes out on the channel drops, and so does each file removed from it (on file board deleted). Its page lists each one as it happens.",
+        shows: &["on file blocks", "file handlers beside routes", "on file deleted", "channels", "state across runs"],
+        port: Some("8157"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folder (an admin): holon folder add board ~/holon-board --read-only; deploy, open http://127.0.0.1:8157/, then copy any file into ~/holon-board: within two seconds the page shows it, with its size, and deleting it shows that too",
+        text: include_str!("../samples/drop-board.holon"),
+    },
 ];
 
 #[cfg(test)]
@@ -607,8 +620,9 @@ mod tests {
         let ports: Vec<_> = samples().iter().filter_map(|s| s.port).collect();
         assert_eq!(ports.iter().collect::<HashSet<_>>().len(), ports.len(), "each server its own port");
         for s in samples() {
-            // What starts it: requests on a port, the clock, or new files (`on file`).
-            let on_file = s.text.lines().any(|l| l.starts_with("on file "));
+            // What starts it: requests on a port, the clock, or new files (an `on file` header; a
+            // block is a handler, beside routes or not).
+            let on_file = s.text.lines().any(|l| l.starts_with("on file ") && !l.ends_with('{'));
             assert_eq!([s.port.is_some(), s.interval.is_some(), on_file].iter().filter(|b| **b).count(), 1, "{}: a port, an interval or on file", s.name);
             let doc = build(s).unwrap_or_else(|e| panic!("{e}"));
             assert!(!doc.nodes.is_empty(), "{}", s.name);
