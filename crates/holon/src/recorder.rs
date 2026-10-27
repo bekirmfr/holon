@@ -130,6 +130,11 @@ pub struct LogEntry {
     /// deployment's own port names nobody.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// The secrets the run was given, by name: the version and fingerprint its marks name
+    /// (`v3 #a1b2c3d4`, `‹secret:name v3 #a1b2c3d4›`), so which value it had shows even where it
+    /// logged none, and `holon verify` stands in the same marks. Absent in entries logged before.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, String>,
     /// Whether text the run had looked like a mark the log writes in place of a value it never
     /// holds (`‹secret:name›`, `‹token:name›`), and was escaped: each `‹` of its own before one
     /// written twice, so that a mark is only ever one the log wrote (`secrets::write_marked`).
@@ -581,6 +586,7 @@ mod tests {
             retries: 0,
             claims: vec![],
             by: None,
+            secrets: BTreeMap::new(),
             escaped: false,
         }
     }

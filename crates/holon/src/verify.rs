@@ -427,9 +427,11 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
     let mut sourced: Vec<(Capability, Value)> =
         state.iter().map(|(k, v)| (Capability::StateRead(k.clone()), v.clone())).collect();
     sourced.extend(extra.iter().cloned());
+    // With the version and fingerprint the run was given (an entry from before names none).
     for cap in caps.iter() {
         if let Capability::SecretRead(name) = cap {
-            sourced.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &name))));
+            let shown = entry.secrets.get(&name).map_or(name.clone(), |shown| format!("{name} {shown}"));
+            sourced.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &shown))));
         }
     }
 
@@ -638,7 +640,8 @@ impl Observer for Asserting {
 }
 
 /// The placeholders of values the log never holds, as a run being checked has them. Each mark the
-/// log wrote (`‹secret:name›`, `‹token:name›`) stands in as `‹<tag>|secret:name›`, with a tag
+/// log wrote (`‹secret:name v3 #a1b2c3d4›`, `‹token:name›`) stands in as
+/// `‹<tag>|secret:name v3 #a1b2c3d4›`, with a tag
 /// made for this check, and so does each secret and token the run gets again: text a caller sent
 /// that only looks like a mark (which the log escaped, `secrets::write_marked`) is read back as
 /// the text it was, and computed with like any other.

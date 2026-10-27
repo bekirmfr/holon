@@ -366,7 +366,9 @@ only the editor.
   versions and sources).
   A flow references a secret by name (a `secret` source node, capability `SecretRead("stripe_key")`
   in its manifest, granted by the host); a run reads only the secrets it was granted, and its run
-  id doesn't include them. Every literal occurrence of a value is redacted, as `‹secret:name›`,
+  id doesn't include them. Every literal occurrence of a value is redacted, as `‹secret:name v3 #a1b2c3d4›` (its version and
+  a fingerprint keyed by a key derived from the master key; each run's entry records the versions it was
+  given, which verify and the editor's replay stand in again),
   from the flow log and from what the control plane says about a deployment (state, sessions,
   `/trigger` and "send live" replies); a replay substitutes the same placeholder. A state,
   collection, database, channel or file write carrying a secret's value is refused, so one never

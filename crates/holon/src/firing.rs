@@ -95,6 +95,8 @@ pub(crate) struct FiredRun {
     pub(crate) claims: Vec<claims::ClaimRecord>,
     /// The nodes a secret reaches (taint.rs): what its log entry keeps none of, or withholds.
     pub(crate) secret_fed: taint::SecretFed,
+    /// The secrets it was given, by name: the version and fingerprint of each (`v3 #a1b2c3d4`).
+    pub(crate) secrets: BTreeMap<String, String>,
 }
 
 /// How many times a run is tried without holding its state's lock before it runs holding it.
@@ -519,12 +521,16 @@ fn run_attempt(
     sourced.extend_from_slice(extra_sourced);
     // The secrets it was granted. Not part of the run's input record (nor its id): a log never
     // holds them, and a replay stands a placeholder in.
-    for (name, value) in secrets.lock().unwrap().current.iter() {
+    let mut given = BTreeMap::new();
+    let vault = secrets.lock().unwrap();
+    for (name, value) in vault.current.iter() {
         let cap = Capability::SecretRead(name.clone());
         if permit.allows(&cap) {
             sourced.push((cap, Value::Text(value.to_string())));
+            given.extend(vault.shown.get(name).map(|shown| (name.clone(), shown.clone())));
         }
     }
+    drop(vault);
 
     // Which nodes compute with a secret it was granted, for its log entry.
     let secret_fed = if sourced.iter().any(|(c, _)| matches!(c, Capability::SecretRead(_))) {
@@ -653,6 +659,7 @@ fn run_attempt(
         retries: 0,
         claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
         secret_fed,
+        secrets: given,
     };
     Attempt { run, start, overtaken }
 }
@@ -884,6 +891,7 @@ pub(crate) fn run_entry(
             })
             .collect(),
         by: None,
+        secrets: run.secrets.clone(),
         escaped: false,
         reads: run
             .reads
@@ -933,6 +941,7 @@ impl FiredRun {
             retries: 0,
             claims: vec![],
             secret_fed: taint::SecretFed::default(),
+            secrets: BTreeMap::new(),
         }
     }
 }

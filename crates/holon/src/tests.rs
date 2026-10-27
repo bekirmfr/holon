@@ -600,7 +600,7 @@ fn a_clock_runs_history_never_shows_a_secret() {
     let history = String::from_utf8(body_bytes(route(&state, &req("GET", "/deployments/leak/history", vec![])))).unwrap();
     assert!(history.contains("\"ticks\":[{"), "it ticked: {history}");
     assert!(!history.contains(value), "the history leaks it: {history}");
-    assert!(history.contains("‹secret:api_key›"), "{history}");
+    assert!(history.contains("‹secret:api_key v1 #"), "{history}");
     assert!(!history.contains("c2tfbGl2ZV9rZXB0") && history.contains("‹withheld: computed from a secret›"), "{history}");
     let current = body_json(route(&state, &req("GET", "/deployments/leak/state", vec![])));
     assert!(current["state"].get("encoded").is_none(), "the derived write was refused: {current}");
@@ -1275,7 +1275,10 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     let log = body_json(route(&state, &req("GET", "/deployments/s/log", vec![])));
     let produced: Vec<serde_json::Value> = log["entries"][0]["timeline"].as_array().unwrap().iter().filter_map(|t| t.get("outputs").cloned()).collect();
     assert!(produced.contains(&serde_json::json!([{ "type": "Boolean", "value": true }])), "{produced:?}");
-    assert!(produced.contains(&serde_json::json!([{ "type": "Text", "value": "‹secret:api_key›" }])), "{produced:?}");
+    // Marked with the version and fingerprint the entry says the run was given.
+    let given = log["entries"][0]["secrets"]["api_key"].as_str().unwrap_or_default().to_string();
+    assert!(given.starts_with("v3 #"), "the version the test set last: {log}");
+    assert!(produced.contains(&serde_json::json!([{ "type": "Text", "value": format!("‹secret:api_key {given}›") }])), "{produced:?}");
 
     // Nowhere in what the control plane says about it.
     for url in ["/deployments/s/log", "/deployments/s/state", "/deployments/s/sessions", "/deployments/s/secrets", "/deployments/s/grant"] {
@@ -3870,7 +3873,7 @@ route POST /go (req) {{
     assert!(!log.contains("MIIabc"), "the escaped key: {log}");
     assert!(!log.contains("pk_private_value_123") && !log.contains("bot@x.iam"), "fields of the JSON secret: {log}");
     assert!(log.contains("‹withheld: computed from a secret›"), "the derived parts say they were withheld: {log}");
-    assert!(log.contains("‹secret:pem›"), "the escaped key is redacted where it stands: {log}");
+    assert!(log.contains("‹secret:pem v1 #"), "the escaped key is redacted where it stands: {log}");
     // The export says no more than the log.
     let export = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     assert!(!export.contains("c2tfbGl2ZV9iYXNp") && !export.contains("MIIabc") && !export.contains("pk_private_value_123"));
@@ -5046,6 +5049,51 @@ route GET /b (req) {
     assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/b", vec![])).status, 500);
 }
 
+/// Which value of a secret a run had shows in the log without the value: each entry names the
+/// version and the keyed fingerprint of the secrets it was given, and its marks say the same. A
+/// run before a rotation and one after read differently, both still check after it (the entry
+/// holds what it needs, not the vault), and so does an entry logged before marks named versions.
+#[test]
+fn a_run_shows_which_secret_value_it_had_and_still_checks_after_it_rotates() {
+    let state = claims_state("");
+    let set = |value: &str| {
+        let body = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
+        assert_eq!(route(&state, &req("POST", "/deployments/rotor/secrets/signing_key", body)).status_code, 200);
+    };
+    set("whsec_first_123456");
+    let text = "flow rotor\nport 18149\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    assert_eq!(data_call(&state, &slug, "POST", "/sign", "hello").0, 200);
+    set("whsec_second_654321");
+    assert_eq!(data_call(&state, &slug, "POST", "/sign", "hello").0, 200);
+
+    let entries = log_entries(&state, &slug);
+    let given: Vec<String> = entries.iter().map(|e| e["secrets"]["signing_key"].as_str().unwrap_or_default().to_string()).collect();
+    assert!(given[0].starts_with("v1 #") && given[1].starts_with("v2 #"), "{given:?}");
+    assert_ne!(given[0], given[1].replace("v2", "v1"), "another value, another fingerprint");
+    for (entry, given) in entries.iter().zip(&given) {
+        let line = entry.to_string();
+        assert!(line.contains(&format!("‹secret:signing_key {given}›")), "the mark names it: {line}");
+        assert!(!line.contains("whsec_first") && !line.contains("whsec_second"), "{line}");
+    }
+
+    // Exported after the rotation: both runs check, as what each was given, not the vault's now.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched), (1, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+
+    // An entry from before: no versions in it, its marks bare. Rechained, it checks as it did.
+    let mut v: serde_json::Value = serde_json::from_str(&export.lines[0]).unwrap();
+    v.as_object_mut().unwrap().remove("secrets");
+    let bare = v.to_string().replace(&format!(" {}›", given[0]), "›");
+    assert!(bare.contains("‹secret:signing_key›") && !bare.contains(&given[0]), "{bare}");
+    let head = recorder::line_hash(&bare);
+    let old = verify::Export { lines: vec![bare], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&old, Some(&head), &BTreeMap::new());
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
+}
+
 /// A secret used as a record's key (a map from API keys to accounts) is redacted in the log as a
 /// value is, and the run still checks: verify reads the key's mark back as its placeholder.
 #[test]
@@ -5067,7 +5115,7 @@ route GET /who (req) {
     assert_eq!((r.status, String::from_utf8(r.body).unwrap()), (200, r#"{"tenant":"acme"}"#.to_string()));
     let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
     assert!(!log.contains(value), "{log}");
-    assert!(log.contains("‹secret:partner_key›"), "{log}");
+    assert!(log.contains("‹secret:partner_key v1 #"), "{log}");
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     let report = verify::check(&export, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));

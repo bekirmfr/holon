@@ -17,7 +17,10 @@
 //!   source, never a value.
 //! - Redacted: every value a run logs, and every reply the control plane sends about a
 //!   deployment (its state, its sessions, a trigger's or a "send live" answer), has each secret
-//!   value replaced by `‹secret:name›`. Only literal occurrences are caught: a value transformed
+//!   value replaced by `‹secret:name v3 #a1b2c3d4›`: its name, the version the value is of, and
+//!   the value's fingerprint (keyed by the master key, sealing.rs), so which value a run had can
+//!   be told (an old key, the one just set) without the log holding it. Each run's entry also
+//!   records the versions it was given (`secrets`). Only literal occurrences are caught: a value transformed
 //!   first (hashed, encoded, sliced) can't be recognised. Values shorter than
 //!   [`MIN_SECRET_LEN`] are refused, since they would match ordinary text.
 
@@ -42,9 +45,13 @@ pub(crate) type Vault = Arc<Mutex<Resolved>>;
 pub(crate) struct Resolved {
     /// name → its current value: what a run granted `SecretRead(name)` reads.
     pub(crate) current: BTreeMap<String, Zeroizing<String>>,
-    /// Values its secrets had before (versions still kept): never read, still redacted, so a
-    /// client still sending a rotated-out credential doesn't put it in the log.
-    pub(crate) retired: Vec<(String, Zeroizing<String>)>,
+    /// Values its secrets had before (versions still kept), each with its name and how the log
+    /// tells it apart: never read, still redacted, so a client still sending a rotated-out
+    /// credential doesn't put it in the log.
+    pub(crate) retired: Vec<(String, String, Zeroizing<String>)>,
+    /// name → how the log tells its current value apart: the version it is of and its
+    /// fingerprint (`v3 #a1b2c3d4`, [`mark`]).
+    pub(crate) shown: BTreeMap<String, String>,
     /// name → why its current version has no value, or why the value it has may be stale.
     pub(crate) problems: BTreeMap<String, String>,
     /// name → the version its current value is of, and when it was last read from its source.
@@ -520,6 +527,7 @@ impl SecretStore {
             let Some((current, older)) = versions.split_last() else { continue };
             match self.value_of(slug, name, current) {
                 Ok(value) if value.chars().count() >= MIN_SECRET_LEN => {
+                    resolved.shown.insert(name.clone(), self.shown(current.version, &value));
                     resolved.current.insert(name.clone(), value);
                     resolved.fetched.insert(name.clone(), (current.version, now));
                 }
@@ -530,6 +538,7 @@ impl SecretStore {
                     (Some((version, at)), Some(value)) if version == current.version && now.duration_since(at) < STALE_AFTER => {
                         let ago = now.duration_since(at).as_secs();
                         resolved.problems.insert(name.clone(), format!("{e}; using the value read {ago}s ago"));
+                        resolved.shown.insert(name.clone(), self.shown(version, &value));
                         resolved.current.insert(name.clone(), value);
                         resolved.fetched.insert(name.clone(), (version, at));
                     }
@@ -543,7 +552,7 @@ impl SecretStore {
                 if let Ok(value) = self.value_of(slug, name, v)
                     && value.chars().count() >= MIN_SECRET_LEN
                 {
-                    resolved.retired.push((name.clone(), value));
+                    resolved.retired.push((name.clone(), self.shown(v.version, &value), value));
                 }
             }
         }
@@ -558,6 +567,11 @@ impl SecretStore {
             self.event(slug, name, "readable again", None, None, None, None);
         }
         *entry.vault.lock().unwrap() = resolved;
+    }
+
+    /// How the log tells `value`, version `version` of a secret, apart: `v3 #a1b2c3d4`.
+    fn shown(&self, version: u32, value: &str) -> String {
+        format!("v{version} #{}", self.sealer.fingerprint(value))
     }
 
     fn persist(&self) -> Result<(), String> {
@@ -601,12 +615,21 @@ pub(crate) fn secret_in(v: &holon_core::Value, vault: &Vault) -> Option<String> 
     vault
         .current
         .iter()
-        .chain(vault.retired.iter().map(|(name, value)| (name, value)))
+        .chain(vault.retired.iter().map(|(name, _, value)| (name, value)))
         .find(|(_, value)| walk(v, &|s: &str| s.contains(value.as_str())))
         .map(|(name, _)| name.clone())
 }
 
-/// Replaces each secret value with `‹secret:name›`.
+/// The mark the log writes for a secret's value: `‹secret:name v3 #a1b2c3d4›`, or `‹secret:name›`
+/// for one with no version to show.
+pub(crate) fn mark(name: &str, shown: Option<&str>) -> String {
+    match shown {
+        Some(shown) => format!("‹secret:{name} {shown}›"),
+        None => format!("‹secret:{name}›"),
+    }
+}
+
+/// Replaces each secret value with its mark ([`mark`]).
 pub(crate) struct Redactor {
     /// (value, mark), longest value first, so a value containing another is replaced whole.
     pairs: Vec<(String, String)>,
@@ -618,9 +641,9 @@ impl Redactor {
         let mut pairs: Vec<(String, String)> = vault
             .current
             .iter()
-            .chain(vault.retired.iter().map(|(name, value)| (name, value)))
-            .flat_map(|(name, value)| {
-                let mark = format!("‹secret:{name}›");
+            .map(|(name, value)| (mark(name, vault.shown.get(name).map(String::as_str)), value))
+            .chain(vault.retired.iter().map(|(name, shown, value)| (mark(name, Some(shown)), value)))
+            .flat_map(|(mark, value)| {
                 // As it is, and as it reads inside JSON text (a request's body, a value written
                 // out with `json_stringify`), where a quote, a backslash or a newline in it is
                 // escaped and the value as it is no longer appears.
@@ -922,11 +945,36 @@ mod tests {
         let vault = store.vault("api");
         let v = vault.lock().unwrap();
         assert_eq!(*v.current["k"], "value-number-7");
-        let retired: Vec<&str> = v.retired.iter().map(|(_, value)| value.as_str()).collect();
+        let retired: Vec<&str> = v.retired.iter().map(|(_, _, value)| value.as_str()).collect();
         assert_eq!(retired, ["value-number-3", "value-number-4", "value-number-5", "value-number-6"], "the last {MAX_VERSIONS} are kept");
         drop(v);
-        assert_eq!(Redactor::of(&vault).text("old value-number-4"), "old ‹secret:k›");
+        assert!(Redactor::of(&vault).text("old value-number-4").starts_with("old ‹secret:k v4 #"), "marked with its own version");
         assert_eq!(store.list("api")[0].version, 7);
+    }
+
+    /// A mark names the version the value is of and its fingerprint: a value set again has the
+    /// fingerprint it had, another value another one, and another store's key makes another.
+    #[test]
+    fn a_mark_names_the_version_and_a_fingerprint_of_the_value() {
+        let store = SecretStore::memory();
+        let marked = |store: &SecretStore, text: &str| Redactor::of(&store.vault("api")).text(text);
+        let print = |mark: &str| mark.rsplit_once('#').map(|(_, p)| p.trim_end_matches('›').to_string()).unwrap();
+        store.set("api", "k", "first-value-1", None).unwrap();
+        let first = marked(&store, "first-value-1");
+        assert!(first.starts_with("‹secret:k v1 #") && first.ends_with('›'), "{first}");
+        let p1 = print(&first);
+        assert!(p1.len() == 8 && p1.bytes().all(|b| b.is_ascii_hexdigit()), "{p1}");
+        store.set("api", "k", "second-value-2", None).unwrap();
+        let second = marked(&store, "second-value-2");
+        assert!(second.starts_with("‹secret:k v2 #") && print(&second) != p1, "{second}");
+        assert_eq!(marked(&store, "first-value-1"), first, "a retired value keeps its version and print");
+        store.set("api", "k", "first-value-1", None).unwrap();
+        let again = marked(&store, "first-value-1");
+        assert_eq!((again.starts_with("‹secret:k v3 #"), print(&again)), (true, p1.clone()), "set back: the same print");
+        assert_eq!(store.vault("api").lock().unwrap().shown["k"], format!("v3 #{p1}"));
+        let other = SecretStore::memory();
+        other.set("api", "k", "first-value-1", None).unwrap();
+        assert_ne!(print(&marked(&other, "first-value-1")), p1, "keyed: another key, another print");
     }
 
     #[test]
@@ -977,7 +1025,8 @@ mod tests {
         assert_eq!(store.list("api")[0].source, "env:HOLON_SECRET_API");
         // Replaced by a sealed value: the env one is retired, still redacted.
         store.set("api", "k", "sealed-value-456", None).unwrap();
-        assert_eq!(Redactor::of(&vault).text("env-value-123 / sealed-value-456"), "‹secret:k› / ‹secret:k›");
+        let marked = Redactor::of(&vault).text("env-value-123 / sealed-value-456");
+        assert!(marked.starts_with("‹secret:k v1 #") && marked.contains("› / ‹secret:k v2 #"), "each marked with its version: {marked}");
     }
 
     #[test]
