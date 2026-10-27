@@ -658,6 +658,34 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
 - A manual page on actions: running one from the editor, the deployed page and a script, and
   letting an agent run one.
 
+**As built in slice 5.** The docs landed a page to a commit, each claim checked with `holon check`
+and `holon fmt` on a flow of its own, and the manual's test compiling its flows:
+
+- **LANGUAGE:** §5.1 (handlers, the one-handler form), §5.11 (a block is everything tied to its
+  trigger; `after`; a statement tied to nothing), §5.8 (a holon's undeclared `trigger` port),
+  §5.12 (now "Flows without handlers"), the `ticker` tour entry, and a note in §4 that `action`,
+  `on`, `file` and `after` are keywords only where they start a handler or tie a statement.
+- **The manual:** the permissions page (`Action("name")`, a flow's triggers, who may run an
+  action, `AgentRuns`), a new `guides/actions.md`, the language reference (two new sections, "Clocks,
+  files and actions" and "What a block holds"), the tour, the files guide, the editor and deploying
+  pages, `concepts.md`, the agents page, and the guide `holon mcp`'s `reference` tool gives
+  agents (`agent.rs`, "HANDLERS").
+- **Corrected on the way,** each already wrong before triggers or wrong in this design's own
+  words: none of a flow's triggers can be optional, not just the first (deploy refuses an
+  optional `Clock`, `FileArrival` or `Action`, beside routes too); a state key is written once per
+  run, not once per flow, so two handlers may each write one (the ticker's clock and its `reset`
+  both write `ticks`); `on file` takes several lines, with `deleted` and `matching`; and the editor's
+  curl for an action sent no `Content-Type`, which the server refuses with a 415 (`http.rs`), so it
+  now sends `application/json`.
+- **What the docs say that the code decides, and is worth knowing:** revoking a grant pauses a
+  deployment for its first trigger only (`permissions.rs` `attention`: routes, else files, else
+  clock, else action); another handler's trigger is an ordinary required item, which `keep running`
+  lets go on, and the scheduler never reads the grant (`scheduler.rs`), so a revoked clock beside
+  routes may go on firing. Not tested; `holon fmt` drops a holon nothing places; writing into the
+  folder an `on file` block watches fails validation with an unhelpful message ("derived unit
+  failed validation"); and deploying from the editor's new-flow name prompt rewrites the text
+  (`n` became `add_2`), against what the editor guide says of saving.
+
 ## 9. Samples and slices
 
 | slice | what lands | sample |
