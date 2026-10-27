@@ -222,13 +222,19 @@ impl Outbound {
         let mut method = method.to_string();
         let mut body = Some(body);
         let mut redirects = 0;
+        let first = target.authority.clone();
         loop {
             if let Err(refused) = self.check(&target) {
                 return refused;
             }
             let mut call = agent.request(&method, &self.url(&target));
+            // Redirected to another host, only the headers that say what the body is go along:
+            // the rest may be the first host's credentials (`authorization`, an API key).
+            let elsewhere = target.authority != first;
             for (name, value) in headers {
-                if let Value::Text(v) = value {
+                if let Value::Text(v) = value
+                    && (!elsewhere || CARRIED_ELSEWHERE.contains(&name.to_ascii_lowercase().as_str()))
+                {
                     call = call.set(name, v);
                 }
             }
@@ -281,6 +287,9 @@ impl Outbound {
         }
     }
 }
+
+/// The flow's headers a redirect to another host still carries.
+const CARRIED_ELSEWHERE: &[&str] = &["content-type", "accept", "accept-language", "user-agent"];
 
 /// Where a redirect's `Location` points: absolute, or a path on the same host.
 fn next_target(from: &Target, location: &str) -> Option<Target> {
@@ -432,6 +441,11 @@ mod tests {
 
     /// A tiny HTTP server on 127.0.0.1 that answers each connection with `respond(request line)`.
     fn serve(respond: impl Fn(&str) -> String + Send + 'static) -> String {
+        serve_head(move |head| respond(head.lines().next().unwrap_or("")))
+    }
+
+    /// The same, answering with `respond(the request's head)`.
+    fn serve_head(respond: impl Fn(&str) -> String + Send + 'static) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         std::thread::spawn(move || {
@@ -462,8 +476,7 @@ mod tests {
                         Ok(n) => got.extend_from_slice(&buf[..n]),
                     }
                 }
-                let line = head.lines().next().unwrap_or("").to_string();
-                let _ = stream.write_all(respond(&line).as_bytes());
+                let _ = stream.write_all(respond(&head).as_bytes());
                 let _ = stream.flush();
             }
         });
@@ -573,6 +586,52 @@ mod tests {
         let none = Limits { max_redirects: 0, ..Limits::request_run() };
         let out = o.perform(&request("GET", &format!("https://{hop}/start"), ""), &none);
         assert_eq!(field(&out, "error"), &Value::Text("too_many_redirects".into()));
+    }
+
+    /// A redirect to another granted host carries only the headers that say what the body is: the
+    /// first host's credentials stay with it. One to the same host carries them all.
+    #[test]
+    fn a_redirect_to_another_host_leaves_the_credentials_behind() {
+        let target = serve_head(|head| ok(&head.to_ascii_lowercase()));
+        let to_target = target.clone();
+        let hop = serve(move |line| {
+            let to = if line.contains("/here") { "/landed" } else { &format!("https://{to_target}/landed") };
+            format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        });
+        let both: BTreeSet<String> = [hop.clone(), target.clone()].into();
+        let o = Outbound { allowed: both.clone(), revoked: BTreeSet::new(), plain_http: both, allow_private: true };
+        let mut asked = request("POST", &format!("https://{hop}/away"), "{}");
+        if let Value::Record(r) = &mut asked {
+            let text = |s: &str| Value::Text(s.into());
+            r.insert(
+                "headers".into(),
+                Value::Record(BTreeMap::from([
+                    ("Authorization".to_string(), text("Bearer sk_first_host")),
+                    ("x-api-key".to_string(), text("k_first_host")),
+                    ("content-type".to_string(), text("application/json")),
+                ])),
+            );
+        }
+        let out = o.perform(&asked, &Limits::request_run());
+        let Value::Text(seen) = field(&out, "body") else { panic!("{out:?}") };
+        assert!(seen.starts_with("post /landed"), "a 307 keeps its method: {seen}");
+        assert!(!seen.contains("sk_first_host") && !seen.contains("k_first_host"), "{seen}");
+        assert!(seen.contains("content-type: application/json"), "{seen}");
+
+        // To the same host: all of them.
+        let same = serve_head(move |head| {
+            if head.starts_with("POST /here") {
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: /landed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+            } else {
+                ok(&head.to_ascii_lowercase())
+            }
+        });
+        if let Value::Record(r) = &mut asked {
+            r.insert("url".into(), Value::Text(format!("https://{same}/here")));
+        }
+        let out = local(&same).perform(&asked, &Limits::request_run());
+        let Value::Text(seen) = field(&out, "body") else { panic!("{out:?}") };
+        assert!(seen.contains("bearer sk_first_host") && seen.contains("k_first_host"), "{seen}");
     }
 
     /// A call that fails on the way (nothing listening) says why without its URL: the path and
