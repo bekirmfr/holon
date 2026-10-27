@@ -88,7 +88,7 @@ pub fn permission_kind(item: &str, optional: &BTreeSet<String>, trigger: Option<
 /// point.
 /// Effects it only performs (writes, sends) don't count: they come out as values.
 pub fn reads_from_outside(capabilities: &[String]) -> bool {
-    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "Action", "SecretRead", "StateRead", "CollectionRead", "FileRead", "DbRead", "HttpRequest", "Await"];
+    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "Action", "SecretRead", "StateRead", "CollectionRead", "FileRead", "DbRead", "HttpRequest", "RunsAction", "Await"];
     capabilities.iter().any(|c| SOURCED.contains(&c.split('(').next().unwrap_or("")))
 }
 

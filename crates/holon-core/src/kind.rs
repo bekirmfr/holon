@@ -149,6 +149,10 @@ pub enum Capability {
     /// Lets callers subscribe to the named channel: `channel_subscribe`, a route answering with
     /// the stream of its packs.
     ChannelRead(String),
+    /// Runs the action of another deployed flow and gets its answer: `flow_call`. Named by the
+    /// flow and the action, `"billing/charge"`, so consent names which action a flow may run, not
+    /// just "other flows" (`docs/L4s/triggers-L4.md` §9, slice 6).
+    RunsAction(String),
     /// Starts a process / job.
     Spawn,
     /// Reads rows of a table of a database the host binds: `"shop/orders"`, the database's name
@@ -184,7 +188,7 @@ impl Capability {
         match self {
             Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -341,6 +345,10 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // The same request with a file's bytes as its body, streamed by the host from the folder
         // the handle names (one the deployment reads, checked when it is sent).
         "http_upload" => vec![HttpRequest(http_host(params)?)],
+        // A call to another flow's action: performed by the host between rounds, in-process, its
+        // answer sourced back as an http response is. Both names are frozen params, so the
+        // capability names the action exactly.
+        "flow_call" => vec![RunsAction(format!("{}/{}", ident(params, "flow")?, ident(params, "action")?))],
         // A request whose answer the host forwards as it reads it: to the route's caller, or,
         // piped, to a channel's subscribers, which is sending on that channel too.
         "http_stream" => match params.iter().find(|p| p.name() == "pipe").and_then(|p| p.value()).filter(|v| !v.is_empty()) {
@@ -615,6 +623,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         CollectionWrite(SATURATED_STATE_KEY.to_string()),
         NetworkEgress,
         HttpRequest(SATURATED_STATE_KEY.to_string()),
+        RunsAction(SATURATED_STATE_KEY.to_string()),
         FileWrite(SATURATED_STATE_KEY.to_string()),
         ChannelSend(SATURATED_STATE_KEY.to_string()),
         ChannelRead(SATURATED_STATE_KEY.to_string()),
@@ -1195,12 +1204,13 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 19); // every capability — fail closed
+        assert_eq!(caps.len(), 20); // every capability — fail closed
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
         assert!(caps.contains(Capability::FileWrite("<unknown>".to_string())), "any folder");
         assert!(caps.contains(Capability::ChannelSend("<unknown>".to_string())), "any channel");
         assert!(caps.contains(Capability::DbWrite("<unknown>".to_string())), "any database");
+        assert!(caps.contains(Capability::RunsAction("<unknown>".to_string())), "any action");
     }
 
     #[test]
@@ -1234,6 +1244,19 @@ mod tests {
         for bad in ["", "a b", "a/b", &"x".repeat(65)] {
             assert!(capabilities_of("secret", &named(bad).params).is_none(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn flow_call_names_the_flow_and_the_action() {
+        let call = |flow: &str, action: &str| Unit { params: vec![Param::frozen("flow", flow), Param::frozen("action", action)], ..prim("flow_call") };
+        let caps = capabilities_of("flow_call", &call("billing", "charge").params).unwrap();
+        assert_eq!(caps.iter().collect::<Vec<_>>(), vec![Capability::RunsAction("billing/charge".into())]);
+        assert_eq!(kind_of("flow_call", &call("billing-v2", "charge_2").params), Some(Kind::Sink));
+        assert!(!Capability::RunsAction("a/b".into()).is_sourced(), "performed, not supplied");
+        for bad in [("", "x"), ("a", ""), ("a/b", "x"), ("a", "x y"), ("a", &"x".repeat(65))] {
+            assert!(capabilities_of("flow_call", &call(bad.0, bad.1).params).is_none(), "{bad:?}");
+        }
+        assert!(capabilities_of("flow_call", &[]).is_none(), "no names, no capability");
     }
 
     #[test]

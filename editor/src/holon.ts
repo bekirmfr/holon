@@ -189,6 +189,7 @@ export type WCapability =
   | { CollectionWrite: string }
   | "NetworkEgress"
   | { HttpRequest: string }
+  | { RunsAction: string }
   | { FileWrite: string }
   | { DbRead: string }
   | { DbWrite: string }
