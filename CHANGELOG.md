@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.1.0-rc.29
+
+A flow can have several things that start it, and one flow can run another's action. Deployments,
+logs and the state they keep from rc.28 load and run as they are, and their logs still verify. A
+flow deployed again from its text is a new version, which asks for nothing more: every write and
+call out gained a last input, `trigger` (below), so every unit that has one is hashed differently.
+Saved flows in the editor get that port when they are opened.
+
+- **A write or a call out belongs to what started the run.** A route's `state.hits = n` that reads
+  nothing of the request is still the route's: it is tied to the request, as a `respond` is, so a
+  statement no longer has to use `req` (one tied to nothing is still an error, saying what would
+  tie it). `state.last = id after found` ties a statement to a value instead: it writes only once
+  `found` has one. A holon with a write in it gets a `trigger` port it doesn't declare. `holon fmt`
+  writes none of the ties it can infer.
+- **A flow with several handlers.** Beside its routes a flow can have `every 2s { … }` (a clock; `now`
+  in it is the tick's time), `on file inbox (f) { … }` (a run for each file new, changed or, with
+  `deleted`, removed; `matching "*.csv"` picks names) and `action reset (input) { … }`. Each block
+  is a run of its own, and the flow's state is shared by them all. A flow of clocks or actions alone
+  listens on no port. `every 10s` and `on file inbox` as headers stay for a flow with no handler;
+  beside one, they are an error that names the block to write.
+- **Actions: runs by hand, by name.** An action runs when someone runs it, never from the network:
+  from the editor's server panel or the deployed page (a box for what to send, the answer, **view
+  run**), or `POST /trigger/<slug>/<name>` with a JSON body and `Content-Type: application/json`,
+  as an editor or an admin. An agent runs one only after a person ticks it under ⚙ → **agents may
+  run** and approves `AgentRuns("reset")`, with `holon mcp`'s new `run` tool; taking that back
+  leaves the flow running. Each run is logged under its label (`action reset`) with who ran it.
+  `POST /deployments/<slug>/tick` runs a clock now (**tick now**).
+- **A flow nothing would start is refused**, with the fix: put its statements in
+  `action run (input) { … }`. The editor offers it as **make it runnable by hand**. A flow that reads
+  `ingress` and has no handler still runs by hand, by `POST /trigger/<slug>`.
+- **One flow runs another's action.** `calls billing` in the headers, then `billing.charge(x)`: the
+  server runs billing's action in-process, as an ordinary run of billing logged `by` "flow shop, run
+  …", under billing's own grant. It answers `{answer, run}`, or `{error, message}` when nothing
+  ran (`refused`, `not_found`, `not_running`, `no_action`, `waiting`, `too_deep`, `failed`), so
+  `respond paid.answer, missing: 502` handles every failure. The call is a permission a person
+  approves, `RunsAction("billing/charge")` ("run the action charge of the flow billing"), and is in
+  the flow's hash. The answer is kept in the caller's log, so a retry, `holon verify` and the
+  editor's replay never make the call again. A flow isn't called from its own chain (itself
+  included), a chain is at most `max_call_depth` calls long (a new limit: 3 by default, 8 at
+  most), a secret or a value computed from one is never sent, and the calls of one round to one
+  flow go one at a time, in order. Revoking the permission pauses the caller like any required one,
+  or, with **keep running**, makes its next call answer `refused`.
+- **The editor.** The server panel lists a flow's clocks, file handlers, actions and routes; ⚙
+  shows its clocks where a flow without handlers has its interval; view mode places a run by what
+  started it (`every 2s`, `on file inbox`, `action reset`) and replays it over its block; the
+  canvas draws the trigger ports lighter, ties a write dropped on it to its route, and flags one
+  tied to nothing.
+- **Samples.** `counter`, `ticker` (a clock beside routes, and an action), `drop-board` (file
+  handlers beside routes), and `billing` with `shop` (deploy billing first).
+- **Docs.** A new actions guide, and the language reference, tour, files, editor, deploying,
+  permissions, concepts and agents pages, LANGUAGE.md and the guide `holon mcp`'s `reference` tool
+  gives agents, all say handlers, ties and calls. A state key is written once per run, not once per
+  flow, so two handlers may each write one.
+
 ## 0.1.0-rc.28
 
 A security release: the second review of the code, fixed in order. Nothing to redeploy: no unit is
