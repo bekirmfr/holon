@@ -166,6 +166,12 @@ pub(crate) struct RunWaits {
     /// The deployment's channels, which a piped call sends its answer to (channels.rs); none
     /// outside a run.
     pub(crate) channels: Option<Arc<channels::Channels>>,
+    /// The deployment the run belongs to, which a call to another flow says it is from (calls.rs);
+    /// none outside a run.
+    pub(crate) slug: Option<String>,
+    /// The flows whose calls led to this run, the first being the one that started the chain: empty
+    /// unless a flow's call started it (calls.rs).
+    pub(crate) chain: Vec<String>,
 }
 
 impl Waits for RunWaits {
@@ -383,7 +389,7 @@ impl ParkedRun {
             inputs: inputs.iter().map(|i| i.as_ref().map(SValue::from_core)).collect(),
             sourced: sourced
                 .iter()
-                .filter(|(c, _)| matches!(c, Capability::Clock | Capability::Random | Capability::NetworkIngress))
+                .filter(|(c, _)| matches!(c, Capability::Clock | Capability::Random | Capability::NetworkIngress | Capability::FileArrival(_)))
                 .map(|(c, v)| (format!("{c:?}"), SValue::from_core(v)))
                 .collect(),
             state_refs,
@@ -627,6 +633,7 @@ pub(crate) fn resume_parked(
     let Resumption { unit, inputs, sourced, mut waits, resumed } = record.resume(name, event, store)?;
     waits.folders = Some(folders);
     waits.channels = Some(channels);
+    waits.slug = Some(slug.to_string());
     let resolver = materialize_closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();

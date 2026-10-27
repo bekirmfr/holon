@@ -133,6 +133,7 @@ pub enum WCapability {
     NetworkIngress,
     FileRead(String),
     FileArrival(String),
+    Action(String),
     SecretAccess,
     SecretRead(String),
     Await(String),
@@ -143,6 +144,7 @@ pub enum WCapability {
     CollectionWrite(String),
     NetworkEgress,
     HttpRequest(String),
+    RunsAction(String),
     FileWrite(String),
     ChannelSend(String),
     ChannelRead(String),
@@ -158,6 +160,7 @@ impl WCapability {
             Capability::NetworkIngress => WCapability::NetworkIngress,
             Capability::FileRead(folder) => WCapability::FileRead(folder),
             Capability::FileArrival(folder) => WCapability::FileArrival(folder),
+            Capability::Action(name) => WCapability::Action(name),
             Capability::SecretAccess => WCapability::SecretAccess,
             Capability::SecretRead(name) => WCapability::SecretRead(name),
             Capability::Await(name) => WCapability::Await(name),
@@ -168,6 +171,7 @@ impl WCapability {
             Capability::CollectionWrite(name) => WCapability::CollectionWrite(name),
             Capability::NetworkEgress => WCapability::NetworkEgress,
             Capability::HttpRequest(host) => WCapability::HttpRequest(host),
+            Capability::RunsAction(name) => WCapability::RunsAction(name),
             Capability::FileWrite(folder) => WCapability::FileWrite(folder),
             Capability::ChannelSend(channel) => WCapability::ChannelSend(channel),
             Capability::ChannelRead(channel) => WCapability::ChannelRead(channel),
@@ -261,10 +265,11 @@ struct AskedFor {
     limits: std::collections::BTreeMap<String, u64>,
     plain_http: std::collections::BTreeSet<String>,
     private_addresses: bool,
+    agents: std::collections::BTreeSet<String>,
 }
 
 /// A manifest's items (core's `manifest_items`, the rule the server grants by): `capabilities`
-/// (consent names), then what `requirements` (`{limits, plain_http, private_addresses}`) ask.
+/// (consent names), then what `requirements` (`{limits, plain_http, private_addresses, agents}`) ask.
 #[wasm_bindgen]
 pub fn manifest_items(capabilities: Vec<String>, requirements: JsValue) -> Result<Vec<String>, JsError> {
     let asked: AskedFor = if requirements.is_undefined() || requirements.is_null() {
@@ -272,7 +277,7 @@ pub fn manifest_items(capabilities: Vec<String>, requirements: JsValue) -> Resul
     } else {
         serde_wasm_bindgen::from_value(requirements).map_err(|e| JsError::new(&format!("requirements: {e}")))?
     };
-    Ok(holon_core::manifest_items(&capabilities, &asked.limits, &asked.plain_http, asked.private_addresses).into_iter().collect())
+    Ok(holon_core::manifest_items(&capabilities, &asked.limits, &asked.plain_http, asked.private_addresses, &asked.agents).into_iter().collect())
 }
 
 /// What starts the runs of a unit with these capabilities (core's `trigger`).
@@ -1043,6 +1048,13 @@ pub fn describe_item(item: &str) -> String {
     holon_author::describe::describe_item(item)
 }
 
+/// `item` in words for a flow run by hand (no routes) when `by_hand`: its `NetworkIngress` is
+/// "can be run by hand".
+#[wasm_bindgen]
+pub fn describe_item_of(item: &str, by_hand: bool) -> String {
+    holon_author::describe::describe_item_of(item, by_hand)
+}
+
 /// `.holon` text, in either form, as a flow document: `{name, doc, names, lines, spans}` (each
 /// top-level node's name in the text, the line it is written on, and the range it is written
 /// over as `[from, to]` UTF-16 offsets, by id; docs/L4s/text-graph-link-L4.md). Throws the
@@ -1153,6 +1165,13 @@ pub fn holon_complete(source: &str, offset: usize) -> Result<JsValue, JsError> {
 #[wasm_bindgen]
 pub fn holon_format(source: &str) -> Result<String, JsError> {
     holon_author::editing::format(source).map_err(|e| JsError::new(&e))
+}
+
+/// The quick fix **make it runnable by hand** for a flow nothing would start: its statements in
+/// `action run (input) { … }`, as `holon fmt` writes it. Throws why it doesn't apply.
+#[wasm_bindgen]
+pub fn holon_runnable_by_hand(source: &str) -> Result<String, JsError> {
+    holon_author::editing::runnable_by_hand(source).map_err(|e| JsError::new(&e))
 }
 
 /// The text's colours: `[{from, to, class}]`, in order, `class` the lowercase name of

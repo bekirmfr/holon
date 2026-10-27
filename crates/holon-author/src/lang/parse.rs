@@ -274,9 +274,22 @@ impl Parser {
                 Tok::Eof => return Ok(file),
                 Tok::RBrace => return err(t.span.start, "a } without a block to close"),
                 Tok::Ident => match t.text.as_str() {
-                    "flow" | "port" | "every" | "interval" | "browsers" | "optional" | "collection" | "folder" | "database" | "channel" => {
+                    // `every 2s {` opens a clock handler; `every 2s` alone is the old header.
+                    "every" if self.peek_at(2).tok == Tok::LBrace => file.items.push(Item::Every(self.every()?)),
+                    // A header's word before `.` is a node's name in the wiring form (`every.now -> …`).
+                    "flow" | "port" | "every" | "interval" | "browsers" | "optional" | "collection" | "folder" | "database" | "channel" if self.peek_at(1).tok != Tok::Dot => {
                         let h = self.header()?;
                         file.headers.push(h);
+                    }
+                    // `calls billing` declares a flow whose actions this one runs; no statement starts
+                    // with two names, and `calls` stays a name everywhere else.
+                    "calls" if matches!(self.peek_at(1).tok, Tok::Ident) => {
+                        let h = self.header()?;
+                        file.headers.push(h);
+                    }
+                    // `on file inbox (f) {` opens a file handler; `on file inbox` alone is the old header.
+                    "on" if self.peek_at(1).tok == Tok::Ident && self.peek_at(1).text == "file" && self.on_file_block_ahead() => {
+                        file.items.push(Item::OnFile(self.on_file()?))
                     }
                     "on" if self.peek_at(1).tok == Tok::Ident && self.peek_at(1).text == "file" => {
                         let h = self.header()?;
@@ -284,6 +297,8 @@ impl Parser {
                     }
                     "holon" => file.items.push(self.holon()?),
                     "route" => file.items.push(Item::Route(self.route()?)),
+                    // `action reset (input) {` opens an action; no statement starts with two names.
+                    "action" if self.peek_at(1).tok == Tok::Ident && self.peek_at(2).tok == Tok::LParen => file.items.push(Item::Action(self.action()?)),
                     _ => file.items.push(Item::Stmt(self.stmt()?)),
                 },
                 _ => file.items.push(Item::Stmt(self.stmt()?)),
@@ -316,22 +331,8 @@ impl Parser {
             "folder" => HeaderKind::Folder(self.ident("the folder's name")?.text),
             "database" => HeaderKind::Database(self.ident("the database's name")?.text),
             "channel" => HeaderKind::Channel(self.ident("the channel's name")?.text),
-            "on" => {
-                self.next();
-                let folder = self.ident("the folder whose new files start a run")?.text;
-                let deleted = self.is_word("deleted");
-                if deleted {
-                    self.next();
-                }
-                let matching = if self.is_word("matching") {
-                    self.next();
-                    let t = self.expect(&Tok::Str, "the names to start runs for, quoted: \"*.csv\"")?;
-                    Some(self.unescape(&t)?)
-                } else {
-                    None
-                };
-                HeaderKind::OnFile(FileOn { folder, deleted, matching })
-            }
+            "calls" => HeaderKind::Calls(self.raw_name("the flow's name")?.text),
+            "on" => HeaderKind::OnFile(self.file_on()?),
             "optional" => HeaderKind::Optional(self.consent()?),
             _ => {
                 let mut origins = Vec::new();
@@ -504,6 +505,64 @@ impl Parser {
         Ok(RouteDef { method, path, request, resumes, body, span: head.span.to(end) })
     }
 
+    /// After `on`: `file inbox [deleted] [matching "…"]`.
+    fn file_on(&mut self) -> R<FileOn> {
+        self.next();
+        let folder = self.ident("the folder whose new files start a run")?.text;
+        let deleted = self.is_word("deleted");
+        if deleted {
+            self.next();
+        }
+        let matching = if self.is_word("matching") {
+            self.next();
+            let t = self.expect(&Tok::Str, "the names to start runs for, quoted: \"*.csv\"")?;
+            Some(self.unescape(&t)?)
+        } else {
+            None
+        };
+        Ok(FileOn { folder, deleted, matching })
+    }
+
+    /// Whether the `on file` line here goes on to a `(`: a block, not the header.
+    fn on_file_block_ahead(&self) -> bool {
+        (2..).map(|k| &self.peek_at(k).tok).take_while(|t| !matches!(t, Tok::Newline | Tok::Eof)).any(|t| *t == Tok::LParen)
+    }
+
+    /// `on file inbox [deleted] [matching "…"] (f) { … }`.
+    fn on_file(&mut self) -> R<OnFileDef> {
+        let head = self.next();
+        let on = self.file_on()?;
+        self.expect(&Tok::LParen, "\"(\" and a name for the file")?;
+        let file = self.ident("a name for the file")?;
+        let close = self.expect(&Tok::RParen, "\")\"")?;
+        let (body, end) = self.block()?;
+        Ok(OnFileDef { on, file, head: head.span.to(close.span), body, span: head.span.to(end) })
+    }
+
+    /// `action reset (input) { … }`.
+    fn action(&mut self) -> R<ActionDef> {
+        let head = self.next();
+        let name = self.ident("the action's name")?;
+        self.expect(&Tok::LParen, "\"(\" and a name for what is sent")?;
+        let input = self.ident("a name for what is sent")?;
+        let close = self.expect(&Tok::RParen, "\")\"")?;
+        let (body, end) = self.block()?;
+        Ok(ActionDef { name, input, head: head.span.to(close.span), body, span: head.span.to(end) })
+    }
+
+    /// `every 2s { … }`.
+    fn every(&mut self) -> R<EveryDef> {
+        let head = self.next();
+        let t = self.next();
+        let seconds = match t.tok {
+            Tok::Duration(seconds) => seconds,
+            Tok::Number => t.text.parse().map_err(|_| ParseError { pos: t.span.start, message: format!("{} is not a number", t.text) })?,
+            _ => return err(t.span.start, format!("expected how often, like 10s or 5m, found {}", describe(&t))),
+        };
+        let (body, end) = self.block()?;
+        Ok(EveryDef { seconds, text: t.text, head: head.span.to(t.span), body, span: head.span.to(end) })
+    }
+
     /// `{ statements }`, and the span of the closing brace.
     fn block(&mut self) -> R<(Vec<Stmt>, Span)> {
         let open = self.expect(&Tok::LBrace, "\"{\"")?;
@@ -570,9 +629,18 @@ impl Parser {
                 StmtKind::Expr(e)
             }
         };
+        // `… after x` ties the statement's writes and calls to x, not to the block's trigger.
+        let tieable = !matches!(kind, StmtKind::Node { .. } | StmtKind::Wire { .. } | StmtKind::Respond(_));
+        let after = if tieable && self.is_word("after") {
+            self.next();
+            self.skip_newlines();
+            Some(self.expr()?)
+        } else {
+            None
+        };
         let end = self.toks[self.at - 1].span;
         self.end_statement()?;
-        Ok(Stmt { kind, span: start.to(end) })
+        Ok(Stmt { kind, span: start.to(end), after })
     }
 
     /// A binding's right side: an expression, or `await name, expires: expr`.

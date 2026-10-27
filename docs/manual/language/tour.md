@@ -130,10 +130,43 @@ state.first_beat = state.first_beat ?? t
 ```
 
 `state.beats` on the right is the value as the run began; `state.beats = …` writes it when the
-run finishes. So the line means exactly what it says, and a run never sees its own writes. A key
-may be written once per flow.
+run finishes. So the line means exactly what it says, and a run never sees its own writes. A run
+writes a key once.
 
 Durations are numbers of seconds: `10s`, `5m`, `2h`, `1d`.
+
+A flow with routes keeps its clock in a block of its own, and may have actions beside it:
+
+```holon
+flow visits
+port 8207
+
+every 1h {
+  state.last_hour = now
+}
+
+action reset (input) {
+  state.visits = 0
+}
+
+route POST /visit (req) {
+  state.visits = (state.visits ?? 0) + 1
+  respond state.visits ?? 0
+}
+
+route GET /status (req) {
+  respond { visits: state.visits ?? 0, last_hour: state.last_hour }
+}
+```
+
+`every 1h { … }` runs on its own every hour, with no request, and `now` in it is the time of the
+tick. Each block is a run of its own, and the state is the flow's, shared by all of them: `/status`
+reads what the clock wrote. `state.visits = …` in the route never looks at the request, and is still
+the route's: a block is everything tied to its trigger.
+
+`action reset (input) { … }` is run by hand, by its name, from the editor or a script, never from
+the network: it zeroes the count when a person runs it. See [Actions](../guides/actions.md) and
+the [reference](reference.md#clocks-files-and-actions).
 
 ## Calling other services
 
@@ -319,7 +352,8 @@ route POST /report (req) {
 
 The flow names the folders, never a path. A flow can also run on files instead of requests:
 `on file drop` in place of `port` runs it once for each new file in the folder `drop`, with the
-file's handle as `ingress`. See [Files on the host](../guides/files.md).
+file's handle as `ingress`; beside routes, it is a block, `on file drop (f) { … }`, with the handle
+as `f`. See [Files on the host](../guides/files.md).
 
 ## Databases
 

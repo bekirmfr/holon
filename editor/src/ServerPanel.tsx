@@ -1,5 +1,7 @@
-// The server panel: the routes this flow declares (derived from its request nodes, see
-// derive.ts), and a request tester to try them, locally or against the flow's deployment.
+// The server panel: the routes, clocks, file handlers and actions this flow declares (derived from
+// its request, every, on_file and action nodes, see derive.ts), a request tester to try the
+// routes, locally or against the flow's deployment, "tick now" for a deployed clock, and "run"
+// for a deployed action, with what to send it.
 // Deploying is the header's job (DeployBar), for the whole flow.
 
 import { useState, type CSSProperties } from "react";
@@ -14,7 +16,9 @@ import {
   type EndpointDraft,
   type Method,
 } from "./endpoint";
-import { sendRequest, ServerError, type HttpResponse } from "./server";
+import { sendRequest, ServerError, tickNow, type HttpResponse, type Role } from "./server";
+import type { ActionDraft, ClockDraft, FileDraft } from "./canvasOps";
+import { ActionRows } from "./ActionRows";
 
 const field: CSSProperties = {
   font: "inherit",
@@ -89,21 +93,50 @@ function showBody(body: string): string {
 export function ServerPanel({
   ev,
   endpoints,
+  clocks = [],
+  files = [],
+  actions = [],
   errors,
   liveSlug,
+  tickSlug = "",
+  role,
+  outOfDate = false,
+  onViewRun,
 }: {
   ev: Evaluator;
   /** The routes the canvas declares, each already built into an endpoint unit. */
   endpoints: EndpointDraft[];
+  /** The clocks the canvas declares (its `every` nodes' groups). */
+  clocks?: ClockDraft[];
+  /** The file handlers the canvas declares (its `on_file` nodes' groups). */
+  files?: FileDraft[];
+  /** The actions the canvas declares (its `action` nodes' groups). */
+  actions?: ActionDraft[];
+  /** The flow's running deployment, for "tick now" and "run"; empty when it isn't running. */
+  tickSlug?: string;
   /** Why a request node's group couldn't become a route. */
   errors: string[];
   /** The flow's server deployment, for "send live"; empty when it isn't deployed. */
   liveSlug: string;
+  /** Who is signed in: a viewer sees the actions, never runs one. */
+  role?: Role;
+  /** The canvas has changes not deployed (an action runs the deployed version). */
+  outOfDate?: boolean;
+  /** Open view mode on a run an action made. */
+  onViewRun?: (seq: number) => void;
 }) {
   const [req, setReq] = useState<TesterRequest>({ method: "GET", url: "/", headers: "", body: "" });
   const [result, setResult] = useState<TesterResult | null>(null);
   const [sending, setSending] = useState(false);
   const [open, setOpen] = useState(true);
+  const [ticked, setTicked] = useState("");
+
+  const tick = (clock: string) => {
+    setTicked(`${clock}: ticking…`);
+    tickNow(tickSlug, clock)
+      .then((t) => setTicked(`${clock}: ticked, ${t.performed.length} effect${t.performed.length === 1 ? "" : "s"} performed`))
+      .catch((err: unknown) => setTicked(`${clock}: ${err instanceof Error ? err.message : String(err)}`));
+  };
 
   const sendLocal = () => setResult(answerLocally(ev, endpoints, req));
 
@@ -145,14 +178,36 @@ export function ServerPanel({
         onClick={() => setOpen(!open)}
         title={open ? "collapse" : "expand"}
       >
-        server {open ? "▾" : `▸ ${endpoints.length} route${endpoints.length === 1 ? "" : "s"}`}
+        server {open ? "▾" : `▸ ${endpoints.length} route${endpoints.length === 1 ? "" : "s"}${clocks.length > 0 ? `, ${clocks.length} clock${clocks.length === 1 ? "" : "s"}` : ""}${files.length > 0 ? `, ${files.length} file handler${files.length === 1 ? "" : "s"}` : ""}${actions.length > 0 ? `, ${actions.length} action${actions.length === 1 ? "" : "s"}` : ""}`}
       </div>
       {open && (
         <>
 
-      {endpoints.length === 0 && errors.length === 0 && (
+      {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && actions.length === 0 && errors.length === 0 && (
         <div>drop a request node (palette, http) and wire it to a respond node to add a route</div>
       )}
+      {clocks.map((c) => (
+        <div key={c.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <span style={{ color: "#6fd3e0", ...label }}>every</span>
+          <span style={{ flex: 1, color: "#e6eefb" }}>{c.label.slice("every ".length)}</span>
+          <button
+            style={{ ...button, opacity: tickSlug ? 1 : 0.4 }}
+            disabled={!tickSlug}
+            title={tickSlug ? "run this clock's group once, now, on the deployment" : "deploy the flow to tick it"}
+            onClick={() => tick(c.label)}
+          >
+            tick now
+          </button>
+        </div>
+      ))}
+      {ticked && <div style={{ color: "#9fb4d4" }}>{ticked}</div>}
+      {files.map((f) => (
+        <div key={f.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each file its line is for, in the folder ${f.folder} on the host`}>
+          <span style={{ color: "#6fd3e0", ...label }}>on file</span>
+          <span style={{ flex: 1, color: "#e6eefb" }}>{f.label.slice("on file ".length)}</span>
+        </div>
+      ))}
+      <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
       {endpoints.map((e) => (
         <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <span style={{ color: "#6fd3e0", ...label }}>{e.method}</span>

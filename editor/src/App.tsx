@@ -54,7 +54,12 @@ import {
   nodeFromPalette,
   flowUnitHash,
   groupSelection,
+  lighterTriggers,
   projectCanvas,
+  takesTrigger,
+  tieEdge,
+  triggersOf,
+  untiedSinks,
   type Projection,
 } from "./canvasOps";
 import { expandComposite } from "./composites";
@@ -68,7 +73,7 @@ import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccountMenu, AuthGate, type Me } from "./AuthGate";
 import { AdminPage } from "./AdminPage";
 import { HomePage } from "./HomePage";
-import { compileHolon, printHolon, sourceLineOf } from "./holonText";
+import { compileHolon, printHolon, runnableByHand, sourceLineOf } from "./holonText";
 import { TextPane } from "./TextPane";
 import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
@@ -120,7 +125,7 @@ function Canvas({
   const dialog = useDialog();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const { screenToFlowPosition, getNode, getEdges, getViewport, setViewport, fitView } =
+  const { screenToFlowPosition, getNode, getNodes, getEdges, getViewport, setViewport, fitView } =
     useReactFlow<PrimitiveNodeType>();
   const idRef = useRef(0);
   // The one in-browser workspace every placed composite lives in (see Projection below).
@@ -386,9 +391,13 @@ function Canvas({
         return;
       }
       const node = nodeFromPalette(name, byName, variadic, `${name}-${idRef.current++}`, screenToFlowPosition({ x: e.clientX, y: e.clientY }));
-      if (node) setNodes((ns) => ns.concat(node));
+      if (!node) return;
+      setNodes((ns) => ns.concat(node));
+      // A sink placed on a canvas with one trigger is tied to it; with several, it is flagged.
+      const triggers = triggersOf(getNodes());
+      if (takesTrigger(node) && triggers.length === 1) setEdges((es) => es.concat(tieEdge(node.id, triggers[0])));
     },
-    [byName, variadic, screenToFlowPosition, setNodes, viewing, ev, market],
+    [byName, variadic, screenToFlowPosition, setNodes, setEdges, getNodes, viewing, ev, market],
   );
 
   // A saved flow's manifest (the flows page), derived from its document as deploying it would:
@@ -398,9 +407,10 @@ function Canvas({
       restoreDocument(doc, ev);
       const port = doc.server?.port ?? DEFAULT_SETTINGS.port;
       const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
-      const scheduled = (doc.server?.interval ?? "").trim() !== "" && deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port).endpoints.length === 0;
+      const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
+      const scheduled = (doc.server?.interval ?? "").trim() !== "" && server.endpoints.length === 0 && server.clocks.length === 0 && server.files.length === 0 && server.actions.length === 0;
       const caps = ev.deployed_capability_names(hash, scheduled) as string[];
-      return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
+      return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps), byHand: server.endpoints.length === 0 };
     },
     [ev, byName],
   );
@@ -414,20 +424,30 @@ function Canvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port]);
 
-  // What the canvas's flow would ask for, by consent name (empty while it doesn't derive): the
+  // What the canvas's flow would ask for, by consent name (null while it doesn't derive): the
   // deploy settings offer each one but its trigger as something it can run without.
-  const flowCapabilities = useMemo(() => {
+  const flowCaps = useMemo(() => {
     try {
       const { nodes: ns, edges: es } = live.current;
+      if (ns.length === 0) return null;
       const hash = flowUnitHash(ns, es, ev, settings.port);
-      const scheduled = settings.interval.trim() !== "" && derived.endpoints.length === 0;
+      const scheduled = settings.interval.trim() !== "" && derived.endpoints.length === 0 && derived.clocks.length === 0 && derived.files.length === 0 && derived.actions.length === 0;
       return ((ev.deployed_capability_names(hash, scheduled) as string[])).sort();
     } catch {
-      return [];
+      return null;
     }
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port, settings.interval, derived]);
+  const flowCapabilities = useMemo(() => flowCaps ?? [], [flowCaps]);
+  // Nothing would start a run: no route, clock, file handler or action, nor the old forms'
+  // `ingress`, interval or `on file` (docs/L4s/triggers-L4.md fork 14). Deploy is greyed, with
+  // the quick fix. Not said of a canvas that doesn't derive: that has its own error.
+  const startsNothing =
+    flowCaps !== null &&
+    derived.endpoints.length + derived.clocks.length + derived.files.length + derived.actions.length === 0 &&
+    settings.interval.trim() === "" &&
+    !flowCaps.some((c) => c === "NetworkIngress" || c.startsWith("FileArrival("));
 
   // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to
@@ -619,7 +639,12 @@ function Canvas({
   });
   const expandNode = compositeOverlay.expand;
   overlayOpen.current = compositeOverlay.open;
-  const nodeActions = useMemo(() => ({ updateHolon, expandComposite: expandNode, ungroup }), [updateHolon, expandNode, ungroup]);
+  // A sink's quick fix: tie its trigger to the one picked.
+  const tie = useCallback(
+    (id: string, trigger: { id: string; output: string }) => setEdges((es) => (es.some((e) => e.target === id && e.targetHandle === "trigger") ? es : es.concat(tieEdge(id, trigger)))),
+    [setEdges],
+  );
+  const nodeActions = useMemo(() => ({ updateHolon, expandComposite: expandNode, ungroup, tie }), [updateHolon, expandNode, ungroup, tie]);
 
   const onExpand = useCallback(() => {
     const selected = nodes.filter((n) => n.selected);
@@ -681,14 +706,18 @@ function Canvas({
       const latest = src ? savedFlowTimes.get(src.flow) : undefined;
       return src !== undefined && latest !== undefined && latest > src.savedAt;
     };
-    if (errorNodeIds.size === 0 && !nodes.some(outdated)) return nodes;
+    // A sink nothing triggers, on a canvas with a trigger: flagged, a fix for each trigger.
+    const untied = untiedSinks(nodes, edges);
+    const triggers = untied.size > 0 ? triggersOf(nodes) : [];
+    if (errorNodeIds.size === 0 && !nodes.some(outdated) && untied.size === 0) return nodes;
     return nodes.map((n) => {
-      const flags = { ...(errorNodeIds.has(n.id) ? { error: true } : {}), ...(outdated(n) ? { updateAvailable: true } : {}) };
+      const flags = { ...(errorNodeIds.has(n.id) ? { error: true } : {}), ...(outdated(n) ? { updateAvailable: true } : {}), ...(untied.has(n.id) ? { untied: triggers } : {}) };
       return Object.keys(flags).length > 0 ? { ...n, data: { ...n.data, ...flags } } : n;
     });
-  }, [nodes, errorNodeIds, viewing, view.viewNodes, savedFlowTimes]);
+  }, [nodes, edges, errorNodeIds, viewing, view.viewNodes, savedFlowTimes]);
 
-  const decoratedEdges = viewing ? view.viewEdges : edges;
+  // Trigger wires are drawn lighter than data wires (canvasOps.lighterTriggers).
+  const decoratedEdges = useMemo(() => lighterTriggers(viewing ? view.viewEdges : edges), [viewing, view.viewEdges, edges]);
 
   // The flow's text beside the canvas (useTextPane.ts, TextPane.tsx), and in view mode the run
   // shown in it.
@@ -809,6 +838,17 @@ function Canvas({
                   slug={flowName}
                   secretNames={secretNames}
                   capabilities={flowCapabilities}
+                  clocks={derived.clocks.map((c) => c.label)}
+                  fileFolders={derived.files.map((f) => f.folder)}
+                  startsNothing={startsNothing}
+                  onMakeRunnable={() => {
+                    try {
+                      textPane.rewrite(runnableByHand);
+                      setDeployError("");
+                    } catch (e) {
+                      setDeployError(`can't make it runnable by hand: ${e instanceof Error ? e.message : String(e)}`);
+                    }
+                  }}
                 />
               }
               saveMsg={saveMsg}
@@ -839,8 +879,15 @@ function Canvas({
                 key={flowName ?? ""}
                 ev={ev}
                 endpoints={derived.endpoints}
+                clocks={derived.clocks}
+                files={derived.files}
+                actions={derived.actions}
                 errors={derived.errors}
                 liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
+                tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
+                role={me.role}
+                outOfDate={outOfDate === true}
+                onViewRun={(seq) => flowName && onView(flowName, seq)}
               />
             </Panel>
           )}
@@ -944,6 +991,7 @@ function Canvas({
               onView={onView}
               onChanged={refreshDeployments}
               focus={focus}
+              role={me.role}
             />
           )}
         </div>

@@ -12,7 +12,9 @@ and how each construct lowers to the graph, is in [`docs/LANGUAGE.md`](../../LAN
 - [Calls](#calls)
 - [The outside world](#the-outside-world)
 - [Routes](#routes)
-- [Flows without routes](#flows-without-routes)
+- [Clocks, files and actions](#clocks-files-and-actions)
+- [What a block holds](#what-a-block-holds)
+- [Flows without handlers](#flows-without-handlers)
 - [Holons](#holons)
 - [JavaScript holons](#javascript-holons)
 - [Functions for map and fold](#functions-for-map-and-fold)
@@ -24,7 +26,7 @@ and how each construct lowers to the graph, is in [`docs/LANGUAGE.md`](../../LAN
 ## Files
 
 A flow is a `.holon` file: UTF-8 text, lines ending in `\n` or `\r\n`. A file is its headers, then
-its holons, routes and statements:
+its holons, its handlers (routes, clocks, file handlers and actions) or its statements:
 
 ```holon
 # A comment runs from # to the end of the line.
@@ -36,8 +38,9 @@ route GET /ping (req) {
 }
 ```
 
-`holon fmt` rewrites a file in the canonical form: headers first, then holons, then routes, each
-statement on its own line. It keeps comments on the line they were written on.
+`holon fmt` rewrites a file in the canonical form: headers first, then holons, then the handlers
+in the order written, each statement on its own line. It keeps comments on the line they were
+written on.
 
 A statement may continue on the next line while a parenthesis, brace or bracket is open, or after
 a binary operator or a comma. There are no semicolons.
@@ -51,11 +54,12 @@ else.
 |---|---|
 | `flow NAME` | The flow's name: what it deploys as. Required. |
 | `port N` | A flow with routes: the port its server answers on. |
-| `every DURATION` | A flow without routes: how often it runs (`every 10s`, `every 1h`). |
+| `every DURATION` | A flow without handlers: how often it runs (`every 10s`, `every 1h`). Beside handlers, a clock is a block: `every 10s { … }`. |
 | `collection NAME` | Declares a collection, used as `NAME[key]`. One per line; as many as needed. |
 | `folder NAME` | Declares a named folder on the host, used as `NAME[file]`. |
 | `database NAME` | Declares a named database on the host, used as `NAME.query(sql, …)`. |
-| `on file NAME` | A flow without routes: runs once for each new file in the folder `NAME` (which it declares too). One per flow. |
+| `calls FLOW` | Names another deployed flow, by its slug, whose actions this one runs: `FLOW.action(x)` (see [The outside world](#the-outside-world)). A `-` in the slug is `_` in the call: `calls billing-v2`, `billing_v2.charge(x)`. |
+| `on file NAME [deleted] [matching "GLOB"]` | A flow without handlers: runs once for each new file in the folder `NAME` (which it declares too). Several lines may each start it. Beside handlers, it is a block: `on file NAME (f) { … }`. |
 | `optional PERMISSION` | A permission the flow can run without (see below). |
 | `browsers ORIGIN, …` | The web origins allowed to call the flow from a browser (CORS), or `*`. |
 
@@ -73,7 +77,9 @@ can't be bound; the mistake names the clash.
 
 **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `folder` `database` `holon` `js` `route`
 `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`. A keyword
-is fine after a dot (`req.json.in`) and as a record key (`{ in: 1 }`).
+is fine after a dot (`req.json.in`) and as a record key (`{ in: 1 }`). `action`, `on`, `file`,
+`calls` and `after` are keywords only where they start a handler, declare a flow or tie a statement: `list(after: …)` and
+`req.query.after` are names.
 
 **Nouns** are the outside world: `req` (or whatever a route names its request), `secret`, `state`,
 `now`, `random`, `http`, `stripe`, and every declared collection, folder and database.
@@ -99,12 +105,14 @@ and a record or list is written as JSON.
 | `state.key = expr` | Writes the flow's state under `key` when the run finishes. |
 | `coll[key] = expr` | Writes an item of a collection (or a file of a folder) when the run finishes. |
 | `delete coll[key]` | Deletes an item (or a file) when the run finishes. |
-| `respond …` | What a route answers (see [Routes](#routes)). |
+| `respond …` | What a route or an action answers (see [Routes](#routes)). |
 | `expr` | An effect, such as `notes.put(k, v)` or an `http.post(…)` whose answer isn't used. |
+| `statement after x` | Its writes and calls tied to `x` (see [What a block holds](#what-a-block-holds)). |
 
 An expression statement that isn't an effect is a mistake ("a value nobody uses"): bind it or
 remove it. A binding that is never used is a warning. Each state key may be written once in a
-flow: a run reads its starting state and writes once, at the end.
+run (in a block, or a flow without handlers): a run reads its starting state and writes once, at
+the end. Two handlers may each write the same key.
 
 ## Expressions
 
@@ -204,13 +212,15 @@ Each of these is one building block, and each is one thing the flow may do.
 | `dir.lines(name, from: i, limit: n)` | `n` lines from line `i` (from the end when negative) |
 | `dir.slice(name, offset: o, length: n)` | `n` bytes from offset `o`, as text |
 | `dir[name] = handle`, `dir.copy(name, handle)` | copy a file by handle when the run finishes |
-| `ingress` (with `on file NAME`) | the handle of the new file that started the run |
+| `f` in `on file NAME (f) { … }` | the handle of the file that started the run: `{folder, name, size, hash, modified, event}` |
+| `ingress` (with an `on file NAME` header) | the same handle, in a flow without handlers |
 | `db.query(sql, v1, v2, …)` | the rows of a declared database, a list of records, as the run began; `$1`, `$2`, … in the SQL are the values after it |
 | `db.one(sql, v1, …)` | the first row, or no value when there is none |
 | `db.exec(sql, v1, …)`, `db.exec(sql, …, expect: n)` | run an `insert`, `update` or `delete` when the run finishes; with `expect:`, only if it changes exactly `n` rows, else nothing the run wrote lands and a route answers 409 |
 | `http.get(host, path, headers: h, body: b)` | a request to `host`; also `post`, `put`, `patch`, `delete`, `head`. The answer is `{status, headers, body}` |
 | `http.put(host, path, headers: h, file: handle)` | the same, sending a file as the body, by handle: the server streams its bytes, which never pass through the flow (any method) |
 | `stripe.verify(req, secret, now, tolerance: 5m)` | a verified Stripe webhook; `.event` is the event |
+| `flow.action(x)` (with `calls flow`) | run the action `action` of the deployed flow `flow` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
 | `await name, expires: d` | park the run until the event `name` arrives |
 | `resume_token(name)` | the token a resuming route takes to deliver `name` |
 | `json(x)`, `parse_json(text)` | JSON out, JSON in |
@@ -228,6 +238,17 @@ Rules:
 - **A file sent with `file:`** must be in a folder the flow reads, or be the new file that
   started the run. The server checks, before and as it sends, that the bytes still have the
   handle's hash; if not, the call answers `{status: 0, error: "changed"}`.
+- **A call to another flow's action** goes out between rounds, as an `http.*` call does, and its
+  answer is kept in the run's log, so a retry, a replay and `holon verify` never make it again. The
+  other flow runs its action as it would for a person, under its own grant and limits, and logs it
+  as run by "flow shop, run …". The error is one of `refused` (not granted, revoked, or the flow is
+  already in the chain of calls, itself included), `not_found`, `not_running`, `no_action`,
+  `waiting` (the action parked at an `await`; its `run` goes on later), `failed` and `too_deep` (a
+  chain is at most `max_call_depth` calls long: 3 by default). A secret, or a value computed from
+  one, isn't sent: the other flow's log would keep it. `respond paid.answer, missing: 502` handles
+  every failure at once, as the answer has no value then. A call nobody uses is a statement; to
+  say why one failed, bind it and look at `error` and `message`. See
+  [Actions](../guides/actions.md#run-by-another-flow).
 - **The method forms** (`notes.put(k, v)`, `state.set(k, v)`) are the same writes as values: for a
   holon that names its writes as outputs, or to pass a write on.
 
@@ -262,17 +283,104 @@ A redirect: `respond "", status: 303, headers: { location: "/" }`. A streamed re
 sent.body, stream: true`, answers with its call's status: a refused call's error reaches the
 caller as it was.
 
-**A route is everything wired to its request.** Every statement in a route must use `req`,
-directly or through a binding. A statement that doesn't (a counter that never looks at the
-request, say) wouldn't be part of the route, so it is a mistake; move it to a flow of its own.
+**Handlers are separate.** Two routes (or any two handlers) can't share a value. At the top level
+of a flow with handlers, only bindings of literals are allowed (`limit = 50`); put shared logic in
+a holon.
 
-**Routes are separate.** Two routes can't share a value. At the top level of a flow with routes,
-only bindings of literals are allowed (`limit = 50`); put shared logic in a holon.
+## Clocks, files and actions
 
-## Flows without routes
+Beside its routes, a flow may have other handlers, each a block that starts runs of its own:
 
-A flow with no routes is one body of statements. With `every`, the server runs it on that
-interval:
+```holon
+flow handlers
+port 8203
+collection seen
+
+every 1h {
+  state.last_tick = now
+}
+
+on file uploads (f) {
+  seen[f.name] = { size: f.size, at: now }
+}
+
+action forget (input) {
+  delete seen[input.name]
+  respond { forgot: input.name }
+}
+
+route GET /seen/:name (req) {
+  respond seen[req.params.name]
+}
+```
+
+- **`every DURATION { … }`** runs every `DURATION`, with no input; `now` in it is the time of the
+  tick. A whole number of seconds from `1s` to `366d`, one block per period.
+- **`on file NAME (f) { … }`** runs for each file new or changed in the folder `NAME` (which the line
+  declares), once it stops changing; `f` is its handle. `deleted` after the name makes it for
+  files removed from the folder, and `matching "*.csv"` for the names that match (`*` and `?`
+  within a folder, `**/` any number of folders, letters either case). One block per line.
+- **`action NAME (input) { … }`** runs when someone runs it by its name, `input` what they sent (a
+  JSON value; `{}` for nothing). It answers with `respond VALUE`, a value alone (no `status:`,
+  `missing:`, `headers:` or `stream:`), at most once; one that only writes answers nothing. Its
+  name is letters, digits and `_`, one block per name. The network never reaches it: a person runs
+  it from the editor or a script, and an agent only one a person lets agents run
+  ([Actions](../guides/actions.md)).
+
+`respond` belongs to routes and actions: a clock's or a file's run answers nobody. `ingress` isn't
+used in a block: a file handler and an action name what they receive, and a clock receives
+nothing.
+
+## What a block holds
+
+**A block is everything tied to its trigger:** a route's request, a clock's tick, a file
+handler's file, an action's input. What reads from the trigger is the block's, and so is every
+write and call placed in it, whether or not it reads the trigger:
+
+```holon
+flow hits
+port 8204
+
+route GET /hit (req) {
+  hits = (state.hits ?? 0) + 1
+  state.hits = hits
+  respond "hit {hits}"
+}
+```
+
+`state.hits = hits` never looks at the request, and is still the route's: the write is tied to
+the request. The tie is never read; it only has to be there.
+
+**`after x` ties a statement to `x` instead.** Its writes and calls happen once `x` has a value in
+the run, and not at all when `x` has none:
+
+```holon
+flow first-seen
+port 8205
+collection notes
+
+route POST /notes/:id (req) {
+  id = req.params.id
+  found = notes[id]
+  state.seen = id after found
+  respond found, missing: 404
+}
+```
+
+`state.seen` is written only when the note was found. `x` is any value in the block; `holon fmt`
+binds it to a name before the statement, and drops `after` when it names the block's own
+trigger. A holon with a write inside it is tied as a write is (`bump() after found`); a holon
+that only computes takes no `after`. The run still commits as one, its writes at its end.
+
+**A statement tied to nothing is a mistake.** A binding nothing uses and that reads nothing of the
+block (`t = now` in a route) wouldn't be part of it. The mistake says what would tie it: in a
+route, use the request in it, or move it to a flow of its own; in a clock, write something with
+it.
+
+## Flows without handlers
+
+A flow with no handler is one body of statements, one run of all of it. Its writes are tied to
+nothing, and run with the run. With `every`, the server runs it on that interval:
 
 ```holon
 flow tick
@@ -301,9 +409,17 @@ deployed aren't new; files that arrive while the server is down or the deploymen
 their runs when it is back; a file the flow's own runs wrote into the folder doesn't start it
 again.
 
-A flow without routes, `every` or `on file` is a building block: it can be placed in another flow as
-a holon. Its outputs are its values that nothing uses, which is why an expression statement is
-allowed here, and only here.
+Several `on file` lines may each start it: `ingress` is then the handle of whichever file started
+the run, its `event` `new`, `changed` or `deleted`.
+
+A flow without handlers that reads `ingress`, and has neither header, runs by hand: `ingress` is
+the text it was sent. A flow with none of these starts nothing, and deploying it is refused: to
+run it by hand, put its statements in `action run (input) { … }`. Such a flow is a building block,
+a holon to place in other flows. Its outputs are its values that nothing uses, which is why an
+expression statement is allowed here, and only here.
+
+`every` and `on file` headers belong to flows without handlers: beside a route or an action, they
+are a mistake that names the block to write instead.
 
 ## Holons
 
@@ -451,12 +567,17 @@ broken.holon:5:11: unknown name "nope"
 | `notes` is not a declared collection | the name |
 | `http.*`'s host must be written as text | the host |
 | `state.k` written twice | both writes |
-| `respond` outside a route, or more than one `respond` | the statement |
+| `respond` outside a route or an action, or more than one `respond` | the statement |
+| an action answers with a value alone | the `status:`, `missing:`, `headers:` or `stream:` |
+| a period, a file line or an action name written twice | the second block's header |
+| an `every` or `on file` header beside handlers | the header |
+| `after` on a statement with no write or call | the statement |
 | `map` gives its function `n` inputs; this one takes `m` | the function |
 | a holon's input never used, output never bound, or bound twice | the port or binding |
 | two routes share a value | the shared binding |
 | two routes clash; not a method; not a route path | the route header |
-| this isn't wired to the route's request | the statement |
+| a flow named by `calls` that is already a name, named twice, used bare, bound over, or called with two inputs | the header, the name or the extra input |
+| this isn't wired to the route's request (or the block's trigger) | the statement |
 
 ## The wiring form
 

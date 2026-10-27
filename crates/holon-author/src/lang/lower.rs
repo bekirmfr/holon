@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
-use holon_core::{interface_of, PASSES_EXTRA, VARIADIC};
+use holon_core::{interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
 use serde_json::json;
 
 use super::ast::*;
@@ -80,6 +80,12 @@ const RESERVED: &[&str] = &[
     "parse_json",
 ];
 
+/// The name a flow's actions are called by (`calls billing-v2`, `billing_v2.charge(x)`): its slug
+/// with `-` as `_`.
+pub(crate) fn call_noun(flow: &str) -> String {
+    flow.replace('-', "_")
+}
+
 /// Plain names for two leaves, read as English.
 fn alias(name: &str) -> &str {
     match name {
@@ -87,6 +93,11 @@ fn alias(name: &str) -> &str {
         "parse_json" => "json_parse",
         n => n,
     }
+}
+
+/// An `on file` line as the log names its handler: `on file inbox deleted`.
+fn file_label(f: &FileOn) -> String {
+    holon_core::FileTrigger { folder: f.folder.clone(), deleted: f.deleted, matching: f.matching.clone().unwrap_or_default() }.label()
 }
 
 /// Whether an `http_stream` node pipes its answer to a channel (`updates.pipe(…)`), rather than
@@ -98,7 +109,8 @@ fn piped(d: &crate::canvas::NodeData) -> bool {
 /// Inputs a node works without, left unwired (routes.rs `is_optional_input`, core's
 /// `has_optional_ports`).
 fn is_optional(leaf: &str, input: &str) -> bool {
-    matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
+    input == TRIGGER
+        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
 }
 
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
@@ -170,6 +182,12 @@ enum FrameKind {
     Flow { has_routes: bool },
     /// A route's block: its request node, and where it responded.
     Route { request: String, responded: Option<Span> },
+    /// An `every` block: its tick node, whose `now` is the time of the tick.
+    Every { tick: String },
+    /// An `on file` block: the name of the file's handle, which `ingress` would be in the old form.
+    OnFile { file: String },
+    /// An action's block: its `action` node, the name of what was sent, and where it responded.
+    Action { node: String, input: String, responded: Option<Span> },
     /// A holon's block: its declared outputs, in order, and what each is bound to.
     Holon { declared: Vec<String>, bound: HashMap<String, (Val, Span)>, effects: Vec<(Val, Span)> },
     /// A function's body: the names it uses from around it, in first use, each with its value
@@ -202,6 +220,10 @@ impl Frame {
     }
 }
 
+/// A handler block's trigger node, the nodes it placed, its header's span, and how a stray's
+/// error names the trigger and what to use of it (`the tick`, `now`).
+type Block = (String, Vec<String>, Span, (&'static str, String));
+
 struct Lowerer<'a> {
     b: FlowBuilder,
     defs: HashMap<String, &'a HolonDef>,
@@ -218,6 +240,9 @@ struct Lowerer<'a> {
     /// The channels the header declares (`channel updates`): sent on, and subscribed to as a
     /// route's answer.
     channels: HashSet<String>,
+    /// The flows the header names (`calls billing`), by the noun that calls them (`billing`, or
+    /// `billing_v2` for `billing-v2`): their slugs.
+    calls: HashMap<String, String>,
     /// The streamed call (`http_stream`) the current route's `respond …, stream: true` forwards.
     streamed: Option<String>,
     /// The channel the http call being lowered pipes to (`updates.pipe(http.post(…))`).
@@ -236,6 +261,8 @@ struct Lowerer<'a> {
     /// Each route's request node, the nodes its block placed, and its header's span: a route is
     /// everything wired to its request, so a node left unwired to it would silently fall out.
     routes: Vec<(String, Vec<String>, Span)>,
+    /// Each `every` or `on file` block, likewise.
+    ticks: Vec<Block>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -246,6 +273,7 @@ impl<'a> Lowerer<'a> {
         let on_files = file.headers.iter().filter_map(|h| if let HeaderKind::OnFile(f) = &h.kind { Some(f.clone()) } else { None }).collect();
         let databases = file.headers.iter().filter_map(|h| if let HeaderKind::Database(d) = &h.kind { Some(d.clone()) } else { None }).collect();
         let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
+        let calls = file.headers.iter().filter_map(|h| if let HeaderKind::Calls(f) = &h.kind { Some((call_noun(f), f.clone())) } else { None }).collect();
         let folders = file
             .headers
             .iter()
@@ -254,6 +282,7 @@ impl<'a> Lowerer<'a> {
                 HeaderKind::OnFile(f) => Some(f.folder.clone()),
                 _ => None,
             })
+            .chain(file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o.on.folder.clone()) } else { None }))
             .collect();
         Lowerer {
             b: FlowBuilder::new(),
@@ -265,6 +294,7 @@ impl<'a> Lowerer<'a> {
             folders,
             databases,
             channels,
+            calls,
             streamed: None,
             piping: None,
             on_files,
@@ -275,6 +305,7 @@ impl<'a> Lowerer<'a> {
             spans: BTreeMap::new(),
             lambdas: 0,
             routes: vec![],
+            ticks: vec![],
         }
     }
 
@@ -305,7 +336,48 @@ impl<'a> Lowerer<'a> {
                 return err(name.span, format!("there is a holon \"{}\" already", name.text));
             }
         }
-        let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_)));
+        // A flow of handlers (routes, `every`, `on file` and `action` blocks) keeps its statements in them.
+        let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_) | Item::Every(_) | Item::OnFile(_) | Item::Action(_)));
+        let actions: Vec<&ActionDef> = file.items.iter().filter_map(|i| if let Item::Action(a) = i { Some(a) } else { None }).collect();
+        for (i, a) in actions.iter().enumerate() {
+            if actions[..i].iter().any(|o| o.name.text == a.name.text) {
+                return err(a.head, format!("action {} is written twice: one block per name", a.name.text));
+            }
+        }
+        let blocks: Vec<&EveryDef> = file.items.iter().filter_map(|i| if let Item::Every(e) = i { Some(e) } else { None }).collect();
+        let file_blocks: Vec<&OnFileDef> = file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o) } else { None }).collect();
+        if has_routes
+            && let Some(h) = file.headers.iter().find(|h| matches!(h.kind, HeaderKind::Every { .. } | HeaderKind::Interval(_)))
+        {
+            // The header is the one-handler form's clock: beside handlers it would start nothing.
+            if !(blocks.is_empty() && file_blocks.is_empty()) {
+                return err(h.span, "a flow with `every` or `on file` blocks has its clocks in them: put the clock's statements in an `every … { … }` block");
+            }
+            let beside = if file.items.iter().any(|i| matches!(i, Item::Route(_))) { "routes" } else { "actions" };
+            return err(h.span, format!("this `every` line is the clock of a flow without handlers: beside {beside}, put the clock's statements in an `every … {{ … }}` block"));
+        }
+        for (i, b) in blocks.iter().enumerate() {
+            if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
+                return err(b.head, format!("{} is written twice: one block per period", b.text));
+            }
+        }
+        for (i, b) in file_blocks.iter().enumerate() {
+            if let Some(g) = &b.on.matching
+                && !holon_core::is_glob(g)
+            {
+                return err(b.head, format!("{g:?} isn't a pattern of names: `*` and `?` within a folder, `**/` for any folders, `/` between them"));
+            }
+            if file_blocks[..i].iter().any(|o| o.on == b.on) {
+                return err(b.head, format!("{} is written twice: one block per line", file_label(&b.on)));
+            }
+        }
+        // The header is the one-handler form's file line: beside handlers, the file's run is a block.
+        if let Some(h) = file.headers.iter().find(|h| matches!(h.kind, HeaderKind::OnFile(_)))
+            && has_routes
+        {
+            let HeaderKind::OnFile(f) = &h.kind else { unreachable!() };
+            return err(h.span, format!("a flow with handlers has its triggers in them: put the file's statements in an `{} (f) {{ … }}` block, reading the file as f", file_label(f)));
+        }
         let on_file: Vec<&Header> = file.headers.iter().filter(|h| matches!(h.kind, HeaderKind::OnFile(_))).collect();
         for (i, h) in on_file.iter().enumerate() {
             let HeaderKind::OnFile(f) = &h.kind else { continue };
@@ -317,9 +389,6 @@ impl<'a> Lowerer<'a> {
             if on_file[..i].iter().any(|o| o.kind == h.kind) {
                 return err(h.span, "this `on file` line is written twice");
             }
-        }
-        if let (Some(h), true) = (on_file.first(), has_routes) {
-            return err(h.span, "a flow with routes runs on requests: `on file` is for a flow without routes, whose runs start with a new file");
         }
         self.frames.push(Frame::new(FrameKind::Flow { has_routes }));
         // Top-level statements first (the wiring form's nodes, a flow's body, literal constants),
@@ -342,8 +411,12 @@ impl<'a> Lowerer<'a> {
             }
         }
         for i in &file.items {
-            if let Item::Route(r) = i {
-                self.route(r)?;
+            match i {
+                Item::Route(r) => self.route(r)?,
+                Item::Every(e) => self.every(e)?,
+                Item::OnFile(o) => self.on_file(o)?,
+                Item::Action(a) => self.action(a)?,
+                _ => {}
             }
         }
         // Holons and js nodes nobody placed are still defined (and checked).
@@ -380,6 +453,13 @@ impl<'a> Lowerer<'a> {
                 return err(span, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own");
             }
         }
+        for (tick, created, head, (what, use_)) in &self.ticks {
+            let Some(group) = groups.iter().find(|g| g.contains(tick)) else { continue };
+            if let Some(stray) = created.iter().find(|id| !group.contains(id)) {
+                let span = self.spans.get(stray).copied().unwrap_or(*head);
+                return err(span, format!("this isn't wired to {what}, so it isn't part of the block (a block is everything wired to its trigger): write something with it, or use {use_} in it"));
+            }
+        }
         Ok(Lowered { name, doc, names: self.names, spans: self.spans })
     }
 
@@ -398,12 +478,38 @@ impl<'a> Lowerer<'a> {
                     Consent::Named { name, arg: None } => name.clone(),
                 }),
                 HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
+                HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
         if !optional.is_empty() {
             s.requirements = Some(Requirements { optional: Some(optional), ..Default::default() });
         }
         Ok(s)
+    }
+
+    /// Whether `calls flow` can be a name: a flow's name (letters, digits, `-` and `_`, as a
+    /// deployment's slug is), whose noun is a name of its own, which nothing else in the file has.
+    fn check_calls(&self, flow: &str, span: Span, file: &File) -> R<()> {
+        let noun = call_noun(flow);
+        let name = flow.len() <= 64 && flow.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') && noun.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_');
+        if !name {
+            return err(span, format!("\"{flow}\" isn't a flow's name: letters, digits, - and _, starting with a letter"));
+        }
+        let taken = RESERVED.contains(&noun.as_str())
+            || interface_of(alias(&noun)).is_some()
+            || templates::is_template(&noun)
+            || self.is_def(&noun)
+            || self.store(&noun).is_some()
+            || self.databases.contains(&noun)
+            || self.channels.contains(&noun);
+        if taken {
+            return err(span, format!("\"{noun}\" is already a name here (a keyword, a leaf, a holon or something declared): a flow called by it can't be named so"));
+        }
+        let twice = file.headers.iter().filter(|h| matches!(&h.kind, HeaderKind::Calls(f) if call_noun(f) == noun)).count();
+        if twice > 1 {
+            return err(span, format!("`calls` names \"{noun}\" twice"));
+        }
+        Ok(())
     }
 
     // ── nodes and wires ──────────────────────────────────────────────────────────────────────
@@ -497,6 +603,9 @@ impl<'a> Lowerer<'a> {
         if self.channels.contains(n) {
             return err(name.span, format!("\"{n}\" is a channel; a binding may not shadow it"));
         }
+        if self.calls.contains_key(n) {
+            return err(name.span, format!("\"{n}\" is a flow; a binding may not shadow it"));
+        }
         if self.is_def(n) {
             return err(name.span, format!("\"{n}\" is a holon; a binding may not shadow it"));
         }
@@ -506,7 +615,41 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// A statement, its sinks tied to what `after` names when it has one; the rest are tied to the
+    /// block's trigger when the block ends (`route`, `holon`).
     fn stmt(&mut self, s: &'a Stmt) -> R<()> {
+        let Some(after) = &s.after else { return self.stmt_kind(s) };
+        let before = self.cur().created.len();
+        self.stmt_kind(s)?;
+        let placed: Vec<String> = self.cur().created[before..].to_vec();
+        let sinks: Vec<String> = placed.into_iter().filter(|id| self.untied(id)).collect();
+        if sinks.is_empty() {
+            return err(after.span, "`after` ties a write or a call to what it names: this statement makes none");
+        }
+        let v = self.expr(after)?;
+        for id in &sinks {
+            self.connect(&v, id, TRIGGER, after.span)?;
+        }
+        Ok(())
+    }
+
+    /// Whether node `id` takes a trigger (a sink, or a holon with one) that nothing feeds yet.
+    fn untied(&self, id: &str) -> bool {
+        self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER))
+            && !self.b.is_wired(id, TRIGGER)
+            && !self.cur().wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER)
+    }
+
+    /// Every sink placed in this block and not tied by `after`, tied to `v`: the block's trigger.
+    fn tie_block(&mut self, v: &Val, span: Span) -> R<bool> {
+        let untied: Vec<String> = self.cur().created.iter().filter(|id| self.untied(id)).cloned().collect();
+        for id in &untied {
+            self.connect(v, id, TRIGGER, span)?;
+        }
+        Ok(!untied.is_empty())
+    }
+
+    fn stmt_kind(&mut self, s: &'a Stmt) -> R<()> {
         match &s.kind {
             StmtKind::Bind { name, value } => {
                 // In a holon, a declared output is bound here.
@@ -568,7 +711,9 @@ impl<'a> Lowerer<'a> {
             StmtKind::Expr(e) => {
                 let v = self.expr(e)?;
                 let top_without_routes = matches!(self.cur().kind, FrameKind::Flow { has_routes: false });
-                if v.effectful() || top_without_routes {
+                // A call to another flow's action is made for what it does, whatever it answers.
+                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| d.name == "flow_call"));
+                if v.effectful() || a_call || top_without_routes {
                     return self.effect(v, s.span);
                 }
                 err(s.span, "a value nobody uses: bind it, or remove it")
@@ -660,6 +805,13 @@ impl<'a> Lowerer<'a> {
     }
 
     fn respond(&mut self, args: &'a [Arg], span: Span) -> R<()> {
+        if let FrameKind::Action { node, responded, .. } = &self.cur().kind {
+            if let Some(first) = responded {
+                return err(span, format!("more than one respond in the action (the first is on line {})", first.start.line));
+            }
+            let node = node.clone();
+            return self.answer(&node, args, span);
+        }
         let request = match &self.cur().kind {
             FrameKind::Route { request, responded } => {
                 if let Some(first) = responded {
@@ -782,6 +934,30 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// `respond v` in an action: its answer, the value alone. An action is run through Holon, not
+    /// HTTP, so it has no status, headers or stream: the respond's envelope is a 200 whose body is
+    /// the answer.
+    fn answer(&mut self, action: &str, args: &'a [Arg], span: Span) -> R<()> {
+        if let Some(n) = args.iter().find_map(|a| a.name.as_ref()) {
+            return err(n.span, "an action answers with a value alone: status:, missing:, headers: and stream: are a route's");
+        }
+        let value = match args {
+            [one] => &one.value,
+            [] => return err(span, "respond gives the action's answer: respond with a value"),
+            [_, second, ..] => return err(second.value.span, "respond takes one value"),
+        };
+        let v = self.expr(value)?;
+        let node = self.node("respond", &[("status".to_string(), "200".to_string()), ("missing".to_string(), "404".to_string())], span)?;
+        let Val::Out { id, .. } = &node else { unreachable!() };
+        let id = id.clone();
+        self.b.wire(action, "input", &id, "request").or_else(|e| err(span, e))?;
+        self.connect(&v, &id, "body", value.span)?;
+        if let FrameKind::Action { responded, .. } = &mut self.frame().kind {
+            *responded = Some(span);
+        }
+        Ok(())
+    }
+
     /// The `http_stream` node `e` is the body of (`sent.body`, `sent` bound to one), if it is.
     fn streamed_call(&self, e: &Expr) -> Option<String> {
         let ExprKind::Field { base, name } = &e.kind else { return None };
@@ -837,6 +1013,16 @@ impl<'a> Lowerer<'a> {
         for s in &r.body {
             self.stmt(s)?;
         }
+        // Every sink of the route is tied to its request (docs/L4s/triggers-L4.md §3).
+        let request = self.cur().env.get(&r.request.text).cloned().filter(|v| matches!(v, Val::Out { .. }));
+        let request = match request {
+            Some(Val::Out { id, outputs, .. }) => Val::Out { port: outputs.iter().position(|p| p.name == "request").unwrap_or(0), id, outputs, explicit: true },
+            _ => self.out(&match &self.cur().kind {
+                FrameKind::Route { request, .. } => request.clone(),
+                _ => unreachable!("a route's frame"),
+            }),
+        };
+        self.tie_block(&request, r.method.span.to(r.path.span))?;
         let frame = self.frames.pop().expect("the route's frame");
         // A streamed call is forwarded to the caller: the route says so where it answers.
         let streams: Vec<&String> = frame.created.iter().filter(|id| self.b.data(id).is_some_and(|d| d.name == "http_stream" && !piped(d))).collect();
@@ -856,6 +1042,95 @@ impl<'a> Lowerer<'a> {
         if responded.is_none() && !has_effect && !frame.wiring_form {
             return err(r.method.span.to(r.path.span), "the route answers nothing: add a respond (or an effect, answered 204)");
         }
+        Ok(())
+    }
+
+    /// `every 2s { … }`: a clock handler. Its tick node is its trigger, `now` in it the tick's time,
+    /// and its sinks are tied to it (docs/L4s/triggers-L4.md §2, §3).
+    fn every(&mut self, e: &'a EveryDef) -> R<()> {
+        let seconds = if e.seconds.fract() == 0.0 && e.seconds >= 1.0 { number_text(e.seconds) } else { String::new() };
+        crate::templates::period(&seconds).or_else(|_| err(e.head, format!("every {}: a clock runs every whole number of seconds, from 1s to 366d", e.text)))?;
+        let tick = self.node("every", &[("seconds".to_string(), seconds)], e.head)?;
+        let Val::Out { id, .. } = &tick else { unreachable!() };
+        let id = id.clone();
+        let mut frame = Frame::new(FrameKind::Every { tick: id.clone() });
+        frame.created.push(id.clone());
+        self.frames.push(frame);
+        for s in &e.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: a clock answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        let tied = self.tie_block(&tick, e.head)?;
+        let frame = self.frames.pop().expect("the block's frame");
+        if !tied {
+            return err(e.head, "the block does nothing: write something in it (state, a collection, a channel)");
+        }
+        self.ticks.push((id, frame.created, e.head, ("the tick", "now".into())));
+        Ok(())
+    }
+
+    /// `on file inbox (f) { … }`: a file handler. Its `on_file` node is its trigger, `f` in it the
+    /// file's handle, and its sinks are tied to it (docs/L4s/triggers-L4.md §2, §3).
+    fn on_file(&mut self, o: &'a OnFileDef) -> R<()> {
+        let mut params = vec![("folder".to_string(), o.on.folder.clone())];
+        if o.on.deleted {
+            params.push(("on".into(), "deleted".into()));
+        }
+        if let Some(m) = &o.on.matching {
+            params.push(("matching".into(), m.clone()));
+        }
+        let file = self.node("on_file", &params, o.head)?;
+        let Val::Out { id, .. } = &file else { unreachable!() };
+        let id = id.clone();
+        // A handle: written to a folder, it is copied; sent, it goes by handle.
+        self.arrivals.insert(id.clone());
+        self.names.insert(id.clone(), o.file.text.clone());
+        self.check_name_free(&o.file)?;
+        let mut frame = Frame::new(FrameKind::OnFile { file: o.file.text.clone() });
+        frame.created.push(id.clone());
+        frame.env.insert(o.file.text.clone(), file.clone());
+        self.frames.push(frame);
+        for s in &o.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: a file's run answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        let tied = self.tie_block(&file, o.head)?;
+        let frame = self.frames.pop().expect("the block's frame");
+        if !tied {
+            return err(o.head, "the block does nothing: write something in it (a folder, state, a channel)");
+        }
+        self.ticks.push((id, frame.created, o.head, ("the file", o.file.text.clone())));
+        Ok(())
+    }
+
+    /// `action reset (input) { … }`: an action, run by hand by its name. Its `action` node is its
+    /// trigger, `input` in it what was sent, and its sinks are tied to it (docs/L4s/triggers-L4.md
+    /// §2, §3); `respond v` answers.
+    fn action(&mut self, a: &'a ActionDef) -> R<()> {
+        crate::templates::action_name(&[WParam::frozen("name", &a.name.text)]).or_else(|e| err(a.name.span, e))?;
+        let node = self.node("action", &[("name".to_string(), a.name.text.clone())], a.head)?;
+        let Val::Out { id, .. } = &node else { unreachable!() };
+        let id = id.clone();
+        self.names.insert(id.clone(), a.input.text.clone());
+        self.check_name_free(&a.input)?;
+        let mut frame = Frame::new(FrameKind::Action { node: id.clone(), input: a.input.text.clone(), responded: None });
+        frame.created.push(id.clone());
+        frame.env.insert(a.input.text.clone(), node.clone());
+        self.frames.push(frame);
+        for s in &a.body {
+            self.stmt(s)?;
+        }
+        let tied = self.tie_block(&node, a.head)?;
+        let frame = self.frames.pop().expect("the block's frame");
+        let FrameKind::Action { responded, .. } = frame.kind else { unreachable!() };
+        if responded.is_none() && !tied {
+            return err(a.head, "the action does nothing: respond with something, or write something (state, a collection, a channel)");
+        }
+        self.ticks.push((id, frame.created, a.head, ("what was sent", a.input.text.clone())));
         Ok(())
     }
 
@@ -908,7 +1183,17 @@ impl<'a> Lowerer<'a> {
             }
         }
         self.frames.push(frame);
-        let result = self.holon_body(def);
+        let mut result = self.holon_body(def);
+        // Its sinks are tied to its trigger: the input named so when it declares one, else one it
+        // gets last, which a placement ties to the block it is placed in. (The wiring form is the
+        // graph as written: a tie there is a wire, `in.trigger -> w.trigger`, so nothing is added.)
+        let mut implicit_trigger = false;
+        if result.is_ok() && !self.cur().wiring_form {
+            match self.tie_block(&Val::In(TRIGGER.into()), def.name.span) {
+                Ok(tied) => implicit_trigger = tied && !def.inputs.iter().any(|p| p.name.text == TRIGGER),
+                Err(e) => result = Err(e),
+            }
+        }
         let frame = self.frames.pop().expect("the holon's frame");
         self.in_progress.remove(name);
         result?;
@@ -966,7 +1251,10 @@ impl<'a> Lowerer<'a> {
                 wiring_out.push((id.clone(), output, pname.clone()));
                 outputs.push(HolonPort { name: pname, unit: None });
             }
-            let inputs: Vec<HolonPort> = def.inputs.iter().map(|p| HolonPort { name: p.name.text.clone(), unit: p.unit.clone() }).collect();
+            let mut inputs: Vec<HolonPort> = def.inputs.iter().map(|p| HolonPort { name: p.name.text.clone(), unit: p.unit.clone() }).collect();
+            if implicit_trigger {
+                inputs.push(HolonPort { name: TRIGGER.into(), unit: None });
+            }
             // Inputs in declared order, as the boundary lists them.
             wiring_in.sort_by_key(|(port, _, _)| inputs.iter().position(|p| p.name == *port));
             self.b.end_holon_exact(name, &inputs, &outputs, &wiring_in, &wiring_out).or_else(|e| err(def.name.span, e))?
@@ -1053,14 +1341,16 @@ impl<'a> Lowerer<'a> {
     fn place(&mut self, name: &Name, args: &'a [Arg], span: Span) -> R<Val> {
         let h = self.holon(&name.text, name.span)?;
         let mut given: Vec<Option<&'a Expr>> = vec![None; h.inputs.len()];
+        // Positional arguments fill the inputs in order, the trigger aside: the block ties it.
+        let fillable: Vec<usize> = (0..h.inputs.len()).filter(|&k| h.inputs[k].name != TRIGGER).collect();
         let mut positional = 0;
         for a in args {
             match &a.name {
                 None => {
-                    if positional >= h.inputs.len() {
-                        return err(a.value.span, format!("\"{}\" takes {} inputs", name.text, h.inputs.len()));
-                    }
-                    given[positional] = Some(&a.value);
+                    let Some(&k) = fillable.get(positional) else {
+                        return err(a.value.span, format!("\"{}\" takes {} inputs", name.text, fillable.len()));
+                    };
+                    given[k] = Some(&a.value);
                     positional += 1;
                 }
                 Some(n) => match h.inputs.iter().position(|p| p.name == n.text) {
@@ -1074,6 +1364,7 @@ impl<'a> Lowerer<'a> {
             .inputs
             .iter()
             .zip(&given)
+            .filter(|(p, g)| g.is_some() || p.name != TRIGGER)
             .map(|(p, g)| match g {
                 Some(e) => Ok((p.name.clone(), self.expr(e)?)),
                 None => err(span, format!("\"{}\": the input \"{}\" can't be left out", name.text, p.name)),
@@ -1158,6 +1449,8 @@ impl<'a> Lowerer<'a> {
             ExprKind::Secret(n) => self.node("secret", &[("name".into(), n.clone())], e.span),
             ExprKind::State(k) => self.node("store_read", &[("key".into(), k.clone())], e.span),
             ExprKind::Noun(Noun::Ingress) => self.ingress(e.span),
+            // In an `every` block, `now` is the time of its tick.
+            ExprKind::Noun(Noun::Now) if let FrameKind::Every { tick } = &self.cur().kind => Ok(self.out(&tick.clone())),
             ExprKind::Noun(n) => self.node(if *n == Noun::Now { "clock" } else { "random" }, &[], e.span),
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
             ExprKind::Method { receiver, method, args } => self.method(receiver, method, args, e.span),
@@ -1262,6 +1555,9 @@ impl<'a> Lowerer<'a> {
         if self.channels.contains(n) {
             return err(span, format!("\"{n}\" is a channel: send on it with {n}.send(…); a route answers with respond {n}.subscribe()"));
         }
+        if self.calls.contains_key(n) {
+            return err(span, format!("\"{n}\" is a flow: run one of its actions, {n}.action(input)"));
+        }
         if interface_of(alias(n)).is_some() || templates::is_template(n) {
             return err(span, format!("\"{n}\" is a leaf: call it, {n}(…)"));
         }
@@ -1272,6 +1568,16 @@ impl<'a> Lowerer<'a> {
     /// files, the file's handle: its `on file` line's `file_arrival`, or with several, whichever
     /// started the run (a `coalesce` of them, in the order written: only that one has a value).
     fn ingress(&mut self, span: Span) -> R<Val> {
+        // In an `on file` block the file has its own name, in an action what was sent.
+        let block = self.frames.iter().rev().take_while(|f| !matches!(f.kind, FrameKind::Holon { .. })).find_map(|f| match &f.kind {
+            FrameKind::OnFile { file } => Some(format!("in an `on file` block the file is {file}: use {file} in place of ingress")),
+            FrameKind::Every { .. } => Some("a clock's run receives nothing: `now` in it is the time of the tick (ingress is a flow's run by hand)".to_string()),
+            FrameKind::Action { input, .. } => Some(format!("in an action what was sent is {input}: use {input} in place of ingress")),
+            _ => None,
+        });
+        if let Some(message) = block {
+            return err(span, message);
+        }
         let mut chain: Option<Val> = None;
         for f in self.on_files.clone() {
             let mut params = vec![("folder".to_string(), f.folder)];
@@ -1589,6 +1895,18 @@ impl<'a> Lowerer<'a> {
                 }
                 other => err(method.span, format!("a channel has no \"{other}\": send(…), pipe(http.post(…)), or respond {c}.subscribe() in a route")),
             },
+            // `billing.charge(x)`: run the action `charge` of the flow `billing`, sending x.
+            c if self.calls.contains_key(c) => {
+                if method.text.len() > 64 {
+                    return err(method.span, "an action's name is at most 64 characters");
+                }
+                if args.len() > 1 {
+                    return err(args[1].value.span, format!("an action takes one input: {c}.{}(x), with x a record to send more", method.text));
+                }
+                let flow = self.calls[c].clone();
+                let (inputs, params) = leaf("flow_call");
+                self.unit_call("flow_call", &inputs, &params, &[("flow".to_string(), flow), ("action".to_string(), method.text.clone())], args, span)
+            }
             c if ["get", "put", "delete", "list"].contains(&method.text.as_str()) => {
                 err(receiver.span, format!("\"{c}\" is not a declared collection (add `collection {c}` to the header)"))
             }
@@ -1809,6 +2127,8 @@ impl<'a> Lowerer<'a> {
         let mut function: Option<(usize, Vec<Val>, Span)> = None;
         let mut positional = 0;
         let zero_input = inputs.is_empty();
+        // A sink's trigger, last, is never an argument in order: the block or `after` ties it.
+        let fillable = if inputs.last().is_some_and(|p| p.name == TRIGGER) { inputs.len() - 1 } else { inputs.len() };
         for a in args {
             match &a.name {
                 None if zero_input => {
@@ -1819,12 +2139,12 @@ impl<'a> Lowerer<'a> {
                     params.push((p.name().to_string(), self.literal_text(&a.value)?));
                 }
                 None => {
-                    if positional < inputs.len() {
+                    if positional < fillable {
                         given[positional] = Some(&a.value);
                     } else if variadic {
                         extra.push(&a.value);
                     } else {
-                        return err(a.value.span, format!("\"{leaf}\" takes {} inputs, {} given", inputs.len(), positional + 1));
+                        return err(a.value.span, format!("\"{leaf}\" takes {fillable} inputs, {} given", positional + 1));
                     }
                     positional += 1;
                 }
@@ -2218,6 +2538,207 @@ pub(crate) mod tests {
         assert_eq!(outs, ["receipt", "put", "write"]);
     }
 
+    /// A route's sinks are tied to its request; `after x` ties a statement's to x instead; a
+    /// holon's to its own trigger, an input it gets last, which the block placing it ties.
+    #[test]
+    fn sinks_are_tied_to_their_block_or_to_what_after_names() {
+        let src = "collection c\n\nholon keep(v) -> saved {\n  saved = state.set(last, v)\n}\n\nroute POST /v/:id (req) {\n  id = req.params.id\n  put = c.put(id, 1)\n  state.last = id after put\n  keep(id)\n  respond id\n}";
+        let d = compiled(src).doc;
+        let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
+        let tie = |leaf: &str| {
+            let n = d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+            let w = d.edges.iter().find(|w| w.target == n.id && w.input() == TRIGGER).unwrap_or_else(|| panic!("{leaf} is tied"));
+            (node(&w.source).data.name.clone(), w.output().to_string())
+        };
+        assert_eq!(tie("collection_put"), ("request".into(), "request".into()));
+        assert_eq!(tie("store_write"), ("collection_put".into(), "out".into()), "after put");
+        assert_eq!(tie("keep"), ("request".into(), "request".into()), "the placed holon");
+        let keep = d.nodes.iter().find(|n| n.data.name == "keep").unwrap();
+        assert_eq!(keep.data.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["v", TRIGGER]);
+        // One that declares its trigger uses it; a holon with no sink takes none.
+        let d = compiled("holon keep(v, trigger) -> saved {\n  saved = state.set(last, v)\n}\nholon twice(n) -> m {\n  m = n * 2\n}\nkeep(twice(1), trigger: 2)").doc;
+        let ins = |name: &str| d.nodes.iter().find(|n| n.data.name == name).unwrap().data.inputs.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        assert_eq!(ins("keep"), ["v", TRIGGER]);
+        assert_eq!(ins("twice"), ["n"]);
+        // `after` on a statement with nothing to tie is said.
+        assert!(error("route GET /a (req) {\n  n = 1 after req\n  respond n\n}").2.contains("this statement makes none"));
+    }
+
+    /// `calls billing` names a flow whose actions this one runs: `billing.charge(x)` is a
+    /// `flow_call{flow, action}` tied to the block's trigger as any sink is, which asks for
+    /// `RunsAction("billing/charge")` (docs/L4s/triggers-L4.md §9, slice 6). A slug's `-` is `_`
+    /// in the call.
+    #[test]
+    fn calls_run_another_flows_action_tied_to_the_block() {
+        let d = compiled("calls billing-v2\nroute POST /p (req) {\n  r = billing_v2.charge({ amount: req.json.total })\n  respond r.answer\n}\n").doc;
+        let call = d.nodes.iter().find(|n| n.data.name == "flow_call").expect("the call");
+        assert_eq!((call.param("flow"), call.param("action")), ("billing-v2", "charge"));
+        let request = d.nodes.iter().find(|n| n.is_template("request")).unwrap();
+        let tie = d.edges.iter().find(|w| w.target == call.id && w.input() == TRIGGER).map(|w| w.source.clone());
+        assert_eq!(tie, Some(request.id.clone()), "tied to the request, though it reads none of it");
+        // Nothing sent is `{}`; `after` ties a call to a value, and a lone call is a statement.
+        let d = compiled("calls billing\ncollection c\nroute POST /p (req) {\n  found = c[req.body]\n  billing.reset() after found\n  respond 204\n}\n").doc;
+        let call = d.nodes.iter().find(|n| n.data.name == "flow_call").unwrap();
+        assert!(!d.edges.iter().any(|w| w.target == call.id && w.input() == "input"), "no input wired");
+        let found = d.nodes.iter().find(|n| n.data.name == "collection_get").unwrap();
+        assert!(d.edges.iter().any(|w| w.target == call.id && w.input() == TRIGGER && w.source == found.id), "after the lookup");
+        // A name that is already a name, a name twice, a bare noun, a binding on it.
+        assert_eq!(error("calls route\nroute GET /a (req) {\n  respond 1\n}").2, "\"route\" is already a name here (a keyword, a leaf, a holon or something declared): a flow called by it can't be named so");
+        assert_eq!(error("calls a\ncalls a\nroute GET /a (req) {\n  respond 1\n}").2, "`calls` names \"a\" twice");
+        assert_eq!(error("calls a\nroute GET /a (req) {\n  respond a\n}").2, "\"a\" is a flow: run one of its actions, a.action(input)");
+        assert_eq!(error("calls a\nroute GET /a (req) {\n  a = 1\n  respond a\n}").2, "\"a\" is a flow; a binding may not shadow it");
+        assert_eq!(error("calls a\nroute GET /a (req) {\n  respond a.go(1, 2)\n}").2, "an action takes one input: a.go(x), with x a record to send more");
+        // `calls` is a name anywhere else.
+        compiled("route GET /a (req) {\n  calls = 1\n  respond calls + req.query.n\n}");
+    }
+
+    /// A clock, a file handler or an action whose only work is a call is a handler: the call is
+    /// made for what it does, whatever it answers.
+    #[test]
+    fn a_block_of_calls_alone_is_a_handler() {
+        let d = compiled("calls billing\nevery 1h {\n  billing.reset()\n}\n").doc;
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), vec!["every 1h"]);
+        let d = compiled("calls billing\naction run (input) {\n  r = billing.charge(input)\n  respond r\n}\n").doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.actions.len(), 1);
+    }
+
+    /// `every 2s { … }` is a clock handler: its tick node, everything wired to it, its sinks tied
+    /// to the tick, and `now` in it the tick's time (docs/L4s/triggers-L4.md §2, §3).
+    #[test]
+    fn every_blocks_are_clock_handlers_tied_to_their_tick() {
+        let d = compiled("channel ticks\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n  ticks.send(now)\n}\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n").doc;
+        let every = d.nodes.iter().find(|n| n.is_template("every")).expect("the tick");
+        assert_eq!(every.param("seconds"), "2");
+        assert!(!d.nodes.iter().any(|n| n.data.name == "clock"), "now in a block is the tick's");
+        let from = |leaf: &str, input: &str| {
+            let n = d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+            d.edges.iter().find(|w| w.target == n.id && w.input() == input).map(|w| (w.source.clone(), w.output().to_string()))
+        };
+        let tick = Some((every.id.clone(), "now".to_string()));
+        assert_eq!(from("store_write", TRIGGER), tick, "the write is tied to the tick");
+        assert_eq!(from("channel_send", TRIGGER), tick);
+        assert_eq!(from("channel_send", "pack"), tick, "now");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!((server.endpoints.len(), server.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>()), (1, vec!["every 2s"]));
+        // A flow of clocks alone is a server with no port.
+        let d = compiled("every 1h {\n  state.n = (state.n ?? 0) + 1\n}\n").doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.routes.len(), read.clocks[0].seconds), (None, 0, 3600));
+
+        assert_eq!(error("every 2s {\n  respond 1\n}"), (2, 3, "respond belongs in a route: a clock answers nobody".into()));
+        assert_eq!(error("every 2s {\n  n = now\n}").2, "the block does nothing: write something in it (state, a collection, a channel)");
+        assert_eq!(error("every 1.5s {\n  state.n = 1\n}").2, "every 1.5s: a clock runs every whole number of seconds, from 1s to 366d");
+        assert_eq!(error("every 2s {\n  state.a = now\n}\nevery 2s {\n  state.b = now\n}").2, "2s is written twice: one block per period");
+        assert!(error("every 10s\nevery 2s {\n  state.n = now\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
+        assert_eq!(error("every 2s {\n  state.n = ingress\n}").2, "a clock's run receives nothing: `now` in it is the time of the tick (ingress is a flow's run by hand)");
+        // The header form's clock beside handlers would start nothing: refused, naming the block.
+        assert_eq!(
+            error("every 10s\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}").2,
+            "this `every` line is the clock of a flow without handlers: beside routes, put the clock's statements in an `every … { … }` block"
+        );
+        assert_eq!(
+            error("every 10s\n\naction reset (input) {\n  state.n = 0\n}").2,
+            "this `every` line is the clock of a flow without handlers: beside actions, put the clock's statements in an `every … { … }` block"
+        );
+        // A write that reads nothing of the tick is still the block's: tied to it.
+        let d = compiled("every 2s {\n  state.n = 1\n}\n").doc;
+        assert!(d.edges.iter().any(|w| w.source.starts_with("every") && w.input() == TRIGGER));
+    }
+
+    /// `action reset (input) { … }` is an action: its `action` node, everything wired to it, its
+    /// sinks tied to what was sent, `respond v` its answer (docs/L4s/triggers-L4.md §2, §3).
+    #[test]
+    fn action_blocks_are_actions_tied_to_what_was_sent() {
+        let src = "action reset (input) {\n  state.ticks = input.to ?? 0\n  respond { was: state.ticks ?? 0 }\n}\naction note (n) {\n  state.note = n\n}\nroute GET /n (req) {\n  respond state.ticks ?? 0\n}\n";
+        let d = compiled(src).doc;
+        let actions: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("action")).collect();
+        assert_eq!(actions.iter().map(|n| n.param("name")).collect::<Vec<_>>(), ["reset", "note"]);
+        let into = |id: &str, input: &str| d.edges.iter().find(|w| w.target == id && w.input() == input).map(|w| (w.source.clone(), w.output().to_string()));
+        let sent = Some((actions[0].id.clone(), "input".to_string()));
+        let writes: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.data.name == "store_write").collect();
+        assert_eq!(into(&writes[0].id, TRIGGER), sent, "the write is tied to what was sent");
+        let respond = d.nodes.iter().find(|n| n.is_template("respond") && into(&n.id, "request") == sent).expect("the action's respond");
+        assert_eq!((respond.param("status"), respond.param("missing")), ("200", "404"));
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.actions.iter().map(|a| a.label.as_str()).collect::<Vec<_>>(), ["action reset", "action note"]);
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.routes.len(), read.actions.len()), (Some(8080), 1, 2));
+        // A flow of actions alone listens on no port.
+        let d = compiled("action reset (input) {\n  state.n = 0\n}\n").doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
+
+        assert_eq!(error("action a (input) {\n  respond 1, status: 201\n}").2, "an action answers with a value alone: status:, missing:, headers: and stream: are a route's");
+        assert_eq!(error("action a (input) {\n  n = input\n}").2, "the action does nothing: respond with something, or write something (state, a collection, a channel)");
+        assert_eq!(error("action a (input) {\n  state.n = ingress\n}").2, "in an action what was sent is input: use input in place of ingress");
+        // An `on file` line beside actions: they are blocks, and the file's run goes in one too.
+        assert!(error("on file inbox\n\naction a (input) {\n  state.n = 0\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file inbox (f) { … }` block"));
+        assert!(error("on file inbox\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file inbox (f) { … }` block"));
+        assert_eq!(error("action a (x) {\n  state.a = x\n}\naction a (y) {\n  state.b = y\n}").2, "action a is written twice: one block per name");
+        assert_eq!(error("action a (input) {\n  respond 1\n  respond 2\n}").2, "more than one respond in the action (the first is on line 2)");
+        // An answer that reads nothing of what was sent is still the action's.
+        assert!(compile("action ping (input) {\n  respond \"pong\"\n}\n").is_ok());
+    }
+
+    /// `on file drop (f) { … }` is a file handler: its `on_file` node, everything wired to it,
+    /// its sinks tied to the file, and `f` the file's handle (docs/L4s/triggers-L4.md §2, §3).
+    #[test]
+    fn on_file_blocks_are_file_handlers_tied_to_their_file() {
+        let src = "folder done\nchannel drops\non file drop (f) {\n  drops.send(f.name)\n  done[f.name] = f\n}\non file drop deleted matching \"*.csv\" (gone) {\n  state.last = gone.name\n}\nroute GET /n (req) {\n  respond state.last\n}\n";
+        let d = compiled(src).doc;
+        let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_file")).collect();
+        assert_eq!(on.iter().map(|n| (n.param("folder"), n.param("on"), n.param("matching"))).collect::<Vec<_>>(), [("drop", "new", ""), ("drop", "deleted", "*.csv")]);
+        assert!(!d.nodes.iter().any(|n| n.data.name == "file_arrival"), "f in a block is its on_file node's");
+        let from = |leaf: &str, input: &str| {
+            let n = d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+            d.edges.iter().find(|w| w.target == n.id && w.input() == input).map(|w| (w.source.clone(), w.output().to_string()))
+        };
+        let file = Some((on[0].id.clone(), "file".to_string()));
+        assert_eq!(from("channel_send", TRIGGER), file, "the send is tied to the file");
+        assert_eq!(from("file_copy", "from"), file, "f is a handle: written to a folder, it is copied");
+        assert_eq!(from("store_write", TRIGGER), Some((on[1].id.clone(), "file".to_string())));
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        let labels: Vec<&str> = server.files.iter().map(|f| f.label.as_str()).collect();
+        assert_eq!((server.endpoints.len(), labels), (1, vec!["on file drop", "on file drop deleted matching \"*.csv\""]));
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.files.len()), (Some(8080), 2));
+        assert!(holon_core::capabilities(unit, &store).contains(holon_core::Capability::FileArrival("drop".into())));
+        // A flow of file handlers alone listens on no port.
+        let d = compiled("on file drop (f) {\n  state.n = f.size\n}\n").doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
+
+        assert_eq!(error("on file a (f) {\n  respond 1\n}"), (2, 3, "respond belongs in a route: a file's run answers nobody".into()));
+        assert_eq!(error("on file a (f) {\n  n = f.name\n}").2, "the block does nothing: write something in it (a folder, state, a channel)");
+        assert_eq!(error("on file a (f) {\n  state.n = ingress\n}").2, "in an `on file` block the file is f: use f in place of ingress");
+        assert_eq!(error("on file a (f) {\n  state.a = f\n}\non file a (g) {\n  state.b = g\n}").2, "on file a is written twice: one block per line");
+        assert!(error("on file a matching \"a**\" (f) {\n  state.a = f\n}").2.contains("isn't a pattern of names"));
+        assert!(error("on file b\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file b (f) { … }` block"));
+        assert!(error("every 10s\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
+        // The header form is unchanged: `ingress` is the file.
+        assert!(leaves(&compiled("on file inbox\nstate.n = ingress.name\n").doc).contains(&"file_arrival".to_string()));
+    }
+
     #[test]
     fn routes_respond_and_their_errors() {
         let d = compiled("route GET /a (req) {\n  respond 204\n}\nroute POST /b (r) resumes paid {\n  respond r.json, status: 201, missing: 400\n}\n").doc;
@@ -2233,10 +2754,15 @@ pub(crate) mod tests {
         assert_eq!(error("route GET /a (req) {\n  respond 1, status: 101\n}"), (2, 22, "a status is a number from 200 to 599".into()), "not an interim one");
         assert_eq!(error("route GET /a (req) {\n  respond \"x\", status: 204\n}"), (2, 11, "a 204 answers with no body".into()));
         assert_eq!(error("route GET /a (req) {\n  1 + 1\n  respond 2\n}"), (2, 3, "a value nobody uses: bind it, or remove it".into()));
-        // A statement that never touches the request isn't in the route's group: said, not dropped.
+        // A write that reads nothing of the request is tied to it by its trigger: a route counts
+        // its hits (docs/L4s/triggers-L4.md §3).
+        let d = compiled("route GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  respond 2\n}").doc;
+        let tie = d.edges.iter().find(|w| w.target.starts_with("store_write") && w.input() == "trigger").expect("the write is tied");
+        assert!(tie.source.starts_with("request") && tie.output() == "request", "{tie:?}");
+        // A value that never touches the request isn't in the route's group: said, not dropped.
         assert_eq!(
-            error("route GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  respond 2\n}"),
-            (2, 17, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own".into())
+            error("route GET /a (req) {\n  n = length([1, 2])\n  respond 2\n}"),
+            (2, 15, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own".into())
         );
         assert_eq!(error("x = 1 + 1\nroute GET /a (req) {\n  respond x\n}"), (1, 1, "routes are separate units; put shared logic in a holon (only a literal may be bound at the top level)".into()));
         // A literal at the top level is placed afresh in each route that uses it.
@@ -2361,7 +2887,7 @@ route POST /n/:who (req) {
         assert_eq!(error("on file inbox\nx = 1\n").2, "`on file` starts a run for each new file, and the run reads it as `ingress`: use `ingress` (its .name, say)");
         assert!(error("on file a\non file a\nx = ingress\n").2.contains("written twice"));
         assert!(error("on file a matching \"a**\"\nx = ingress\n").2.contains("isn't a pattern of names"));
-        assert!(error("port 8000\non file a\nroute GET /x (req) {\n  respond 1\n}\n").2.contains("for a flow without routes"));
+        assert!(error("port 8000\non file a\nroute GET /x (req) {\n  respond 1\n}\n").2.contains("put the file's statements in an `on file a (f) { … }` block"));
         assert_eq!(error("folder a\nh = a.file(\"x\")\nr = http.put(\"h.example.com\", \"/\", body: \"t\", file: h)\n").2, "a call sends a body or a file, not both");
         assert!(leaves(&compiled("on = 1\nx = on + 1\n").doc).contains(&"add".to_string()), "on is still a name elsewhere");
     }

@@ -1,0 +1,20 @@
+flow counter
+port 8155
+collection visits
+
+route GET /hit (req) {
+  hits = (state.hits ?? 0) + 1
+  state.hits = hits
+  respond "hit {hits}"
+}
+
+route POST /visits/:id (req) {
+  id = req.params.id
+  saved = visits.put(id, now)
+  state.last = id after saved
+  respond "visited {id}"
+}
+
+route GET /last (req) {
+  respond state.last ?? "nobody yet"
+}

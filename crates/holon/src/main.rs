@@ -150,6 +150,7 @@ mod activity;
 mod arrivals;
 mod auth;
 mod blobs;
+mod calls;
 mod channels;
 mod claims;
 mod oidc;
@@ -262,7 +263,15 @@ type DynStore = Box<dyn Store + Send>;
 /// same underlying `Mutex`, so they see the same data. See the module doc for why this exists
 /// instead of a `holon-host` change.
 #[derive(Clone)]
-struct SharedStore(Arc<Mutex<DynStore>>);
+struct SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>);
+
+impl SharedStore {
+    /// A handle onto `backend`, which no run can yet reach the other deployments through: the
+    /// server connects that once its table of deployments exists (`calls::Hub::connect`).
+    fn new(backend: DynStore) -> SharedStore {
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default())
+    }
+}
 
 impl Store for SharedStore {
     fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
@@ -347,6 +356,16 @@ impl AppState {
     }
 }
 
+impl Deployment {
+    /// Fire on the scheduler's next pass: its interval, if it has one, and each of its clocks.
+    fn arm_clocks(&mut self, now: SystemTime) {
+        if self.interval_seconds.is_some() {
+            self.next_due = Some(now);
+        }
+        self.clock_due = self.server.as_ref().map(|s| vec![now; s.clocks.len()]).unwrap_or_default();
+    }
+}
+
 /// slug → (port, stop signal) of each running data-plane listener.
 type Listeners = BTreeMap<String, (u16, dataplane::Stop)>;
 
@@ -363,6 +382,9 @@ struct Deployment {
     triggers: Vec<String>,
     interval_seconds: Option<u64>,
     next_due: Option<SystemTime>,
+    /// When each of its server's clocks (`server.clocks`, in order) fires next: due at deploy,
+    /// at load and when it runs again, then a period after each tick.
+    clock_due: Vec<SystemTime>,
     /// A bounded ring buffer (last 20) of clock ticks — see the L4's Fork 2: logged to stdout
     /// *and* kept here, retrievable via `GET /deployments/<slug>/history`, so a standing
     /// deployment is checkable after the fact, not just while someone happens to be watching
@@ -929,7 +951,7 @@ fn serve(args: Vec<String>) {
         Box::new(store)
     };
 
-    let store = SharedStore(Arc::new(Mutex::new(backend)));
+    let store = SharedStore::new(backend);
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let refuse_to_start = |e: String| -> ! {
@@ -1011,6 +1033,7 @@ fn serve(args: Vec<String>) {
     }
     let access = access::Access::new(Arc::clone(&accounts), allow_hosts, allow_origins);
     let activity = activity::Activity::beside(&deployments_arg);
+    store.1.connect(Arc::clone(&deployments), deployments_arg.clone());
     let state = AppState {
         store,
         registry,

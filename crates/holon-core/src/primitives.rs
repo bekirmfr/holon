@@ -615,7 +615,7 @@ fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
 
 /// The primitives that construct an Effect from a payload input (see [`sink_effect`]).
 pub(crate) fn is_sink(name: &str) -> bool {
-    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "collection_put" | "channel_send")
+    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "flow_call" | "collection_put" | "channel_send")
 }
 
 /// The most items one `collection_list` returns.
@@ -802,7 +802,25 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// `http_request` (headers, body). Inside a composite, such a port that *is* wired holds the
 /// node back while its value is absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
-    matches!(name, "http_request" | "http_upload" | "http_stream" | "collection_list" | "file_list" | "file_lines")
+    matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "collection_list" | "file_list" | "file_lines")
+}
+
+/// What a `flow_call` asks the host: `{flow, action, input}`, to run the action `action` of the
+/// deployed flow `flow` with `input` (`{}` when none is wired). `None` when there is nothing valid
+/// to send: a name that isn't a name, or an Effect anywhere in what is sent.
+pub(crate) fn flow_call_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let flow = crate::kind::ident(params, "flow")?;
+    let action = crate::kind::ident(params, "action")?;
+    let input = match inputs.first() {
+        Some(Some(v)) if contains_effect(v) => return None,
+        Some(Some(v)) => v.clone(),
+        _ => Value::Record(BTreeMap::new()),
+    };
+    Some(Value::Record(BTreeMap::from([
+        ("flow".to_string(), Value::Text(flow)),
+        ("action".to_string(), Value::Text(action)),
+        ("input".to_string(), input),
+    ])))
 }
 
 /// The methods `http_request` sends.
@@ -1517,6 +1535,20 @@ mod tests {
         );
         assert_eq!(compute("egress", &[], &[]), None); // no payload ⇒ nothing to construct
     }
+    #[test]
+    fn flow_call_asks_for_the_action_with_what_it_sends() {
+        let params = [p("flow", "billing"), p("action", "charge")];
+        let sent = Value::Record([("amount".to_string(), Value::Number(5.0))].into());
+        let Some(Value::Record(r)) = flow_call_request(&[Some(sent.clone())], &params) else { panic!() };
+        assert_eq!((r["flow"].clone(), r["action"].clone(), r["input"].clone()), (txt("billing"), txt("charge"), sent));
+        // Nothing wired sends `{}`; an Effect, or a name that isn't one, sends nothing.
+        let Some(Value::Record(r)) = flow_call_request(&[None], &params) else { panic!() };
+        assert_eq!(r["input"], Value::Record(BTreeMap::new()));
+        let effect = Value::Effect { sink: "egress".into(), payload: Box::new(Value::Number(1.0)) };
+        assert_eq!(flow_call_request(&[Some(effect)], &params), None);
+        assert_eq!(flow_call_request(&[None], &[p("flow", "a b"), p("action", "x")]), None);
+    }
+
     #[test]
     fn http_request_builds_its_request_from_params_and_inputs() {
         let params = [p("method", "POST"), p("host", "Hooks.Slack.com")];

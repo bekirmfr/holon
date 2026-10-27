@@ -293,6 +293,19 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/likes.holon"),
     },
     Sample {
+        name: "counter",
+        title: "Hit counter (writes run with their route)",
+        description: "A route counts its hits though nothing in it reads the request: its writes are tied to the route's request. Another records the last visitor after the visit is put.",
+        shows: &["a sink's trigger", "after", "state", "collection_put"],
+        port: Some("8155"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "curl http://127.0.0.1:8155/hit twice (\"hit 2\"), curl -X POST http://127.0.0.1:8155/visits/ada, then GET /last (\"ada\")",
+        text: include_str!("../samples/counter.holon"),
+    },
+    Sample {
         name: "witness",
         title: "Run witness",
         description: "Takes the run heads a holon server sends it (holon serve --export-heads), with the witness key: keeps each batch with when it arrived and answers a receipt, so a run log changed afterwards no longer matches what was witnessed.",
@@ -565,6 +578,58 @@ static SAMPLES: &[Sample] = &[
         try_it: "first bind the folders (an admin): holon folder add inbox ~/holon-inbox --read-only, holon folder add outbox ~/holon-outbox --read-only and holon folder add audit ~/holon-audit; deploy, then copy a .csv into ~/holon-inbox, delete a file from it, or drop any file into ~/holon-outbox: within two seconds ~/holon-audit/<folder>/ holds an entry for each change; a .txt dropped into the inbox starts nothing",
         text: include_str!("../samples/file-audit.holon"),
     },
+    Sample {
+        name: "ticker",
+        title: "Ticker (a clock beside routes)",
+        description: "A flow with a clock of its own beside its routes: every 2 seconds (an every block) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the block). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (action reset (input), input what was sent); a person runs it, and an agent only once a person lets agents run it.",
+        shows: &["every blocks", "a clock beside routes", "now in a block", "actions run by hand", "agents running an action", "channels", "state across runs"],
+        port: Some("8156"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far; run reset from the editor's server panel (or POST {\"to\": 0} to /trigger/ticker/reset on the holon server) to set it back, or from the deployed page; to let an agent run it (holon mcp's run tool), tick reset under ⚙ → agents may run, deploy and approve it",
+        text: include_str!("../samples/ticker.holon"),
+    },
+    Sample {
+        name: "drop-board",
+        title: "Drop board (files on a live page)",
+        description: "A flow with file handlers beside its routes: each file that settles in a folder on the host (an on file board (f) block, f the file's handle) counts in its state and goes out on the channel drops, and so does each file removed from it (on file board deleted). Its page lists each one as it happens.",
+        shows: &["on file blocks", "file handlers beside routes", "on file deleted", "channels", "state across runs"],
+        port: Some("8157"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folder (an admin): holon folder add board ~/holon-board --read-only; deploy, open http://127.0.0.1:8157/, then copy any file into ~/holon-board: within two seconds the page shows it, with its size, and deleting it shows that too",
+        text: include_str!("../samples/drop-board.holon"),
+    },
+    Sample {
+        name: "billing",
+        title: "Billing (actions another flow runs)",
+        description: "A flow whose work is two actions, run by name: charge records a charge in a collection and answers its total, refund deletes one. A person runs them from the editor; the sample shop runs them from its routes, a call from one flow to another's action. GET /charges/:id reads a charge back.",
+        shows: &["actions", "actions another flow runs", "a collection", "an action that only writes"],
+        port: Some("8158"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy it first, then the sample shop; run charge from the editor's server panel with {\"id\": \"a1\", \"amount\": 5}, then curl http://127.0.0.1:8158/charges/a1; in the deployed shop, an order's run shows up here as an action run by the flow shop",
+        text: include_str!("../samples/billing.holon"),
+    },
+    Sample {
+        name: "shop",
+        title: "Shop (a flow calling another's actions)",
+        description: "A flow that runs another deployed flow's actions: calls billing declares it, and billing.charge(x) runs billing's action charge with x, answering {answer, run} or {error, message}. Deploying it asks to run the action charge and the action refund of the flow billing, which a person approves like any permission; an order is stored only when the charge answered, and answers 502 when billing can't be reached.",
+        shows: &["calls", "billing.charge(x)", "a call's answer and its errors", "a permission to run another flow's action"],
+        port: Some("8159"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy the sample billing first; then curl -X POST -H \"Content-Type: application/json\" -d '{\"id\":\"o1\",\"amount\":5}' http://127.0.0.1:8159/orders answers {\"id\":\"o1\",\"total\":6}; GET /orders/o1 reads the order, and billing's log has the charge run by the flow shop; stop billing and the same request answers 502; DELETE /orders/o1 runs billing's refund",
+        text: include_str!("../samples/shop.holon"),
+    },
 ];
 
 #[cfg(test)]
@@ -581,8 +646,9 @@ mod tests {
         let ports: Vec<_> = samples().iter().filter_map(|s| s.port).collect();
         assert_eq!(ports.iter().collect::<HashSet<_>>().len(), ports.len(), "each server its own port");
         for s in samples() {
-            // What starts it: requests on a port, the clock, or new files (`on file`).
-            let on_file = s.text.lines().any(|l| l.starts_with("on file "));
+            // What starts it: requests on a port, the clock, or new files (an `on file` header; a
+            // block is a handler, beside routes or not).
+            let on_file = s.text.lines().any(|l| l.starts_with("on file ") && !l.ends_with('{'));
             assert_eq!([s.port.is_some(), s.interval.is_some(), on_file].iter().filter(|b| **b).count(), 1, "{}: a port, an interval or on file", s.name);
             let doc = build(s).unwrap_or_else(|e| panic!("{e}"));
             assert!(!doc.nodes.is_empty(), "{}", s.name);

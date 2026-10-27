@@ -65,6 +65,10 @@ pub enum HeaderKind {
     /// `channel updates`: packs the flow sends (`updates.send(v)`) to whoever subscribes, a route
     /// answering with `respond updates.subscribe()`.
     Channel(String),
+    /// `calls billing`: another deployed flow, by its slug, whose actions this flow runs:
+    /// `billing.charge(x)`, `RunsAction("billing/charge")`. A slug's `-` is `_` in the call
+    /// (`calls billing-v2` is called as `billing_v2.charge(x)`).
+    Calls(String),
     /// `on file inbox`: a run for each file new or changed in the folder (or removed from it,
     /// `deleted`; only names matching a glob, `matching "*.csv"`), which it declares too; the run
     /// reads the file's handle as `ingress`. A flow may have several.
@@ -93,7 +97,49 @@ pub enum Item {
     Holon(HolonDef),
     Js(JsDef),
     Route(RouteDef),
+    Every(EveryDef),
+    OnFile(OnFileDef),
+    Action(ActionDef),
     Stmt(Stmt),
+}
+
+/// `action reset (input) { body }`: an action, a run by hand by its name (docs/L4s/triggers-L4.md
+/// §2). `input` in it is what the caller sent; `respond v` gives the answer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionDef {
+    pub name: Name,
+    /// The name of what was sent.
+    pub input: Name,
+    /// `action reset (input)`.
+    pub head: Span,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `on file inbox [deleted] [matching "…"] (f) { body }`: a file handler, a run for each file the
+/// line starts (docs/L4s/triggers-L4.md §2). `f` in it is the file's handle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnFileDef {
+    pub on: FileOn,
+    /// The name of the file's handle.
+    pub file: Name,
+    /// `on file inbox … (f)`.
+    pub head: Span,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `every 2s { body }`: a clock handler, a run every period (docs/L4s/triggers-L4.md §2). `now`
+/// in it is the time of the tick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EveryDef {
+    /// The period in seconds, and as written.
+    pub seconds: f64,
+    pub text: String,
+    /// `every 2s`.
+    pub head: Span,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 /// `holon name(inputs) -> outputs js [fuel N] [memory N] { body }`: a holon whose body is
@@ -162,6 +208,8 @@ pub struct RouteDef {
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
+    /// `… after x`: what the statement's sinks are tied to, instead of the block's trigger.
+    pub after: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

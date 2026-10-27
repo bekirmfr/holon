@@ -1,0 +1,46 @@
+flow ticker
+port 8156
+channel ticks
+
+holon page(count) -> html js {
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>Ticker</title>
+<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em auto;padding:0 1em}li.new{animation:in 1s}@keyframes in{from{background:#ffd}}</style>
+<h1>Ticker</h1>
+<p>${count} ticks so far; each new one shows below as it arrives.</p>
+<ul id="ticks"></ul>
+<script>
+const list = document.getElementById("ticks");
+new EventSource("/live").onmessage = (e) => {
+  const tick = JSON.parse(e.data);
+  const li = document.createElement("li");
+  li.className = "new";
+  li.textContent = "tick " + tick.n + " at " + new Date(tick.at * 1000).toLocaleTimeString();
+  list.prepend(li);
+};
+</script>`;
+}
+
+every 2s {
+  n = (state.ticks ?? 0) + 1
+  state.ticks = n
+  ticks.send({ n: n, at: now })
+}
+
+action reset (input) {
+  state.ticks = input.to ?? 0
+  respond { was: state.ticks ?? 0, set: input.to ?? 0 }
+}
+
+route GET / (req) {
+  respond page(state.ticks ?? 0), headers: { "content-type": "text/html; charset=utf-8" }
+}
+
+route GET /count (req) {
+  respond state.ticks ?? 0
+}
+
+route GET /live (req) {
+  respond ticks.subscribe()
+}

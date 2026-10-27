@@ -13,6 +13,7 @@ import { unitFor } from "./canvasUnits";
 import { defaultBoundaryValue } from "./BoundaryField";
 import type { EndpointDraft } from "./endpoint";
 import { restoreDocument } from "./docUnits";
+import { findRoutes } from "./derive";
 
 // What a flow turns into (its nodes' units, its routes, its server, the unit it deploys as) is
 // holon-author's (crates/holon-author/src/flow.rs), through the Evaluator, which stores every
@@ -36,11 +37,26 @@ export function traceOfUnit(hash: string, group: PrimitiveNodeType[], ev: Evalua
   return ev.trace_of(hash, group);
 }
 
-/** The server a canvas declares: its endpoints, why any route can't be one, the server unit's
- *  hash once every route is sound and `portText` is a port, and the trace from each route's
- *  stored children to canvas nodes. */
+/** One clock of the derived server (an `every` node's group): its period, its label (`every 2s`)
+ *  and its handler unit's hash. */
+export type ClockDraft = { seconds: number; label: string; hash: string };
+
+/** One file handler of the derived server (an `on_file` node's group): the folder it watches, its
+ *  label (`on file inbox`) and its handler unit's hash. */
+export type FileDraft = { folder: string; label: string; hash: string };
+
+/** One action of the derived server (an `action` node's group): its name, its label (`action
+ *  reset`) and its handler unit's hash. */
+export type ActionDraft = { name: string; label: string; hash: string };
+
+/** The server a canvas declares: its endpoints, clocks, file handlers and actions, why any handler can't be one, the
+ *  server unit's hash once every handler is sound (and `portText` is a port, with a route), and
+ *  the trace from each handler's stored children to canvas nodes, by its route or label. */
 export type DerivedServer = {
   endpoints: EndpointDraft[];
+  clocks: ClockDraft[];
+  files: FileDraft[];
+  actions: ActionDraft[];
   errors: string[];
   serverHash: string | null;
   trace: Record<string, string[]>;
@@ -282,4 +298,68 @@ export function nodeFromPalette(
       minInputs: inputs.length,
     },
   };
+}
+
+// ── Triggers (docs/L4s/triggers-L4.md §3, §7) ──────────────────────────────────────────────────
+
+/** The input every write and call out takes last: what starts it. */
+export const TRIGGER = "trigger";
+
+/** Whether `n` takes a trigger: a sink, or a holon with one inside. */
+export function takesTrigger(n: PrimitiveNodeType): boolean {
+  return n.data.inputs.some((p) => p.name === TRIGGER);
+}
+
+/** What can start a run on this canvas, each as the output a trigger is wired to: a route's
+ *  request, labelled by its method and path. */
+export function triggersOf(nodes: PrimitiveNodeType[]): { id: string; output: string; label: string }[] {
+  const param = (n: PrimitiveNodeType, k: string) => {
+    const p = n.data.params.find((p) => p.name === k);
+    return p?.kind === "Frozen" ? p.value : "";
+  };
+  return nodes
+    .filter((n) => n.data.body.kind === "Template" && n.data.name === "request")
+    .map((n) => ({ id: n.id, output: "request", label: `${param(n, "method") || "GET"} ${param(n, "path") || "/"}` }));
+}
+
+/** A wire tying `sink`'s trigger to the trigger `t`. */
+export function tieEdge(sink: string, t: { id: string; output: string }): Edge {
+  return { id: `tie-${t.id}-${sink}`, source: t.id, sourceHandle: t.output, target: sink, targetHandle: TRIGGER };
+}
+
+/** The nodes whose trigger nothing feeds, on a canvas that has a trigger to tie them to: each is
+ *  flagged "not tied to a trigger", with a fix for each trigger. (A canvas with none runs as a
+ *  whole, every sink with it, and flags nothing.) */
+export function untiedSinks(nodes: PrimitiveNodeType[], edges: Edge[]): Set<string> {
+  if (triggersOf(nodes).length === 0) return new Set();
+  const fed = new Set(edges.filter((e) => e.targetHandle === TRIGGER).map((e) => e.target));
+  return new Set(nodes.filter((n) => takesTrigger(n) && !fed.has(n.id)).map((n) => n.id));
+}
+
+/** Trigger wires drawn lighter than data wires: many sinks run from one trigger. */
+export function lighterTriggers(edges: Edge[]): Edge[] {
+  return edges.map((e) => (e.targetHandle === TRIGGER ? { ...e, style: { ...e.style, strokeWidth: 1, strokeDasharray: "4 3", opacity: e.style?.opacity ?? 0.55 } } : e));
+}
+
+/**
+ * A saved canvas brought up to sinks that take their trigger: a write or call out saved before
+ * gets the `trigger` input the catalog gives it now, last, and when it is in a route's group, the
+ * wire from that route's request, as the language ties it. Anything else stays as it is: an open
+ * trigger runs with the canvas, as it did.
+ */
+export function withTriggers(nodes: PrimitiveNodeType[], edges: Edge[], catalog: WUnit[]): { nodes: PrimitiveNodeType[]; edges: Edge[] } {
+  const sinks = new Set(catalog.flatMap((u) => (u.body.kind === "Primitive" && u.inputs?.at(-1)?.name === TRIGGER ? [u.body.name] : [])));
+  const added: string[] = [];
+  const migrated = nodes.map((n) => {
+    if (n.data.body.kind !== "Primitive" || !sinks.has(n.data.name) || takesTrigger(n)) return n;
+    added.push(n.id);
+    return { ...n, data: { ...n.data, inputs: [...n.data.inputs, { name: TRIGGER, ty: "Any" as const }], minInputs: n.data.inputs.length + 1 } };
+  });
+  if (added.length === 0) return { nodes, edges };
+  const { routes } = findRoutes(migrated, edges);
+  const ties = added.flatMap((id) => {
+    const route = routes.find((r) => r.nodeIds.includes(id));
+    return route ? [tieEdge(id, { id: route.requestId, output: "request" })] : [];
+  });
+  return { nodes: migrated, edges: [...edges, ...ties] };
 }

@@ -92,7 +92,7 @@ export function useDeployFlow({
     let trace = derived.trace;
     try {
       if (derived.errors.length > 0) throw new Error(derived.errors.join("; "));
-      if (derived.endpoints.length > 0) {
+      if (derived.endpoints.length > 0 || derived.clocks.length > 0 || derived.files.length > 0 || derived.actions.length > 0) {
         if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it under ⚙)`);
         hash = derived.serverHash;
         isServer = true;
@@ -132,7 +132,9 @@ export function useDeployFlow({
       ask = preview.needs_approval;
       // Each item says whether the flow can run without it (deploy settings' optional ones).
       const optional = requirements?.optional ?? [];
-      const said = (i: string) => `• ${describeItem(i)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
+      // A flow with no routes that reads `ingress` is run by hand, and its approval says so.
+      const byHand = derived.endpoints.length === 0;
+      const said = (i: string) => `• ${describeItem(i, byHand)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
       const lines = [`${existing ? "Update" : "Deploy"} "${name}"?`];
       if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map(said));
       if (preview.already_granted.length > 0) {

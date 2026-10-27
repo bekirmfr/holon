@@ -79,7 +79,8 @@ same graph are the same unit.
 | js holons | `holon name(inputs) -> outputs js [fuel N] [memory N] { JavaScript }`: a holon whose body is JavaScript, run by an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
 | Routes | `route METHOD /path (req) [resumes name] { … }`; `respond` is a statement wired to the request implicitly | §5.11 |
-| Flows without routes | The top-level statements are the one unit | §5.12 |
+| Flows without handlers | The top-level statements are the one unit, started as its headers say | §5.12 |
+| Another flow's action | `calls billing`, then `billing.charge(x)`: run by the host in-process, answered `{answer, run}` or `{error, message}`, a permission, never a loop | §5.4 |
 | Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
 | Hash | The lowered DAG's. Binding names, holon names, layout and comments are not in it | §7 |
 | Layout | Not in the text. Positions live in the flow document; import lays out automatically | §8 |
@@ -289,7 +290,7 @@ same leaves the assignment forms lower to. The route never mentions `put` or `sa
 Effect outputs nobody reads, so they are exposed and performed. `slugify` is placed twice and is
 one unit, one hash.
 
-### heartbeat: a flow without routes
+### heartbeat: a flow without handlers
 
 ```
 flow heartbeat
@@ -299,7 +300,7 @@ state.last_beat = now
 state.beats = (state.beats ?? 0) + 1
 ```
 
-No routes, so the top-level statements are the one unit the clock fires (§5.12). `state.beats` on
+No handlers, so the top-level statements are the one unit the clock fires (§5.12). `state.beats` on
 the right is `store_read{key: beats}`, the run's starting value; the assignment is
 `store_write{key: beats}`, committed when the run finishes. Which is why the line means exactly
 what it says.
@@ -671,6 +672,107 @@ value, the whole answer, as any call's. The pieces are the upstream's bytes, nev
 computation, so they stay true whatever the run does after: a run that runs again answers the
 call from its record and pipes nothing twice. A piped call needn't be in a route.
 
+### ticker: a clock beside routes, and an action
+
+```
+flow ticker
+port 8156
+channel ticks
+
+every 2s {
+  n = (state.ticks ?? 0) + 1
+  state.ticks = n
+  ticks.send({ n: n, at: now })
+}
+
+action reset (input) {
+  state.ticks = input.to ?? 0
+  respond { was: state.ticks ?? 0, set: input.to ?? 0 }
+}
+
+route GET /count (req) {
+  respond state.ticks ?? 0
+}
+
+route GET /live (req) {
+  respond ticks.subscribe()
+}
+```
+
+A flow with routes keeps its clock in a block of its own: `every 2s { … }` runs every two seconds,
+apart from the routes, with no input, and `now` in it is the time of the tick. It is a clock
+handler in the flow's server, beside the routes' endpoints (`declare = "every"`, `seconds: 2`), and
+the deployment asks `Clock`. The block is everything tied to its tick (§5.11): the write and the
+send take it as their trigger, so they are the clock's, though neither reads it. The state is the
+flow's, one for every handler: the clock counts, and `GET /count` reads the count. heartbeat's
+`every 10s` header is the form for a flow without handlers; beside a route it is an error that
+names this block.
+
+`action reset (input) { … }` is run by hand, by its name, and the network never reaches it: the
+port answers only the routes. A person runs it from the editor's server panel or the deployed page,
+or a script with `POST /trigger/ticker/reset` on the holon server (as an editor or an admin);
+`input` is the JSON they sent, `{}` for nothing, so `{"to": 0}` and nothing both set the count
+back to 0. Its `respond` is the answer to whoever ran it: `state.ticks` on the right is the count
+at the start of the run (§6.6), so `was` is the count before the write. The deployment asks
+`Action("reset")`. An agent runs it (`holon mcp`'s `run` tool) only once a person lets agents run
+`reset` in the flow's deploy settings, which asks `AgentRuns("reset")`: an optional permission, as
+the flow runs the same without it. The sample's page, `GET /`, is a js holon whose `EventSource`
+lists each tick as it arrives.
+
+### shop and billing: a flow calling another's actions
+
+```
+flow billing
+port 8158
+collection charges
+
+action charge (input) {
+  charges[input.id] = { amount: input.amount, fee: 1 }
+  respond { id: input.id, total: input.amount + 1 }
+}
+
+action refund (input) {
+  delete charges[input.id]
+}
+
+route GET /charges/:id (req) {
+  respond charges[req.params.id]
+}
+```
+
+```
+flow shop
+port 8159
+collection orders
+calls billing
+
+route POST /orders (req) {
+  paid = billing.charge({ id: req.json.id, amount: req.json.amount })
+  orders[req.json.id] = { amount: req.json.amount, total: paid.answer.total }
+  respond paid.answer, status: 201, missing: 502
+}
+
+route DELETE /orders/:id (req) {
+  billing.refund({ id: req.params.id })
+  delete orders[req.params.id]
+  respond 204
+}
+
+route GET /orders/:id (req) {
+  respond orders[req.params.id]
+}
+```
+
+`calls billing` declares the other flow, and `billing.charge(x)` runs its action with `x`: the
+shop asks to "run the action charge of the flow billing" (and refund), which a person approves
+like any permission, and the call is in the shop's hash (§5.4). The call answers `{answer, run}`;
+when billing can't be reached (stopped, not deployed, charge revoked) it answers `{error,
+message}` instead, so `paid.answer` has no value, the order isn't stored, and `missing: 502`
+answers 502: the failure is handled by absence, as a failed request is. `refund` only writes, so
+the shop ignores its answer, and a call nobody uses is a statement. billing logs each as an
+ordinary action run by "flow shop, run …", and the shop's log keeps the call and its answer, so
+`holon verify` replays the shop from its own record without calling billing again.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -697,7 +799,11 @@ around it reaches it as an input after the item (§5.9).
   holon's outputs) `route`
   `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`, and the
   wiring form's `node` `at` `in` `out` `interval`. Keywords are valid after a dot (`req.in`) and
-  as record keys (`{ in: 1 }`).
+  as record keys (`{ in: 1 }`). A few words are keywords only where they open a handler or end a
+  statement: `action` before a name and `(` (elsewhere it is the `action` template's name), `on
+  file` (with `deleted` and `matching`) at the start of a line, `calls` before a flow's name at the
+  start of a line (§5.4), and `after` after a statement (§5.11). `on`, `calls` and `after` are
+  names elsewhere.
 - **Nouns:** `req` (the name a route gives its request; any identifier works), `secret`, `state`,
   `now`, `random`, `ingress`, `http`, `stripe`, and every declared collection and folder. `secret`, `state`,
   `http` and `stripe` are namespaces: they take a dot. The nouns are reserved like keywords.
@@ -731,22 +837,65 @@ a binary operator or a comma. Semicolons are not used.
 file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
           | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
-          | "folder" ident | "on" "file" ident ["deleted"] ["matching" string]
-          | "channel" ident
-item      = holon | route | statement | wiring        # wiring: the netlist form, §10
+          | "folder" ident | "database" ident | "on" fileline
+          | "channel" ident | "calls" slug
+fileline  = "file" ident ["deleted"] ["matching" string]
+item      = holon | handler | statement | wiring      # wiring: the netlist form, §10
+handler   = route                                     # a route, §5.2 and §5.11
+          | "every" duration block                    # a clock
+          | "on" fileline "(" ident ")" block         # a file handler
+          | "action" ident "(" ident ")" block        # an action, run by hand
 ```
 
-Headers are the flow's deploy settings, exactly as today (`Settings`): `every 10s` is `interval`
-10. `collection notes` declares a name for the body (§5.4); several may be declared, one per line.
-`folder inbox` declares a folder the same way. `on file inbox` declares it too, and makes `ingress`
-the handle of the file that starts each run (`file_arrival{folder: inbox}`); only in a flow
-without routes. `deleted` makes it for files removed from the folder (`on: deleted`), and
-`matching "<glob>"` for the names that match (`*` and `?` within a folder, `**/` any number of
-folders, letters either case). A flow may have several, each a different line: `ingress` is then
-the `coalesce` of their `file_arrival`s in the order written, whichever started the run.
-`channel updates` declares a channel, sent on with `updates.send(v)` (or a call's answer piped to
-it, `updates.pipe(http.post(…))`) and subscribed to as a route's answer, `respond updates.subscribe()`. Statements at the top level are the body of a flow without routes (§5.12); with routes, only
-bindings of literals are allowed at the top level (§5.11).
+Headers are the flow's deploy settings, exactly as today (`Settings`), and its names for the
+outside world. `collection notes` declares a name for the body (§5.4); several may be declared, one
+per line. `folder inbox` declares a folder the same way, `database shop` a database on the host,
+and `channel updates` a channel, sent on with `updates.send(v)` (or a call's answer piped to it,
+`updates.pipe(http.post(…))`) and subscribed to as a route's answer, `respond updates.subscribe()`.
+`calls billing` names another deployed flow, by its slug, whose actions this one runs:
+`billing.charge(x)` (§5.4). A slug's `-` is `_` in the call, so `calls billing-v2` is called as
+`billing_v2.charge(x)`; the name must be one nothing else in the file has.
+
+**Handlers start runs.** A flow has one or more, each a block of its own, and each block is
+everything tied to its trigger (§5.11): a statement in it tied to nothing is an error, as is a
+block that does nothing.
+
+- **A route,** `route GET /path (req) { … }`, runs on each request to the flow's port, `req` the
+  request (§5.11).
+- **A clock,** `every 2s { … }`, runs every 2 seconds, with no input: `now` in it is the time of
+  the run. Its period is a whole number of seconds, from `1s` to `366d`; one block per period.
+- **A file handler,** `on file inbox (f) { … }`, runs for each file new or changed in the folder
+  `inbox` (which the line declares, as `folder inbox` would), once the file stops changing; `f` is
+  its handle (`.name`, `.size`, `.hash`, `.folder`, `.event`). `deleted` makes it for files
+  removed from the folder, and `matching "<glob>"` for the names that match (`*` and `?` within a
+  folder, `**/` any number of folders, letters either case). One block per line.
+- **An action,** `action reset (input) { … }`, runs when someone runs it by its name, `input` what
+  they sent (a JSON value; `{}` when they sent nothing). `respond v` gives its answer, a value
+  alone (a route's `status:`, `missing:`, `headers:` and `stream:` are not an action's), at most
+  once; an action that only writes answers nothing. Its name is a name (letters, digits and `_`),
+  one block per name. The network never reaches one: a person runs it from the editor, the deployed
+  page or a script (`POST /trigger/<slug>/<name>` on the holon server, as an editor or an admin),
+  and an agent only one a person lets agents run, in the flow's deploy settings.
+
+`respond` is a route's and an action's: a clock's or a file's run answers nobody. In a block,
+`ingress` is refused: an `on file` block and an action name what they receive (`f.name`, not
+`ingress.name`), and a clock receives nothing. With handlers, only bindings of literals are allowed
+at the top level (§5.11), and the statements go in the blocks.
+
+**The one-handler form.** With no handler, the top-level statements are the flow (§5.12), and a
+header says what starts it. `every 10s` is `interval` 10: the flow runs every 10 seconds. `on file
+inbox` makes `ingress` the handle of the file that starts each run (`file_arrival{folder: inbox}`),
+with `deleted` and `matching` as above; a flow may have several, each a different line, and
+`ingress` is then the `coalesce` of their `file_arrival`s in the order written, whichever started
+the run. A flow with neither that reads `ingress` is run by hand, `ingress` the text it was sent
+(`POST /trigger/<slug>`): the form an action was before it had a name. These headers are the
+one-handler form's alone: beside any handler, an `every` or `on file` line is an error that names
+the block to write instead (`every 10s { … }`, `on file inbox (f) { … }`).
+
+**A flow nothing would start** (no handler, no `every` or `on file` header, no `ingress`) is a holon,
+made to be placed in other flows (§5.8). It checks, and deploy refuses it, naming the form to
+write: to run it by hand, put its statements in `action run (input) { … }`. The editor's quick fix,
+**make it runnable by hand**, writes that block, ending it with `respond` of the value it computes.
 
 ### 5.2 Definitions and statements
 
@@ -887,9 +1036,31 @@ Rules the table implies:
   ended with `event: missed`, and catches up when it reconnects; one channel has up to
   `max_subscribers` (100). Pausing or stopping the deployment ends its subscriptions with
   `event: closed`.
+- **Another flow's action** is run with `billing.charge(x)`, `billing` declared by `calls billing`
+  (§5.1). It lowers to the sink `flow_call{flow: billing, action: charge}(input, trigger)`: the
+  host performs it between rounds, in-process, as an http call is, and the answer goes into the
+  run's record, so a retry, a replay and `holon verify` answer it from the log and never call
+  again. `x` is a value (`{}` when none is written; one input, a record to send more); the answer is
+  `{answer, run}` (`answer` absent for an action that only writes, `run` the number of the run in
+  the other flow's log) or `{error, message}` when nothing ran: `refused`, `not_found`,
+  `not_running`, `no_action`, `waiting` (the action parked at an `await`; `run` says which),
+  `failed` and `too_deep`. A value that isn't there is absent as anywhere (§6.3), so `respond
+  paid.answer, missing: 502` answers 502 whatever went wrong. The call is tied to the block's
+  trigger as a write is, `billing.charge(x) after found` ties it to a value (§5.11), and one nobody
+  uses stands as a statement, made for what it does; a clock, file or action block of calls alone
+  is a handler. It asks `RunsAction("billing/charge")`, which an approval says as "run the action
+  charge of the flow billing", and the call is in the flow's hash: pointing it at another flow or
+  action is a new version.
+  The other flow runs an ordinary action run, under its own grant and limits, logged there `by`
+  "flow shop, run <id>". A call refuses what it shouldn't carry: a secret, or a value computed from
+  one, which the other flow's log would keep; and a flow already in its chain of calls (itself
+  included), which would wait for the run that made the call. A chain is at most `max_call_depth`
+  calls long (3 by default, 8 at most). Calls to one flow in a round go one at a time, in the
+  order of their nodes. Revoking the permission pauses the caller, as any required one does, or
+  with **keep running** ticked refuses the next call.
 - `state.x` on the right of `=` and on the left are different leaves, read and write, and that is
   the whole semantics of state in Holon: read at the start, write at the end. The same key may be
-  written once per flow (one `store_write` per key), or the error says which two lines collide.
+  written once per run (one `store_write` per key), or the error says which two lines collide.
 - The assignment and `delete` forms are statements; their Effect is exposed and performed
   (§5.10). The method forms are the same leaves as expressions, for a holon that must name its
   effects as outputs, or for an effect whose value is passed on (`published.put`).
@@ -998,6 +1169,16 @@ assignment statement inside a holon (`posts[k] = v`) is allowed too: the lowerin
 Effect under a generated name (`put`, `put_2`, …), which the printer then shows. Declaring the
 name is clearer and is what `fmt` prints.
 
+**A holon with a sink has a `trigger` port it doesn't declare,** its last input, whether the sink
+is in its body or in a holon it places; it is the one port a holon has without declaring it, as
+`respond` has its request. Its sinks are tied to it, and a placement is tied as a sink is
+(§5.11): to the block's trigger, so `bump()` in a route writes with the route's request, or to
+what `after` names, `bump() after found`. A holon with no sink, a calculation, has no trigger,
+and `after` on it is an error. Written out, as `holon keep(v, trigger)` or `keep(v, trigger: x)`,
+it is the same port: `fmt` writes the first as `holon keep(v)` and the second as `keep(v) after
+x`, or as `keep(v)` when `x` is the block's own trigger. In a flow without handlers the trigger is
+left open, and the holon's sinks run with the flow, as a leaf's do.
+
 Holons are defined at the top level and are visible to the whole file, in any order, so a holon
 may use one defined below it. They may not be nested in text; a holon placed inside another is
 the nesting.
@@ -1103,11 +1284,12 @@ Effects are values, so `if c then state.set(k, a) else state.set(k, b)` places t
 idiom the samples use, and the one the printer prefers, guards the value instead:
 `state.k = a when ok`.
 
-### 5.11 Routes
+### 5.11 Routes, and what a block holds
 
 ```
 route POST /orders (req) { … }
 route GET /paid/:token (req) resumes paid { … }
+tied      = statement "after" expr                  # its writes and calls tied to expr
 ```
 
 Lowers to a `request{method, path, resume}` template node named by the parenthesised identifier,
@@ -1132,23 +1314,68 @@ respond_args = expr ("," "status" ":" (number | expr))? ("," "missing" ":" numbe
   lowering; `respond` outside a route is an error.
 - A route needs one `respond`, or at least one effect (answered 204); more than one `respond` is
   an error naming the route, as `route_spec` says today.
-- Two routes may not share a node. A top-level binding would wire two routes into one group, so at
-  the top level of a flow with routes only bindings of literals are allowed, lowered by placing a
-  fresh `const` in each route that uses them. A top-level binding of anything else is an error
-  that says why: "routes are separate units; put shared logic in a holon".
+- Two handlers may not share a node. A top-level binding would wire two of them into one group,
+  so at the top level of a flow with handlers only bindings of literals are allowed, lowered by
+  placing a fresh `const` in each block that uses them. A top-level binding of anything else is an
+  error that says why: "routes are separate units; put shared logic in a holon".
 - Clashing routes, bad methods and bad paths are the existing errors, now with a column.
-- A route is everything wired to its request, so a statement in the block that never touches the
-  request (`state.hits = (state.hits ?? 0) + 1`, say) would not be part of the route and would be
-  left out of the server. The lowering refuses it, pointing at the statement: use the request in
-  it, or move it to a flow of its own.
 
-### 5.12 Flows without routes
+**A block is everything tied to its trigger.** Each handler (§5.1) has a trigger node: a route's
+`request`, a clock's tick (its value the time of the tick), a file handler's `on_file` (the file's
+handle) and an action's `action` (what was sent). What reads from it is the block's, and so is
+every sink placed in it:
 
-With no `route` in the file, the top-level statements are the flow: a clock flow (`every`), a flow
-that runs on new files (`on file`), or a flow placed as a holon in another. They lower to the whole canvas grouped as one composite,
-exactly `flow_unit`'s existing rule. The flow's outputs are its unused values, which is why a
-non-Effect expression statement is allowed here and only here: it is an output. `respond` is an
-error.
+- **Every sink takes its trigger.** The writes (state, a collection, a folder, a database), the
+  calls out (`http.*`), a send on a channel and `egress` take a `trigger` input, last, and the
+  lowering wires it to the block's trigger node. The text doesn't write it, as `respond` doesn't
+  write its request. So a write that reads nothing of the request is still the route's:
+
+  ```
+  route GET /hit (req) {
+    hits = (state.hits ?? 0) + 1
+    state.hits = hits                 # tied to req
+    respond "hit {hits}"
+  }
+  ```
+
+  A holon with a sink in it takes a trigger too, which its placement wires the same way (§5.8).
+- **The trigger is never read;** it only has to be there. A sink whose trigger has no value does
+  nothing.
+- **`after x` ties a statement's sinks to `x` instead:** `state.last = id after saved` writes once
+  `saved`, the put before it, has its result in the run, and `state.seen = id after found` writes
+  only when the lookup `found` found something. `x` is any value in scope in the block; `fmt`
+  writes it as a name bound before the statement (`after c.put(id, 1)` comes back as a binding and
+  `after` its name), and writes `after` only for a tie other than the block's own. `after` on a
+  statement with no write or call in it is an error, and `respond` takes none. The tie is within
+  the run: the run still commits as one, its writes at its end (§6.6). `after` is a keyword only
+  there: `list(after: …)` and `req.query.after` are names.
+- **A statement tied to nothing** (a binding nothing uses, `t = now`) would not be part of the
+  block, and would be left out of the server. The lowering refuses it, pointing at the statement
+  and saying what would tie it: in a route, use the request in it (or move it to a flow of its
+  own); in a clock, write something with it, or use `now` in it.
+- **A flow without handlers** (§5.12) is one run of the whole flow, and its sinks are left open:
+  they run with it, as they always did. The wiring form (§10) ties nothing it doesn't write as a
+  wire.
+
+### 5.12 Flows without handlers
+
+With no handler in the file, the top-level statements are the flow, and each run is a run of all
+of it. Its headers say what starts one (§5.1): `every 10s` a clock, `on file inbox` each new file
+(its handle `ingress`), and, with neither, reading `ingress` makes it a flow run by hand. A flow
+with none of the three starts nothing: it is a holon, to place in another flow (§5.8), and deploy
+refuses it.
+
+- **It lowers to the whole canvas grouped as one composite,** exactly `flow_unit`'s existing rule.
+  There are no blocks for a binding to wire together, so a top-level binding of anything is allowed
+  (`n = (state.n ?? 0) + 1`), not only a literal's.
+- **Its sinks are left open** (§5.11): no trigger is wired, and they run with the run. `after x`
+  still ties a statement's sinks to `x`, as in a block: `state.last = now after saved` writes once
+  the put `saved` has its result.
+- **Its outputs are its unused values,** so nothing in it is tied to nothing, and a non-Effect
+  expression statement is allowed here and only here: it is an output. `fmt` writes one as a
+  binding under a generated name (`1 + 2` comes back as `add_2 = 1 + 2`).
+- **`respond` is an error:** a run of the whole flow answers nobody. A flow that answers has a
+  route or an action.
 
 ## 6. Semantics
 

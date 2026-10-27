@@ -217,8 +217,10 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
 
         // A sink's payload is data: an Effect-typed source never fits it, `Any` port or not
         // (primitives.rs's `sink_effect` refuses one that only shows up at run time).
+        // A trigger is never read, so it may be an effect: `after saved` ties a write to a put.
         let into_sink = e.to_child != BOUNDARY
-            && matches!(resolved[e.to_child as usize], Some(Unit { body: UnitBody::Primitive { name }, .. }) if crate::primitives::is_sink(name));
+            && matches!(resolved[e.to_child as usize], Some(Unit { body: UnitBody::Primitive { name }, inputs, .. })
+                if crate::primitives::is_sink(name) && inputs.get(e.to_port as usize).is_none_or(|p| p.name != crate::TRIGGER));
         if !compatible(&src_ty, &dst_ty) || (into_sink && mentions_effect(&src_ty)) {
             errors.push(ValidationError::TypeMismatch { edge: ei, src: src_ty, dst: dst_ty });
         }

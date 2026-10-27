@@ -13,10 +13,11 @@ use holon_host::fire_sourced_with;
 
 pub(crate) fn test_state() -> AppState {
     let backend: DynStore = Box::new(MemStore::new());
-    let store = SharedStore(Arc::new(Mutex::new(backend)));
+    let store = SharedStore::new(backend);
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let deployments = Arc::new(Mutex::new(BTreeMap::new()));
+    store.1.connect(Arc::clone(&deployments), ":memory:".to_string());
     AppState {
         store,
         registry,
@@ -559,7 +560,8 @@ fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
 
     let unscheduled = deploy_json(&state, "beats", unit, serde_json::json!({}));
     assert_eq!(unscheduled.status_code, 400);
-    assert!(String::from_utf8_lossy(&body_bytes(unscheduled)).contains("nothing would ever trigger it"));
+    let said = String::from_utf8_lossy(&body_bytes(unscheduled)).into_owned();
+    assert!(said.contains("nothing would start a run") && said.contains("action run (input)"), "{said}");
 
     let body = serde_json::json!({ "slug": "beats", "unit": plan.unit, "interval_seconds": 5 });
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&body).unwrap())));
@@ -1640,7 +1642,7 @@ fn deployments_persist_across_a_simulated_restart() {
     // A real on-disk store, not MemStore — the deployment definition surviving only means
     // something if the unit it points at is still there too.
     let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
-    let store = SharedStore(Arc::new(Mutex::new(backend)));
+    let store = SharedStore::new(backend);
 
     let ingress = test_ingress();
     let ingress_hash = hash_unit(&ingress).unwrap();
@@ -2661,7 +2663,7 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
 
     // A restart reloads it as a server, with its items.
     let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
-    assert_eq!(reloaded["todo-api"].server.as_ref().map(|s| s.port), Some(18080));
+    assert_eq!(reloaded["todo-api"].server.as_ref().and_then(|s| s.port), Some(18080));
     assert_eq!(reloaded["todo-api"].triggers, vec!["Http :18080"], "labelled as when it was deployed");
     let todos = reloaded["todo-api"].state.as_ref().unwrap().state.lock().unwrap().get("todos").unwrap().clone();
     assert!(matches!(todos, Value::Record(ref items) if items.len() == 1));
@@ -3122,7 +3124,7 @@ fn state_persists_across_a_simulated_restart() {
     let deployments_path = unique_temp_path("state-deployments");
     let store_dir = unique_temp_path("state-store");
     let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
-    let store = SharedStore(Arc::new(Mutex::new(backend)));
+    let store = SharedStore::new(backend);
 
     let ingress = test_ingress();
     let ingress_hash = hash_unit(&ingress).unwrap();
@@ -6346,4 +6348,320 @@ fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
     // One level less is materialized.
     let inside = match store.get(&below).unwrap().unwrap().body { UnitBody::Composite { children, .. } => children[0], _ => unreachable!() };
     materialize_closure(&state.store, inside).unwrap();
+}
+
+/// A flow's `on file` blocks are file handlers of its server (the drop-board sample): a file
+/// that settles in the folder runs the handler for new files alone, one removed runs the one for
+/// deleted files, each logged under its label with the file's handle; a route reads what they
+/// wrote, and their runs verify offline. What starts them can't be optional.
+#[test]
+fn a_servers_file_handlers_run_alone_for_their_lines_beside_its_routes_and_verify() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-file-blocks-{}-{}", std::process::id(), rand::random::<u32>()));
+    let board = dir.join("board");
+    std::fs::create_dir_all(&board).unwrap();
+    assert_eq!(route_status(&state, &serde_json::json!({ "name": "board", "path": board.display().to_string(), "access": "read" })), 200);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/drop-board.holon"), "");
+    // A server's handlers are in its unit's canonical order, by hash.
+    let mut triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
+    triggers.sort();
+    assert_eq!(triggers, ["Http :8157", "on file board", "on file board deleted"]);
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    let runs = || -> Vec<(String, String)> {
+        log_entries(&state, &slug)
+            .iter()
+            .filter(|e| e["kind"] == "file")
+            .map(|e| (e["route"].as_str().unwrap_or_default().to_string(), e["performed"].to_string()))
+            .collect()
+    };
+
+    std::fs::write(board.join("a.csv"), "x,1\n").unwrap();
+    look();
+    let got = runs();
+    assert_eq!(got.iter().map(|(r, _)| r.as_str()).collect::<Vec<_>>(), ["on file board"], "the handler for new files, alone: {got:?}");
+    assert!(got[0].1.contains("a.csv") && got[0].1.contains("new"), "it sent the file's name and event: {got:?}");
+    let (status, page, _) = data_call(&state, &slug, "GET", "/", "");
+    assert!(status == 200 && page.contains("1 files dropped so far"), "the count is the server's state, the routes' too: {page}");
+
+    std::fs::remove_file(board.join("a.csv")).unwrap();
+    look();
+    let got = runs();
+    assert_eq!(got.iter().map(|(r, _)| r.as_str()).collect::<Vec<_>>(), ["on file board", "on file board deleted"], "{got:?}");
+    assert!(got[1].1.contains("deleted"), "{got:?}");
+    let entry = log_entries(&state, &slug).into_iter().rfind(|e| e["kind"] == "file").unwrap();
+    assert!(entry["sourced"].as_array().unwrap().iter().any(|p| p[0] == "FileArrival(\"board\")"), "the handle is sourced: {entry:?}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 2, "{}", verify::describe(&report, None));
+
+    // What starts its file handlers can't be optional.
+    let unit = state.deployments.lock().unwrap()[&slug].unit;
+    let r = deploy_json(&state, &slug, unit, serde_json::json!({ "requirements": { "optional": ["FileArrival(\"board\")"] } }));
+    assert_eq!(r.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(r)).contains("it can't be optional"));
+    route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![]));
+    route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A flow's `action` blocks are run by hand by their names (the ticker sample's reset): what was
+/// sent is the handler's input (nothing is `{}`), its respond's body the answer, the run logged
+/// as a trigger run under its label with what was sent, and it verifies offline. The old
+/// `/trigger/<slug>` names the way in.
+#[test]
+fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
+    let mut state = claims_state("");
+    state.deployments_path = unique_temp_path("action-blocks");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/ticker.holon"), "127.0.0.1:9");
+    let mut triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
+    triggers.sort();
+    assert_eq!(triggers, ["Http :8156", "action reset", "every 2s"]);
+    let run = |body: &str| route(&state, &req("POST", &format!("/trigger/{slug}/reset"), body.as_bytes().to_vec()));
+    let count = || data_call(&state, &slug, "GET", "/count", "").1;
+    assert_eq!(count(), "0");
+
+    let r = body_json(run(r#"{"to": 5}"#));
+    assert_eq!(r["answer"], serde_json::json!({ "was": 0, "set": 5 }), "{r}");
+    assert_eq!(count(), "5", "the action writes the routes' state");
+    let entry = log_entries(&state, &slug).into_iter().find(|e| e["seq"] == r["seq"]).expect("its entry is the answer's seq");
+    assert_eq!((entry["kind"].as_str(), entry["route"].as_str()), (Some("trigger"), Some("action reset")));
+    assert!(entry["request"].to_string().contains("\"to\""), "what was sent is logged: {entry}");
+    // Nothing sent is `{}`.
+    assert_eq!(body_json(run(""))["answer"], serde_json::json!({ "was": 5, "set": 0 }));
+    assert_eq!(count(), "0");
+
+    assert_eq!(run("{not json").status_code, 400);
+    assert_eq!(route(&state, &req("POST", &format!("/trigger/{slug}/nope"), vec![])).status_code, 404);
+    let old = route(&state, &req("POST", &format!("/trigger/{slug}"), vec![]));
+    assert_eq!(old.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(old)).contains(&format!("POST /trigger/{slug}/reset")));
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 2, "{}", verify::describe(&report, None));
+    // What starts an action can't be optional.
+    let unit = state.deployments.lock().unwrap()[&slug].unit;
+    let r = deploy_json(&state, &slug, unit, serde_json::json!({ "requirements": { "optional": ["Action(\"reset\")"] } }));
+    assert_eq!(r.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(r)).contains("it can't be optional"));
+    route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![]));
+    assert_eq!(run("").status_code, 409, "a stopped deployment runs nothing");
+    route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![]));
+
+    // A flow of actions alone deploys, listening on no port, and is run by name.
+    let slug = deploy_text(&state, "flow notes\n\naction note (n) {\n  state.note = n\n  respond \"noted\"\n}\n", "");
+    assert_eq!(state.deployments.lock().unwrap()[&slug].triggers, ["action note"]);
+    let r = body_json(route(&state, &req("POST", &format!("/trigger/{slug}/note"), b"\"hi\"".to_vec())));
+    assert_eq!(r["answer"], "noted");
+    route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![]));
+    route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![]));
+}
+
+/// A flow's `every` block is a clock of its server: it ticks on its own period beside the routes,
+/// each run logged and kept in the history under its label, and its runs verify offline. A flow
+/// of clocks alone listens on no port; its clocks are in its text, so it takes no interval.
+#[test]
+fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
+    let mut state = claims_state("");
+    let path = unique_temp_path("clock-blocks");
+    state.deployments_path = path.clone();
+    let text = "flow ticks\nport 18257\n\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n}\n\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
+    assert_eq!(triggers, ["Http :18257", "every 2s"]);
+
+    let t0 = SystemTime::now();
+    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0);
+    assert_eq!(data_call(&state, &slug, "GET", "/n", "").1, "1", "due at deploy");
+    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0 + Duration::from_secs(1));
+    assert_eq!(data_call(&state, &slug, "GET", "/n", "").1, "1", "not before its period");
+    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0 + Duration::from_secs(3));
+    assert_eq!(data_call(&state, &slug, "GET", "/n", "").1, "2");
+
+    let ticks: Vec<serde_json::Value> = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "tick").collect();
+    assert_eq!(ticks.len(), 2);
+    assert!(ticks.iter().all(|e| e["route"] == "every 2s"), "{ticks:?}");
+    let history = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/history"), vec![])));
+    assert_eq!(history["ticks"][0]["label"], "every 2s");
+
+    // Tick now (the editor's): that clock ticks once, at once; one it doesn't have is not found.
+    let tick = |clock: &str| route(&state, &req("POST", &format!("/deployments/{slug}/tick"), serde_json::to_vec(&serde_json::json!({ "clock": clock })).unwrap()));
+    let r = tick("every 2s");
+    assert_eq!(r.status_code, 200);
+    assert_eq!(body_json(r)["label"], "every 2s");
+    assert_eq!(data_call(&state, &slug, "GET", "/n", "").1, "3");
+    assert_eq!(tick("every 9s").status_code, 404);
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 7, "three ticks and four requests");
+
+    // Clocks alone: no port, and no interval besides the text's.
+    let alone = deploy_text(&state, "flow beats\n\nevery 1h {\n  state.n = (state.n ?? 0) + 1\n}\n", "127.0.0.1:9");
+    let (triggers, unit, port) = {
+        let deployments = state.deployments.lock().unwrap();
+        let d = &deployments[&alone];
+        (d.triggers.clone(), d.unit, d.server.as_ref().map(|s| s.port))
+    };
+    assert_eq!((triggers, port), (vec!["every 1h".to_string()], Some(None)));
+    let r = deploy_json(&state, &alone, unit, serde_json::json!({ "interval_seconds": 5 }));
+    assert_eq!(r.status_code, 400);
+    let why = String::from_utf8_lossy(&body_bytes(r)).to_string();
+    assert!(why.contains("clocks are in its text"), "{why}");
+    // What starts its clocks can't be optional, beside routes too.
+    let ticks_unit = state.deployments.lock().unwrap()[&slug].unit;
+    let r = deploy_json(&state, &slug, ticks_unit, serde_json::json!({ "requirements": { "optional": ["Clock"] } }));
+    assert_eq!(r.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(r)).contains("it can't be optional"));
+
+    for s in [&slug, &alone] {
+        route(&state, &req("POST", &format!("/deployments/{s}/stop"), vec![]));
+        route(&state, &req("DELETE", &format!("/deployments/{s}"), vec![]));
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+// ── flow calls (docs/L4s/triggers-L4.md §9, slice 6) ─────────────────────────────────────────────
+
+const BILLING: &str = "flow billing\ncollection charges\n\naction charge (input) {\n  charges[input.id] = input\n  respond { ok: true, total: input.amount * 2 }\n}\n\naction reset (input) {\n  state.resets = (state.resets ?? 0) + 1\n}\n";
+const SHOP: &str = "flow shop\nport 18311\ncalls billing\n\nroute POST /orders (req) {\n  charged = billing.charge({ id: req.json.id, amount: req.json.total })\n  respond charged\n}\n\nroute POST /reset (req) {\n  billing.reset()\n  respond 204\n}\n";
+
+fn order(state: &AppState, id: &str, total: f64) -> serde_json::Value {
+    let (status, body, _) = data_call(state, "shop", "POST", "/orders", &format!("{{\"id\":\"{id}\",\"total\":{total}}}"));
+    assert_eq!(status, 200, "{body}");
+    serde_json::from_str(&body).unwrap()
+}
+
+/// A flow runs another's action in-process: the answer comes back, the other flow logs an ordinary
+/// action run by the caller and its run, the caller's log keeps the call, and `holon verify`
+/// replays both from their logs without calling again.
+#[test]
+fn a_flow_runs_another_flows_action_and_both_logs_say_so() {
+    let state = claims_state("");
+    deploy_text(&state, BILLING, "127.0.0.1:9");
+    deploy_text(&state, SHOP, "127.0.0.1:9");
+    let granted = state.deployments.lock().unwrap()["shop"].grant.items.clone();
+    assert!(granted.contains("RunsAction(\"billing/charge\")") && granted.contains("RunsAction(\"billing/reset\")"), "{granted:?}");
+
+    let answered = order(&state, "o1", 5.0);
+    assert_eq!(answered["answer"]["total"], 10.0, "{answered}");
+    assert_eq!(answered["answer"]["ok"], true);
+    assert!(answered["error"].is_null(), "{answered}");
+
+    // billing's run is an action run, by the calling flow and its run.
+    let theirs = log_entries(&state, "billing");
+    let ran = theirs.last().unwrap();
+    assert_eq!(ran["route"], "action charge");
+    let by = ran["by"].as_str().unwrap();
+    assert!(by.starts_with("flow shop, run "), "{by}");
+    assert!(ran["request"].to_string().contains("o1"), "what was sent is kept: {ran}");
+    assert_eq!(answered["run"].as_u64(), Some(theirs.len() as u64 - 1), "the call says which run it was");
+
+    // shop's run kept the call and its answer.
+    let mine = log_entries(&state, "shop");
+    let rounds = mine.last().unwrap()["rounds"].to_string();
+    assert!(rounds.contains("billing") && rounds.contains("charge"), "{rounds}");
+
+    // An action that only writes answers no value: `charged.answer` has none.
+    let (status, _, _) = data_call(&state, "shop", "POST", "/reset", "{}");
+    assert_eq!(status, 204);
+    assert_eq!(log_entries(&state, "billing").last().unwrap()["route"], "action reset");
+
+    // Each log verifies, shop's from its record of the call.
+    for slug in ["shop", "billing"] {
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+        assert!(report.ok(), "{slug}: {}", verify::describe(&report, None));
+        assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{slug}: {}", verify::describe(&report, None));
+    }
+}
+
+/// A call that can't be made answers why, as a failed request does, and the caller handles it.
+#[test]
+fn a_call_that_cant_be_made_says_why() {
+    let state = claims_state("");
+    deploy_text(&state, SHOP, "127.0.0.1:9");
+    let error = |id: &str| order(&state, id, 1.0)["error"].as_str().map(str::to_string);
+    assert_eq!(error("a").as_deref(), Some("not_found"), "billing isn't deployed");
+
+    deploy_text(&state, "flow billing\n\naction other (input) {\n  state.n = 1\n}\n", "127.0.0.1:9");
+    assert_eq!(error("b").as_deref(), Some("no_action"), "it has no such action");
+
+    deploy_text(&state, BILLING, "127.0.0.1:9");
+    assert_eq!(error("c"), None, "now it runs");
+    route(&state, &req("POST", "/deployments/billing/pause", vec![]));
+    assert_eq!(error("d").as_deref(), Some("not_running"), "paused");
+    route(&state, &req("POST", "/deployments/billing/run", vec![]));
+    assert_eq!(error("e"), None);
+
+    // Revoked, the caller pauses as with any required permission; kept running, its next call is
+    // refused at once, and granted back it runs.
+    let change = |body: serde_json::Value| body_json(route(&state, &req("POST", "/deployments/shop/grant", serde_json::to_vec(&body).unwrap())));
+    let revoked = change(serde_json::json!({ "revoke": ["RunsAction(\"billing/charge\")"] }));
+    assert!(revoked.get("error").is_none(), "{revoked}");
+    assert_eq!(data_call(&state, "shop", "POST", "/orders", "{}").0, 503, "paused");
+    change(serde_json::json!({ "keep_running": true }));
+    assert_eq!(error("f").as_deref(), Some("refused"));
+    change(serde_json::json!({ "grant": ["RunsAction(\"billing/charge\")"] }));
+    assert_eq!(error("g"), None, "granted back");
+}
+
+/// A flow isn't called from its own chain, and a chain is only so long (`max_call_depth`).
+#[test]
+fn a_chain_of_calls_is_never_a_loop_and_is_only_so_long() {
+    let state = claims_state("");
+    let relay = |name: &str, next: Option<&str>| match next {
+        Some(next) => format!("flow {name}\ncalls {next}\n\naction go (input) {{\n  r = {next}.go(input)\n  respond r\n}}\n"),
+        None => format!("flow {name}\n\naction go (input) {{\n  respond \"{name}\"\n}}\n"),
+    };
+    // ping and pong call each other: the second call back is refused, and says why.
+    deploy_text(&state, &relay("ping", Some("pong")), "127.0.0.1:9");
+    deploy_text(&state, &relay("pong", Some("ping")), "127.0.0.1:9");
+    let r = body_json(route(&state, &req("POST", "/trigger/ping/go", b"{}".to_vec())));
+    assert!(r.to_string().contains("already in this chain"), "{r}");
+
+    // a → b → c → d → e: the fourth call down is past the default three.
+    for (name, next) in [("a", Some("b")), ("b", Some("c")), ("c", Some("d")), ("d", Some("e")), ("e", None)] {
+        deploy_text(&state, &relay(name, next), "127.0.0.1:9");
+    }
+    let r = body_json(route(&state, &req("POST", "/trigger/a/go", b"{}".to_vec()))).to_string();
+    assert!(r.contains("too_deep"), "{r}");
+    // One shorter (b → c → d → e) is three deep, and runs.
+    let r = body_json(route(&state, &req("POST", "/trigger/b/go", b"{}".to_vec()))).to_string();
+    assert!(r.contains("\\\"e\\\"") || r.contains("\"e\""), "{r}");
+    assert!(!r.contains("too_deep"), "{r}");
+
+    // It refuses itself, whatever the name.
+    deploy_text(&state, "flow me\ncalls me\n\naction go (input) {\n  r = me.go(input)\n  respond r\n}\n", "127.0.0.1:9");
+    let r = body_json(route(&state, &req("POST", "/trigger/me/go", b"{}".to_vec()))).to_string();
+    assert!(r.contains("already in this chain"), "{r}");
+}
+
+/// What a secret reaches doesn't leave in a call: the other flow's log would keep it.
+#[test]
+fn a_secret_is_never_sent_to_another_flow() {
+    let state = claims_state("");
+    deploy_text(&state, BILLING, "127.0.0.1:9");
+    let text = "flow vault\ncalls billing\n\naction leak (input) {\n  r = billing.charge({ id: secret.token, amount: 1 })\n  respond r\n}\n\naction joined (input) {\n  r = billing.charge({ id: \"id-{secret.token}\", amount: 1 })\n  respond r\n}\n";
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        route(&state, &req("POST", "/unit", u.clone()));
+    }
+    let unit = parse_hash(&plan.unit).unwrap();
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "vault", "unit": plan.unit })).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    assert_eq!(deploy_json(&state, "vault", unit, serde_json::json!({ "acknowledge": asked })).status_code, 200);
+    route(&state, &req("POST", "/deployments/vault/secrets/token", serde_json::to_vec(&serde_json::json!({ "value": "s3cret-value" })).unwrap()));
+    for action in ["leak", "joined"] {
+        let r = body_json(route(&state, &req("POST", &format!("/trigger/vault/{action}"), b"{}".to_vec()))).to_string();
+        assert!(r.contains("refused") && r.contains("can't be sent to another flow"), "{action}: {r}");
+    }
+    assert!(!log_entries(&state, "billing").iter().any(|e| e["route"] == "action charge"), "billing never ran");
 }

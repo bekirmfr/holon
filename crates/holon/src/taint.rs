@@ -48,7 +48,7 @@ const PASSES_LITERALLY: &[&str] = &[
 ];
 
 /// Leaves whose output is what the far side answered: an outbound request's response.
-const ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream"];
+const ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call"];
 
 /// Deeper than this, a composite is taken as computing with whatever reaches it.
 const MAX_DEPTH: usize = 128;
@@ -283,6 +283,15 @@ fn topo_order(n: usize, edges: &[holon_core::Edge]) -> Option<Vec<usize>> {
 pub(crate) fn withhold_request(request: &mut holon_core::Value, path: &[u32], fed: &SecretFed) {
     let holon_core::Value::Record(r) = request else { return };
     let derived = |port: usize| fed.input(path, port) == Taint::Derived;
+    // A call to another flow's action: what it sends is its one input.
+    if r.contains_key("flow") {
+        if derived(0)
+            && let Some(input) = r.get_mut("input")
+        {
+            *input = holon_core::Value::Text(WITHHELD.into());
+        }
+        return;
+    }
     // An `http_request`'s inputs: its path, its headers, its body (an upload's file handle).
     if derived(0)
         && let Some(holon_core::Value::Text(url)) = r.get_mut("url")

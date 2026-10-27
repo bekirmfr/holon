@@ -129,6 +129,32 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
   expect(Object.values(document.bindings ?? {})).toEqual(expect.arrayContaining(["name", "id"]));
 });
 
+test("a flow nothing would start can't deploy; made runnable by hand, it deploys and runs as an action", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "new", exact: true }).click();
+  const canvas = page.locator(".hl-canvas");
+  await canvas.getByRole("button", { name: "text off" }).click();
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText("flow by-hand\n\ntotal = 1 + 2\n");
+  await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
+  // The quick fix puts its statements in an action, answering the value it computes.
+  await canvas.getByRole("button", { name: "make it runnable by hand" }).click();
+  await expect(page.getByRole("region", { name: "Text" })).toContainText("action run (input) {");
+  await expect(page.getByRole("region", { name: "Text" })).toContainText("respond total");
+  await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);
+  // Deployed under a name of its own (asked, as for any new flow), its action answers.
+  await canvas.getByRole("button", { name: /^deploy/ }).click();
+  await page.locator('[aria-modal="true"]').locator("input").fill(`by-hand-${Date.now()}`);
+  await page.keyboard.press("Enter");
+  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
+  await page.getByRole("dialog").getByRole("button", { name: /^(Approve and deploy|Deploy)$/ }).click();
+  expect((await deployed).status()).toBe(200);
+  await page.getByRole("button", { name: "run", exact: true }).click();
+  await expect(page.getByText(/^run: 3 \(run \d+\)/)).toBeVisible();
+});
+
 test("hello-api answers, and its run replays exactly in view mode", async ({ page, request }) => {
   await openSample(page, "Hello API");
   const port = await deploy(page);
@@ -444,6 +470,120 @@ test("likes answers a count in a sentence: the number as text (as_text), then th
   expect(await shown.text()).toBe("1 likes");
   // Never liked: the count falls back to 0, and as_text writes it.
   expect(await (await request.get(`http://127.0.0.1:${port}/posts/${post}-never/likes`)).text()).toBe("0 likes");
+});
+
+test("counter counts its hits with no wire to the request, and records the last visit after it is put", async ({ page, request }) => {
+  await openSample(page, "Hit counter (writes run with their route)");
+  const port = await deploy(page);
+  // Each hit's write is tied to its route's request: it runs, though it reads nothing of it.
+  const hit = async () => Number((await (await request.get(`http://127.0.0.1:${port}/hit`)).text()).replace("hit ", ""));
+  const first = await hit();
+  expect(await hit()).toBe(first + 1);
+  // The last visitor is written after the visit is put.
+  const who = `e2e-${Date.now()}`;
+  expect(await (await request.post(`http://127.0.0.1:${port}/visits/${who}`)).text()).toBe(`visited ${who}`);
+  expect(await (await request.get(`http://127.0.0.1:${port}/last`)).text()).toBe(who);
+});
+
+test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, its action sets it by hand, from the editor and the deployed page, and each run replays exactly", async ({ page, request }) => {
+  await openSample(page, "Ticker (a clock beside routes)");
+  // Agents may run its action, as its deploy settings ask: a grant of its own.
+  const port = await deploy(page, SAMPLE_SHIFT, (settings) => settings.getByLabel("agents may run reset").check());
+  const count = async () => Number(await (await request.get(`http://127.0.0.1:${port}/count`)).text());
+  // Its every block runs on the scheduler, every 2 seconds, with no request to start it.
+  await expect.poll(count, { timeout: 15_000 }).toBeGreaterThan(0);
+  const before = await count();
+  await page.getByRole("button", { name: "tick now" }).click();
+  await expect(page.getByText(/^every 2s: ticked, 2 effects performed$/)).toBeVisible();
+  expect(await count()).toBeGreaterThan(before);
+  // The newest run is a tick, named by its clock, and view mode replays it over its block.
+  await page.getByRole("button", { name: "tick now" }).click();
+  await expect(page.getByText(/^every 2s: ticked/)).toBeVisible();
+  await viewNewestRun(page);
+  await expect(page.locator(".hl-view__bottom")).toContainText("every 2s");
+  await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
+  // Its action, run by hand from the server panel with what to send, sets the count: the clock
+  // goes on from there.
+  await page.getByLabel("what to send reset").fill('{"to": 1000}');
+  await page.getByRole("button", { name: "run", exact: true }).click();
+  await expect(page.getByText(/^reset: \{"set":1000,"was":\d+\} \(run \d+\)/)).toBeVisible();
+  const reset = await count();
+  expect(reset >= 1000 && reset < 1010, `${reset}`).toBe(true);
+  // Its run is logged under its label: view run opens view mode on it, replayed over its block.
+  await page.getByRole("button", { name: "view run" }).click();
+  await expect(page.locator(".hl-view__bottom")).toContainText(/· action reset · session/);
+  await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
+  // The deployed page runs it too, without opening the flow; its grant lets agents run it.
+  await page.getByRole("button", { name: "deployed", exact: true }).click();
+  const card = page.getByLabel("deployment ticker");
+  await card.getByLabel("what to send reset").fill('{"to": 5}');
+  await card.getByRole("button", { name: "run", exact: true }).click();
+  await expect(card.getByText(/^reset: \{"set":5,"was":\d+\} \(run \d+\)/)).toBeVisible();
+  expect(await count()).toBeLessThan(1000);
+  await card.getByText(/^manifest ▸/).click();
+  await expect(card).toContainText("let agents run its action reset");
+});
+
+test("shop runs billing's actions: an order calls billing and stores what it answered, a refund undoes it, a stopped billing answers 502, and the order's run replays exactly", async ({ page, request }) => {
+  // billing first: the shop's calls need it deployed.
+  await openSample(page, "Billing (actions another flow runs)");
+  const billing = await deploy(page);
+  await openSample(page, "Shop (a flow calling another's actions)", false);
+  // The shop asks to run billing's actions, which its approval says in words.
+  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
+  await page.getByRole("dialog", { name: "deploy settings" }).getByRole("button", { name: "done" }).click();
+  const shop = await deploy(page);
+  const at = (port: number | null, path: string) => `http://127.0.0.1:${port}${path}`;
+  const id = `o-${Date.now()}`;
+  const placed = await request.post(at(shop, "/orders"), { data: { id, amount: 5 } });
+  expect(placed.status()).toBe(201);
+  expect(await placed.json()).toEqual({ id, total: 6 });
+  expect(await (await request.get(at(shop, `/orders/${id}`))).json()).toEqual({ amount: 5, total: 6 });
+  // The charge is billing's own: its page reads it back.
+  expect(await (await request.get(at(billing, `/charges/${id}`))).json()).toEqual({ amount: 5, fee: 1 });
+  // A refund runs billing's other action, which only writes.
+  expect((await request.delete(at(shop, `/orders/${id}`))).status()).toBe(204);
+  expect((await request.get(at(billing, `/charges/${id}`))).status()).toBe(404);
+  // The shop's run replays exactly, the call answered from its record.
+  await request.post(at(shop, "/orders"), { data: { id: `${id}-again`, amount: 7 } });
+  await viewNewestRun(page);
+  await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
+  await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
+  // Its manifest names what it may run.
+  await page.getByRole("button", { name: "deployed", exact: true }).click();
+  const shopCard = page.getByLabel("deployment shop");
+  await shopCard.getByText(/^manifest ▸/).click();
+  await expect(shopCard).toContainText("run the action charge of the flow billing");
+  // A billing that isn't running can't be called: the call answers why, and the order isn't stored.
+  const billingCard = page.getByLabel("deployment billing");
+  await billingCard.getByRole("button", { name: "stop", exact: true }).click();
+  await expect(billingCard).toContainText("stopped");
+  const lost = `${id}-lost`;
+  expect((await request.post(at(shop, "/orders"), { data: { id: lost, amount: 1 } })).status()).toBe(502);
+  expect((await request.get(at(shop, `/orders/${lost}`))).status()).toBe(404);
+});
+
+test("drop-board's file handlers run beside its routes: a file dropped in, and one removed, show on its page, and a file's run replays exactly", async ({ page, browser }) => {
+  const { rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  await openSample(page, "Drop board (files on a live page)");
+  const port = await deploy(page);
+  // The server panel lists its file handlers beside its routes.
+  await expect(page.getByText("board deleted", { exact: true })).toBeVisible();
+  const board = await browser.newPage();
+  const subscribed = board.waitForResponse((r) => new URL(r.url()).pathname === "/live");
+  await board.goto(`http://127.0.0.1:${port}/`);
+  await subscribed;
+  // A file that settles in the folder runs the block for new files; removed, the one for deleted.
+  const name = `dropped-${Date.now()}.txt`;
+  writeFileSync(join(FOLDERS, "board", name), "hello");
+  await expect(board.locator("li.new").first()).toHaveText(`new ${name} (5 bytes)`, { timeout: 15_000 });
+  rmSync(join(FOLDERS, "board", name));
+  await expect(board.locator("li.new").first()).toHaveText(`deleted ${name}`, { timeout: 15_000 });
+  await board.close();
+  // The newest run is the deleted file's, named by its line, and view mode replays it over its block.
+  await viewNewestRun(page);
+  await expect(page.locator(".hl-view__bottom")).toContainText(`deleted file ${name} (on file board deleted)`);
 });
 
 test("basket reads a price inside a mapped function, per item, and its run replays exactly", async ({ page, request }) => {

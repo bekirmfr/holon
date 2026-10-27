@@ -166,6 +166,21 @@ fn tool_list() -> Value {
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true }
         },
         {
+            "name": "run",
+            "title": "Run a flow's action",
+            "description": "Run one of a deployed flow's actions (an `action reset (input) { … }` block) by its name, with what to send it (it is logged as a run), and answer what it answered and the run's number for explain. An agent runs only the actions a person lets agents run, in the flow's deploy settings.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": slug,
+                    "action": { "type": "string", "description": "the action's name: reset, for `action reset (input)`" },
+                    "input": { "description": "what to send it, as JSON (the block's input); leave out for {}" }
+                },
+                "required": ["slug", "action"]
+            },
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true }
+        },
+        {
             "name": "deployments",
             "title": "List what is deployed",
             "description": "What is deployed, one line each (state, version, port, runs, who deployed it), what each waits on a person for, and the flows saved but never deployed. With a slug, that one in full: its routes, what it may do, what its grant doesn't cover, the secrets it reads and which are set, what it waits for, and its text as deployed, even when it has never run.",
@@ -215,6 +230,7 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
         "save" => save(&*connect()?, arg(args, "text")?, args.get("name").and_then(Value::as_str)),
         "deploy" => deploy(&*connect()?, arg(args, "text")?, args.get("slug").and_then(Value::as_str)),
         "call" => call(&*connect()?, args),
+        "run" => run_action(&*connect()?, arg(args, "slug")?, arg(args, "action")?, args.get("input").cloned().unwrap_or_else(|| json!({}))),
         "deployments" => deployments(&*connect()?, args.get("slug").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
         "flows" => flows(&*connect()?, args.get("name").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
         "runs" => runs(&*connect()?, arg(args, "slug")?, args.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 200)),
@@ -529,6 +545,17 @@ fn call(api: &dyn Api, args: &Value) -> Result<String, String> {
         None => out.push("Its run isn't in the log.".into()),
     }
     Ok(out.join("\n"))
+}
+
+/// Run `slug`'s action `name` with `input`: what it answered, and its run.
+fn run_action(api: &dyn Api, slug: &str, name: &str, input: Value) -> Result<String, String> {
+    let ran = json_of(api, "POST", &format!("/trigger/{}/{}", seg(slug), seg(name)), Some(Body::Json(input)))?;
+    let seq = ran.get("seq").and_then(Value::as_u64).unwrap_or(0);
+    if ran.get("waiting").and_then(Value::as_bool) == Some(true) {
+        return Ok(format!("action {name} is waiting for an event: run {seq}, which `explain` shows."));
+    }
+    let answer = ran.get("answer").cloned().unwrap_or(Value::Null);
+    Ok(format!("action {name} → {answer}\n\nThis was run {seq}: `explain` with run {seq} shows what each statement did."))
 }
 
 fn runs(api: &dyn Api, slug: &str, limit: u64) -> Result<String, String> {
@@ -887,6 +914,64 @@ mod tests {
         assert_eq!(person.send("POST", "/deployments/agent-slugs/stop", None).unwrap().0, 200);
     }
 
+    /// An agent runs a flow's action only as its grant lets agents: a person asks for it (the
+    /// deploy settings' `agents`) and approves `AgentRuns("reset")`; taking it back refuses the
+    /// agent again and leaves the flow running. A person runs it either way.
+    #[test]
+    fn an_agent_runs_an_action_only_as_its_grant_lets_agents() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let text = include_str!("../../holon-author/samples/ticker.holon").replace("port 8156", "port 18259");
+        let plan = agent::plan(&text).unwrap();
+        for unit in &plan.units {
+            json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
+        }
+        let deploy_with = |agents: Value| -> Result<Value, String> {
+            let requirements = json!({ "agents": agents });
+            let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "ticker", "unit": plan.unit, "requirements": requirements }))))?;
+            let ask = json!({ "slug": "ticker", "unit": plan.unit, "acknowledge": preview["needs_approval"], "requirements": requirements, "document": plan.document });
+            json_of(&person, "POST", "/deploy", Some(Body::Json(ask)))?;
+            Ok(preview)
+        };
+        deploy_with(json!([])).unwrap();
+        let refused = tool_as(&agent, "run", json!({ "slug": "ticker", "action": "reset", "input": { "to": 3 } })).unwrap_err();
+        assert!(refused.contains("refused") && refused.contains("agents may not run"), "{refused}");
+        let ran = tool_as(&person, "run", json!({ "slug": "ticker", "action": "reset", "input": { "to": 3 } })).unwrap();
+        assert!(ran.starts_with("action reset → {\"set\":3,"), "a person runs it: {ran}");
+
+        let preview = deploy_with(json!(["reset"])).unwrap();
+        assert!(preview["needs_approval"].as_array().unwrap().contains(&json!("AgentRuns(\"reset\")")), "a person approves it: {preview}");
+        let ran = tool_as(&agent, "run", json!({ "slug": "ticker", "action": "reset", "input": { "to": 7 } })).unwrap();
+        assert!(ran.contains("\"set\":7") && ran.contains("This was run"), "{ran}");
+        assert!(tool_as(&agent, "run", json!({ "slug": "ticker", "action": "reset" })).unwrap().contains("\"set\":0"), "nothing sent is {{}}");
+        assert!(runs(&agent, "ticker", 5).unwrap().contains("ada (agent)"), "the run names who ran it");
+
+        json_of(&person, "POST", "/deployments/ticker/grant", Some(Body::Json(json!({ "revoke": ["AgentRuns(\"reset\")"] })))).unwrap();
+        assert!(tool_as(&agent, "run", json!({ "slug": "ticker", "action": "reset" })).unwrap_err().contains("agents may not run"));
+        assert!(state.deployments.lock().unwrap()["ticker"].life.status == crate::lifecycle::Status::Running, "taken back, it runs on");
+        assert!(deploy_with(json!(["nope"])).unwrap_err().contains("it has no action \"nope\""));
+        assert_eq!(person.send("POST", "/deployments/ticker/stop", None).unwrap().0, 200);
+    }
+
+    fn tool_as(api: &dyn Api, name: &str, args: Value) -> Result<String, String> {
+        let connect = || -> Result<Box<dyn Api + '_>, String> {
+            struct By<'b>(&'b dyn Api);
+            impl Api for By<'_> {
+                fn server(&self) -> String {
+                    self.0.server()
+                }
+                fn send(&self, method: &str, path: &str, body: Option<Body>) -> Result<(u16, Vec<u8>), String> {
+                    self.0.send(method, path, body)
+                }
+            }
+            Ok(Box::new(By(api)))
+        };
+        call_tool(name, &args, &connect)
+    }
+
     /// Which sites' pages a flow answers (`browsers`) is a person's to widen: a page from a new one
     /// reads what the flow answers, in its visitor's browser. An agent's version that keeps them,
     /// or answers fewer, deploys; one that adds a site waits for a person.
@@ -1049,7 +1134,7 @@ mod tests {
         assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(answers[0]["result"]["serverInfo"]["name"], "holon");
         let names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["reference", "check", "save", "deploy", "call", "deployments", "flows", "runs", "explain"]);
+        assert_eq!(names, ["reference", "check", "save", "deploy", "call", "run", "deployments", "flows", "runs", "explain"]);
         assert_eq!(answers[2]["result"]["isError"], false);
         assert!(answers[2]["result"]["content"][0]["text"].as_str().unwrap().starts_with("concat("));
         assert_eq!(answers[3]["result"]["isError"], true, "a mistake is a tool's failure, said: {}", answers[3]);

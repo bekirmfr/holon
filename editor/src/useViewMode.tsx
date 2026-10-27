@@ -30,6 +30,7 @@ import {
   wireKey,
   type ReplayNode,
 } from "./replay";
+import { stable } from "./textSync";
 import { getDeployedDocument, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
 import type { FlowMeta } from "./tabs";
@@ -153,8 +154,16 @@ export function useViewMode(input: ViewModeInput) {
       const n = ns.find((x) => x.id === id);
       return n?.data.name === "respond" && n.data.body.kind === "Template";
     });
-    if (selectedRun.kind === "request" && respond && selectedRun.outputs.length > 0) {
+    // An action's run is answered as a request is: by its respond.
+    const action = selectedRun.kind === "trigger" && !!selectedRun.route;
+    if ((selectedRun.kind === "request" || action) && respond && selectedRun.outputs.length > 0) {
       verdict = JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(selectedRun.outputs[0]);
+    }
+    // A clock's tick, a file handler's run or an action that only writes answers nobody: it
+    // reproduces when each node gives what the log says it gave.
+    if ((selectedRun.kind === "tick" || selectedRun.kind === "file" || (action && !respond)) && selectedRun.route) {
+      const recorded = [...nodeOutputs(selectedRun, viewTrace)].filter(([id]) => run.traces.has(id));
+      if (recorded.length > 0) verdict = recorded.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs));
     }
     // It ran the nodes the run ran (a branch the run took, the replay took), where the timeline
     // can tell.

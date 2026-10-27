@@ -390,9 +390,29 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
         return Rerun::Differs(format!("its unit {} isn't in the export", &entry.unit[..12.min(entry.unit.len())]));
     };
 
-    // What it ran: a request's endpoint, with the request; anything else, the whole unit.
-    let (root, inputs) = match &entry.route {
-        Some(route) => {
+    // What it ran: a request's endpoint, with the request; a clock's tick or a file's run, that
+    // handler alone (the file's handle among the sourced values); an action's, its handler with
+    // what was sent; anything else, the whole unit.
+    let clock = match &entry.route {
+        Some(label) if entry.kind == "tick" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.clocks.into_iter().find(|c| c.label == *label)).map(|c| (c.handler, false))
+        }
+        Some(label) if entry.kind == "file" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.files.into_iter().find(|f| f.label == *label)).map(|f| (f.handler, false))
+        }
+        Some(label) if entry.kind == "trigger" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.actions.into_iter().find(|a| a.label == *label)).map(|a| (a.handler, true))
+        }
+        _ => None,
+    };
+    let (root, inputs) = match (&entry.route, clock) {
+        (Some(label), Some((handler, sent))) => {
+            let Some(root) = resolver.resolve(&handler) else {
+                return Rerun::Differs(format!("the handler of {label:?} isn't in the export"));
+            };
+            (root, if sent { vec![entry.request.as_ref().map(|r| marks.read(r, entry.escaped))] } else { Vec::new() })
+        }
+        (Some(route), None) => {
             let Ok(server) = read_server(deployed, resolver) else {
                 return Rerun::Differs("it names a route, but its unit isn't a server".into());
             };
@@ -405,7 +425,7 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
             };
             (root, vec![entry.request.as_ref().map(|r| marks.read(r, entry.escaped))])
         }
-        None => (deployed, Vec::new()),
+        (None, _) => (deployed, Vec::new()),
     };
 
     let mut extra = Vec::new();

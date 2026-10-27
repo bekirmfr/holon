@@ -126,7 +126,7 @@ fn serve_flow(
     let mut ran: Option<LogEntry> = None;
     // Whether its answer may be computed from a secret: the log keeps it withheld then.
     let mut answer_derived = false;
-    let mut waits = RunWaits { folders: Some(folders), forward, channels: Some(channels), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), forward, channels: Some(channels), slug: Some(slug.to_string()), ..Default::default() };
     let mut parked: Result<Vec<String>, String> = Ok(Vec::new());
     // A module in the flow runs through the engine; everything else resolves as before.
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
@@ -232,7 +232,7 @@ pub(crate) fn sync_listeners(state: &AppState) {
         .unwrap()
         .iter()
         .filter(|(_, d)| d.life.status != Status::Stopped)
-        .filter_map(|(slug, d)| d.server.as_ref().map(|s| (slug.clone(), s.port)))
+        .filter_map(|(slug, d)| d.server.as_ref().and_then(|s| s.port).map(|port| (slug.clone(), port)))
         .collect();
     let mut running = listeners.lock().unwrap();
     running.retain(|slug, (port, stop)| {

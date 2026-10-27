@@ -1,4 +1,5 @@
-//! HTTP node templates: `request`, `respond` and `stripe_verify`. They are not new primitives.
+//! Node templates: `request`, `respond`, `stripe_verify`, `every`, `on_file` and `action`. They are not new
+//! primitives.
 //! Each is a small composite of genesis leaves (field, json_parse, record, with_field, const,
 //! default, …), rebuilt from the node's params whenever it is hashed, the same way a primitive
 //! node is rebuilt from its catalog entry.
@@ -30,6 +31,17 @@
 //!   while a secret is being rolled), any one matching passes: each piece is compared with
 //!   `v1=<expected>` in constant time, folded into whether any matched.
 //!
+//! - `every` (param: seconds) is a clock handler's trigger (docs/L4s/triggers-L4.md §2): a run
+//!   every `seconds`, the group wired to it its unit. No inputs; one output, `now`, the time of the
+//!   tick (a `clock` leaf), which its sinks are tied to.
+//! - `on_file` (params: folder, on, matching) is a file handler's trigger (§2): a run for each file
+//!   that settles in `folder` (or, `on: deleted`, leaves it), its name matching the glob `matching`
+//!   if set. No inputs; one output, `file`, the file's handle (a `file_arrival` leaf, sourced as
+//!   it is in a flow of one `on file` line), which its sinks are tied to.
+//! - `action` (param: name) is an action's trigger (§2): a run by hand, by its name. One input,
+//!   hidden as a request node's is: what was sent, fed by the action handler it derives into; one
+//!   output, `input`, the same value, which its sinks are tied to and a `respond` answers.
+//!
 //! A template's units are part of every flow's identity that uses it: a change here changes the
 //! hash of each such flow.
 
@@ -39,7 +51,43 @@ use serde::Serialize;
 use crate::wire::{frozen_value, WParam, WPort, WType};
 
 /// The templates, in palette order.
-pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify"];
+pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify", "every", "on_file", "action"];
+
+/// A clock handler's period, read from its `seconds`: whole seconds, 1 up to core's `MAX_PERIOD`.
+pub fn period(seconds: &str) -> Result<u64, String> {
+    match seconds.trim().parse::<u64>() {
+        Ok(s) if (1..=holon_core::MAX_PERIOD).contains(&s) => Ok(s),
+        _ => Err(format!("every \"{seconds}\": a clock runs every whole number of seconds, from 1s to 366d")),
+    }
+}
+
+/// A file handler's trigger, read from its params: a folder's name, `on` new or deleted, and
+/// `matching` empty or a glob.
+pub fn file_trigger(params: &[WParam]) -> Result<holon_core::FileTrigger, String> {
+    let folder = frozen_value(params, "folder").unwrap_or("");
+    if folder.is_empty() || folder.len() > 64 || !folder.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(format!("on file \"{folder}\": a folder is a name (letters, digits, - and _)"));
+    }
+    let deleted = match frozen_value(params, "on").unwrap_or("") {
+        "" | "new" => false,
+        "deleted" => true,
+        on => return Err(format!("on file {folder}: \"{on}\" is neither new nor deleted")),
+    };
+    let matching = frozen_value(params, "matching").unwrap_or("").to_string();
+    if !matching.is_empty() && !holon_core::is_glob(&matching) {
+        return Err(format!("{matching:?} isn't a pattern of names: `*` and `?` within a folder, `**/` for any folders, `/` between them"));
+    }
+    Ok(holon_core::FileTrigger { folder: folder.to_string(), deleted, matching })
+}
+
+/// An action's name, read from its `name`: letters, digits, `-` and `_`, as core reads it back.
+pub fn action_name(params: &[WParam]) -> Result<String, String> {
+    let name = frozen_value(params, "name").unwrap_or("");
+    if name.is_empty() || name.len() > 64 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(format!("action \"{name}\": an action's name is letters, digits, - and _"));
+    }
+    Ok(name.to_string())
+}
 
 pub fn is_template(name: &str) -> bool {
     TEMPLATES.contains(&name)
@@ -53,6 +101,15 @@ pub fn describe(name: &str) -> Option<&'static str> {
         }
         "respond" => {
             "Answers the route's request: body as the response, with the status set on the node (a record or list is sent as JSON). When body didn't arrive, it answers the missing status instead (404 unless set) with an error."
+        }
+        "every" => {
+            "A clock: a run every seconds set on the node, with now, the time of the tick. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
+        }
+        "on_file" => {
+            "A file handler: a run for each file that settles in the folder set on the node (or, on: deleted, is removed from it), its name matching the glob matching if set, with file, its handle {folder, name, size, hash, modified, event}. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
+        }
+        "action" => {
+            "An action: a run by hand, by the name set on the node, with input, what was sent (a JSON value; {} when nothing). A respond it wires to gives the answer. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
         }
         "stripe_verify" => {
             "Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time with each v1 signature (any one matching passes, as while a secret is rolled), the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it."
@@ -87,6 +144,9 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
             ],
             hidden_inputs: true,
         },
+        "every" => Interface { inputs: vec![], outputs: vec![WPort::new("now", Number)], hidden_inputs: false },
+        "on_file" => Interface { inputs: vec![], outputs: vec![WPort::new("file", Record)], hidden_inputs: false },
+        "action" => Interface { inputs: vec![WPort::new("input", Any)], outputs: vec![WPort::new("input", Any)], hidden_inputs: true },
         "stripe_verify" => Interface {
             inputs: vec![request(), WPort::new("secret", Text), WPort::new("now", Number)],
             outputs: vec![WPort::new("event", Any), WPort::new("verified", Boolean)],
@@ -114,6 +174,9 @@ pub fn defaults(name: &str) -> Option<Vec<WParam>> {
         "request" => vec![f("method", "GET"), f("path", "/"), f("resume", "")],
         "respond" => vec![f("status", "200"), f("missing", "404"), f("headers", "false"), f("status_input", "false")],
         "stripe_verify" => vec![f("tolerance", "300")],
+        "every" => vec![f("seconds", "10")],
+        "on_file" => vec![f("folder", "inbox"), f("on", "new"), f("matching", "")],
+        "action" => vec![f("name", "run")],
         _ => return None,
     })
 }
@@ -323,6 +386,31 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
             Ok(composite(children, edges, inputs, outputs))
         }
 
+        "every" => {
+            period(frozen_value(params, "seconds").unwrap_or(""))?;
+            let clock = add_leaf(store, "clock", vec![], None)?;
+            Ok(composite(vec![clock], vec![e(0, 0, B, 0)], inputs, outputs))
+        }
+
+        "on_file" => {
+            let t = file_trigger(params)?;
+            let mut p = vec![frozen("folder", &t.folder)];
+            if t.deleted {
+                p.push(frozen("on", "deleted"));
+            }
+            if !t.matching.is_empty() {
+                p.push(frozen("matching", &t.matching));
+            }
+            let arrival = add_leaf(store, "file_arrival", p, None)?;
+            Ok(composite(vec![arrival], vec![e(0, 0, B, 0)], inputs, outputs))
+        }
+
+        // What was sent, passed through: the action handler feeds it, the block reads it.
+        "action" => {
+            action_name(params)?;
+            Ok(composite(vec![], vec![e(B, 0, B, 0)], inputs, outputs))
+        }
+
         // respond
         _ => {
             let status = frozen_value(params, "status").unwrap_or("");
@@ -486,5 +574,34 @@ mod tests {
             assert!(interface(t, &params).is_some() && describe(t).is_some(), "{t}");
         }
         assert!(interface("add", &[]).is_none() && !is_template("add"));
+    }
+
+    /// `action` passes what was sent through, its name checked.
+    #[test]
+    fn action_passes_what_was_sent_through() {
+        let mut store = MapResolver::new();
+        let unit = build("action", &[WParam::frozen("name", "reset")], &mut store).unwrap();
+        assert_eq!((names(&unit.inputs), names(&unit.outputs)), (vec!["input"], vec!["input"]));
+        assert!(matches!(&unit.body, UnitBody::Composite { children, edges } if children.is_empty() && edges == &[e(BOUNDARY, 0, BOUNDARY, 0)]));
+        for bad in ["", "a b", "../x"] {
+            assert!(build("action", &[WParam::frozen("name", bad)], &mut store).is_err(), "{bad:?}");
+        }
+    }
+
+    /// `on_file` is a `file_arrival` leaf with the node's line: its handle is the file's, sourced
+    /// as the old form's is, so core reads its trigger and its capability alike.
+    #[test]
+    fn on_file_is_a_file_arrival_with_its_line() {
+        let mut store = MapResolver::new();
+        let p = |on: &str, matching: &str| vec![WParam::frozen("folder", "drop"), WParam::frozen("on", on), WParam::frozen("matching", matching)];
+        let unit = build("on_file", &p("deleted", "*.csv"), &mut store).unwrap();
+        let caps = holon_core::capabilities(&unit, &store);
+        assert!(caps.contains(holon_core::Capability::FileArrival("drop".into())));
+        let t = holon_core::file_triggers(&unit, &store);
+        assert_eq!(t, [holon_core::FileTrigger { folder: "drop".into(), deleted: true, matching: "*.csv".into() }]);
+        assert!(build("on_file", &p("new", ""), &mut store).is_ok());
+        for bad in [p("moved", ""), p("new", "a**"), vec![WParam::frozen("folder", "../up")]] {
+            assert!(build("on_file", &bad, &mut store).is_err(), "{bad:?}");
+        }
     }
 }

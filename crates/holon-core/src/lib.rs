@@ -63,7 +63,7 @@ pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::{choice_next, eval, eval_observed, eval_one, Answer, Choice, NoObserver, Observer, Slot};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
-pub use catalog::{genesis_units, interface_of, GENESIS, PASSES_EXTRA, VARIADIC};
+pub use catalog::{genesis_units, interface_of, open_trigger, takes_trigger, GENESIS, PASSES_EXTRA, TRIGGER, TRIGGERED, VARIADIC};
 pub use docs::describe;
 pub use manifest::{consent_name, manifest_items, permission_kind, reads_from_outside, trigger, PermissionKind};
 pub use inspect::{adoption_counts, child_refs, dependencies};
@@ -89,8 +89,8 @@ pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;
 pub use json::{parse as parse_json, stringify as stringify_json};
 pub use declare::{
-    declaration_of, match_route, parse_path, read_endpoint, read_server, DeclError, EndpointError, Route, Segment,
-    Server, METHODS,
+    clock_label, declaration_of, match_route, parse_path, period_text, read_clock, read_action, read_endpoint, read_file_handler, read_server,
+    Action, Clock, DeclError, EndpointError, FileHandler, Route, Segment, Server, MAX_PERIOD, METHODS,
 };
 
 /// Reserved edge endpoint denoting a composite's **boundary** (its own interface)

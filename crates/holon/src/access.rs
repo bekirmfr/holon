@@ -78,9 +78,13 @@ fn is_open(method: &str, url: &str) -> bool {
 /// What an agent may do besides reading (see the module's notes).
 fn agent_may(method: &str, url: &str) -> bool {
     let calls = || url.strip_prefix("/deployments/").and_then(|r| r.strip_suffix("/request")).is_some_and(|slug| !slug.is_empty() && !slug.contains('/'));
+    // An action by its name; whether its grant lets agents run it is the deployment's to say.
+    let runs = || {
+        url.strip_prefix("/trigger/").and_then(|r| r.split_once('/')).is_some_and(|(slug, name)| !slug.is_empty() && !name.is_empty() && !name.contains('/'))
+    };
     match method {
         "GET" => true,
-        "POST" => matches!(url, "/unit" | "/deploy/preview" | "/deploy" | "/flows") || calls(),
+        "POST" => matches!(url, "/unit" | "/deploy/preview" | "/deploy" | "/flows") || calls() || runs(),
         _ => false,
     }
 }
@@ -261,7 +265,7 @@ mod tests {
         let (access, [ada, bob, cy]) = server();
         let accounts = access.accounts().unwrap();
         let (claude, _) = accounts.create_token("claude", Role::Agent, "ada").unwrap();
-        for (method, url) in [("GET", "/flows"), ("POST", "/unit"), ("POST", "/deploy/preview"), ("POST", "/deploy"), ("POST", "/flows"), ("POST", "/deployments/a/request"), ("GET", "/auth/me")] {
+        for (method, url) in [("GET", "/flows"), ("POST", "/unit"), ("POST", "/deploy/preview"), ("POST", "/deploy"), ("POST", "/flows"), ("POST", "/deployments/a/request"), ("POST", "/trigger/a/reset"), ("GET", "/auth/me")] {
             assert_eq!(call(&access, method, url, Some(&claude)), Ok(Some("token:claude".into())), "{method} {url}");
         }
         for (method, url) in [
@@ -274,6 +278,7 @@ mod tests {
             ("POST", "/deployments/a/secrets/k"),
             ("POST", "/deployments/a/b/request"),
             ("POST", "/trigger/a"),
+            ("POST", "/trigger/a/b/c"),
             ("POST", "/fire"),
             ("POST", "/registry/publish"),
             ("POST", "/permissions/reload"),

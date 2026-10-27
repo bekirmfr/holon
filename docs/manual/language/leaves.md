@@ -473,14 +473,14 @@ Whether two values are the same.
 
 ## The outside world
 
-Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder).
+Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or what `after` names. The language ties it, so it is never an argument.
 
-[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`clock`](#clock) · [`random`](#random) · [`ingress`](#ingress) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
+[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`clock`](#clock) · [`random`](#random) · [`ingress`](#ingress) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
 
 ### `http_request`
 
 ```
-http_request(path: Text, headers: Record, body: Any) -> out: Record  {method: GET, host: example.com}
+http_request(path: Text, headers: Record, body: Any, trigger: Any) -> out: Record  {method: GET, host: example.com}
 ```
 
 Calls the host set on the node (HTTPS) with the method, path, headers and body, and answers {status, headers, body}. Performed by the server between rounds, within the deployment's limits; the host is a permission it asks for. Holds back when a wired input didn't arrive.
@@ -488,7 +488,7 @@ Calls the host set on the node (HTTPS) with the method, path, headers and body, 
 ### `http_upload`
 
 ```
-http_upload(path: Text, headers: Record, file: Record) -> out: Record  {method: PUT, host: example.com}
+http_upload(path: Text, headers: Record, file: Record, trigger: Any) -> out: Record  {method: PUT, host: example.com}
 ```
 
 Calls the host set on the node like http_request, with the file a handle names as the body: the server streams its bytes from the folder (one the deployment reads), never through the flow, and fails the call if the file changed since the run read it.
@@ -496,10 +496,18 @@ Calls the host set on the node like http_request, with the file a handle names a
 ### `http_stream`
 
 ```
-http_stream(path: Text, headers: Record, body: Any) -> out: Record  {method: POST, host: example.com, pipe}
+http_stream(path: Text, headers: Record, body: Any, trigger: Any) -> out: Record  {method: POST, host: example.com, pipe}
 ```
 
 Calls the host set on the node like http_request, and the server forwards the answer's body to the route's caller as it arrives (a 2xx answer; the reply is 200 with the answer's content type): a model's tokens, say, as they come. With pipe set to a channel's name, the pieces go to that channel's subscribers instead, as they arrive (a shared live transcript). The flow still gets the whole answer, as http_request's.
+
+### `flow_call`
+
+```
+flow_call(input: Any, trigger: Any) -> out: Record  {flow: billing, action: charge}
+```
+
+Runs the action set on the node of the deployed flow set on the node, with the input (a value; {} when none is wired), and answers {answer, run} when it ran, or {error, message} when it didn't (not_found, not_running, no_action, waiting, failed, too_deep, refused). Performed by the server between rounds, in-process, as an ordinary action run of the other flow, logged there as run by this flow; the pair is a permission it asks for. Holds back when a wired input didn't arrive.
 
 ### `clock`
 
@@ -568,7 +576,7 @@ The deployment's state under the key set on the node, as the run started. Readin
 ### `store_write`
 
 ```
-store_write(value: Any) -> out: Effect  {key: value}
+store_write(value: Any, trigger: Any) -> out: Effect  {key: value}
 ```
 
 Sets the deployment's state under the key set on the node to value, when the run finishes. Writing it is a permission.
@@ -592,7 +600,7 @@ A record of a collection's items, by key, in key order, up to limit: those whose
 ### `collection_put`
 
 ```
-collection_put(key: Text, value: Any) -> out: Effect  {collection: items}
+collection_put(key: Text, value: Any, trigger: Any) -> out: Effect  {collection: items}
 ```
 
 Puts value into a collection under key when the run finishes (added, or replaced). Writing it is a permission.
@@ -600,7 +608,7 @@ Puts value into a collection under key when the run finishes (added, or replaced
 ### `collection_delete`
 
 ```
-collection_delete(key: Text) -> out: Effect  {collection: items}
+collection_delete(key: Text, trigger: Any) -> out: Effect  {collection: items}
 ```
 
 Deletes a collection's item under key when the run finishes.
@@ -624,7 +632,7 @@ A record of a folder's files (name, size, hash, modified) in name order, up to l
 ### `file_write`
 
 ```
-file_write(name: Text, text: Text) -> out: Effect  {folder: files}
+file_write(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}
 ```
 
 Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.
@@ -632,7 +640,7 @@ Writes text to the file name in a folder when the run finishes (created, or repl
 ### `file_delete`
 
 ```
-file_delete(name: Text) -> out: Effect  {folder: files}
+file_delete(name: Text, trigger: Any) -> out: Effect  {folder: files}
 ```
 
 Deletes the file name in a folder when the run finishes.
@@ -664,7 +672,7 @@ length bytes of the file name in a folder from byte offset (from the end when ne
 ### `file_copy`
 
 ```
-file_copy(name: Text, from: Record) -> out: Effect  {folder: files}
+file_copy(name: Text, from: Record, trigger: Any) -> out: Effect  {folder: files}
 ```
 
 Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.
@@ -672,7 +680,7 @@ Copies the file a handle names into this folder as name when the run finishes, h
 ### `file_create`
 
 ```
-file_create(name: Text, text: Text) -> out: Effect  {folder: files}
+file_create(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}
 ```
 
 Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
@@ -680,7 +688,7 @@ Writes text to the file name in a folder when the run finishes, only if no file 
 ### `file_create_copy`
 
 ```
-file_create_copy(name: Text, from: Record) -> out: Effect  {folder: files}
+file_create_copy(name: Text, from: Record, trigger: Any) -> out: Effect  {folder: files}
 ```
 
 Copies the file a handle names into this folder as name when the run finishes, only if no file has that name then: it never replaces one.
@@ -704,7 +712,7 @@ The first row sql selects from a database, as a record by column name; nothing w
 ### `db_exec`
 
 ```
-db_exec(params: List<Any>) -> out: Effect  {database: db, sql: delete from t where false, expect}
+db_exec(params: List<Any>, trigger: Any) -> out: Effect  {database: db, sql: delete from t where false, expect}
 ```
 
 Runs sql (an insert, update or delete) on a database when the run finishes, in one transaction with the run's other writes there; params are its $1, $2, …. With expect, it must change exactly that many rows, or nothing the run did there lands.
@@ -728,7 +736,7 @@ The first document filter selects from a collection, as a record; nothing when t
 ### `db_insert`
 
 ```
-db_insert(params: List<Any>) -> out: Effect  {database: db, collection: items, document: {}}
+db_insert(params: List<Any>, trigger: Any) -> out: Effect  {database: db, collection: items, document: {}}
 ```
 
 Adds document to a collection when the run finishes, in one transaction with the run's other writes there; params are its $1, $2, ….
@@ -736,7 +744,7 @@ Adds document to a collection when the run finishes, in one transaction with the
 ### `db_update`
 
 ```
-db_update(params: List<Any>) -> out: Effect  {database: db, collection: items, filter: {}, update: {"$set":{}}, expect}
+db_update(params: List<Any>, trigger: Any) -> out: Effect  {database: db, collection: items, filter: {}, update: {"$set":{}}, expect}
 ```
 
 Applies update (its $set, $inc, … operators) to the documents filter selects, when the run finishes; params are their $1, $2, …. With expect, it must match exactly that many documents, or nothing the run did there lands.
@@ -744,7 +752,7 @@ Applies update (its $set, $inc, … operators) to the documents filter selects, 
 ### `db_delete`
 
 ```
-db_delete(params: List<Any>) -> out: Effect  {database: db, collection: items, filter: {}, expect}
+db_delete(params: List<Any>, trigger: Any) -> out: Effect  {database: db, collection: items, filter: {}, expect}
 ```
 
 Deletes the documents filter selects when the run finishes; params are its $1, $2, …. With expect, it must delete exactly that many, or nothing the run did there lands.
@@ -752,7 +760,7 @@ Deletes the documents filter selects when the run finishes; params are its $1, $
 ### `channel_send`
 
 ```
-channel_send(pack: Any) -> out: Effect  {channel: updates}
+channel_send(pack: Any, trigger: Any) -> out: Effect  {channel: updates}
 ```
 
 Sends pack on the channel set on the node once the run is over and its writes have landed: every caller subscribed to the channel gets it as a server-sent event. Sending on it is a permission.
@@ -768,7 +776,7 @@ A subscription to the channel set on the node, for a route to answer with: the c
 ### `egress`
 
 ```
-egress(payload: Any) -> out: Effect
+egress(payload: Any, trigger: Any) -> out: Effect
 ```
 
 Sends its payload out of the flow as a message, when the run finishes.
@@ -789,3 +797,15 @@ Answers the route's request: body as the response, with the status set on the no
 ### `stripe_verify`
 
 Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time with each v1 signature (any one matching passes, as while a secret is rolled), the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it.
+
+### `every`
+
+A clock: a run every seconds set on the node, with now, the time of the tick. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
+
+### `on_file`
+
+A file handler: a run for each file that settles in the folder set on the node (or, on: deleted, is removed from it), its name matching the glob matching if set, with file, its handle {folder, name, size, hash, modified, event}. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
+
+### `action`
+
+An action: a run by hand, by the name set on the node, with input, what was sent (a JSON value; {} when nothing). A respond it wires to gives the answer. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.

@@ -176,6 +176,9 @@ fn eval_at(
     observer: &mut impl Observer,
     path: &mut Vec<u32>,
 ) -> Slots {
+    // A sink's trigger only has to be there (the composite holds it back while a wired one is
+    // absent): it is dropped here, so the leaf computes on its own inputs as it always did.
+    let inputs = if crate::takes_trigger(unit) && inputs.len() == unit.inputs.len() { &inputs[..inputs.len() - 1] } else { inputs };
     match &unit.body {
         // `map` is higher-order — it invokes the evaluator — so it lives here, where
         // recursion lives, rather than in first-order `compute`.
@@ -187,6 +190,8 @@ fn eval_at(
         UnitBody::Primitive { name } if name == "http_request" => ask(primitives::http_request(inputs, &unit.params), observer, path),
         // One whose body is a file: the host streams it.
         UnitBody::Primitive { name } if name == "http_upload" => ask(primitives::http_upload(inputs, &unit.params), observer, path),
+        // A call to another flow's action: the host runs it in-process and answers.
+        UnitBody::Primitive { name } if name == "flow_call" => ask(primitives::flow_call_request(inputs, &unit.params), observer, path),
         // One whose answer the host forwards to the route's caller as it arrives.
         UnitBody::Primitive { name } if name == "http_stream" => ask(primitives::http_stream(inputs, &unit.params), observer, path),
         // A durable run's waiting point and its token: also the host's to answer.
@@ -436,9 +441,11 @@ fn eval_composite(
                     // absence means everywhere else: the node doesn't fire. Otherwise a request
                     // downstream of a check that failed (a webhook whose signature didn't
                     // verify) still went out, bodiless.
-                    let gathered: Vec<Option<Value>> = seen.into_iter().map(Slot::into_value).collect();
+                    let mut gathered: Vec<Option<Value>> = seen.into_iter().map(Slot::into_value).collect();
+                    open_triggers(child, &mut gathered, |p| incoming.contains_key(&(ci as u32, p as u32)));
                     let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
-                    let held = wired_but_absent && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name));
+                    // A sink is held the same way: its trigger, wired, hasn't arrived.
+                    let held = wired_but_absent && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str()));
                     path.push(ci as u32);
                     observer.enter(path);
                     let outs = if held {
@@ -470,6 +477,19 @@ fn eval_composite(
             None => Slot::Absent,
         })
         .collect()
+}
+
+/// A placed holon's trigger left unwired reads as present ([`crate::open_trigger`]): its sinks run
+/// with the unit around it, as a leaf's open trigger lets it.
+pub(crate) fn open_triggers(child: &Unit, gathered: &mut [Option<Value>], wired: impl Fn(usize) -> bool) {
+    if matches!(child.body, UnitBody::Primitive { .. }) {
+        return;
+    }
+    for (p, port) in child.inputs.iter().enumerate() {
+        if port.name == crate::TRIGGER && gathered.get(p).is_some_and(Option::is_none) && !wired(p) {
+            gathered[p] = Some(crate::open_trigger());
+        }
+    }
 }
 
 /// Kahn's algorithm over in-range child→child edges, emitting a deterministic order
@@ -909,6 +929,35 @@ mod tests {
         assert_eq!(send(&wired, Some(Value::Text("hi".into()))), (vec![Some(num(200.0))], 1));
         assert_eq!(send(&wired, None), (vec![None], 0), "wired, absent: not sent");
         assert_eq!(send(&unwired, None), (vec![Some(num(200.0))], 1), "unwired: optional, sent without a body");
+    }
+
+    /// A sink's trigger (docs/L4s/triggers-L4.md §3): never read, dropped before it computes;
+    /// wired and absent, it holds the sink back; open, the sink runs with the unit around it. A
+    /// holon's own trigger left open reads as present, so its sinks run as a leaf's would.
+    #[test]
+    fn a_sink_waits_for_its_trigger_and_an_open_one_runs_with_its_unit() {
+        let mut r = MapResolver::new();
+        let write = Unit { params: vec![Param::frozen("key", "k")], ..crate::interface_of("store_write").unwrap() };
+        assert_eq!(write.inputs.last().map(|p| p.name.as_str()), Some(crate::TRIGGER));
+        let effect = |v: f64| Some(Value::Effect { sink: "store_write:k".into(), payload: Box::new(num(v)) });
+        // The leaf itself: the trigger's value is never read.
+        assert_eq!(eval(&write, &[Some(num(1.0)), Some(Value::Text("anything".into()))], &r).into_vec(), vec![effect(1.0)]);
+        let hw = r.insert(write).unwrap();
+        let ports = vec![nport("value"), Port { name: crate::TRIGGER.into(), ty: Type::Any }];
+        let tied = composite(ports, Type::Effect, vec![hw], vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)]);
+        let open = composite(vec![nport("value")], Type::Effect, vec![hw], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)]);
+        let run = |u: &Unit, inputs: &[Option<Value>], r: &MapResolver| {
+            let lazy = eval(u, inputs, r).into_vec();
+            assert_eq!(lazy, crate::eager::eval_eager(u, inputs, r), "eager agrees");
+            lazy
+        };
+        assert_eq!(run(&tied, &[Some(num(2.0)), Some(Value::Boolean(true))], &r), vec![effect(2.0)]);
+        assert_eq!(run(&tied, &[Some(num(2.0)), None], &r), vec![None], "wired, absent: held");
+        assert_eq!(run(&open, &[Some(num(3.0))], &r), vec![effect(3.0)], "open: runs with its unit");
+        // The tied one placed as a holon, its trigger left open: its sink runs.
+        let holon = r.insert(tied).unwrap();
+        let placed = composite(vec![nport("value")], Type::Effect, vec![holon], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)]);
+        assert_eq!(run(&placed, &[Some(num(4.0))], &r), vec![effect(4.0)]);
     }
 
     #[test]

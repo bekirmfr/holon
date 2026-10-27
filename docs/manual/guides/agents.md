@@ -55,6 +55,7 @@ The tools `holon mcp` offers:
 | `save` | save a flow on the server, for a person to open; never replaces a flow someone else saved |
 | `deploy` | deploy a flow; when it needs approval, save it for a person instead |
 | `call` | send a request to a deployed flow's route, logged as a run like any other |
+| `run` | run one of a deployed flow's actions by its name, with what to send it: only an action a person lets agents run |
 | `deployments` | what is deployed; with a slug, one in full: routes, what it may do, what isn't granted, which secrets are set, its text |
 | `flows` | the saved flows; with a name, its text |
 | `runs` | a deployment's latest runs, one line each |
@@ -64,6 +65,12 @@ The tools `holon mcp` offers:
 
 The agent role **never** approves a grant, starts, pauses, stops or deletes a deployment, sets a
 secret, or replaces a flow someone else saved. The server enforces this, not the tool.
+
+An agent runs a flow's [action](actions.md) only once you let it: in the deploy settings (**⚙**),
+**agents may run** lists the flow's actions, and each one you tick asks for `AgentRuns("name")`,
+which you approve at the next deploy. Until then, `run` answers that agents may not run it, and
+revoking it on the deployed page refuses them again. The agent's runs are logged as anyone's,
+"by *you* (agent)".
 
 ## Approving what an agent proposes
 
@@ -102,7 +109,8 @@ Agents work well with Holon when they use the tools in this order:
 1. `reference` once, to learn the language;
 2. write the flow, and `check` it until it compiles and asks for no more than it should;
 3. `deploy`; if it needs approval, ask the person;
-4. `call` it with a few requests, then `runs` and `explain` to see what each statement did;
+4. `call` it with a few requests (or `run` an action it is let run), then `runs` and `explain` to
+   see what each statement did;
 5. fix, `check`, `deploy` again.
 
 `explain` is the agent's view of what the editor's view mode shows you: the flow's text with the

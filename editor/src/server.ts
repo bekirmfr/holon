@@ -304,6 +304,9 @@ export type Requirements = {
   /** Capabilities it can run without: one not granted leaves it running with those calls
    *  refused, where a required one pauses it. Never its trigger (permissions.rs). */
   optional?: string[];
+  /** The actions agents may run (`action reset`'s `reset`): each is `AgentRuns("reset")`, a
+   *  grant a person approves and can take back. A person runs any of them either way. */
+  agents?: string[];
 };
 
 /** `POST /deploy/preview` — what deploying would ask for, without deploying. */
@@ -728,6 +731,30 @@ export async function sendRequest(slug: string, request: HttpRequest): Promise<H
     body: JSON.stringify(request),
   });
   return asJson<HttpResponse>(res);
+}
+
+/** `POST /deployments/<slug>/tick` — that clock of a deployed flow (its label, `every 2s`) ticks
+ *  now, its next tick a period later; answers the tick's history entry. */
+export async function tickNow(slug: string, clock: string): Promise<{ at_epoch_seconds: number; label?: string; performed: unknown[] }> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/tick`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clock }),
+  });
+  return asJson(res);
+}
+
+/** Where a deployment's action `name` is run: `POST <server>/trigger/<slug>/<name>`. */
+export function actionUrl(slug: string, name: string): string {
+  return `${BASE || window.location.origin}/trigger/${encodeURIComponent(slug)}/${encodeURIComponent(name)}`;
+}
+
+/** `POST /trigger/<slug>/<name>` — run the deployment's action `name` by hand, `sent` what it is
+ *  sent (JSON text; empty is `{}`): its answer, and the seq of the run's log entry. Throws
+ *  {@link ServerError}: 400 for what isn't JSON, 404 for no such action, 403 for a viewer. */
+export async function runAction(slug: string, name: string, sent: string): Promise<{ answer: unknown; seq: number; waiting?: boolean }> {
+  const res = await api(actionUrl(slug, name), { method: "POST", headers: { "Content-Type": "application/json" }, body: sent });
+  return asJson(res);
 }
 
 /** `GET /deployments/<slug>/state` — a stateful deployment's current keyed state. Throws

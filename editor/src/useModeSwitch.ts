@@ -7,7 +7,7 @@ import { useCallback, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
 import { restoreDocument } from "./docUnits";
 import { blankTab, type FlowMeta, type Mode, type TabState } from "./tabs";
-import { getDeployedDocument, getFlow, type DeploymentEntry, type FlowDocument } from "./server";
+import { getDeployedDocument, getFlow, getLog, type DeploymentEntry, type FlowDocument } from "./server";
 import { newHistory, snapshotOf, type Snapshot } from "./useCanvasHistory";
 import type { History } from "./history";
 import type { Evaluator } from "./holon";
@@ -63,7 +63,7 @@ export function useModeSwitch({
   const flowName = flow.name;
 
   const onView = useCallback(
-    async (slug: string) => {
+    async (slug: string, seq?: number) => {
       let doc: FlowDocument;
       try {
         doc = await getDeployedDocument(slug);
@@ -71,6 +71,8 @@ export function useModeSwitch({
         setError(e instanceof Error ? e.message : String(e));
         return;
       }
+      // Opened on a run (an action's view run): that run selected, when the log has it.
+      const run = seq === undefined ? null : await getLog(slug, seq - 1).then((l) => l.entries.find((e) => e.seq === seq) ?? null, () => null);
       // A unit that won't decode just stays unresolvable, like on Open.
       restoreDocument(doc, ev);
       const open = tabOf(slug);
@@ -93,7 +95,7 @@ export function useModeSwitch({
           viewing: slug,
           viewUnit: deployments.find((d) => d.slug === slug)?.unit ?? null,
           viewTrace: doc.trace,
-          selectedRun: null,
+          selectedRun: run,
           step: null,
           inspectNode: null,
         },

@@ -311,7 +311,7 @@ A flow is its headers, its definitions (`holon`), and its **handlers**. There ar
 - **Routes are the only handlers the network reaches.** A clock and a file have no caller. An
   action has callers, all through Holon, and its grant says which (§5).
 
-The **old forms stay**, as the one-handler case, lowered as they are apart from the sinks' trigger
+The **old forms stay**, as the one-handler case, lowered as they are, their sinks' triggers open
 (§3):
 
 - `every 10s` with top-level statements is a flow with one clock handler, lowered as today: the
@@ -388,18 +388,33 @@ same thing, and no node belongs to a handler by a field you can't see.
 
 - **`after` ties a sink to something else,** any value: `state.last = id after saved`, or
   `posts.put(k, v) after x`. It is not a node. It is how the text writes the trigger wire, and
-  `fmt` prints it only when the trigger isn't the block's own. Because an absent trigger means no
+  `fmt` prints it only when the trigger isn't the block's own. What it names is a statement of its
+  own, before it, never written inline in the clause. An effect read only by a trigger is still
+  performed: a trigger waits for it, it doesn't take it in (encapsulate.rs `default_spec`). Because an absent trigger means no
   write, `after found` is "write only if the lookup found something". `after` stays a name
   everywhere else (`list(after: …)`, `req.query.after`); it is a keyword only as the clause after
   a sink.
 - **A tick's value is its time.** The `every` block's trigger node is a `now` read (the `clock`
   leaf), so sinks have something to tie to without the handler taking an input (fork 8 stands).
-  The old forms tie likewise:
-  - a clock flow's sinks to a `now` read. The lowering places one `clock` leaf per `now` written
-    (lower.rs 1161) and none otherwise, so it adds one for a flow without `now`;
-  - a file flow's to its `ingress`: one `file_arrival` per `on file` line, folded into a
-    `coalesce` chain (lower.rs 1271–1295), so the tie is the chain's output;
-  - a by-hand flow's to its `ingress` leaf (lower.rs 1290).
+  As built in slice 2, it is the `every` template: the `clock` leaf with the period as its
+  `seconds`, and `now` in the block reads its output. The printer writes its group back as the
+  block, the ties left out.
+- **A file's value is its handle.** As built in slice 3, an `on file` block's trigger node is the
+  `on_file` template: the `file_arrival` leaf with the block's line as its `folder`, `on` and
+  `matching`, its one output `file` what the parameter names. Its sinks are tied to it, and the
+  printer writes its group back as the block.
+- **What was sent is the `action` node's.** As built in slice 4, an action's trigger node is the
+  `action` template: one input, hidden as a request node's is (the action handler feeds it), passed
+  through to its one output `input`, what the parameter names. Its sinks are tied to it. `respond
+  v` wires `v` to a respond node (a 200, whose body is the answer), and refuses `status:`,
+  `missing:`, `headers:` and `stream:`.
+- **The old forms stay untied** (as built in slice 1). A clock flow, a file flow, a by-hand flow
+  and a flow of top-level statements are each one run of the whole canvas, so their sinks run
+  with it through the open trigger below, as they did. Their ties come with the blocks of slices
+  2–4, which replace them.
+- **The wiring form ties nothing.** It is the graph as written: a tie there is a wire,
+  `in.trigger -> w.trigger`, and a holon in it gets no trigger it doesn't declare. `fmt` writes a
+  holon with an open sink inside (a canvas group) in that form, so it reads back untied.
 - **A holon with a sink gets a `trigger` input,** last, whether the sink is in its body or in a
   holon it places. Its sinks are wired to it, and a placement wires it to the block's trigger, so
   `bump()` in a route is tied. `bump() after x` ties it to something else. It is the one port a
@@ -411,22 +426,27 @@ same thing, and no node belongs to a handler by a field you can't see.
 - **Two handlers still may not share a node.** A node wired to two triggers joins their groups,
   which is an error, as two requests wired together are today (routes.rs 81).
 
-The trigger is not one of today's optional inputs (`has_optional_ports`, primitives.rs 804). An
-unwired optional input reads as "none" and the leaf still fires (an `http_request` with no headers
-sends `{}`, primitives.rs 824–834). So a sink with its trigger left unwired would still write, and
-what it belongs to would be invisible again. The trigger is required, and the lowering always
-wires it.
+**What core does with it, as built.** The trigger is never read: a sink drops it before it
+computes (`takes_trigger`, eval.rs and eager.rs), so it computes on its own inputs as it always
+did. Wired and absent, it holds the sink back, as a wired optional input does (the hold, eval.rs).
+Left unwired, it is open, and the sink runs with the unit around it, as an unwired optional input
+lets a leaf fire. A holon's own trigger left unwired reads as present (`open_trigger`), so its
+sinks run as a leaf's would. Open is what keeps a whole-canvas flow and a node just dropped on the
+canvas working. It doesn't make membership invisible again: the lowering ties every sink a block
+places, and the canvas flags an open trigger on a canvas that has a trigger to tie it to (§7).
 
 Saved flows need a migration, because a saved flow is its graph. The editor saves a `FlowDocument`
 of React Flow nodes and edges, with the text only as an optional `source` (`useSavedFlows.ts`
 97–130, `server.ts` 750–776; the server keeps it as opaque JSON, `holon/src/flows.rs` 5–7). A
 placed leaf's unit is rebuilt from the ports stored in its own node data, not from the catalog
 (`holon-author/src/canvas.rs` 38–40, `flow.rs` 33–40), and nothing refreshes them on load
-(`tabs.ts` 179–214). So on load, an old sink gets its `trigger` port added to its stored inputs,
-then the wire to its group's trigger. Loading goes through `tabFromDocument` (`tabs.ts` 179: open,
-import, mode switch) and `flowAsNode` (`canvasOps.ts` 231: placing a saved flow as a holon).
-Samples are compiled from text and need none. Deployments from before are not migrated: they are
-removed and deployed again (Holon is in development).
+(`tabs.ts` 179–214). So on load (`tabFromDocument`: open, import, mode switch), an old sink gets
+its `trigger` port added to its stored inputs, then the wire from its route's request when it is
+in a route's group (`canvasOps.withTriggers`); one in no group stays open. Placing a saved flow as
+a holon (`flowAsNode`) needs none: a sink saved without the port is not a sink with its trigger
+to core (`takes_trigger` reads the last input's name), so it computes as it did. Samples are
+compiled from text and need none. Deployments from before are not migrated: they are removed and
+deployed again (Holon is in development).
 
 ## 4. The units
 
@@ -437,9 +457,17 @@ The flow's unit stays a composite of handler units with no edges and no ports, s
 - **a clock handler:** `declare=every`, `seconds` (the period), no inputs, the handler's effects as
   outputs;
 - **a file handler:** `declare=on_file`, `folder`, and `on` and `matching` when given. One input,
-  `file: Record`, the handle; its effects as outputs;
+  `file: Record`, the handle; its effects as outputs. As built in slice 3 it has **no inputs**,
+  as a clock handler has none: the handle is its `on_file` node's `file_arrival` leaf, sourced as
+  `FileArrival(folder)` as the old form's is. So its capability and its watch come from the leaf
+  (`file_triggers`), a waiting run keeps the handle among its sourced values (the widened filter,
+  durable.rs 386), and verify reruns it with the logged handle, as it reruns a tick with its
+  time. The three points below are what an input would have needed instead;
 - **an action handler:** `declare=action`, `name`. One input, what was sent; its answer, then its
-  effects, as outputs (the order an endpoint's are in).
+  effects, as outputs (the order an endpoint's are in). As built in slice 4, that is the shape:
+  an endpoint's, with `input: Any` in place of the request and output 0 named `answer` (the
+  respond's envelope). `Action(name)` comes from the declaration (`collect_caps`), as
+  `NetworkIngress` does from an endpoint, never from a leaf.
 
 `port` is there only when the flow has a route. A flow of only clocks, files and actions listens
 on no port.
@@ -468,7 +496,12 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
   - The capabilities are the union over the handlers, and the triggers come from the
     declarations.
   - `is_clock` becomes "has an `every` handler, or is an old clock flow".
-  - Arrivals are watched from the `on_file` children as well as the old leaves.
+  - Arrivals are watched from the `on_file` children as well as the old leaves. As built in
+    slice 3: the `on_file` template's leaf is in the closure, so the watch is opened as before.
+    A look fires, for a server, each file handler whose line is for the file, alone, logged as a
+    `"file"` run under its label (`on file inbox`); the old form still fires the whole unit. A
+    server lists its handlers' labels among its triggers in place of `Files inbox`, and refuses
+    a handler's `FileArrival(folder)` marked optional.
   - "Declares no driver capability" stays, for a flow with no handler at all. Its message says
     "trigger" and what to write: "nothing would ever start a run: to run it by hand, put it in
     an `action run (input) { … }`" (fork 14). No handler is added for the author.
@@ -483,7 +516,12 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
   seconds", "run when a file settles in inbox", "can be run by hand: reset".
 - **The clock** keeps a `next_due` per `every` handler, keyed by its period. A tick fires that
   handler's unit with no inputs, and logs a `"tick"` with the handler's label. The old form keeps
-  its one `next_due` from the deploy setting.
+  its one `next_due` from the deploy setting. As built in slice 2: `Deployment.clock_due`, one per
+  `server.clocks`, due at deploy, at load and when it runs again; the label is the entry's
+  `route` and the history entry's `label`; a flow with clocks refuses `interval_seconds` and a
+  `Clock` marked optional (the manifest still names one trigger: `NetworkIngress` beside routes);
+  a server of clocks alone has no `port` and listens on none. **Tick now** is
+  `POST /deployments/<slug>/tick` with `{"clock": "every 2s"}`.
 - **Arrivals** drop the `server.is_none()` filter (arrivals.rs 299) and fire handlers, not the
   whole unit. A file fires each handler it matches with the handle as its input, logged as a
   `"file"` with the handler's label. The seen-set stays one per deployment, keyed by folder and
@@ -492,11 +530,27 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
   `/trigger/<slug>` stays, for the old form's one unnamed action, and answers 400 for a flow
   that has handlers. An action run is logged as a `"trigger"` with the label `action <name>`
   and, always, who ran it in `LogEntry.by`: a person, an agent, or `flow <slug>, run <id>`.
+  As built in slice 4: the body is read as JSON (nothing sent is `{}`; what isn't JSON is a 400),
+  logged as the entry's `request`. The answer is `{answer, seq}`: the respond's body (`null` for
+  an action that only writes) and the run's log entry; a respond's `missing` answers with its own
+  status and error. `/trigger/<slug>` on a flow with actions names the way in. Deploy takes a flow
+  of actions alone, and refuses an action's `Action(name)` marked optional.
+  As built in slice 4b: agents may POST `/trigger/<slug>/<name>` (access.rs), and the handler
+  refuses one (403) unless the deployment's grant holds `AgentRuns("<name>")`. A flow with no
+  trigger is refused as "nothing would start a run: it has no route, clock, file handler or
+  action. To run it by hand, put it in an `action run (input) { … }`".
 - **Who may run an action is its grant**, whoever asks. There are no access modifiers:
   - **a person:** an editor or an admin, as `/trigger` allows today (fork 13); a viewer may not;
   - **an agent:** only an action the deployment's grant lets agents run. The approval lists each
     action with "agents may run it", off unless a person ticks it, and changing it is a grant
     change, as an optional permission is;
+  - As built in slice 4b: the deploy settings' `requirements.agents` (⚙ → **agents may run**, a
+    box per action) asks for `AgentRuns("reset")`, a manifest item a person approves ("let agents
+    run its action reset"). It is always optional (manifest.rs `permission_kind`): taking it back
+    refuses agents again and leaves the flow running. Deploy refuses an `agents` name that is not
+    one of its actions. An agent's deploy from text sends what the text says, which can't say
+    `agents`, so an agent's redeploy drops them, as it drops `plain_http`: a person ticks them
+    again. `holon mcp` gains **run** (slug, action, input), which runs an action as the agent;
   - **another flow:** only through its own grant (§9, slice 6);
   - **the network:** never. The data plane serves routes only.
 - **Persistence** adds nothing new on disk: the handlers are re-derived from the unit at load, as
@@ -547,18 +601,41 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
     it, and **view run**, which opens view mode on the run it made. It runs the deployed version,
     and says so when the canvas has changes not deployed. A viewer sees the row, its button
     greyed: "an editor or an admin runs this".
+  - As built in slice 4a: one box for what to send, under the action rows (not remembered per
+    action), the answer under it with its run's number, and the command beside it; the run is in
+    view mode's log under its label (`action reset`), which replays it over its block. A viewer's
+    refusal shows as the answer.
+  - As built in slice 4b: the rows are `ActionRows.tsx`, shared with the deployed page. Each
+    action has its own box (kept while the panel is open, not across reloads), its answer with
+    its run's number and **view run**, which opens view mode with that run selected, and its
+    command. A viewer sees the rows with **run** greyed and "an editor or an admin runs this" in
+    place of the box. "runs the deployed version: the canvas has changes not deployed" shows
+    above them when the canvas has changed.
   - Beside **run**, the command a script would use, to copy:
     `curl -X POST <server>/trigger/<slug>/reset -H "Authorization: Bearer $HOLON_TOKEN" -d '…'`.
 - **The deployed page** lists a running deployment's actions as the same rows, so an operator
   runs them without opening the flow. Today's "request body" box becomes the row of the old
   form's unnamed action, labelled **run**.
+  As built in slice 4b: a deployment's actions come from its triggers' labels (`action reset`);
+  the old form's box reads "what to send" and its button **run**, and neither shows for a viewer.
 - **A flow with no trigger** shows deploy greyed, "nothing would start a run", with a quick fix,
   **make it runnable by hand**. It wraps the flow's top-level statements in `action run (input) {
   … }` and, when the flow computes a value, ends the block with `respond` of it. The author can
   rename the action before deploying (fork 14).
+  As built in slice 4b: `holon-author/src/editing.rs` `runnable_by_hand` moves the top-level
+  statements' lines into the block (headers and holons stay where they are), answers the last
+  statement (`respond` of an expression, or of the last binding's name) when that compiles, and
+  writes the result as `fmt` does; what was sent is `sent` when the flow already names `input`.
+  It refuses a flow with a trigger, one that reads `ingress` (run by hand already) and one with
+  no statements. The editor applies it as a formatted edit of the text (`useTextPane`'s
+  `rewrite`), so undo takes it back. `holon check` says "nothing would start a run: it is a
+  holon, placed in other flows. To run it by hand, put it in an `action run (input) { … }`" as a
+  note, not a problem: a holon is still a text worth checking.
 - **The approval** (and `holon check`) show an old by-hand flow's `NetworkIngress` as "can be
   run by hand", not "receive requests" (`holon-author/src/describe.rs` 43, which both use): a
   label only, so no hash or grant changes.
+  As built in slice 4b: `describe_item_of(item, by_hand)`, by hand meaning no routes; the deploy
+  dialog, the flows page's manifest and the deployed page's manifest and permissions use it.
 - **The flows page** shows a flow's triggers beside its name: ":8129 · every 2s · 1 action". Today
   only its collapsed "may" section, opened, marks the permission that starts runs with a "trigger"
   badge (`Pages.tsx` 193–196, `Manifest.tsx` 53). The deployed page, which lists a deployment's triggers
@@ -581,11 +658,39 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
 - A manual page on actions: running one from the editor, the deployed page and a script, and
   letting an agent run one.
 
+**As built in slice 5.** The docs landed a page to a commit, each claim checked with `holon check`
+and `holon fmt` on a flow of its own, and the manual's test compiling its flows:
+
+- **LANGUAGE:** §5.1 (handlers, the one-handler form), §5.11 (a block is everything tied to its
+  trigger; `after`; a statement tied to nothing), §5.8 (a holon's undeclared `trigger` port),
+  §5.12 (now "Flows without handlers"), the `ticker` tour entry, and a note in §4 that `action`,
+  `on`, `file` and `after` are keywords only where they start a handler or tie a statement.
+- **The manual:** the permissions page (`Action("name")`, a flow's triggers, who may run an
+  action, `AgentRuns`), a new `guides/actions.md`, the language reference (two new sections, "Clocks,
+  files and actions" and "What a block holds"), the tour, the files guide, the editor and deploying
+  pages, `concepts.md`, the agents page, and the guide `holon mcp`'s `reference` tool gives
+  agents (`agent.rs`, "HANDLERS").
+- **Corrected on the way,** each already wrong before triggers or wrong in this design's own
+  words: none of a flow's triggers can be optional, not just the first (deploy refuses an
+  optional `Clock`, `FileArrival` or `Action`, beside routes too); a state key is written once per
+  run, not once per flow, so two handlers may each write one (the ticker's clock and its `reset`
+  both write `ticks`); `on file` takes several lines, with `deleted` and `matching`; and the editor's
+  curl for an action sent no `Content-Type`, which the server refuses with a 415 (`http.rs`), so it
+  now sends `application/json`.
+- **What the docs say that the code decides, and is worth knowing:** revoking a grant pauses a
+  deployment for its first trigger only (`permissions.rs` `attention`: routes, else files, else
+  clock, else action); another handler's trigger is an ordinary required item, which `keep running`
+  lets go on, and the scheduler never reads the grant (`scheduler.rs`), so a revoked clock beside
+  routes may go on firing. Not tested; `holon fmt` drops a holon nothing places; writing into the
+  folder an `on file` block watches fails validation with an unhelpful message ("derived unit
+  failed validation"); and deploying from the editor's new-flow name prompt rewrites the text
+  (`n` became `add_2`), against what the editor guide says of saving.
+
 ## 9. Samples and slices
 
 | slice | what lands | sample |
 |---|---|---|
-| 1. Every sink takes its trigger | the `trigger` input on the seventeen sinks (the catalog, `docs/manual/language/leaves.md` blessed by `crates/holon-author/tests/manual.rs`, the wasm parity checks in `holon-wasm/src/lib.rs`), the lowering's tie, `after`, a holon's `trigger` port, the old forms' ties, the migration of saved graphs, the canvas's trigger ports and quick fix | `counter`: a route that counts its hits with no wire to the request in its text, and records the last id `after` the put |
+| 1. Every sink takes its trigger | the `trigger` input on the seventeen sinks (the catalog, `docs/manual/language/leaves.md` blessed by `crates/holon-author/tests/manual.rs`, the wasm parity checks in `holon-wasm/src/lib.rs`), the lowering's tie, `after`, a holon's `trigger` port, the migration of saved graphs, the canvas's trigger ports and quick fix | `counter`: a route that counts its hits with no wire to the request in its text, and records the last id `after` the put |
 | 2. Clock blocks | `every … { }`, `declare=every`, deploy and the manifest's triggers, a `next_due` per handler, the log label, verify and replay by label, "tick now" | `ticker` without its action: a page that adds each tick as it arrives |
 | 3. File blocks | `on file … (f) { }`, `declare=on_file`, arrivals for servers, the handle as an input | `drop-board` (new, beside today's `drop-box`): files dropped in a folder show on a live page (`on file drop (f)` sends on a channel, `GET /live` subscribes) |
 | 4. Actions | `action … (x) { }`, `declare=action`, `Action(name)`, `/trigger/<slug>/<name>`, `LogEntry.by`, the agents' actions in the grant, the run rows in the handlers panel and on the deployed page, the no-trigger error naming `action run` and its quick fix | `ticker`'s `reset`, the flow at the top of this L4 |
@@ -610,6 +715,41 @@ each other.
   answer as it logs an outbound request's, so `verify` replays it from the log instead of calling
   again;
 - a call to a paused or stopped flow is an error the caller handles, as a failed request is.
+
+**As built in slice 6** (commits 6a to 6e; the samples `billing` and `shop`):
+
+- **The form:** `calls billing` in the headers, `billing.charge(x)` in a block. A slug's `-` is `_`
+  in the call (`calls billing-v2`, `billing_v2.charge(x)`); the one `as` alias floated in the
+  proposal wasn't built, as the printer couldn't recover it from the graph. `calls` is a keyword
+  only before a name at the start of a line.
+- **The leaf:** `flow_call{flow, action}(input, trigger)`, the eighteenth sink, `RunsAction("flow/action")`
+  (a Sink kind, counted as reading from outside). Its request is `{flow, action, input}`, its answer
+  `{answer, run}` or `{error, message}`. A call nobody uses is a statement, and a block of calls
+  alone is a handler.
+- **The host:** `calls.rs` and `deploy::run_action` (which `handle_post_action` wraps). The call is
+  performed between rounds and recorded in the caller's `rounds` like an http exchange, so retries,
+  `holon verify` and the editor's replay answer it from the log with no code of their own beyond
+  naming the leaf. The callee logs an ordinary action run, `by` "flow <slug>, run <id>". Two things
+  differ from the pick: a call carries the chain of flows that led to it, so a flow already in it,
+  itself included, is refused (`refused`), where a depth limit alone would let a flow
+  call back into a run waiting on it; and the limit, `max_call_depth` (3, ceiling 8), bounds the
+  chain's length (`too_deep`).
+- **No callee-side key:** the pick had the callee answer a repeated call from a stored key. It
+  would only catch a repeat of the same run, which the caller's record already answers (same node,
+  same request); a client that asks again starts a new run, as with an http call. A caller that
+  crashes between the callee's commit and its own log can repeat the call if its client retries.
+- **What a call doesn't carry:** a secret, or a value a secret reaches (`taint`), is refused, as the
+  callee's log would keep it; the caller's log withholds a derived input as it does a derived body.
+  The callee's answer, when it derives from a secret there, is the withheld mark.
+- **Order:** the calls of one round to one flow go one at a time, in the order of their nodes
+  (`rounds.rs`), since they change things there.
+- **Who may grant it:** the caller's approval, as any item; approvers are editors and admins, who
+  may run any action, so "only what they could do themselves" holds by construction. It isn't a
+  check that a later per-action rule would still get for free.
+- **Revoking** `RunsAction` pauses the caller like any required item; with **keep running**, its next
+  call answers `refused`.
+- **Not done:** hover and completion for a flow's actions in the editor's text pane, and a
+  canvas affordance beyond the generic node (its `flow` and `action` params edit as a leaf's do).
 
 ## 10. Forks, surfaced
 

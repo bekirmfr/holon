@@ -34,14 +34,16 @@ export function holonText(inputs: string[], outputs: string[], inner: number | n
 export const NodeDocs = createContext<DescribeNode>(() => null);
 export const useNodeDocs = () => useContext(NodeDocs);
 
-/** What a node can ask the canvas to do for it: place a holon's newest version over it; and for
- *  a composite, open it on a canvas of its own (expand), or replace it with its nodes (ungroup). */
+/** What a node can ask the canvas to do for it: place a holon's newest version over it; for
+ *  a composite, open it on a canvas of its own (expand), or replace it with its nodes (ungroup);
+ *  for a sink not tied to a trigger, tie it to one. */
 export type NodeActionsValue = {
   updateHolon: (id: string) => void;
   expandComposite: (id: string) => void;
   ungroup: (id: string) => void;
+  tie: (id: string, trigger: { id: string; output: string }) => void;
 };
-export const NodeActions = createContext<NodeActionsValue>({ updateHolon: () => {}, expandComposite: () => {}, ungroup: () => {} });
+export const NodeActions = createContext<NodeActionsValue>({ updateHolon: () => {}, expandComposite: () => {}, ungroup: () => {}, tie: () => {} });
 export const useNodeActions = () => useContext(NodeActions);
 
 /** An ⓘ that shows `text` while hovered: drawn on the page itself, so a node or a scrolling

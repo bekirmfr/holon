@@ -1386,6 +1386,8 @@ pub(crate) struct Sender<'a> {
     /// The deployment's channels, for a piped call's answer, and the ones it may send on.
     pub(crate) channels: Option<Arc<channels::Channels>>,
     pub(crate) sends: BTreeSet<String>,
+    /// The run's side of its calls to other flows' actions (calls.rs).
+    pub(crate) calls: Option<&'a calls::Caller<'a>>,
 }
 
 /// A file a request sends, as the run's handle names it.
@@ -1429,7 +1431,21 @@ impl FileBody for Sent<'_> {
 }
 
 impl Performer for Sender<'_> {
+    fn perform_at(&self, path: &[u32], request: &Value, limits: &Limits) -> Value {
+        if calls::is_call(request) {
+            return match self.calls {
+                Some(caller) => caller.call(path, request),
+                None => calls::failure("failed", "this run can't call other flows"),
+            };
+        }
+        self.perform(request, limits)
+    }
+
     fn perform(&self, request: &Value, limits: &Limits) -> Value {
+        // A call to another flow's action isn't an HTTP request: the server runs it in-process.
+        if calls::is_call(request) {
+            return calls::failure("failed", "a call is made by a node that says where it is");
+        }
         let Value::Record(r) = request else { return self.outbound.perform(request, limits) };
         if r.get("stream") == Some(&Value::Boolean(true)) {
             return self.outbound.perform_forwarding(request, limits, self.forward.and_then(|f| f.take()));

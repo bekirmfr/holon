@@ -36,9 +36,7 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
         (None, Status::Paused) if dep.grant.paused => {
             let _ = dep.life.run(RunFrom::Latest, now);
             dep.grant.paused = false;
-            if dep.interval_seconds.is_some() {
-                dep.next_due = Some(SystemTime::now());
-            }
+            dep.arm_clocks(SystemTime::now());
         }
         _ => {}
     }

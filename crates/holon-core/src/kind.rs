@@ -111,6 +111,9 @@ pub enum Capability {
     /// Starts a run for each new file in the named folder: `file_arrival`, whose value is the
     /// file's handle. The host watches the folder an admin bound to that name.
     FileArrival(String),
+    /// Runs the named action, by hand: a person (or, as its grant says, an agent) sends it
+    /// something through Holon, never the network. A server's `declare=action` child gives it.
+    Action(String),
     /// Reads a secret / credential (a security-sensitive read).
     SecretAccess,
     /// Reads the named secret from the deployment's secret store: `secret`. Per name, so
@@ -146,6 +149,10 @@ pub enum Capability {
     /// Lets callers subscribe to the named channel: `channel_subscribe`, a route answering with
     /// the stream of its packs.
     ChannelRead(String),
+    /// Runs the action of another deployed flow and gets its answer: `flow_call`. Named by the
+    /// flow and the action, `"billing/charge"`, so consent names which action a flow may run, not
+    /// just "other flows" (`docs/L4s/triggers-L4.md` §9, slice 6).
+    RunsAction(String),
     /// Starts a process / job.
     Spawn,
     /// Reads rows of a table of a database the host binds: `"shop/orders"`, the database's name
@@ -179,9 +186,9 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -196,7 +203,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
         )
     }
 }
@@ -338,6 +345,10 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // The same request with a file's bytes as its body, streamed by the host from the folder
         // the handle names (one the deployment reads, checked when it is sent).
         "http_upload" => vec![HttpRequest(http_host(params)?)],
+        // A call to another flow's action: performed by the host between rounds, in-process, its
+        // answer sourced back as an http response is. Both names are frozen params, so the
+        // capability names the action exactly.
+        "flow_call" => vec![RunsAction(format!("{}/{}", ident(params, "flow")?, ident(params, "action")?))],
         // A request whose answer the host forwards as it reads it: to the route's caller, or,
         // piped, to a channel's subscribers, which is sending on that channel too.
         "http_stream" => match params.iter().find(|p| p.name() == "pipe").and_then(|p| p.value()).filter(|v| !v.is_empty()) {
@@ -612,6 +623,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         CollectionWrite(SATURATED_STATE_KEY.to_string()),
         NetworkEgress,
         HttpRequest(SATURATED_STATE_KEY.to_string()),
+        RunsAction(SATURATED_STATE_KEY.to_string()),
         FileWrite(SATURATED_STATE_KEY.to_string()),
         ChannelSend(SATURATED_STATE_KEY.to_string()),
         ChannelRead(SATURATED_STATE_KEY.to_string()),
@@ -635,7 +647,15 @@ fn collect_caps(root: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capabi
         //     `child_refs` (the one definition of what a unit references). A capability routed
         //     through a reference cannot hide; an unresolvable reference fails closed rather than
         //     being read as inert data.
+        let server = crate::declaration_of(unit) == Some("server");
         for h in crate::inspect::child_refs(unit) {
+            if server && resolver.resolve(&h).is_some_and(|c| crate::declaration_of(c) == Some("endpoint")) {
+                acc.insert(Capability::NetworkIngress);
+            }
+            // An action is run by name, what was sent its input.
+            if server && let Some(name) = resolver.resolve(&h).and_then(crate::read_action) {
+                acc.insert(Capability::Action(name));
+            }
             if !seen.insert(h) {
                 continue;
             }
@@ -664,11 +684,9 @@ fn unit_caps(unit: &Unit, acc: &mut BTreeSet<Capability>) {
         }
     }
 
-    // (1b) A server declaration listens for requests: the inbound side of its manifest. Its
-    //      endpoints' handlers contribute the rest through (2).
-    if crate::declaration_of(unit) == Some("server") {
-        acc.insert(Capability::NetworkIngress);
-    }
+    // (1b) A server declaration with a route listens for requests: the inbound side of its
+    //      manifest (`collect_caps`, which sees its children; a server of clocks alone listens for
+    //      none). Its handlers contribute the rest through (2).
 }
 
 #[cfg(test)]
@@ -1186,12 +1204,13 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 19); // every capability — fail closed
+        assert_eq!(caps.len(), 20); // every capability — fail closed
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
         assert!(caps.contains(Capability::FileWrite("<unknown>".to_string())), "any folder");
         assert!(caps.contains(Capability::ChannelSend("<unknown>".to_string())), "any channel");
         assert!(caps.contains(Capability::DbWrite("<unknown>".to_string())), "any database");
+        assert!(caps.contains(Capability::RunsAction("<unknown>".to_string())), "any action");
     }
 
     #[test]
@@ -1225,6 +1244,19 @@ mod tests {
         for bad in ["", "a b", "a/b", &"x".repeat(65)] {
             assert!(capabilities_of("secret", &named(bad).params).is_none(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn flow_call_names_the_flow_and_the_action() {
+        let call = |flow: &str, action: &str| Unit { params: vec![Param::frozen("flow", flow), Param::frozen("action", action)], ..prim("flow_call") };
+        let caps = capabilities_of("flow_call", &call("billing", "charge").params).unwrap();
+        assert_eq!(caps.iter().collect::<Vec<_>>(), vec![Capability::RunsAction("billing/charge".into())]);
+        assert_eq!(kind_of("flow_call", &call("billing-v2", "charge_2").params), Some(Kind::Sink));
+        assert!(!Capability::RunsAction("a/b".into()).is_sourced(), "performed, not supplied");
+        for bad in [("", "x"), ("a", ""), ("a/b", "x"), ("a", "x y"), ("a", &"x".repeat(65))] {
+            assert!(capabilities_of("flow_call", &call(bad.0, bad.1).params).is_none(), "{bad:?}");
+        }
+        assert!(capabilities_of("flow_call", &[]).is_none(), "no names, no capability");
     }
 
     #[test]

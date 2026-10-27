@@ -152,8 +152,9 @@ pub(crate) fn load_deployments(
             caps.contains(Capability::NetworkIngress),
             caps.contains(Capability::Clock) && server.is_none(),
         );
-        triggers.extend(arrivals.labels());
+        triggers.extend(arrivals.labels().filter(|_| server.is_none()));
         let next_due = record.interval_seconds.filter(|_| server.is_none()).map(|_| SystemTime::now());
+        let clock_due = server.as_ref().map(|s| vec![SystemTime::now(); s.clocks.len()]).unwrap_or_default();
 
         // The grant, re-checked against what the unit needs now and the policy in force. A record
         // from before grants is granted what it was acknowledged for at its deploy.
@@ -220,6 +221,7 @@ pub(crate) fn load_deployments(
                 uses: record.uses.clone(),
                 browsers: record.browsers.clone(),
                 next_due,
+                clock_due,
                 history: Vec::new(),
                 state,
                 server,

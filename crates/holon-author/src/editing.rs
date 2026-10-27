@@ -9,7 +9,7 @@ use holon_core::MapResolver;
 use crate::agent;
 use crate::commands;
 use crate::composites::Names;
-use crate::lang::ast::{HeaderKind, Item, Pos, Span};
+use crate::lang::ast::{HeaderKind, Item, Pos, Span, Stmt, StmtKind};
 use crate::lang::lex::{lex, Tok, Token};
 use crate::lang::{self, parse};
 use crate::text;
@@ -51,6 +51,52 @@ pub fn mistakes(source: &str) -> Vec<Mistake> {
 /// The text in the canonical form, as `holon fmt` writes it; or why it can't be.
 pub fn format(source: &str) -> Result<String, String> {
     commands::fmt("text", source).map_err(|r| r.err.join("\n"))
+}
+
+/// The quick fix for a flow nothing would start (docs/L4s/triggers-L4.md §7, fork 14), **make it
+/// runnable by hand**: its top-level statements in `action run (input) { … }`, ending with
+/// `respond` of the value it computes when that compiles, in the canonical form. Its headers and
+/// holons stay as they were; the author can rename the action.
+pub fn runnable_by_hand(source: &str) -> Result<String, String> {
+    let file = parse(source).map_err(|e| e.message)?;
+    let triggered_header = file.headers.iter().any(|h| matches!(h.kind, HeaderKind::Every { .. } | HeaderKind::OnFile(_)));
+    if triggered_header || file.items.iter().any(|i| matches!(i, Item::Route(_) | Item::Every(_) | Item::OnFile(_) | Item::Action(_))) {
+        return Err("it has a trigger already: a route, a clock, a file or an action starts its runs".into());
+    }
+    let tokens = lex(source).map_err(|e| e.message)?;
+    let named = |word: &str| tokens.iter().any(|t| t.tok == Tok::Ident && t.text == word);
+    if named("ingress") {
+        return Err("it reads `ingress`: it is run by hand already".into());
+    }
+    let stmts: Vec<&Stmt> = file.items.iter().filter_map(|i| if let Item::Stmt(s) = i { Some(s) } else { None }).collect();
+    let Some((last, before)) = stmts.split_last() else {
+        return Err("nothing to run: it has no statement outside its holons".into());
+    };
+    let input = if named("input") { "sent" } else { "input" };
+    // Each top-level statement is on lines of its own: those lines move into the block.
+    let lines: Vec<&str> = source.lines().collect();
+    let of = |s: &Stmt| (s.span.start.line..=s.span.end.line).filter_map(|l| lines.get(l as usize - 1).copied()).collect::<Vec<_>>();
+    let moved: std::collections::BTreeSet<usize> = stmts.iter().flat_map(|s| s.span.start.line as usize..=s.span.end.line as usize).collect();
+    let rest: String = lines.iter().enumerate().filter(|(i, _)| !moved.contains(&(i + 1))).map(|(_, l)| format!("{l}\n")).collect();
+    let indented = |ls: Vec<&str>| ls.iter().map(|l| format!("  {l}\n")).collect::<String>();
+    let first: String = before.iter().map(|s| indented(of(s))).collect();
+    let block = |body: String| format!("{rest}\naction run ({input}) {{\n{body}}}\n");
+    // The value it computes, answered: its last expression, or its last binding.
+    let answered = match &last.kind {
+        StmtKind::Expr(_) if last.after.is_none() => {
+            let mut ls = of(last);
+            let head = format!("respond {}", ls[0].trim_start());
+            ls[0] = &head;
+            Some(block(format!("{first}{}", indented(ls))))
+        }
+        StmtKind::Bind { name, .. } => Some(block(format!("{first}{}  respond {}\n", indented(of(last)), name.text))),
+        _ => None,
+    };
+    let plain = block(format!("{first}{}", indented(of(last))));
+    if let Some(text) = answered.and_then(|t| format(&t).ok()).filter(|t| mistakes(t).is_empty()) {
+        return Ok(text);
+    }
+    format(&plain)
 }
 
 /// The language's words, said in a line each.
@@ -677,6 +723,30 @@ mod tests {
     use crate::samples;
 
     const SLUGS: &str = include_str!("../samples/slugs.holon");
+
+    /// A flow nothing would start becomes an action, run by hand: its statements moved into the
+    /// block, its value answered, its holons left where they were.
+    #[test]
+    fn a_flow_nothing_starts_is_made_runnable_by_hand() {
+        let flow = "flow sums\n\nholon double(x) -> y {\n  y = x * 2\n}\n\nstate.last = 3\ndouble(21)\n";
+        let fixed = runnable_by_hand(flow).unwrap();
+        assert!(fixed.contains("action run (input) {") && fixed.contains("respond double(21)"), "{fixed}");
+        assert!(fixed.contains("holon double(x) -> y"), "its holon stays: {fixed}");
+        assert_eq!(format(&fixed).unwrap(), fixed, "as fmt writes it");
+        assert!(mistakes(&fixed).is_empty(), "{:?}", mistakes(&fixed));
+        let mut store = MapResolver::new();
+        let compiled = lang::compile(&fixed).unwrap();
+        text::restore(&compiled.doc, &mut store, &Names::new());
+        assert!(!commands::starts_nothing(&compiled, &mut store), "an action starts it now");
+        // Its last binding is answered.
+        assert!(runnable_by_hand("flow f\n\ntotal = 1 + 2\n").unwrap().contains("respond total"));
+        // `input` taken, what was sent is named otherwise.
+        assert!(runnable_by_hand("flow f\n\ninput = 2\nstate.n = input\n").unwrap().contains("action run (sent) {"));
+        // A flow something starts is left alone.
+        assert!(runnable_by_hand("flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n").unwrap_err().contains("trigger already"));
+        assert!(runnable_by_hand("flow f\n\nstate.last = ingress\n").unwrap_err().contains("run by hand already"));
+        assert!(runnable_by_hand("flow f\n\nholon h(x) -> y {\n  y = x\n}\n").unwrap_err().contains("nothing to run"));
+    }
 
     /// The position of the `nth` (from 0) occurrence of `needle` in `source`, plus `into` chars.
     fn at(source: &str, needle: &str, nth: usize, into: u32) -> Pos {

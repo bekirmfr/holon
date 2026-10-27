@@ -10,7 +10,8 @@ import type { FlowSettings } from "./DeployBar";
 import { DEFAULT_SETTINGS } from "./DeployBar";
 import { documentKey, structuralKey } from "./flowDoc";
 import { restoreDocument } from "./docUnits";
-import type { Evaluator } from "./holon";
+import { primitiveCatalog, type Evaluator } from "./holon";
+import { withTriggers } from "./canvasOps";
 import type { History } from "./history";
 import { newHistory, snapshotOf, type Snapshot } from "./useCanvasHistory";
 
@@ -177,11 +178,11 @@ export function nextAfterClose(ids: number[], closing: number): number | null {
  *  counter past every id it holds. `saved`: it is the saved flow of that name (else a draft,
  *  unsaved until saved). */
 export function tabFromDocument(name: string | null, doc: FlowDocument, saved: boolean, ev: Evaluator): TabState {
-  const ns = doc.nodes as PrimitiveNodeType[];
-  const es = doc.edges as Edge[];
   // A preimage is re-hashed on insert, so a tampered entry can only add a unit nobody
   // points at, never stand in for one.
   const failed = restoreDocument(doc, ev);
+  // Saved before sinks took their trigger: given it now (canvasOps.withTriggers).
+  const { nodes: ns, edges: es } = withTriggers(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], primitiveCatalog());
   let msg = failed ? `some saved units could not be restored: ${failed}` : "";
   const missing = ns.filter((n) => {
     if (n.data.body.kind !== "Composite") return false;

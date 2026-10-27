@@ -25,7 +25,13 @@ pub fn consent_name(c: &Capability) -> String {
 
 /// The manifest's items: `capabilities` (consent names), then what the author asks beyond the
 /// host's defaults.
-pub fn manifest_items(capabilities: &[String], limits: &BTreeMap<String, u64>, plain_http: &BTreeSet<String>, private_addresses: bool) -> BTreeSet<String> {
+pub fn manifest_items(
+    capabilities: &[String],
+    limits: &BTreeMap<String, u64>,
+    plain_http: &BTreeSet<String>,
+    private_addresses: bool,
+    agents: &BTreeSet<String>,
+) -> BTreeSet<String> {
     let mut items: BTreeSet<String> = capabilities.iter().cloned().collect();
     for (name, n) in limits {
         items.insert(format!("Limit({name}={n})"));
@@ -36,15 +42,22 @@ pub fn manifest_items(capabilities: &[String], limits: &BTreeMap<String, u64>, p
     if private_addresses {
         items.insert("PrivateAddresses".into());
     }
+    // The actions agents may run, each a grant of its own (docs/L4s/triggers-L4.md §5).
+    for action in agents {
+        items.insert(format!("AgentRuns({action:?})"));
+    }
     items
 }
 
 /// What starts the runs of a unit with `capabilities`: `NetworkIngress` for one with routes, else
-/// `FileArrival("inbox")` for one a new file starts, else `Clock` for one the clock fires; none for
-/// one only triggered by hand.
+/// `FileArrival("inbox")` for one a new file starts, else `Clock` for one the clock fires, else
+/// `Action("reset")` for one run by hand by name; none for one only triggered by hand.
 pub fn trigger(capabilities: &[String]) -> Option<&str> {
     let find = |p: fn(&str) -> bool| capabilities.iter().find(|c| p(c)).map(String::as_str);
-    find(|c| c == "NetworkIngress").or_else(|| find(|c| c.starts_with("FileArrival("))).or_else(|| find(|c| c == "Clock"))
+    find(|c| c == "NetworkIngress")
+        .or_else(|| find(|c| c.starts_with("FileArrival(")))
+        .or_else(|| find(|c| c == "Clock"))
+        .or_else(|| find(|c| c.starts_with("Action(")))
 }
 
 /// Whether a manifest item is required or optional.
@@ -57,8 +70,12 @@ pub enum PermissionKind {
 }
 
 /// `item`'s kind, given what the author marked `optional` and the unit's `trigger`: optional only
-/// when marked so, and its trigger never is.
+/// when marked so, and its trigger never is. Letting agents run an action (`AgentRuns("reset")`)
+/// always is: without it the flow runs, and only agents are refused.
 pub fn permission_kind(item: &str, optional: &BTreeSet<String>, trigger: Option<&str>) -> PermissionKind {
+    if item.starts_with("AgentRuns(") {
+        return PermissionKind::Optional;
+    }
     if Some(item) != trigger && optional.contains(item) {
         PermissionKind::Optional
     } else {
@@ -71,7 +88,7 @@ pub fn permission_kind(item: &str, optional: &BTreeSet<String>, trigger: Option<
 /// point.
 /// Effects it only performs (writes, sends) don't count: they come out as values.
 pub fn reads_from_outside(capabilities: &[String]) -> bool {
-    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "SecretRead", "StateRead", "CollectionRead", "FileRead", "DbRead", "HttpRequest", "Await"];
+    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "Action", "SecretRead", "StateRead", "CollectionRead", "FileRead", "DbRead", "HttpRequest", "RunsAction", "Await"];
     capabilities.iter().any(|c| SOURCED.contains(&c.split('(').next().unwrap_or("")))
 }
 
@@ -97,10 +114,11 @@ mod tests {
             &BTreeMap::from([("max_requests".to_string(), 80)]),
             &BTreeSet::from(["a.local:8080".to_string()]),
             true,
+            &BTreeSet::from(["reset".to_string()]),
         );
         assert_eq!(
             items.into_iter().collect::<Vec<_>>(),
-            ["Limit(max_requests=80)", "NetworkIngress", "PlainHttp(\"a.local:8080\")", "PrivateAddresses", "SecretRead(\"k\")"]
+            ["AgentRuns(\"reset\")", "Limit(max_requests=80)", "NetworkIngress", "PlainHttp(\"a.local:8080\")", "PrivateAddresses", "SecretRead(\"k\")"]
         );
     }
 
@@ -115,6 +133,7 @@ mod tests {
         let t = trigger(&server);
         assert_eq!(permission_kind("SecretRead(\"k\")", &optional, t), PermissionKind::Optional);
         assert_eq!(permission_kind("Clock", &optional, t), PermissionKind::Required);
+        assert_eq!(permission_kind("AgentRuns(\"reset\")", &BTreeSet::new(), t), PermissionKind::Optional, "a flow runs without agents");
         assert_eq!(permission_kind("NetworkIngress", &optional, t), PermissionKind::Required, "a trigger even when marked");
     }
 

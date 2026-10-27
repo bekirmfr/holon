@@ -5,8 +5,9 @@ what it may do, how that is enforced, and what is kept of every run.
 
 ## Flows
 
-A **flow** is a small program: a server's routes, a job on a clock, or a run for each new file
-in a folder. It is written in the Holon language, or drawn on the editor's canvas. The two are
+A **flow** is a small program: a server's routes, a job on a clock, a run for each new file in a
+folder, an action a person runs by hand, or several of these in one flow. It is written in the
+Holon language, or drawn on the editor's canvas. The two are
 the same thing: the text compiles to a graph of **nodes** joined by **wires**, the canvas draws
 that graph, and a change in either one is a change to the graph.
 
@@ -100,8 +101,9 @@ of [permissions](reference/permissions.md).
 
 A **deployment** is a flow running on a server, under the flow's name (its **slug**). It has:
 
-- a **trigger**: its own HTTP server on a port, a clock interval, or a folder whose new files it
-  runs on;
+- **triggers**, what start its runs: routes on its own HTTP server's port, clocks (a run every
+  period), folders whose new files it runs on, and **actions**, which a person runs by their
+  name. A flow may have several of each, and each starts runs of its own;
 - a **grant**, and the **secrets** set for it;
 - its **state**: the values under `state.x`, and its collections;
 - its **run log**.

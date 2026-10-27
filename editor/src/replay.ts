@@ -216,16 +216,24 @@ export type NodeTiming = {
   outputs?: (WValue | null)[];
 };
 
+/** Which of the deployed flow's traces places a run's steps, and how deep they sit: a request's
+ *  route, or a clock's, file handler's or action's label (`every 2s`, `on file inbox`, `action
+ *  reset`), one level down, inside its handler unit; else the whole flow's (`"*"`), at the top. */
+function placedBy(entry: { kind: string; route: string | null }): { key: string; depth: 1 | 2 } {
+  const handler = entry.kind === "request" || ((entry.kind === "tick" || entry.kind === "file" || entry.kind === "trigger") && !!entry.route);
+  return handler ? { key: entry.route ?? "", depth: 2 } : { key: "*", depth: 1 };
+}
+
 /** A run's step paths, as the server records them, against canvas node ids. `trace` comes with
- *  the deployed flow: for each route (or `"*"` for a whole-flow unit), which canvas node is each
- *  child of the unit as stored (canonical order). A request's steps sit one level down, inside its
- *  endpoint (`[0, k]`); a whole-flow unit's at the top (`[k]`). */
+ *  the deployed flow: for each route or clock (or `"*"` for a whole-flow unit), which canvas node
+ *  is each child of the unit as stored (canonical order). A request's or a clock's steps sit one
+ *  level down, inside its handler unit (`[0, k]`); a whole-flow unit's at the top (`[k]`). */
 function nodeAtPath(
   entry: { kind: string; route: string | null },
   trace: Record<string, string[]> | undefined,
 ): (path: number[]) => string | undefined {
-  const map = trace?.[entry.kind === "request" ? (entry.route ?? "") : "*"];
-  const depth = entry.kind === "request" ? 2 : 1;
+  const { key, depth } = placedBy(entry);
+  const map = trace?.[key];
   return (path) => {
     if (!map || path.length !== depth || (depth === 2 && path[0] !== 0)) return undefined;
     return map[path[depth - 1]];
@@ -246,10 +254,11 @@ export function innerSteps(
   trace: Record<string, string[]> | undefined,
   nodeId: string,
 ): InnerStep[] {
-  const map = trace?.[entry.kind === "request" ? (entry.route ?? "") : "*"];
+  const { key, depth } = placedBy(entry);
+  const map = trace?.[key];
   const k = map ? map.indexOf(nodeId) : -1;
   if (k < 0) return [];
-  const prefix = entry.kind === "request" ? [0, k] : [k];
+  const prefix = depth === 2 ? [0, k] : [k];
   const last = Math.max(0, ...(entry.timeline ?? []).map((t) => t.round ?? 0));
   return (entry.timeline ?? [])
     .filter((t) => (t.round ?? 0) === last && t.path.length === prefix.length + 1 && prefix.every((p, i) => t.path[i] === p))
@@ -282,7 +291,7 @@ export function nodeExchanges(
   );
 }
 
-/** What each `http_request` (or `http_upload`, `http_stream`) node was answered, from the run's record: the last answer it got,
+/** What each `http_request` (or `http_upload`, `http_stream`, `flow_call`) node was answered, from the run's record: the last answer it got,
  *  which is the one its final round used. Replay feeds these back instead of calling anything. */
 export function recordedResponses(exchanges: NodeExchange[]): Map<string, WValue> {
   const out = new Map<string, WValue>();
@@ -376,11 +385,47 @@ export function nodeOutputs(
   return out;
 }
 
+/** How a clock's period is written in its label: `2s`, `5m`, `1h`, `1d`, the largest unit it is a
+ *  whole number of (core's `period_text`). */
+export function periodText(seconds: number): string {
+  for (const [per, unit] of [[86_400, "d"], [3_600, "h"], [60, "m"]] as const) {
+    if (seconds % per === 0) return `${seconds / per}${unit}`;
+  }
+  return `${seconds}s`;
+}
+
+/** An `on_file` node's label, as the log names its handler's runs: `on file inbox`, `on file
+ *  inbox deleted`, `on file inbox matching "*.csv"` (core's `FileTrigger::label`). */
+export function fileLabel(params: ReplayNode["data"]["params"]): string {
+  const matching = frozen(params, "matching") ?? "";
+  return `on file ${frozen(params, "folder") ?? ""}${frozen(params, "on") === "deleted" ? " deleted" : ""}${matching ? ` matching ${JSON.stringify(matching)}` : ""}`;
+}
+
 /**
  * Which nodes a run touched: for a request, the group holding the request node of its route
- * (`"GET /todos/:id"`); for anything else (a tick, a trigger), the whole canvas.
+ * (`"GET /todos/:id"`); for a clock's tick, the group holding its `every` node (`"every 2s"`);
+ * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`); for an
+ * action's, the group holding its `action` node (`"action reset"`); for anything else (a flow's
+ * tick, a trigger, a flow of `on file` lines), the whole canvas.
  */
 export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: ReplayInput): string[] {
+  if (entry.kind === "trigger" && entry.route) {
+    const action = nodes.find((n) => n.data.name === "action" && n.data.body.kind === "Template" && `action ${frozen(n.data.params, "name") ?? ""}` === entry.route);
+    if (!action) return [];
+    return components(nodes, edges).find((ids) => ids.includes(action.id)) ?? [];
+  }
+  if (entry.kind === "file" && entry.route) {
+    const onFile = nodes.find((n) => n.data.name === "on_file" && n.data.body.kind === "Template" && fileLabel(n.data.params) === entry.route);
+    if (!onFile) return [];
+    return components(nodes, edges).find((ids) => ids.includes(onFile.id)) ?? [];
+  }
+  if (entry.kind === "tick" && entry.route) {
+    const every = nodes.find(
+      (n) => n.data.name === "every" && n.data.body.kind === "Template" && `every ${periodText(Number(frozen(n.data.params, "seconds")))}` === entry.route,
+    );
+    if (!every) return [];
+    return components(nodes, edges).find((ids) => ids.includes(every.id)) ?? [];
+  }
   if (entry.kind !== "request" || !entry.route) return nodes.map((n) => n.id);
   const [method, path] = [entry.route.slice(0, entry.route.indexOf(" ")), entry.route.slice(entry.route.indexOf(" ") + 1)];
   const req = nodes.find(
@@ -490,10 +535,14 @@ export function replay(
     const param = (p: string) => frozen(node.data.params, p) ?? "";
     if (primitive && name === "store_read") return { inputs, outputs: [entry.state_before[param("key")] ?? null] };
     if (primitive && name === "clock") return { inputs, outputs: [sourced.get("Clock") ?? null] };
+    // A clock's tick: the time it ticked.
+    if (node.data.body.kind === "Template" && name === "every") return { inputs, outputs: [sourced.get("Clock") ?? null] };
     if (primitive && name === "random") return { inputs, outputs: [sourced.get("Random") ?? null] };
     if (primitive && name === "ingress") return { inputs, outputs: [sourced.get("NetworkIngress") ?? null] };
     // The new file that started the run: its handle, as the log keeps it.
     if (primitive && name === "file_arrival") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
+    // A file handler's file: its handle, likewise.
+    if (node.data.body.kind === "Template" && name === "on_file") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
     // A waiting point answers with the event the log says was delivered, if any.
     if (primitive && name === "await") return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
     // A token is a credential: the log has it redacted, and so does the replay.
@@ -504,7 +553,7 @@ export function replay(
       const shown = entry.secrets?.[secret];
       return { inputs, outputs: [{ type: "Text", value: `‹secret:${secret}${shown ? ` ${shown}` : ""}›` }] };
     }
-    if (primitive && ["http_request", "http_upload", "http_stream", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
+    if (primitive && ["http_request", "http_upload", "http_stream", "flow_call", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
       // Answered from the record, never the network, the store or the disk: a replay is offline
       // and exact, and shows the collection or folder as the run found it, whatever it holds now.
       return { inputs, outputs: [responses.get(id) ?? null] };
@@ -513,6 +562,8 @@ export function replay(
       const fed = [entry.request];
       return { inputs: fed, outputs: evaluate(node, fed) };
     }
+    // An action's: what was sent, as the log keeps it.
+    if (name === "action" && node.data.body.kind === "Template") return { inputs: [entry.request], outputs: [entry.request ?? null] };
     if (inputs.some(hasPlaceholder) || readsOutside(node)) {
       // Fed a secret or token the log doesn't hold, or reading from outside within itself: what
       // the run recorded, if it did.
@@ -674,6 +725,12 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
 
 /** Why an outbound call's answer counts as a failure, if it does. */
 function whyFailed(response: WValue | null): string | null {
+  // A call to another flow's action answers `{answer, run}`, or `{error, message}` when it didn't run.
+  const failed = textOf(fieldOf(response, "error"));
+  if (failed && fieldOf(response, "status") === null) {
+    const message = textOf(fieldOf(response, "message"));
+    return `the call failed: ${failed}${message ? ` (${message})` : ""}`;
+  }
   const status = fieldOf(response, "status");
   if (status?.type !== "Number") return null;
   if (status.value === 0) {
@@ -721,7 +778,7 @@ export function diagnose(
       issues.set(id, { role: "starved", reason: `${fellBack ? "fell back: " : "didn't run: "}${from} never arrived` });
       continue;
     }
-    if ((n.data.name === "http_request" || n.data.name === "http_upload" || n.data.name === "http_stream") && n.data.body.kind === "Primitive") {
+    if ((n.data.name === "http_request" || n.data.name === "http_upload" || n.data.name === "http_stream" || n.data.name === "flow_call") && n.data.body.kind === "Primitive") {
       const why = whyFailed(trace.outputs[0] ?? null);
       if (why) {
         issues.set(id, { role: "origin", reason: why });

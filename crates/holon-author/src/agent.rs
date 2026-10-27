@@ -488,26 +488,38 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
 
 // ── the reference ───────────────────────────────────────────────────────────────────────────
 
-const GUIDE: &str = r#"Holon: flows written as text. A flow is a small service (routes, or a clock), built from pure
-parts. Holon derives what it may do from the text itself, runs only what is granted, and keeps a
-record of every run that replays exactly.
+const GUIDE: &str = r#"Holon: flows written as text. A flow is a small service (routes, clocks, actions), built from
+pure parts. Holon derives what it may do from the text itself, runs only what is granted, and
+keeps a record of every run that replays exactly.
 
 A FILE
   flow notes-api            its name (what it deploys as)
-  port 8102                 a flow with routes: the port its server answers on
-  every 10s                 a flow without routes: how often it runs
+  port 8102                 the port its routes answer on
   collection notes          a named store of items, used as notes[key]
   optional secret.key       a permission it can run without
 
-ROUTES
+HANDLERS (each starts runs; a flow has one or more, each a block)
   route GET /notes/:id (req) {
     respond notes[req.params.id]
   }
   req.params.id, req.query.after, req.headers.authorization, req.body (text), req.json (parsed)
   respond <body>, status: 201, missing: 400   (missing: the status when the body has no value)
   respond 204                                  (a status alone, no body)
-  A route is everything wired to its request: every statement in it must use req, directly or
-  through a binding.
+
+  every 10s { state.last = now }               a clock: now is the time of the tick
+  on file inbox (f) { … }                      each new file in the folder inbox, f its handle
+  action reset (input) {                       run by hand, by name: input is what was sent
+    state.count = input.to ?? 0                (JSON; {} for nothing), never from the network
+    respond { set: input.to ?? 0 }             its answer: a value alone, or none
+  }
+
+  A block is everything tied to its trigger. Its writes and calls are tied to it, though they
+  needn't read it; `state.seen = id after found` ties one to a value instead (it writes only when
+  found has a value). A statement tied to nothing is an error. At the top level, beside handlers,
+  only bindings of literals.
+  Without handlers, the top-level statements are the flow, one run of all of it: `every 10s` or
+  `on file inbox` in the header starts it. A flow nothing starts is a holon: to run it by hand,
+  put it in `action run (input) { … }`.
 
 BINDINGS AND VALUES
   name = expression          one form, everywhere; a binding used twice is one node
@@ -535,6 +547,10 @@ THE OUTSIDE WORLD (each is one permission the flow asks for)
   http.get(host, path, headers: h, body: b)   also post, put, patch, delete, head;
                                            host is a text literal: it is the permission
   stripe.verify(req, secret.whsec, now)    a verified Stripe event (.event)
+  calls billing                            (a header) another deployed flow, by its slug
+  r = billing.charge({ id: 1 })            runs its action charge with a value ({} if none):
+                                           r is {answer, run}, or {error, message} when it
+                                           didn't run; a permission, and never a loop
   await paid, expires: 1d                  park the run until the event arrives
   resume_token(paid)                       the token a resuming route takes
   route GET /paid/:token (req) resumes paid { … }
@@ -637,7 +653,7 @@ pub fn leaves_page() -> String {
         .collect();
     let sections = [
         ("Computing", "These touch nothing outside: given the same inputs, they always give the same output.", false),
-        ("The outside world", "Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder).", true),
+        ("The outside world", "Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or what `after` names. The language ties it, so it is never an argument.", true),
     ];
     for (title, about, outside) in sections {
         let these: Vec<_> = all.iter().filter(|(name, ..)| reaches.contains(name) == outside).collect();
@@ -840,7 +856,7 @@ mod tests {
     #[test]
     fn the_reference_lists_the_language_every_leaf_and_the_samples() {
         let all = reference(None).unwrap();
-        assert!(all.contains("ROUTES") && all.contains("  concat(") && all.contains("  hello-api: "), "{all}");
+        assert!(all.contains("HANDLERS") && all.contains("  concat(") && all.contains("  hello-api: "), "{all}");
         assert!(reference(Some("coalesce")).unwrap().starts_with("coalesce("));
         assert!(reference(Some("respond")).unwrap().contains("(a template)"));
         assert!(reference(Some("likes")).unwrap().contains("collection likes"));

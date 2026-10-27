@@ -61,6 +61,9 @@ export type PrimitiveData = {
   source?: { flow: string; savedAt: number };
   /** That flow has been saved since: an update is offered. Rendering only, set by App. */
   updateAvailable?: boolean;
+  /** A sink whose trigger nothing feeds, on a canvas with these triggers: each is offered as its
+   *  fix. Rendering only, set by App. */
+  untied?: { id: string; output: string; label: string }[];
   /** View mode: what this node computed in the replayed run, and where the step-through is.
    *  Rendering only, like `error`: set on a copy of the node, never on the canvas state. */
   trace?: {
@@ -375,6 +378,16 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
         )}
         <InfoIcon text={describe(data)} />
       </div>
+      {data.untied && !readOnly && (
+        <div className="nodrag" style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", fontSize: 10, color: "#e0c36f", padding: "2px 8px" }}>
+          <span title="nothing starts it: tie its trigger to what should">not tied to a trigger</span>
+          {data.untied.map((t) => (
+            <button key={t.id} onClick={() => actions.tie(id, t)} style={{ ...portButtonStyle, color: "#e0c36f", padding: "0 6px" }} title={`run it with ${t.label}`}>
+              tie to {t.label}
+            </button>
+          ))}
+        </div>
+      )}
       {trace?.issue && (
         <div
           data-overlay
@@ -510,7 +523,7 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
       <div className="hl-node__body">
         <div className="hl-node__col hl-node__col--in">
           {!hiddenInputs && inputs.map((port) => (
-            <div className="hl-port" key={port.name}>
+            <div className="hl-port" key={port.name} style={port.name === "trigger" ? { opacity: 0.55 } : undefined} title={port.name === "trigger" ? "what starts it: a route's request, or what it runs after" : undefined}>
               <Handle
                 type="target"
                 position={Position.Left}

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { holonIndex, type HolonUse } from "./holonUsage";
 import { setMarketplaceUrl, type Listing } from "./marketplace";
-import { getActivity, type ActivityEntry } from "./server";
+import { getActivity, type ActivityEntry, type Role } from "./server";
 import { deleteFlow, getFlow, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
 import { ManifestSection, type ManifestView } from "./Manifest";
 import { openChoice } from "./tabs";
@@ -327,6 +327,7 @@ export function DeployedPage({
   onView,
   onChanged,
   focus,
+  role,
 }: {
   deployments: DeploymentEntry[];
   error: string;
@@ -336,10 +337,13 @@ export function DeployedPage({
   onTrigger: (slug: string) => void;
   triggerResults: Record<string, TriggerOutcome>;
   onDelete: (slug: string) => void;
-  onView: (slug: string) => void;
+  /** Open a deployment in view mode, on one of its runs when `seq` is given. */
+  onView: (slug: string, seq?: number) => void;
   onChanged: () => void;
   /** The card asked for (from the admin page): shown with its permissions open, again at each `n`. */
   focus?: { slug: string; n: number } | null;
+  /** Who is signed in: a viewer sees a deployment's actions, never runs one. */
+  role?: Role;
 }) {
   return (
     <div style={{ maxWidth: 760 }}>
@@ -366,8 +370,9 @@ export function DeployedPage({
           onTriggerInputChange={(v) => onTriggerInputChange(entry.slug, v)}
           onTrigger={() => onTrigger(entry.slug)}
           onDelete={() => onDelete(entry.slug)}
-          onView={() => onView(entry.slug)}
+          onView={(seq) => onView(entry.slug, seq)}
           onChanged={onChanged}
+          role={role}
           result={triggerResults[entry.slug]}
           focus={focus?.slug === entry.slug ? focus.n : undefined}
         />

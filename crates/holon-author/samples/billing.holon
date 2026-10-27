@@ -1,0 +1,16 @@
+flow billing
+port 8158
+collection charges
+
+action charge (input) {
+  charges[input.id] = { amount: input.amount, fee: 1 }
+  respond { id: input.id, total: input.amount + 1 }
+}
+
+action refund (input) {
+  delete charges[input.id]
+}
+
+route GET /charges/:id (req) {
+  respond charges[req.params.id]
+}

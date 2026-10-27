@@ -12,8 +12,9 @@ the editor show).
 
 | Name | Shown as | From |
 |---|---|---|
-| `NetworkIngress` | receive requests | a `route` |
-| `Clock` | read the clock | `now`, or `every` (a flow on a clock runs on it) |
+| `NetworkIngress` | receive requests | a `route`; in a flow without handlers that reads `ingress`, shown as "can be run by hand" |
+| `Clock` | read the clock | `now`, or `every` (a clock starts runs) |
+| `Action("name")` | can be run by hand: name | `action name (input) { … }` |
 | `Random` | use randomness | `random` |
 | `HttpRequest("host")` | call https://host | `http.get("host", …)`, `http.post(…)`, …; the host is written in the text |
 | `SecretRead("name")` | read the secret "name" | `secret.name` |
@@ -26,12 +27,15 @@ the editor show).
 | `DbRead("d/t")` | read the table "t" of the database "d" | `d.query("select … from t …")`, `d.one(…)` |
 | `DbWrite("d/t")` | insert, update and delete rows of the table "t" of the database "d" | `d.exec("update t …")` |
 | `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on file f` |
+| `RunsAction("billing/charge")` | run the action charge of the flow billing | `billing.charge(x)`, with `calls billing` |
 | `Await("e")` | wait for an event "e" and continue later | `await e` |
 
-A flow's trigger is one of them: `NetworkIngress` for a flow with routes, `FileArrival` for one
-`on file`, `Clock` for one with `every`. A flow with `every` and no routes asks for `Clock` even if
-it never reads `now`, because the clock starts its runs. A deploy with no trigger is refused, and
-the trigger can't be optional.
+A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes, `Clock`
+for an `every` block (or an `every` header), `FileArrival` for each folder an `on file` watches,
+`Action("name")` for each action, and `NetworkIngress` for a flow without handlers that reads
+`ingress`, run by hand. A flow with a clock asks for `Clock` even if it never reads `now`, because
+the clock starts its runs. A deploy with no trigger is refused, saying how to run it by hand, and
+none of a flow's triggers can be optional.
 
 A few leaves the language doesn't write have items of their own: `NetworkEgress` (send outbound
 messages), `SecretAccess` (read secrets) and `Spawn` (start processes).
@@ -77,6 +81,7 @@ can change both columns ([Server configuration](server.md#the-policy)).
 | `max_redirects` | redirects followed | 10 | 20 |
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
+| `max_call_depth` | flows a chain of calls may go through, one calling another's action | 3 | 8 |
 | `module_fuel` | instructions a js holon may run per call | 200000000 per holon, unless it says | 1000000000 |
 | `module_memory` | memory a js holon may use per call | 16 MiB per holon, unless it says | 256 MiB |
 | `max_db_rows` | rows a run reads from databases | 10000 | 1000000 |
@@ -102,7 +107,34 @@ optional secret.slack_webhook_path
 ```
 
 The deploy dialog marks it optional, and a deployment may be granted it or not. Without it, the
-nodes that need it have no value. The trigger can't be optional.
+nodes that need it have no value. A trigger can't be optional.
+
+## Who may run an action
+
+An action is never reached from the network: the flow's port answers only its routes. It runs
+when someone runs it by its name, from the editor's [server panel](../guides/editor.md#the-server-panel), the
+[deployed page](../guides/editor.md#the-deployed-page), or
+`POST /trigger/<slug>/<name>` on the holon server, its body the JSON the action receives
+(nothing is `{}`). On a server with accounts, an editor or an admin may run one, and a viewer may
+not. A flow without handlers that reads `ingress` runs the same way, by `POST /trigger/<slug>`.
+
+Another flow runs an action only through its own grant: a flow that says `billing.charge(x)` asks
+for `RunsAction("billing/charge")`, and a person approves it with the rest of the flow, as one who
+could run that action themselves (an editor or an admin). Revoking it pauses the calling flow like
+any required item, or, with **keep running** ticked, makes its next call answer `refused`. The
+other flow needs nothing from its side: its action runs as it would for a person, `by` the calling
+flow ([Actions](../guides/actions.md#run-by-another-flow)).
+
+An agent may run an action only when a person has let it:
+
+| Name | Shown as | |
+|---|---|---|
+| `AgentRuns("name")` | let agents run its action name | the deploy settings' **agents may run**, one per action |
+
+It is always optional: without it the flow runs as it would, and only an agent is refused
+("agents may not run …"). Like any item, it is approved by a person, never by an agent, and can be
+taken back while the deployment runs. An agent runs it with `holon mcp`'s `run` tool, or `POST
+/trigger/<slug>/<name>` as an agent; it never runs a flow by hand that has no action.
 
 ## How an item is decided
 

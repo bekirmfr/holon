@@ -282,6 +282,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             if method == "POST" {
                 return handle_post_request(state, slug, request, by);
             }
+        } else if let Some(slug) = rest.strip_suffix("/tick") {
+            if method == "POST" {
+                return scheduler::handle_post_tick(state, slug, request);
+            }
         } else if method == "DELETE" {
             let response = handle_delete_deployment(&state.store, &state.deployments, &state.deployments_path, rest);
             if response.status_code == 200
@@ -296,6 +300,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
 
     if let Some(slug) = url.strip_prefix("/trigger/")
         && method == "POST" {
+            // `/trigger/<slug>/<name>` runs one of its actions by hand.
+            if let Some((slug, name)) = slug.split_once('/') {
+                return handle_post_action(&state.store, &state.deployments, &state.deployments_path, slug, name, request, by, agent);
+            }
             return handle_post_trigger(&state.store, &state.deployments, &state.deployments_path, slug, request);
         }
 

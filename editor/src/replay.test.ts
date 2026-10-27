@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, it, expect } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
-import { collectionsAtStep, diagnose, executionOrder, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
+import { collectionsAtStep, diagnose, executionOrder, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, runGroup, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type ReplayNode } from "./replay";
 import type { WParam, WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
@@ -118,6 +118,54 @@ describe("replay", () => {
     expect(traces.get("k")?.outputs).toEqual([num(42)]);
     expect(traces.get("s")?.outputs).toEqual([null]);
     expect(runGroup(nodes, edges, { ...entry, route: "DELETE /x" })).toEqual([]);
+  });
+
+  it("runs a clock's tick over its every node's group, the tick the time it ticked", () => {
+    const tick: ReplayInput = { kind: "tick", route: "every 2m", request: null, sourced: [["Clock", num(120)]], state_before: {} };
+    const canvas = [
+      n("e", "every", [], ["now"], [frozen("seconds", "120")], "Template"),
+      n("w", "store_write", ["value", "trigger"], ["out"], [frozen("key", "at")]),
+      n("o", "every", [], ["now"], [frozen("seconds", "2")], "Template"),
+      n("x", "store_write", ["value", "trigger"], ["out"], [frozen("key", "other")]),
+    ];
+    const wires = [wire("e", "now", "w", "value"), wire("e", "now", "w", "trigger"), wire("o", "now", "x", "value"), wire("o", "now", "x", "trigger")];
+    expect(runGroup(canvas, wires, tick)).toEqual(["e", "w"]);
+    expect(runGroup(canvas, wires, { ...tick, route: "every 5s" })).toEqual([]);
+    expect(replay(canvas, wires, tick, evalNode).traces.get("e")?.outputs).toEqual([num(120)]);
+    expect([2, 120, 3600, 86_400, 90].map(periodText)).toEqual(["2s", "2m", "1h", "1d", "90s"]);
+  });
+
+  it("runs a file handler's run over its on_file node's group, the file its handle", () => {
+    const handle: WValue = { type: "Record", value: [["name", { type: "Text", value: "a.csv" }]] } as unknown as WValue;
+    const run: ReplayInput = { kind: "file", route: "on file drop deleted", request: null, sourced: [['FileArrival("drop")', handle]], state_before: {} };
+    const canvas = [
+      n("f", "on_file", [], ["file"], [frozen("folder", "drop"), frozen("on", "new"), frozen("matching", "")], "Template"),
+      n("w", "store_write", ["value", "trigger"], ["out"], [frozen("key", "new")]),
+      n("g", "on_file", [], ["file"], [frozen("folder", "drop"), frozen("on", "deleted"), frozen("matching", "")], "Template"),
+      n("x", "store_write", ["value", "trigger"], ["out"], [frozen("key", "gone")]),
+    ];
+    const wires = [wire("f", "file", "w", "value"), wire("f", "file", "w", "trigger"), wire("g", "file", "x", "value"), wire("g", "file", "x", "trigger")];
+    expect(runGroup(canvas, wires, run)).toEqual(["g", "x"]);
+    expect(runGroup(canvas, wires, { ...run, route: "on file drop" })).toEqual(["f", "w"]);
+    expect(runGroup(canvas, wires, { ...run, route: 'on file drop matching "*.csv"' })).toEqual([]);
+    expect(replay(canvas, wires, run, evalNode).traces.get("g")?.outputs).toEqual([handle]);
+    expect(fileLabel([frozen("folder", "in"), frozen("matching", "*.csv")])).toBe('on file in matching "*.csv"');
+  });
+
+  it("runs an action's run over its action node's group, fed what was sent", () => {
+    const sent: WValue = { type: "Record", value: [["to", { type: "Number", value: 5 }]] } as unknown as WValue;
+    const run: ReplayInput = { kind: "trigger", route: "action reset", request: sent, sourced: [], state_before: {} };
+    const canvas = [
+      n("a", "action", ["input"], ["input"], [frozen("name", "reset")], "Template"),
+      n("w", "store_write", ["value", "trigger"], ["out"], [frozen("key", "ticks")]),
+      n("b", "action", ["input"], ["input"], [frozen("name", "note")], "Template"),
+      n("x", "store_write", ["value", "trigger"], ["out"], [frozen("key", "note")]),
+    ];
+    const wires = [wire("a", "input", "w", "value"), wire("a", "input", "w", "trigger"), wire("b", "input", "x", "value"), wire("b", "input", "x", "trigger")];
+    expect(runGroup(canvas, wires, run)).toEqual(["a", "w"]);
+    expect(runGroup(canvas, wires, { ...run, route: "action note" })).toEqual(["b", "x"]);
+    expect(runGroup(canvas, wires, { ...run, route: "action nope" })).toEqual([]);
+    expect(replay(canvas, wires, run, evalNode).traces.get("a")?.outputs).toEqual([sent]);
   });
 });
 

@@ -252,6 +252,11 @@ impl FlowBuilder {
         Ok(())
     }
 
+    /// Whether something is wired to `to`'s `input` (in the flow being built, or the holon begun).
+    pub fn is_wired(&self, to: &str, input: &str) -> bool {
+        self.frames.last().is_some_and(|f| f.wires.iter().any(|w| w.target == to && w.input() == input))
+    }
+
     /// A variadic node given `inputs` inputs, as its "+" adds them.
     pub fn arity(&mut self, node: &str, inputs: usize) -> Result<(), String> {
         let n = self.find(node)?;

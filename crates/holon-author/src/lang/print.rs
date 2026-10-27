@@ -15,12 +15,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY};
+use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, TRIGGER};
 
 use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
-use crate::routes::{components, find_routes};
+use crate::lang::lower::call_noun;
+use crate::routes::{components, find_actions, find_clocks, find_files, find_routes};
 use crate::templates;
 use crate::text::restore;
 use crate::wire::{WParam, WPort, WType};
@@ -152,6 +153,7 @@ struct Group<'g> {
 
 impl<'g> Group<'g> {
     fn new(nodes: Vec<&'g Node>, wires: Vec<(Src, String, String)>, outs: Vec<(String, String, String)>) -> Group<'g> {
+        let (nodes, wires) = without_block_ties(nodes, wires);
         let ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
         let mut incoming = HashMap::new();
         let mut consumers: HashMap<(String, String), usize> = HashMap::new();
@@ -224,6 +226,8 @@ pub struct Printer<'s> {
     databases: BTreeSet<String>,
     /// Every channel any leaf names (`channel updates`).
     channels: BTreeSet<String>,
+    /// The flows any `flow_call` runs an action of (`calls billing`).
+    calls: BTreeSet<String>,
     /// The `on file` lines, in order, when the flow runs on files: folder, `deleted`, `matching`.
     on_files: Vec<OnFile>,
     /// With several lines, each `coalesce` of their `file_arrival`s that is `ingress`, and the
@@ -262,6 +266,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         folders: BTreeSet::new(),
         databases: BTreeSet::new(),
         channels: BTreeSet::new(),
+        calls: BTreeSet::new(),
         on_files: Vec::new(),
         ingress_chains: HashMap::new(),
         holon_defs: HashSet::new(),
@@ -278,7 +283,10 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         if !s.port.is_empty() {
             out.push(header(format!("port {}", param_value(&s.port))));
         }
-        if !s.interval.is_empty() {
+        // The header form's clock, for a flow without handlers; beside them an interval left in
+        // the settings starts nothing, and the text says only what runs.
+        let handlers = doc.nodes.iter().any(|n| ["request", "every", "on_file", "action"].iter().any(|t| n.is_template(t)));
+        if !s.interval.is_empty() && !handlers {
             out.push(header(format!("every {}", duration(&s.interval))));
         }
         if let Some(b) = s.browsers.as_ref().filter(|b| !b.is_empty()) {
@@ -302,7 +310,9 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     for c in &p.collections {
         out.push(header(format!("collection {c}")));
     }
-    for f in p.folders.iter().filter(|f| !p.on_files.iter().any(|(on, _, _)| on == *f)) {
+    // A folder an `on file` line or block names is declared by it.
+    let blocks: Vec<&str> = doc.nodes.iter().filter(|n| n.is_template("on_file")).map(|n| n.param("folder")).collect();
+    for f in p.folders.iter().filter(|f| !p.on_files.iter().any(|(on, _, _)| on == *f) && !blocks.contains(&f.as_str())) {
         out.push(header(format!("folder {f}")));
     }
     for d in &p.databases {
@@ -310,6 +320,9 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     }
     for c in &p.channels {
         out.push(header(format!("channel {c}")));
+    }
+    for f in &p.calls {
+        out.push(header(format!("calls {f}")));
     }
     let body = p.flow_body(doc)?;
     let blocks = std::mem::take(&mut p.blocks);
@@ -394,6 +407,47 @@ pub(crate) fn js_statement(store: &MapResolver, unit: &holon_core::Unit, hname: 
     Some(format!("holon {hname}({}) -> {outs_text} js{budgets} {{{body}}}", ins.join(", ")))
 }
 
+/// `nodes` and `wires` without the ties the text doesn't write: a trigger fed by its block's
+/// trigger (a route's request, an `every` block's tick, an `on file` block's file, a holon's own `trigger`, or the
+/// pass-through the lowering places when that feeds several, which goes too, with its `true`).
+/// What's left on a trigger is written `after`.
+fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (Vec<&Node>, Vec<(Src, String, String)>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
+    // The last wire into an input is the one that counts, as `Group` keeps it: a holon's
+    // boundary is listed as its node first, then as the port.
+    let into = |to: &str, input: &str| wires.iter().rev().find(|(_, t, i)| t == to && i == input).map(|(s, _, _)| s);
+    let own_trigger = |src: &Src| match src {
+        Src::In(p) => p == TRIGGER,
+        Src::Node { id, output } => id == crate::composites::BOUNDARY_IN && output == TRIGGER,
+    };
+    let passes_trigger = |id: &str| {
+        let Some(n) = by_id.get(id) else { return false };
+        let always = matches!(into(id, "cond"), Some(Src::Node { id: c, .. }) if by_id.get(c.as_str()).is_some_and(|c| c.data.name == "const" && c.param("type") == "Boolean" && c.param("value") == "true"));
+        n.data.name == "guard" && always && into(id, "value").is_some_and(own_trigger)
+    };
+    let tie = |src: &Src, input: &str| {
+        input == TRIGGER
+            && (own_trigger(src)
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
+    };
+    // A pass-through that feeds only ties goes, with the `true` it holds.
+    let mut gone: HashSet<String> = HashSet::new();
+    for n in &nodes {
+        let feeds: Vec<&(Src, String, String)> = wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id, .. } if *id == n.id)).collect();
+        if passes_trigger(&n.id) && !feeds.is_empty() && feeds.iter().all(|(_, _, input)| input == TRIGGER) {
+            gone.insert(n.id.clone());
+            if let Some(Src::Node { id: c, .. }) = into(&n.id, "cond")
+                && wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id, .. } if id == c)).count() == 1
+            {
+                gone.insert(c.clone());
+            }
+        }
+    }
+    let touches_gone = |(src, to, _): &(Src, String, String)| gone.contains(to) || matches!(src, Src::Node { id, .. } if gone.contains(id));
+    let kept: Vec<(Src, String, String)> = wires.iter().filter(|w| !tie(&w.0, &w.2) && !touches_gone(w)).cloned().collect();
+    (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept)
+}
+
 /// Whether the expression form can spell `nodes` as wired: every input a node needs is wired
 /// (the lowering refuses one left out), and nothing but a route's request has a hidden input.
 fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, request: Option<&str>) -> bool {
@@ -408,9 +462,9 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
             let optional = n.data.body == PlacedBody::Primitive
                 && matches!(
                     (n.data.name.as_str(), p.name.as_str()),
-                    ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
+                    ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
                 );
-            optional || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
+            optional || p.name == TRIGGER || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
         })
     })
 }
@@ -443,17 +497,20 @@ impl<'s> Printer<'s> {
             } else if leaf == "http_stream" {
                 // A piped call's channel (empty when it isn't piped).
                 Some("pipe")
+            } else if leaf == "flow_call" {
+                Some("flow")
             } else {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
             if !name.is_empty() {
                 match param {
                     "collection" => &mut out.0,
                     "folder" => &mut out.1,
                     "database" => &mut out.2,
+                    "flow" => &mut out.4,
                     _ => &mut out.3,
                 }
                 .insert(name);
@@ -483,7 +540,7 @@ impl<'s> Printer<'s> {
             }
         }
         let mut seen = HashSet::new();
-        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases), std::mem::take(&mut self.channels));
+        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases), std::mem::take(&mut self.channels), std::mem::take(&mut self.calls));
         for n in nodes {
             match &n.data.body {
                 PlacedBody::Primitive if named_by(&n.data.name).is_some() => {
@@ -497,17 +554,24 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders, self.databases, self.channels) = out;
+        (self.collections, self.folders, self.databases, self.channels, self.calls) = out;
         Ok(())
     }
 
-    /// The top of the flow: its routes, a flow without routes as statements, and whatever the
-    /// expression form can't spell in the wiring form.
+    /// The top of the flow: its handlers (routes, `every` and `on file` blocks) in the order of their nodes, a
+    /// flow without any as statements, and whatever the expression form can't spell in the wiring
+    /// form.
     fn flow_body(&mut self, doc: &FlowDocument) -> Result<Vec<Line>, String> {
-        let (routes, errors) = find_routes(&doc.nodes, &doc.edges);
-        let has_request = doc.nodes.iter().any(|n| n.is_template("request"));
+        let (routes, mut errors) = find_routes(&doc.nodes, &doc.edges);
+        let (clocks, clock_errors) = find_clocks(&doc.nodes, &doc.edges);
+        errors.extend(clock_errors);
+        let (files, file_errors) = find_files(&doc.nodes, &doc.edges);
+        errors.extend(file_errors);
+        let (actions, action_errors) = find_actions(&doc.nodes, &doc.edges);
+        errors.extend(action_errors);
+        let has_trigger = doc.nodes.iter().any(|n| n.is_template("request") || n.is_template("every") || n.is_template("on_file") || n.is_template("action"));
         let mut lines: Vec<Line> = Vec::new();
-        if !has_request {
+        if !has_trigger {
             // One block, the flow's own.
             let group = self.group_of(doc.nodes.iter().collect(), &doc.edges, vec![]);
             if !expressible(&group.nodes, &group.incoming, None) {
@@ -521,7 +585,87 @@ impl<'s> Printer<'s> {
         let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let mut routed: HashSet<String> = HashSet::new();
         let mut stray_routes: Vec<String> = Vec::new();
-        for r in &routes {
+        let position: HashMap<&str, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        let first = |node_ids: &[String]| node_ids.iter().map(|id| position[id.as_str()]).min().unwrap_or(usize::MAX);
+        enum Handler<'r> {
+            Route(&'r crate::routes::RouteGroup),
+            Clock(&'r crate::routes::ClockGroup),
+            File(&'r crate::routes::FileGroup),
+            Action(&'r crate::routes::ActionGroup),
+        }
+        let mut handlers: Vec<(usize, Handler)> = routes
+            .iter()
+            .map(|r| (first(&r.node_ids), Handler::Route(r)))
+            .chain(clocks.iter().map(|c| (first(&c.node_ids), Handler::Clock(c))))
+            .chain(files.iter().map(|f| (first(&f.node_ids), Handler::File(f))))
+            .chain(actions.iter().map(|a| (first(&a.node_ids), Handler::Action(a))))
+            .collect();
+        handlers.sort_by_key(|(at, _)| *at);
+        for (_, handler) in handlers {
+            let r = match handler {
+                Handler::Route(r) => r,
+                Handler::File(f) => {
+                    let nodes: Vec<&Node> = f.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+                    let group = self.group_of(nodes, &doc.edges, vec![]);
+                    if !expressible(&group.nodes, &group.incoming, Some(&f.on_file_id)) {
+                        stray_routes.push(format!("{}: an input isn't wired, so the block is written as nodes and wires", f.label));
+                        continue;
+                    }
+                    if !lines.is_empty() {
+                        lines.push((String::new(), vec![]));
+                    }
+                    let name = self.handle_name(by_id[f.on_file_id.as_str()], "f");
+                    let mut head = format!("on file {}", f.folder);
+                    if f.deleted {
+                        head.push_str(" deleted");
+                    }
+                    if !f.matching.is_empty() {
+                        head.push_str(&format!(" matching {}", quote(&f.matching)));
+                    }
+                    lines.push((format!("{head} ({name}) {{"), vec![f.on_file_id.clone()]));
+                    let mut body = Block::new(self, &group, "  ", Some((f.on_file_id.clone(), name)));
+                    lines.extend(body.statements()?);
+                    lines.push(("}".into(), vec![]));
+                    routed.extend(f.node_ids.iter().cloned());
+                    continue;
+                }
+                Handler::Action(a) => {
+                    let nodes: Vec<&Node> = a.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+                    let group = self.group_of(nodes, &doc.edges, vec![]);
+                    if !expressible(&group.nodes, &group.incoming, Some(&a.action_id)) {
+                        stray_routes.push(format!("{}: an input isn't wired, so the block is written as nodes and wires", a.label));
+                        continue;
+                    }
+                    if !lines.is_empty() {
+                        lines.push((String::new(), vec![]));
+                    }
+                    let name = self.handle_name(by_id[a.action_id.as_str()], "input");
+                    lines.push((format!("action {} ({name}) {{", a.name), vec![a.action_id.clone()]));
+                    let mut body = Block::new(self, &group, "  ", Some((a.action_id.clone(), name)));
+                    lines.extend(body.statements()?);
+                    lines.push(("}".into(), vec![]));
+                    routed.extend(a.node_ids.iter().cloned());
+                    continue;
+                }
+                Handler::Clock(c) => {
+                    let nodes: Vec<&Node> = c.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+                    let group = self.group_of(nodes, &doc.edges, vec![]);
+                    if !expressible(&group.nodes, &group.incoming, Some(&c.every_id)) {
+                        stray_routes.push(format!("{}: an input isn't wired, so the block is written as nodes and wires", c.label));
+                        continue;
+                    }
+                    if !lines.is_empty() {
+                        lines.push((String::new(), vec![]));
+                    }
+                    lines.push((format!("every {} {{", holon_core::period_text(c.seconds)), vec![c.every_id.clone()]));
+                    let mut body = Block::new(self, &group, "  ", None);
+                    body.tick = Some(c.every_id.clone());
+                    lines.extend(body.statements()?);
+                    lines.push(("}".into(), vec![]));
+                    routed.extend(c.node_ids.iter().cloned());
+                    continue;
+                }
+            };
             let nodes: Vec<&Node> = r.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
             let request = by_id[r.request_id.as_str()];
             let group = self.group_of(nodes, &doc.edges, vec![]);
@@ -567,11 +711,17 @@ impl<'s> Printer<'s> {
     }
 
     fn request_name(&self, request: &Node) -> String {
-        let n = self.bindings.get(&request.id).cloned().unwrap_or_else(|| "req".into());
+        self.handle_name(request, "req")
+    }
+
+    /// The name a block's trigger goes by (a route's request, an `on file` block's file): the
+    /// text's, or `fallback` when it has none it can keep.
+    fn handle_name(&self, request: &Node, fallback: &str) -> String {
+        let n = self.bindings.get(&request.id).cloned().unwrap_or_else(|| fallback.into());
         if plain(&n) && !RESERVED.contains(&n.as_str()) && interface_of(&n).is_none() && !templates::is_template(&n) && !self.collections.contains(&n) && !self.folders.contains(&n) && !self.databases.contains(&n) && !self.channels.contains(&n) {
             n
         } else {
-            "req".into()
+            fallback.into()
         }
     }
 
@@ -688,22 +838,31 @@ impl<'s> Printer<'s> {
                 }
             }
         }
+        // A sink left open inside (a canvas group) is said in the wiring form, which ties nothing:
+        // the expression form would tie it to the holon's trigger.
+        let open = opened.children.iter().any(|c| c.data.inputs.iter().any(|p| p.name == TRIGGER) && !wires.iter().any(|(_, to, input)| *to == c.id && input == TRIGGER));
+        let boundary_in: Vec<(String, String, String)> =
+            wires.iter().filter_map(|(src, to, input)| if let Src::In(port) = src { Some((port.clone(), to.clone(), input.clone())) } else { None }).collect();
         let group = Group::new(opened.children.iter().collect(), wires, bouts);
         let outs_text = if outs.len() == 1 { port(&outs[0]) } else { format!("({})", outs.iter().map(port).collect::<Vec<_>>().join(", ")) };
-        let mut lines: Vec<Line> = vec![(format!("holon {hname}({}) -> {outs_text} {{", ins.iter().map(port).collect::<Vec<_>>().join(", ")), vec![])];
-        if expressible(&group.nodes, &group.incoming, None) {
+        let expression = !open && expressible(&group.nodes, &group.incoming, None);
+        // Its trigger, last and read by nothing but ties, is the one it gets without declaring it.
+        let own_trigger = expression
+            && unit_ins.last().is_some_and(|u| u == TRIGGER)
+            && ins.last().is_some_and(|(n, _)| !group.incoming.values().any(|s| matches!(s, Src::In(p) if p == n)));
+        let declared = &ins[..ins.len() - usize::from(own_trigger)];
+        let mut lines: Vec<Line> = vec![(format!("holon {hname}({}) -> {outs_text} {{", declared.iter().map(port).collect::<Vec<_>>().join(", ")), vec![])];
+        if expression {
             let inputs: HashSet<String> = ins.iter().map(|(n, _)| n.clone()).collect();
             let mut block = Block::new(self, &group, "  ", None);
             block.inputs = inputs;
             lines.extend(block.statements()?);
         } else {
             // The wiring form inside: nodes, wires, and the boundary as `in.x -> n.p`, `n.p -> out.y`.
-            let (wired, node_names) = self.wiring_form(&group.nodes, opened.wires.iter(), "  ")?;
+            let (wired, node_names) = self.wiring_form(&opened.children.iter().collect::<Vec<_>>(), opened.wires.iter(), "  ")?;
             lines.extend(wired);
-            for ((to, input), src) in &group.incoming {
-                if let Src::In(port) = src
-                    && let Some(n) = node_names.get(to)
-                {
+            for (port, to, input) in &boundary_in {
+                if let Some(n) = node_names.get(to) {
                     lines.push((format!("  in.{port} -> {n}.{}", if plain(input) { input.clone() } else { quote(input) }), vec![]));
                 }
             }
@@ -818,8 +977,11 @@ struct Block<'p, 's, 'g> {
     p: &'p mut Printer<'s>,
     g: &'g Group<'g>,
     indent: &'static str,
-    /// The route's request node and its name, in a route.
+    /// The route's request node and its name, in a route; in an `on file` block, its `on_file`
+    /// node and the file's name.
     request: Option<(String, String)>,
+    /// The block's tick node, in an `every` block: it is `now` there.
+    tick: Option<String>,
     /// A holon's or function's inputs, by name.
     inputs: HashSet<String>,
     bound: HashMap<String, String>,
@@ -850,7 +1012,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         if let Some((_, name)) = &request {
             used.insert(name.clone());
         }
-        let mut b = Block { p, g, indent, request, inputs: HashSet::new(), bound: HashMap::new(), used, touched: vec![], nest: indent.into(), absorbed: HashSet::new() };
+        let mut b = Block { p, g, indent, request, tick: None, inputs: HashSet::new(), bound: HashMap::new(), used, touched: vec![], nest: indent.into(), absorbed: HashSet::new() };
         for n in &g.nodes {
             let Some(m) = b.match_shape(n) else { continue };
             b.absorbed.extend(m.parts.iter().map(|n| n.id.clone()));
@@ -867,7 +1029,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
 
     /// Whether `node` may fold into an expression: no name of its own, and one output.
     fn free(&self, node: &Node) -> bool {
-        !(self.is_request(&node.id) || node.is_template("respond") || node.data.name == "await" || self.bound.contains_key(&node.id) || self.p.bindings.contains_key(&node.id))
+        !(self.is_request(&node.id) || self.is_tick(&node.id) || node.is_template("respond") || node.data.name == "await" || self.bound.contains_key(&node.id) || self.p.bindings.contains_key(&node.id))
             && node.data.outputs.len() == 1
     }
 
@@ -1013,10 +1175,33 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         self.request.as_ref().is_some_and(|(r, _)| r == id)
     }
 
+    fn is_tick(&self, id: &str) -> bool {
+        self.tick.as_deref() == Some(id)
+    }
+
     /// Whether `node`'s one output prints inline at its one consumer. A node the text named keeps
     /// its binding: fmt keeps an author's names.
     fn inline(&self, node: &Node) -> bool {
-        self.free(node) && (self.g.consumed_total(node) == 1 || self.absorbed.contains(&node.id))
+        self.free(node) && (self.g.consumed_total(node) == 1 || self.absorbed.contains(&node.id)) && !self.tied_elsewhere(node) && !self.awaited(node)
+    }
+
+    /// Whether `node`'s trigger is fed by something other than its block's trigger: `after`.
+    fn tied_elsewhere(&self, node: &Node) -> bool {
+        self.g.incoming.contains_key(&(node.id.clone(), TRIGGER.to_string()))
+    }
+
+    /// Whether a trigger waits for `node` (`after x`): it is a statement of its own, placed before
+    /// what waits for it, as the text that made it wrote it.
+    fn awaited(&self, node: &Node) -> bool {
+        self.g.incoming.iter().any(|((_, input), src)| input == TRIGGER && matches!(src, Src::Node { id, .. } if *id == node.id))
+    }
+
+    /// ` after x` for a node tied elsewhere, else nothing.
+    fn after(&mut self, node: &Node) -> Result<String, String> {
+        Ok(match self.arg(node, TRIGGER)? {
+            Some((text, _)) => format!(" after {text}"),
+            None => String::new(),
+        })
     }
 
     /// The input a `guard(true, input)` passes through, when `node` is one: the lowering places it
@@ -1037,7 +1222,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         let order = self.g.order.clone();
         for id in &order {
             let node = self.g.node(id);
-            if self.is_request(id) || self.pass_through(node).is_some() {
+            if self.is_request(id) || self.is_tick(id) || self.pass_through(node).is_some() {
                 continue;
             }
             self.touched.clear();
@@ -1062,19 +1247,31 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             let effect = single && node.data.outputs[0].ty == WType::Effect;
             if total == 0 && effect {
                 let text = self.effect_statement(node)?;
-                let l = self.line(format!("{}{text}", self.indent));
+                let after = self.after(node)?;
+                let l = self.line(format!("{}{text}{after}", self.indent));
                 lines.push(l);
                 continue;
             }
             if total == 0 && !single && node.data.outputs.iter().any(|o| o.ty == WType::Effect) {
                 let (text, _) = self.render(node, "")?;
-                let l = self.line(format!("{}{text}", self.indent));
+                let after = self.after(node)?;
+                let l = self.line(format!("{}{text}{after}", self.indent));
+                lines.push(l);
+                continue;
+            }
+            // A call to another flow's action nobody uses is a statement, made for what it does.
+            if total == 0 && single && node.data.name == "flow_call" {
+                let (text, _) = self.render(node, &node.data.outputs[0].name)?;
+                let after = self.after(node)?;
+                let l = self.line(format!("{}{text}{after}", self.indent));
                 lines.push(l);
                 continue;
             }
             // A binding, then any boundary outputs it feeds. Rendered first: a holon's block is
             // written (and its name taken) on first use, and the binding must not shadow it.
             let (text, _) = self.render(node, if single { &node.data.outputs[0].name } else { "" })?;
+            let after = self.after(node)?;
+            let text = format!("{text}{after}");
             let name = self.bind(node);
             let l = self.line(format!("{}{name} = {text}", self.indent));
             lines.push(l);
@@ -1102,6 +1299,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 "file_lines" => "lines".into(),
                 "file_slice" => "part".into(),
                 "http_request" => "response".into(),
+                "flow_call" if plain(node.param("action")) => node.param("action").to_string(),
                 "stripe_verify" => "verified".into(),
                 "clock" => "t".into(),
                 "const" => "c".into(),
@@ -1130,7 +1328,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// started the run).
     fn copies_a_handle(&self, node: &Node) -> bool {
         match self.g.incoming.get(&(node.id.clone(), "from".to_string())) {
-            Some(Src::Node { id, .. }) => ["file_handle", "file_arrival"].contains(&self.g.node(id).data.name.as_str()) || self.p.ingress_chains.contains_key(id),
+            Some(Src::Node { id, .. }) => ["file_handle", "file_arrival"].contains(&self.g.node(id).data.name.as_str()) || self.g.node(id).is_template("on_file") || self.p.ingress_chains.contains_key(id),
             _ => false,
         }
     }
@@ -1149,7 +1347,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 if let Some((req, name)) = &self.request
                     && req == id
                 {
-                    return Ok((if output == "request" { name.clone() } else { format!("{name}.{output}") }, ATOM));
+                    return Ok((if ["request", "file", "input"].contains(&output.as_str()) { name.clone() } else { format!("{name}.{output}") }, ATOM));
+                }
+                if self.is_tick(id) {
+                    return Ok(("now".into(), ATOM));
                 }
                 if let Some(name) = self.bound.get(id).cloned() {
                     let node = self.g.node(id);
@@ -1268,6 +1469,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let key = self.required(node, "key")?;
                 let value = self.required(node, "value")?;
                 atom(format!("{}.put({key}, {value})", node.param("collection")))
+            }
+            // `billing.charge(x)`: the flow's name with `-` as `_`, then the action.
+            "flow_call" if plain(node.param("action")) && plain(&call_noun(node.param("flow"))) => {
+                let input = self.arg(node, "input")?.map(|(t, _)| t).unwrap_or_default();
+                atom(format!("{}.{}({input})", call_noun(node.param("flow")), node.param("action")))
             }
             "channel_send" if plain(node.param("channel")) => atom(format!("{}.send({})", node.param("channel"), self.required(node, "pack")?)),
             "channel_subscribe" if plain(node.param("channel")) => match node.param("from") {
@@ -1679,7 +1885,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     fn positional_then_named(&mut self, node: &Node, inputs: &[String], _skip: &[&str]) -> Result<Vec<String>, String> {
         let mut args = Vec::new();
         let mut named = false;
-        for input in inputs {
+        for input in inputs.iter().filter(|i| *i != TRIGGER) {
             match self.arg(node, input)? {
                 Some((t, _)) if !named => args.push(t),
                 Some((t, _)) => args.push(format!("{input}: {t}")),
@@ -1915,6 +2121,21 @@ mod tests {
         print(name, doc, &mut MapResolver::new(), &Names::new(), bindings).unwrap_or_else(|e| panic!("{e}"))
     }
 
+    /// An interval left in a flow's settings beside its handlers starts nothing: the text leaves
+    /// it out (the lowering refuses an `every` line there), and a flow without handlers keeps it.
+    #[test]
+    fn an_interval_beside_handlers_is_not_printed() {
+        for src in ["flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n", "flow f\n\naction reset (input) {\n  state.n = 0\n}\n"] {
+            let mut doc = compile(src).unwrap_or_else(|e| panic!("{e}")).doc;
+            doc.server.as_mut().expect("its settings").interval = "10".into();
+            let text = printed(Some("f"), &doc, &BTreeMap::new());
+            assert!(!text.contains("every 10s"), "{text}");
+            compile(&text).unwrap_or_else(|e| panic!("it compiles: {e}\n{text}"));
+        }
+        let clock = compile("flow f\nevery 10s\n\nstate.n = now\n").unwrap_or_else(|e| panic!("{e}")).doc;
+        assert!(printed(Some("f"), &clock, &BTreeMap::new()).contains("every 10s"));
+    }
+
     /// A `js` node (docs/L4s/js-node-L4.md): its body prints back verbatim, a `}` in a string or a
     /// template notwithstanding, its budgets only where they differ from the defaults; the printed
     /// text lowers to the same units; and the node runs, through the engine, as the body says.
@@ -2032,6 +2253,29 @@ mod tests {
         assert!(text.contains("file: "), "{text}");
     }
 
+    /// A call to another flow's action prints as the method on the flow's name (`-` as `_`), its
+    /// flow declared by `calls`; a lone call is a statement, and `after` ties one to a value.
+    #[test]
+    fn calls_print_as_methods_on_the_flow_and_round_trip() {
+        let src = "flow shop\nport 8180\ncollection c\ncalls billing-v2\n\nroute POST /orders (req) {\n  charged = billing_v2.charge({ amount: req.json.total })\n  found = c[req.json.id]\n  billing_v2.reset() after found\n  billing_v2.refund(1)\n  respond charged.answer\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("shop", &l.doc, &l.names);
+        assert_eq!(text, src, "fmt keeps it as written");
+    }
+
+    /// The ties the lowering makes aren't written: a route's writes, a holon's own trigger (absent
+    /// from its signature) and the placement's tie; what `after` names is (docs/L4s/triggers-L4.md).
+    #[test]
+    fn ties_print_as_the_text_wrote_them_and_round_trip() {
+        let src = "flow f\nport 8100\ncollection c\n\nholon keep(v) -> (saved, put) {\n  saved = state.set(last, v)\n  put = c.put(\"k\", v)\n}\n\nroute POST /k (req) {\n  id = req.params.id\n  r = keep(id)\n  state.seen = id after r.put\n  state.hits = (state.hits ?? 0) + 1\n  respond id\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("f", &l.doc, &l.names);
+        assert!(text.contains("holon keep(v) -> (saved, put) {"), "its trigger isn't declared: {text}");
+        assert!(text.contains("state.seen = id after r.put"), "{text}");
+        assert!(text.contains("state.hits = (state.hits ?? 0) + 1\n"), "tied to the request, nothing written: {text}");
+        assert!(!text.contains("trigger"), "{text}");
+    }
+
     #[test]
     fn several_on_file_lines_deletions_and_globs_print_and_round_trip() {
         let src = "flow sort\non file drop matching \"**/*.csv\"\non file drop deleted\non file inbox\nfolder done\n\nh = ingress\ndone[\"{h.event}-{h.name}\"] = h\ndone.create(\"{ingress.folder}.log\", ingress.name)\n";
@@ -2040,6 +2284,26 @@ mod tests {
         assert!(text.contains("on file drop matching \"**/*.csv\"\non file drop deleted\non file inbox\nfolder done\n"), "{text}");
         assert!(!text.contains("file_arrival") && !text.contains("coalesce"), "each chain is ingress: {text}");
         assert!(text.contains(".create("), "{text}");
+    }
+
+    /// `on file` blocks print back as written, in order, each with its file's name; the folder a
+    /// block names is declared by it, so a write into it adds no `folder` line, and a handle
+    /// written to a folder is a copy.
+    #[test]
+    fn on_file_blocks_print_back_as_written() {
+        let src = "flow sort\nport 8080\nfolder done\n\non file drop matching \"*.csv\" (sheet) {\n  done[sheet.name] = sheet\n  drop[\"seen/{sheet.name}\"] = \"seen\"\n}\n\non file drop deleted (f) {\n  state.last = f.name\n}\n\nroute GET /last (req) {\n  respond state.last\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("sort", &l.doc, &l.names);
+        assert_eq!(text, src);
+    }
+
+    /// Action blocks print back as written, each with the name of what was sent.
+    #[test]
+    fn action_blocks_print_back_as_written() {
+        let src = "flow ticker\n\nevery 2s {\n  state.ticks = (state.ticks ?? 0) + 1\n}\n\naction reset (input) {\n  state.ticks = input.to ?? 0\n  respond { was: state.ticks ?? 0 }\n}\n\naction ping (sent) {\n  respond sent\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("ticker", &l.doc, &l.names);
+        assert_eq!(text, src);
     }
 
     /// A value used once is written inline, inside an interpolated part too; when it holds a
