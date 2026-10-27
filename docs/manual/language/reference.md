@@ -110,7 +110,8 @@ and a record or list is written as JSON.
 
 An expression statement that isn't an effect is a mistake ("a value nobody uses"): bind it or
 remove it. A binding that is never used is a warning. Each state key may be written once in a
-flow: a run reads its starting state and writes once, at the end.
+run (in a block, or a flow without handlers): a run reads its starting state and writes once, at
+the end. Two handlers may each write the same key.
 
 ## Expressions
 
