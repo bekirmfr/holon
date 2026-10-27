@@ -671,6 +671,53 @@ value, the whole answer, as any call's. The pieces are the upstream's bytes, nev
 computation, so they stay true whatever the run does after: a run that runs again answers the
 call from its record and pipes nothing twice. A piped call needn't be in a route.
 
+### ticker: a clock beside routes, and an action
+
+```
+flow ticker
+port 8156
+channel ticks
+
+every 2s {
+  n = (state.ticks ?? 0) + 1
+  state.ticks = n
+  ticks.send({ n: n, at: now })
+}
+
+action reset (input) {
+  state.ticks = input.to ?? 0
+  respond { was: state.ticks ?? 0, set: input.to ?? 0 }
+}
+
+route GET /count (req) {
+  respond state.ticks ?? 0
+}
+
+route GET /live (req) {
+  respond ticks.subscribe()
+}
+```
+
+A flow with routes keeps its clock in a block of its own: `every 2s { … }` runs every two seconds,
+apart from the routes, with no input, and `now` in it is the time of the tick. It is a clock
+handler in the flow's server, beside the routes' endpoints (`declare = "every"`, `seconds: 2`), and
+the deployment asks `Clock`. The block is everything tied to its tick (§5.11): the write and the
+send take it as their trigger, so they are the clock's, though neither reads it. The state is the
+flow's, one for every handler: the clock counts, and `GET /count` reads the count. heartbeat's
+`every 10s` header is the form for a flow without handlers; beside a route it is an error that
+names this block.
+
+`action reset (input) { … }` is run by hand, by its name, and the network never reaches it: the
+port answers only the routes. A person runs it from the editor's server panel or the deployed page,
+or a script with `POST /trigger/ticker/reset` on the holon server (as an editor or an admin);
+`input` is the JSON they sent, `{}` for nothing, so `{"to": 0}` and nothing both set the count
+back to 0. Its `respond` is the answer to whoever ran it: `state.ticks` on the right is the count
+at the start of the run (§6.6), so `was` is the count before the write. The deployment asks
+`Action("reset")`. An agent runs it (`holon mcp`'s `run` tool) only once a person lets agents run
+`reset` in the flow's deploy settings, which asks `AgentRuns("reset")`: an optional permission, as
+the flow runs the same without it. The sample's page, `GET /`, is a js holon whose `EventSource`
+lists each tick as it arrives.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
