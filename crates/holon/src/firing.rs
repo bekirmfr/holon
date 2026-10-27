@@ -594,7 +594,9 @@ fn run_attempt(
             eprintln!("holon: refused {cap:?}: a copy from the folder {from:?}, which this deployment doesn't read");
             return false;
         }
-        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) = cap {
+        // A file too: another deployment that reads it logs its text, redacted only of its own
+        // secrets, and a part of it read is kept as it is.
+        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::FileWrite(key) = cap {
             if let Some(name) = secrets::secret_in(payload, secrets) {
                 eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
                 return false;

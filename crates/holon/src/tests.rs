@@ -5017,6 +5017,80 @@ fn route_status(state: &AppState, body: &serde_json::Value) -> u16 {
     route(state, &req("POST", "/admin/folders", serde_json::to_vec(body).unwrap())).status_code
 }
 
+/// A file is kept out of a secret's way as a state write is: a write of a secret, or of something
+/// computed from one, is refused; a part of a file read that holds one isn't kept in the log (a
+/// mark there would no longer prove it part of the file); and a file text that holds one isn't
+/// shipped in the export. Verify asks for the file instead of failing, and skips the refused writes.
+#[test]
+fn a_secret_stays_out_of_files_and_of_what_the_log_keeps_of_them() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-file-secrets-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (logs, out) = (dir.join("logs"), dir.join("out"));
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    let value = "sk_live_file_secret_value";
+    let mut text: String = (0..400).map(|i| format!("line {i} of a config\n")).collect();
+    text.push_str(&format!("key = {value}\nend\n"));
+    std::fs::write(logs.join("app.conf"), &text).unwrap();
+    let bind = |name: &str, path: &Path, access: &str| {
+        let body = serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access, "keep": "bytes" });
+        route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code
+    };
+    assert_eq!(bind("logs", &logs, "read"), 200);
+    assert_eq!(bind("out", &out, "read-write"), 200);
+    let flow = r#"flow filer
+port 18146
+folder logs
+folder out
+
+route POST /lit (req) {
+  out["lit.txt"] = "{req.body}:{secret.api_key}"
+  respond { ok: true }
+}
+
+route POST /der (req) {
+  out["der.txt"] = "{req.body}:{base64(secret.api_key)}"
+  respond { ok: true }
+}
+
+route GET /tail/:name (req) {
+  respond logs.lines(req.params.name, from: -2, limit: 2)
+}
+
+route GET /whole/:name (req) {
+  respond logs[req.params.name]
+}
+"#;
+    let slug = deploy_text(&state, flow, "");
+    let set = req("POST", &format!("/deployments/{slug}/secrets/api_key"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+
+    assert_eq!(data_call(&state, &slug, "POST", "/lit", "a").0, 200);
+    assert_eq!(data_call(&state, &slug, "POST", "/der", "a").0, 200);
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "neither write landed");
+
+    let (status, tail, _) = data_call(&state, &slug, "GET", "/tail/app.conf", "");
+    assert_eq!(status, 200, "{tail}");
+    assert!(tail.contains(value), "the caller gets what it read: {tail}");
+    let (status, whole, _) = data_call(&state, &slug, "GET", "/whole/app.conf", "");
+    assert_eq!((status, whole.len()), (200, text.len()), "{whole}");
+
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    assert!(!log.contains(value), "{log}");
+    let entries = log_entries(&state, &slug);
+    let tail_read = &entries.iter().find(|e| e["route"] == "GET /tail/:name").unwrap()["reads"][0]["file"];
+    assert!(tail_read["range"].is_object() && tail_read["range"]["text"].is_null(), "the part read isn't kept: {tail_read}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(!serde_json::to_string(&export).unwrap().contains(value), "the export ships no text holding it");
+    assert!(export.files_not_kept >= 1, "the whole file's text is counted as not kept");
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    let skipped = report.reruns.iter().filter(|(_, r)| matches!(r, verify::Rerun::Skipped(_))).count();
+    assert!(skipped >= 2, "the two reads are asked for the file: {:?}", report.reruns);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A file too big to read whole is read by handle and by range: its last lines and first bytes
 /// enter the run, nothing else, and the log proves them part of the file by its hashes, so the
 /// runs check offline without it. A copy by handle streams the file host to host.

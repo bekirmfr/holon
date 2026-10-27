@@ -369,8 +369,10 @@ only the editor.
   id doesn't include them. Every literal occurrence of a value is redacted, as `‹secret:name›`,
   from the flow log and from what the control plane says about a deployment (state, sessions,
   `/trigger` and "send live" replies); a replay substitutes the same placeholder. A state,
-  collection or channel write carrying a secret's value is refused, so one never reaches the state
-  store, snapshots, a channel's packs or disk. Values under 6 characters are refused (too short to
+  collection, database, channel or file write carrying a secret's value is refused, so one never
+  reaches the state store, snapshots, a channel's packs, a file another deployment reads, or disk.
+  A part of a file read that holds one isn't kept in the log, and a file text that holds one isn't
+  shipped in an export. Values under 6 characters are refused (too short to
   redact reliably). A value transformed before it's logged (encoded, sliced, a field of a JSON
   secret) can't be recognised, so the graph is followed instead (`taint.rs`): what a secret reaches
   through anything but a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`) or a Boolean

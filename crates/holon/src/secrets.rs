@@ -648,6 +648,11 @@ impl Redactor {
         self
     }
 
+    /// Whether `s` holds any of its values.
+    pub(crate) fn holds(&self, s: &str) -> bool {
+        self.pairs.iter().any(|(value, _)| !value.is_empty() && s.contains(value.as_str()))
+    }
+
     pub(crate) fn text(&self, s: &str) -> String {
         let mut out = s.to_string();
         for (value, mark) in &self.pairs {
@@ -736,6 +741,13 @@ impl Redactor {
         for read in &mut e.reads {
             r(&mut read.request);
             read.answer.iter_mut().for_each(&mut r);
+            // A part of a file is kept as read, proved by its hashes: one holding a secret isn't
+            // kept at all (a mark would no longer prove), so verify asks for the file instead.
+            if let Some(range) = read.file.as_mut().and_then(|f| f.range.as_mut())
+                && range.text.as_deref().is_some_and(|t| self.holds(t))
+            {
+                range.text = None;
+            }
         }
         for t in &mut e.timeline {
             t.outputs.iter_mut().flatten().flatten().for_each(&mut r);
