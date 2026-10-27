@@ -65,6 +65,10 @@ pub enum HeaderKind {
     /// `channel updates`: packs the flow sends (`updates.send(v)`) to whoever subscribes, a route
     /// answering with `respond updates.subscribe()`.
     Channel(String),
+    /// `calls billing`: another deployed flow, by its slug, whose actions this flow runs:
+    /// `billing.charge(x)`, `RunsAction("billing/charge")`. A slug's `-` is `_` in the call
+    /// (`calls billing-v2` is called as `billing_v2.charge(x)`).
+    Calls(String),
     /// `on file inbox`: a run for each file new or changed in the folder (or removed from it,
     /// `deleted`; only names matching a glob, `matching "*.csv"`), which it declares too; the run
     /// reads the file's handle as `ingress`. A flow may have several.

@@ -16,7 +16,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("give that code up to {} MiB of memory per call", n / (1024 * 1024));
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 18] = [
+    let named: [(&str, Say); 19] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -26,6 +26,10 @@ pub fn describe_item(item: &str) -> String {
         ("FileArrival", |a| format!("run on each file new, changed or removed in the folder \"{a}\" (as its on file lines say), and pass it on")),
         ("Action", |a| format!("can be run by hand: {a}")),
         ("AgentRuns", |a| format!("let agents run its action {a}")),
+        ("RunsAction", |a| match a.split_once('/') {
+            Some((flow, action)) => format!("run the action {action} of the flow {flow}"),
+            None => format!("run an action of the flow {a}"),
+        }),
         ("FileWrite", |a| format!("write, copy into and delete files in the folder \"{a}\"")),
         ("DbRead", |a| table_of(a, "read")),
         ("DbWrite", |a| table_of(a, "insert, update and delete rows of")),

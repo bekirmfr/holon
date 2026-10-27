@@ -284,6 +284,7 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
         "http_request" => &["headers", "body"],
         "http_upload" => &["headers"],
         "http_stream" => &["headers", "body"],
+        "flow_call" => &["input"],
         "collection_list" | "file_list" => &["prefix", "after"],
         "file_lines" => &["from"],
         _ => &[],
@@ -322,7 +323,11 @@ fn caller_spec(spec: EncapSpec, group: &[&Node], label: &str, trigger: &str) -> 
     }
     let is_respond = |child: u32| group[child as usize].is_template("respond");
     let is_effect =
-        |child: u32, port: u32| group[child as usize].data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect);
+        |child: u32, port: u32| {
+            let n = group[child as usize];
+            // A call to another flow's action is made for what it does, whatever it answers.
+            n.data.name == "flow_call" || n.data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect)
+        };
     let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_respond(x.child) || is_effect(x.child, x.port)).collect();
     let (responses, effects): (Vec<_>, Vec<_>) = expose.into_iter().partition(|x| is_respond(x.child));
     if responses.len() > 1 {
@@ -364,7 +369,11 @@ fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str) -> Res
         return Err(format!("{label}: {} is a route's; {who} answers nobody", n.data.name));
     }
     let is_effect =
-        |child: u32, port: u32| group[child as usize].data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect);
+        |child: u32, port: u32| {
+            let n = group[child as usize];
+            // A call to another flow's action is made for what it does, whatever it answers.
+            n.data.name == "flow_call" || n.data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect)
+        };
     let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_effect(x.child, x.port)).collect();
     if expose.is_empty() {
         return Err(format!("{label}: it does nothing: write something (state, a collection, a channel)"));

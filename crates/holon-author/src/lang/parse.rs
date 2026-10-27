@@ -281,6 +281,12 @@ impl Parser {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
+                    // `calls billing` declares a flow whose actions this one runs; no statement starts
+                    // with two names, and `calls` stays a name everywhere else.
+                    "calls" if matches!(self.peek_at(1).tok, Tok::Ident) => {
+                        let h = self.header()?;
+                        file.headers.push(h);
+                    }
                     // `on file inbox (f) {` opens a file handler; `on file inbox` alone is the old header.
                     "on" if self.peek_at(1).tok == Tok::Ident && self.peek_at(1).text == "file" && self.on_file_block_ahead() => {
                         file.items.push(Item::OnFile(self.on_file()?))
@@ -325,6 +331,7 @@ impl Parser {
             "folder" => HeaderKind::Folder(self.ident("the folder's name")?.text),
             "database" => HeaderKind::Database(self.ident("the database's name")?.text),
             "channel" => HeaderKind::Channel(self.ident("the channel's name")?.text),
+            "calls" => HeaderKind::Calls(self.raw_name("the flow's name")?.text),
             "on" => HeaderKind::OnFile(self.file_on()?),
             "optional" => HeaderKind::Optional(self.consent()?),
             _ => {

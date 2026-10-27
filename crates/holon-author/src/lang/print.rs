@@ -20,6 +20,7 @@ use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, TRIGGE
 use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
+use crate::lang::lower::call_noun;
 use crate::routes::{components, find_actions, find_clocks, find_files, find_routes};
 use crate::templates;
 use crate::text::restore;
@@ -225,6 +226,8 @@ pub struct Printer<'s> {
     databases: BTreeSet<String>,
     /// Every channel any leaf names (`channel updates`).
     channels: BTreeSet<String>,
+    /// The flows any `flow_call` runs an action of (`calls billing`).
+    calls: BTreeSet<String>,
     /// The `on file` lines, in order, when the flow runs on files: folder, `deleted`, `matching`.
     on_files: Vec<OnFile>,
     /// With several lines, each `coalesce` of their `file_arrival`s that is `ingress`, and the
@@ -263,6 +266,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         folders: BTreeSet::new(),
         databases: BTreeSet::new(),
         channels: BTreeSet::new(),
+        calls: BTreeSet::new(),
         on_files: Vec::new(),
         ingress_chains: HashMap::new(),
         holon_defs: HashSet::new(),
@@ -316,6 +320,9 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     }
     for c in &p.channels {
         out.push(header(format!("channel {c}")));
+    }
+    for f in &p.calls {
+        out.push(header(format!("calls {f}")));
     }
     let body = p.flow_body(doc)?;
     let blocks = std::mem::take(&mut p.blocks);
@@ -455,7 +462,7 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
             let optional = n.data.body == PlacedBody::Primitive
                 && matches!(
                     (n.data.name.as_str(), p.name.as_str()),
-                    ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
+                    ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
                 );
             optional || p.name == TRIGGER || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
         })
@@ -490,17 +497,20 @@ impl<'s> Printer<'s> {
             } else if leaf == "http_stream" {
                 // A piped call's channel (empty when it isn't piped).
                 Some("pipe")
+            } else if leaf == "flow_call" {
+                Some("flow")
             } else {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
             if !name.is_empty() {
                 match param {
                     "collection" => &mut out.0,
                     "folder" => &mut out.1,
                     "database" => &mut out.2,
+                    "flow" => &mut out.4,
                     _ => &mut out.3,
                 }
                 .insert(name);
@@ -530,7 +540,7 @@ impl<'s> Printer<'s> {
             }
         }
         let mut seen = HashSet::new();
-        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases), std::mem::take(&mut self.channels));
+        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases), std::mem::take(&mut self.channels), std::mem::take(&mut self.calls));
         for n in nodes {
             match &n.data.body {
                 PlacedBody::Primitive if named_by(&n.data.name).is_some() => {
@@ -544,7 +554,7 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders, self.databases, self.channels) = out;
+        (self.collections, self.folders, self.databases, self.channels, self.calls) = out;
         Ok(())
     }
 
@@ -1249,6 +1259,14 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 lines.push(l);
                 continue;
             }
+            // A call to another flow's action nobody uses is a statement, made for what it does.
+            if total == 0 && single && node.data.name == "flow_call" {
+                let (text, _) = self.render(node, &node.data.outputs[0].name)?;
+                let after = self.after(node)?;
+                let l = self.line(format!("{}{text}{after}", self.indent));
+                lines.push(l);
+                continue;
+            }
             // A binding, then any boundary outputs it feeds. Rendered first: a holon's block is
             // written (and its name taken) on first use, and the binding must not shadow it.
             let (text, _) = self.render(node, if single { &node.data.outputs[0].name } else { "" })?;
@@ -1281,6 +1299,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 "file_lines" => "lines".into(),
                 "file_slice" => "part".into(),
                 "http_request" => "response".into(),
+                "flow_call" if plain(node.param("action")) => node.param("action").to_string(),
                 "stripe_verify" => "verified".into(),
                 "clock" => "t".into(),
                 "const" => "c".into(),
@@ -1450,6 +1469,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let key = self.required(node, "key")?;
                 let value = self.required(node, "value")?;
                 atom(format!("{}.put({key}, {value})", node.param("collection")))
+            }
+            // `billing.charge(x)`: the flow's name with `-` as `_`, then the action.
+            "flow_call" if plain(node.param("action")) && plain(&call_noun(node.param("flow"))) => {
+                let input = self.arg(node, "input")?.map(|(t, _)| t).unwrap_or_default();
+                atom(format!("{}.{}({input})", call_noun(node.param("flow")), node.param("action")))
             }
             "channel_send" if plain(node.param("channel")) => atom(format!("{}.send({})", node.param("channel"), self.required(node, "pack")?)),
             "channel_subscribe" if plain(node.param("channel")) => match node.param("from") {
@@ -2227,6 +2251,16 @@ mod tests {
         assert!(text.contains("on file inbox\nfolder sent\n"), "the trigger declares its folder: {text}");
         assert!(!text.contains("folder inbox"), "{text}");
         assert!(text.contains("file: "), "{text}");
+    }
+
+    /// A call to another flow's action prints as the method on the flow's name (`-` as `_`), its
+    /// flow declared by `calls`; a lone call is a statement, and `after` ties one to a value.
+    #[test]
+    fn calls_print_as_methods_on_the_flow_and_round_trip() {
+        let src = "flow shop\nport 8180\ncollection c\ncalls billing-v2\n\nroute POST /orders (req) {\n  charged = billing_v2.charge({ amount: req.json.total })\n  found = c[req.json.id]\n  billing_v2.reset() after found\n  billing_v2.refund(1)\n  respond charged.answer\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("shop", &l.doc, &l.names);
+        assert_eq!(text, src, "fmt keeps it as written");
     }
 
     /// The ties the lowering makes aren't written: a route's writes, a holon's own trigger (absent

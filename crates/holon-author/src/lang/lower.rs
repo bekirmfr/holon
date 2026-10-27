@@ -80,6 +80,12 @@ const RESERVED: &[&str] = &[
     "parse_json",
 ];
 
+/// The name a flow's actions are called by (`calls billing-v2`, `billing_v2.charge(x)`): its slug
+/// with `-` as `_`.
+pub(crate) fn call_noun(flow: &str) -> String {
+    flow.replace('-', "_")
+}
+
 /// Plain names for two leaves, read as English.
 fn alias(name: &str) -> &str {
     match name {
@@ -104,7 +110,7 @@ fn piped(d: &crate::canvas::NodeData) -> bool {
 /// `has_optional_ports`).
 fn is_optional(leaf: &str, input: &str) -> bool {
     input == TRIGGER
-        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
+        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
 }
 
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
@@ -234,6 +240,9 @@ struct Lowerer<'a> {
     /// The channels the header declares (`channel updates`): sent on, and subscribed to as a
     /// route's answer.
     channels: HashSet<String>,
+    /// The flows the header names (`calls billing`), by the noun that calls them (`billing`, or
+    /// `billing_v2` for `billing-v2`): their slugs.
+    calls: HashMap<String, String>,
     /// The streamed call (`http_stream`) the current route's `respond …, stream: true` forwards.
     streamed: Option<String>,
     /// The channel the http call being lowered pipes to (`updates.pipe(http.post(…))`).
@@ -264,6 +273,7 @@ impl<'a> Lowerer<'a> {
         let on_files = file.headers.iter().filter_map(|h| if let HeaderKind::OnFile(f) = &h.kind { Some(f.clone()) } else { None }).collect();
         let databases = file.headers.iter().filter_map(|h| if let HeaderKind::Database(d) = &h.kind { Some(d.clone()) } else { None }).collect();
         let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
+        let calls = file.headers.iter().filter_map(|h| if let HeaderKind::Calls(f) = &h.kind { Some((call_noun(f), f.clone())) } else { None }).collect();
         let folders = file
             .headers
             .iter()
@@ -284,6 +294,7 @@ impl<'a> Lowerer<'a> {
             folders,
             databases,
             channels,
+            calls,
             streamed: None,
             piping: None,
             on_files,
@@ -467,12 +478,38 @@ impl<'a> Lowerer<'a> {
                     Consent::Named { name, arg: None } => name.clone(),
                 }),
                 HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
+                HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
         if !optional.is_empty() {
             s.requirements = Some(Requirements { optional: Some(optional), ..Default::default() });
         }
         Ok(s)
+    }
+
+    /// Whether `calls flow` can be a name: a flow's name (letters, digits, `-` and `_`, as a
+    /// deployment's slug is), whose noun is a name of its own, which nothing else in the file has.
+    fn check_calls(&self, flow: &str, span: Span, file: &File) -> R<()> {
+        let noun = call_noun(flow);
+        let name = flow.len() <= 64 && flow.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') && noun.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_');
+        if !name {
+            return err(span, format!("\"{flow}\" isn't a flow's name: letters, digits, - and _, starting with a letter"));
+        }
+        let taken = RESERVED.contains(&noun.as_str())
+            || interface_of(alias(&noun)).is_some()
+            || templates::is_template(&noun)
+            || self.is_def(&noun)
+            || self.store(&noun).is_some()
+            || self.databases.contains(&noun)
+            || self.channels.contains(&noun);
+        if taken {
+            return err(span, format!("\"{noun}\" is already a name here (a keyword, a leaf, a holon or something declared): a flow called by it can't be named so"));
+        }
+        let twice = file.headers.iter().filter(|h| matches!(&h.kind, HeaderKind::Calls(f) if call_noun(f) == noun)).count();
+        if twice > 1 {
+            return err(span, format!("`calls` names \"{noun}\" twice"));
+        }
+        Ok(())
     }
 
     // ── nodes and wires ──────────────────────────────────────────────────────────────────────
@@ -565,6 +602,9 @@ impl<'a> Lowerer<'a> {
         }
         if self.channels.contains(n) {
             return err(name.span, format!("\"{n}\" is a channel; a binding may not shadow it"));
+        }
+        if self.calls.contains_key(n) {
+            return err(name.span, format!("\"{n}\" is a flow; a binding may not shadow it"));
         }
         if self.is_def(n) {
             return err(name.span, format!("\"{n}\" is a holon; a binding may not shadow it"));
@@ -671,7 +711,9 @@ impl<'a> Lowerer<'a> {
             StmtKind::Expr(e) => {
                 let v = self.expr(e)?;
                 let top_without_routes = matches!(self.cur().kind, FrameKind::Flow { has_routes: false });
-                if v.effectful() || top_without_routes {
+                // A call to another flow's action is made for what it does, whatever it answers.
+                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| d.name == "flow_call"));
+                if v.effectful() || a_call || top_without_routes {
                     return self.effect(v, s.span);
                 }
                 err(s.span, "a value nobody uses: bind it, or remove it")
@@ -1513,6 +1555,9 @@ impl<'a> Lowerer<'a> {
         if self.channels.contains(n) {
             return err(span, format!("\"{n}\" is a channel: send on it with {n}.send(…); a route answers with respond {n}.subscribe()"));
         }
+        if self.calls.contains_key(n) {
+            return err(span, format!("\"{n}\" is a flow: run one of its actions, {n}.action(input)"));
+        }
         if interface_of(alias(n)).is_some() || templates::is_template(n) {
             return err(span, format!("\"{n}\" is a leaf: call it, {n}(…)"));
         }
@@ -1850,6 +1895,18 @@ impl<'a> Lowerer<'a> {
                 }
                 other => err(method.span, format!("a channel has no \"{other}\": send(…), pipe(http.post(…)), or respond {c}.subscribe() in a route")),
             },
+            // `billing.charge(x)`: run the action `charge` of the flow `billing`, sending x.
+            c if self.calls.contains_key(c) => {
+                if method.text.len() > 64 {
+                    return err(method.span, "an action's name is at most 64 characters");
+                }
+                if args.len() > 1 {
+                    return err(args[1].value.span, format!("an action takes one input: {c}.{}(x), with x a record to send more", method.text));
+                }
+                let flow = self.calls[c].clone();
+                let (inputs, params) = leaf("flow_call");
+                self.unit_call("flow_call", &inputs, &params, &[("flow".to_string(), flow), ("action".to_string(), method.text.clone())], args, span)
+            }
             c if ["get", "put", "delete", "list"].contains(&method.text.as_str()) => {
                 err(receiver.span, format!("\"{c}\" is not a declared collection (add `collection {c}` to the header)"))
             }
@@ -2505,6 +2562,49 @@ pub(crate) mod tests {
         assert_eq!(ins("twice"), ["n"]);
         // `after` on a statement with nothing to tie is said.
         assert!(error("route GET /a (req) {\n  n = 1 after req\n  respond n\n}").2.contains("this statement makes none"));
+    }
+
+    /// `calls billing` names a flow whose actions this one runs: `billing.charge(x)` is a
+    /// `flow_call{flow, action}` tied to the block's trigger as any sink is, which asks for
+    /// `RunsAction("billing/charge")` (docs/L4s/triggers-L4.md §9, slice 6). A slug's `-` is `_`
+    /// in the call.
+    #[test]
+    fn calls_run_another_flows_action_tied_to_the_block() {
+        let d = compiled("calls billing-v2\nroute POST /p (req) {\n  r = billing_v2.charge({ amount: req.json.total })\n  respond r.answer\n}\n").doc;
+        let call = d.nodes.iter().find(|n| n.data.name == "flow_call").expect("the call");
+        assert_eq!((call.param("flow"), call.param("action")), ("billing-v2", "charge"));
+        let request = d.nodes.iter().find(|n| n.is_template("request")).unwrap();
+        let tie = d.edges.iter().find(|w| w.target == call.id && w.input() == TRIGGER).map(|w| w.source.clone());
+        assert_eq!(tie, Some(request.id.clone()), "tied to the request, though it reads none of it");
+        // Nothing sent is `{}`; `after` ties a call to a value, and a lone call is a statement.
+        let d = compiled("calls billing\ncollection c\nroute POST /p (req) {\n  found = c[req.body]\n  billing.reset() after found\n  respond 204\n}\n").doc;
+        let call = d.nodes.iter().find(|n| n.data.name == "flow_call").unwrap();
+        assert!(!d.edges.iter().any(|w| w.target == call.id && w.input() == "input"), "no input wired");
+        let found = d.nodes.iter().find(|n| n.data.name == "collection_get").unwrap();
+        assert!(d.edges.iter().any(|w| w.target == call.id && w.input() == TRIGGER && w.source == found.id), "after the lookup");
+        // A name that is already a name, a name twice, a bare noun, a binding on it.
+        assert_eq!(error("calls route\nroute GET /a (req) {\n  respond 1\n}").2, "\"route\" is already a name here (a keyword, a leaf, a holon or something declared): a flow called by it can't be named so");
+        assert_eq!(error("calls a\ncalls a\nroute GET /a (req) {\n  respond 1\n}").2, "`calls` names \"a\" twice");
+        assert_eq!(error("calls a\nroute GET /a (req) {\n  respond a\n}").2, "\"a\" is a flow: run one of its actions, a.action(input)");
+        assert_eq!(error("calls a\nroute GET /a (req) {\n  a = 1\n  respond a\n}").2, "\"a\" is a flow; a binding may not shadow it");
+        assert_eq!(error("calls a\nroute GET /a (req) {\n  respond a.go(1, 2)\n}").2, "an action takes one input: a.go(x), with x a record to send more");
+        // `calls` is a name anywhere else.
+        compiled("route GET /a (req) {\n  calls = 1\n  respond calls + req.query.n\n}");
+    }
+
+    /// A clock, a file handler or an action whose only work is a call is a handler: the call is
+    /// made for what it does, whatever it answers.
+    #[test]
+    fn a_block_of_calls_alone_is_a_handler() {
+        let d = compiled("calls billing\nevery 1h {\n  billing.reset()\n}\n").doc;
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), vec!["every 1h"]);
+        let d = compiled("calls billing\naction run (input) {\n  r = billing.charge(input)\n  respond r\n}\n").doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.actions.len(), 1);
     }
 
     /// `every 2s { … }` is a clock handler: its tick node, everything wired to it, its sinks tied
