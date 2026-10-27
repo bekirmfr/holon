@@ -135,7 +135,8 @@ them part of the file, so the run can still be checked offline.
 ## A run per new file
 
 `on file NAME`, in place of `port` or `every`, makes a flow run once for each new file in that
-folder. In each run, `ingress` is the file's handle:
+folder. In each run, `ingress` is the file's handle (its `event` says `new`, `changed` or
+`deleted`):
 
 ```holon
 flow drop-box
@@ -156,8 +157,49 @@ It asks to "run on each file new, changed or removed in the folder "drop" (as it
 - Files that arrive while the server is down, or the deployment paused, start their runs when it
   is back.
 - A file the flow's own runs wrote into the folder doesn't start it again, unless it changes.
-- One `on file` per flow, and only in a flow without routes. A run on a file has the clock run's
-  time budget.
+- A run on a file has the clock run's time budget.
+
+### As a block, beside routes
+
+That header is the form for a flow with nothing else. A flow with routes, a clock or actions
+writes the handler as a block, which names the file it receives:
+
+```holon
+flow drop-board
+port 8206
+channel files
+
+on file drop (f) {
+  files.send({ name: f.name, size: f.size })
+}
+
+route GET /live (req) {
+  respond files.subscribe()
+}
+```
+
+The line declares the folder, as the header does. `f` is the same handle `ingress` is; the block
+is everything tied to the file's arrival
+([What a block holds](../language/reference.md#what-a-block-holds)), and `ingress` isn't used in
+it (the mistake says to use `f`). Each line has its own block (one block per line), and
+`deleted` and `matching` go on the line, before the `(f)`: `on file inbox matching "*.csv" (f)
+{ … }`. The header and the block don't mix: beside any handler, an `on file`
+header line is a mistake that names the block to write.
+
+### Several lines, some names
+
+A flow may have several `on file` lines, each a trigger of its own. `deleted` makes one for files
+removed from the folder, and `matching "*.csv"` one for the names that match (`*` and `?` within
+a folder, `**/` any number of folders, letters either case):
+
+```
+on file inbox matching "*.csv"
+on file inbox deleted
+on file outbox
+```
+
+With the header form, `ingress` is then the handle of whichever file started the run. A removed
+file's handle is as it was last seen, without a hash: its bytes are gone.
 
 ## Sending a file
 
