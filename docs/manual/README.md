@@ -30,6 +30,8 @@ propose, and find out what happened. For how Holon is built, see the design docu
   run.
 - **[Deploying and permissions](guides/deploying.md):** deploy settings, approving what a flow
   may do, secrets, changing a grant, new versions.
+- **[Actions: runs by hand](guides/actions.md):** an `action` block, running it from the editor,
+  a script or an agent, and who may.
 - **[Working with agents](guides/agents.md):** connecting an agent to Holon, what it can and
   can't do, and approving what it proposes.
 - **[Stripe to Slack](guides/stripe-to-slack.md):** a real webhook end to end, against Stripe and

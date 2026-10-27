@@ -101,7 +101,7 @@ export function ActionRows({
             )}
             {slug && !viewer && (
               <code style={{ color: "#6f86a8", fontSize: 10, wordBreak: "break-all" }} title="the same run from a terminal">
-                curl -X POST {actionUrl(slug, name)} -H "Authorization: Bearer $HOLON_TOKEN" -d '{(sent[name] ?? "").trim() || "{}"}'
+                curl -X POST {actionUrl(slug, name)} -H "Authorization: Bearer $HOLON_TOKEN" -H "Content-Type: application/json" -d '{(sent[name] ?? "").trim() || "{}"}'
               </code>
             )}
           </div>
