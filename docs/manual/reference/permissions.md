@@ -27,6 +27,7 @@ the editor show).
 | `DbRead("d/t")` | read the table "t" of the database "d" | `d.query("select … from t …")`, `d.one(…)` |
 | `DbWrite("d/t")` | insert, update and delete rows of the table "t" of the database "d" | `d.exec("update t …")` |
 | `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on file f` |
+| `RunsAction("billing/charge")` | run the action charge of the flow billing | `billing.charge(x)`, with `calls billing` |
 | `Await("e")` | wait for an event "e" and continue later | `await e` |
 
 A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes, `Clock`
@@ -76,6 +77,7 @@ can change both columns ([Server configuration](server.md#the-policy)).
 | `max_redirects` | redirects followed | 10 | 20 |
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
+| `max_call_depth` | flows a chain of calls may go through, one calling another's action | 3 | 8 |
 | `module_fuel` | instructions a js holon may run per call | 200000000 per holon, unless it says | 1000000000 |
 | `module_memory` | memory a js holon may use per call | 16 MiB per holon, unless it says | 256 MiB |
 | `max_db_rows` | rows a run reads from databases | 10000 | 1000000 |
@@ -111,6 +113,13 @@ when someone runs it by its name, from the editor's [server panel](../guides/edi
 `POST /trigger/<slug>/<name>` on the holon server, its body the JSON the action receives
 (nothing is `{}`). On a server with accounts, an editor or an admin may run one, and a viewer may
 not. A flow without handlers that reads `ingress` runs the same way, by `POST /trigger/<slug>`.
+
+Another flow runs an action only through its own grant: a flow that says `billing.charge(x)` asks
+for `RunsAction("billing/charge")`, and a person approves it with the rest of the flow, as one who
+could run that action themselves (an editor or an admin). Revoking it pauses the calling flow like
+any required item, or, with **keep running** ticked, makes its next call answer `refused`. The
+other flow needs nothing from its side: its action runs as it would for a person, `by` the calling
+flow ([Actions](../guides/actions.md#run-by-another-flow)).
 
 An agent may run an action only when a person has let it:
 

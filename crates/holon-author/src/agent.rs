@@ -547,6 +547,10 @@ THE OUTSIDE WORLD (each is one permission the flow asks for)
   http.get(host, path, headers: h, body: b)   also post, put, patch, delete, head;
                                            host is a text literal: it is the permission
   stripe.verify(req, secret.whsec, now)    a verified Stripe event (.event)
+  calls billing                            (a header) another deployed flow, by its slug
+  r = billing.charge({ id: 1 })            runs its action charge with a value ({} if none):
+                                           r is {answer, run}, or {error, message} when it
+                                           didn't run; a permission, and never a loop
   await paid, expires: 1d                  park the run until the event arrives
   resume_token(paid)                       the token a resuming route takes
   route GET /paid/:token (req) resumes paid { … }

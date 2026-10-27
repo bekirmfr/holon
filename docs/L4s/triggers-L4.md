@@ -716,6 +716,41 @@ each other.
   again;
 - a call to a paused or stopped flow is an error the caller handles, as a failed request is.
 
+**As built in slice 6** (commits 6a to 6e; the samples `billing` and `shop`):
+
+- **The form:** `calls billing` in the headers, `billing.charge(x)` in a block. A slug's `-` is `_`
+  in the call (`calls billing-v2`, `billing_v2.charge(x)`); the one `as` alias floated in the
+  proposal wasn't built, as the printer couldn't recover it from the graph. `calls` is a keyword
+  only before a name at the start of a line.
+- **The leaf:** `flow_call{flow, action}(input, trigger)`, the eighteenth sink, `RunsAction("flow/action")`
+  (a Sink kind, counted as reading from outside). Its request is `{flow, action, input}`, its answer
+  `{answer, run}` or `{error, message}`. A call nobody uses is a statement, and a block of calls
+  alone is a handler.
+- **The host:** `calls.rs` and `deploy::run_action` (which `handle_post_action` wraps). The call is
+  performed between rounds and recorded in the caller's `rounds` like an http exchange, so retries,
+  `holon verify` and the editor's replay answer it from the log with no code of their own beyond
+  naming the leaf. The callee logs an ordinary action run, `by` "flow <slug>, run <id>". Two things
+  differ from the pick: a call carries the chain of flows that led to it, so a flow already in it,
+  itself included, is refused (`refused`), where a depth limit alone would let a flow
+  call back into a run waiting on it; and the limit, `max_call_depth` (3, ceiling 8), bounds the
+  chain's length (`too_deep`).
+- **No callee-side key:** the pick had the callee answer a repeated call from a stored key. It
+  would only catch a repeat of the same run, which the caller's record already answers (same node,
+  same request); a client that asks again starts a new run, as with an http call. A caller that
+  crashes between the callee's commit and its own log can repeat the call if its client retries.
+- **What a call doesn't carry:** a secret, or a value a secret reaches (`taint`), is refused, as the
+  callee's log would keep it; the caller's log withholds a derived input as it does a derived body.
+  The callee's answer, when it derives from a secret there, is the withheld mark.
+- **Order:** the calls of one round to one flow go one at a time, in the order of their nodes
+  (`rounds.rs`), since they change things there.
+- **Who may grant it:** the caller's approval, as any item; approvers are editors and admins, who
+  may run any action, so "only what they could do themselves" holds by construction. It isn't a
+  check that a later per-action rule would still get for free.
+- **Revoking** `RunsAction` pauses the caller like any required item; with **keep running**, its next
+  call answers `refused`.
+- **Not done:** hover and completion for a flow's actions in the editor's text pane, and a
+  canvas affordance beyond the generic node (its `flow` and `action` params edit as a leaf's do).
+
 ## 10. Forks, surfaced
 
 1. **What makes a node part of a handler.** *Decided in review (§11): wiring to its trigger, with

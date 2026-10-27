@@ -94,6 +94,54 @@ page (**permissions ▸**) refuses agents again at once. An agent runs an action
 **run** tool, which answers what the action answered and the run's number, for **explain**
 ([Working with agents](agents.md)).
 
+## Run by another flow
+
+A flow runs another's action in its own text. It names the other flow, by its slug, in its
+headers, and calls the action as a method:
+
+```holon
+flow shop
+port 8159
+collection orders
+calls billing
+
+route POST /orders (req) {
+  paid = billing.charge({ id: req.json.id, amount: req.json.amount })
+  orders[req.json.id] = { amount: req.json.amount, total: paid.answer.total }
+  respond paid.answer, status: 201, missing: 502
+}
+```
+
+Deploying `shop` asks a person to approve "run the action charge of the flow billing", as it asks
+for a host to call, and the approval is checked again at each call. The other flow, `billing`
+here, changes nothing: its action runs as it does for anyone, under its own grant and limits, and
+its log says who asked: `by` "flow shop, run …". The `shop`'s own log keeps the call and its
+answer, so replaying or verifying the shop's runs never calls billing again.
+
+The call answers `{answer, run}` (`answer` is what the action answered, absent for one that only
+writes; `run` is its number in billing's log), or `{error, message}` when nothing ran. `error` is:
+
+| `error` | Why |
+|---|---|
+| `refused` | the call isn't granted or was revoked; the flow is already in the chain of calls, itself included; or it would send a secret (or a value computed from one) |
+| `not_found` | no flow is deployed under that name |
+| `not_running` | it is paused or stopped |
+| `no_action` | it has no action of that name |
+| `waiting` | the action parked at an `await`; its run goes on when the event arrives, and `run` says which |
+| `too_deep` | the chain of calls is past `max_call_depth` (3 by default) |
+| `failed` | the action failed: its run in the other log says why |
+
+Handle them as a failed request is handled: by absence. `paid.answer` has no value when the call
+failed, so the order above isn't stored and `missing: 502` answers 502. To say why, bind the whole
+answer and read `error` and `message`.
+
+A flow isn't called back: `shop` calls `billing`, which can't call `shop` (or `billing`) again,
+because the call would wait for the run that made it. Calls to one flow in a round go one at a
+time, in the order they are written.
+
+The **billing** and **shop** samples (`holon new --sample shop`) are this pair: deploy billing
+first.
+
 ## Flows nothing starts
 
 A flow with no route, clock, `on file` or action, that doesn't read `ingress`, starts nothing: it

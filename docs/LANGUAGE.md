@@ -80,6 +80,7 @@ same graph are the same unit.
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
 | Routes | `route METHOD /path (req) [resumes name] { … }`; `respond` is a statement wired to the request implicitly | §5.11 |
 | Flows without handlers | The top-level statements are the one unit, started as its headers say | §5.12 |
+| Another flow's action | `calls billing`, then `billing.charge(x)`: run by the host in-process, answered `{answer, run}` or `{error, message}`, a permission, never a loop | §5.4 |
 | Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
 | Hash | The lowered DAG's. Binding names, holon names, layout and comments are not in it | §7 |
 | Layout | Not in the text. Positions live in the flow document; import lays out automatically | §8 |
@@ -718,6 +719,60 @@ at the start of the run (§6.6), so `was` is the count before the write. The dep
 the flow runs the same without it. The sample's page, `GET /`, is a js holon whose `EventSource`
 lists each tick as it arrives.
 
+### shop and billing: a flow calling another's actions
+
+```
+flow billing
+port 8158
+collection charges
+
+action charge (input) {
+  charges[input.id] = { amount: input.amount, fee: 1 }
+  respond { id: input.id, total: input.amount + 1 }
+}
+
+action refund (input) {
+  delete charges[input.id]
+}
+
+route GET /charges/:id (req) {
+  respond charges[req.params.id]
+}
+```
+
+```
+flow shop
+port 8159
+collection orders
+calls billing
+
+route POST /orders (req) {
+  paid = billing.charge({ id: req.json.id, amount: req.json.amount })
+  orders[req.json.id] = { amount: req.json.amount, total: paid.answer.total }
+  respond paid.answer, status: 201, missing: 502
+}
+
+route DELETE /orders/:id (req) {
+  billing.refund({ id: req.params.id })
+  delete orders[req.params.id]
+  respond 204
+}
+
+route GET /orders/:id (req) {
+  respond orders[req.params.id]
+}
+```
+
+`calls billing` declares the other flow, and `billing.charge(x)` runs its action with `x`: the
+shop asks to "run the action charge of the flow billing" (and refund), which a person approves
+like any permission, and the call is in the shop's hash (§5.4). The call answers `{answer, run}`;
+when billing can't be reached (stopped, not deployed, charge revoked) it answers `{error,
+message}` instead, so `paid.answer` has no value, the order isn't stored, and `missing: 502`
+answers 502: the failure is handled by absence, as a failed request is. `refund` only writes, so
+the shop ignores its answer, and a call nobody uses is a statement. billing logs each as an
+ordinary action run by "flow shop, run …", and the shop's log keeps the call and its answer, so
+`holon verify` replays the shop from its own record without calling billing again.
+
 ### map and fold
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -746,8 +801,9 @@ around it reaches it as an input after the item (§5.9).
   wiring form's `node` `at` `in` `out` `interval`. Keywords are valid after a dot (`req.in`) and
   as record keys (`{ in: 1 }`). A few words are keywords only where they open a handler or end a
   statement: `action` before a name and `(` (elsewhere it is the `action` template's name), `on
-  file` (with `deleted` and `matching`) at the start of a line, and `after` after a statement
-  (§5.11). `on` and `after` are names elsewhere.
+  file` (with `deleted` and `matching`) at the start of a line, `calls` before a flow's name at the
+  start of a line (§5.4), and `after` after a statement (§5.11). `on`, `calls` and `after` are
+  names elsewhere.
 - **Nouns:** `req` (the name a route gives its request; any identifier works), `secret`, `state`,
   `now`, `random`, `ingress`, `http`, `stripe`, and every declared collection and folder. `secret`, `state`,
   `http` and `stripe` are namespaces: they take a dot. The nouns are reserved like keywords.
@@ -782,7 +838,7 @@ file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
           | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
           | "folder" ident | "database" ident | "on" fileline
-          | "channel" ident
+          | "channel" ident | "calls" slug
 fileline  = "file" ident ["deleted"] ["matching" string]
 item      = holon | handler | statement | wiring      # wiring: the netlist form, §10
 handler   = route                                     # a route, §5.2 and §5.11
@@ -796,6 +852,9 @@ outside world. `collection notes` declares a name for the body (§5.4); several 
 per line. `folder inbox` declares a folder the same way, `database shop` a database on the host,
 and `channel updates` a channel, sent on with `updates.send(v)` (or a call's answer piped to it,
 `updates.pipe(http.post(…))`) and subscribed to as a route's answer, `respond updates.subscribe()`.
+`calls billing` names another deployed flow, by its slug, whose actions this one runs:
+`billing.charge(x)` (§5.4). A slug's `-` is `_` in the call, so `calls billing-v2` is called as
+`billing_v2.charge(x)`; the name must be one nothing else in the file has.
 
 **Handlers start runs.** A flow has one or more, each a block of its own, and each block is
 everything tied to its trigger (§5.11): a statement in it tied to nothing is an error, as is a
@@ -977,9 +1036,31 @@ Rules the table implies:
   ended with `event: missed`, and catches up when it reconnects; one channel has up to
   `max_subscribers` (100). Pausing or stopping the deployment ends its subscriptions with
   `event: closed`.
+- **Another flow's action** is run with `billing.charge(x)`, `billing` declared by `calls billing`
+  (§5.1). It lowers to the sink `flow_call{flow: billing, action: charge}(input, trigger)`: the
+  host performs it between rounds, in-process, as an http call is, and the answer goes into the
+  run's record, so a retry, a replay and `holon verify` answer it from the log and never call
+  again. `x` is a value (`{}` when none is written; one input, a record to send more); the answer is
+  `{answer, run}` (`answer` absent for an action that only writes, `run` the number of the run in
+  the other flow's log) or `{error, message}` when nothing ran: `refused`, `not_found`,
+  `not_running`, `no_action`, `waiting` (the action parked at an `await`; `run` says which),
+  `failed` and `too_deep`. A value that isn't there is absent as anywhere (§6.3), so `respond
+  paid.answer, missing: 502` answers 502 whatever went wrong. The call is tied to the block's
+  trigger as a write is, `billing.charge(x) after found` ties it to a value (§5.11), and one nobody
+  uses stands as a statement, made for what it does; a clock, file or action block of calls alone
+  is a handler. It asks `RunsAction("billing/charge")`, which an approval says as "run the action
+  charge of the flow billing", and the call is in the flow's hash: pointing it at another flow or
+  action is a new version.
+  The other flow runs an ordinary action run, under its own grant and limits, logged there `by`
+  "flow shop, run <id>". A call refuses what it shouldn't carry: a secret, or a value computed from
+  one, which the other flow's log would keep; and a flow already in its chain of calls (itself
+  included), which would wait for the run that made the call. A chain is at most `max_call_depth`
+  calls long (3 by default, 8 at most). Calls to one flow in a round go one at a time, in the
+  order of their nodes. Revoking the permission pauses the caller, as any required one does, or
+  with **keep running** ticked refuses the next call.
 - `state.x` on the right of `=` and on the left are different leaves, read and write, and that is
   the whole semantics of state in Holon: read at the start, write at the end. The same key may be
-  written once per flow (one `store_write` per key), or the error says which two lines collide.
+  written once per run (one `store_write` per key), or the error says which two lines collide.
 - The assignment and `delete` forms are statements; their Effect is exposed and performed
   (§5.10). The method forms are the same leaves as expressions, for a holon that must name its
   effects as outputs, or for an effect whose value is passed on (`published.put`).

@@ -58,6 +58,7 @@ else.
 | `collection NAME` | Declares a collection, used as `NAME[key]`. One per line; as many as needed. |
 | `folder NAME` | Declares a named folder on the host, used as `NAME[file]`. |
 | `database NAME` | Declares a named database on the host, used as `NAME.query(sql, …)`. |
+| `calls FLOW` | Names another deployed flow, by its slug, whose actions this one runs: `FLOW.action(x)` (see [The outside world](#the-outside-world)). A `-` in the slug is `_` in the call: `calls billing-v2`, `billing_v2.charge(x)`. |
 | `on file NAME [deleted] [matching "GLOB"]` | A flow without handlers: runs once for each new file in the folder `NAME` (which it declares too). Several lines may each start it. Beside handlers, it is a block: `on file NAME (f) { … }`. |
 | `optional PERMISSION` | A permission the flow can run without (see below). |
 | `browsers ORIGIN, …` | The web origins allowed to call the flow from a browser (CORS), or `*`. |
@@ -76,8 +77,8 @@ can't be bound; the mistake names the clash.
 
 **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `folder` `database` `holon` `js` `route`
 `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`. A keyword
-is fine after a dot (`req.json.in`) and as a record key (`{ in: 1 }`). `action`, `on`, `file` and
-`after` are keywords only where they start a handler or tie a statement: `list(after: …)` and
+is fine after a dot (`req.json.in`) and as a record key (`{ in: 1 }`). `action`, `on`, `file`,
+`calls` and `after` are keywords only where they start a handler, declare a flow or tie a statement: `list(after: …)` and
 `req.query.after` are names.
 
 **Nouns** are the outside world: `req` (or whatever a route names its request), `secret`, `state`,
@@ -219,6 +220,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `http.get(host, path, headers: h, body: b)` | a request to `host`; also `post`, `put`, `patch`, `delete`, `head`. The answer is `{status, headers, body}` |
 | `http.put(host, path, headers: h, file: handle)` | the same, sending a file as the body, by handle: the server streams its bytes, which never pass through the flow (any method) |
 | `stripe.verify(req, secret, now, tolerance: 5m)` | a verified Stripe webhook; `.event` is the event |
+| `flow.action(x)` (with `calls flow`) | run the action `action` of the deployed flow `flow` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
 | `await name, expires: d` | park the run until the event `name` arrives |
 | `resume_token(name)` | the token a resuming route takes to deliver `name` |
 | `json(x)`, `parse_json(text)` | JSON out, JSON in |
@@ -236,6 +238,17 @@ Rules:
 - **A file sent with `file:`** must be in a folder the flow reads, or be the new file that
   started the run. The server checks, before and as it sends, that the bytes still have the
   handle's hash; if not, the call answers `{status: 0, error: "changed"}`.
+- **A call to another flow's action** goes out between rounds, as an `http.*` call does, and its
+  answer is kept in the run's log, so a retry, a replay and `holon verify` never make it again. The
+  other flow runs its action as it would for a person, under its own grant and limits, and logs it
+  as run by "flow shop, run …". The error is one of `refused` (not granted, revoked, or the flow is
+  already in the chain of calls, itself included), `not_found`, `not_running`, `no_action`,
+  `waiting` (the action parked at an `await`; its `run` goes on later), `failed` and `too_deep` (a
+  chain is at most `max_call_depth` calls long: 3 by default). A secret, or a value computed from
+  one, isn't sent: the other flow's log would keep it. `respond paid.answer, missing: 502` handles
+  every failure at once, as the answer has no value then. A call nobody uses is a statement; to
+  say why one failed, bind it and look at `error` and `message`. See
+  [Actions](../guides/actions.md#run-by-another-flow).
 - **The method forms** (`notes.put(k, v)`, `state.set(k, v)`) are the same writes as values: for a
   holon that names its writes as outputs, or to pass a write on.
 
@@ -563,6 +576,7 @@ broken.holon:5:11: unknown name "nope"
 | a holon's input never used, output never bound, or bound twice | the port or binding |
 | two routes share a value | the shared binding |
 | two routes clash; not a method; not a route path | the route header |
+| a flow named by `calls` that is already a name, named twice, used bare, bound over, or called with two inputs | the header, the name or the extra input |
 | this isn't wired to the route's request (or the block's trigger) | the statement |
 
 ## The wiring form
