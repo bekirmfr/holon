@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.1.0-rc.28
+
+A security release: the second review of the code, fixed in order. Nothing to redeploy: no unit is
+hashed differently, and deployments, logs and waiting runs from rc.27 load as they are (an entry
+logged before the marks below named versions still verifies).
+
+- **The log says which value of a secret a run had.** A secret shows as
+  `‹secret:name v3 #a1b2c3d4›`: its version and a fingerprint of the value, keyed by the server's
+  master key so a guess can't be checked against the log. An old key and the one just set read
+  differently, the same value reads the same, and each entry lists the secrets the run was given
+  (`secrets`), so verify and the editor's replay stand in the same marks and a run still checks
+  after the secret rotates.
+- **A token a call answers with a secret is kept out of the log.** An `access_token`,
+  `refresh_token`, `id_token`, `session_token`, `token`, `client_secret`, `api_key`, `secret` or
+  `password` in a JSON answer to a request that held a secret reads
+  `‹token:answer access_token #a1b2c3d4›` wherever it appears, and a write of it to state, a
+  collection, a database, a channel or a file is refused, as a secret's is. A run that uses the
+  token still checks; one that tried to keep it is skipped. A flow that cached such a token in
+  state is now refused.
+- **A secret stays out of files, and of what the log keeps of them.** A file, state, collection or
+  channel write of a secret's value is refused, a part of a file read that holds one isn't kept,
+  and an export doesn't ship a file text that holds one; verify asks for the file, and skips a run
+  that wrote a secret's value. A secret used as a record's key is redacted like a value.
+- **A redirect to another host leaves the credentials behind.** A call that follows a redirect to a
+  different host no longer sends its `authorization`, cookies or other headers there, and a call
+  that fails on the way says why without its URL (a path or query can hold a secret).
+- **SQL brackets are code.** In `[…]` a subquery now reads its table, so a table behind a bracket
+  needs the permission it should. Quote names with `"…"`.
+- **A reply is framed by the host.** A flow's, or a proxied upstream's, `content-length`,
+  `transfer-encoding`, `connection` and the like are dropped, the rest kept, and a status is 200 to
+  599 (`101` switched the connection to another protocol).
+- **Sign-in.** Wrong passwords sent at once count before they are checked, so a name locks after
+  five tries rather than after however many were in flight, and a name with no account is refused
+  as slowly as a wrong password.
+- **An agent doesn't open a flow to new sites.** Its deploy that adds an origin to `browsers` that
+  the deployment doesn't already answer waits for a person's approval, like any new permission.
+
 ## 0.1.0-rc.27
 
 Nothing to redeploy: no unit is hashed differently (every sample rc.26 compiles hashes as it
