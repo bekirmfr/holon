@@ -1146,11 +1146,12 @@ Effects are values, so `if c then state.set(k, a) else state.set(k, b)` places t
 idiom the samples use, and the one the printer prefers, guards the value instead:
 `state.k = a when ok`.
 
-### 5.11 Routes
+### 5.11 Routes, and what a block holds
 
 ```
 route POST /orders (req) { … }
 route GET /paid/:token (req) resumes paid { … }
+tied      = statement "after" expr                  # its writes and calls tied to expr
 ```
 
 Lowers to a `request{method, path, resume}` template node named by the parenthesised identifier,
@@ -1175,15 +1176,48 @@ respond_args = expr ("," "status" ":" (number | expr))? ("," "missing" ":" numbe
   lowering; `respond` outside a route is an error.
 - A route needs one `respond`, or at least one effect (answered 204); more than one `respond` is
   an error naming the route, as `route_spec` says today.
-- Two routes may not share a node. A top-level binding would wire two routes into one group, so at
-  the top level of a flow with routes only bindings of literals are allowed, lowered by placing a
-  fresh `const` in each route that uses them. A top-level binding of anything else is an error
-  that says why: "routes are separate units; put shared logic in a holon".
+- Two handlers may not share a node. A top-level binding would wire two of them into one group,
+  so at the top level of a flow with handlers only bindings of literals are allowed, lowered by
+  placing a fresh `const` in each block that uses them. A top-level binding of anything else is an
+  error that says why: "routes are separate units; put shared logic in a holon".
 - Clashing routes, bad methods and bad paths are the existing errors, now with a column.
-- A route is everything wired to its request, so a statement in the block that never touches the
-  request (`state.hits = (state.hits ?? 0) + 1`, say) would not be part of the route and would be
-  left out of the server. The lowering refuses it, pointing at the statement: use the request in
-  it, or move it to a flow of its own.
+
+**A block is everything tied to its trigger.** Each handler (§5.1) has a trigger node: a route's
+`request`, a clock's tick (its value the time of the tick), a file handler's `on_file` (the file's
+handle) and an action's `action` (what was sent). What reads from it is the block's, and so is
+every sink placed in it:
+
+- **Every sink takes its trigger.** The writes (state, a collection, a folder, a database), the
+  calls out (`http.*`), a send on a channel and `egress` take a `trigger` input, last, and the
+  lowering wires it to the block's trigger node. The text doesn't write it, as `respond` doesn't
+  write its request. So a write that reads nothing of the request is still the route's:
+
+  ```
+  route GET /hit (req) {
+    hits = (state.hits ?? 0) + 1
+    state.hits = hits                 # tied to req
+    respond "hit {hits}"
+  }
+  ```
+
+  A holon with a sink in it takes a trigger too, which its placement wires the same way (§5.8).
+- **The trigger is never read;** it only has to be there. A sink whose trigger has no value does
+  nothing.
+- **`after x` ties a statement's sinks to `x` instead:** `state.last = id after saved` writes once
+  `saved`, the put before it, has its result in the run, and `state.seen = id after found` writes
+  only when the lookup `found` found something. `x` is any value in scope in the block; `fmt`
+  writes it as a name bound before the statement (`after c.put(id, 1)` comes back as a binding and
+  `after` its name), and writes `after` only for a tie other than the block's own. `after` on a
+  statement with no write or call in it is an error, and `respond` takes none. The tie is within
+  the run: the run still commits as one, its writes at its end (§6.6). `after` is a keyword only
+  there: `list(after: …)` and `req.query.after` are names.
+- **A statement tied to nothing** (a binding nothing uses, `t = now`) would not be part of the
+  block, and would be left out of the server. The lowering refuses it, pointing at the statement
+  and saying what would tie it: in a route, use the request in it (or move it to a flow of its
+  own); in a clock, write something with it, or use `now` in it.
+- **A flow without handlers** (§5.12) is one run of the whole flow, and its sinks are left open:
+  they run with it, as they always did. The wiring form (§10) ties nothing it doesn't write as a
+  wire.
 
 ### 5.12 Flows without routes
 
