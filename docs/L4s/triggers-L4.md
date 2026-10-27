@@ -403,6 +403,11 @@ same thing, and no node belongs to a handler by a field you can't see.
   `on_file` template: the `file_arrival` leaf with the block's line as its `folder`, `on` and
   `matching`, its one output `file` what the parameter names. Its sinks are tied to it, and the
   printer writes its group back as the block.
+- **What was sent is the `action` node's.** As built in slice 4, an action's trigger node is the
+  `action` template: one input, hidden as a request node's is (the action handler feeds it), passed
+  through to its one output `input`, what the parameter names. Its sinks are tied to it. `respond
+  v` wires `v` to a respond node (a 200, whose body is the answer), and refuses `status:`,
+  `missing:`, `headers:` and `stream:`.
 - **The old forms stay untied** (as built in slice 1). A clock flow, a file flow, a by-hand flow
   and a flow of top-level statements are each one run of the whole canvas, so their sinks run
   with it through the open trigger below, as they did. Their ties come with the blocks of slices
@@ -459,7 +464,10 @@ The flow's unit stays a composite of handler units with no edges and no ports, s
   durable.rs 386), and verify reruns it with the logged handle, as it reruns a tick with its
   time. The three points below are what an input would have needed instead;
 - **an action handler:** `declare=action`, `name`. One input, what was sent; its answer, then its
-  effects, as outputs (the order an endpoint's are in).
+  effects, as outputs (the order an endpoint's are in). As built in slice 4, that is the shape:
+  an endpoint's, with `input: Any` in place of the request and output 0 named `answer` (the
+  respond's envelope). `Action(name)` comes from the declaration (`collect_caps`), as
+  `NetworkIngress` does from an endpoint, never from a leaf.
 
 `port` is there only when the flow has a route. A flow of only clocks, files and actions listens
 on no port.
@@ -522,6 +530,12 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
   `/trigger/<slug>` stays, for the old form's one unnamed action, and answers 400 for a flow
   that has handlers. An action run is logged as a `"trigger"` with the label `action <name>`
   and, always, who ran it in `LogEntry.by`: a person, an agent, or `flow <slug>, run <id>`.
+  As built in slice 4: the body is read as JSON (nothing sent is `{}`; what isn't JSON is a 400),
+  logged as the entry's `request`. The answer is `{answer, seq}`: the respond's body (`null` for
+  an action that only writes) and the run's log entry; a respond's `missing` answers with its own
+  status and error. `/trigger/<slug>` on a flow with actions names the way in. Deploy takes a flow
+  of actions alone, and refuses an action's `Action(name)` marked optional. Agents stay refused
+  `/trigger/…` (access.rs) until the grant names the actions they may run (slice 4b).
 - **Who may run an action is its grant**, whoever asks. There are no access modifiers:
   - **a person:** an editor or an admin, as `/trigger` allows today (fork 13); a viewer may not;
   - **an agent:** only an action the deployment's grant lets agents run. The approval lists each
@@ -577,6 +591,11 @@ of the same method and shape today) covers clocks (same `seconds`), file handler
     it, and **view run**, which opens view mode on the run it made. It runs the deployed version,
     and says so when the canvas has changes not deployed. A viewer sees the row, its button
     greyed: "an editor or an admin runs this".
+  - As built in slice 4a: one box for what to send, under the action rows (not remembered per
+    action), the answer under it with its run's number, and the command beside it; the run is in
+    view mode's log under its label (`action reset`), which replays it over its block. A viewer's
+    refusal shows as the answer. The greyed row for viewers, the boxes per action, the note when
+    the canvas has changes not deployed, and the deployed page's rows are slice 4b's.
   - Beside **run**, the command a script would use, to copy:
     `curl -X POST <server>/trigger/<slug>/reset -H "Authorization: Bearer $HOLON_TOKEN" -d '…'`.
 - **The deployed page** lists a running deployment's actions as the same rows, so an operator

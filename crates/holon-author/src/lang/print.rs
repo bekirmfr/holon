@@ -20,7 +20,7 @@ use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, TRIGGE
 use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
-use crate::routes::{components, find_clocks, find_files, find_routes};
+use crate::routes::{components, find_actions, find_clocks, find_files, find_routes};
 use crate::templates;
 use crate::text::restore;
 use crate::wire::{WParam, WPort, WType};
@@ -418,7 +418,7 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (
     let tie = |src: &Src, input: &str| {
         input == TRIGGER
             && (own_trigger(src)
-                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || passes_trigger(id)))
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
     };
     // A pass-through that feeds only ties goes, with the `true` it holds.
     let mut gone: HashSet<String> = HashSet::new();
@@ -554,7 +554,9 @@ impl<'s> Printer<'s> {
         errors.extend(clock_errors);
         let (files, file_errors) = find_files(&doc.nodes, &doc.edges);
         errors.extend(file_errors);
-        let has_trigger = doc.nodes.iter().any(|n| n.is_template("request") || n.is_template("every") || n.is_template("on_file"));
+        let (actions, action_errors) = find_actions(&doc.nodes, &doc.edges);
+        errors.extend(action_errors);
+        let has_trigger = doc.nodes.iter().any(|n| n.is_template("request") || n.is_template("every") || n.is_template("on_file") || n.is_template("action"));
         let mut lines: Vec<Line> = Vec::new();
         if !has_trigger {
             // One block, the flow's own.
@@ -576,12 +578,14 @@ impl<'s> Printer<'s> {
             Route(&'r crate::routes::RouteGroup),
             Clock(&'r crate::routes::ClockGroup),
             File(&'r crate::routes::FileGroup),
+            Action(&'r crate::routes::ActionGroup),
         }
         let mut handlers: Vec<(usize, Handler)> = routes
             .iter()
             .map(|r| (first(&r.node_ids), Handler::Route(r)))
             .chain(clocks.iter().map(|c| (first(&c.node_ids), Handler::Clock(c))))
             .chain(files.iter().map(|f| (first(&f.node_ids), Handler::File(f))))
+            .chain(actions.iter().map(|a| (first(&a.node_ids), Handler::Action(a))))
             .collect();
         handlers.sort_by_key(|(at, _)| *at);
         for (_, handler) in handlers {
@@ -610,6 +614,24 @@ impl<'s> Printer<'s> {
                     lines.extend(body.statements()?);
                     lines.push(("}".into(), vec![]));
                     routed.extend(f.node_ids.iter().cloned());
+                    continue;
+                }
+                Handler::Action(a) => {
+                    let nodes: Vec<&Node> = a.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+                    let group = self.group_of(nodes, &doc.edges, vec![]);
+                    if !expressible(&group.nodes, &group.incoming, Some(&a.action_id)) {
+                        stray_routes.push(format!("{}: an input isn't wired, so the block is written as nodes and wires", a.label));
+                        continue;
+                    }
+                    if !lines.is_empty() {
+                        lines.push((String::new(), vec![]));
+                    }
+                    let name = self.handle_name(by_id[a.action_id.as_str()], "input");
+                    lines.push((format!("action {} ({name}) {{", a.name), vec![a.action_id.clone()]));
+                    let mut body = Block::new(self, &group, "  ", Some((a.action_id.clone(), name)));
+                    lines.extend(body.statements()?);
+                    lines.push(("}".into(), vec![]));
+                    routed.extend(a.node_ids.iter().cloned());
                     continue;
                 }
                 Handler::Clock(c) => {
@@ -1303,7 +1325,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 if let Some((req, name)) = &self.request
                     && req == id
                 {
-                    return Ok((if output == "request" || output == "file" { name.clone() } else { format!("{name}.{output}") }, ATOM));
+                    return Ok((if ["request", "file", "input"].contains(&output.as_str()) { name.clone() } else { format!("{name}.{output}") }, ATOM));
                 }
                 if self.is_tick(id) {
                     return Ok(("now".into(), ATOM));
@@ -2220,6 +2242,15 @@ mod tests {
         let src = "flow sort\nport 8080\nfolder done\n\non file drop matching \"*.csv\" (sheet) {\n  done[sheet.name] = sheet\n  drop[\"seen/{sheet.name}\"] = \"seen\"\n}\n\non file drop deleted (f) {\n  state.last = f.name\n}\n\nroute GET /last (req) {\n  respond state.last\n}\n";
         let l = compile(src).unwrap();
         let text = round_trips("sort", &l.doc, &l.names);
+        assert_eq!(text, src);
+    }
+
+    /// Action blocks print back as written, each with the name of what was sent.
+    #[test]
+    fn action_blocks_print_back_as_written() {
+        let src = "flow ticker\n\nevery 2s {\n  state.ticks = (state.ticks ?? 0) + 1\n}\n\naction reset (input) {\n  state.ticks = input.to ?? 0\n  respond { was: state.ticks ?? 0 }\n}\n\naction ping (sent) {\n  respond sent\n}\n";
+        let l = compile(src).unwrap();
+        let text = round_trips("ticker", &l.doc, &l.names);
         assert_eq!(text, src);
     }
 

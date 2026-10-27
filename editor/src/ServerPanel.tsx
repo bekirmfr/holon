@@ -1,6 +1,7 @@
-// The server panel: the routes and clocks this flow declares (derived from its request and every
-// nodes, see derive.ts), a request tester to try the routes, locally or against the flow's
-// deployment, and "tick now" for a deployed clock.
+// The server panel: the routes, clocks, file handlers and actions this flow declares (derived from
+// its request, every, on_file and action nodes, see derive.ts), a request tester to try the
+// routes, locally or against the flow's deployment, "tick now" for a deployed clock, and "run"
+// for a deployed action, with what to send it.
 // Deploying is the header's job (DeployBar), for the whole flow.
 
 import { useState, type CSSProperties } from "react";
@@ -15,8 +16,8 @@ import {
   type EndpointDraft,
   type Method,
 } from "./endpoint";
-import { sendRequest, ServerError, tickNow, type HttpResponse } from "./server";
-import type { ClockDraft, FileDraft } from "./canvasOps";
+import { actionUrl, runAction, sendRequest, ServerError, tickNow, type HttpResponse } from "./server";
+import type { ActionDraft, ClockDraft, FileDraft } from "./canvasOps";
 
 const field: CSSProperties = {
   font: "inherit",
@@ -93,6 +94,7 @@ export function ServerPanel({
   endpoints,
   clocks = [],
   files = [],
+  actions = [],
   errors,
   liveSlug,
   tickSlug = "",
@@ -104,7 +106,9 @@ export function ServerPanel({
   clocks?: ClockDraft[];
   /** The file handlers the canvas declares (its `on_file` nodes' groups). */
   files?: FileDraft[];
-  /** The flow's running deployment, for "tick now"; empty when it isn't running. */
+  /** The actions the canvas declares (its `action` nodes' groups). */
+  actions?: ActionDraft[];
+  /** The flow's running deployment, for "tick now" and "run"; empty when it isn't running. */
   tickSlug?: string;
   /** Why a request node's group couldn't become a route. */
   errors: string[];
@@ -116,6 +120,16 @@ export function ServerPanel({
   const [sending, setSending] = useState(false);
   const [open, setOpen] = useState(true);
   const [ticked, setTicked] = useState("");
+  // What to send the actions (JSON; empty is {}), and what the last one run answered.
+  const [sent, setSent] = useState("");
+  const [ran, setRan] = useState<{ name: string; text: string; ok: boolean } | null>(null);
+
+  const run = (name: string) => {
+    setRan({ name, text: "running…", ok: true });
+    runAction(tickSlug, name, sent)
+      .then((r) => setRan({ name, text: r.waiting ? `waiting (run ${r.seq})` : `${JSON.stringify(r.answer)} (run ${r.seq})`, ok: true }))
+      .catch((err: unknown) => setRan({ name, text: err instanceof Error ? err.message : String(err), ok: false }));
+  };
 
   const tick = (clock: string) => {
     setTicked(`${clock}: ticking…`);
@@ -164,12 +178,12 @@ export function ServerPanel({
         onClick={() => setOpen(!open)}
         title={open ? "collapse" : "expand"}
       >
-        server {open ? "▾" : `▸ ${endpoints.length} route${endpoints.length === 1 ? "" : "s"}${clocks.length > 0 ? `, ${clocks.length} clock${clocks.length === 1 ? "" : "s"}` : ""}${files.length > 0 ? `, ${files.length} file handler${files.length === 1 ? "" : "s"}` : ""}`}
+        server {open ? "▾" : `▸ ${endpoints.length} route${endpoints.length === 1 ? "" : "s"}${clocks.length > 0 ? `, ${clocks.length} clock${clocks.length === 1 ? "" : "s"}` : ""}${files.length > 0 ? `, ${files.length} file handler${files.length === 1 ? "" : "s"}` : ""}${actions.length > 0 ? `, ${actions.length} action${actions.length === 1 ? "" : "s"}` : ""}`}
       </div>
       {open && (
         <>
 
-      {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && errors.length === 0 && (
+      {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && actions.length === 0 && errors.length === 0 && (
         <div>drop a request node (palette, http) and wire it to a respond node to add a route</div>
       )}
       {clocks.map((c) => (
@@ -193,6 +207,42 @@ export function ServerPanel({
           <span style={{ flex: 1, color: "#e6eefb" }}>{f.label.slice("on file ".length)}</span>
         </div>
       ))}
+      {actions.map((a) => (
+        <div key={a.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <span style={{ color: "#6fd3e0", ...label }}>action</span>
+          <span style={{ flex: 1, color: "#e6eefb" }}>{a.name}</span>
+          <button
+            style={{ ...button, opacity: tickSlug ? 1 : 0.4 }}
+            disabled={!tickSlug}
+            title={tickSlug ? "run this action once, now, on the deployment, with what to send below" : "deploy the flow to run it"}
+            onClick={() => run(a.name)}
+          >
+            run
+          </button>
+        </div>
+      ))}
+      {actions.length > 0 && (
+        <>
+          <textarea
+            value={sent}
+            onChange={(e) => setSent(e.target.value)}
+            placeholder={'what to send, as JSON (empty is {})\n{"to": 0}'}
+            aria-label="what to send the action"
+            rows={2}
+            style={{ ...field, resize: "vertical" }}
+          />
+          {ran && (
+            <div style={{ color: ran.ok ? "#9ad29f" : "#e0916f", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              {ran.name}: {ran.text}
+            </div>
+          )}
+          {tickSlug && (
+            <code style={{ color: "#6f86a8", fontSize: 10, wordBreak: "break-all" }} title="the same run from a terminal">
+              curl -X POST {actionUrl(tickSlug, ran?.name ?? actions[0].name)} -H "Authorization: Bearer $HOLON_TOKEN" -d '{sent.trim() || "{}"}'
+            </code>
+          )}
+        </>
+      )}
       {endpoints.map((e) => (
         <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <span style={{ color: "#6fd3e0", ...label }}>{e.method}</span>

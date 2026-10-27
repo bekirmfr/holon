@@ -95,7 +95,21 @@ pub enum Item {
     Route(RouteDef),
     Every(EveryDef),
     OnFile(OnFileDef),
+    Action(ActionDef),
     Stmt(Stmt),
+}
+
+/// `action reset (input) { body }`: an action, a run by hand by its name (docs/L4s/triggers-L4.md
+/// §2). `input` in it is what the caller sent; `respond v` gives the answer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionDef {
+    pub name: Name,
+    /// The name of what was sent.
+    pub input: Name,
+    /// `action reset (input)`.
+    pub head: Span,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 /// `on file inbox [deleted] [matching "…"] (f) { body }`: a file handler, a run for each file the

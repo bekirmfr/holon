@@ -111,6 +111,9 @@ pub enum Capability {
     /// Starts a run for each new file in the named folder: `file_arrival`, whose value is the
     /// file's handle. The host watches the folder an admin bound to that name.
     FileArrival(String),
+    /// Runs the named action, by hand: a person (or, as its grant says, an agent) sends it
+    /// something through Holon, never the network. A server's `declare=action` child gives it.
+    Action(String),
     /// Reads a secret / credential (a security-sensitive read).
     SecretAccess,
     /// Reads the named secret from the deployment's secret store: `secret`. Per name, so
@@ -179,7 +182,7 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | Spawn => Kind::Sink,
         }
@@ -196,7 +199,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
         )
     }
 }
@@ -639,6 +642,10 @@ fn collect_caps(root: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capabi
         for h in crate::inspect::child_refs(unit) {
             if server && resolver.resolve(&h).is_some_and(|c| crate::declaration_of(c) == Some("endpoint")) {
                 acc.insert(Capability::NetworkIngress);
+            }
+            // An action is run by name, what was sent its input.
+            if server && let Some(name) = resolver.resolve(&h).and_then(crate::read_action) {
+                acc.insert(Capability::Action(name));
             }
             if !seen.insert(h) {
                 continue;

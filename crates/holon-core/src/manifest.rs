@@ -40,11 +40,14 @@ pub fn manifest_items(capabilities: &[String], limits: &BTreeMap<String, u64>, p
 }
 
 /// What starts the runs of a unit with `capabilities`: `NetworkIngress` for one with routes, else
-/// `FileArrival("inbox")` for one a new file starts, else `Clock` for one the clock fires; none for
-/// one only triggered by hand.
+/// `FileArrival("inbox")` for one a new file starts, else `Clock` for one the clock fires, else
+/// `Action("reset")` for one run by hand by name; none for one only triggered by hand.
 pub fn trigger(capabilities: &[String]) -> Option<&str> {
     let find = |p: fn(&str) -> bool| capabilities.iter().find(|c| p(c)).map(String::as_str);
-    find(|c| c == "NetworkIngress").or_else(|| find(|c| c.starts_with("FileArrival("))).or_else(|| find(|c| c == "Clock"))
+    find(|c| c == "NetworkIngress")
+        .or_else(|| find(|c| c.starts_with("FileArrival(")))
+        .or_else(|| find(|c| c == "Clock"))
+        .or_else(|| find(|c| c.starts_with("Action(")))
 }
 
 /// Whether a manifest item is required or optional.
@@ -71,7 +74,7 @@ pub fn permission_kind(item: &str, optional: &BTreeSet<String>, trigger: Option<
 /// point.
 /// Effects it only performs (writes, sends) don't count: they come out as values.
 pub fn reads_from_outside(capabilities: &[String]) -> bool {
-    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "SecretRead", "StateRead", "CollectionRead", "FileRead", "DbRead", "HttpRequest", "Await"];
+    const SOURCED: &[&str] = &["Clock", "Random", "NetworkIngress", "FileArrival", "Action", "SecretRead", "StateRead", "CollectionRead", "FileRead", "DbRead", "HttpRequest", "Await"];
     capabilities.iter().any(|c| SOURCED.contains(&c.split('(').next().unwrap_or("")))
 }
 

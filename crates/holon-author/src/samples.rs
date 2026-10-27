@@ -581,14 +581,14 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
-        description: "A flow with a clock of its own beside its routes: every 2 seconds (an every block) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the block). Its page lists each tick as it arrives; GET /count answers the count.",
-        shows: &["every blocks", "a clock beside routes", "now in a block", "channels", "state across runs"],
+        description: "A flow with a clock of its own beside its routes: every 2 seconds (an every block) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the block). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (action reset (input), input what was sent).",
+        shows: &["every blocks", "a clock beside routes", "now in a block", "actions run by hand", "channels", "state across runs"],
         port: Some("8156"),
         interval: None,
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far",
+        try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far; run reset from the editor's server panel (or POST {\"to\": 0} to /trigger/ticker/reset on the holon server) to set it back",
         text: include_str!("../samples/ticker.holon"),
     },
     Sample {

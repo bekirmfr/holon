@@ -291,6 +291,8 @@ impl Parser {
                     }
                     "holon" => file.items.push(self.holon()?),
                     "route" => file.items.push(Item::Route(self.route()?)),
+                    // `action reset (input) {` opens an action; no statement starts with two names.
+                    "action" if self.peek_at(1).tok == Tok::Ident && self.peek_at(2).tok == Tok::LParen => file.items.push(Item::Action(self.action()?)),
                     _ => file.items.push(Item::Stmt(self.stmt()?)),
                 },
                 _ => file.items.push(Item::Stmt(self.stmt()?)),
@@ -528,6 +530,17 @@ impl Parser {
         let close = self.expect(&Tok::RParen, "\")\"")?;
         let (body, end) = self.block()?;
         Ok(OnFileDef { on, file, head: head.span.to(close.span), body, span: head.span.to(end) })
+    }
+
+    /// `action reset (input) { … }`.
+    fn action(&mut self) -> R<ActionDef> {
+        let head = self.next();
+        let name = self.ident("the action's name")?;
+        self.expect(&Tok::LParen, "\"(\" and a name for what is sent")?;
+        let input = self.ident("a name for what is sent")?;
+        let close = self.expect(&Tok::RParen, "\")\"")?;
+        let (body, end) = self.block()?;
+        Ok(ActionDef { name, input, head: head.span.to(close.span), body, span: head.span.to(end) })
     }
 
     /// `every 2s { … }`.

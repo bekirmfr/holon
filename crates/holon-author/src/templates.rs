@@ -1,4 +1,4 @@
-//! Node templates: `request`, `respond`, `stripe_verify`, `every` and `on_file`. They are not new
+//! Node templates: `request`, `respond`, `stripe_verify`, `every`, `on_file` and `action`. They are not new
 //! primitives.
 //! Each is a small composite of genesis leaves (field, json_parse, record, with_field, const,
 //! default, …), rebuilt from the node's params whenever it is hashed, the same way a primitive
@@ -38,6 +38,9 @@
 //!   that settles in `folder` (or, `on: deleted`, leaves it), its name matching the glob `matching`
 //!   if set. No inputs; one output, `file`, the file's handle (a `file_arrival` leaf, sourced as
 //!   it is in a flow of one `on file` line), which its sinks are tied to.
+//! - `action` (param: name) is an action's trigger (§2): a run by hand, by its name. One input,
+//!   hidden as a request node's is: what was sent, fed by the action handler it derives into; one
+//!   output, `input`, the same value, which its sinks are tied to and a `respond` answers.
 //!
 //! A template's units are part of every flow's identity that uses it: a change here changes the
 //! hash of each such flow.
@@ -48,7 +51,7 @@ use serde::Serialize;
 use crate::wire::{frozen_value, WParam, WPort, WType};
 
 /// The templates, in palette order.
-pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify", "every", "on_file"];
+pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify", "every", "on_file", "action"];
 
 /// A clock handler's period, read from its `seconds`: whole seconds, 1 up to core's `MAX_PERIOD`.
 pub fn period(seconds: &str) -> Result<u64, String> {
@@ -77,6 +80,15 @@ pub fn file_trigger(params: &[WParam]) -> Result<holon_core::FileTrigger, String
     Ok(holon_core::FileTrigger { folder: folder.to_string(), deleted, matching })
 }
 
+/// An action's name, read from its `name`: letters, digits, `-` and `_`, as core reads it back.
+pub fn action_name(params: &[WParam]) -> Result<String, String> {
+    let name = frozen_value(params, "name").unwrap_or("");
+    if name.is_empty() || name.len() > 64 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err(format!("action \"{name}\": an action's name is letters, digits, - and _"));
+    }
+    Ok(name.to_string())
+}
+
 pub fn is_template(name: &str) -> bool {
     TEMPLATES.contains(&name)
 }
@@ -95,6 +107,9 @@ pub fn describe(name: &str) -> Option<&'static str> {
         }
         "on_file" => {
             "A file handler: a run for each file that settles in the folder set on the node (or, on: deleted, is removed from it), its name matching the glob matching if set, with file, its handle {folder, name, size, hash, modified, event}. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
+        }
+        "action" => {
+            "An action: a run by hand, by the name set on the node, with input, what was sent (a JSON value; {} when nothing). A respond it wires to gives the answer. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
         }
         "stripe_verify" => {
             "Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time with each v1 signature (any one matching passes, as while a secret is rolled), the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it."
@@ -131,6 +146,7 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
         },
         "every" => Interface { inputs: vec![], outputs: vec![WPort::new("now", Number)], hidden_inputs: false },
         "on_file" => Interface { inputs: vec![], outputs: vec![WPort::new("file", Record)], hidden_inputs: false },
+        "action" => Interface { inputs: vec![WPort::new("input", Any)], outputs: vec![WPort::new("input", Any)], hidden_inputs: true },
         "stripe_verify" => Interface {
             inputs: vec![request(), WPort::new("secret", Text), WPort::new("now", Number)],
             outputs: vec![WPort::new("event", Any), WPort::new("verified", Boolean)],
@@ -160,6 +176,7 @@ pub fn defaults(name: &str) -> Option<Vec<WParam>> {
         "stripe_verify" => vec![f("tolerance", "300")],
         "every" => vec![f("seconds", "10")],
         "on_file" => vec![f("folder", "inbox"), f("on", "new"), f("matching", "")],
+        "action" => vec![f("name", "run")],
         _ => return None,
     })
 }
@@ -388,6 +405,12 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
             Ok(composite(vec![arrival], vec![e(0, 0, B, 0)], inputs, outputs))
         }
 
+        // What was sent, passed through: the action handler feeds it, the block reads it.
+        "action" => {
+            action_name(params)?;
+            Ok(composite(vec![], vec![e(B, 0, B, 0)], inputs, outputs))
+        }
+
         // respond
         _ => {
             let status = frozen_value(params, "status").unwrap_or("");
@@ -551,6 +574,18 @@ mod tests {
             assert!(interface(t, &params).is_some() && describe(t).is_some(), "{t}");
         }
         assert!(interface("add", &[]).is_none() && !is_template("add"));
+    }
+
+    /// `action` passes what was sent through, its name checked.
+    #[test]
+    fn action_passes_what_was_sent_through() {
+        let mut store = MapResolver::new();
+        let unit = build("action", &[WParam::frozen("name", "reset")], &mut store).unwrap();
+        assert_eq!((names(&unit.inputs), names(&unit.outputs)), (vec!["input"], vec!["input"]));
+        assert!(matches!(&unit.body, UnitBody::Composite { children, edges } if children.is_empty() && edges == &[e(BOUNDARY, 0, BOUNDARY, 0)]));
+        for bad in ["", "a b", "../x"] {
+            assert!(build("action", &[WParam::frozen("name", bad)], &mut store).is_err(), "{bad:?}");
+        }
     }
 
     /// `on_file` is a `file_arrival` leaf with the node's line: its handle is the file's, sourced

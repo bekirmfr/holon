@@ -215,10 +215,10 @@ export type NodeTiming = {
 };
 
 /** Which of the deployed flow's traces places a run's steps, and how deep they sit: a request's
- *  route, or a clock's or file handler's label (`every 2s`, `on file inbox`), one level down,
- *  inside its handler unit; else the whole flow's (`"*"`), at the top. */
+ *  route, or a clock's, file handler's or action's label (`every 2s`, `on file inbox`, `action
+ *  reset`), one level down, inside its handler unit; else the whole flow's (`"*"`), at the top. */
 function placedBy(entry: { kind: string; route: string | null }): { key: string; depth: 1 | 2 } {
-  const handler = entry.kind === "request" || ((entry.kind === "tick" || entry.kind === "file") && !!entry.route);
+  const handler = entry.kind === "request" || ((entry.kind === "tick" || entry.kind === "file" || entry.kind === "trigger") && !!entry.route);
   return handler ? { key: entry.route ?? "", depth: 2 } : { key: "*", depth: 1 };
 }
 
@@ -402,10 +402,16 @@ export function fileLabel(params: ReplayNode["data"]["params"]): string {
 /**
  * Which nodes a run touched: for a request, the group holding the request node of its route
  * (`"GET /todos/:id"`); for a clock's tick, the group holding its `every` node (`"every 2s"`);
- * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`); for
- * anything else (a flow's tick, a trigger, a flow of `on file` lines), the whole canvas.
+ * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`); for an
+ * action's, the group holding its `action` node (`"action reset"`); for anything else (a flow's
+ * tick, a trigger, a flow of `on file` lines), the whole canvas.
  */
 export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: ReplayInput): string[] {
+  if (entry.kind === "trigger" && entry.route) {
+    const action = nodes.find((n) => n.data.name === "action" && n.data.body.kind === "Template" && `action ${frozen(n.data.params, "name") ?? ""}` === entry.route);
+    if (!action) return [];
+    return components(nodes, edges).find((ids) => ids.includes(action.id)) ?? [];
+  }
   if (entry.kind === "file" && entry.route) {
     const onFile = nodes.find((n) => n.data.name === "on_file" && n.data.body.kind === "Template" && fileLabel(n.data.params) === entry.route);
     if (!onFile) return [];
@@ -550,6 +556,8 @@ export function replay(
       const fed = [entry.request];
       return { inputs: fed, outputs: evaluate(node, fed) };
     }
+    // An action's: what was sent, as the log keeps it.
+    if (name === "action" && node.data.body.kind === "Template") return { inputs: [entry.request], outputs: [entry.request ?? null] };
     if (inputs.some(hasPlaceholder) || readsOutside(node)) {
       // Fed a secret or token the log doesn't hold, or reading from outside within itself: what
       // the run recorded, if it did.

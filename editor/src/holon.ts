@@ -177,6 +177,7 @@ export type WCapability =
   | "NetworkIngress"
   | { FileRead: string }
   | { FileArrival: string }
+  | { Action: string }
   | "SecretAccess"
   | { SecretRead: string }
   | { Await: string }

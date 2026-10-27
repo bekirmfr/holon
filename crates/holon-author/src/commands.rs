@@ -84,7 +84,7 @@ fn port_of(c: &Lowered) -> &str {
 /// Whether the flow deploys on a schedule: `every`, and no routes or handler blocks. It then runs on the clock, so
 /// what it may do includes the clock (core's `Capabilities::deployed`), as the deploy will ask.
 pub(crate) fn scheduled(c: &Lowered, server: &DerivedServer) -> bool {
-    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
+    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
 }
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
@@ -164,6 +164,11 @@ pub fn check(file: &str, source: &str) -> Report {
         let alone = server.endpoints.is_empty() && server.clocks.is_empty();
         out.push(if alone { "a server of file handlers, listening on no port" } else { "and its file handlers" }.into());
         out.extend(server.files.iter().map(|f| format!("  {}", f.label)));
+    }
+    if !server.actions.is_empty() {
+        let alone = server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty();
+        out.push(if alone { "a server of actions, run by hand, listening on no port" } else { "and its actions, run by hand" }.into());
+        out.extend(server.actions.iter().map(|a| format!("  {}", a.label)));
     }
     let (caps, modules, mut problems) = match unit {
         Ok((hash, caps)) => {
@@ -247,6 +252,10 @@ pub fn show(file: &str, source: &str) -> Report {
     if !server.files.is_empty() {
         out.push("  files".into());
         out.extend(server.files.iter().map(|f| format!("    {}", f.label)));
+    }
+    if !server.actions.is_empty() {
+        out.push("  actions".into());
+        out.extend(server.actions.iter().map(|a| format!("    {}", a.label)));
     }
     if let Ok((_, caps)) = &unit {
         out.extend(while_it_runs(caps).iter().map(|l| format!("  {l}")));

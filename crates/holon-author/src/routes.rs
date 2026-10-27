@@ -84,13 +84,26 @@ pub struct FileGroup {
     pub node_ids: Vec<String>,
 }
 
+/// One action of the server: its `action` node, its name, and every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ActionGroup {
+    pub name: String,
+    /// `action reset`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "actionId")]
+    pub action_id: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
 impl FileGroup {
     pub fn trigger(&self) -> holon_core::FileTrigger {
         holon_core::FileTrigger { folder: self.folder.clone(), deleted: self.deleted, matching: self.matching.clone() }
     }
 }
 
-/// What a node is the trigger of, when it is one: a route's request, a clock's tick, a file.
+/// What a node is the trigger of, when it is one: a route's request, a clock's tick, a file, an
+/// action.
 fn trigger_label(n: &Node) -> Option<String> {
     if n.is_template("request") {
         Some(format!("{} {}", n.param("method"), n.param("path")))
@@ -104,6 +117,8 @@ fn trigger_label(n: &Node) -> Option<String> {
             Ok(t) => t.label(),
             Err(_) => format!("on file {}", n.param("folder")),
         })
+    } else if n.is_template("action") {
+        Some(format!("action {}", n.param("name")))
     } else {
         None
     }
@@ -167,6 +182,37 @@ pub fn find_files(nodes: &[Node], wires: &[Wire]) -> (Vec<FileGroup>, Vec<String
     // In the order they are written.
     files.sort_by_key(|f| node_ids.iter().position(|id| *id == f.on_file_id));
     (files, errors)
+}
+
+/// The actions the flow declares (each connected group holding an `action` node and no other
+/// trigger), and why any can't be one.
+pub fn find_actions(nodes: &[Node], wires: &[Wire]) -> (Vec<ActionGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let (mut actions, mut errors): (Vec<ActionGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [action] = triggers.as_slice() else { continue };
+        if !action.is_template("action") {
+            continue;
+        }
+        let name = match crate::templates::action_name(&action.data.params) {
+            Ok(n) => n,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = format!("action {name}");
+        if actions.iter().any(|a| a.name == name) {
+            errors.push(format!("{label} is written twice: one block per name"));
+            continue;
+        }
+        actions.push(ActionGroup { name, label, action_id: action.id.clone(), node_ids: ids });
+    }
+    // In the order they are written.
+    actions.sort_by_key(|a| node_ids.iter().position(|id| *id == a.action_id));
+    (actions, errors)
 }
 
 /// The routes the flow declares, and why any group can't be one. Groups without a request node
@@ -253,12 +299,23 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
 /// absent when the endpoint runs, rather than refusing the route.
 /// `group` is in the same order as the children the spec was proposed over.
 pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    caller_spec(spec, group, label, "request")
+}
+
+/// An action's boundary, as a route's: the one input left open is its `action` node's (what was
+/// sent), the outputs its respond's (the answer) and its effects.
+pub fn action_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    caller_spec(spec, group, label, "action")
+}
+
+/// A handler with a caller to answer, whose `trigger` node takes what the caller sent.
+fn caller_spec(spec: EncapSpec, group: &[&Node], label: &str, trigger: &str) -> Result<EncapSpec, String> {
     let input_name = |child: u32, port: u32| group[child as usize].data.inputs.get(port as usize).map(|p| p.name.as_str());
     let promote: Vec<_> =
         spec.promote.into_iter().filter(|p| !is_optional_input(group[p.child as usize], input_name(p.child, p.port))).collect();
     for p in &promote {
         let n = group[p.child as usize];
-        if !n.is_template("request") {
+        if !n.is_template(trigger) {
             let port = input_name(p.child, p.port).map(String::from).unwrap_or_else(|| p.port.to_string());
             return Err(format!("{label}: {} · {port} is not wired", n.data.name));
         }
@@ -272,7 +329,10 @@ pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<Encap
         return Err(format!("{label}: more than one respond node"));
     }
     if responses.is_empty() && effects.is_empty() {
-        return Err(format!("{label}: add a respond node (or an effect, answered 204)"));
+        return Err(match trigger {
+            "action" => format!("{label}: it does nothing: respond with something, or write something (state, a collection, a channel)"),
+            _ => format!("{label}: add a respond node (or an effect, answered 204)"),
+        });
     }
     // The response first: the endpoint takes the first non-effect output as output 0.
     Ok(EncapSpec { promote, expose: responses.into_iter().chain(effects).collect() })
@@ -374,6 +434,33 @@ pub fn endpoint_unit(handler: Hash, inputs: &[Port], outputs: &[Port], method: &
     if outputs.is_empty() {
         return Err("a handler needs an output: the response".into());
     }
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    let mut params = vec![frozen("declare", "endpoint"), frozen("method", method), frozen("path", path)];
+    // Only when set, so an ordinary route's endpoint hashes as it always did.
+    if !resume.is_empty() {
+        params.push(frozen("resume", resume));
+    }
+    Ok(caller_unit(handler, inputs, outputs, params, Port { name: "request".into(), ty: Type::Record }, "response"))
+}
+
+/// Wrap an action's handler as an action handler unit (core's `read_action`), as an endpoint is
+/// wrapped: its one input what was sent, output 0 the answer (the respond's envelope, whose body
+/// the host answers with), then its effects; `declare = "action"` and `name`.
+pub fn action_unit(handler: Hash, inputs: &[Port], outputs: &[Port], name: &str) -> Result<Unit, String> {
+    if inputs.len() > 1 {
+        return Err("a handler takes at most one input: what was sent".into());
+    }
+    if outputs.is_empty() {
+        return Err("a handler needs an output: its answer or an effect".into());
+    }
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    let params = vec![frozen("declare", "action"), frozen("name", name)];
+    Ok(caller_unit(handler, inputs, outputs, params, Port { name: "input".into(), ty: Type::Any }, "answer"))
+}
+
+/// A handler wrapped for its caller: `input` fed to the handler's input if it has one, output 0
+/// (named `first`) its first non-effect output (or its first effect), then every other effect.
+fn caller_unit(handler: Hash, inputs: &[Port], outputs: &[Port], params: Vec<Param>, input: Port, first: &str) -> Unit {
     let is_effect = |p: &Port| p.ty == Type::Effect;
     let response = outputs.iter().position(|p| !is_effect(p)).unwrap_or(0);
     let order: Vec<usize> =
@@ -388,25 +475,19 @@ pub fn endpoint_unit(handler: Hash, inputs: &[Port], outputs: &[Port], method: &
         to_child: BOUNDARY,
         to_port: to as u32,
     }));
-    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
-    let mut params = vec![frozen("declare", "endpoint"), frozen("method", method), frozen("path", path)];
-    // Only when set, so an ordinary route's endpoint hashes as it always did.
-    if !resume.is_empty() {
-        params.push(frozen("resume", resume));
-    }
-    Ok(Unit {
+    Unit {
         body: UnitBody::Composite { children: vec![handler], edges },
         params,
-        inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+        inputs: vec![input],
         outputs: order
             .iter()
             .enumerate()
-            .map(|(k, &i)| Port { name: if k == 0 { "response".into() } else { outputs[i].name.clone() }, ty: outputs[i].ty.clone() })
+            .map(|(k, &i)| Port { name: if k == 0 { first.into() } else { outputs[i].name.clone() }, ty: outputs[i].ty.clone() })
             .collect(),
-    })
+    }
 }
 
-/// A server unit over the given endpoints, clock handlers and file handlers, in that order, with `port` when it
+/// A server unit over the given endpoints, clock handlers, file handlers and actions, in that order, with `port` when it
 /// has a route. Core's `read_server` re-checks everything on deploy.
 pub fn server_unit(handlers: Vec<Hash>, port: Option<u16>) -> Unit {
     let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };

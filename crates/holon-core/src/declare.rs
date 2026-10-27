@@ -11,7 +11,10 @@
 //!   carrying `declare = "on_file"`, `folder`, and `on` (`deleted`) and `matching` when given: the
 //!   host runs it for each file its trigger starts. The file's handle is sourced, as a
 //!   `file_arrival` leaf's is (docs/L4s/triggers-L4.md §4, as built).
-//! - A **server** is a composite whose children are endpoints, clock handlers and file handlers, with no wiring
+//! - An **action handler** is a composite from what its caller sent to its answer (an envelope, as
+//!   an endpoint's response is, whose body is the answer), then its effects, carrying
+//!   `declare = "action"` and `name`: a person runs it by name through Holon, never the network.
+//! - A **server** is a composite whose children are endpoints, clock handlers, file handlers and action handlers, with no wiring
 //!   and no ports, carrying `declare = "server"`, and `port` when it has a route. Its hash is the
 //!   hash of the whole flow.
 //!
@@ -68,6 +71,16 @@ pub struct FileHandler {
     pub handler: Hash,
 }
 
+/// One action handler of a server, as declared: run by name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Action {
+    pub name: String,
+    /// How the log and the editor name it: `action reset`.
+    pub label: String,
+    /// The handler unit's hash (the server's child), which a run evaluates with what was sent.
+    pub handler: Hash,
+}
+
 /// A server unit, read and checked. `port` is there when it has a route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Server {
@@ -75,6 +88,14 @@ pub struct Server {
     pub routes: Vec<Route>,
     pub clocks: Vec<Clock>,
     pub files: Vec<FileHandler>,
+    pub actions: Vec<Action>,
+}
+
+impl Server {
+    /// Its action named `name`, if it has one.
+    pub fn action(&self, name: &str) -> Option<&Action> {
+        self.actions.iter().find(|a| a.name == name)
+    }
 }
 
 /// The longest period a clock handler may have: 366 days, in seconds.
@@ -102,6 +123,15 @@ pub fn read_clock(unit: &Unit) -> Option<u64> {
         return None;
     }
     frozen(unit, "seconds")?.parse::<u64>().ok().filter(|s| (1..=MAX_PERIOD).contains(s))
+}
+
+/// An action handler's name, if `unit` is one: `declare = "action"`, a name (letters, digits, `-`
+/// and `_`), a composite of one input with an answer.
+pub fn read_action(unit: &Unit) -> Option<String> {
+    if !matches!(unit.body, UnitBody::Composite { .. }) || declaration_of(unit) != Some("action") || unit.inputs.len() != 1 || unit.outputs.is_empty() {
+        return None;
+    }
+    crate::kind::ident(&unit.params, "name")
 }
 
 /// A file handler's trigger, if `unit` is one: `declare = "on_file"`, a folder's name, `on`
@@ -141,7 +171,9 @@ pub enum DeclError {
     DuplicateClock { seconds: u64 },
     /// Two file handlers with the same folder, `on` and `matching`.
     DuplicateFileHandler { label: String },
-    /// No route, clock or file handler: nothing would start a run.
+    /// Two actions of one name.
+    DuplicateAction { name: String },
+    /// No route, clock, file handler or action: nothing would start a run.
     NoHandlers,
 }
 
@@ -170,6 +202,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
     let mut routes: Vec<Route> = Vec::with_capacity(children.len());
     let mut clocks: Vec<Clock> = Vec::new();
     let mut files: Vec<FileHandler> = Vec::new();
+    let mut actions: Vec<Action> = Vec::new();
     for (i, hash) in children.iter().enumerate() {
         let child = i as u32;
         let endpoint = resolver.resolve(hash).ok_or(DeclError::UnresolvedEndpoint { child })?;
@@ -187,6 +220,14 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
                 return Err(DeclError::DuplicateFileHandler { label: trigger.label() });
             }
             files.push(FileHandler { label: trigger.label(), trigger, handler: *hash });
+            continue;
+        }
+        if declaration_of(endpoint) == Some("action") {
+            let name = read_action(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
+            if actions.iter().any(|a| a.name == name) {
+                return Err(DeclError::DuplicateAction { name });
+            }
+            actions.push(Action { label: format!("action {name}"), name, handler: *hash });
             continue;
         }
         let (method, path) = read_endpoint(endpoint).map_err(|e| match e {
@@ -215,10 +256,10 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
         };
         routes.push(Route { method, path, segments, endpoint: *hash, resume });
     }
-    if routes.is_empty() && clocks.is_empty() && files.is_empty() {
+    if routes.is_empty() && clocks.is_empty() && files.is_empty() && actions.is_empty() {
         return Err(DeclError::NoHandlers);
     }
-    // A port only for a server with a route: a flow of clocks and files listens on none.
+    // A port only for a server with a route: a flow of clocks, files and actions listens on none.
     let port = match frozen(unit, "port") {
         None if routes.is_empty() => None,
         text => match text.unwrap_or("").parse::<u16>() {
@@ -226,7 +267,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             _ => return Err(DeclError::BadPort(text.unwrap_or("").to_string())),
         },
     };
-    Ok(Server { port, routes, clocks, files })
+    Ok(Server { port, routes, clocks, files, actions })
 }
 
 /// Why a unit is not a well-formed endpoint.
@@ -473,6 +514,37 @@ mod tests {
         let mut ps = vec![Param::frozen("declare", "on_file")];
         ps.extend(params.iter().map(|(k, v)| Param::frozen(*k, *v)));
         r.insert(Unit { body: UnitBody::Composite { children: vec![h], edges: vec![] }, params: ps, inputs: vec![], outputs: vec![] }).unwrap()
+    }
+
+    fn action(r: &mut MapResolver, name: &str) -> Hash {
+        let h = r.insert(handler()).unwrap();
+        r.insert(Unit {
+            body: UnitBody::Composite { children: vec![h], edges: vec![] },
+            params: vec![Param::frozen("declare", "action"), Param::frozen("name", name)],
+            inputs: vec![Port { name: "input".into(), ty: Type::Any }],
+            outputs: vec![Port { name: "answer".into(), ty: Type::Record }],
+        })
+        .unwrap()
+    }
+
+    /// A server's actions (its `action` blocks) are children beside its endpoints, run by name;
+    /// a server of actions alone has no port, and each action is a capability of its own.
+    #[test]
+    fn a_server_holds_actions_each_a_capability_of_its_own() {
+        let mut r = MapResolver::new();
+        let (reset, reindex) = (action(&mut r, "reset"), action(&mut r, "reindex"));
+        let alone = Unit { params: vec![Param::frozen("declare", "server")], ..server("", vec![reset, reindex]) };
+        let s = read_server(&alone, &r).unwrap();
+        assert_eq!((s.port, s.routes.len()), (None, 0));
+        assert_eq!(s.actions.iter().map(|a| (a.name.as_str(), a.label.as_str(), a.handler)).collect::<Vec<_>>(), [("reset", "action reset", reset), ("reindex", "action reindex", reindex)]);
+        assert_eq!(s.action("reindex").map(|a| a.handler), Some(reindex));
+        let caps = crate::capabilities(&alone, &r);
+        assert!(caps.contains(crate::Capability::Action("reset".into())) && caps.contains(crate::Capability::Action("reindex".into())));
+        assert!(!caps.contains(crate::Capability::NetworkIngress), "an action is never the network's");
+        let e = endpoint(&mut r, "GET", "/a");
+        assert_eq!(read_server(&server("80", vec![e, reset, reset]), &r), Err(DeclError::DuplicateAction { name: "reset".into() }));
+        let bad = action(&mut r, "../x");
+        assert_eq!(read_server(&server("80", vec![e, bad]), &r), Err(DeclError::BadEndpointShape { child: 1 }));
     }
 
     /// A server's file handlers (its `on file` blocks) are children beside its endpoints, each

@@ -23,8 +23,8 @@ pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool 
     })
 }
 
-/// What a deployment shows as its triggers: a server's port, its clocks (`every 2s`) and its file
-/// handlers (`on file inbox`), or plain
+/// What a deployment shows as its triggers: a server's port, its clocks (`every 2s`), its file
+/// handlers (`on file inbox`) and its actions (`action reset`), or plain
 /// `Ingress` for a unit that takes requests some other way, plus `Clock` for a flow on an
 /// interval (`clock` is false for a server, whose clocks are its own). Deploy and reload both
 /// derive it here.
@@ -34,6 +34,7 @@ pub(crate) fn trigger_labels(server: Option<&Server>, ingress: bool, clock: bool
         triggers.extend(s.port.map(|port| format!("Http :{port}")));
         triggers.extend(s.clocks.iter().map(|c| c.label.clone()));
         triggers.extend(s.files.iter().map(|f| f.label.clone()));
+        triggers.extend(s.actions.iter().map(|a| a.label.clone()));
     } else if ingress {
         triggers.push("Ingress".to_string());
     }
@@ -154,11 +155,12 @@ pub(crate) fn handle_post_deploy(
     let is_ingress = caps.contains(Capability::NetworkIngress);
     let is_clock = caps.contains(Capability::Clock) && server.is_none();
     let has_clocks = server.as_ref().is_some_and(|s| !s.clocks.is_empty());
+    let has_actions = server.as_ref().is_some_and(|s| !s.actions.is_empty());
     let arrivals = Arc::new(arrivals::Watch::open(deployments_path, &body.slug, &caps, holon_core::file_triggers(root_unit, &resolver)));
-    if !is_ingress && !is_clock && !has_clocks && !arrivals.watches() {
+    if !is_ingress && !is_clock && !has_clocks && !has_actions && !arrivals.watches() {
         return err(
             400,
-            "this unit declares no driver capability (NetworkIngress, Clock or FileArrival) — nothing would ever trigger it",
+            "this unit declares no driver capability (NetworkIngress, Clock, FileArrival or Action) — nothing would ever trigger it",
         );
     }
     if has_clocks && body.interval_seconds.is_some() {
@@ -174,6 +176,13 @@ pub(crate) fn handle_post_deploy(
         let named = format!("FileArrival({:?})", f.trigger.folder);
         if body.requirements.optional.contains(&named) {
             return err(400, format!("{named} starts this flow's {}: it can't be optional", f.label));
+        }
+    }
+    // Nor its actions'.
+    for a in server.iter().flat_map(|s| &s.actions) {
+        let named = format!("Action({:?})", a.name);
+        if body.requirements.optional.contains(&named) {
+            return err(400, format!("{named} starts this flow's {}: it can't be optional", a.label));
         }
     }
 
@@ -688,6 +697,9 @@ pub(crate) fn handle_post_trigger(
             Some(dep) if dep.life.status != Status::Running => {
                 return err(409, format!("{slug:?} is {}", status_word(dep.life.status)));
             }
+            Some(dep) if let Some(action) = dep.server.as_ref().and_then(|s| s.actions.first()) => {
+                return err(400, format!("this deployment's actions run by name: POST /trigger/{slug}/{}", action.name));
+            }
             Some(dep) if dep.server.is_some() => {
                 return err(400, "this deployment is an HTTP server: send requests to its own port");
             }
@@ -751,6 +763,110 @@ pub(crate) fn handle_post_trigger(
     .unwrap_or_default();
     redactor.json(&mut reply);
     Response::json(&reply)
+}
+
+/// `POST /trigger/<slug>/<name>`: run the deployment's action `name` by hand, what was sent the
+/// body as JSON (nothing is `{}`). Its handler alone runs, logged as a trigger run under its label
+/// (`action reset`) with what was sent and who ran it. The answer is `{answer, seq}`: the
+/// respond's body (`null` for an action that only writes) and the run's log entry. A respond's
+/// error (its `missing`) answers with its status; a run that failed, with why in its log.
+pub(crate) fn handle_post_action(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    slug: &str,
+    name: &str,
+    request: &Request,
+    by: Option<&str>,
+) -> Response {
+    let (action, state, permit, vault, folders, channels) = {
+        let deployments = deployments.lock().unwrap();
+        let Some(dep) = deployments.get(slug) else { return Response::empty_404() };
+        if dep.life.status != Status::Running {
+            return err(409, format!("{slug:?} is {}", status_word(dep.life.status)));
+        }
+        let Some(action) = dep.server.as_ref().and_then(|s| s.action(name)) else {
+            return err(404, format!("{slug:?} has no action {name:?}"));
+        };
+        (action.clone(), dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
+    };
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let Ok(text) = String::from_utf8(bytes) else { return err(400, "what is sent to an action is JSON, and this isn't UTF-8 text") };
+    let input = if text.trim().is_empty() {
+        Value::Record(Default::default())
+    } else {
+        match holon_core::parse_json(&text) {
+            Some(v) => v,
+            None => return err(400, "what is sent to an action is JSON, and this isn't"),
+        }
+    };
+    let resolver = match materialize_closure(store, action.handler) {
+        Ok(r) => r,
+        Err(e) => {
+            record_trigger(deployments, slug, true);
+            return err(500, format!("store error while materializing closure: {e:?}"));
+        }
+    };
+    let Some(handler) = resolver.resolve(&action.handler) else {
+        record_trigger(deployments, slug, true);
+        return err(500, "the action's handler no longer resolves in the store");
+    };
+
+    let epoch_seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, Value::Number(rand::random::<f64>()))];
+    let started = started_now();
+    let inputs = [Some(input.clone())];
+    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), ..Default::default() };
+    let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
+    let run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
+
+    // Output 0 is the respond's envelope, or (an action that only writes) an effect.
+    let (status, answer) = match run.outputs.first().cloned().flatten() {
+        Some(Value::Record(f)) if matches!(f.get("status"), Some(Value::Number(_))) => {
+            let Some(Value::Number(n)) = f.get("status") else { unreachable!() };
+            (*n as u16, f.get("body").cloned())
+        }
+        Some(Value::Effect { .. }) => (200, None),
+        Some(other) => (200, Some(other)),
+        None => (500, None),
+    };
+    let failed = run.error.is_some() || status >= 500;
+    record_trigger(deployments, slug, failed);
+    let mut entry = run_entry("trigger", started, &sourced, &run);
+    entry.route = Some(action.label.clone());
+    entry.request = Some(SValue::from_core(&input));
+    entry.by = by.map(String::from);
+    let answer_json = answer.as_ref().map_or(Some("null".to_string()), holon_core::stringify_json);
+    entry.response_body = Some(if run.secret_fed.derives_output(0) { crate::taint::WITHHELD.to_string() } else { answer_json.clone().unwrap_or_default() });
+    match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), &inputs, &sourced, &run, &waits) {
+        Ok(names) => entry.parked = names,
+        Err(e) => entry.error = Some(e),
+    }
+    let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
+    let seq = deployments.lock().unwrap().get(slug).map_or(0, |d| d.log.next_seq());
+    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
+    if state.is_some() || parked_any {
+        persist_deployments(deployments_path, deployments, store);
+    }
+    if error {
+        return err(500, format!("the action failed: its run log says why (entry {seq})"));
+    }
+    if parked_any {
+        return Response::json(&serde_json::json!({ "answer": null, "seq": seq, "waiting": true })).with_status_code(202);
+    }
+    let Some(answer_json) = answer_json else { return err(500, "the action's answer has no JSON form") };
+    let answer: serde_json::Value = if run.secret_fed.derives_output(0) {
+        serde_json::Value::String(crate::taint::WITHHELD.to_string())
+    } else {
+        serde_json::from_str(&answer_json).unwrap_or_default()
+    };
+    let mut reply = if (200..300).contains(&status) { serde_json::json!({ "answer": answer, "seq": seq }) } else { answer };
+    Redactor::of(&vault).json(&mut reply);
+    Redactor::tokens(&waits.tokens).json(&mut reply);
+    Response::json(&reply).with_status_code(status)
 }
 
 /// `GET /deployments/<slug>/log?after=<seq>&limit=<n>` — the flow log past `after` (all of it

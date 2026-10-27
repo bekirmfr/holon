@@ -151,6 +151,22 @@ describe("replay", () => {
     expect(replay(canvas, wires, run, evalNode).traces.get("g")?.outputs).toEqual([handle]);
     expect(fileLabel([frozen("folder", "in"), frozen("matching", "*.csv")])).toBe('on file in matching "*.csv"');
   });
+
+  it("runs an action's run over its action node's group, fed what was sent", () => {
+    const sent: WValue = { type: "Record", value: [["to", { type: "Number", value: 5 }]] } as unknown as WValue;
+    const run: ReplayInput = { kind: "trigger", route: "action reset", request: sent, sourced: [], state_before: {} };
+    const canvas = [
+      n("a", "action", ["input"], ["input"], [frozen("name", "reset")], "Template"),
+      n("w", "store_write", ["value", "trigger"], ["out"], [frozen("key", "ticks")]),
+      n("b", "action", ["input"], ["input"], [frozen("name", "note")], "Template"),
+      n("x", "store_write", ["value", "trigger"], ["out"], [frozen("key", "note")]),
+    ];
+    const wires = [wire("a", "input", "w", "value"), wire("a", "input", "w", "trigger"), wire("b", "input", "x", "value"), wire("b", "input", "x", "trigger")];
+    expect(runGroup(canvas, wires, run)).toEqual(["a", "w"]);
+    expect(runGroup(canvas, wires, { ...run, route: "action note" })).toEqual(["b", "x"]);
+    expect(runGroup(canvas, wires, { ...run, route: "action nope" })).toEqual([]);
+    expect(replay(canvas, wires, run, evalNode).traces.get("a")?.outputs).toEqual([sent]);
+  });
 });
 
 describe("stateAtStep", () => {

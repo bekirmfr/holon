@@ -797,3 +797,7 @@ A clock: a run every seconds set on the node, with now, the time of the tick. Ev
 ### `on_file`
 
 A file handler: a run for each file that settles in the folder set on the node (or, on: deleted, is removed from it), its name matching the glob matching if set, with file, its handle {folder, name, size, hash, modified, event}. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
+
+### `action`
+
+An action: a run by hand, by the name set on the node, with input, what was sent (a JSON value; {} when nothing). A respond it wires to gives the answer. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.

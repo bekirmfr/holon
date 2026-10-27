@@ -6153,6 +6153,60 @@ fn a_servers_file_handlers_run_alone_for_their_lines_beside_its_routes_and_verif
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A flow's `action` blocks are run by hand by their names (the ticker sample's reset): what was
+/// sent is the handler's input (nothing is `{}`), its respond's body the answer, the run logged
+/// as a trigger run under its label with what was sent, and it verifies offline. The old
+/// `/trigger/<slug>` names the way in.
+#[test]
+fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
+    let mut state = claims_state("");
+    state.deployments_path = unique_temp_path("action-blocks");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/ticker.holon"), "127.0.0.1:9");
+    let mut triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
+    triggers.sort();
+    assert_eq!(triggers, ["Http :8156", "action reset", "every 2s"]);
+    let run = |body: &str| route(&state, &req("POST", &format!("/trigger/{slug}/reset"), body.as_bytes().to_vec()));
+    let count = || data_call(&state, &slug, "GET", "/count", "").1;
+    assert_eq!(count(), "0");
+
+    let r = body_json(run(r#"{"to": 5}"#));
+    assert_eq!(r["answer"], serde_json::json!({ "was": 0, "set": 5 }), "{r}");
+    assert_eq!(count(), "5", "the action writes the routes' state");
+    let entry = log_entries(&state, &slug).into_iter().find(|e| e["seq"] == r["seq"]).expect("its entry is the answer's seq");
+    assert_eq!((entry["kind"].as_str(), entry["route"].as_str()), (Some("trigger"), Some("action reset")));
+    assert!(entry["request"].to_string().contains("\"to\""), "what was sent is logged: {entry}");
+    // Nothing sent is `{}`.
+    assert_eq!(body_json(run(""))["answer"], serde_json::json!({ "was": 5, "set": 0 }));
+    assert_eq!(count(), "0");
+
+    assert_eq!(run("{not json").status_code, 400);
+    assert_eq!(route(&state, &req("POST", &format!("/trigger/{slug}/nope"), vec![])).status_code, 404);
+    let old = route(&state, &req("POST", &format!("/trigger/{slug}"), vec![]));
+    assert_eq!(old.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(old)).contains(&format!("POST /trigger/{slug}/reset")));
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count() >= 2, "{}", verify::describe(&report, None));
+    // What starts an action can't be optional.
+    let unit = state.deployments.lock().unwrap()[&slug].unit;
+    let r = deploy_json(&state, &slug, unit, serde_json::json!({ "requirements": { "optional": ["Action(\"reset\")"] } }));
+    assert_eq!(r.status_code, 400);
+    assert!(String::from_utf8_lossy(&body_bytes(r)).contains("it can't be optional"));
+    route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![]));
+    assert_eq!(run("").status_code, 409, "a stopped deployment runs nothing");
+    route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![]));
+
+    // A flow of actions alone deploys, listening on no port, and is run by name.
+    let slug = deploy_text(&state, "flow notes\n\naction note (n) {\n  state.note = n\n  respond \"noted\"\n}\n", "");
+    assert_eq!(state.deployments.lock().unwrap()[&slug].triggers, ["action note"]);
+    let r = body_json(route(&state, &req("POST", &format!("/trigger/{slug}/note"), b"\"hi\"".to_vec())));
+    assert_eq!(r["answer"], "noted");
+    route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![]));
+    route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![]));
+}
+
 /// A flow's `every` block is a clock of its server: it ticks on its own period beside the routes,
 /// each run logged and kept in the history under its label, and its runs verify offline. A flow
 /// of clocks alone listens on no port; its clocks are in its text, so it takes no interval.

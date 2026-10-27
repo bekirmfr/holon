@@ -739,6 +739,19 @@ export async function tickNow(slug: string, clock: string): Promise<{ at_epoch_s
   return asJson(res);
 }
 
+/** Where a deployment's action `name` is run: `POST <server>/trigger/<slug>/<name>`. */
+export function actionUrl(slug: string, name: string): string {
+  return `${BASE || window.location.origin}/trigger/${encodeURIComponent(slug)}/${encodeURIComponent(name)}`;
+}
+
+/** `POST /trigger/<slug>/<name>` — run the deployment's action `name` by hand, `sent` what it is
+ *  sent (JSON text; empty is `{}`): its answer, and the seq of the run's log entry. Throws
+ *  {@link ServerError}: 400 for what isn't JSON, 404 for no such action, 403 for a viewer. */
+export async function runAction(slug: string, name: string, sent: string): Promise<{ answer: unknown; seq: number; waiting?: boolean }> {
+  const res = await api(actionUrl(slug, name), { method: "POST", headers: { "Content-Type": "application/json" }, body: sent });
+  return asJson(res);
+}
+
 /** `GET /deployments/<slug>/state` — a stateful deployment's current keyed state. Throws
  *  {@link ServerError} — 400 if the slug exists but was never stateful, 404 if it doesn't
  *  exist at all; two different failures, two different statuses, not one glossed-over "empty". */

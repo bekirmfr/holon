@@ -28,6 +28,11 @@ every 2s {
   ticks.send({ n: n, at: now })
 }
 
+action reset (input) {
+  state.ticks = input.to ?? 0
+  respond { was: state.ticks ?? 0, set: input.to ?? 0 }
+}
+
 route GET / (req) {
   respond page(state.ticks ?? 0), headers: { "content-type": "text/html; charset=utf-8" }
 }

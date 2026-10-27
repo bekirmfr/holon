@@ -45,13 +45,18 @@ export type ClockDraft = { seconds: number; label: string; hash: string };
  *  label (`on file inbox`) and its handler unit's hash. */
 export type FileDraft = { folder: string; label: string; hash: string };
 
-/** The server a canvas declares: its endpoints, clocks and file handlers, why any handler can't be one, the
+/** One action of the derived server (an `action` node's group): its name, its label (`action
+ *  reset`) and its handler unit's hash. */
+export type ActionDraft = { name: string; label: string; hash: string };
+
+/** The server a canvas declares: its endpoints, clocks, file handlers and actions, why any handler can't be one, the
  *  server unit's hash once every handler is sound (and `portText` is a port, with a route), and
  *  the trace from each handler's stored children to canvas nodes, by its route or label. */
 export type DerivedServer = {
   endpoints: EndpointDraft[];
   clocks: ClockDraft[];
   files: FileDraft[];
+  actions: ActionDraft[];
   errors: string[];
   serverHash: string | null;
   trace: Record<string, string[]>;

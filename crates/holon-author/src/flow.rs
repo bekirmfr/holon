@@ -10,7 +10,10 @@ use holon_core::{
 use serde::Serialize;
 
 use crate::canvas::{Node, PlacedBody, Wire};
-use crate::routes::{clock_spec, clock_unit, endpoint_unit, file_spec, file_unit, find_clocks, find_files, find_routes, is_optional_input, route_spec, server_unit};
+use crate::routes::{
+    action_spec, action_unit, clock_spec, clock_unit, endpoint_unit, file_spec, file_unit, find_actions, find_clocks, find_files, find_routes, is_optional_input, route_spec,
+    server_unit,
+};
 use crate::wire::WPort;
 use crate::{templates, to_hex};
 
@@ -102,7 +105,15 @@ pub struct FileDraft {
     pub hash: String,
 }
 
-/// The server a flow declares: its endpoints, clocks and file handlers, why any handler can't be one, the server
+/// One action: its name, its label (`action reset`), and its unit's hash.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ActionDraft {
+    pub name: String,
+    pub label: String,
+    pub hash: String,
+}
+
+/// The server a flow declares: its endpoints, clocks, file handlers and actions, why any handler can't be one, the server
 /// unit's hash once every handler is sound (and the port is a port, with a route), and, for each
 /// handler by its label, which node each of its stored children is.
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
@@ -110,6 +121,7 @@ pub struct DerivedServer {
     pub endpoints: Vec<EndpointDraft>,
     pub clocks: Vec<ClockDraft>,
     pub files: Vec<FileDraft>,
+    pub actions: Vec<ActionDraft>,
     pub errors: Vec<String>,
     #[serde(rename = "serverHash")]
     pub server_hash: Option<String>,
@@ -201,22 +213,47 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
             Err(e) => errors.push(format!("{}: {e}", f.label)),
         }
     }
-    // A port only with a route: a flow of clocks and files listens on none.
+    let (groups, action_errors) = find_actions(nodes, wires);
+    errors.extend(action_errors);
+    let mut actions = Vec::new();
+    for a in groups {
+        let group: Vec<&Node> = a.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+        let action = (|| -> Result<Result<Hash, String>, String> {
+            let (children, edges) = group_of(&group, wires, store)?;
+            let proposed = default_spec(&children, &edges, store).map_err(|e| e.to_string())?;
+            let spec = match action_spec(proposed, &group, &a.label) {
+                Ok(spec) => spec,
+                Err(e) => return Ok(Err(e)),
+            };
+            let handler = derive_and_freeze(children, edges, &spec, store).map_err(|e| e.to_string())?;
+            trace.insert(a.label.clone(), trace_of(&handler, &group));
+            let (inputs, outputs) = (handler.inputs.clone(), handler.outputs.clone());
+            let handler = put(store, handler)?;
+            Ok(Ok(put(store, action_unit(handler, &inputs, &outputs, &a.name)?)?))
+        })();
+        match action {
+            Ok(Ok(hash)) => actions.push(ActionDraft { name: a.name, label: a.label, hash: to_hex(&hash) }),
+            Ok(Err(e)) => errors.push(e),
+            Err(e) => errors.push(format!("{}: {e}", a.label)),
+        }
+    }
+    // A port only with a route: a flow of clocks, files and actions listens on none.
     let port = if endpoints.is_empty() { Some(None) } else { port_of(port).map(Some) };
     let server_hash = match port {
-        Some(port) if !(endpoints.is_empty() && clocks.is_empty() && files.is_empty()) && errors.is_empty() => {
+        Some(port) if !(endpoints.is_empty() && clocks.is_empty() && files.is_empty() && actions.is_empty()) && errors.is_empty() => {
             let hashes = endpoints
                 .iter()
                 .map(|e| &e.hash)
                 .chain(clocks.iter().map(|c| &c.hash))
                 .chain(files.iter().map(|f| &f.hash))
+                .chain(actions.iter().map(|a| &a.hash))
                 .map(|h| parse_hash(h).expect("hashes made here"))
                 .collect();
             put(store, server_unit(hashes, port)).ok().map(|h| to_hex(&h))
         }
         _ => None,
     };
-    DerivedServer { endpoints, clocks, files, errors, server_hash, trace }
+    DerivedServer { endpoints, clocks, files, actions, errors, server_hash, trace }
 }
 
 /// The unit a flow deploys as, stored: its server when it has routes, else the whole flow grouped
@@ -226,7 +263,7 @@ pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: 
     if !derived.errors.is_empty() {
         return Err(derived.errors.join("; "));
     }
-    if !derived.endpoints.is_empty() || !derived.clocks.is_empty() || !derived.files.is_empty() {
+    if !derived.endpoints.is_empty() || !derived.clocks.is_empty() || !derived.files.is_empty() || !derived.actions.is_empty() {
         let hash = derived.server_hash.ok_or_else(|| format!("\"{port}\" is not a port (set it under ⚙)"))?;
         return Ok(parse_hash(&hash).expect("a hash made here"));
     }

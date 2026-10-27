@@ -459,7 +459,7 @@ test("counter counts its hits with no wire to the request, and records the last 
   expect(await (await request.get(`http://127.0.0.1:${port}/last`)).text()).toBe(who);
 });
 
-test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, and a tick replays exactly", async ({ page, request }) => {
+test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, its action sets it by hand, and each run replays exactly", async ({ page, request }) => {
   await openSample(page, "Ticker (a clock beside routes)");
   const port = await deploy(page);
   const count = async () => Number(await (await request.get(`http://127.0.0.1:${port}/count`)).text());
@@ -474,6 +474,19 @@ test("ticker's clock ticks beside its routes: its count grows on its own, tick n
   await expect(page.getByText(/^every 2s: ticked/)).toBeVisible();
   await viewNewestRun(page);
   await expect(page.locator(".hl-view__bottom")).toContainText("every 2s");
+  await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
+  // Its action, run by hand from the server panel with what to send, sets the count: the clock
+  // goes on from there.
+  await page.getByLabel("what to send the action").fill('{"to": 1000}');
+  await page.getByRole("button", { name: "run", exact: true }).click();
+  await expect(page.getByText(/^reset: \{"set":1000,"was":\d+\} \(run \d+\)$/)).toBeVisible();
+  const reset = await count();
+  expect(reset >= 1000 && reset < 1010, `${reset}`).toBe(true);
+  // Its run is logged under its label, and view mode replays it over its block.
+  await viewNewestRun(page);
+  await page.locator(".hl-view__bottom").getByText("action reset", { exact: true }).first().click();
+  await expect(page.locator(".hl-view__bottom")).toContainText(/· action reset · session/);
+  await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
 });
 
 test("drop-board's file handlers run beside its routes: a file dropped in, and one removed, show on its page, and a file's run replays exactly", async ({ page, browser }) => {

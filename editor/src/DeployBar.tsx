@@ -535,7 +535,8 @@ function OptionalPermissions({
 }) {
   const optional = settings.requirements?.optional ?? [];
   const trigger = manifestTrigger(capabilities);
-  const starts = (c: string) => c === trigger || (clocked && c === "Clock") || fileFolders.some((f) => c === `FileArrival(${JSON.stringify(f)})`);
+  // An action is what starts its own runs: never optional either.
+  const starts = (c: string) => c === trigger || (clocked && c === "Clock") || fileFolders.some((f) => c === `FileArrival(${JSON.stringify(f)})`) || c.startsWith("Action(");
   const listed = [...new Set([...capabilities.filter((c) => !starts(c)), ...optional])].sort();
   if (listed.length === 0) return null;
   const toggle = (item: string, on: boolean) => {

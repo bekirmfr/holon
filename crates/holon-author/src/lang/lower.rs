@@ -180,6 +180,8 @@ enum FrameKind {
     Every { tick: String },
     /// An `on file` block: the name of the file's handle, which `ingress` would be in the old form.
     OnFile { file: String },
+    /// An action's block: its `action` node, the name of what was sent, and where it responded.
+    Action { node: String, input: String, responded: Option<Span> },
     /// A holon's block: its declared outputs, in order, and what each is bound to.
     Holon { declared: Vec<String>, bound: HashMap<String, (Val, Span)>, effects: Vec<(Val, Span)> },
     /// A function's body: the names it uses from around it, in first use, each with its value
@@ -323,8 +325,14 @@ impl<'a> Lowerer<'a> {
                 return err(name.span, format!("there is a holon \"{}\" already", name.text));
             }
         }
-        // A flow of handlers (routes, `every` and `on file` blocks) keeps its statements in them.
-        let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_) | Item::Every(_) | Item::OnFile(_)));
+        // A flow of handlers (routes, `every`, `on file` and `action` blocks) keeps its statements in them.
+        let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_) | Item::Every(_) | Item::OnFile(_) | Item::Action(_)));
+        let actions: Vec<&ActionDef> = file.items.iter().filter_map(|i| if let Item::Action(a) = i { Some(a) } else { None }).collect();
+        for (i, a) in actions.iter().enumerate() {
+            if actions[..i].iter().any(|o| o.name.text == a.name.text) {
+                return err(a.head, format!("action {} is written twice: one block per name", a.name.text));
+            }
+        }
         let blocks: Vec<&EveryDef> = file.items.iter().filter_map(|i| if let Item::Every(e) = i { Some(e) } else { None }).collect();
         let file_blocks: Vec<&OnFileDef> = file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o) } else { None }).collect();
         if !(blocks.is_empty() && file_blocks.is_empty())
@@ -393,6 +401,7 @@ impl<'a> Lowerer<'a> {
                 Item::Route(r) => self.route(r)?,
                 Item::Every(e) => self.every(e)?,
                 Item::OnFile(o) => self.on_file(o)?,
+                Item::Action(a) => self.action(a)?,
                 _ => {}
             }
         }
@@ -751,6 +760,13 @@ impl<'a> Lowerer<'a> {
     }
 
     fn respond(&mut self, args: &'a [Arg], span: Span) -> R<()> {
+        if let FrameKind::Action { node, responded, .. } = &self.cur().kind {
+            if let Some(first) = responded {
+                return err(span, format!("more than one respond in the action (the first is on line {})", first.start.line));
+            }
+            let node = node.clone();
+            return self.answer(&node, args, span);
+        }
         let request = match &self.cur().kind {
             FrameKind::Route { request, responded } => {
                 if let Some(first) = responded {
@@ -868,6 +884,30 @@ impl<'a> Lowerer<'a> {
             self.connect(&v, &id, "status", at)?;
         }
         if let FrameKind::Route { responded, .. } = &mut self.frame().kind {
+            *responded = Some(span);
+        }
+        Ok(())
+    }
+
+    /// `respond v` in an action: its answer, the value alone. An action is run through Holon, not
+    /// HTTP, so it has no status, headers or stream: the respond's envelope is a 200 whose body is
+    /// the answer.
+    fn answer(&mut self, action: &str, args: &'a [Arg], span: Span) -> R<()> {
+        if let Some(n) = args.iter().find_map(|a| a.name.as_ref()) {
+            return err(n.span, "an action answers with a value alone: status:, missing:, headers: and stream: are a route's");
+        }
+        let value = match args {
+            [one] => &one.value,
+            [] => return err(span, "respond gives the action's answer: respond with a value"),
+            [_, second, ..] => return err(second.value.span, "respond takes one value"),
+        };
+        let v = self.expr(value)?;
+        let node = self.node("respond", &[("status".to_string(), "200".to_string()), ("missing".to_string(), "404".to_string())], span)?;
+        let Val::Out { id, .. } = &node else { unreachable!() };
+        let id = id.clone();
+        self.b.wire(action, "input", &id, "request").or_else(|e| err(span, e))?;
+        self.connect(&v, &id, "body", value.span)?;
+        if let FrameKind::Action { responded, .. } = &mut self.frame().kind {
             *responded = Some(span);
         }
         Ok(())
@@ -1019,6 +1059,33 @@ impl<'a> Lowerer<'a> {
             return err(o.head, "the block does nothing: write something in it (a folder, state, a channel)");
         }
         self.ticks.push((id, frame.created, o.head, ("the file", o.file.text.clone())));
+        Ok(())
+    }
+
+    /// `action reset (input) { … }`: an action, run by hand by its name. Its `action` node is its
+    /// trigger, `input` in it what was sent, and its sinks are tied to it (docs/L4s/triggers-L4.md
+    /// §2, §3); `respond v` answers.
+    fn action(&mut self, a: &'a ActionDef) -> R<()> {
+        crate::templates::action_name(&[WParam::frozen("name", &a.name.text)]).or_else(|e| err(a.name.span, e))?;
+        let node = self.node("action", &[("name".to_string(), a.name.text.clone())], a.head)?;
+        let Val::Out { id, .. } = &node else { unreachable!() };
+        let id = id.clone();
+        self.names.insert(id.clone(), a.input.text.clone());
+        self.check_name_free(&a.input)?;
+        let mut frame = Frame::new(FrameKind::Action { node: id.clone(), input: a.input.text.clone(), responded: None });
+        frame.created.push(id.clone());
+        frame.env.insert(a.input.text.clone(), node.clone());
+        self.frames.push(frame);
+        for s in &a.body {
+            self.stmt(s)?;
+        }
+        let tied = self.tie_block(&node, a.head)?;
+        let frame = self.frames.pop().expect("the block's frame");
+        let FrameKind::Action { responded, .. } = frame.kind else { unreachable!() };
+        if responded.is_none() && !tied {
+            return err(a.head, "the action does nothing: respond with something, or write something (state, a collection, a channel)");
+        }
+        self.ticks.push((id, frame.created, a.head, ("what was sent", a.input.text.clone())));
         Ok(())
     }
 
@@ -1453,13 +1520,14 @@ impl<'a> Lowerer<'a> {
     /// files, the file's handle: its `on file` line's `file_arrival`, or with several, whichever
     /// started the run (a `coalesce` of them, in the order written: only that one has a value).
     fn ingress(&mut self, span: Span) -> R<Val> {
-        // In an `on file` block the file has its own name.
+        // In an `on file` block the file has its own name, in an action what was sent.
         let block = self.frames.iter().rev().take_while(|f| !matches!(f.kind, FrameKind::Holon { .. })).find_map(|f| match &f.kind {
-            FrameKind::OnFile { file } => Some(file.clone()),
+            FrameKind::OnFile { file } => Some(format!("in an `on file` block the file is {file}: use {file} in place of ingress")),
+            FrameKind::Action { input, .. } => Some(format!("in an action what was sent is {input}: use {input} in place of ingress")),
             _ => None,
         });
-        if let Some(file) = block {
-            return err(span, format!("in an `on file` block the file is {file}: use {file} in place of ingress"));
+        if let Some(message) = block {
+            return err(span, message);
         }
         let mut chain: Option<Val> = None;
         for f in self.on_files.clone() {
@@ -2471,6 +2539,43 @@ pub(crate) mod tests {
         // A write that reads nothing of the tick is still the block's: tied to it.
         let d = compiled("every 2s {\n  state.n = 1\n}\n").doc;
         assert!(d.edges.iter().any(|w| w.source.starts_with("every") && w.input() == TRIGGER));
+    }
+
+    /// `action reset (input) { … }` is an action: its `action` node, everything wired to it, its
+    /// sinks tied to what was sent, `respond v` its answer (docs/L4s/triggers-L4.md §2, §3).
+    #[test]
+    fn action_blocks_are_actions_tied_to_what_was_sent() {
+        let src = "action reset (input) {\n  state.ticks = input.to ?? 0\n  respond { was: state.ticks ?? 0 }\n}\naction note (n) {\n  state.note = n\n}\nroute GET /n (req) {\n  respond state.ticks ?? 0\n}\n";
+        let d = compiled(src).doc;
+        let actions: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("action")).collect();
+        assert_eq!(actions.iter().map(|n| n.param("name")).collect::<Vec<_>>(), ["reset", "note"]);
+        let into = |id: &str, input: &str| d.edges.iter().find(|w| w.target == id && w.input() == input).map(|w| (w.source.clone(), w.output().to_string()));
+        let sent = Some((actions[0].id.clone(), "input".to_string()));
+        let writes: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.data.name == "store_write").collect();
+        assert_eq!(into(&writes[0].id, TRIGGER), sent, "the write is tied to what was sent");
+        let respond = d.nodes.iter().find(|n| n.is_template("respond") && into(&n.id, "request") == sent).expect("the action's respond");
+        assert_eq!((respond.param("status"), respond.param("missing")), ("200", "404"));
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.actions.iter().map(|a| a.label.as_str()).collect::<Vec<_>>(), ["action reset", "action note"]);
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.routes.len(), read.actions.len()), (Some(8080), 1, 2));
+        // A flow of actions alone listens on no port.
+        let d = compiled("action reset (input) {\n  state.n = 0\n}\n").doc;
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
+
+        assert_eq!(error("action a (input) {\n  respond 1, status: 201\n}").2, "an action answers with a value alone: status:, missing:, headers: and stream: are a route's");
+        assert_eq!(error("action a (input) {\n  n = input\n}").2, "the action does nothing: respond with something, or write something (state, a collection, a channel)");
+        assert_eq!(error("action a (input) {\n  state.n = ingress\n}").2, "in an action what was sent is input: use input in place of ingress");
+        assert_eq!(error("action a (x) {\n  state.a = x\n}\naction a (y) {\n  state.b = y\n}").2, "action a is written twice: one block per name");
+        assert_eq!(error("action a (input) {\n  respond 1\n  respond 2\n}").2, "more than one respond in the action (the first is on line 2)");
+        // An answer that reads nothing of what was sent is still the action's.
+        assert!(compile("action ping (input) {\n  respond \"pong\"\n}\n").is_ok());
     }
 
     /// `on file drop (f) { … }` is a file handler: its `on_file` node, everything wired to it,
