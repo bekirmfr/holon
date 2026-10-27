@@ -3827,6 +3827,8 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
                         "slow"
                     }
                     "/name" => "k",
+                    // What a token exchange answers.
+                    "/token" => r#"{"access_token":"tok_live_abcdef123456","token_type":"bearer","expires_in":3600}"#,
                     _ => "fast",
                 };
                 let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
@@ -3877,6 +3879,80 @@ route POST /go (req) {{
     // The export says no more than the log.
     let export = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     assert!(!export.contains("c2tfbGl2ZV9iYXNp") && !export.contains("MIIabc") && !export.contains("pk_private_value_123"));
+}
+
+/// A token a call answers to a request that held a secret (an OAuth exchange) is as good as the
+/// secret until it expires: kept out of the log by its value, with a fingerprint like a secret's,
+/// and out of state, as a secret is. What the caller needs it for still works: the run sends it
+/// on, the log shows the same mark there, and the run checks; a run that tried to keep it is
+/// skipped by verify, its write refused. The same answer to a request with no secret is clean.
+#[test]
+fn a_token_a_call_answers_with_a_secret_is_kept_out_of_the_log_and_out_of_state() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let text = format!(
+        r#"flow oauth
+port 18150
+
+route POST /call (req) {{
+  got = http.post("{host}", "/token", headers: {{ "x-client-secret": secret.client_secret }}, body: req.body)
+  parsed = json_parse(got.body)
+  used = http.get("{host}", "/name", headers: {{ authorization: parsed.access_token }})
+  respond {{ used: used.status, expires: parsed.expires_in }}
+}}
+
+route POST /cache (req) {{
+  got = http.post("{host}", "/token", headers: {{ "x-client-secret": secret.client_secret }}, body: req.body)
+  parsed = json_parse(got.body)
+  state.cached = parsed.access_token
+  state.expires = parsed.expires_in
+  respond "cached"
+}}
+
+route POST /open (req) {{
+  got = http.post("{host}", "/token", body: req.body)
+  parsed = json_parse(got.body)
+  state.open_token = parsed.access_token
+  respond "open"
+}}
+"#
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let set = req("POST", &format!("/deployments/{slug}/secrets/client_secret"), serde_json::to_vec(&serde_json::json!({ "value": "cs_live_client_secret_1" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let token = "tok_live_abcdef123456";
+
+    let (status, body, _) = data_call(&state, &slug, "POST", "/call", "grant");
+    assert_eq!((status, body.as_str()), (200, r#"{"expires":3600,"used":200}"#), "the run used the token");
+    let (status, body, _) = data_call(&state, &slug, "POST", "/cache", "grant");
+    assert_eq!((status, body.as_str()), (200, "cached"));
+    data_call(&state, &slug, "POST", "/open", "grant");
+
+    let current = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/state"), vec![])));
+    assert!(current["state"].get("cached").is_none(), "the token's write was refused: {current}");
+    assert!(current["state"].get("expires").is_some(), "its other write went through: {current}");
+    assert!(current["state"].get("open_token").is_some(), "a token from a call that sent no secret is an ordinary answer: {current}");
+
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    let entries = log_entries(&state, &slug);
+    let line = |at: usize| entries[at].to_string();
+    assert!(!line(0).contains(token) && !line(1).contains(token), "the token is not in the log: {log}");
+    assert!(line(2).contains(token), "a token no secret fetched is an ordinary value: {}", line(2));
+    let mark = |l: &str| {
+        let at = l.find("‹token:answer access_token #").unwrap_or_else(|| panic!("the token's mark: {l}"));
+        l[at..l[at..].find('›').map(|e| at + e + '›'.len_utf8()).unwrap()].to_string()
+    };
+    let (m0, m1) = (mark(&line(0)), mark(&line(1)));
+    assert_eq!(m0, m1, "the same token reads the same in both runs");
+    assert!(line(0).matches(&m0).count() >= 2, "in the answer, and where the run sent it on: {}", line(0));
+
+    // Exported, the run that used it checks, and the one that tried to keep it is skipped.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(!export.lines[0].contains(token) && !export.lines[1].contains(token));
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert_eq!(report.reruns[0], (0, verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    assert!(matches!(&report.reruns[1], (1, verify::Rerun::Skipped(why)) if why.contains("wrote a secret's value")), "{}", verify::describe(&report, None));
+    assert!(report.ok(), "{}", verify::describe(&report, None));
 }
 
 /// What is computed from a secret isn't kept: a state, collection or channel write of it is

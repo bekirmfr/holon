@@ -82,7 +82,9 @@ A secret's value never appears in the run log, the editor, an export or a replay
 would, it shows as `‹secret:name v3 #a1b2c3d4›`: the name, the version the value is of, and a
 fingerprint of it (keyed by the server's master key, so a guess can't be checked against the log).
 That tells which value a run had (the key you set an hour ago or the one before, the same token in
-two runs) without the log holding it. A state write that contains a secret is refused. What the
+two runs) without the log holding it. A token an API answers a request that held a secret with
+(an OAuth exchange's `access_token`) is kept out of the log the same way, and a write of it is
+refused too. A state write that contains a secret is refused. What the
 flow answers its own caller is not redacted: if a flow puts a secret in its response, the caller
 gets it, so don't.
 

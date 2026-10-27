@@ -726,12 +726,13 @@ pub(crate) fn handle_post_trigger(
     }
     let parked_any = !entry.parked.is_empty();
     log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
-    let FiredRun { outputs, performed, .. } = run;
+    let FiredRun { outputs, performed, answered, .. } = run;
     if state.is_some() || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
 
     let redactor = Redactor::of(&vault);
+    let answers = Redactor::answers(&answered.0, &vault);
     let mut reply = serde_json::to_value(FireResponseBody {
         outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
         performed: performed
@@ -741,6 +742,7 @@ pub(crate) fn handle_post_trigger(
     })
     .unwrap_or_default();
     redactor.json(&mut reply);
+    answers.json(&mut reply);
     Response::json(&reply)
 }
 

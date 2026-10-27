@@ -383,7 +383,12 @@ only the editor.
   `‹withheld: computed from a secret›`. An effect carries no node, so this goes by capability: a
   key written anywhere in the run from such a value has all its writes in that run refused. A flow
   may still send a secret where it is meant to go: an outbound request's header, or its own
-  response to a caller.
+  response to a caller. A credential a call answers with to a request that held a secret (an
+  OAuth exchange's `access_token`, `refresh_token`, `id_token`, …: `ANSWER_FIELDS` in
+  `secrets.rs`) is redacted by its value as `‹token:answer access_token #a1b2c3d4›` and refused
+  the writes a secret is, rather than treating every answer to such a call as computed from the
+  secret, which would withhold most of what a flow does with an API and leave verify nothing to
+  check.
   - **Sealed at rest** ✅ (`sealing.rs`): each value is AES-256-GCM sealed, bound to its
     deployment, name and version, under a master key kept apart from the file: the OS key store
     by default (Credential Manager, Keychain), else `--secrets-key env:VAR` (a container, or a

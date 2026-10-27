@@ -700,11 +700,13 @@ impl Marks {
 
     /// Whether `v` carries a secret's placeholder anywhere, a record's keys included.
     fn carries_secret(&self, v: &Value) -> bool {
-        let secret = format!("{}secret:", self.start);
+        // A credential a call answered to a request that held a secret (`secrets::answered_tokens`)
+        // is refused a write as the secret is.
+        let secret = |t: &str| t.contains(&format!("{}secret:", self.start)) || t.contains(&format!("{}token:answer ", self.start));
         match v {
-            Value::Text(t) => t.contains(&secret),
+            Value::Text(t) => secret(t),
             Value::List(items) => items.iter().any(|v| self.carries_secret(v)),
-            Value::Record(fields) => fields.iter().any(|(k, v)| k.contains(&secret) || self.carries_secret(v)),
+            Value::Record(fields) => fields.iter().any(|(k, v)| secret(k) || self.carries_secret(v)),
             Value::Sum { payload, .. } | Value::Effect { payload, .. } => self.carries_secret(payload),
             Value::Number(_) | Value::Boolean(_) => false,
         }

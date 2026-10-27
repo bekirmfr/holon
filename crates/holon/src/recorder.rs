@@ -141,6 +141,20 @@ pub struct LogEntry {
     /// Absent when nothing was, and in entries logged before look-alikes were escaped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub escaped: bool,
+    /// The credentials its calls answered, until the entry is logged (`log_run`): not part of it.
+    #[serde(skip)]
+    pub answered: AnswerTokens,
+}
+
+/// The credentials a run's calls answered, name and value, on their way to the redactor that
+/// keeps them out of the log (`secrets::answered_tokens`): never serialized, never printed.
+#[derive(Clone, Default)]
+pub struct AnswerTokens(pub Vec<(String, String)>);
+
+impl std::fmt::Debug for AnswerTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AnswerTokens({} kept out of sight)", self.0.len())
+    }
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -588,6 +602,7 @@ mod tests {
             by: None,
             secrets: BTreeMap::new(),
             escaped: false,
+            answered: AnswerTokens::default(),
         }
     }
 
