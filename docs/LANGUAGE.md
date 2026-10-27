@@ -1041,6 +1041,16 @@ assignment statement inside a holon (`posts[k] = v`) is allowed too: the lowerin
 Effect under a generated name (`put`, `put_2`, …), which the printer then shows. Declaring the
 name is clearer and is what `fmt` prints.
 
+**A holon with a sink has a `trigger` port it doesn't declare,** its last input, whether the sink
+is in its body or in a holon it places; it is the one port a holon has without declaring it, as
+`respond` has its request. Its sinks are tied to it, and a placement is tied as a sink is
+(§5.11): to the block's trigger, so `bump()` in a route writes with the route's request, or to
+what `after` names, `bump() after found`. A holon with no sink, a calculation, has no trigger,
+and `after` on it is an error. Written out, as `holon keep(v, trigger)` or `keep(v, trigger: x)`,
+it is the same port: `fmt` writes the first as `holon keep(v)` and the second as `keep(v) after
+x`, or as `keep(v)` when `x` is the block's own trigger. In a flow without handlers the trigger is
+left open, and the holon's sinks run with the flow, as a leaf's do.
+
 Holons are defined at the top level and are visible to the whole file, in any order, so a holon
 may use one defined below it. They may not be nested in text; a holon placed inside another is
 the nesting.
