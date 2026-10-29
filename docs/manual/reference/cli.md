@@ -12,6 +12,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon fmt`](#holon-fmt) | rewrite a flow in the canonical form |
 | [`holon export`](#holon-export) | write a deployment's runs to a file |
 | [`holon verify`](#holon-verify) | check exported runs offline |
+| [`holon history`](#holon-history) | a deployment's timeline: its runs, and what was done to it |
 | [`holon restore`](#holon-restore) | a deployment's versions, and an earlier version's or run's code or state back |
 | [`holon folder`](#holon-folder) | bind the folders flows use |
 | [`holon database`](#holon-database) | bind the databases flows use |
@@ -144,6 +145,17 @@ Checks exported runs, offline: the chain, each unit's hash, and every run, run a
 checks that a head a witness holds is in the export. `--files` gives the files runs read whose
 texts the export doesn't hold. Exits 0 when it all checks, 1 when something doesn't, 2 for a file
 it can't read.
+
+## `holon history`
+
+```
+holon history <slug> [--last N] [--events] [--server PORT|URL]
+```
+
+A deployment's timeline, oldest first: its runs, and its events, what was done to it and by whom
+(deploys, restores, grant changes, secrets, bindings for it, pausing and running). `--last N`: the
+newest N runs, 20 by default, with the events among them. `--events`: every event, without the
+runs. See [The timeline](../guides/deploying.md#the-timeline).
 
 ## `holon restore`
 

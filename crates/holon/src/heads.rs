@@ -11,7 +11,8 @@
 //!   "heads": [{ "deployment": "hello-api", "kind": "run", "seq": 7, "head": "<hex>", "at_ms": 1792… }] }
 //! ```
 //!
-//! `kind` is `"run"` for a run's head, or `"trim"` when a log is cut back to what it keeps (its
+//! `kind` is `"run"` for a run's head, `"event"` for the head of the deployment's events (events.rs:
+//! their own chain, `seq` the event's), or `"trim"` when a log is cut back to what it keeps (its
 //! `seq` the oldest run kept, its `head` the hash of the last run dropped): runs before it are gone
 //! by the host's choice. No run data leaves the server: heads only. `batch` names the batch, so a
 //! witness can take a retried one again harmlessly. With `HOLON_EXPORT_HEADS_TOKEN` set, the request
@@ -34,7 +35,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Head {
     pub deployment: String,
-    /// `"run"` or `"trim"` (see the module docs).
+    /// `"run"`, `"event"` or `"trim"` (see the module docs).
     pub kind: String,
     pub seq: u64,
     pub head: String,

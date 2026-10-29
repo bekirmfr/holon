@@ -1334,6 +1334,10 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                 match bound {
                     Ok((b, d)) => {
                         state.activity.record("bound the database", &labelled(&b.name, b.deployment.as_deref()), Some(by));
+                        if let Some(slug) = &b.deployment {
+                            let detail = crate::events::Detail { name: Some(b.name.clone()), ..Default::default() };
+                            crate::events::note(&state.deployments, slug, "binding", format!("bound the database {}", b.name), Some(by), detail);
+                        }
                         Response::json(&shown(&b.name, b.deployment.as_deref(), &d))
                     }
                     Err(e) => e,
@@ -1361,6 +1365,10 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
     Some(match all.unbind(name, deployment.as_deref()) {
         Ok(true) => {
             state.activity.record("unbound the database", &labelled(name, deployment.as_deref()), Some(by));
+            if let Some(slug) = &deployment {
+                let detail = crate::events::Detail { name: Some(name.to_string()), ..Default::default() };
+                crate::events::note(&state.deployments, slug, "binding", format!("unbound the database {name}"), Some(by), detail);
+            }
             Response::empty_204()
         }
         Ok(false) => err(404, format!("no database {name:?} is bound{}", deployment.map_or(String::new(), |d| format!(" for {d}")))),

@@ -217,10 +217,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
 
     if let Some(rest) = url.strip_prefix("/deployments/") {
         if let Some(slug) = rest.strip_suffix("/secrets") {
-            return handle_secrets(&state.secrets, slug, None, method, request, by);
+            return handle_secrets(&state.secrets, &state.deployments, slug, None, method, request, by);
         }
         if let Some((slug, name)) = rest.split_once("/secrets/") {
-            return handle_secrets(&state.secrets, slug, Some(name), method, request, by);
+            return handle_secrets(&state.secrets, &state.deployments, slug, Some(name), method, request, by);
         }
         if let Some((slug, name)) = rest.split_once("/collections/")
             && method == "GET"
@@ -252,6 +252,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             if method == "GET" {
                 return handle_get_document(&state.store, &state.deployments, slug, request);
             }
+        } else if let Some(slug) = rest.strip_suffix("/events") {
+            if method == "GET" {
+                return crate::events::handle_get_events(&state.deployments, slug);
+            }
         } else if let Some(slug) = rest.strip_suffix("/versions") {
             if method == "GET" {
                 return handle_get_versions(&state.deployments, slug);
@@ -269,7 +273,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return handle_get_permission_view(&state.store, &state.deployments, slug, which);
             }
             if method == "POST" && which == "grant" {
-                return recorded(state, grants::handle_post_grant(state, slug, request), "granted", slug, by);
+                return recorded(state, grants::handle_post_grant(state, slug, request, by), "granted", slug, by);
             }
         } else if let Some(slug) = rest.strip_suffix("/sessions") {
             if method == "GET" {
@@ -279,7 +283,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             && matches!(action, "run" | "pause" | "stop")
         {
             if method == "POST" {
-                let response = handle_lifecycle(state, slug, action, request);
+                let response = handle_lifecycle(state, slug, action, request, by);
                 sync_listeners(state);
                 let done = match action {
                     "run" => "run",

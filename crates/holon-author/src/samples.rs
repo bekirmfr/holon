@@ -633,14 +633,14 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "price-rollback",
         title: "Price rollback (an earlier version's code, or its prices, back)",
-        description: "Every deploy is a version, kept for good, and every run keeps the state it left. Deploy this, set a price, then deploy a version with another fee: holon restore price-rollback --to N --code deploys an earlier one's code again, as a new version that names it, its prices as they are. Set a wrong price, and --to N --state puts back the prices version N left, in a new session, the wrong ones kept as the last session's; --to-run SEQ does the same for a run. Restored code is checked against today's grant, not the one it had.",
-        shows: &["versions", "holon restore", "state restore", "collections"],
+        description: "Every deploy is a version, kept for good, and every run keeps the state it left. Deploy this, set a price, then deploy a version with another fee: holon restore price-rollback --to N --code deploys an earlier one's code again, as a new version that names it, its prices as they are. Set a wrong price, and --to N --state puts back the prices version N left, in a new session, the wrong ones kept as the last session's; --to-run SEQ does the same for a run. Restored code is checked against today's grant, not the one it had. holon history shows it all among the runs: each deploy and restore, by whom.",
+        shows: &["versions", "holon restore", "state restore", "holon history", "collections"],
         port: Some("8160"),
         interval: None,
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: r#"curl -X PUT -d '{"price":4}' http://127.0.0.1:8160/prices/tea, then curl http://127.0.0.1:8160/quote/tea answers a total of 4.5; change fee = 0.5 to fee = 5 and deploy again (a total of 9); holon restore price-rollback lists the versions, and holon restore price-rollback --to N --code (N: the one before) answers 4.5 again, tea still priced 4. Then curl -X PUT -d '{"price":40}' http://127.0.0.1:8160/prices/tea (a total of 40.5): holon restore price-rollback --to N --state --dry-run says what would change, and without --dry-run tea is 4 again"#,
+        try_it: r#"curl -X PUT -d '{"price":4}' http://127.0.0.1:8160/prices/tea, then curl http://127.0.0.1:8160/quote/tea answers a total of 4.5; change fee = 0.5 to fee = 5 and deploy again (a total of 9); holon restore price-rollback lists the versions, and holon restore price-rollback --to N --code (N: the one before) answers 4.5 again, tea still priced 4. Then curl -X PUT -d '{"price":40}' http://127.0.0.1:8160/prices/tea (a total of 40.5): holon restore price-rollback --to N --state --dry-run says what would change, and without --dry-run tea is 4 again; holon history price-rollback shows the runs, deploys and restores"#,
         text: include_str!("../samples/price-rollback.holon"),
     },
 ];

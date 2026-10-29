@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **What was done to a deployment is on its timeline.** Deploys, restores, grant changes (revoked,
+  granted back, lowered), secrets set, removed or rolled back (name, version and source, never a
+  value), folders and databases bound for it, and pausing, stopping and running, each with who and
+  when; the host's own pause when a grant no longer covers it too. `holon history <slug>` shows
+  them among the runs (`GET /deployments/<slug>/events`). Recorded, never restored: a restore puts
+  back code and state, and the grant, secrets and bindings stay as they are. Events are kept for
+  good, in a hash chain of their own beside the run log (`<slug>.events.jsonl`); an export carries
+  them, `holon verify` checks their chain, and the witness gets their heads (kind `event`).
+
 - **Every deploy is a version, kept for good, and an earlier one restores.** A deployment keeps
   each version it was deployed as (its unit, its canvas, when and by whom, what its deploy asked),
   not only the last ten canvases, numbered from 1 (`GET /deployments/<slug>/versions`). `holon

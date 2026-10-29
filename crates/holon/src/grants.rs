@@ -32,11 +32,14 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
             dep.channels.close();
             dep.grant.paused = true;
             eprintln!("holon: paused: {why}");
+            let what = format!("paused: {why}");
+            dep.note("lifecycle", what, None, Default::default());
         }
         (None, Status::Paused) if dep.grant.paused => {
             let _ = dep.life.run(RunFrom::Latest, now);
             dep.grant.paused = false;
             dep.arm_clocks(SystemTime::now());
+            dep.note("lifecycle", "resumed: its grant covers it again".into(), None, Default::default());
         }
         _ => {}
     }
@@ -78,7 +81,7 @@ pub(crate) fn handle_get_admin_grants(state: &AppState) -> Response {
 /// `POST /deployments/<slug>/grant` — change what it is granted:
 /// `{"revoke": [item], "grant": [item], "lower": {limit: n}, "keep_running": bool}`, every part
 /// optional. Applied whole or not at all; answers with the grant as it now is.
-pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request) -> Response {
+pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request, by: Option<&str>) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
@@ -107,10 +110,12 @@ pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request)
         let now = epoch_now();
         match dep.grant.change(&manifest, &policy, &change, now) {
             Ok(grant) => {
-                for c in grant.changes.iter().skip(dep.grant.changes.len()) {
-                    eprintln!("holon: grant of {slug:?}: {}", c.change);
-                }
+                let made: Vec<String> = grant.changes.iter().skip(dep.grant.changes.len()).map(|c| c.change.clone()).collect();
                 dep.grant = grant;
+                for change in made {
+                    eprintln!("holon: grant of {slug:?}: {change}");
+                    dep.note("grant", change, by, Default::default());
+                }
             }
             Err(e) => return err(400, e),
         }

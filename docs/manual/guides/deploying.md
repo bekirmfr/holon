@@ -255,7 +255,40 @@ can narrow it:
 - **grant back** restores a revoked item.
 - a limit can be **lowered**. Raising one needs a new deploy, and approval.
 
-Each change is logged, with who made it, and each run records the grant it ran under.
+Each change goes on the deployment's [timeline](#the-timeline), with who made it, and each run
+records the grant it ran under.
+
+## The timeline
+
+Beside its runs, a deployment keeps what was done to it, each with who and when: its **events**.
+
+| Kind | |
+|---|---|
+| deploy | each version deployed, or a version's code restored |
+| restore | a state put back, and the session it started |
+| grant | an item revoked or granted back, a limit lowered |
+| secret | a secret set, removed or rolled back: its name, version and source, never its value |
+| binding | a folder or database bound or unbound for this deployment (`--for SLUG`) |
+| lifecycle | paused, resumed, stopped, run (and from which state), by a person or by the host (a grant that no longer covers it) |
+
+`holon history <slug>` shows them among the runs, oldest first:
+
+```
+#3      run        2026-10-30T09:12:01  PUT /prices/tea  200  v4
+        deploy     2026-10-30T09:12:03  deployed version 5  by maria
+#4      run        2026-10-30T09:12:05  PUT /prices/tea  200  v5
+        restore    2026-10-30T09:14:40  put back the state version 4 left, in session 2  by maria
+```
+
+`--last N` shows the newest N runs (20 by default) and the events among them; `--events`, every
+event, without the runs. `GET /deployments/<slug>/events` answers them as JSON.
+
+Events are **recorded, never restored**: [going back](#going-back-to-an-earlier-version) puts back
+code and state only, and the grant, secrets and bindings stay as they are now. They are kept for
+good, in a hash chain of their own beside the run log, which an export carries and `holon verify`
+checks ([Checking runs](checking-runs.md)). Deploy settings aren't events: each version's deploy
+holds them. Saved drafts, accounts and bindings for every deployment are in the server's activity
+log.
 
 ## The host's policy
 

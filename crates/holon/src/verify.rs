@@ -55,6 +55,13 @@ pub(crate) struct Export {
     /// by, and they were swept): runs that read them check only with the files given.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(crate) files_not_kept: u64,
+    /// The deployment's events (events.rs), their lines exactly as written, oldest first: their
+    /// own chain, kept for good. Absent from exports before rc.30.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) events: Vec<String>,
+    /// The hash of the newest event's line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) events_head: String,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -87,8 +94,8 @@ pub(crate) fn handle_get_export(
             Some(Err(_)) => return err(400, "max_files_bytes is a number of bytes"),
         }
     };
-    let (lines, head, redactor) = match deployments.lock().unwrap().get(slug) {
-        Some(dep) => (dep.log.lines(), dep.log.head().to_string(), crate::secrets::Redactor::of(&dep.secrets)),
+    let (lines, head, redactor, events, events_head) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (dep.log.lines(), dep.log.head().to_string(), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     let mut units = BTreeMap::new();
@@ -135,7 +142,18 @@ pub(crate) fn handle_get_export(
         }
     }
     let files_left_out = (left_out.files > 0).then_some(left_out);
-    let export = Export { export: FORMAT.into(), deployment: slug.into(), head, lines, units, blobs, files_left_out, files_not_kept: not_kept };
+    let export = Export {
+        export: FORMAT.into(),
+        deployment: slug.into(),
+        head,
+        lines,
+        units,
+        blobs,
+        files_left_out,
+        files_not_kept: not_kept,
+        events,
+        events_head,
+    };
     Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{slug}-runs.json\""))
 }
 
@@ -191,6 +209,15 @@ pub(crate) struct Report {
     /// a resume token the run received (in its request, its state or what it read), which the log
     /// never holds.
     pub(crate) ids_given: Vec<u64>,
+    /// The events in it (events.rs), the event lines that aren't one (1-based), the events that
+    /// don't follow the line before them (their chain starts at the first: they are kept for
+    /// good), and whether the newest's hash is the events head the export names.
+    pub(crate) events: usize,
+    pub(crate) bad_event_lines: Vec<usize>,
+    pub(crate) event_breaks: Vec<u64>,
+    pub(crate) events_head_matches: bool,
+    /// For a head given to check against: the event it is the hash of, if it is one.
+    pub(crate) witnessed_event: Option<u64>,
 }
 
 /// What the log's record stood in for, running one run again.
@@ -208,7 +235,10 @@ impl Report {
     pub(crate) fn ok(&self) -> bool {
         self.breaks.is_empty()
             && self.head_matches
-            && self.witnessed != Some(None)
+            && self.event_breaks.is_empty()
+            && self.bad_event_lines.is_empty()
+            && self.events_head_matches
+            && (self.witnessed != Some(None) || self.witnessed_event.is_some())
             && self.bad_units.is_empty()
             && !self.reruns.iter().any(|(_, r)| matches!(r, Rerun::Differs(_)))
     }
@@ -244,6 +274,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     if witnessed.is_some() && report.witnessed.is_none() {
         report.witnessed = Some(None);
     }
+    check_events(export, witnessed, &mut report);
     report.head_matches = head == export.head;
     report.head = head;
     report.runs = entries.len();
@@ -278,6 +309,27 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         report.reruns.push((entry.seq, came_to));
     }
     report
+}
+
+/// The events' chain: unbroken from the first (nothing before it, as they are kept for good) to
+/// the head the export names.
+fn check_events(export: &Export, witnessed: Option<&str>, report: &mut Report) {
+    let mut head = String::new();
+    for (i, line) in export.events.iter().enumerate() {
+        let Ok(event) = serde_json::from_str::<crate::events::Event>(line) else {
+            report.bad_event_lines.push(i + 1);
+            continue;
+        };
+        if event.prev != head {
+            report.event_breaks.push(event.seq);
+        }
+        head = line_hash(line);
+        if witnessed == Some(head.as_str()) {
+            report.witnessed_event = Some(event.seq);
+        }
+        report.events += 1;
+    }
+    report.events_head_matches = head == export.events_head;
 }
 
 /// Where the text of a file a run read comes from when its log entry keeps only the hash: the
@@ -843,7 +895,28 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     } else {
         "  head: DOESN'T MATCH the newest run: the export was changed\n".to_string()
     };
+    if r.events > 0 || !r.event_breaks.is_empty() || !r.bad_event_lines.is_empty() {
+        out += &if !r.event_breaks.is_empty() {
+            format!("  events: {}, chain BROKEN at event {}: changed, removed or inserted outside holon\n", r.events, list(&r.event_breaks))
+        } else {
+            format!("  events: {}, chain unbroken from the first\n", r.events)
+        };
+        if !r.bad_event_lines.is_empty() {
+            out += &format!("  event lines {} aren't events (cut short by a crash, or changed)\n", list(&r.bad_event_lines));
+        }
+    }
+    if !r.events_head_matches {
+        out += "  events head: DOESN'T MATCH the newest event: the export was changed\n";
+    }
+    match (r.witnessed_event, head) {
+        (Some(seq), Some(h)) if r.event_breaks.iter().any(|b| *b <= seq) => {
+            out += &format!("  witnessed head {}: event {seq}, but the events' chain breaks before it, so events up to it were changed\n", short(h))
+        }
+        (Some(seq), Some(h)) => out += &format!("  witnessed head {}: event {seq}, so no event up to it was changed or removed\n", short(h)),
+        _ => {}
+    }
     match (&r.witnessed, head) {
+        (Some(None), Some(_)) if r.witnessed_event.is_some() => {}
         (Some(Some(seq)), Some(h)) if r.breaks.iter().any(|b| b <= seq) => {
             out += &format!("  witnessed head {}: run {seq}, but the chain breaks before it, so runs up to it were changed\n", short(h))
         }
@@ -1011,7 +1084,12 @@ pub(crate) fn export(args: &[String]) -> i32 {
     // Where it is in full, so the hint below runs from any folder.
     let path = std::path::absolute(&out).unwrap_or(out).display().to_string();
     let arg = if path.contains(' ') { format!("\"{path}\"") } else { path.clone() };
-    println!("wrote {path}: {} runs of {slug:?}, head {head}", export.lines.len());
+    let events = match export.events.len() {
+        0 => String::new(),
+        1 => " and its 1 event".to_string(),
+        n => format!(" and its {n} events"),
+    };
+    println!("wrote {path}: {} runs of {slug:?}{events}, head {head}", export.lines.len());
     if let Some(l) = &export.files_left_out {
         let s = if l.files == 1 { "" } else { "s" };
         println!("left out the text of {} file{s} its runs read ({} bytes): holon verify --files <folder> checks those runs", l.files, l.bytes);

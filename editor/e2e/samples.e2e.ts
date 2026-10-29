@@ -636,6 +636,12 @@ test("price-rollback: an earlier version's code restored answers as it did, its 
   expect(put.status()).toBe(200);
   expect(((await put.json()) as { state: { from: string } }).state.from).toBe(`version ${versions[1].number}`);
   expect(await total()).toBe(4.5);
+  // Each deploy and restore is on its timeline, by whom.
+  const events = await request.get(`${SERVER}/deployments/price-rollback/events`, { headers: auth });
+  const said = ((await events.json()) as { events: { kind: string; what: string; by?: string }[] }).events.slice(-4);
+  expect(said.map((e) => e.kind)).toEqual(["deploy", "deploy", "deploy", "restore"]);
+  expect(said[2].what).toBe(`restored version ${versions[1].number}'s code, as version ${versions[0].number + 1}`);
+  expect(said.every((e) => typeof e.by === "string")).toBe(true);
 });
 
 test("live-board's page gets each ticket posted as a pack on its channel, and a reconnect gets the ones it missed", async ({ page, browser, request }) => {

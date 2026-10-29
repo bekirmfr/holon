@@ -162,11 +162,13 @@ mod deploy;
 mod editor;
 mod durable;
 mod engines;
+mod events;
 mod mongo;
 mod firing;
 mod fixtures;
 mod grants;
 mod heads;
+mod history;
 mod jsonedit;
 mod flowcmd;
 mod flows;
@@ -469,6 +471,9 @@ struct Deployment {
     /// logged on an earlier version is shown on its own canvas, and any version with its request
     /// kept can be deployed again (`holon restore`). Kept for good. Persisted.
     versions: Vec<wire::Version>,
+    /// What was done to it, by whom (events.rs): deploys, restores, grant changes, secrets,
+    /// bindings, pausing and running. Kept for good beside the log.
+    events: events::Events,
 }
 
 const USAGE: &str = "usage: holon <command>
@@ -481,7 +486,8 @@ const USAGE: &str = "usage: holon <command>
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
-  restore <slug> [--to N --code]     a deployment's versions; deploy an earlier one's code again
+  history <slug> [--last N]          a deployment's timeline: its runs, and what was done to it
+  restore <slug> [--to N --code]     a deployment's versions; an earlier one's code or state back
   folder add|list|remove             bind a name flows use to a folder on this machine (admin)
   database add|list|remove           bind a name flows use to a database on this machine (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
@@ -558,6 +564,7 @@ fn main() {
         Some("verify") => std::process::exit(verify::run(&rest)),
         Some("export") => std::process::exit(verify::export(&rest)),
         Some("restore") => std::process::exit(restore::cli(&rest)),
+        Some("history") => std::process::exit(history::cli(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("database") => std::process::exit(databases::cli(&rest)),
         // Not in the usage: the server runs it for the admin page's "browse…" (pick.rs).

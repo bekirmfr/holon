@@ -3499,6 +3499,71 @@ fn a_runs_code_and_state_come_back_together() {
     assert!(String::from_utf8(body_bytes(none)).unwrap().contains("keeps no state"));
 }
 
+/// What was done to a deployment is on its timeline, each with who: deploys, secrets (never a
+/// value), grant changes, the host's own pause and resume, pausing, stopping and running, and
+/// restores; each after the runs before it, in a chain kept across a restart, exported, and checked
+/// by verify, which finds an event changed outside holon.
+#[test]
+fn what_was_done_to_a_deployment_is_its_events() {
+    let mut state = test_state();
+    let path = unique_temp_path("events");
+    state.deployments_path = path.clone();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "ev", writer, ack).status_code, 200);
+    assert_eq!(route(&state, &req("POST", "/trigger/ev", b"one".to_vec())).status_code, 200);
+    let secret = serde_json::to_vec(&serde_json::json!({ "value": "a-value-never-shown" })).unwrap();
+    assert_eq!(route(&state, &req("POST", "/deployments/ev/secrets/api_key", secret)).status_code, 200);
+    assert!(change_grant(&state, "ev", serde_json::json!({ "revoke": ["StateWrite(\"k\")"] })).is_success());
+    assert!(change_grant(&state, "ev", serde_json::json!({ "grant": ["StateWrite(\"k\")"] })).is_success());
+    for (action, body) in [("pause", ""), ("run", ""), ("stop", ""), ("run", r#"{"from":"latest"}"#)] {
+        assert!(route(&state, &req("POST", &format!("/deployments/ev/{action}"), body.as_bytes().to_vec())).is_success(), "{action}");
+    }
+    assert!(route(&state, &req("POST", "/deployments/ev/restore", br#"{"run":0,"state":true}"#.to_vec())).is_success());
+
+    let listed = body_json(route(&state, &req("GET", "/deployments/ev/events", vec![])));
+    let events = listed["events"].as_array().unwrap().clone();
+    let said: Vec<(String, String)> = events.iter().map(|e| (e["kind"].as_str().unwrap().into(), e["what"].as_str().unwrap().into())).collect();
+    let kinds: Vec<&str> = said.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["deploy", "secret", "grant", "lifecycle", "grant", "lifecycle", "lifecycle", "lifecycle", "lifecycle", "lifecycle", "restore"],
+        "{said:#?}"
+    );
+    assert_eq!(said[0].1, "deployed version 1");
+    assert!(said[1].1.starts_with("set the secret api_key, version 1, from a value"), "{}", said[1].1);
+    assert!(said[2].1.contains("StateWrite") && said[3].1.starts_with("paused: "), "{said:#?}");
+    assert_eq!(said[5].1, "resumed: its grant covers it again");
+    assert_eq!(said[6..10].iter().map(|(_, w)| w.as_str()).collect::<Vec<_>>(), ["paused", "resumed", "stopped", "ran from latest, in session 2"]);
+    assert_eq!(said[10].1, "put back the state run 0 left, in session 3");
+    assert!(events[3]["by"].is_null() && events[5]["by"].is_null(), "the host's own: by nobody");
+    assert_eq!((events[0]["run_seq"].clone(), events[1]["run_seq"].clone()), (0.into(), 1.into()), "the secret was set after run 0");
+    assert_eq!(events[1]["name"], "api_key");
+    assert_eq!(events[10]["session"], 3);
+    assert!(listed["breaks"].as_array().unwrap().is_empty());
+
+    // Exported with the runs, checked, and never holding a secret's value.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/ev/export", vec![])))).unwrap();
+    assert_eq!(export.events.len(), 11);
+    assert!(!export.events.concat().contains("a-value-never-shown"));
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.events == 11, "{}", verify::describe(&report, None));
+    let witnessed = recorder::line_hash(&export.events[4]);
+    assert_eq!(verify::check(&export, Some(&witnessed), &BTreeMap::new()).witnessed_event, Some(4));
+    let mut changed = verify::Export { events: export.events.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    changed.events[2] = changed.events[2].replace("StateWrite", "StateRead");
+    let report = verify::check(&changed, None, &BTreeMap::new());
+    assert_eq!((report.ok(), report.event_breaks.clone()), (false, vec![3]));
+
+    // Kept for good, across a restart.
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    assert_eq!(reloaded["ev"].events.entries().len(), 11);
+    assert!(reloaded["ev"].events.breaks().is_empty());
+    route(&state, &req("POST", "/deployments/ev/stop", vec![]));
+    assert_eq!(route(&state, &req("DELETE", "/deployments/ev", vec![])).status_code, 200);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A deployments file from before rc.30 kept the last 10 earlier versions' documents only: they
 /// are numbered and their documents moved into the store at load, the current version added. They
 /// open on their canvas but don't restore, having no record of what their deploys asked.

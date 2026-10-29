@@ -4,7 +4,7 @@
 same day to observability and restore, leaving out per-run reverts, conflicts and compensations
 (§8). Step 2.5 of the [host capabilities](host-capabilities-L4.md) plan (§7, Tier 2), taken
 ahead of Tier 1. Builds on [host resources](host-resources-L4.md) (a timeline per resource).
-Slices 1 and 2, restoring code and restoring state, are built (§10).
+Slices 1 and 2, restoring code and restoring state, and slice 3b, events, are built (§10).
 
 Two things, and only two:
 
@@ -57,19 +57,39 @@ Most of what this needs is in the store already; what's missing is keeping it an
 
 ## 2. One timeline
 
-A deployment's run log becomes its timeline. Next to runs, it gets **deploy**, **grant** and
-**restore** entries, in the same hash chain, so everything that changed the deployment's code,
-permissions or state is in one ordered, checkable place.
+A deployment's timeline is its runs and its **events**: everything a person, an agent or the host
+did to the deployment, each with who and when. So the timeline answers why a run behaved as it
+did (a secret replaced, a database rebound, a limit lowered) and who changed what the flow may do,
+in a record `holon verify` checks offline.
 
 | Entry | Holds |
 |---|---|
-| `run` | as today, plus the state root it left (`state_after`) |
-| `deploy` | the unit before and after, the grant's hash, who deployed it, who approved it |
-| `grant` | what was granted, lowered or revoked, and by whom |
-| `restore` | the point restored to, what (code, state or both), by whom, why, and what it didn't touch (§5) |
+| `run` | as today, plus the state it left (`state_after`) |
+| `deploy` | the version it made, and what it restored, if it was a restore of code |
+| `restore` | the state put back: the point (`run 41`, `version 3`) and the session it started |
+| `grant` | what was revoked, granted back or lowered, and keep-running set or cleared |
+| `secret` | a secret set, replaced, removed or rolled back: its name, version and source kind (value, env, vault), never a value or a fingerprint |
+| `binding` | a folder or database bound or unbound for this deployment (`--for SLUG`) |
+| `lifecycle` | paused, resumed, stopped, run (and from which state) |
 
-Every entry has `seq`, `at` and `prev`, as a run's line does. The activity log stays as it is
-(the server's own, across deployments); a deploy or a grant change is written to both.
+Left out: deploy settings (interval, port, limits asked, browsers, which actions agents may run),
+which each version's deploy already holds; saved drafts and accounts, which aren't the deployment
+and stay in the activity log; bindings for every deployment, which stay there too (the runs
+record what they read through them). The activity log stays as it is, across deployments; an
+event is written to both.
+
+**Recorded, never restored.** A restore puts back code and state only. Grants, secrets and
+bindings are always as they are today: restoring a version from before a revoke must not grant
+back what a person took away. The restore's dry run says what differs.
+
+**Events have a log of their own,** `<slug>.events.jsonl` beside the run log, hash chained the same
+way (`seq`, `prev`), and kept for good: events are few, a person's actions, while runs are many
+and the run log keeps the newest 500. One chain for both would mean dropping runs from the middle
+of it, which needs headers kept for every run trimmed (§7), and would put non-runs in front of
+everything that reads runs today (replay, verify's re-run, the editor's runs, MCP's `runs`). Each
+event names the run log's next seq when it happened (`run_seq`), so the two merge into one
+order: event 7 came after run 40 and before run 41. The witness gets each event log head too, and
+an export carries both logs.
 
 ## 3. Restore points
 
@@ -199,9 +219,12 @@ Reordered so restoring code, which changes nothing already logged, comes first:
      with the rest; the dry run counts the runs since and their effects outside (§5) by
      capability.
    - **Running or paused only:** a stopped deployment runs from a session's state instead.
-3. **Seeing it:** `holon history`, deploy, grant and restore entries in the chain, a cell's
-   history, the editor's timeline and restore button, MCP's `history` and `restore`, agents
-   restoring.
+3. **Seeing it**, in two parts:
+   - **3b, events** (built; first, so the timeline is built once with every kind): the event log of §2,
+     `GET /deployments/<slug>/events`, `holon history <slug>` merging events and runs, exports
+     carrying events and `holon verify` checking their chain.
+   - **3a, the editor's timeline** and restore button, MCP's `history` and `restore`, agents
+     restoring, a cell's history.
 4. **Retention and verify** of whole states.
 
 ## 11. Forks, surfaced

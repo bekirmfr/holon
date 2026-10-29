@@ -18,6 +18,10 @@ The editor checks the chain as it shows the log. In view mode, above the run lis
 A deployment keeps its newest 500 runs by default (`holon serve --keep-runs N`). Older ones are
 trimmed, and the chain is checked from the oldest kept run.
 
+What was done to the deployment (its [events](deploying.md#the-timeline): deploys, restores, grant
+changes, secrets, bindings, pausing and running) is a chain of its own, kept for good, so it is
+checked from the first event.
+
 ## Exporting
 
 From the editor: **export runs** above the run list saves `<slug>-runs.json`.
@@ -29,11 +33,11 @@ holon export notes-api
 ```
 
 ```
-wrote /home/you/notes-api-runs.json: 42 runs of "notes-api", head 3f9c2a7be01d
+wrote /home/you/notes-api-runs.json: 42 runs of "notes-api" and its 3 events, head 3f9c2a7be01d
 ```
 
-The file holds the run log exactly as written and every unit the runs ran on, so it needs
-nothing else to be checked. Options:
+The file holds the run log and the events exactly as written and every unit the runs ran on, so
+it needs nothing else to be checked. Options:
 
 | Option | |
 |---|---|
@@ -56,6 +60,7 @@ holon verify notes-api-runs.json
 notes-api: 42 runs, runs 1 to 42
   chain: unbroken
   head: 3f9c2a7be01d is the newest run's
+  events: 3, chain unbroken from the first
   re-ran 42 runs: each produced what its log entry says
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret or a resume token (not computed again)
   2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
@@ -150,8 +155,8 @@ Start the server with a witness to send heads to:
 HOLON_EXPORT_HEADS_TOKEN=… holon serve --export-heads https://witness.example.com/heads
 ```
 
-Every five seconds it sends the new heads (`{batch, heads: [{deployment, kind, seq, head, at_ms}]}`)
-with `Authorization: Bearer` the token. Only hashes leave the server: nothing a run read or
+Every five seconds it sends the new heads (`{batch, heads: [{deployment, kind, seq, head, at_ms}]}`,
+`kind` `run`, or `event` for the events' chain) with `Authorization: Bearer` the token. Only hashes leave the server: nothing a run read or
 answered. If the witness can't be reached, the heads wait in a queue and are sent later.
 
 A witness can be any service that keeps what it is sent. The **witness** sample is one, written as
@@ -167,5 +172,8 @@ holon verify notes-api-runs.json --head 3f9c2a7be01d…
 ```
   witnessed head 3f9c2a7be01d: run 42, so no run up to it was changed or removed
 ```
+
+An event's head is checked the same way: `witnessed head …: event 7, so no event up to it was
+changed or removed`.
 
 Give the whole head, as the witness holds it.

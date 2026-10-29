@@ -228,9 +228,14 @@ pub(crate) fn load_deployments(
             );
         }
         let channels = Arc::new(channels::Channels::from_log(&log, &permit.channels));
+        let events = crate::events::Events::for_deployment(path, &record.slug);
+        if !events.breaks().is_empty() {
+            eprintln!("holon: {:?}'s events were changed outside holon: event {:?} doesn't follow the one before it", record.slug, events.breaks());
+        }
         loaded.insert(
             record.slug,
             Deployment {
+                events,
                 channels,
                 unit: unit_hash,
                 triggers,

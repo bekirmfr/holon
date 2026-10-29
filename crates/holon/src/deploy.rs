@@ -334,9 +334,9 @@ fn deploy(
             }
             None => Lifecycle::deployed(now_secs),
         };
-        let (log, old_document, mut versions) = match deployments.get_mut(&body.slug) {
-            Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions)),
-            None => (Log::for_deployment(deployments_path, &body.slug), None, Vec::new()),
+        let (log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
+            Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
+            None => (Log::for_deployment(deployments_path, &body.slug), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug)),
         };
         // Every deploy is a version, kept for good with what it asked, so it can be deployed
         // again; one deployed without a canvas keeps the canvas it had.
@@ -366,6 +366,11 @@ fn deploy(
             first_seq: Some(log.next_seq()),
             document: None,
         });
+        let what = match restored_from {
+            Some(n) => format!("restored version {n}'s code, as version {version}"),
+            None => format!("deployed version {version}"),
+        };
+        events.push("deploy", what, by, log.next_seq(), crate::events::Detail { version: Some(version), ..Default::default() });
         let document = body.document.clone().or(old_document);
         // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
         let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
@@ -407,6 +412,7 @@ fn deploy(
                 channels,
                 document,
                 versions,
+                events,
             },
         );
     }
@@ -540,7 +546,19 @@ fn preview_value(
 /// current again, as a new one.
 /// A slug may have secrets before it is first deployed.
 /// `by`: who asked (access.rs), named in the audit.
-pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&str>, method: &str, request: &Request, by: Option<&str>) -> Response {
+pub(crate) fn handle_secrets(
+    secrets: &SecretStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    name: Option<&str>,
+    method: &str,
+    request: &Request,
+    by: Option<&str>,
+) -> Response {
+    // Each change goes on the deployment's timeline: its name, version and source, never a value.
+    let note = |name: &str, what: String| {
+        crate::events::note(deployments, slug, "secret", what, by, crate::events::Detail { name: Some(name.to_string()), ..Default::default() })
+    };
     if !is_valid_slug(slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
     }
@@ -566,7 +584,10 @@ pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&st
             }
             match serde_json::from_slice::<Rollback>(&bytes) {
                 Ok(body) => match secrets.rollback(slug, name, body.version, by) {
-                    Ok(version) => Response::json(&serde_json::json!({ "version": version })),
+                    Ok(version) => {
+                        note(name, format!("rolled the secret {name} back to version {}, as version {version}", body.version));
+                        Response::json(&serde_json::json!({ "version": version }))
+                    }
                     Err(e) => err(400, e),
                 },
                 Err(e) => err(400, format!("expected {{\"version\": n}}: {e}")),
@@ -582,20 +603,30 @@ pub(crate) fn handle_secrets(secrets: &SecretStore, slug: &str, name: Option<&st
                 value: Option<String>,
                 from: Option<String>,
             }
+            let mut source = "a value";
             let set = match serde_json::from_slice(&bytes) {
                 Ok(SetSecret { value: Some(value), from: None }) => secrets.set(slug, name, &value, by),
                 Ok(SetSecret { value: None, from: Some(from) }) if from == "local" => Err("a local secret is set with a value".to_string()),
-                Ok(SetSecret { value: None, from: Some(from) }) => secrets.set_from(slug, name, &from, by),
+                Ok(SetSecret { value: None, from: Some(from) }) => {
+                    source = if from.starts_with("vault:") { "vault" } else { "the environment" };
+                    secrets.set_from(slug, name, &from, by)
+                }
                 Ok(_) => Err("expected {\"value\": \"...\"} or {\"from\": \"env:… | vault:…\"}".to_string()),
                 Err(e) => Err(format!("expected {{\"value\": \"...\"}} or {{\"from\": \"...\"}}: {e}")),
             };
             match set {
-                Ok(version) => Response::json(&serde_json::json!({ "version": version })),
+                Ok(version) => {
+                    note(name, format!("set the secret {name}, version {version}, from {source}"));
+                    Response::json(&serde_json::json!({ "version": version }))
+                }
                 Err(e) => err(400, e),
             }
         }
         ("DELETE", Some(name), None) => match secrets.remove(slug, name, by) {
-            Ok(true) => Response::empty_204(),
+            Ok(true) => {
+                note(name, format!("removed the secret {name}"));
+                Response::empty_204()
+            }
             Ok(false) => err(404, format!("{slug:?} has no secret {name:?}")),
             Err(e) => err(500, e),
         },
@@ -727,6 +758,7 @@ pub(crate) fn handle_delete_deployment(
     match removed {
         Some(dep) => {
             dep.log.delete_file();
+            dep.events.delete_file();
             dep.arrivals.forget();
             dep.channels.close();
             persist_deployments(deployments_path, deployments, store);
@@ -1215,7 +1247,7 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
         answer["code"] = serde_json::json!(number);
     }
     if let Some((loaded, label)) = put_back {
-        let session = match put_state_back(state, slug, loaded, &label) {
+        let session = match put_state_back(state, slug, loaded, &label, by) {
             Ok(n) => n,
             Err(r) => return r,
         };
@@ -1380,7 +1412,7 @@ fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since
 
 /// Make `loaded` `slug`'s live state, in a new session: the one it replaces is kept as the ending
 /// session's, as a stop keeps it. Answers the new session's number.
-fn put_state_back(state: &AppState, slug: &str, loaded: State, label: &str) -> Result<u32, Response> {
+fn put_state_back(state: &AppState, slug: &str, loaded: State, label: &str, by: Option<&str>) -> Result<u32, Response> {
     let mut table = state.deployments.lock().unwrap();
     let Some(dep) = table.get_mut(slug) else { return Err(err(404, format!("no deployment {slug:?}"))) };
     let Some(arc) = dep.state.clone() else { return Err(err(409, format!("{slug:?} keeps no state: there is none to restore"))) };
@@ -1388,7 +1420,10 @@ fn put_state_back(state: &AppState, slug: &str, loaded: State, label: &str) -> R
     let refs = live.save(&mut state.store.clone()).map_err(|e| err(500, format!("the state it has now couldn't be kept: {e:?}")))?;
     dep.life.restart(Some(&refs), label, epoch_now()).map_err(|e| err(409, format!("can't restore {slug:?}'s state: {}", e.message())))?;
     *live = loaded;
-    Ok(dep.life.sessions.last().map_or(0, |s| s.number))
+    drop(live);
+    let session = dep.life.sessions.last().map_or(0, |s| s.number);
+    dep.note("restore", format!("put back the state {label} left, in session {session}"), by, crate::events::Detail { session: Some(session), ..Default::default() });
+    Ok(session)
 }
 
 pub(crate) fn epoch_now() -> u64 {
@@ -1408,7 +1443,7 @@ pub(crate) fn status_word(status: Status) -> &'static str {
 /// used only when starting after a stop. Answers with the deployment's entry; 409 when the
 /// move doesn't apply (pausing a stopped deployment, running a running one, a session with no
 /// saved state).
-pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, request: &Request) -> Response {
+pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, request: &Request, by: Option<&str>) -> Response {
     let from = if action == "run" {
         let bytes = match read_body(request) {
             Ok(b) => b,
@@ -1460,6 +1495,7 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
             },
             _ => None,
         };
+        let sessions_before = dep.life.sessions.len();
         let result = match action {
             "pause" => dep.life.pause(),
             "stop" => {
@@ -1481,6 +1517,15 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         if let Err(e) = result {
             return err(409, format!("can't {action} {slug:?}: {}", e.message()));
         }
+        // What it did: a run after a stop started a session, named after where its state came from.
+        let started = dep.life.sessions.last().filter(|_| dep.life.sessions.len() > sessions_before).map(|s| (s.number, s.from.clone()));
+        let (what, session) = match (action, started) {
+            ("pause", _) => ("paused".to_string(), None),
+            ("stop", _) => ("stopped".to_string(), None),
+            (_, Some((n, from))) => (format!("ran from {from}, in session {n}"), Some(n)),
+            _ => ("resumed".to_string(), None),
+        };
+        dep.note("lifecycle", what, by, crate::events::Detail { session, ..Default::default() });
         // A paused or stopped deployment answers nobody: its subscribers hear so.
         if dep.life.status != Status::Running {
             dep.channels.close();
