@@ -113,7 +113,7 @@ export function valueChip(v: WValue | null): string {
     case "Boolean":
       return String(v.value);
     case "Text": {
-      const placeholder = /^‹(secret|token):[^›]*›$/.exec(v.value);
+      const placeholder = /^‹(secret|token|file):[^›]*›$/.exec(v.value);
       if (placeholder) return `‹${placeholder[1]}›`;
       return v.value.length > 16 ? `"${v.value.slice(0, 15)}…"` : JSON.stringify(v.value);
     }

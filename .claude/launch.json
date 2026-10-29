@@ -8,10 +8,10 @@
       "port": 7420
     },
     {
-      "name": "editor",
+      "name": "editor-wt",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "editor", "run", "dev", "--", "--port", "5173", "--strictPort"],
-      "port": 5173
+      "runtimeArgs": ["--prefix", "editor", "run", "dev", "--", "--port", "5174", "--strictPort"],
+      "port": 5174
     }
   ]
 }

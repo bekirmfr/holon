@@ -183,6 +183,14 @@ export function useViewMode(input: ViewModeInput) {
     [fitView, setInspectNode],
   );
 
+  const fitToNodes = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      fitView({ nodes: ids.map((id) => ({ id })), duration: 300, maxZoom: 1.1, padding: 0.2 });
+    },
+    [fitView],
+  );
+
   // A failed run opens on where it failed.
   const origin = replayed?.diagnosis?.origins[0];
   useEffect(() => {
@@ -317,6 +325,7 @@ export function useViewMode(input: ViewModeInput) {
     toggleValues: () => setShowValues((v) => !v),
     setHoveredWire,
     showNode,
+    fitToNodes,
     /** Picks a node for the side pane, without moving the canvas. */
     pickNode: setInspectNode,
     onSelectRun,
@@ -372,6 +381,7 @@ export function ViewModePanes({ view, flow, nodes }: { view: ViewMode; flow: Flo
         onPickNode={view.pickNode}
         diagnosis={replayed?.diagnosis ?? null}
         onShowNode={view.showNode}
+        onFitToNodes={view.fitToNodes}
       />
     </>
   );
