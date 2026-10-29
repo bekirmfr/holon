@@ -2,11 +2,12 @@
 # A MongoDB for CI's tests: a one-node replica set on 127.0.0.1:27017 (a commit is a transaction,
 # which needs one), in Docker, ready to write when this returns.
 #
-# The image is pinned by digest: mongo:8.0 as pulled 2026-10-27. The one the tag named on
-# 2026-10-29 exited as soon as it started, on every job.
+# MongoDB 7.0, not 8.0: 8.0 and newer refuse to start on Linux 6.19 and newer (their TCMalloc,
+# SERVER-121912, no fixed release yet), the kernel GitHub's ubuntu-24.04 runners have had since
+# their 20261025 image. 7.0 keeps the older allocator. Holon asks nothing of MongoDB that 7.0
+# lacks (transactions need a replica set, since 4.0).
 set -euo pipefail
-image='mongo:8.0@sha256:8e7d23aa641b0ec6c86418866d5d18d74d5abf89061bc5db7bc4b80929021ef6'
-docker run -d --name mongo -p 27017:27017 "$image" --replSet rs0 --bind_ip_all
+docker run -d --name mongo -p 27017:27017 mongo:7.0 --replSet rs0 --bind_ip_all
 for _ in $(seq 1 60); do
   docker exec mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
   sleep 1
