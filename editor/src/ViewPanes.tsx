@@ -1257,43 +1257,114 @@ function StateTab({
   changed: string[];
   collections: CollectionAtStep[];
 }) {
+  const [modalOpen, setModalOpen] = useState(false);
   if (!run) return <div>select a run</div>;
   const before = run.state_before;
-  // A collection's root is a state cell; it shows as its collection, below, not as a hash.
-  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !isCollectionCell(k)).sort();
+  const allKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !isCollectionCell(k)).sort();
+  const changedKeys = allKeys.filter((k) => changed.includes(k));
+  const unchangedCount = allKeys.length - changedKeys.length;
   const items = collections.reduce((n, c) => n + c.items.filter(itemChanged).length, 0);
   const counted = [
-    changed.length > 0 ? `${changed.length} key${changed.length === 1 ? "" : "s"}` : "",
+    changedKeys.length > 0 ? `${changedKeys.length} key${changedKeys.length === 1 ? "" : "s"}` : "",
     items > 0 ? `${items} item${items === 1 ? "" : "s"}` : "",
   ].filter(Boolean);
+  const changedCollections = collections.filter((c) => c.items.some(itemChanged));
   return (
     <>
-      <div style={{ color: dim }}>
-        {step === null ? `after the whole run (${order.length} nodes)` : `after node ${step + 1} of ${order.length}`}
-        {counted.length > 0 ? ` · ${counted.join(" and ")} changed` : " · no change"}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <div style={{ color: dim, flex: 1, fontSize: 11 }}>
+          {step === null ? `after the whole run (${order.length} nodes)` : `after node ${step + 1} of ${order.length}`}
+          {counted.length > 0 ? ` · ${counted.join(" and ")} changed` : " · no change"}
+        </div>
+        <button onClick={() => setModalOpen(true)} style={{ ...small, padding: "0px 4px", fontSize: 10, lineHeight: 1.4, flexShrink: 0 }} title="view full state">⤢</button>
       </div>
-      {keys.length === 0 && collections.length === 0 && <div>no state: nothing read or written</div>}
-      {keys.map((k) => {
-        const moved = changed.includes(k);
-        return (
-          <div
-            key={k}
-            style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: moved ? changedBg : "transparent" }}
-          >
-            <div style={{ color: moved ? "#e0c36f" : ink, marginBottom: 2 }}>
-              {k}
-              {moved ? " · changed" : ""}
-            </div>
-            <Field name="before" value={show(before[k])} rawValue={before[k]} />
-            {moved && <Field name="after" value={show(after[k])} color="#e0c36f" rawValue={after[k]} />}
-          </div>
-        );
-      })}
-      {collections.map((c) => (
+      {allKeys.length === 0 && collections.length === 0 && <div>no state: nothing read or written</div>}
+      {changedKeys.map((k) => (
+        <div key={k} style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: changedBg }}>
+          <div style={{ color: "#e0c36f", marginBottom: 2 }}>{k} · changed</div>
+          <Field name="before" value={show(before[k])} rawValue={before[k]} />
+          <Field name="after" value={show(after[k])} color="#e0c36f" rawValue={after[k]} />
+        </div>
+      ))}
+      {changedCollections.map((c) => (
         <CollectionBox key={c.name} slug={slug} c={c} />
       ))}
-      <div style={{ color: dim }}>writes are committed when the run finishes: the next run reads “after”.</div>
+      {counted.length === 0 && unchangedCount > 0 && (
+        <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} · no change · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
+      )}
+      {counted.length > 0 && unchangedCount > 0 && (
+        <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} unchanged · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
+      )}
+      {modalOpen && (
+        <StateModal slug={slug} run={run} step={step} order={order} after={after} changed={changed} collections={collections} onClose={() => setModalOpen(false)} />
+      )}
     </>
+  );
+}
+
+function StateModal({
+  slug,
+  run,
+  step,
+  order,
+  after,
+  changed,
+  collections,
+  onClose,
+}: {
+  slug: string;
+  run: LogEntry;
+  step: number | null;
+  order: string[];
+  after: Record<string, WValue>;
+  changed: string[];
+  collections: CollectionAtStep[];
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onClose]);
+
+  const before = run.state_before;
+  const allKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !isCollectionCell(k)).sort();
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(5,10,20,0.75)", display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, width: "min(96vw, 760px)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #1b2a45", flexShrink: 0, gap: 8 }}>
+          <span style={{ color: ink, fontWeight: 600 }}>Full state</span>
+          <span style={{ color: dim, fontSize: 11 }}>{step === null ? `after the whole run (${order.length} nodes)` : `after node ${step + 1} of ${order.length}`}</span>
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: dim, cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1 }} title="close">×</button>
+        </div>
+        <div style={{ ...scroll, padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
+          {allKeys.length === 0 && collections.length === 0 && <div style={{ color: dim }}>no state: nothing read or written</div>}
+          {allKeys.map((k) => {
+            const moved = changed.includes(k);
+            const val = after[k] ?? before[k];
+            return (
+              <div key={k} style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: moved ? changedBg : "transparent" }}>
+                <div style={{ color: moved ? "#e0c36f" : ink, marginBottom: 2 }}>{k}{moved ? " · changed" : ""}</div>
+                {moved && <Field name="before" value={show(before[k])} rawValue={before[k]} />}
+                <Field name={moved ? "after" : "value"} value={show(val)} rawValue={val} color={moved ? "#e0c36f" : undefined} />
+              </div>
+            );
+          })}
+          {collections.map((c) => (
+            <CollectionBox key={c.name} slug={slug} c={c} />
+          ))}
+          <div style={{ color: dim, fontSize: 11 }}>writes are committed when the run finishes: the next run reads "after".</div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1537,7 +1608,7 @@ function renderValueContent(v: WValue, renderer: RendererKind, portName: string,
       };
       const kind = extKind[ext] ?? "File";
       const noteText = kept === "kept by hash"
-        ? "Content not stored in the run log — this folder keeps a hash only. To view contents here, set the folder’s keep to “bytes”."
+        ? `Content not stored in the run log — this folder keeps a hash only. To view contents here, set the folder’s keep to “bytes”.`
         : kept;
       return (
         <div style={{ padding: "24px 16px", textAlign: "center" }}>
