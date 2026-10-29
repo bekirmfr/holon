@@ -613,6 +613,9 @@ test("price-rollback: an earlier version's code restored answers as it did, its 
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
   await page.keyboard.insertText(text.replace("port 8160", `port ${port}`).replace("fee = 0.5", "fee = 5"));
+  // Compiled: the canvas is no longer what is deployed. (Its port already was: ⚙ saying so
+  // doesn't show the new text has landed.)
+  await expect(page.locator(".hl-canvas").getByTitle("the canvas has changed since it was deployed")).toBeVisible({ timeout: 15_000 });
   await settingsSayPort(page, String(port));
   expect(await deploy(page, 0)).toBe(port);
   expect(await total()).toBe(9);
@@ -1388,10 +1391,11 @@ test("a deployment's runs export from view mode and from holon export, and holon
   // Into a folder of its own (made for it), by a name (.json added), the full path said.
   const mine = join(dir, "audits", "as-me.json");
   const asMe = execFileSync(holon, ["export", "ledger", "--server", String(PORTS.server), "--to", join(dir, "audits"), "--as", "as-me"], { encoding: "utf8", env: local });
-  // Its events with its runs: here its deploy.
-  expect(asMe).toContain(`wrote ${mine}: 4 runs of "ledger" and its 1 event, head ${head.slice(0, 12)}`);
+  // Its events with its runs: its deploys (as many as tests on this server deployed it).
+  expect(asMe).toContain(`wrote ${mine}: 4 runs of "ledger" and its `);
+  expect(asMe).toMatch(new RegExp(` and its \\d+ events?, head ${head.slice(0, 12)}`));
   expect(asMe).toContain(`holon verify ${mine}`);
   const checked = execFileSync(holon, ["verify", mine], { encoding: "utf8" });
   expect(checked).toContain("re-ran 4 runs");
-  expect(checked).toContain("events: 1, chain unbroken from the first");
+  expect(checked).toMatch(/events: \d+, chain unbroken from the first/);
 });
