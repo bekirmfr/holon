@@ -456,6 +456,8 @@ function LogTab({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [rightTab, setRightTab] = useState<"details" | "errors" | "timeline">("details");
   const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
+  const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set());
+  const [compareRuns, setCompareRuns] = useState<[LogEntry, LogEntry] | null>(null);
 
   useEffect(() => {
     if (diagnosis) setRightTab("errors");
@@ -527,6 +529,29 @@ function LogTab({
     a.download = `run-${e.seq}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const allVisibleSelected = sorted.length > 0 && sorted.every((e) => selectedSeqs.has(e.seq));
+  const toggleAllVisible = () => {
+    if (allVisibleSelected) setSelectedSeqs((prev) => { const n = new Set(prev); sorted.forEach((e) => n.delete(e.seq)); return n; });
+    else setSelectedSeqs((prev) => { const n = new Set(prev); sorted.forEach((e) => n.add(e.seq)); return n; });
+  };
+  const copySelected = () => {
+    const runs = entries.filter((e) => selectedSeqs.has(e.seq));
+    navigator.clipboard.writeText(JSON.stringify(runs, null, 2)).catch(() => {});
+  };
+  const exportSelected = () => {
+    const runs = entries.filter((e) => selectedSeqs.has(e.seq));
+    const seqs = [...selectedSeqs].sort((a, b) => a - b);
+    const blob = new Blob([JSON.stringify(runs, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `runs-${seqs.join("-")}.json`; a.click(); URL.revokeObjectURL(url);
+  };
+  const openCompare = () => {
+    const seqs = [...selectedSeqs].sort((a, b) => a - b);
+    const runA = entries.find((e) => e.seq === seqs[0]);
+    const runB = entries.find((e) => e.seq === seqs[1]);
+    if (runA && runB) setCompareRuns([runA, runB]);
   };
 
   const onDivider = (ev: ReactPointerEvent<HTMLDivElement>) => {
@@ -631,6 +656,7 @@ function LogTab({
     : { flex: "1 1 45%" };
 
   return (
+    <>
     <div style={{ display: "flex", flex: 1, minHeight: 0, flexDirection: "column" }}>
       <ChainBar slug={slug} head={head} breaks={breaks} />
       <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
@@ -641,11 +667,24 @@ function LogTab({
           style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
         />
         {filter && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
+        <span style={{ flex: 1 }} />
+        {selectedSeqs.size > 0 && (
+          <>
+            <span style={{ color: dim, fontSize: 10 }}>{selectedSeqs.size} selected</span>
+            <button style={{ ...small, padding: "0 5px" }} title="copy selected runs as JSON" onClick={copySelected}>⎘</button>
+            <button style={{ ...small, padding: "0 5px" }} title="export selected runs as JSON" onClick={exportSelected}>↓</button>
+            {selectedSeqs.size === 2 && (
+              <button style={{ ...small, padding: "0 5px" }} title="compare selected runs" onClick={openCompare}>⇔</button>
+            )}
+            <button style={{ ...small, padding: "0 4px" }} title="clear selection" onClick={() => setSelectedSeqs(new Set())}>×</button>
+          </>
+        )}
       </div>
       <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
         {/* Left: run list */}
         <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
           <div style={{ display: "flex", gap: 10, padding: "2px 6px", borderBottom: "1px solid #1b2a45", fontSize: 10, flexShrink: 0 }}>
+            <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} style={{ width: 12, cursor: "pointer", accentColor: "#6fd3e0", flexShrink: 0 }} title={allVisibleSelected ? "deselect all visible" : "select all visible"} />
             <SortHeader k="seq" label="#" w={30} />
             <SortHeader k="time" label="time" w={84} />
             <ColHeader sk="session" label="s" col="session" w={22} />
@@ -677,10 +716,17 @@ function LogTab({
                     padding: "2px 6px",
                     cursor: "pointer",
                     borderRadius: 3,
-                    background: e.seq === selected?.seq ? "#13243f" : "transparent",
+                    background: selectedSeqs.has(e.seq) ? "#0d1e38" : e.seq === selected?.seq ? "#13243f" : "transparent",
                     alignItems: "center",
                   }}
                 >
+                  <input
+                    type="checkbox"
+                    checked={selectedSeqs.has(e.seq)}
+                    onChange={() => {}}
+                    onClick={(ev) => { ev.stopPropagation(); setSelectedSeqs((prev) => { const n = new Set(prev); if (n.has(e.seq)) n.delete(e.seq); else n.add(e.seq); return n; }); }}
+                    style={{ width: 12, cursor: "pointer", accentColor: "#6fd3e0", flexShrink: 0 }}
+                  />
                   <span style={{ color: dim, width: 30, textAlign: "right", flexShrink: 0 }}>#{e.seq}</span>
                   <span style={{ color: dim, width: 84, whiteSpace: "nowrap", flexShrink: 0 }}>{time(e.at_ms)}</span>
                   <span style={{ color: dim, width: 22, flexShrink: 0 }}>s{e.session}</span>
@@ -802,6 +848,8 @@ function LogTab({
         </div>
       </div>
     </div>
+    {compareRuns && <CompareModal a={compareRuns[0]} b={compareRuns[1]} onClose={() => setCompareRuns(null)} />}
+    </>
   );
 }
 
@@ -811,6 +859,92 @@ function Field({ name, value, color }: { name: string; value: string; color?: st
       {/* A long name (a hash used as a key) wraps within its share instead of crowding out the value. */}
       <span style={{ color: dim, minWidth: 90, maxWidth: "40%", flexShrink: 0, overflowWrap: "anywhere" }}>{name}</span>
       <span style={{ color: color ?? ink, overflowWrap: "anywhere", whiteSpace: "pre-wrap", flex: 1, minWidth: 0 }}>{value}</span>
+    </div>
+  );
+}
+
+type RunSection = { key: string; value: string; color?: string };
+
+function runSectionsForCompare(e: LogEntry): RunSection[] {
+  const s: RunSection[] = [];
+  if (e.url) s.push({ key: `${e.method ?? "GET"} ${e.url}`, value: "" });
+  if (e.request) s.push({ key: "request", value: formatValue(e.request) });
+  for (const [cap, v] of e.sourced) s.push({ key: cap.toLowerCase(), value: formatValue(v) });
+  for (const p of e.performed) s.push({ key: `did ${p.capability.toLowerCase()}`, value: formatValue(p.payload) });
+  if (e.response_body !== null) s.push({ key: "answered", value: `${e.status ?? ""}: ${e.response_body || "(empty)"}` });
+  if (e.error) s.push({ key: "error", value: e.error, color: bad });
+  const rounds = e.rounds ?? [];
+  if (rounds.length > 0) {
+    const lines = rounds.flatMap((r, i) => r.exchanges.map((x) => { const { line } = exchangeLine(x.request, x.response); return `round ${i + 1}: ${line}`; }));
+    s.push({ key: "rounds", value: lines.join("\n") });
+  }
+  const reads = e.reads ?? [];
+  if (reads.length > 0) {
+    const lines = reads.map((r) => `${formatValue(r.request)} → ${r.answer ? formatValue(r.answer) : "nothing"}`);
+    s.push({ key: "read", value: lines.join("\n") });
+  }
+  if ((e.retries ?? 0) > 0) s.push({ key: "ran again", value: `${e.retries}×`, color: "#e0c36f" });
+  if ((e.parked ?? []).length > 0) s.push({ key: "waiting at", value: (e.parked ?? []).join(", "), color: "#e0c36f" });
+  for (const [name, v] of Object.entries(e.events ?? {})) s.push({ key: `event ${name}`, value: formatValue(v) });
+  if (e.run_id) s.push({ key: "run", value: `${e.run_id.slice(0, 16)}… · grant ${(e.grant ?? "").slice(0, 12)}…`, color: dim });
+  return s;
+}
+
+function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: () => void }) {
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onClose]);
+
+  const sa = runSectionsForCompare(a);
+  const sb = runSectionsForCompare(b);
+  const mapA = new Map(sa.map((s) => [s.key, s]));
+  const mapB = new Map(sb.map((s) => [s.key, s]));
+  const allKeys: string[] = [];
+  const seen = new Set<string>();
+  for (const s of [...sa, ...sb]) if (!seen.has(s.key)) { seen.add(s.key); allKeys.push(s.key); }
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(5,10,20,0.75)", display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, width: "min(96vw, 1100px)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #1b2a45", flexShrink: 0, gap: 8 }}>
+          <span style={{ color: ink, fontWeight: 600 }}>Compare runs</span>
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: dim, cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1 }} title="close">×</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 1fr", borderBottom: "1px solid #1b2a45", padding: "5px 14px", flexShrink: 0, gap: 8, fontSize: 11 }}>
+          <span style={{ color: ink, fontWeight: 600 }}>#{a.seq} · {time(a.at_ms)} · {runLabel(a)}</span>
+          <span />
+          <span style={{ color: ink, fontWeight: 600 }}>#{b.seq} · {time(b.at_ms)} · {runLabel(b)}</span>
+        </div>
+        <div style={{ overflowY: "auto", flex: 1, padding: "4px 0" }}>
+          {allKeys.map((key) => {
+            const rowA = mapA.get(key);
+            const rowB = mapB.get(key);
+            const bothPresent = !!(rowA && rowB);
+            const identical = bothPresent && rowA!.value === rowB!.value;
+            const keyColor = !bothPresent ? dim : identical ? "#6fd3e0" : "#e0c36f";
+            return (
+              <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 110px 1fr", padding: "4px 14px", gap: 8, borderBottom: "1px solid #1b2a4520", alignItems: "start" }}>
+                <div style={{ color: rowA?.color ?? (rowA ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16 }}>
+                  {rowA?.value !== undefined ? (rowA.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}
+                </div>
+                <div style={{ color: keyColor, fontSize: 10, textAlign: "center", paddingTop: 3, fontWeight: bothPresent ? 600 : 400, wordBreak: "break-word" }}>{key}</div>
+                <div style={{ color: rowB?.color ?? (rowB ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16 }}>
+                  {rowB?.value !== undefined ? (rowB.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
