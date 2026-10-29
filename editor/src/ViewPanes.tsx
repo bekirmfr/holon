@@ -778,15 +778,15 @@ function LogTab({
                   {selected.url && (
                     <div style={{ color: ink }}>{selected.method} {selected.url}</div>
                   )}
-                  {selected.request && <Field name="request" value={formatValue(selected.request)} />}
+                  {selected.request && <Field name="request" value={formatValue(selected.request)} rawValue={selected.request} />}
                   {selected.sourced.map(([cap, v]) => (
-                    <Field key={cap} name={cap.toLowerCase()} value={formatValue(v)} />
+                    <Field key={cap} name={cap.toLowerCase()} value={formatValue(v)} rawValue={v} />
                   ))}
                   {selected.performed.map((p, i) => (
-                    <Field key={i} name={`did ${p.capability}`} value={formatValue(p.payload)} />
+                    <Field key={i} name={`did ${p.capability}`} value={formatValue(p.payload)} rawValue={p.payload} />
                   ))}
                   {selected.response_body !== null && (
-                    <Field name={`answered ${selected.status}`} value={selected.response_body || "(empty)"} />
+                    <Field name={`answered ${selected.status}`} value={selected.response_body || "(empty)"} rawValue={selected.response_body ? { type: "Text" as const, value: selected.response_body } : undefined} />
                   )}
                   {selected.error && <Field name="error" value={selected.error} color={bad} />}
                   {(selected.rounds ?? []).map((r, i) =>
@@ -807,7 +807,7 @@ function LogTab({
                     <Field name="waiting at" value={(selected.parked ?? []).join(", ")} color="#e0c36f" />
                   )}
                   {Object.entries(selected.events ?? {}).map(([name, v]) => (
-                    <Field key={name} name={`event ${name}`} value={formatValue(v)} />
+                    <Field key={name} name={`event ${name}`} value={formatValue(v)} rawValue={v} />
                   ))}
                   {selected.run_id && (
                     <Field name="run" value={`${selected.run_id.slice(0, 16)}… · grant ${(selected.grant ?? "").slice(0, 12)}…`} color={dim} />
@@ -853,25 +853,30 @@ function LogTab({
   );
 }
 
-function Field({ name, value, color }: { name: string; value: string; color?: string }) {
+function Field({ name, value, color, rawValue }: { name: string; value: string; color?: string; rawValue?: WValue }) {
+  const [modalOpen, setModalOpen] = useState(false);
   return (
     <div style={{ display: "flex", gap: 8 }}>
       {/* A long name (a hash used as a key) wraps within its share instead of crowding out the value. */}
       <span style={{ color: dim, minWidth: 90, maxWidth: "40%", flexShrink: 0, overflowWrap: "anywhere" }}>{name}</span>
       <span style={{ color: color ?? ink, overflowWrap: "anywhere", whiteSpace: "pre-wrap", flex: 1, minWidth: 0 }}>{value}</span>
+      {rawValue != null && (
+        <button onClick={() => setModalOpen(true)} style={{ ...small, padding: "0px 4px", fontSize: 10, lineHeight: 1.4, flexShrink: 0 }} title="view value">⤢</button>
+      )}
+      {modalOpen && rawValue != null && <ValueModal value={rawValue} portName={name} onClose={() => setModalOpen(false)} />}
     </div>
   );
 }
 
-type RunSection = { key: string; value: string; color?: string };
+type RunSection = { key: string; value: string; color?: string; rawValue?: WValue };
 
 function runSectionsForCompare(e: LogEntry): RunSection[] {
   const s: RunSection[] = [];
   if (e.url) s.push({ key: `${e.method ?? "GET"} ${e.url}`, value: "" });
-  if (e.request) s.push({ key: "request", value: formatValue(e.request) });
-  for (const [cap, v] of e.sourced) s.push({ key: cap.toLowerCase(), value: formatValue(v) });
-  for (const p of e.performed) s.push({ key: `did ${p.capability.toLowerCase()}`, value: formatValue(p.payload) });
-  if (e.response_body !== null) s.push({ key: "answered", value: `${e.status ?? ""}: ${e.response_body || "(empty)"}` });
+  if (e.request) s.push({ key: "request", value: formatValue(e.request), rawValue: e.request });
+  for (const [cap, v] of e.sourced) s.push({ key: cap.toLowerCase(), value: formatValue(v), rawValue: v });
+  for (const p of e.performed) s.push({ key: `did ${p.capability.toLowerCase()}`, value: formatValue(p.payload), rawValue: p.payload });
+  if (e.response_body !== null) s.push({ key: "answered", value: `${e.status ?? ""}: ${e.response_body || "(empty)"}`, rawValue: e.response_body ? { type: "Text" as const, value: e.response_body } : undefined });
   if (e.error) s.push({ key: "error", value: e.error, color: bad });
   const rounds = e.rounds ?? [];
   if (rounds.length > 0) {
@@ -885,17 +890,18 @@ function runSectionsForCompare(e: LogEntry): RunSection[] {
   }
   if ((e.retries ?? 0) > 0) s.push({ key: "ran again", value: `${e.retries}×`, color: "#e0c36f" });
   if ((e.parked ?? []).length > 0) s.push({ key: "waiting at", value: (e.parked ?? []).join(", "), color: "#e0c36f" });
-  for (const [name, v] of Object.entries(e.events ?? {})) s.push({ key: `event ${name}`, value: formatValue(v) });
+  for (const [name, v] of Object.entries(e.events ?? {})) s.push({ key: `event ${name}`, value: formatValue(v), rawValue: v });
   if (e.run_id) s.push({ key: "run", value: `${e.run_id.slice(0, 16)}… · grant ${(e.grant ?? "").slice(0, 12)}…`, color: dim });
   return s;
 }
 
 function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: () => void }) {
+  const [viewValue, setViewValue] = useState<{ value: WValue; name: string } | null>(null);
   useEffect(() => {
-    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") { if (viewValue) setViewValue(null); else onClose(); } };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
-  }, [onClose]);
+  }, [onClose, viewValue]);
 
   const sa = runSectionsForCompare(a);
   const sb = runSectionsForCompare(b);
@@ -924,6 +930,7 @@ function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: ()
           <span />
           <span style={{ color: ink, fontWeight: 600 }}>#{b.seq} · {time(b.at_ms)} · {runLabel(b)}</span>
         </div>
+        {viewValue && <ValueModal value={viewValue.value} portName={viewValue.name} onClose={() => setViewValue(null)} />}
         <div style={{ overflowY: "auto", flex: 1, padding: "4px 0" }}>
           {allKeys.map((key) => {
             const rowA = mapA.get(key);
@@ -933,12 +940,14 @@ function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: ()
             const keyColor = !bothPresent ? dim : identical ? "#6fd3e0" : "#e0c36f";
             return (
               <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 110px 1fr", padding: "4px 14px", gap: 8, borderBottom: "1px solid #1b2a4520", alignItems: "start" }}>
-                <div style={{ color: rowA?.color ?? (rowA ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16 }}>
-                  {rowA?.value !== undefined ? (rowA.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}
+                <div style={{ color: rowA?.color ?? (rowA ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16, display: "flex", alignItems: "flex-start", gap: 4 }}>
+                  <span style={{ flex: 1 }}>{rowA?.value !== undefined ? (rowA.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}</span>
+                  {rowA?.rawValue && <button onClick={(e) => { e.stopPropagation(); setViewValue({ value: rowA!.rawValue!, name: `${key} · run #${a.seq}` }); }} style={{ ...small, padding: "0px 4px", fontSize: 9, flexShrink: 0, lineHeight: 1.4 }} title="view value">⤢</button>}
                 </div>
                 <div style={{ color: keyColor, fontSize: 10, textAlign: "center", paddingTop: 3, fontWeight: bothPresent ? 600 : 400, wordBreak: "break-word" }}>{key}</div>
-                <div style={{ color: rowB?.color ?? (rowB ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16 }}>
-                  {rowB?.value !== undefined ? (rowB.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}
+                <div style={{ color: rowB?.color ?? (rowB ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16, display: "flex", alignItems: "flex-start", gap: 4 }}>
+                  <span style={{ flex: 1 }}>{rowB?.value !== undefined ? (rowB.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}</span>
+                  {rowB?.rawValue && <button onClick={(e) => { e.stopPropagation(); setViewValue({ value: rowB!.rawValue!, name: `${key} · run #${b.seq}` }); }} style={{ ...small, padding: "0px 4px", fontSize: 9, flexShrink: 0, lineHeight: 1.4 }} title="view value">⤢</button>}
                 </div>
               </div>
             );
@@ -1275,8 +1284,8 @@ function StateTab({
               {k}
               {moved ? " · changed" : ""}
             </div>
-            <Field name="before" value={show(before[k])} />
-            {moved && <Field name="after" value={show(after[k])} color="#e0c36f" />}
+            <Field name="before" value={show(before[k])} rawValue={before[k]} />
+            {moved && <Field name="after" value={show(after[k])} color="#e0c36f" rawValue={after[k]} />}
           </div>
         );
       })}
