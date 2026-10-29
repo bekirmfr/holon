@@ -186,6 +186,7 @@ mod persist;
 mod pick;
 mod ranges;
 mod recorder;
+mod restore;
 mod scheduler;
 mod sealing;
 mod secret_sources;
@@ -464,10 +465,10 @@ struct Deployment {
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
     /// view mode shows exactly what runs even after the flow is edited. Persisted.
     document: Option<serde_json::Value>,
-    /// The documents of the versions deployed before this one, oldest first, by unit (hex):
-    /// a run logged on an earlier version is shown on its own canvas. The last
-    /// [`deploy::KEPT_VERSIONS`] are kept. Persisted.
-    versions: Vec<wire::KeptDocument>,
+    /// Every version deployed, oldest first, the current one last (`wire::Version`): a run
+    /// logged on an earlier version is shown on its own canvas, and any version with its request
+    /// kept can be deployed again (`holon restore`). Kept for good. Persisted.
+    versions: Vec<wire::Version>,
 }
 
 const USAGE: &str = "usage: holon <command>
@@ -480,6 +481,7 @@ const USAGE: &str = "usage: holon <command>
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
+  restore <slug> [--to N --code]     a deployment's versions; deploy an earlier one's code again
   folder add|list|remove             bind a name flows use to a folder on this machine (admin)
   database add|list|remove           bind a name flows use to a database on this machine (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
@@ -555,6 +557,7 @@ fn main() {
         Some(cmd @ ("new" | "check" | "show" | "fmt")) => std::process::exit(flowcmd::run(cmd, &rest)),
         Some("verify") => std::process::exit(verify::run(&rest)),
         Some("export") => std::process::exit(verify::export(&rest)),
+        Some("restore") => std::process::exit(restore::cli(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("database") => std::process::exit(databases::cli(&rest)),
         // Not in the usage: the server runs it for the admin page's "browse…" (pick.rs).

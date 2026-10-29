@@ -124,6 +124,25 @@ pub(crate) fn handle_post_deploy(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
+    deploy(store, deployments, deployments_path, policy, secrets, folders, body, by, agent, activity, None)
+}
+
+/// Deploy `body` (`POST /deploy`'s, or a restore's: `restored_from` names the version it deploys
+/// again). Every deploy is a new version, kept for good.
+#[allow(clippy::too_many_arguments)]
+fn deploy(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments_path: &str,
+    policy: &Policy,
+    secrets: &SecretStore,
+    folders: &Arc<folders::Folders>,
+    body: DeployRequestBody,
+    by: Option<&str>,
+    agent: bool,
+    activity: &crate::activity::Activity,
+    restored_from: Option<u32>,
+) -> Response {
     if agent && !body.acknowledge.is_empty() {
         return err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval, a person approves, deploying it from the editor");
     }
@@ -271,6 +290,16 @@ pub(crate) fn handle_post_deploy(
     // A server's file handlers are named by their lines, among its triggers already.
     triggers.extend(arrivals.labels().filter(|_| server.is_none()));
     let is_state = derives_state(caps.iter());
+    // Its canvas goes into the content store before anything changes, so a store that can't take
+    // it refuses the deploy rather than losing the version's canvas.
+    let document_ref = match &body.document {
+        Some(doc) => match store_document(store, doc) {
+            Ok(r) => Some(r),
+            Err(e) => return err(500, format!("its canvas couldn't be kept: {e}")),
+        },
+        None => None,
+    };
+    let version;
 
     {
         let mut deployments = deployments.lock().unwrap();
@@ -305,16 +334,29 @@ pub(crate) fn handle_post_deploy(
             }
             None => Lifecycle::deployed(now_secs),
         };
-        let (log, old_document, mut versions, old_unit) = match deployments.get_mut(&body.slug) {
-            Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions), Some(old.unit)),
-            None => (Log::for_deployment(deployments_path, &body.slug), None, Vec::new(), None),
+        let (log, old_document, mut versions) = match deployments.get_mut(&body.slug) {
+            Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions)),
+            None => (Log::for_deployment(deployments_path, &body.slug), None, Vec::new()),
         };
-        // The version it replaces keeps its canvas, so the runs it logged still show on it.
-        if let (Some(unit), Some(doc)) = (old_unit, &old_document)
-            && unit != unit_hash
-        {
-            keep_version(&mut versions, to_hex(&unit), doc.clone());
-        }
+        // Every deploy is a version, kept for good with what it asked, so it can be deployed
+        // again; one deployed without a canvas keeps the canvas it had.
+        version = versions.last().map_or(1, |v| v.number + 1);
+        let document_ref = document_ref.or_else(|| versions.last().and_then(|v| v.document_ref.clone()));
+        versions.push(Version {
+            number: version,
+            unit: to_hex(&unit_hash),
+            deployed_at: Some(now_secs),
+            by: by.map(String::from),
+            restored_from,
+            request: Some(VersionRequest {
+                interval_seconds: body.interval_seconds,
+                requirements: body.requirements.clone(),
+                uses: body.uses.clone(),
+                browsers: body.browsers.clone(),
+            }),
+            document_ref,
+            document: None,
+        });
         let document = body.document.clone().or(old_document);
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
         // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
@@ -361,9 +403,9 @@ pub(crate) fn handle_post_deploy(
         );
     }
     persist_deployments(deployments_path, deployments, store);
-    activity.record("deployed", &body.slug, by);
+    activity.record(if restored_from.is_some() { "restored" } else { "deployed" }, &body.slug, by);
 
-    Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds })
+    Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds, version })
 }
 
 /// Build the wire-facing summary of one deployment — shared by `GET /deployments` and
@@ -415,6 +457,19 @@ pub(crate) fn handle_post_deploy_preview(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
+    preview(store, deployments, policy, secrets, folders, &body, agent)
+}
+
+/// What deploying `body` would ask for (`POST /deploy/preview`'s answer, and a restore's dry run).
+fn preview(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    policy: &Policy,
+    secrets: &SecretStore,
+    folders: &Arc<folders::Folders>,
+    body: &DeployRequestBody,
+    agent: bool,
+) -> Response {
     let Some(unit_hash) = parse_hash(&body.unit) else {
         return err(400, "unit is not a 64-char hex hash");
     };
@@ -427,7 +482,7 @@ pub(crate) fn handle_post_deploy_preview(
     };
     // As the deploy will derive it: on a schedule, it runs on the clock.
     let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
-    let manifest = Manifest::new(capabilities(root_unit, &resolver).deployed(scheduled).iter(), body.requirements.with_module_limits(root_unit, &resolver));
+    let manifest = Manifest::new(capabilities(root_unit, &resolver).deployed(scheduled).iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
     let (previous, previous_unit, previous_browsers) = previous_of(deployments, &body.slug);
     let (mut needs, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
     if agent {
@@ -977,35 +1032,162 @@ pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, 
     }
 }
 
-/// How many earlier versions' documents a deployment keeps.
-pub(crate) const KEPT_VERSIONS: usize = 10;
+/// Keep a flow document in the content store, as a text value holding its JSON: its hash (hex).
+fn store_document(store: &SharedStore, document: &serde_json::Value) -> Result<String, String> {
+    let text = serde_json::to_string(document).map_err(|e| e.to_string())?;
+    store.clone().put_value(&Value::Text(text)).map(|h| to_hex(&h)).map_err(|e| format!("{e:?}"))
+}
 
-/// Keep `document` as version `unit`'s, newest last, the last [`KEPT_VERSIONS`] only. A version
-/// deployed again moves to the end rather than being kept twice.
-pub(crate) fn keep_version(versions: &mut Vec<KeptDocument>, unit: String, document: serde_json::Value) {
-    versions.retain(|v| v.unit != unit);
-    versions.push(KeptDocument { unit, document });
-    if versions.len() > KEPT_VERSIONS {
-        versions.drain(..versions.len() - KEPT_VERSIONS);
+/// A version's flow document, from the content store.
+fn version_document(store: &SharedStore, version: &Version) -> Option<serde_json::Value> {
+    let hash = parse_hash(version.document_ref.as_deref()?)?;
+    match store.get_value(&hash).ok()?? {
+        Value::Text(text) => serde_json::from_str(&text).ok(),
+        _ => None,
     }
 }
 
+/// A deployment's versions as this release keeps them, from what a file of any release held:
+/// each numbered, each document in the content store, and `current` last unless it is there
+/// already. Files before rc.30 kept only earlier versions' documents (the last 10), without what
+/// their deploys asked: those versions open on their canvas, but don't restore.
+pub(crate) fn complete_versions(kept: Vec<Version>, current: Version, store: &SharedStore) -> Result<Vec<Version>, String> {
+    let mut versions: Vec<Version> = Vec::with_capacity(kept.len() + 1);
+    let mut next = 1;
+    for mut v in kept.into_iter().chain(std::iter::once(current)) {
+        if v.number == 0 {
+            // The current version, when the file already ends with it.
+            if versions.last().is_some_and(|last| last.unit == v.unit) {
+                continue;
+            }
+            v.number = next;
+        }
+        next = v.number + 1;
+        if let Some(doc) = v.document.take() {
+            v.document_ref = Some(store_document(store, &doc).map_err(|e| format!("version {}'s canvas can't be stored: {e}", v.number))?);
+        }
+        versions.push(v);
+    }
+    Ok(versions)
+}
+
 /// `GET /deployments/<slug>/document` — the flow document it was deployed from, for view mode;
-/// with `?unit=<hex>`, the document of that version (the current one, or one kept), for a run
-/// logged on it.
-pub(crate) fn handle_get_document(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
+/// with `?unit=<hex>`, the document of that version (the current one, or an earlier one), for a
+/// run logged on it.
+pub(crate) fn handle_get_document(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     let deployments = deployments.lock().unwrap();
     let Some(dep) = deployments.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
     let wanted = request.get_param("unit").filter(|u| *u != to_hex(&dep.unit));
     let doc = match &wanted {
-        None => dep.document.as_ref(),
-        Some(unit) => dep.versions.iter().find(|v| &v.unit == unit).map(|v| &v.document),
+        None => dep.document.clone(),
+        Some(unit) => dep.versions.iter().rev().find(|v| &v.unit == unit).and_then(|v| version_document(store, v)),
     };
     match (doc, wanted) {
-        (Some(doc), _) => Response::json(doc),
+        (Some(doc), _) => Response::json(&doc),
         (None, None) => err(404, format!("{slug:?} was deployed without its canvas; deploy it again from the editor")),
-        (None, Some(unit)) => err(404, format!("{slug:?} no longer keeps the canvas of version {}", &unit[..unit.len().min(12)])),
+        (None, Some(unit)) => err(404, format!("{slug:?} keeps no canvas of version {}", &unit[..unit.len().min(12)])),
     }
+}
+
+/// `GET /deployments/<slug>/versions` — every version deployed, newest first: its number, unit,
+/// when and by whom, the version it restored, whether it is the one deployed now, and whether it
+/// can be restored (what its deploy asked is kept).
+pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
+    let deployments = deployments.lock().unwrap();
+    let Some(dep) = deployments.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
+    let current = dep.versions.last().map(|v| v.number);
+    let versions: Vec<serde_json::Value> = dep
+        .versions
+        .iter()
+        .rev()
+        .map(|v| {
+            serde_json::json!({
+                "number": v.number,
+                "unit": v.unit,
+                "deployed_at": v.deployed_at,
+                "by": v.by,
+                "restored_from": v.restored_from,
+                "current": Some(v.number) == current,
+                "restorable": v.request.is_some(),
+                "canvas": v.document_ref.is_some(),
+            })
+        })
+        .collect();
+    Response::json(&serde_json::json!({ "slug": slug, "versions": versions }))
+}
+
+/// `POST /deployments/<slug>/restore` (`{"version": n, "code": true}`) — deploy an earlier
+/// version's code again (docs/L4s/history-L4.md §4): its unit, with what its deploy asked and its
+/// canvas, as a new version that names the one it restores. It is a deploy like any other,
+/// checked against today's policy and grant rather than those it had: what it needs that isn't
+/// granted now is approved again (`acknowledge`), and `"dry_run": true` says what that is,
+/// deploying nothing. The state stays as it is.
+pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Request, by: Option<&str>, agent: bool) -> Response {
+    let bytes = match read_body(request) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let restore: RestoreRequestBody = match serde_json::from_slice(&bytes) {
+        Ok(b) => b,
+        Err(e) => return err(400, format!("not a valid restore request JSON: {e}")),
+    };
+    if restore.state {
+        return err(
+            400,
+            "restoring a version's state isn't built yet: to start from an earlier state, stop the deployment and run it from a session's (POST /deployments/<slug>/run {\"from\": <session>})",
+        );
+    }
+    if !restore.code {
+        return err(400, "say what to restore: \"code\": true deploys the version's code again");
+    }
+    let (version, document) = {
+        let deployments = state.deployments.lock().unwrap();
+        let Some(dep) = deployments.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
+        let Some(version) = dep.versions.iter().find(|v| v.number == restore.version).cloned() else {
+            let newest = dep.versions.last().map_or(0, |v| v.number);
+            return err(404, format!("{slug:?} has no version {}: its versions are 1 to {newest}", restore.version));
+        };
+        if dep.versions.last().is_some_and(|v| v.number == version.number) {
+            return err(409, format!("version {} is the one deployed now", version.number));
+        }
+        let document = version_document(&state.store, &version);
+        (version, document)
+    };
+    let Some(asked) = version.request.clone() else {
+        return err(
+            409,
+            format!(
+                "version {} was deployed before Holon kept what a deploy asks (rc.29 or earlier), so it can't be restored as it was: open its canvas and deploy it again from the editor",
+                version.number
+            ),
+        );
+    };
+    let body = DeployRequestBody {
+        slug: slug.to_string(),
+        unit: version.unit.clone(),
+        interval_seconds: asked.interval_seconds,
+        acknowledge: restore.acknowledge,
+        document,
+        requirements: asked.requirements,
+        uses: asked.uses,
+        browsers: asked.browsers,
+    };
+    if restore.dry_run {
+        return preview(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, &body, agent);
+    }
+    deploy(
+        &state.store,
+        &state.deployments,
+        &state.deployments_path,
+        &state.policy(),
+        &state.secrets,
+        &state.folders,
+        body,
+        by,
+        agent,
+        &state.activity,
+        Some(version.number),
+    )
 }
 
 pub(crate) fn epoch_now() -> u64 {

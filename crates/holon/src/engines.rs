@@ -881,7 +881,7 @@ fn clock_text(us: i64) -> String {
 }
 
 /// The moment `us` microseconds after 1970-01-01, as RFC 3339 without its zone.
-fn time_text(us: i64) -> String {
+pub(crate) fn time_text(us: i64) -> String {
     let day = 86_400_000_000;
     format!("{}T{}", day_text(us.div_euclid(day)), clock_text(us.rem_euclid(day)))
 }

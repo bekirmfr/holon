@@ -250,7 +250,17 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/document") {
             if method == "GET" {
-                return handle_get_document(&state.deployments, slug, request);
+                return handle_get_document(&state.store, &state.deployments, slug, request);
+            }
+        } else if let Some(slug) = rest.strip_suffix("/versions") {
+            if method == "GET" {
+                return handle_get_versions(&state.deployments, slug);
+            }
+        } else if let Some(slug) = rest.strip_suffix("/restore") {
+            if method == "POST" {
+                let response = handle_post_restore(state, slug, request, by, agent);
+                sync_listeners(state);
+                return response;
             }
         } else if let Some((slug, which)) = rest.rsplit_once('/')
             && matches!(which, "manifest" | "grant")

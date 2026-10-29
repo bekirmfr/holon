@@ -630,6 +630,19 @@ static SAMPLES: &[Sample] = &[
         try_it: "deploy the sample billing first; then curl -X POST -H \"Content-Type: application/json\" -d '{\"id\":\"o1\",\"amount\":5}' http://127.0.0.1:8159/orders answers {\"id\":\"o1\",\"total\":6}; GET /orders/o1 reads the order, and billing's log has the charge run by the flow shop; stop billing and the same request answers 502; DELETE /orders/o1 runs billing's refund",
         text: include_str!("../samples/shop.holon"),
     },
+    Sample {
+        name: "price-rollback",
+        title: "Price rollback (an earlier version back, its data kept)",
+        description: "Every deploy is a version, kept for good. Deploy this, set a price, then deploy a version with another fee: holon restore lists both, and holon restore price-rollback --to N --code deploys an earlier one's code again, as a new version that names it. The prices stay as they are, and the restored code is checked against today's grant, not the one it had.",
+        shows: &["versions", "holon restore", "collections"],
+        port: Some("8160"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X PUT -d '{"price":4}' http://127.0.0.1:8160/prices/tea, then curl http://127.0.0.1:8160/quote/tea answers a total of 4.5; change fee = 0.5 to fee = 5 and deploy again (a total of 9); holon restore price-rollback lists the versions, and holon restore price-rollback --to N --code (N: the one before) answers 4.5 again, tea still priced 4"#,
+        text: include_str!("../samples/price-rollback.holon"),
+    },
 ];
 
 #[cfg(test)]

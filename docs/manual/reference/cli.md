@@ -144,6 +144,21 @@ checks that a head a witness holds is in the export. `--files` gives the files r
 texts the export doesn't hold. Exits 0 when it all checks, 1 when something doesn't, 2 for a file
 it can't read.
 
+## `holon restore`
+
+```
+holon restore <slug> [--server PORT|URL]
+holon restore <slug> --to N --code [--dry-run] [--approve] [--server PORT|URL]
+```
+
+Without `--to`, lists a deployment's versions, newest first: every deploy is one, kept for good.
+`--to N --code` deploys version N's code again, as a new version; the state stays as it is. It is
+checked against the grant the deployment has now: what it needs that isn't granted is listed, and
+approved only with `--approve`. `--dry-run` says what it would ask and changes nothing. Exits 0
+when it is done (or a dry run answered), 1 when the server refused it or it needs approving, 2 for
+a mistake on the command line. See [Going back to an earlier
+version](../guides/deploying.md#going-back-to-an-earlier-version).
+
 ## `holon folder`
 
 ```

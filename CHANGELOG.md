@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Every deploy is a version, kept for good, and an earlier one restores.** A deployment keeps
+  each version it was deployed as (its unit, its canvas, when and by whom, what its deploy asked),
+  not only the last ten canvases, numbered from 1 (`GET /deployments/<slug>/versions`). `holon
+  restore <slug> --to N --code` deploys version N's code again as a new version that names it,
+  checked against today's grant (`--approve` approves what isn't covered now), the state left as it
+  is (`POST /deployments/<slug>/restore`, an editor's or an admin's). Sample: **price-rollback**.
+  Deployments from rc.29 load as they are: their kept canvases become versions that open but don't
+  restore, and canvases move from the deployments file into the content store. Versions are
+  written under a new name (`versions_kept`), so an older release reading the file finds none
+  rather than failing.
+
 ## 0.1.0-rc.29
 
 A flow can have several things that start it, and one flow can run another's action. Deployments,

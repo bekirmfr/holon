@@ -2,8 +2,9 @@
 
 **Status:** design, before any code. Written 2026-10-29, against rc.29 (6bc5c68); narrowed the
 same day to observability and restore, leaving out per-run reverts, conflicts and compensations
-(§8). Step 2.5 of the [host capabilities](host-capabilities-L4.md) plan (§7, Tier 2). Builds on
-[host resources](host-resources-L4.md) (a timeline per resource).
+(§8). Step 2.5 of the [host capabilities](host-capabilities-L4.md) plan (§7, Tier 2), taken
+ahead of Tier 1. Builds on [host resources](host-resources-L4.md) (a timeline per resource).
+Slice 1, restoring code, is built (§10).
 
 Two things, and only two:
 
@@ -48,6 +49,10 @@ Most of what this needs is in the store already; what's missing is keeping it an
   after; the log keeps the newest 500 runs (`--keep-runs`).
 - **Deploys and grants** are in the activity log (`activity.rs`): `{at, action, target, by}`, no
   unit hash, no chain, across all deployments.
+- **Sessions already keep states** (`lifecycle.rs`): stopping a deployment ends its session and
+  keeps the state it ended with, by reference (values in the content store); running it again
+  starts from the latest state, from nothing, or from any session's snapshot. That is a restore of
+  state at the points where a session ended, which §4 extends to any entry.
 - **The editor's view mode** opens a logged run on the version it ran on (the kept document).
 
 ## 2. One timeline
@@ -165,16 +170,24 @@ decide:
 
 - **`price-rollback`:** a prices flow with a collection. Deploy v1, set prices, deploy a v2 that
   writes them wrong, then restore to before v2: code and state back, the timeline showing all of
-  it. Deployed by the e2e tests, which restore through the editor and check a quote again.
+  it. Deployed by the e2e tests, which restore it (through the server's endpoint until the
+  editor's button, slice 3) and check a quote again.
 
 ## 10. Slices
 
-1. **Roots in run lines:** `state_after`, `state_before` by root, states and documents kept by
-   hash.
-2. **Deploy, grant and restore entries** in the deployment's chain.
-3. **Restore** of code, state or both, `--dry-run`, the CLI and the server's endpoint.
-4. **Seeing it:** `holon history`, a cell's history, the editor's timeline and restore, MCP.
-5. **Retention and verify** of whole states.
+Reordered so restoring code, which changes nothing already logged, comes first:
+
+1. **Restoring code** (built). Every deploy is a numbered version kept for good, with its canvas
+   (by hash, in the content store) and what its deploy asked; `GET /deployments/<slug>/versions`;
+   `POST /deployments/<slug>/restore` and `holon restore <slug> --to N --code`, a deploy like any
+   other, checked against today's grant, with a dry run. Restore by version number for now: the
+   timeline's entries (`--to <seq>`) come with slice 2. Agents can't restore yet.
+2. **Restoring state:** roots in run lines (`state_after`, `state_before` by root), states kept by
+   hash; deploy, grant and restore entries in the deployment's chain; `--state`, both together,
+   and the dry run's list of effects outside.
+3. **Seeing it:** `holon history`, a cell's history, the editor's timeline and restore button,
+   MCP's `history` and `restore`.
+4. **Retention and verify** of whole states.
 
 ## 11. Forks, surfaced
 

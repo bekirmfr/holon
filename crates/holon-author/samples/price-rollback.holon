@@ -1,0 +1,13 @@
+flow price-rollback
+port 8160
+collection prices
+
+route PUT /prices/:item (req) {
+  prices[req.params.item] = req.json.price
+  respond { item: req.params.item, price: req.json.price }
+}
+
+route GET /quote/:item (req) {
+  fee = 0.5
+  respond { item: req.params.item, price: prices[req.params.item], fee: fee, total: prices[req.params.item] + fee }
+}

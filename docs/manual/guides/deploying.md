@@ -191,8 +191,27 @@ Any change to a flow is a new version. **update** deploys it in place:
 - runs parked at an `await` finish on the version they started on;
 - each run records its version, and view mode shows a run on the canvas it ran on.
 
-The last versions' canvases are kept for that. To go back to an earlier version, open or import
-it and update again.
+Every deploy is a version, numbered from 1 and kept for good: its unit, its canvas, when and by
+whom, and what its deploy asked. `GET /deployments/<slug>/versions` lists them.
+
+### Going back to an earlier version
+
+`holon restore <slug>` lists the versions; `holon restore <slug> --to N --code` deploys version
+N's code again. It is a new version that names the one it restores, never a rewrite: the history
+keeps the version it replaces, which can be restored in turn.
+
+- **Checked against today's grant**, not the one it had: a secret revoked since stays revoked, and
+  what it needs that isn't granted now is listed. `--approve` approves exactly that list; without
+  it nothing changes. `--dry-run` says what it would ask.
+- **Its state stays as it is.** Only the code goes back; the state, collections and sessions are
+  the deployment's as they are now. To start from an earlier state, stop the deployment and run it
+  **from session N**.
+- **Versions deployed before rc.30** open on their canvas, but don't restore: what their deploys
+  asked wasn't kept. Open or import one and update again.
+- Restoring is an editor's or an admin's: an agent can't (`POST /deployments/<slug>/restore`,
+  `{"version": N, "code": true}`, with `"dry_run": true` or `"acknowledge": […]`).
+
+The sample **price-rollback** walks through it.
 
 ## Running, pausing, stopping
 

@@ -49,7 +49,8 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                 status: Some(dep.life.status),
                 sessions: dep.life.sessions.clone(),
                 document: dep.document.clone(),
-                versions: dep.versions.clone(),
+                versions: Vec::new(),
+                versions_kept: dep.versions.clone(),
                 grant: Some(dep.grant.clone()),
                 // What a waiting run keeps that may hold a secret is sealed under the secrets
                 // master key, which is kept apart from this file: a backup of it carries none.
@@ -198,6 +199,21 @@ pub(crate) fn load_deployments(
             .deployed_at_epoch_seconds
             .map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
             .unwrap_or_else(SystemTime::now);
+        // A file from before rc.30 keeps earlier versions' documents only: number them, move
+        // their documents into the store, and add the current version.
+        let kept = if record.versions_kept.is_empty() { record.versions } else { record.versions_kept };
+        let current = crate::wire::Version {
+            number: 0,
+            unit: record.unit.clone(),
+            deployed_at: record.deployed_at_epoch_seconds,
+            by: record.deployed_by.clone(),
+            restored_from: None,
+            request: None,
+            document_ref: None,
+            document: record.document.clone(),
+        };
+        let versions = crate::deploy::complete_versions(kept, current, &values)
+            .map_err(|e| format!("deployment {slug:?} in {path:?}: {e}"))?;
 
         println!("loaded deployment {:?} from {path:?} (triggers: {triggers:?})", record.slug);
         let log = Log::for_deployment(path, &record.slug);
@@ -252,7 +268,7 @@ pub(crate) fn load_deployments(
                 parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
                 log,
                 document: record.document,
-                versions: record.versions,
+                versions,
                 trigger_count: record.trigger_count,
                 error_count: record.error_count,
                 deployed_at,

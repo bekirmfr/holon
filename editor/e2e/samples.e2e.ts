@@ -600,6 +600,33 @@ test("basket reads a price inside a mapped function, per item, and its run repla
   expect((await request.post(`http://127.0.0.1:${port}/basket`, { data: { items: [{ name: `scone-${Date.now()}`, qty: 1 }] } })).status()).toBe(404);
 });
 
+test("price-rollback: an earlier version restored answers as it did, as a new version, its prices kept", async ({ page, request, adminToken }) => {
+  await openSample(page, "Price rollback (an earlier version back, its data kept)");
+  const port = await deploy(page);
+  const tea = `tea-${Date.now()}`;
+  expect((await request.put(`http://127.0.0.1:${port}/prices/${tea}`, { data: { price: 4 } })).status()).toBe(200);
+  const total = async () => ((await (await request.get(`http://127.0.0.1:${port}/quote/${tea}`)).json()) as { total: number }).total;
+  expect(await total()).toBe(4.5);
+  // Another version: its fee changed in the text, on the same port.
+  const text = readFileSync(new URL("../../crates/holon-author/samples/price-rollback.holon", import.meta.url), "utf8");
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace("port 8160", `port ${port}`).replace("fee = 0.5", "fee = 5"));
+  await settingsSayPort(page, String(port));
+  expect(await deploy(page, 0)).toBe(port);
+  expect(await total()).toBe(9);
+  // The one before it, deployed again (holon restore's endpoint): a new version naming it.
+  const auth = { Authorization: `Bearer ${adminToken}` };
+  const listed = await request.get(`${SERVER}/deployments/price-rollback/versions`, { headers: auth });
+  const versions = ((await listed.json()) as { versions: { number: number; current: boolean }[] }).versions;
+  expect(versions[0].current).toBe(true);
+  const restored = await request.post(`${SERVER}/deployments/price-rollback/restore`, { headers: auth, data: { version: versions[1].number, code: true } });
+  expect(restored.status()).toBe(200);
+  expect(((await restored.json()) as { version: number }).version).toBe(versions[0].number + 1);
+  expect(await total()).toBe(4.5);
+});
+
 test("live-board's page gets each ticket posted as a pack on its channel, and a reconnect gets the ones it missed", async ({ page, browser, request }) => {
   await openSample(page, "Live board (a channel: packs to whoever listens)");
   const port = await deploy(page);

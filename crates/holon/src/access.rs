@@ -273,6 +273,7 @@ mod tests {
             ("POST", "/deployments/a/run"),
             ("POST", "/deployments/a/pause"),
             ("POST", "/deployments/a/stop"),
+            ("POST", "/deployments/a/restore"),
             ("DELETE", "/deployments/a"),
             ("DELETE", "/flows/a"),
             ("POST", "/deployments/a/secrets/k"),

@@ -244,9 +244,14 @@ pub(crate) struct DeploymentRecord {
     pub(crate) sessions: Vec<Session>,
     #[serde(default)]
     pub(crate) document: Option<serde_json::Value>,
-    /// The documents of earlier versions, by unit.
+    /// The documents of earlier versions, as files before rc.30 kept them (`{unit, document}`, the
+    /// last 10). Read once at load, numbered and completed into `versions_kept`; never written,
+    /// so an older release reading a newer file finds no versions rather than failing on them.
+    #[serde(default, skip_serializing)]
+    pub(crate) versions: Vec<Version>,
+    /// Every version deployed, oldest first, the current one last.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) versions: Vec<KeptDocument>,
+    pub(crate) versions_kept: Vec<Version>,
     /// What the host granted it. Absent in files written before grants: such a deployment's
     /// capabilities were acknowledged when it was deployed, and it is granted them at load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -271,6 +276,8 @@ pub(crate) struct DeployResponseBody {
     /// both, or (refused before reaching this response) neither.
     pub(crate) triggers: Vec<String>,
     pub(crate) interval_seconds: Option<u64>,
+    /// The version this deploy made (`GET /deployments/<slug>/versions`).
+    pub(crate) version: u32,
 }
 
 #[derive(Serialize)]
@@ -355,10 +362,65 @@ pub(crate) fn to_hex(h: &Hash) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// An earlier version's flow document, kept so its runs show on their own canvas.
+/// One deploy of a deployment, kept for good (docs/L4s/history-L4.md): what it deployed, when,
+/// by whom, and what its deploy asked, so its runs show on their own canvas and the version can be
+/// deployed again (`POST /deployments/<slug>/restore`). The last is the current one.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub(crate) struct KeptDocument {
-    /// The version's unit (hex), as its log entries name it.
+pub(crate) struct Version {
+    /// 1 for its first deploy, then counting up; never reused, a restore included.
+    #[serde(default)]
+    pub(crate) number: u32,
+    /// Its unit (hex), as its log entries name it.
     pub(crate) unit: String,
-    pub(crate) document: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) deployed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) by: Option<String>,
+    /// The version it deployed again, when it was a restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) restored_from: Option<u32>,
+    /// What its deploy asked beside the unit, so restoring it asks the same. Absent for versions
+    /// deployed before Holon kept it (rc.29 and earlier): they open, but don't restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) request: Option<VersionRequest>,
+    /// Its flow document (canvas), by the hash of a text value holding its JSON in the content
+    /// store, so the deployments file stays small however many versions it keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) document_ref: Option<String>,
+    /// The document inline, as files kept it before `document_ref`. Read once at load, when it
+    /// moves into the store; never written.
+    #[serde(default, skip_serializing)]
+    pub(crate) document: Option<serde_json::Value>,
+}
+
+/// What a deploy asked beside its unit and document: what deploying it again asks.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct VersionRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) interval_seconds: Option<u64>,
+    #[serde(default)]
+    pub(crate) requirements: Requirements,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) uses: Option<Vec<HolonUse>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) browsers: Vec<String>,
+}
+
+/// `POST /deployments/<slug>/restore`'s body.
+#[derive(Deserialize)]
+pub(crate) struct RestoreRequestBody {
+    /// The version to go back to, by its number.
+    pub(crate) version: u32,
+    /// Its code: the one thing restored so far; must be true.
+    #[serde(default)]
+    pub(crate) code: bool,
+    /// Its state: not restored this way yet.
+    #[serde(default)]
+    pub(crate) state: bool,
+    /// What the version needs that today's grant doesn't cover, approved, as a deploy's.
+    #[serde(default)]
+    pub(crate) acknowledge: Vec<String>,
+    /// What it would ask, without deploying anything.
+    #[serde(default)]
+    pub(crate) dry_run: bool,
 }

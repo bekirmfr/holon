@@ -3341,16 +3341,104 @@ fn each_run_names_its_version_and_each_version_keeps_its_canvas() {
     assert_eq!(body_json(doc(&format!("?unit={}", to_hex(&v2))))["rev"], 2);
     let gone = doc("?unit=00ff");
     assert_eq!(gone.status_code, 404);
-    assert!(String::from_utf8(body_bytes(gone)).unwrap().contains("no longer keeps"));
+    assert!(String::from_utf8(body_bytes(gone)).unwrap().contains("keeps no canvas"));
+}
 
-    // Kept: the last KEPT_VERSIONS, newest last, a version deployed again not kept twice.
-    let mut versions = Vec::new();
-    for n in 0..12 {
-        crate::deploy::keep_version(&mut versions, format!("u{n}"), serde_json::json!(n));
+/// Every deploy is a version, kept for good; restoring an earlier one deploys its code again as a
+/// new version, checked against today's grant, and leaves the state as it is.
+#[test]
+fn every_deploy_is_a_version_and_restoring_one_is_a_new_one() {
+    let state = test_state();
+    let v1 = stage_stateful_writer(&state, test_ingress(), "a");
+    let v2 = stage_stateful_writer(&state, test_ingress(), "b");
+    let deploy = |unit: Hash, key: &str, rev: u32| {
+        let ack = serde_json::json!(["NetworkIngress", format!("StateWrite(\"{key}\")")]);
+        body_json(deploy_json(&state, "r", unit, serde_json::json!({ "acknowledge": ack, "document": { "rev": rev } })))
+    };
+    assert_eq!(deploy(v1, "a", 1)["version"], 1);
+    assert_eq!(deploy(v2, "b", 2)["version"], 2);
+    assert_eq!(route(&state, &req("POST", "/trigger/r", b"hello".to_vec())).status_code, 200);
+    let versions = || body_json(route(&state, &req("GET", "/deployments/r/versions", vec![])))["versions"].clone();
+    let listed = versions();
+    assert_eq!(listed[0]["number"], 2, "newest first");
+    assert_eq!((listed[0]["current"].clone(), listed[1]["current"].clone()), (true.into(), false.into()));
+    assert_eq!(listed[1]["unit"], to_hex(&v1));
+    assert_eq!(listed[1]["restorable"], true);
+
+    let restore = |body: serde_json::Value| route(&state, &req("POST", "/deployments/r/restore", body.to_string().into_bytes()));
+    // v1 writes `a`, which the grant v2 has now doesn't cover: approved again, not inherited.
+    let preview = body_json(restore(serde_json::json!({ "version": 1, "code": true, "dry_run": true })));
+    assert_eq!(preview["needs_approval"], serde_json::json!(["StateWrite(\"a\")"]));
+    assert_eq!(versions().as_array().unwrap().len(), 2, "a dry run deploys nothing");
+    let unapproved = restore(serde_json::json!({ "version": 1, "code": true }));
+    assert_eq!(unapproved.status_code, 400);
+    assert!(String::from_utf8(body_bytes(unapproved)).unwrap().contains("StateWrite(\\\"a\\\")"));
+
+    let done = body_json(restore(serde_json::json!({ "version": 1, "code": true, "acknowledge": ["StateWrite(\"a\")"] })));
+    assert_eq!((done["version"].clone(), done["unit"].clone()), (3.into(), to_hex(&v1).into()));
+    let listed = versions();
+    assert_eq!((listed[0]["number"].clone(), listed[0]["restored_from"].clone(), listed[0]["current"].clone()), (3.into(), 1.into(), true.into()));
+    assert_eq!(body_json(route(&state, &req("GET", "/deployments/r/document", vec![])))["rev"], 1, "its canvas came back with it");
+    let st = body_json(route(&state, &req("GET", "/deployments/r/state", vec![])));
+    assert!(st.to_string().contains("\"b\""), "the state is as v2 left it: {st}");
+    assert_eq!(route(&state, &req("POST", "/trigger/r", b"again".to_vec())).status_code, 200, "it runs as v1 again");
+    let log = body_json(route(&state, &req("GET", "/deployments/r/log", vec![])));
+    assert_eq!(log["entries"].as_array().unwrap().last().unwrap()["unit"], to_hex(&v1));
+
+    for (body, status) in [
+        (serde_json::json!({ "version": 3, "code": true }), 409),
+        (serde_json::json!({ "version": 9, "code": true }), 404),
+        (serde_json::json!({ "version": 2 }), 400),
+        (serde_json::json!({ "version": 2, "code": true, "state": true }), 400),
+    ] {
+        assert_eq!(restore(body.clone()).status_code, status, "{body}");
     }
-    crate::deploy::keep_version(&mut versions, "u5".into(), serde_json::json!("again"));
-    let kept: Vec<&str> = versions.iter().map(|v| v.unit.as_str()).collect();
-    assert_eq!(kept, ["u2", "u3", "u4", "u6", "u7", "u8", "u9", "u10", "u11", "u5"]);
+    assert_eq!(route(&state, &req("POST", "/deployments/nope/restore", br#"{"version":1,"code":true}"#.to_vec())).status_code, 404);
+}
+
+/// A deployments file from before rc.30 kept the last 10 earlier versions' documents only: they
+/// are numbered and their documents moved into the store at load, the current version added. They
+/// open on their canvas but don't restore, having no record of what their deploys asked.
+#[test]
+fn versions_from_before_are_numbered_and_open_but_dont_restore() {
+    let state = test_state();
+    let legacy = |unit: &str, doc: serde_json::Value| -> crate::wire::Version {
+        serde_json::from_value(serde_json::json!({ "unit": unit, "document": doc })).unwrap()
+    };
+    let current = || crate::wire::Version { document: Some(serde_json::json!(3)), ..legacy("u3", serde_json::Value::Null) };
+    let versions = crate::deploy::complete_versions(vec![legacy("u1", serde_json::json!(1)), legacy("u2", serde_json::json!(2))], current(), &state.store).unwrap();
+    assert_eq!(versions.iter().map(|v| (v.number, v.unit.as_str())).collect::<Vec<_>>(), [(1, "u1"), (2, "u2"), (3, "u3")]);
+    assert!(versions.iter().all(|v| v.document.is_none() && v.document_ref.is_some() && v.request.is_none()));
+    // Written again and read back: nothing added twice.
+    let again = crate::deploy::complete_versions(versions.clone(), current(), &state.store).unwrap();
+    assert_eq!(again, versions);
+}
+
+/// A deployment's versions survive a restart, and an older release's reader finds none rather
+/// than failing on them (they are written under a new name).
+#[test]
+fn versions_survive_a_restart() {
+    let mut state = test_state();
+    let path = unique_temp_path("kept-versions");
+    state.deployments_path = path.clone();
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"], "document": { "rev": 1 } });
+    assert_eq!(deploy_json(&state, "kept", writer, ack.clone()).status_code, 200);
+    assert_eq!(deploy_json(&state, "kept", writer, ack).status_code, 200);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(file[0].get("versions").is_none(), "the old name isn't written");
+    let kept = file[0]["versions_kept"].as_array().unwrap();
+    assert_eq!(kept.len(), 2);
+    assert!(kept.iter().all(|v| v.get("document").is_none() && v["document_ref"].is_string()), "canvases are kept by hash, not inline");
+
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let versions = &reloaded["kept"].versions;
+    assert_eq!(versions.iter().map(|v| v.number).collect::<Vec<_>>(), [1, 2]);
+    assert!(versions.iter().all(|v| v.request.is_some() && v.document_ref.is_some()));
+    route(&state, &req("POST", "/deployments/kept/stop", vec![]));
+    assert_eq!(route(&state, &req("DELETE", "/deployments/kept", vec![])).status_code, 200);
+    let _ = std::fs::remove_file(&path);
 }
 
 /// A deployment's flow log is kept beside the deployments file: a restart reads it back, so a
