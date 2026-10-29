@@ -78,6 +78,11 @@ pub struct LogEntry {
     pub sourced: Vec<(String, SValue)>,
     /// The deployment's state when the run began: what every `store_read` saw.
     pub state_before: BTreeMap<String, SValue>,
+    /// The state it left, once it committed: the hash of a snapshot in the content store
+    /// (`restore::save_snapshot`), what `holon restore --to-run` puts back. Absent for a
+    /// deployment without state, a run that didn't commit, and entries logged before rc.30.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_after: Option<String>,
     /// The unit's settled outputs (an endpoint's: response first, then effects).
     pub outputs: Vec<Option<SValue>>,
     /// The effects the host performed.
@@ -584,6 +589,7 @@ mod tests {
             request: None,
             sourced: vec![],
             state_before: BTreeMap::new(),
+            state_after: None,
             outputs: vec![],
             performed: vec![],
             response_body: None,

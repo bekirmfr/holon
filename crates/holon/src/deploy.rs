@@ -342,6 +342,13 @@ fn deploy(
         // again; one deployed without a canvas keeps the canvas it had.
         version = versions.last().map_or(1, |v| v.number + 1);
         let document_ref = document_ref.or_else(|| versions.last().and_then(|v| v.document_ref.clone()));
+        let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
+        // And the state it carries, as a snapshot: the state the version before it left.
+        let state_at_deploy = carried.as_ref().and_then(|arc| {
+            crate::restore::save_snapshot(&arc.state.lock().unwrap(), None, store)
+                .map_err(|e| eprintln!("holon: {}: the state version {version} carried wasn't kept: {e}", body.slug))
+                .ok()
+        });
         versions.push(Version {
             number: version,
             unit: to_hex(&unit_hash),
@@ -355,10 +362,11 @@ fn deploy(
                 browsers: body.browsers.clone(),
             }),
             document_ref,
+            state_at_deploy,
+            first_seq: Some(log.next_seq()),
             document: None,
         });
         let document = body.document.clone().or(old_document);
-        let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
         // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
         let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
         // Runs waiting keep waiting, each on the unit it started on.
@@ -470,15 +478,28 @@ fn preview(
     body: &DeployRequestBody,
     agent: bool,
 ) -> Response {
+    match preview_value(store, deployments, policy, secrets, folders, body, agent) {
+        Ok(v) => Response::json(&v),
+        Err(r) => r,
+    }
+}
+
+/// What `preview` answers, for a restore to add to.
+fn preview_value(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    policy: &Policy,
+    secrets: &SecretStore,
+    folders: &Arc<folders::Folders>,
+    body: &DeployRequestBody,
+    agent: bool,
+) -> Result<serde_json::Value, Response> {
     let Some(unit_hash) = parse_hash(&body.unit) else {
-        return err(400, "unit is not a 64-char hex hash");
+        return Err(err(400, "unit is not a 64-char hex hash"));
     };
-    let resolver = match materialize_closure(store, unit_hash) {
-        Ok(r) => r,
-        Err(e) => return e.response(),
-    };
+    let resolver = materialize_closure(store, unit_hash).map_err(|e| e.response())?;
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
-        return err(404, "no unit stored at that hash — stage or publish it first");
+        return Err(err(404, "no unit stored at that hash — stage or publish it first"));
     };
     // As the deploy will derive it: on a schedule, it runs on the clock.
     let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
@@ -490,7 +511,7 @@ fn preview(
     }
     let items = manifest.items();
     let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
-    Response::json(&serde_json::json!({
+    Ok(serde_json::json!({
         "manifest": to_hex(&manifest.hash()),
         "items": items,
         "needs_approval": needs,
@@ -1099,8 +1120,9 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
     let versions: Vec<serde_json::Value> = dep
         .versions
         .iter()
+        .enumerate()
         .rev()
-        .map(|v| {
+        .map(|(i, v)| {
             serde_json::json!({
                 "number": v.number,
                 "unit": v.unit,
@@ -1110,18 +1132,31 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
                 "current": Some(v.number) == current,
                 "restorable": v.request.is_some(),
                 "canvas": v.document_ref.is_some(),
+                // The state it left is kept: the one the next version carried.
+                "state_kept": dep.versions.get(i + 1).is_some_and(|next| next.state_at_deploy.is_some()),
             })
         })
         .collect();
     Response::json(&serde_json::json!({ "slug": slug, "versions": versions }))
 }
 
-/// `POST /deployments/<slug>/restore` (`{"version": n, "code": true}`) — deploy an earlier
-/// version's code again (docs/L4s/history-L4.md §4): its unit, with what its deploy asked and its
-/// canvas, as a new version that names the one it restores. It is a deploy like any other,
-/// checked against today's policy and grant rather than those it had: what it needs that isn't
-/// granted now is approved again (`acknowledge`), and `"dry_run": true` says what that is,
-/// deploying nothing. The state stays as it is.
+/// `POST /deployments/<slug>/restore` — go back to an earlier point (docs/L4s/history-L4.md §4): a
+/// version (`"version": n`) or a run (`"run": seq`), its code (`"code": true`), its state
+/// (`"state": true`), or both.
+///
+/// - **Code** is deployed again: the version's unit (for a run, the version it ran on), with what
+///   its deploy asked and its canvas, as a new version that names the one it restores. It is a
+///   deploy like any other, checked against today's policy and grant rather than those it had:
+///   what it needs that isn't granted now is approved again (`acknowledge`).
+/// - **State** is put back as the live state: the state a version left (the one the version after
+///   it carried when deployed), or a run left. The session ends, keeping the state it replaces,
+///   and a new one starts from the one put back (`Lifecycle::restart`), so a restore can be undone
+///   in turn. The deployment must be running or paused.
+///
+/// Both together: the code first, then the state, and nothing changes if the state can't be read.
+/// `"dry_run": true` changes nothing and says what it would: the deploy's preview for code, and for
+/// state, the keys it would change and the runs logged since that point, with the outside effects
+/// they performed, which a restore doesn't undo.
 pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Request, by: Option<&str>, agent: bool) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -1131,63 +1166,229 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid restore request JSON: {e}")),
     };
-    if restore.state {
-        return err(
-            400,
-            "restoring a version's state isn't built yet: to start from an earlier state, stop the deployment and run it from a session's (POST /deployments/<slug>/run {\"from\": <session>})",
-        );
+    if !restore.code && !restore.state {
+        return err(400, "say what to restore: \"code\": true, \"state\": true, or both");
     }
-    if !restore.code {
-        return err(400, "say what to restore: \"code\": true deploys the version's code again");
-    }
-    let (version, document) = {
-        let deployments = state.deployments.lock().unwrap();
-        let Some(dep) = deployments.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
-        let Some(version) = dep.versions.iter().find(|v| v.number == restore.version).cloned() else {
-            let newest = dep.versions.last().map_or(0, |v| v.number);
-            return err(404, format!("{slug:?} has no version {}: its versions are 1 to {newest}", restore.version));
-        };
-        if dep.versions.last().is_some_and(|v| v.number == version.number) {
-            return err(409, format!("version {} is the one deployed now", version.number));
-        }
-        let document = version_document(&state.store, &version);
-        (version, document)
+    let point = match (restore.version, restore.run) {
+        (Some(n), None) => Point::Version(n),
+        (None, Some(seq)) => Point::Run(seq),
+        _ => return err(400, "name one point to go back to: \"version\": N or \"run\": SEQ"),
     };
-    let Some(asked) = version.request.clone() else {
-        return err(
-            409,
-            format!(
-                "version {} was deployed before Holon kept what a deploy asks (rc.29 or earlier), so it can't be restored as it was: open its canvas and deploy it again from the editor",
-                version.number
-            ),
-        );
+    let Plan { code, state: put_back } = match restore_plan(state, slug, point, restore.code, restore.state) {
+        Ok(p) => p,
+        Err(r) => return r,
     };
-    let body = DeployRequestBody {
-        slug: slug.to_string(),
-        unit: version.unit.clone(),
-        interval_seconds: asked.interval_seconds,
-        acknowledge: restore.acknowledge,
-        document,
-        requirements: asked.requirements,
-        uses: asked.uses,
-        browsers: asked.browsers,
-    };
+    let code = code.map(|(n, body)| (n, DeployRequestBody { acknowledge: restore.acknowledge, ..body }));
     if restore.dry_run {
-        return preview(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, &body, agent);
+        let mut answer = match &code {
+            Some((_, body)) => match preview_value(&state.store, &state.deployments, &state.policy(), &state.secrets, &state.folders, body, agent) {
+                Ok(v) => v,
+                Err(r) => return r,
+            },
+            None => serde_json::json!({}),
+        };
+        answer["code"] = serde_json::json!(code.as_ref().map(|(n, _)| n));
+        if let Some((snapshot, label, since)) = &put_back {
+            answer["state"] = match state_change(state, slug, snapshot, label, since) {
+                Ok(v) => v,
+                Err(r) => return r,
+            };
+        }
+        return Response::json(&answer);
     }
-    deploy(
-        &state.store,
-        &state.deployments,
-        &state.deployments_path,
-        &state.policy(),
-        &state.secrets,
-        &state.folders,
-        body,
-        by,
-        agent,
-        &state.activity,
-        Some(version.number),
-    )
+    // The state is read (and checked) before anything changes.
+    let put_back = match put_back.map(|(snapshot, label, _)| crate::restore::load_snapshot(&snapshot, &state.store).map(|s| (s, label.clone())).map_err(|e| (e, label))).transpose() {
+        Ok(p) => p,
+        Err((e, label)) => return err(500, format!("the state {label} left can't be read: {e}")),
+    };
+    let mut answer = serde_json::json!({ "slug": slug });
+    if let Some((number, body)) = code {
+        let deployed =
+            deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, &state.folders, body, by, agent, &state.activity, Some(number));
+        if !deployed.is_success() {
+            return deployed;
+        }
+        if let Some(v) = state.deployments.lock().unwrap().get(slug).and_then(|d| d.versions.last()) {
+            answer["version"] = serde_json::json!(v.number);
+            answer["unit"] = serde_json::json!(v.unit);
+        }
+        answer["code"] = serde_json::json!(number);
+    }
+    if let Some((loaded, label)) = put_back {
+        let session = match put_state_back(state, slug, loaded, &label) {
+            Ok(n) => n,
+            Err(r) => return r,
+        };
+        persist_deployments(&state.deployments_path, &state.deployments, &state.store);
+        state.activity.record("restored state", slug, by);
+        answer["state"] = serde_json::json!({ "from": label, "session": session });
+    }
+    Response::json(&answer)
+}
+
+/// The point a restore goes back to.
+#[derive(Clone, Copy)]
+enum Point {
+    Version(u32),
+    Run(u64),
+}
+
+/// What a restore puts back, worked out before anything changes.
+struct Plan {
+    /// The version whose code is deployed again, and its deploy as it asked it.
+    code: Option<(u32, DeployRequestBody)>,
+    /// The snapshot put back as the state, what it is (`"version 3"`, `"run 41"`), and the runs
+    /// logged since.
+    state: Option<(String, String, Vec<LogEntry>)>,
+}
+
+fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_state: bool) -> Result<Plan, Response> {
+    let deployments = state.deployments.lock().unwrap();
+    let Some(dep) = deployments.get(slug) else { return Err(err(404, format!("no deployment {slug:?}"))) };
+    let current = dep.versions.last();
+    if with_state {
+        if dep.state.is_none() {
+            return Err(err(409, format!("{slug:?} keeps no state: there is none to restore")));
+        }
+        if dep.life.status == Status::Stopped {
+            return Err(err(409, format!("can't restore {slug:?}'s state: {}", crate::lifecycle::LifecycleError::Stopped.message())));
+        }
+    }
+    let kept = dep.log.after(None, usize::MAX);
+    let (version, put_back) = match point {
+        Point::Version(n) => {
+            let Some(i) = dep.versions.iter().position(|v| v.number == n) else {
+                let newest = current.map_or(0, |v| v.number);
+                return Err(err(404, format!("{slug:?} has no version {n}: its versions are 1 to {newest}")));
+            };
+            let Some(next) = dep.versions.get(i + 1) else {
+                let has = if with_state { ", and the state it left is the live one" } else { "" };
+                return Err(err(409, format!("version {n} is the one deployed now{has}")));
+            };
+            let put_back = if with_state {
+                let Some(snapshot) = next.state_at_deploy.clone() else {
+                    return Err(err(
+                        409,
+                        format!(
+                            "the state version {n} left wasn't kept: version {} was deployed before Holon kept the state a deploy carries (rc.29 or earlier)",
+                            next.number
+                        ),
+                    ));
+                };
+                let since = next.first_seq.unwrap_or_default();
+                Some((snapshot, format!("version {n}"), kept.into_iter().filter(|e| e.seq >= since).collect()))
+            } else {
+                None
+            };
+            (code.then(|| dep.versions[i].clone()), put_back)
+        }
+        Point::Run(seq) => {
+            let Some(entry) = kept.iter().find(|e| e.seq == seq) else {
+                return Err(err(
+                    404,
+                    if seq >= dep.log.next_seq() {
+                        format!("{slug:?} has no run {seq} yet")
+                    } else {
+                        format!("run {seq} isn't in {slug:?}'s log any more: it keeps the newest {} runs", crate::recorder::keep())
+                    },
+                ));
+            };
+            let put_back = if with_state {
+                let Some(snapshot) = entry.state_after.clone() else {
+                    return Err(err(
+                        409,
+                        format!("run {seq} left no state to restore: it didn't commit, or it ran before Holon kept the state runs leave (rc.29 or earlier)"),
+                    ));
+                };
+                Some((snapshot, format!("run {seq}"), kept.iter().filter(|e| e.seq > seq).cloned().collect()))
+            } else {
+                None
+            };
+            // Its code: the newest version deployed with the unit it ran on, unless that is the
+            // code deployed now.
+            let version = if !code {
+                None
+            } else if current.is_some_and(|c| c.unit == entry.unit) {
+                if !with_state {
+                    return Err(err(409, format!("run {seq} ran on the code deployed now")));
+                }
+                None
+            } else {
+                match dep.versions.iter().rev().find(|v| v.unit == entry.unit) {
+                    Some(v) => Some(v.clone()),
+                    None => return Err(err(409, format!("the code run {seq} ran on isn't one of {slug:?}'s versions"))),
+                }
+            };
+            (version, put_back)
+        }
+    };
+    let code = match version {
+        None => None,
+        Some(v) => {
+            let Some(asked) = v.request.clone() else {
+                return Err(err(
+                    409,
+                    format!(
+                        "version {} was deployed before Holon kept what a deploy asks (rc.29 or earlier), so it can't be restored as it was: open its canvas and deploy it again from the editor",
+                        v.number
+                    ),
+                ));
+            };
+            let body = DeployRequestBody {
+                slug: slug.to_string(),
+                unit: v.unit.clone(),
+                interval_seconds: asked.interval_seconds,
+                acknowledge: Vec::new(),
+                document: version_document(&state.store, &v),
+                requirements: asked.requirements,
+                uses: asked.uses,
+                browsers: asked.browsers,
+            };
+            Some((v.number, body))
+        }
+    };
+    Ok(Plan { code, state: put_back })
+}
+
+/// What putting `snapshot` back would change: the keys whose values differ, those it brings back
+/// and those it drops, and the runs logged since `label`, with the outside effects they performed
+/// (calls, files, database rows, messages), which a restore doesn't undo. Writes to the
+/// deployment's own state and collections aren't counted: those are what it puts back.
+fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since: &[LogEntry]) -> Result<serde_json::Value, Response> {
+    let back = crate::restore::snapshot_refs(snapshot, &state.store).map_err(|e| err(500, format!("the state {label} left can't be read: {e}")))?;
+    let live = state.deployments.lock().unwrap().get(slug).and_then(|d| d.state.clone());
+    let now = live.map(|arc| arc.state.lock().unwrap().refs()).unwrap_or_default();
+    let changed: Vec<&String> = back.iter().filter(|(k, h)| now.get(*k).is_some_and(|n| n != *h)).map(|(k, _)| k).collect();
+    let added: Vec<&String> = back.keys().filter(|k| !now.contains_key(*k)).collect();
+    let removed: Vec<&String> = now.keys().filter(|k| !back.contains_key(*k)).collect();
+    let mut effects: BTreeMap<&str, u64> = BTreeMap::new();
+    for p in since.iter().flat_map(|e| &e.performed) {
+        let name = p.capability.split('(').next().unwrap_or_default();
+        if name != "StateWrite" && name != "CollectionWrite" && !name.ends_with("Read") {
+            *effects.entry(name).or_default() += 1;
+        }
+    }
+    Ok(serde_json::json!({
+        "from": label,
+        "changed": changed,
+        "added": added,
+        "removed": removed,
+        "runs_since": since.len(),
+        "effects_since": effects,
+    }))
+}
+
+/// Make `loaded` `slug`'s live state, in a new session: the one it replaces is kept as the ending
+/// session's, as a stop keeps it. Answers the new session's number.
+fn put_state_back(state: &AppState, slug: &str, loaded: State, label: &str) -> Result<u32, Response> {
+    let mut table = state.deployments.lock().unwrap();
+    let Some(dep) = table.get_mut(slug) else { return Err(err(404, format!("no deployment {slug:?}"))) };
+    let Some(arc) = dep.state.clone() else { return Err(err(409, format!("{slug:?} keeps no state: there is none to restore"))) };
+    let mut live = arc.state.lock().unwrap();
+    let refs = live.save(&mut state.store.clone()).map_err(|e| err(500, format!("the state it has now couldn't be kept: {e:?}")))?;
+    dep.life.restart(Some(&refs), label, epoch_now()).map_err(|e| err(409, format!("can't restore {slug:?}'s state: {}", e.message())))?;
+    *live = loaded;
+    Ok(dep.life.sessions.last().map_or(0, |s| s.number))
 }
 
 pub(crate) fn epoch_now() -> u64 {

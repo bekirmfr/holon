@@ -192,24 +192,41 @@ Any change to a flow is a new version. **update** deploys it in place:
 - each run records its version, and view mode shows a run on the canvas it ran on.
 
 Every deploy is a version, numbered from 1 and kept for good: its unit, its canvas, when and by
-whom, and what its deploy asked. `GET /deployments/<slug>/versions` lists them.
+whom, what its deploy asked, and the state it was deployed with. `GET /deployments/<slug>/versions`
+lists them. Every run keeps the state it left, too: its line in the log names it.
 
 ### Going back to an earlier version
 
-`holon restore <slug>` lists the versions; `holon restore <slug> --to N --code` deploys version
-N's code again. It is a new version that names the one it restores, never a rewrite: the history
-keeps the version it replaces, which can be restored in turn.
+`holon restore <slug>` lists the versions. Going back takes a point, a version (`--to N`) or a run
+(`--to-run SEQ`, its number in the log), and what of it to restore, its code (`--code`), its state
+(`--state`), or both:
 
-- **Checked against today's grant**, not the one it had: a secret revoked since stays revoked, and
-  what it needs that isn't granted now is listed. `--approve` approves exactly that list; without
-  it nothing changes. `--dry-run` says what it would ask.
-- **Its state stays as it is.** Only the code goes back; the state, collections and sessions are
-  the deployment's as they are now. To start from an earlier state, stop the deployment and run it
-  **from session N**.
-- **Versions deployed before rc.30** open on their canvas, but don't restore: what their deploys
-  asked wasn't kept. Open or import one and update again.
+| | `--code` | `--state` |
+|---|---|---|
+| `--to N` | version N's code, deployed again | the state version N left: the one the version after it was deployed with |
+| `--to-run SEQ` | the code the run ran on, unless that is the code deployed now | the state the run left |
+
+Nothing is rewritten: what a restore replaces stays restorable in turn.
+
+- **Code** is deployed again as a new version that names the one it restores. It is checked against
+  **today's grant**, not the one it had: a secret revoked since stays revoked, and what it needs
+  that isn't granted now is listed. `--approve` approves exactly that list; without it nothing
+  changes.
+- **State** (state, collections) is put back as the live state, in a **new session**: the session
+  ends as a stop would, keeping the state it replaces as its own, and a new one starts from the
+  state put back, named after it (`run 41`, `version 3`). The deployment must be running or paused;
+  a stopped one runs **from session N** instead. Runs waiting at an `await` carry on against the
+  state put back.
+- **Both**: the code first, then the state; nothing changes if either can't be done.
+- **`--dry-run`** says what it would do: what the code would ask, which keys the state would change,
+  and how many runs were logged since that point and what they did outside the state: calls out,
+  file and database writes, messages. A restore doesn't undo those: a refund sent stays sent.
+- **Before rc.30**, versions open on their canvas but don't restore their code (what their deploys
+  asked wasn't kept), and neither versions nor runs kept the state they left. Open or import one and
+  update again.
 - Restoring is an editor's or an admin's: an agent can't (`POST /deployments/<slug>/restore`,
-  `{"version": N, "code": true}`, with `"dry_run": true` or `"acknowledge": […]`).
+  `{"version": N}` or `{"run": SEQ}`, with `"code": true`, `"state": true` or both, and
+  `"dry_run": true` or `"acknowledge": […]`).
 
 The sample **price-rollback** walks through it.
 
@@ -219,6 +236,7 @@ The sample **price-rollback** walks through it.
   is lost. **resume** carries on.
 - **stop**: the same, and ends the session. **run** starts a new one, **from latest** (the state
   as it was), **fresh** (empty state) or **from session N** (the state a kept session ended with).
+  A state put back with `holon restore --state` starts a new session too, without stopping.
 - **delete** (once stopped, on the deployed page) removes the deployment and its stored state.
   It can't be undone. `holon export` its runs first if you need them.
 

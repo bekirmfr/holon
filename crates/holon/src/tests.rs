@@ -3344,7 +3344,7 @@ fn each_run_names_its_version_and_each_version_keeps_its_canvas() {
     assert!(String::from_utf8(body_bytes(gone)).unwrap().contains("keeps no canvas"));
 }
 
-/// Every deploy is a version, kept for good; restoring an earlier one deploys its code again as a
+/// Every deploy is a version, kept for good; restoring an earlier one's code deploys it again as a
 /// new version, checked against today's grant, and leaves the state as it is.
 #[test]
 fn every_deploy_is_a_version_and_restoring_one_is_a_new_one() {
@@ -3389,11 +3389,114 @@ fn every_deploy_is_a_version_and_restoring_one_is_a_new_one() {
         (serde_json::json!({ "version": 3, "code": true }), 409),
         (serde_json::json!({ "version": 9, "code": true }), 404),
         (serde_json::json!({ "version": 2 }), 400),
-        (serde_json::json!({ "version": 2, "code": true, "state": true }), 400),
+        (serde_json::json!({ "version": 2, "run": 1, "code": true }), 400),
     ] {
         assert_eq!(restore(body.clone()).status_code, status, "{body}");
     }
     assert_eq!(route(&state, &req("POST", "/deployments/nope/restore", br#"{"version":1,"code":true}"#.to_vec())).status_code, 404);
+}
+
+/// The state a run left, or a version left, is put back as the live state, in a new session: the
+/// state it replaces is kept as the last session's and can be put back in turn. A dry run says
+/// which keys would change and how many runs were logged since; a stopped deployment, a run not
+/// in the log and the version deployed now are refused.
+#[test]
+fn a_runs_or_a_versions_state_is_put_back_in_a_new_session() {
+    let state = test_state();
+    let writer = stage_stateful_writer(&state, test_ingress(), "a");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"a\")"] });
+    assert_eq!(deploy_json(&state, "s", writer, ack.clone()).status_code, 200);
+    let fire = |text: &str| assert_eq!(route(&state, &req("POST", "/trigger/s", text.as_bytes().to_vec())).status_code, 200);
+    fire("one");
+    fire("two");
+    let log = body_json(route(&state, &req("GET", "/deployments/s/log", vec![])));
+    let entries = log["entries"].as_array().unwrap().clone();
+    let (one, two) = (entries[0]["seq"].as_u64().unwrap(), entries[1]["seq"].as_u64().unwrap());
+    assert!(entries.iter().all(|e| e["state_after"].is_string()), "each run names the state it left");
+    let now = || body_json(route(&state, &req("GET", "/deployments/s/state", vec![]))).to_string();
+    let restore = |body: serde_json::Value| route(&state, &req("POST", "/deployments/s/restore", body.to_string().into_bytes()));
+
+    let dry = body_json(restore(serde_json::json!({ "run": one, "state": true, "dry_run": true })));
+    assert_eq!(dry["state"]["changed"], serde_json::json!(["a"]));
+    assert_eq!((dry["state"]["runs_since"].clone(), dry["state"]["effects_since"].clone()), (1.into(), serde_json::json!({})));
+    assert!(dry["code"].is_null(), "no code to deploy");
+    assert!(now().contains("\"two\""), "a dry run changes nothing");
+
+    let done = body_json(restore(serde_json::json!({ "run": one, "state": true })));
+    assert_eq!((done["state"]["from"].clone(), done["state"]["session"].clone()), (format!("run {one}").into(), 2.into()));
+    assert!(now().contains("\"one\"") && !now().contains("\"two\""), "run {one}'s state is live: {}", now());
+    let sessions = body_json(route(&state, &req("GET", "/deployments/s/sessions", vec![])));
+    let s = |i: usize| sessions["sessions"][i].clone();
+    assert_eq!(s(0)["state"]["a"]["value"], "two", "the state it replaced is session 1's");
+    assert_eq!((s(1)["from"].clone(), s(1)["ended_at"].clone()), (format!("run {one}").into(), serde_json::Value::Null));
+    assert_eq!(body_json(restore(serde_json::json!({ "run": two, "state": true })))["state"]["session"], 3, "and is put back in turn");
+    assert!(now().contains("\"two\""));
+
+    // A version's state is the state the version after it was deployed with.
+    assert_eq!(deploy_json(&state, "s", writer, ack).status_code, 200);
+    fire("three");
+    let dry = body_json(restore(serde_json::json!({ "version": 1, "state": true, "dry_run": true })));
+    assert_eq!((dry["state"]["changed"].clone(), dry["state"]["runs_since"].clone()), (serde_json::json!(["a"]), 1.into()));
+    let versions = body_json(route(&state, &req("GET", "/deployments/s/versions", vec![])))["versions"].clone();
+    assert_eq!((versions[0]["state_kept"].clone(), versions[1]["state_kept"].clone()), (false.into(), true.into()));
+    assert_eq!(body_json(restore(serde_json::json!({ "version": 1, "state": true })))["state"]["from"], "version 1");
+    assert!(now().contains("\"two\""), "the state version 1 left: {}", now());
+
+    let log = body_json(route(&state, &req("GET", "/deployments/s/log", vec![])));
+    let three = log["entries"].as_array().unwrap().last().unwrap()["seq"].as_u64().unwrap();
+    for (body, status) in [
+        (serde_json::json!({ "version": 2, "state": true }), 409),
+        (serde_json::json!({ "run": three + 9, "state": true }), 404),
+        (serde_json::json!({ "run": three, "code": true }), 409),
+        (serde_json::json!({ "version": 1, "run": three, "state": true }), 400),
+        (serde_json::json!({ "run": three }), 400),
+    ] {
+        assert_eq!(restore(body.clone()).status_code, status, "{body}");
+    }
+    route(&state, &req("POST", "/deployments/s/stop", vec![]));
+    let stopped = restore(serde_json::json!({ "run": three, "state": true }));
+    assert_eq!(stopped.status_code, 409);
+    assert!(String::from_utf8(body_bytes(stopped)).unwrap().contains("it is stopped"));
+}
+
+/// A run on an earlier version restores both: that version's code again, as a new version, then
+/// the state the run left. A deployment without state has none to restore.
+#[test]
+fn a_runs_code_and_state_come_back_together() {
+    let state = test_state();
+    let v1 = stage_stateful_writer(&state, test_ingress(), "a");
+    let v2 = stage_stateful_writer(&state, test_ingress(), "b");
+    let deploy = |unit: Hash, key: &str| {
+        let ack = serde_json::json!(["NetworkIngress", format!("StateWrite(\"{key}\")")]);
+        deploy_json(&state, "both", unit, serde_json::json!({ "acknowledge": ack })).status_code
+    };
+    let fire = |text: &str| assert_eq!(route(&state, &req("POST", "/trigger/both", text.as_bytes().to_vec())).status_code, 200);
+    assert_eq!(deploy(v1, "a"), 200);
+    fire("first");
+    let seq = body_json(route(&state, &req("GET", "/deployments/both/log", vec![])))["entries"][0]["seq"].as_u64().unwrap();
+    assert_eq!(deploy(v2, "b"), 200);
+    fire("second");
+    let restore = |body: serde_json::Value| route(&state, &req("POST", "/deployments/both/restore", body.to_string().into_bytes()));
+
+    let dry = body_json(restore(serde_json::json!({ "run": seq, "code": true, "state": true, "dry_run": true })));
+    assert_eq!(dry["code"], 1, "the version it ran on");
+    assert_eq!(dry["needs_approval"], serde_json::json!(["StateWrite(\"a\")"]));
+    assert_eq!(dry["state"]["removed"], serde_json::json!(["b"]), "b was written since");
+    let unapproved = restore(serde_json::json!({ "run": seq, "code": true, "state": true }));
+    assert_eq!(unapproved.status_code, 400);
+    assert_eq!(body_json(route(&state, &req("GET", "/deployments/both/versions", vec![])))["versions"].as_array().unwrap().len(), 2, "nothing changed");
+
+    let done = body_json(restore(serde_json::json!({ "run": seq, "code": true, "state": true, "acknowledge": ["StateWrite(\"a\")"] })));
+    assert_eq!((done["code"].clone(), done["version"].clone(), done["unit"].clone()), (1.into(), 3.into(), to_hex(&v1).into()));
+    assert_eq!(done["state"]["from"], format!("run {seq}"));
+    let st = body_json(route(&state, &req("GET", "/deployments/both/state", vec![]))).to_string();
+    assert!(st.contains("\"first\"") && !st.contains("\"second\""), "the state run {seq} left: {st}");
+
+    let plain = stage_ingress_plus_driver(&state, test_random());
+    assert_eq!(deploy_json(&state, "plain", plain, serde_json::json!({ "acknowledge": ["NetworkIngress", "Random"] })).status_code, 200);
+    let none = route(&state, &req("POST", "/deployments/plain/restore", br#"{"version":1,"state":true}"#.to_vec()));
+    assert_eq!(none.status_code, 409);
+    assert!(String::from_utf8(body_bytes(none)).unwrap().contains("keeps no state"));
 }
 
 /// A deployments file from before rc.30 kept the last 10 earlier versions' documents only: they

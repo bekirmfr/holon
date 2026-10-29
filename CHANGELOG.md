@@ -12,6 +12,16 @@
   restore, and canvases move from the deployments file into the content store. Versions are
   written under a new name (`versions_kept`), so an older release reading the file finds none
   rather than failing.
+- **An earlier state restores too: a version's or a run's.** Each run's line in the log names the
+  state it left (`state_after`, a snapshot in the content store holding only what it changed), and
+  each version the state it was deployed with. `holon restore <slug> --to N --state` puts back the
+  state version N left, `--to-run SEQ --state` the state run SEQ left; `--code --state` both, the
+  code first. A state put back starts a new session named after it (`run 41`), the state it
+  replaces kept as the last session's, so a restore can be restored past. The deployment must be
+  running or paused. `--dry-run` lists the keys it would change, and the runs since with what they
+  did outside (calls, file and database writes, messages), which a restore doesn't undo
+  (`POST /deployments/<slug>/restore`, `{"run": SEQ, "state": true}`). Runs and versions from
+  before keep no state to restore. The **price-rollback** sample puts its prices back.
 
 ## 0.1.0-rc.29
 

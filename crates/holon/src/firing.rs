@@ -99,6 +99,8 @@ pub(crate) struct FiredRun {
     pub(crate) secrets: BTreeMap<String, String>,
     /// The credentials its calls answered to requests that held a secret (`secrets::answered_tokens`).
     pub(crate) answered: recorder::AnswerTokens,
+    /// The state it left, once committed: a snapshot's hash (`restore::save_snapshot`).
+    pub(crate) state_after: Option<String>,
 }
 
 /// How many times a run is tried without holding its state's lock before it runs holding it.
@@ -225,6 +227,7 @@ pub(crate) fn fire_with_state(
                         }
                     };
                     if done {
+                        a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
                         a.run.retries = retries;
                         if let Some(c) = waits.claiming.take() {
                             a.run.claims = c.finish();
@@ -292,6 +295,7 @@ pub(crate) fn fire_with_state(
                 databases::Commit::Done(mut failed, db) => {
                     failed.extend(db);
                     not_all_written(&mut a.run, failed);
+                    a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
                 }
                 databases::Commit::Refused(why) => refused(&mut a.run, &why),
                 databases::Commit::Again(why) => nothing_written(&mut a.run, &why),
@@ -446,6 +450,15 @@ fn still_as_read(
         }
         files.as_mut().is_none_or(|files| files.answer(&r.request, false).is_ok_and(|(answer, _)| answer == r.answer))
     })
+}
+
+/// The state a run left, kept as a snapshot (its hash), taken under the state's lock as it commits:
+/// the cells it changed since `start` go into the content store, then the snapshot. A store that
+/// can't take it leaves the run without one (it can't be restored to), and says so.
+fn snapshot_after(live: &State, start: Option<&State>, store: &SharedStore, run_id: &str) -> Option<String> {
+    crate::restore::save_snapshot(live, start, store)
+        .map_err(|e| eprintln!("holon: run {run_id}: the state it left wasn't kept: {e}"))
+        .ok()
 }
 
 /// Apply a run's writes to the live state: each state write, then each collection put and delete,
@@ -674,6 +687,7 @@ fn run_attempt(
         secret_fed,
         secrets: given,
         answered: recorder::AnswerTokens(answered),
+        state_after: None,
     };
     Attempt { run, start, overtaken }
 }
@@ -877,6 +891,7 @@ pub(crate) fn run_entry(
         request: None,
         sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
         state_before: run.state_before.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
+        state_after: run.state_after.clone(),
         outputs: logged_outputs(run, folders::loggable_output),
         performed: logged_performed(run, folders::loggable),
         response_body: None,
@@ -959,6 +974,7 @@ impl FiredRun {
             secret_fed: taint::SecretFed::default(),
             secrets: BTreeMap::new(),
             answered: recorder::AnswerTokens::default(),
+            state_after: None,
         }
     }
 }

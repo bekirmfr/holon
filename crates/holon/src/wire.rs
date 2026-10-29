@@ -387,6 +387,14 @@ pub(crate) struct Version {
     /// store, so the deployments file stays small however many versions it keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) document_ref: Option<String>,
+    /// The state it carried when deployed, as a snapshot's hash (`restore::save_snapshot`): the
+    /// state the version before it left, which restoring that one's state puts back. Absent for a
+    /// deployment without state, and for versions deployed before rc.30.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) state_at_deploy: Option<String>,
+    /// The seq its deploy's next run took in the log: where the runs since it start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) first_seq: Option<u64>,
     /// The document inline, as files kept it before `document_ref`. Read once at load, when it
     /// moves into the store; never written.
     #[serde(default, skip_serializing)]
@@ -406,15 +414,21 @@ pub(crate) struct VersionRequest {
     pub(crate) browsers: Vec<String>,
 }
 
-/// `POST /deployments/<slug>/restore`'s body.
+/// `POST /deployments/<slug>/restore`'s body: one point to go back to, a version or a run, and
+/// what of it to restore.
 #[derive(Deserialize)]
 pub(crate) struct RestoreRequestBody {
-    /// The version to go back to, by its number.
-    pub(crate) version: u32,
-    /// Its code: the one thing restored so far; must be true.
+    /// A version, by its number: its code, and the state it left (the next version's
+    /// `state_at_deploy`).
+    #[serde(default)]
+    pub(crate) version: Option<u32>,
+    /// A run, by its seq in the log: the state it left (`state_after`), and the code it ran on.
+    #[serde(default)]
+    pub(crate) run: Option<u64>,
+    /// Its code, deployed again as a new version.
     #[serde(default)]
     pub(crate) code: bool,
-    /// Its state: not restored this way yet.
+    /// Its state, put back as the live state, in a new session.
     #[serde(default)]
     pub(crate) state: bool,
     /// What the version needs that today's grant doesn't cover, approved, as a deploy's.

@@ -600,8 +600,8 @@ test("basket reads a price inside a mapped function, per item, and its run repla
   expect((await request.post(`http://127.0.0.1:${port}/basket`, { data: { items: [{ name: `scone-${Date.now()}`, qty: 1 }] } })).status()).toBe(404);
 });
 
-test("price-rollback: an earlier version restored answers as it did, as a new version, its prices kept", async ({ page, request, adminToken }) => {
-  await openSample(page, "Price rollback (an earlier version back, its data kept)");
+test("price-rollback: an earlier version's code restored answers as it did, its prices kept, then its prices restored", async ({ page, request, adminToken }) => {
+  await openSample(page, "Price rollback (an earlier version's code, or its prices, back)");
   const port = await deploy(page);
   const tea = `tea-${Date.now()}`;
   expect((await request.put(`http://127.0.0.1:${port}/prices/${tea}`, { data: { price: 4 } })).status()).toBe(200);
@@ -624,6 +624,17 @@ test("price-rollback: an earlier version restored answers as it did, as a new ve
   const restored = await request.post(`${SERVER}/deployments/price-rollback/restore`, { headers: auth, data: { version: versions[1].number, code: true } });
   expect(restored.status()).toBe(200);
   expect(((await restored.json()) as { version: number }).version).toBe(versions[0].number + 1);
+  expect(await total()).toBe(4.5);
+  // A wrong price, then the prices that version left put back: in a new session, its code as it is.
+  expect((await request.put(`http://127.0.0.1:${port}/prices/${tea}`, { data: { price: 40 } })).status()).toBe(200);
+  expect(await total()).toBe(40.5);
+  const state = { version: versions[1].number, state: true };
+  const dry = await request.post(`${SERVER}/deployments/price-rollback/restore`, { headers: auth, data: { ...state, dry_run: true } });
+  expect(((await dry.json()) as { state: { changed: string[] } }).state.changed).toEqual(["#collection:prices"]);
+  expect(await total()).toBe(40.5);
+  const put = await request.post(`${SERVER}/deployments/price-rollback/restore`, { headers: auth, data: state });
+  expect(put.status()).toBe(200);
+  expect(((await put.json()) as { state: { from: string } }).state.from).toBe(`version ${versions[1].number}`);
   expect(await total()).toBe(4.5);
 });
 

@@ -4,7 +4,7 @@
 same day to observability and restore, leaving out per-run reverts, conflicts and compensations
 (§8). Step 2.5 of the [host capabilities](host-capabilities-L4.md) plan (§7, Tier 2), taken
 ahead of Tier 1. Builds on [host resources](host-resources-L4.md) (a timeline per resource).
-Slice 1, restoring code, is built (§10).
+Slices 1 and 2, restoring code and restoring state, are built (§10).
 
 Two things, and only two:
 
@@ -180,13 +180,28 @@ Reordered so restoring code, which changes nothing already logged, comes first:
 1. **Restoring code** (built). Every deploy is a numbered version kept for good, with its canvas
    (by hash, in the content store) and what its deploy asked; `GET /deployments/<slug>/versions`;
    `POST /deployments/<slug>/restore` and `holon restore <slug> --to N --code`, a deploy like any
-   other, checked against today's grant, with a dry run. Restore by version number for now: the
-   timeline's entries (`--to <seq>`) come with slice 2. Agents can't restore yet.
-2. **Restoring state:** roots in run lines (`state_after`, `state_before` by root), states kept by
-   hash; deploy, grant and restore entries in the deployment's chain; `--state`, both together,
-   and the dry run's list of effects outside.
-3. **Seeing it:** `holon history`, a cell's history, the editor's timeline and restore button,
-   MCP's `history` and `restore`.
+   other, checked against today's grant, with a dry run. Agents can't restore yet.
+2. **Restoring state** (built), narrower than first written:
+   - **Snapshots by hash, not by root.** A run's line names the state it left (`state_after`): the
+     hash of a record, cell by name to value hash, in the content store, with only the values it
+     changed put there. A version keeps the state it was deployed with (`state_at_deploy`), and
+     the log's seq at its deploy (`first_seq`). `state_before` stays a copy, so export, verify and
+     replay are unchanged; a Merkle root per entry, and verify checking one from the next, wait
+     for slice 4.
+   - **A state restore is a new session, not a new kind of entry.** The session ends as a stop
+     would, keeping the state it replaces, and a new one starts from the point (`from: "run 41"`,
+     `"version 3"`). Sessions already were the record of where a state came from; deploy, grant
+     and restore entries in the chain move to slice 3, with the timeline that shows them.
+   - **Points are a version (`--to N`) or a run (`--to-run SEQ`).** A version's state is the state
+     it left, just before it was replaced (fork 3): the next version's `state_at_deploy`. A run's
+     code is the version it ran on, skipped when that is the code deployed now.
+   - **Both** is the code (a deploy), then the state. A run that lands between the two is replaced
+     with the rest; the dry run counts the runs since and their effects outside (§5) by
+     capability.
+   - **Running or paused only:** a stopped deployment runs from a session's state instead.
+3. **Seeing it:** `holon history`, deploy, grant and restore entries in the chain, a cell's
+   history, the editor's timeline and restore button, MCP's `history` and `restore`, agents
+   restoring.
 4. **Retention and verify** of whole states.
 
 ## 11. Forks, surfaced

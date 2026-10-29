@@ -81,6 +81,8 @@ pub enum LifecycleError {
     AlreadyRunning,
     AlreadyStopped,
     NoSuchSnapshot(u32),
+    /// A state restore needs a session to replace the state of.
+    Stopped,
 }
 
 impl LifecycleError {
@@ -90,6 +92,9 @@ impl LifecycleError {
             LifecycleError::AlreadyRunning => "it is already running".into(),
             LifecycleError::AlreadyStopped => "it is already stopped".into(),
             LifecycleError::NoSuchSnapshot(n) => format!("session {n} has no saved state"),
+            LifecycleError::Stopped => {
+                "it is stopped: run it (from any session's state), or run it, then restore a state".into()
+            }
         }
     }
 }
@@ -159,6 +164,22 @@ impl Lifecycle {
                 Ok(state)
             }
         }
+    }
+
+    /// A state put back while it runs or is paused (`holon restore --state`): the current session
+    /// ends, keeping `live` as its snapshot, as a stop would, and a new one starts from `from`
+    /// (`"version 3"`, `"run 41"`), in the same status. The state it replaced stays restorable as
+    /// that session's.
+    pub fn restart(&mut self, live: Option<&BTreeMap<String, Hash>>, from: &str, now: u64) -> Result<(), LifecycleError> {
+        let status = self.status;
+        if status == Status::Stopped {
+            return Err(LifecycleError::Stopped);
+        }
+        self.stop(live, now)?;
+        let number = self.sessions.last().map_or(1, |s| s.number + 1);
+        self.sessions.push(session(number, now, from));
+        self.status = status;
+        Ok(())
     }
 
     /// Session `n`'s snapshot references, if it has a readable one.
@@ -236,6 +257,24 @@ mod tests {
             summary,
             vec![(1, "deploy", Some(10)), (2, "latest", Some(30)), (3, "fresh", Some(50)), (4, "session 1", Some(70))]
         );
+    }
+
+    #[test]
+    fn a_restored_state_starts_a_session_and_keeps_the_one_it_replaced() {
+        let mut l = Lifecycle::deployed(0);
+        l.pause().unwrap();
+        l.restart(Some(&todos(5)), "run 41", 10).unwrap();
+        assert_eq!(l.status, Status::Paused, "a paused deployment stays paused");
+        assert_eq!(l.snapshot(1), Some(todos(5)), "the state it replaced is session 1's");
+        let s = &l.sessions[1];
+        assert_eq!((s.number, s.from.as_str(), s.started_at, s.ended_at), (2, "run 41", 10, None));
+        l.run(RunFrom::Latest, 11).unwrap();
+        l.restart(None, "version 1", 20).unwrap();
+        assert_eq!(l.status, Status::Running);
+        assert_eq!(l.sessions[2].from, "version 1");
+        l.stop(None, 30).unwrap();
+        assert_eq!(l.restart(None, "run 1", 40), Err(LifecycleError::Stopped));
+        assert_eq!(l.sessions.len(), 3, "a refused restart changes nothing");
     }
 
     #[test]

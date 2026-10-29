@@ -12,6 +12,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon fmt`](#holon-fmt) | rewrite a flow in the canonical form |
 | [`holon export`](#holon-export) | write a deployment's runs to a file |
 | [`holon verify`](#holon-verify) | check exported runs offline |
+| [`holon restore`](#holon-restore) | a deployment's versions, and an earlier version's or run's code or state back |
 | [`holon folder`](#holon-folder) | bind the folders flows use |
 | [`holon database`](#holon-database) | bind the databases flows use |
 | [`holon mcp`](#holon-mcp) | the tools for agents, and adding them to an agent's host |
@@ -148,16 +149,25 @@ it can't read.
 
 ```
 holon restore <slug> [--server PORT|URL]
-holon restore <slug> --to N --code [--dry-run] [--approve] [--server PORT|URL]
+holon restore <slug> --to N [--code] [--state] [--dry-run] [--approve] [--server PORT|URL]
+holon restore <slug> --to-run SEQ [--code] [--state] [--dry-run] [--approve] [--server PORT|URL]
 ```
 
-Without `--to`, lists a deployment's versions, newest first: every deploy is one, kept for good.
-`--to N --code` deploys version N's code again, as a new version; the state stays as it is. It is
-checked against the grant the deployment has now: what it needs that isn't granted is listed, and
-approved only with `--approve`. `--dry-run` says what it would ask and changes nothing. Exits 0
-when it is done (or a dry run answered), 1 when the server refused it or it needs approving, 2 for
-a mistake on the command line. See [Going back to an earlier
-version](../guides/deploying.md#going-back-to-an-earlier-version).
+Without a point, lists a deployment's versions, newest first: every deploy is one, kept for good;
+`state kept` marks those whose state can be put back.
+
+| Option | |
+|---|---|
+| `--to N` | version N |
+| `--to-run SEQ` | run SEQ of the log |
+| `--code` | deploy that point's code again, as a new version, checked against the grant the deployment has now |
+| `--state` | put back the state that point left, in a new session; the deployment must be running or paused |
+| `--approve` | approve what the code needs that today's grant doesn't cover |
+| `--dry-run` | say what it would do, and what the runs since did outside the state; change nothing |
+
+At least one of `--code` and `--state`. Exits 0 when it is done (or a dry run answered), 1 when the
+server refused it or it needs approving, 2 for a mistake on the command line. See [Going back to an
+earlier version](../guides/deploying.md#going-back-to-an-earlier-version).
 
 ## `holon folder`
 
