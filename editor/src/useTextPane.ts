@@ -74,6 +74,8 @@ export function useTextPane({
   const text = flow.text;
   const setText = useCallback((update: (t: TextState) => TextState) => setFlow((m) => ({ ...m, text: update(m.text) })), [setFlow]);
   const [status, setStatus] = useState("");
+  const [revealSerial, setRevealSerial] = useState(0);
+  const [revealId, setRevealId] = useState<string | null>(null);
   const [width, setWidthState] = useState(() => {
     try {
       return Number(localStorage.getItem(WIDTH_KEY)) || 420;
@@ -266,7 +268,8 @@ export function useTextPane({
     if (!link) return undefined;
     const rangeOf = (id: string) => link.spans.get(id);
     const marks = selectedIds === "" ? [] : selectedIds.split(" ").flatMap((id) => rangeOf(id) ?? []);
-    if (!viewing || !run) return { marks, dims: [], step: null, notes: [] };
+    const reveal = revealId ? (rangeOf(revealId) ?? null) : null;
+    if (!viewing || !run) return { marks, dims: [], step: null, reveal, revealSerial, notes: [] };
     const ran = new Set(run.order);
     const atStep = run.step === null ? undefined : run.order[run.step];
     // Notes for what is named (one value each: a route's `req` is a whole request), the node at
@@ -282,8 +285,8 @@ export function useTextPane({
       const said = outputs.length === 1 ? valueChip(outputs[0] ?? null) : outputs.map((v, i) => `${ports[i]?.name ?? i}: ${valueChip(v ?? null)}`).join("  ");
       return [{ at: r.to, text: said, none: outputs.every((v) => v === null) }];
     });
-    return { marks, dims: dimmed(link.spans, (id) => ran.has(id)), step: (atStep && rangeOf(atStep)) || null, notes };
-  }, [link, selectedIds, viewing, run, flow.inspectNode, nodes]);
+    return { marks, dims: dimmed(link.spans, (id) => ran.has(id)), step: (atStep && rangeOf(atStep)) || null, reveal, revealSerial, notes };
+  }, [link, selectedIds, viewing, run, flow.inspectNode, nodes, revealId, revealSerial]);
 
   // The cursor picks the node under it: selected on the canvas, or in view mode shown in the
   // side pane (of several written as one, the outermost that ran: lowering makes it last, as the
@@ -306,10 +309,16 @@ export function useTextPane({
 
   const toggle = useCallback(() => setText((t) => ({ ...t, open: !t.open })), [setText]);
 
+  const revealNode = useCallback((id: string) => {
+    setRevealId(id);
+    setRevealSerial((s) => s + 1);
+  }, []);
+
   return {
     open: text.open,
     toggle,
     rewrite,
+    revealNode,
     pane: {
       text: viewing ? (viewText ?? "") : (text.value ?? ""),
       readOnly: viewing,

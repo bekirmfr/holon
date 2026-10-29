@@ -116,8 +116,8 @@ class NoteWidget extends WidgetType {
 
 /** What the canvas links to the text: the ranges of the nodes picked there (their lines marked
  *  in the gutter's colour too), and in view mode the run. */
-export type TextLinked = { marks: TextRange[]; dims: TextRange[]; step: TextRange | null; notes: TextNote[] };
-const NOTHING_LINKED: TextLinked = { marks: [], dims: [], step: null, notes: [] };
+export type TextLinked = { marks: TextRange[]; dims: TextRange[]; step: TextRange | null; reveal: TextRange | null; revealSerial: number; notes: TextNote[] };
+const NOTHING_LINKED: TextLinked = { marks: [], dims: [], step: null, reveal: null, revealSerial: 0, notes: [] };
 
 const PICKED_LINE = Decoration.line({ class: "hl-text__picked" });
 const MARK = Decoration.mark({ class: "hl-text__mark" });
@@ -328,13 +328,16 @@ export function TextPane({
 
   // After the text: a text replaced takes the ranges that go with it.
   const shownStep = useRef<string>("");
+  const shownRevealSerial = useRef(-1);
   useEffect(() => {
     const v = view.current;
     if (!v) return;
     const at = link.step ? `${link.step.from}:${link.step.to}` : "";
-    const scroll = at !== "" && at !== shownStep.current ? [EditorView.scrollIntoView(link.step!.from, { y: "center" })] : [];
+    const stepScrolls = at !== "" && at !== shownStep.current ? [EditorView.scrollIntoView(link.step!.from, { y: "center" })] : [];
     shownStep.current = at;
-    v.dispatch({ effects: [setLinked.of(link), ...scroll] });
+    const revealScrolls = link.reveal && shownRevealSerial.current !== -1 && link.revealSerial !== shownRevealSerial.current ? [EditorView.scrollIntoView(link.reveal.from, { y: "center" })] : [];
+    shownRevealSerial.current = link.revealSerial;
+    v.dispatch({ effects: [setLinked.of(link), ...stepScrolls, ...revealScrolls] });
   }, [link, text]);
 
   // Dragging the pane's left edge sets its width.

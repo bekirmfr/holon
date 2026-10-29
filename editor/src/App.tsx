@@ -899,7 +899,7 @@ function Canvas({
       </div>
       {textPane.open && <TextPane key={activeId} {...textPane.pane} />}
       <Inspector node={inspected} unit={inspectedUnit} run={inspectorRun(view, flow)} source={inspectedSource} open={inspectorOpen} onOpen={onInspectorOpen} />
-      <ViewModePanes view={view} flow={flow} nodes={nodes} />
+      <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} />
       {/* The Flows / Deployed pages are overlays ON TOP of the always-mounted canvas — React
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,
           so the canvas is covered, never unmounted. The deployments list used to live in a
