@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, getLog, type LogEntry } from "./server";
-import { formatValue } from "./diagnostics";
+import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
 import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, type Issue, type NodeExchange, type NodeTrace } from "./replay";
@@ -1301,17 +1301,180 @@ function ComponentTab({ node, run, source }: { node: ViewNode | null; run: Inspe
   );
 }
 
+const RENDERER_LABELS: Record<RendererKind, string> = {
+  raw: "Raw", text: "Text", json: "JSON", html: "HTML",
+  markdown: "Markdown", image: "Image", audio: "Audio",
+  table: "Table", record: "Key-value",
+};
+
+function MarkdownView({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.innerHTML = "";
+    const parts = text.split(/```[a-z]*\n?/);
+    parts.forEach((part, idx) => {
+      if (idx % 2 === 1) {
+        const pre = document.createElement("pre");
+        pre.style.cssText = "margin:0 0 8px;padding:8px;background:#0b1527;border-radius:3px;overflow-x:auto;font-size:12px";
+        pre.textContent = part.replace(/\n$/, "");
+        el.appendChild(pre);
+        return;
+      }
+      for (const line of part.split(/\n{2,}|\n/).filter((l) => l.trim() !== "")) {
+        const m = line.match(/^(#{1,6}) (.*)/);
+        if (m) {
+          const h = document.createElement(`h${m[1].length}`);
+          h.style.cssText = "margin:0 0 6px;font-size:13px";
+          h.textContent = m[2];
+          el.appendChild(h);
+        } else {
+          const p = document.createElement("p");
+          p.style.cssText = "margin:0 0 6px;line-height:1.6";
+          for (const bit of line.split(/(`[^`]*`|\*\*[^*]*\*\*)/)) {
+            if (bit.startsWith("`") && bit.endsWith("`") && bit.length > 1) {
+              const c = document.createElement("code");
+              c.style.cssText = "background:#0b1527;padding:1px 4px;border-radius:2px;font-size:11px";
+              c.textContent = bit.slice(1, -1);
+              p.appendChild(c);
+            } else if (bit.startsWith("**") && bit.endsWith("**") && bit.length > 3) {
+              const b = document.createElement("strong");
+              b.textContent = bit.slice(2, -2);
+              p.appendChild(b);
+            } else if (bit) p.appendChild(document.createTextNode(bit));
+          }
+          el.appendChild(p);
+        }
+      }
+    });
+  }, [text]);
+  return <div ref={ref} style={{ color: ink, fontSize: 13 }} />;
+}
+
+function renderValueContent(v: WValue, renderer: RendererKind, portName: string): ReactNode {
+  const pre = (s: string) => (
+    <pre style={{ color: "#cfe3ff", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, fontSize: 12, fontFamily: "var(--mono)", lineHeight: 1.5 }}>{s}</pre>
+  );
+  if (renderer === "image" && v.type === "Text")
+    return <img src={v.value} alt={portName} style={{ maxWidth: "100%", maxHeight: 400, objectFit: "contain", display: "block", margin: "0 auto" }} />;
+  if (renderer === "audio" && v.type === "Text")
+    return <audio controls src={v.value} style={{ width: "100%" }} />;
+  if (renderer === "html" && v.type === "Text")
+    return <iframe srcDoc={v.value} sandbox="allow-scripts" title="html preview" style={{ width: "100%", height: 420, border: "1px solid #1b2a45", borderRadius: 3 }} />;
+  if (renderer === "json" && v.type === "Text") {
+    try { return pre(JSON.stringify(JSON.parse(v.value), null, 2)); } catch {}
+  }
+  if (renderer === "markdown" && v.type === "Text") return <MarkdownView text={v.value} />;
+  if (renderer === "text" && v.type === "Text") return pre(v.value);
+  if (renderer === "table" && v.type === "List") {
+    const rows = v.value.filter((r) => r.type === "Record");
+    if (rows.length > 0) {
+      const keys: string[] = [];
+      const seen = new Set<string>();
+      for (const r of rows) {
+        if (r.type !== "Record") continue;
+        for (const [k] of r.value) if (!seen.has(k)) { seen.add(k); keys.push(k); }
+      }
+      return (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 12, color: ink, width: "100%" }}>
+            <thead>
+              <tr>{keys.map((k) => <th key={k} style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #1b2a45", color: dim, fontWeight: 500 }}>{k}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                if (r.type !== "Record") return null;
+                const map = new Map(r.value);
+                return (
+                  <tr key={i}>
+                    {keys.map((k) => {
+                      const cell = map.get(k);
+                      return <td key={k} style={{ padding: "3px 8px", verticalAlign: "top", borderBottom: "1px solid #1b2a4533" }}>{cell ? formatValue(cell) : "—"}</td>;
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+  }
+  if (renderer === "record" && v.type === "Record") {
+    return (
+      <table style={{ borderCollapse: "collapse", fontSize: 12, color: ink, width: "100%" }}>
+        <tbody>
+          {v.value.map(([k, val]) => (
+            <tr key={k}>
+              <td style={{ padding: "3px 8px", color: dim, whiteSpace: "nowrap", verticalAlign: "top", borderBottom: "1px solid #1b2a4533" }}>{k}</td>
+              <td style={{ padding: "3px 8px", wordBreak: "break-word", whiteSpace: "pre-wrap", borderBottom: "1px solid #1b2a4533" }}>{formatValue(val)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+  return pre(formatValue(v));
+}
+
+function ValueModal({ value, portName, onClose }: { value: WValue; portName: string; onClose: () => void }) {
+  const [renderer, setRenderer] = useState<RendererKind>(() => detectRenderer(value));
+  const available = useMemo(() => availableRenderers(value), [value]);
+
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      style={{ position: "fixed", inset: 0, background: "rgba(5, 10, 20, 0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+    >
+      <div style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, maxWidth: 820, width: "calc(100vw - 32px)", maxHeight: "calc(100vh - 64px)", display: "flex", flexDirection: "column", color: ink, fontSize: 13 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+          <span style={{ color: dim, fontSize: 11 }}>{portName}</span>
+          <span style={{ flex: 1 }} />
+          <select
+            value={renderer}
+            onChange={(e) => setRenderer(e.target.value as RendererKind)}
+            style={{ font: "inherit", fontSize: 11, color: dim, background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 3, padding: "2px 6px" }}
+          >
+            {available.map((r) => <option key={r} value={r}>{RENDERER_LABELS[r]}</option>)}
+          </select>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: dim, cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1 }} title="close">×</button>
+        </div>
+        <div style={{ overflow: "auto", padding: 12, flex: 1, minHeight: 0 }}>
+          {renderValueContent(value, renderer, portName)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Port({ port, value, ran }: { port: WPort; value: WValue | null | undefined; ran: boolean }) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const canExpand = ran && value != null;
   return (
     <div style={{ display: "flex", flexDirection: "column", border: "1px solid #1b2a45", borderRadius: 3, padding: "3px 6px" }}>
-      <div>
-        <span style={{ color: ink }}>{port.name}</span> <span style={{ color: dim }}>{typeLabel(port.ty)}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ color: ink }}>{port.name}</span>
+        <span style={{ color: dim }}>{typeLabel(port.ty)}</span>
+        <span style={{ flex: 1 }} />
+        {canExpand && (
+          <button onClick={() => setModalOpen(true)} style={{ ...small, padding: "0px 4px", fontSize: 10, lineHeight: 1.4 }} title="view value">⤢</button>
+        )}
       </div>
       {ran && (
         <div style={{ color: value === null || value === undefined ? dim : "#cfe3ff", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
           {show(value)}
         </div>
       )}
+      {modalOpen && value != null && <ValueModal value={value} portName={port.name} onClose={() => setModalOpen(false)} />}
     </div>
   );
 }
