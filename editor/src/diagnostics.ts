@@ -113,7 +113,7 @@ export function valueChip(v: WValue | null): string {
     case "Boolean":
       return String(v.value);
     case "Text": {
-      const placeholder = /^‹(secret|token):[^›]*›$/.exec(v.value);
+      const placeholder = /^‹(secret|token|file):[^›]*›$/.exec(v.value);
       if (placeholder) return `‹${placeholder[1]}›`;
       return v.value.length > 16 ? `"${v.value.slice(0, 15)}…"` : JSON.stringify(v.value);
     }
@@ -169,6 +169,49 @@ export function formatValue(v: WValue): string {
 export function formatOutputs(outputs: (WValue | null)[]): string {
   if (outputs.every((o) => o === null)) return "(no output)";
   return outputs.map((o) => (o ? formatValue(o) : "(none)")).join(", ");
+}
+
+/** Which dedicated renderer best matches a value's shape. */
+export type RendererKind = "raw" | "text" | "json" | "html" | "markdown" | "image" | "audio" | "table" | "record";
+
+/** Auto-detect the best renderer for a value based on its shape and content. */
+export function detectRenderer(v: WValue): RendererKind {
+  if (v.type === "Text") {
+    if (v.value.startsWith("data:image/")) return "image";
+    if (v.value.startsWith("data:audio/")) return "audio";
+    try {
+      const parsed = JSON.parse(v.value);
+      if (typeof parsed === "object" && parsed !== null) return "json";
+    } catch {}
+    if (/^\s*(<html|<!doctype)/i.test(v.value)) return "html";
+    if (/^#{1,6} |\*\*[^*]+\*\*/.test(v.value)) return "markdown";
+    return "text";
+  }
+  if (v.type === "List" && v.value.length > 0 && v.value.every((item) => item.type === "Record")) return "table";
+  if (v.type === "Record") return "record";
+  return "raw";
+}
+
+/** All renderers applicable to a value, in preference order, with "raw" always last. */
+export function availableRenderers(v: WValue): RendererKind[] {
+  const all: RendererKind[] = [];
+  if (v.type === "Text") {
+    all.push("text");
+    if (v.value.startsWith("data:image/")) all.push("image");
+    if (v.value.startsWith("data:audio/")) all.push("audio");
+    try {
+      const parsed = JSON.parse(v.value);
+      if (typeof parsed === "object" && parsed !== null) all.push("json");
+    } catch {}
+    if (/^\s*(<html|<!doctype)/i.test(v.value)) all.push("html");
+    if (/^#{1,6} |\*\*[^*]+\*\*/.test(v.value)) all.push("markdown");
+  } else if (v.type === "List" && v.value.length > 0 && v.value.every((item) => item.type === "Record")) {
+    all.push("table");
+  } else if (v.type === "Record") {
+    all.push("record");
+  }
+  all.push("raw");
+  return all;
 }
 
 /** A one-line summary of a deployment's state for a session row: lists and records by size,
