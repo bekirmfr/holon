@@ -1,10 +1,12 @@
-// View mode's panes around the canvas of a deployed flow. The bottom pane follows the flow log
-// live (every request, trigger and tick) with two tabs: the log itself, and a timeline of the
-// selected run, one row per node, timed by the server. The side pane shows the selected run's
-// flow state as of the current step, and the selected node: its params, and the inputs and
-// outputs it had in that run (replayed, replay.ts).
+// View mode's panes around the canvas of a deployed flow. The bottom pane shows the flow log
+// live (every request, trigger and tick). Left side: a sortable, filterable run list with copy
+// and export buttons and a capability-badge column. Right side: two tabs — Details (what the run
+// read and produced) and Timeline (one row per node, timed by the server). The width of the
+// split is draggable and remembered. The side pane shows the selected run's flow state as of the
+// current step, and the selected node: its params, and the inputs and outputs it had in that run
+// (replayed, replay.ts).
 
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, getLog, type LogEntry } from "./server";
 import { formatValue } from "./diagnostics";
 import { typeLabel } from "./theme";
@@ -173,6 +175,28 @@ function rememberedHeight(): number | null {
 const clampHeight = (h: number) => Math.max(120, Math.min(window.innerHeight * 0.75, h));
 const scroll: CSSProperties = { flex: 1, minHeight: 0, overflow: "auto", padding: 8 };
 
+const SPLIT_KEY = "holon.logRightWidth";
+function rememberedSplit(): number | null {
+  try {
+    const w = Number(localStorage.getItem(SPLIT_KEY));
+    return Number.isFinite(w) && w > 0 ? w : null;
+  } catch {
+    return null;
+  }
+}
+const clampSplit = (w: number, total: number) => Math.max(180, Math.min(total - 200, w));
+
+/** Compact capability badges derived from a run's log entry. */
+function runActions(e: LogEntry): { label: string; title: string; color: string }[] {
+  const acts: { label: string; title: string; color: string }[] = [];
+  if (e.sourced.some(([c]) => c === "Random")) acts.push({ label: "rng", title: "random value read", color: dim });
+  if ((e.rounds ?? []).some((r) => r.exchanges.length > 0)) acts.push({ label: "http", title: "outbound http request", color: good });
+  if (Object.keys(e.secrets ?? {}).length > 0) acts.push({ label: "sec", title: "secret read", color: "#e0c36f" });
+  if ((e.reads ?? []).some((r) => r.file != null)) acts.push({ label: "frd", title: "file read", color: "#9fb4d4" });
+  if (e.performed.some((p) => /^file/i.test(p.capability))) acts.push({ label: "fwr", title: "file write", color: "#e0c36f" });
+  return acts;
+}
+
 /** The step controls: back, forward, or the whole run. */
 function Stepper({ step, steps, onStep }: { step: number | null; steps: number; onStep: (s: number | null) => void }) {
   if (steps === 0) return null;
@@ -241,7 +265,6 @@ export function BottomPane({
   onShowNode: (id: string) => void;
 }) {
   const { entries, chain, error } = useFlowLog(slug);
-  const [tab, setTab] = useState<"log" | "timeline">("log");
   // The pane's height, dragged by its top edge: set on the canvas grid it is a row of
   // (`--view-height`, styles.css), so the canvas above takes the rest.
   const pane = useRef<HTMLDivElement>(null);
@@ -293,36 +316,28 @@ export function BottomPane({
   return (
     <div ref={pane} className="nodrag nowheel hl-view__bottom" style={paneStyle} role="region" aria-label="run">
       <div className="hl-view__edge" onPointerDown={onEdge} title="drag to resize" />
-      <Tabs
-        tabs={[
-          ["log", "Log"],
-          ["timeline", "Timeline"],
-        ]}
-        tab={tab}
-        onTab={setTab}
-      >
-        <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "4px 0" }}>
-          {selected && (
-            <span style={{ color: ink }}>
-              #{selected.seq} · {runLabel(selected)} · session {selected.session}
-            </span>
-          )}
-          {verdict !== null && (
-            <span style={{ color: verdict ? good : bad }}>
-              {verdict ? "✓ replay reproduces the run" : "✗ replay differs from the run"}
-            </span>
-          )}
-          {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
-          <Stepper step={step} steps={order.length} onStep={onStep} />
-          <button
-            style={{ ...small, color: live ? "#0e1a2f" : "#9fb4d4", background: live ? good : "transparent" }}
-            onClick={() => setLive(!live)}
-            title="follow the newest run as it happens"
-          >
-            ● live
-          </button>
-        </div>
-      </Tabs>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #1b2a45", padding: "4px 8px" }}>
+        {selected && (
+          <span style={{ color: ink }}>
+            #{selected.seq} · {runLabel(selected)} · session {selected.session}
+          </span>
+        )}
+        {verdict !== null && (
+          <span style={{ color: verdict ? good : bad }}>
+            {verdict ? "✓ replay reproduces the run" : "✗ replay differs from the run"}
+          </span>
+        )}
+        {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
+        <div style={{ flex: 1 }} />
+        <Stepper step={step} steps={order.length} onStep={onStep} />
+        <button
+          style={{ ...small, color: live ? "#0e1a2f" : "#9fb4d4", background: live ? good : "transparent" }}
+          onClick={() => setLive(!live)}
+          title="follow the newest run as it happens"
+        >
+          ● live
+        </button>
+      </div>
       {error && <div style={{ color: bad, padding: "4px 8px" }}>{error}</div>}
       {listenError && (
         <div className="hl-view__not-listening" style={{ color: bad, padding: "4px 8px" }}>
@@ -330,25 +345,24 @@ export function BottomPane({
           deployment; free the port, then deploy again.
         </div>
       )}
-      {diagnosis && <FailureBanner diagnosis={diagnosis} nodes={nodes} onShowNode={onShowNode} />}
-      {tab === "log" ? (
-        <>
-          <ChainBar slug={slug} head={chain.head} breaks={chain.breaks} />
-          <LogTab entries={entries} selected={selected} pick={pick} />
-        </>
-      ) : (
-        <TimelineTab
-          run={selected}
-          order={order}
-          nodes={nodes}
-          timings={timings}
-          exchanges={exchanges}
-          step={step}
-          onStep={onStep}
-          onPickNode={onPickNode}
-          issues={diagnosis?.issues ?? new Map()}
-        />
-      )}
+      <LogTab
+        entries={entries}
+        selected={selected}
+        pick={pick}
+        slug={slug}
+        head={chain.head}
+        breaks={chain.breaks}
+        order={order}
+        nodes={nodes}
+        timings={timings}
+        exchanges={exchanges}
+        step={step}
+        onStep={onStep}
+        onPickNode={onPickNode}
+        issues={diagnosis?.issues ?? new Map()}
+        diagnosis={diagnosis ?? null}
+        onShowNode={onShowNode}
+      />
     </div>
   );
 }
@@ -428,97 +442,379 @@ function FailureBanner({ diagnosis, nodes, onShowNode }: { diagnosis: Diagnosis;
   );
 }
 
-function LogTab({ entries, selected, pick }: { entries: LogEntry[]; selected: LogEntry | null; pick: (e: LogEntry) => void }) {
-  return (
-    <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-      <div style={{ ...scroll, flex: "1 1 55%", borderRight: "1px solid #1b2a45" }}>
-        {entries.length === 0 && <div>no runs yet: send it a request</div>}
-        {[...entries].reverse().map((e) => (
-          <div
-            key={e.seq}
-            onClick={() => pick(e)}
-            style={{
-              display: "flex",
-              gap: 10,
-              padding: "2px 6px",
-              cursor: "pointer",
-              borderRadius: 3,
-              background: e.seq === selected?.seq ? "#13243f" : "transparent",
-            }}
-          >
-            <span style={{ color: dim, width: 30, textAlign: "right" }}>#{e.seq}</span>
-            <span style={{ color: dim, width: 84, whiteSpace: "nowrap" }}>{time(e.at_ms)}</span>
-            <span style={{ color: dim, width: 18 }}>s{e.session}</span>
-            <span style={{ flex: 1, color: ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {runLabel(e)}
-              {e.url && e.route ? <span style={{ color: dim }}> · {e.url}</span> : null}
-            </span>
-            {e.status !== null && <span style={{ color: e.status < 400 ? good : bad, width: 26 }}>{e.status}</span>}
-            {e.error && <span style={{ color: bad }}>error</span>}
-            {(e.parked ?? []).length > 0 && <span style={{ color: "#e0c36f" }} title="waiting for an event">⏸</span>}
-            <span style={{ color: dim, width: 52, textAlign: "right" }}>{e.duration_ms.toFixed(2)}ms</span>
-          </div>
+type SortKey = "seq" | "time" | "session" | "label" | "status" | "duration";
+type FilterableCol = "session" | "label" | "actions" | "status";
+
+function LogTab({
+  entries,
+  selected,
+  pick,
+  slug,
+  head,
+  breaks,
+  order,
+  nodes,
+  timings,
+  exchanges,
+  step,
+  onStep,
+  onPickNode,
+  issues,
+  diagnosis,
+  onShowNode,
+}: {
+  entries: LogEntry[];
+  selected: LogEntry | null;
+  pick: (e: LogEntry) => void;
+  slug: string;
+  head: string;
+  breaks: number[];
+  order: string[];
+  nodes: ViewNode[];
+  timings: Map<string, { start_us: number; end_us: number }>;
+  exchanges: NodeExchange[];
+  step: number | null;
+  onStep: (s: number | null) => void;
+  onPickNode: (id: string) => void;
+  issues: Map<string, Issue>;
+  diagnosis: Diagnosis | null;
+  onShowNode: (id: string) => void;
+}) {
+  const [filter, setFilter] = useState("");
+  const [sortBy, setSortBy] = useState<SortKey>("seq");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [rightTab, setRightTab] = useState<"details" | "errors" | "timeline">("details");
+  const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
+
+  useEffect(() => {
+    if (diagnosis) setRightTab("errors");
+    else setRightTab((t) => (t === "errors" ? "details" : t));
+  }, [selected?.seq]);
+  const [colFilter, setColFilter] = useState<Partial<Record<FilterableCol, Set<string>>>>({});
+  const [openFilter, setOpenFilter] = useState<FilterableCol | null>(null);
+  const container = useRef<HTMLDivElement>(null);
+
+  const allColValues = useMemo<Record<FilterableCol, string[]>>(() => ({
+    session: [...new Set(entries.map((e) => `s${e.session}`))].sort(),
+    label: [...new Set(entries.map((e) => runLabel(e)))].sort(),
+    actions: [...new Set(entries.flatMap((e) => { const a = runActions(e); return a.length === 0 ? [""] : a.map((x) => x.label); }))].sort(),
+    status: [...new Set(entries.map((e) => (e.status !== null ? String(e.status) : "")))].sort(),
+  }), [entries]);
+
+  const toggleSort = (key: SortKey) => {
+    if (sortBy === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortBy(key); setSortDir("desc"); }
+  };
+
+  const filt = filter.toLowerCase();
+  const filtered = entries.filter((e) => {
+    if (filt && !(
+      String(e.seq).includes(filt) ||
+      runLabel(e).toLowerCase().includes(filt) ||
+      (e.url ?? "").toLowerCase().includes(filt) ||
+      String(e.session).includes(filt) ||
+      (e.status !== null && String(e.status).includes(filt)) ||
+      (e.error ?? "").toLowerCase().includes(filt)
+    )) return false;
+    if (colFilter.session !== undefined) { if (!colFilter.session.has(`s${e.session}`)) return false; }
+    if (colFilter.label !== undefined) { if (!colFilter.label.has(runLabel(e))) return false; }
+    if (colFilter.status !== undefined) { const v = e.status !== null ? String(e.status) : ""; if (!colFilter.status.has(v)) return false; }
+    if (colFilter.actions !== undefined) { const acts = runActions(e); const eVals = acts.length === 0 ? [""] : acts.map((a) => a.label); if (!eVals.some((v) => colFilter.actions!.has(v))) return false; }
+    return true;
+  });
+  const sorted = [...filtered].sort((a, b) => {
+    let cmp = 0;
+    if (sortBy === "seq") cmp = a.seq - b.seq;
+    else if (sortBy === "time") cmp = a.at_ms - b.at_ms;
+    else if (sortBy === "session") cmp = a.session - b.session;
+    else if (sortBy === "label") cmp = runLabel(a).localeCompare(runLabel(b));
+    else if (sortBy === "status") cmp = (a.status ?? -1) - (b.status ?? -1);
+    else if (sortBy === "duration") cmp = a.duration_ms - b.duration_ms;
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+
+  const copyRun = (e: LogEntry, ev: ReactMouseEvent) => {
+    ev.stopPropagation();
+    navigator.clipboard.writeText(JSON.stringify(e, null, 2)).catch(() => {});
+  };
+  const exportRun = (e: LogEntry, ev: ReactMouseEvent) => {
+    ev.stopPropagation();
+    const blob = new Blob([JSON.stringify(e, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `run-${e.seq}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const onDivider = (ev: ReactPointerEvent<HTMLDivElement>) => {
+    ev.preventDefault();
+    const total = container.current?.getBoundingClientRect().width ?? 600;
+    const startX = ev.clientX;
+    const startW = rightWidth ?? total * 0.45;
+    let last = startW;
+    const move = (m: PointerEvent) => {
+      last = clampSplit(startW + startX - m.clientX, total);
+      setRightWidth(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try { localStorage.setItem(SPLIT_KEY, String(Math.round(last))); } catch {}
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  useEffect(() => {
+    if (!openFilter) return;
+    const close = () => setOpenFilter(null);
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [openFilter]);
+
+  const SortHeader = ({ k, label, w }: { k: SortKey; label: string; w?: number }) => (
+    <span
+      onClick={() => toggleSort(k)}
+      style={{ width: w, cursor: "pointer", userSelect: "none", color: sortBy === k ? ink : dim, flexShrink: 0 }}
+      title={`sort by ${label}`}
+    >
+      {label}{sortBy === k ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+    </span>
+  );
+
+  const FilterDropdown = ({ col, vals }: { col: FilterableCol; vals: string[] }) => {
+    const current = colFilter[col];
+    const isChecked = (v: string) => !current || current.has(v);
+    const allSelected = !current;
+    const toggle = (val: string) =>
+      setColFilter((prev) => {
+        const all = allColValues[col];
+        const prevSet = prev[col] ?? new Set(all);
+        const next = new Set(prevSet);
+        if (next.has(val)) next.delete(val); else next.add(val);
+        const updated = { ...prev };
+        if (next.size >= all.length) { delete updated[col]; return updated; }
+        updated[col] = next;
+        return updated;
+      });
+    const selectAll = () =>
+      setColFilter((prev) => {
+        if (!prev[col]) { return { ...prev, [col]: new Set<string>() }; }
+        const u = { ...prev }; delete u[col]; return u;
+      });
+    return (
+      <div
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        style={{ position: "absolute", top: "100%", left: 0, zIndex: 50, background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 3, padding: "2px 0", minWidth: 110, maxHeight: 200, overflowY: "auto", boxShadow: "0 4px 12px rgba(0,0,0,0.5)", fontSize: 10 }}
+      >
+        <label style={{ display: "flex", gap: 5, padding: "2px 8px", cursor: "pointer", color: ink, alignItems: "center" }}>
+          <input type="checkbox" checked={allSelected} onChange={selectAll} style={{ accentColor: "#6fd3e0" }} />
+          (Select All)
+        </label>
+        <div style={{ borderBottom: "1px solid #1b2a45", margin: "2px 0" }} />
+        {vals.map((v) => (
+          <label key={v || "__empty__"} style={{ display: "flex", gap: 5, padding: "2px 8px", cursor: "pointer", color: v === "" ? dim : ink, alignItems: "center" }}>
+            <input type="checkbox" checked={isChecked(v)} onChange={() => toggle(v)} style={{ accentColor: "#6fd3e0" }} />
+            {v === "" ? "(empty)" : v}
+          </label>
         ))}
       </div>
-      <div style={{ ...scroll, flex: "1 1 45%", display: "flex", flexDirection: "column", gap: 4 }}>
-        {selected ? (
-          <>
-            {selected.url && (
-              <div style={{ color: ink }}>
-                {selected.method} {selected.url}
+    );
+  };
+
+  const ColHeader = ({ sk, label, col, w, flex1 }: { sk?: SortKey; label: string; col: FilterableCol; w?: number; flex1?: boolean }) => {
+    const active = !!(colFilter[col]?.size);
+    const open = openFilter === col;
+    return (
+      <span style={{ width: flex1 ? undefined : w, flex: flex1 ? 1 : undefined, minWidth: flex1 ? 0 : undefined, display: "flex", alignItems: "center", position: "relative", flexShrink: flex1 ? 1 : 0 }}>
+        {sk ? (
+          <span onClick={() => toggleSort(sk)} style={{ flex: 1, cursor: "pointer", userSelect: "none", color: sortBy === sk ? ink : dim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title={`sort by ${label}`}>
+            {label}{sortBy === sk ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+          </span>
+        ) : (
+          <span style={{ flex: 1, color: dim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{label}</span>
+        )}
+        <button onMouseDown={(e) => e.stopPropagation()} onClick={(ev) => { ev.stopPropagation(); setOpenFilter(open ? null : col); }} style={{ font: "inherit", fontSize: 8, background: "transparent", border: "none", color: active ? "#6fd3e0" : dim, cursor: "pointer", padding: 0, flexShrink: 0, lineHeight: 1 }} title={`filter by ${label}`}>
+          {active ? "◆" : "▾"}
+        </button>
+        {open && <FilterDropdown col={col} vals={allColValues[col]} />}
+      </span>
+    );
+  };
+
+  const rightStyle: CSSProperties = rightWidth !== null
+    ? { width: rightWidth, flexShrink: 0 }
+    : { flex: "1 1 45%" };
+
+  return (
+    <div style={{ display: "flex", flex: 1, minHeight: 0, flexDirection: "column" }}>
+      <ChainBar slug={slug} head={head} breaks={breaks} />
+      <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+        <input
+          placeholder="filter runs…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
+        />
+        {filter && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
+      </div>
+      <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        {/* Left: run list */}
+        <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
+          <div style={{ display: "flex", gap: 10, padding: "2px 6px", borderBottom: "1px solid #1b2a45", fontSize: 10, flexShrink: 0 }}>
+            <SortHeader k="seq" label="#" w={30} />
+            <SortHeader k="time" label="time" w={84} />
+            <ColHeader sk="session" label="s" col="session" w={22} />
+            <ColHeader sk="label" label="route / action" col="label" flex1 />
+            <ColHeader label="actions" col="actions" w={56} />
+            <ColHeader sk="status" label="st" col="status" w={26} />
+            <SortHeader k="duration" label="ms" w={52} />
+            <span style={{ width: 44, flexShrink: 0 }} />
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 0 8px" }}>
+            {sorted.length === 0 && (
+              <div style={{ padding: 8, color: dim }}>
+                {entries.length === 0 ? "no runs yet: send it a request" : "no runs match the filter"}
               </div>
             )}
-            {selected.request && <Field name="request" value={formatValue(selected.request)} />}
-            {selected.sourced.map(([cap, v]) => (
-              <Field key={cap} name={cap.toLowerCase()} value={formatValue(v)} />
-            ))}
-            {selected.performed.map((p, i) => (
-              <Field key={i} name={`did ${p.capability}`} value={formatValue(p.payload)} />
-            ))}
-            {selected.response_body !== null && (
-              <Field name={`answered ${selected.status}`} value={selected.response_body || "(empty)"} />
-            )}
-            {selected.error && <Field name="error" value={selected.error} color={bad} />}
-            {(selected.rounds ?? []).map((r, i) =>
-              r.exchanges.map((x, j) => {
-                const { line, ok } = exchangeLine(x.request, x.response);
+            {sorted.map((e) => {
+              const acts = runActions(e);
+              return (
+                <div
+                  key={e.seq}
+                  onClick={() => pick(e)}
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    padding: "2px 6px",
+                    cursor: "pointer",
+                    borderRadius: 3,
+                    background: e.seq === selected?.seq ? "#13243f" : "transparent",
+                    alignItems: "center",
+                  }}
+                >
+                  <span style={{ color: dim, width: 30, textAlign: "right", flexShrink: 0 }}>#{e.seq}</span>
+                  <span style={{ color: dim, width: 84, whiteSpace: "nowrap", flexShrink: 0 }}>{time(e.at_ms)}</span>
+                  <span style={{ color: dim, width: 22, flexShrink: 0 }}>s{e.session}</span>
+                  <span style={{ flex: 1, color: ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                    {runLabel(e)}
+                    {e.url && e.route ? <span style={{ color: dim }}> · {e.url}</span> : null}
+                  </span>
+                  <span style={{ width: 56, display: "flex", gap: 3, alignItems: "center", flexShrink: 0, overflow: "hidden" }}>
+                    {acts.map((a) => (
+                      <span key={a.label} title={a.title} style={{ color: a.color, fontSize: 9, letterSpacing: "0.02em" }}>{a.label}</span>
+                    ))}
+                    {e.error && <span style={{ color: bad, fontSize: 9 }}>err</span>}
+                    {(e.parked ?? []).length > 0 && <span style={{ color: "#e0c36f", fontSize: 9 }} title="waiting for an event">⏸</span>}
+                  </span>
+                  <span style={{ color: e.status !== null && e.status < 400 ? good : bad, width: 26, flexShrink: 0 }}>
+                    {e.status ?? ""}
+                  </span>
+                  <span style={{ color: dim, width: 52, textAlign: "right", flexShrink: 0 }}>{e.duration_ms.toFixed(2)}</span>
+                  <span style={{ display: "flex", gap: 2, width: 44, flexShrink: 0 }}>
+                    <button style={{ ...small, padding: "0px 4px", fontSize: 10 }} title="copy run as JSON" onClick={(ev) => copyRun(e, ev)}>⎘</button>
+                    <button style={{ ...small, padding: "0px 4px", fontSize: 10 }} title="download run as JSON" onClick={(ev) => exportRun(e, ev)}>↓</button>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {/* Draggable divider */}
+        <div
+          style={{ width: 5, cursor: "col-resize", background: "transparent", flexShrink: 0 }}
+          onPointerDown={onDivider}
+          title="drag to resize"
+        />
+        {/* Right pane: Details | Errors | Timeline tabs */}
+        <div style={{ ...rightStyle, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <Tabs
+            tabs={[
+              ["details", "Details"],
+              ...(diagnosis ? [["errors", "Errors"] as ["errors", string]] : []),
+              ["timeline", "Timeline"],
+            ]}
+            tab={rightTab}
+            onTab={setRightTab}
+          />
+          {rightTab === "details" ? (
+            <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 4 }}>
+              {selected ? (
+                <>
+                  {selected.url && (
+                    <div style={{ color: ink }}>{selected.method} {selected.url}</div>
+                  )}
+                  {selected.request && <Field name="request" value={formatValue(selected.request)} />}
+                  {selected.sourced.map(([cap, v]) => (
+                    <Field key={cap} name={cap.toLowerCase()} value={formatValue(v)} />
+                  ))}
+                  {selected.performed.map((p, i) => (
+                    <Field key={i} name={`did ${p.capability}`} value={formatValue(p.payload)} />
+                  ))}
+                  {selected.response_body !== null && (
+                    <Field name={`answered ${selected.status}`} value={selected.response_body || "(empty)"} />
+                  )}
+                  {selected.error && <Field name="error" value={selected.error} color={bad} />}
+                  {(selected.rounds ?? []).map((r, i) =>
+                    r.exchanges.map((x, j) => {
+                      const { line, ok } = exchangeLine(x.request, x.response);
+                      return (
+                        <Field key={`${i}-${j}`} name={`round ${i + 1} · ${us(x.end_us - x.start_us)}`} value={line} color={ok ? ink : bad} />
+                      );
+                    }),
+                  )}
+                  {(selected.reads ?? []).map((r, i) => (
+                    <Field key={`r${i}`} name="read" value={`${formatValue(r.request)} → ${r.answer ? formatValue(r.answer) : "nothing"}`} />
+                  ))}
+                  {(selected.retries ?? 0) > 0 && (
+                    <Field name="ran again" value={`${selected.retries}× — what it read changed before it could commit, so it ran again from the new state`} color="#e0c36f" />
+                  )}
+                  {(selected.parked ?? []).length > 0 && (
+                    <Field name="waiting at" value={(selected.parked ?? []).join(", ")} color="#e0c36f" />
+                  )}
+                  {Object.entries(selected.events ?? {}).map(([name, v]) => (
+                    <Field key={name} name={`event ${name}`} value={formatValue(v)} />
+                  ))}
+                  {selected.run_id && (
+                    <Field name="run" value={`${selected.run_id.slice(0, 16)}… · grant ${(selected.grant ?? "").slice(0, 12)}…`} color={dim} />
+                  )}
+                </>
+              ) : (
+                <div>select a run</div>
+              )}
+            </div>
+          ) : rightTab === "errors" && diagnosis ? (
+            <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ color: FAIL }}>{diagnosis.summary}</span>
+              {diagnosis.origins.length === 0 && <span style={{ color: dim }}>no node on the canvas stopped the run</span>}
+              {diagnosis.origins.map((id) => {
+                const n = nodes.find((x) => x.id === id);
+                const lbl = n ? nodeLabel(n) : id;
                 return (
-                  <Field
-                    key={`${i}-${j}`}
-                    name={`round ${i + 1} · ${us(x.end_us - x.start_us)}`}
-                    value={line}
-                    color={ok ? ink : bad}
-                  />
+                  <span key={id} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                    <span>failed at <b>{lbl}</b>: {diagnosis.issues.get(id)?.reason}</span>
+                    <button style={{ ...small, color: FAIL, borderColor: FAIL }} onClick={() => onShowNode(id)} title="show it on the canvas">show</button>
+                  </span>
                 );
-              }),
-            )}
-            {(selected.reads ?? []).map((r, i) => (
-              <Field key={`r${i}`} name="read" value={`${formatValue(r.request)} → ${r.answer ? formatValue(r.answer) : "nothing"}`} />
-            ))}
-            {(selected.retries ?? 0) > 0 && (
-              <Field
-                name="ran again"
-                value={`${selected.retries}× — what it read changed before it could commit, so it ran again from the new state`}
-                color="#e0c36f"
-              />
-            )}
-            {(selected.parked ?? []).length > 0 && (
-              <Field name="waiting at" value={(selected.parked ?? []).join(", ")} color="#e0c36f" />
-            )}
-            {Object.entries(selected.events ?? {}).map(([name, v]) => (
-              <Field key={name} name={`event ${name}`} value={formatValue(v)} />
-            ))}
-            {selected.run_id && (
-              <Field
-                name="run"
-                value={`${selected.run_id.slice(0, 16)}… · grant ${(selected.grant ?? "").slice(0, 12)}…`}
-                color={dim}
-              />
-            )}
-          </>
-        ) : (
-          <div>select a run</div>
-        )}
+              })}
+            </div>
+          ) : (
+            <TimelineTab
+              run={selected}
+              order={order}
+              nodes={nodes}
+              timings={timings}
+              exchanges={exchanges}
+              step={step}
+              onStep={onStep}
+              onPickNode={onPickNode}
+              issues={issues}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
