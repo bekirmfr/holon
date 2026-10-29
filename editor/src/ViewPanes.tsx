@@ -407,41 +407,6 @@ function ChainBar({ slug, head, breaks }: { slug: string; head: string; breaks: 
   );
 }
 
-/** What went wrong in the selected run, and where it started, with a way there. */
-function FailureBanner({ diagnosis, nodes, onShowNode }: { diagnosis: Diagnosis; nodes: ViewNode[]; onShowNode: (id: string) => void }) {
-  const label = (id: string) => {
-    const n = nodes.find((x) => x.id === id);
-    return n ? nodeLabel(n) : id;
-  };
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 2,
-        margin: "2px 0 4px",
-        padding: "4px 8px",
-        borderLeft: `3px solid ${FAIL}`,
-        background: `${FAIL}14`,
-        color: ink,
-      }}
-    >
-      <span style={{ color: FAIL }}>✗ {diagnosis.summary}</span>
-      {diagnosis.origins.length === 0 && <span style={{ color: dim }}>no node on the canvas stopped the run</span>}
-      {diagnosis.origins.map((id) => (
-        <span key={id} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-          <span>
-            failed at <b>{label(id)}</b>: {diagnosis.issues.get(id)?.reason}
-          </span>
-          <button style={{ ...small, color: FAIL, borderColor: FAIL }} onClick={() => onShowNode(id)} title="show it on the canvas">
-            show
-          </button>
-        </span>
-      ))}
-    </div>
-  );
-}
-
 type SortKey = "seq" | "time" | "session" | "label" | "status" | "duration";
 type FilterableCol = "session" | "label" | "actions" | "status";
 
