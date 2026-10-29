@@ -1,278 +1,192 @@
-# History: runs and deploys as one chain, a diff before approval, and reverts as new links (L4)
+# History: one timeline per deployment, and restoring code, state or both (L4)
 
-**Status:** design, before any code. Written 2026-10-29, against rc.29 (6bc5c68). Step 2.5 of
-the [host capabilities](host-capabilities-L4.md) plan (§7, Tier 2). Builds on
-[host resources](host-resources-L4.md) (resources, addresses, a timeline per resource),
-[databases](databases-L4.md) (one transaction per run, claims, locks) and
-[triggers](triggers-L4.md) (actions).
+**Status:** design, before any code. Written 2026-10-29, against rc.29 (6bc5c68); narrowed the
+same day to observability and restore, leaving out per-run reverts, conflicts and compensations
+(§8). Step 2.5 of the [host capabilities](host-capabilities-L4.md) plan (§7, Tier 2). Builds on
+[host resources](host-resources-L4.md) (a timeline per resource).
 
-A run is already much like a git commit: it is named by the version it ran on and the Merkle
-root of what it started from, it is checked against what it read before it lands, it goes round
-again when that changed, and its log line points at the line before. This note makes the
-likeness exact, and takes the two things it is good for:
+Two things, and only two:
 
-- **a diff before approval:** a new version is run against the recorded runs of the old one, and
-  the approver sees what it would have done differently, on real traffic;
-- **reverts:** undoing a run's writes, a deploy, or both back to a point, **always as a new link
-  in the chain**, never by rewriting it. Like `git revert`, not `git reset`.
+- **See what happened:** one timeline per deployment of its runs, deploys, grant changes and
+  restores, each with the code it ran on and the state it left.
+- **Go back:** restore a deployment's **code**, its **state**, or **both**, to any earlier point,
+  so a version that worked is never lost. A restore is a new entry on the timeline, never a
+  rewrite of it; it can itself be restored past.
+
+It is not git: nothing branches, nothing merges, nothing is undone run by run. Going back means
+putting the whole deployment, or its code, or its state, where it was at a point in its history.
 
 ```
-$ holon history payouts --last 6
-#4131  run      POST /payouts         v 3f2a…  root 9c1e… → 7d40…  wrote payouts/881
-#4132  deploy   v 3f2a… → v b81c…     by agent:codex, approved by maria
-#4133  run      POST /payouts         v b81c…  root 7d40… → 12aa…  wrote payouts/882  sent 1
-#4134  run      POST /payouts         v b81c…  root 12aa… → e0f3…  wrote payouts/883  sent 1
-#4135  revert   restore to #4131      by maria  "b81c doubles the fee"
-         code v b81c… → v 3f2a…; state e0f3… → 9c5b… (payouts/882, payouts/883 as they were)
-         compensated: 2 runs (refund_payout #4136, #4137)
+$ holon history prices --last 5
+#212  run      POST /quote          v 3f2a…  state 9c1e… → 9c1e…
+#213  deploy   v 3f2a… → v b81c…   by agent:codex, approved by maria
+#214  run      PUT /prices/eur      v b81c…  state 9c1e… → 7d40…  wrote prices
+#215  run      POST /quote          v b81c…  state 7d40… → 7d40…  500
+#216  restore  to #212 (code and state)   by maria  "b81c writes prices in cents"
+        code v b81c… → v 3f2a…   state 7d40… → 9c1e…
+        not restored: 0 effects outside since #212
 ```
 
 ---
 
 ## 1. What is already there
 
-- **A run's id** is `run_id(deployment, input_root)` (`holon-core/src/value_hash.rs`): the hash of
-  the unit it ran on and the Merkle root of its inputs, the state it read, its sourced values and
-  a nonce. **A state's root** is `state_root`: one hash for a key → value map, from each value's
-  hash, so a state whose values are hashed once when written gets its root without reading them.
-- **A run's log line** (`recorder.rs`, `LogEntry`) holds `prev` (the hash of the line before: a
-  hash chain per deployment, checked when the log is opened), `seq`, `unit`, `grant` (its hash),
-  `state_before` (**the whole state, as values**), `reads`, `rounds`, `sourced`, `outputs`,
-  `performed` (the effects, a run's writes among them: a collection write with its value, a file
-  write by its hash), `retries`, and for durable runs `parked` and `events`. There is **no state
-  after**: what the run left is `state_before` with `performed` applied.
-- **Deploys are elsewhere.** The activity log (`activity.rs`) keeps `{at, action, target, by}`
-  for each save, deploy, grant and delete: no hashes, no chain, no unit. A deployment keeps the
-  documents of its last 10 versions (`deploy.rs`, `KEPT_VERSIONS`); every unit itself stays in
-  the store by its hash.
-- **History is short.** A deployment's log keeps its newest 500 runs (`DEFAULT_KEEP`, or
-  `--keep-runs`). File texts a run read are kept in `blobs.rs` and swept when no kept run refers
-  to them; their log lines keep the hash, so such a run "stays provable, not re-runnable".
-- **`holon verify`** (`verify.rs`) checks an export offline: the chain, then each run again from
-  its line (same unit, state, clock, random, outbound answers, reads), comparing run id,
-  outputs, effects and status. It checks runs one by one; it does not check that one run's state
-  follows from the last's.
-- **Replay** (the editor's view mode) runs a logged run again from its line, on the version it
-  ran on.
-- **Optimistic commits** (`firing.rs`): a run whose reads changed before it could land runs again
-  from the state as it now is, its outbound requests answered from its own record (`prior`),
-  four times, then once more holding the lock.
+Most of what this needs is in the store already; what's missing is keeping it and naming it.
 
-## 2. One chain per deployment
+- **Code is kept by hash.** A deployed version is a unit in the content store, and stays there.
+  What isn't kept for long is its **document** (the flow as the editor opens it): a deployment
+  keeps its last 10 (`deploy.rs`, `KEPT_VERSIONS`).
+- **State is a map of cells, and collections are cells too.** A collection's root hash is a state
+  cell under `#collection:<name>`, its trie's nodes in the content store (`collections.rs`). So
+  a collection is restored by putting its root back, if its nodes are still there; the content
+  store isn't swept today.
+- **A state has one hash:** `state_root` (`holon-core/src/value_hash.rs`), from each cell's value
+  hash. A run's id covers it.
+- **The run log** (`recorder.rs`) is a hash chain per deployment (each line's `prev`, checked
+  when the log is opened). Each line holds its unit, its grant's hash, `state_before` (the
+  whole state map, copied) and `performed` (its writes and other effects). There is no state
+  after; the log keeps the newest 500 runs (`--keep-runs`).
+- **Deploys and grants** are in the activity log (`activity.rs`): `{at, action, target, by}`, no
+  unit hash, no chain, across all deployments.
+- **The editor's view mode** opens a logged run on the version it ran on (the kept document).
 
-A deployment's history is one hash chain of **links**, in the file its run log is today. A run
-log line becomes the commonest link; deploys, grant changes and reverts join it.
+## 2. One timeline
 
-| Link | Changes | Holds |
-|---|---|---|
-| `run` | state | today's line, with `root_before`, `root_after` and its `writes` (§3) |
-| `deploy` | code | the unit before and after, the grant's hash, who deployed it, who approved it, and its diff (§5) |
-| `grant` | permissions | what was granted, lowered or revoked, by whom |
-| `revert` | state, code or both | the links it undoes, by whom, why, what it couldn't undo (§6) |
+A deployment's run log becomes its timeline. Next to runs, it gets **deploy**, **grant** and
+**restore** entries, in the same hash chain, so everything that changed the deployment's code,
+permissions or state is in one ordered, checkable place.
 
-Every link has `prev`, `seq` and `at`, as a run's line has now. The activity log keeps its own
-entries as today (it is the server's, across deployments); a deploy or grant is written to both.
+| Entry | Holds |
+|---|---|
+| `run` | as today, plus the state root it left (`state_after`) |
+| `deploy` | the unit before and after, the grant's hash, who deployed it, who approved it |
+| `grant` | what was granted, lowered or revoked, and by whom |
+| `restore` | the point restored to, what (code, state or both), by whom, why, and what it didn't touch (§5) |
 
-**The rule that makes it a chain of states:** each link's `root_before` is the last link's
-`root_after`, except where runs committed side by side, which §3 orders.
+Every entry has `seq`, `at` and `prev`, as a run's line does. The activity log stays as it is
+(the server's own, across deployments); a deploy or a grant change is written to both.
 
-## 3. A run names its states
+## 3. Restore points
 
-- **`root_before`** replaces `state_before`. Replay needs only what the run read, and `reads`
-  and the state cells it read are kept with their values; the rest of the state is named by the
-  root, not copied. A busy deployment's log gets smaller.
-- **`writes`**: what it changed, key by key, each the value's hash (and the value, where the log
-  keeps values today).
-- **`root_after`**: `root_before` with `writes` applied, computed by `state_root` without
-  re-reading anything.
-- **Order.** Runs commit one at a time under the deployment's state lock (`firing.rs`), so their
-  commits already have an order: the link is written in that order, and each `root_before` is
-  the root it committed on. A run that started on an older root and committed anyway (its reads
-  unchanged) names the root it committed on; its line also keeps the root it started from, so
-  replay starts there.
-- **Older lines** (without roots) stay as they are; the chain continues from them, and verify
-  checks roots from the first line that has them.
+Every entry is a point the deployment can go back to: its code is the unit current then, its
+state the root it left.
 
-## 4. Checking a whole chain
+- **Each state is kept by its root.** A state map is stored in the content store as one record,
+  cells by name to value hashes, and its values by hash, so a state shares everything it didn't
+  change with the one before. An entry names its state by root; a run line's `state_before`
+  stops being a copy.
+- **Each document is kept by hash** with its unit, not only the last 10, so any version on the
+  timeline opens in the editor and can be deployed again.
+- **Collections need nothing new:** their roots are cells, their nodes are in the store.
 
-`holon verify` gains a second check, beside running each run again: **each link's states follow
-from the one before.** Starting from a **checkpoint** (a link whose whole state the export
-carries, by default the oldest kept), it applies each link's writes and checks the root it
-reaches against the link's `root_after`. A run whose state doesn't follow is reported, whatever
-its own run said.
+What a point costs is what changed at it. Reaching it costs nothing: a restore reads a root and
+puts it back.
 
-**Keeping history long.** State values are kept once each, by hash (as `blobs.rs` keeps file
-texts), so keeping every link's state costs only what each link changed. A link past the
-deployment's retention keeps its **header** (roots, writes' hashes, `prev`) and drops its
-**body** (values, reads, rounds): the chain still checks, the link is no longer re-runnable, and
-the report says which. Retention becomes a real setting, because it is also how far back a
-revert can reach (§6).
-
-## 5. A diff before approval
-
-When a new version waits for approval (any version an agent deploys that needs one, or one a
-person asks to see), the server replays recorded runs of the current version **on the new one**,
-and shows what would have been different:
+## 4. Restoring
 
 ```
-v b81c… against the last 500 runs of v 3f2a…:
-  463  the same
-   34  answer differently        POST /payouts: 34 (fee: 2.00 → 4.00)
-    2  would write differently   payouts/…: fee
-    1  can't tell                POST /payouts: asks https://fx.example.com, which v 3f2a never did
+holon restore <slug> --to <seq>              code and state, as they were after entry <seq>
+holon restore <slug> --to <seq> --code       the code only
+holon restore <slug> --to <seq> --state      the state only
+holon restore <slug> --to <seq> --dry-run    what it would do, and change nothing
 ```
 
-- **Each run is replayed from its own line**, independently: its request, the state it read, its
-  clock and random, its outbound answers. Nothing compounds from one replayed run to the next, so
-  they replay in parallel, within a time budget.
-- **Compared:** status, outputs (the response first), writes, and effects (what it would send,
-  and where).
-- **"Can't tell"** is a run where the new version asks something the record doesn't hold (a call
-  to a new host or path, a read of a key the old run never read, a new secret). It is never
-  guessed; it is counted and shown.
-- **Runs that touched secrets** compare as verify does today (§1): what a secret-computed node
-  produced is taken from the log.
-- **Where it shows:** the deploy approval (the editor's deployment card, `holon deploy` waiting),
-  with each differing run openable side by side in view mode. The deploy link keeps the summary.
-- **Which runs:** the last *N* (500 by default), or those a person picks (a route, a time range).
+`--to` also takes a version (`--to v 3f2a…`: the point just before that version was replaced).
 
-This is the evidence an approver of an agent's change lacks today: not only what it may touch,
-but what it does differently with the traffic it will get.
+- **Code** is restored as a deploy of the earlier unit, with everything a deploy does today
+  (waiting runs, routes, channels), and **checked against today's policy and grant**, not those it
+  had: a secret revoked since stays revoked; a permission it needs that isn't granted now waits
+  for approval like any new version's.
+- **State** is restored by setting the deployment's state to the point's map, collections
+  included, under the deployment's state lock, as one commit: runs in flight that read the old
+  state run again on the restored one (the optimistic commit already does this, `firing.rs`).
+- **Both** is one restore entry, code first, then state, with nothing running in between.
+- **Code alone over a newer state** is allowed; the newer state may not suit the older code
+  (a cell it doesn't know, a shape it doesn't expect). `--dry-run` shows the cells that differ
+  between the two points, so whoever restores sees it.
+- **Who may restore:** whoever may deploy to the deployment. Where the policy asks for an approval
+  of deploys (approvals-L4, step 2.1), a restore asks for one too. An agent may restore as its
+  grant allows; its restore waits for approval like its deploys.
 
-## 6. Reverts
+## 5. What a restore doesn't touch
 
-A revert is a link. It never removes or changes one.
+A restore puts back what Holon holds: the code and the deployment's state, collections included.
+Everything else belongs to whoever holds it, and isn't put back:
 
-**Three forms:**
+- requests sent, mail sent, messages published on channels;
+- rows in external databases, files in bound folders;
+- secrets (their own versions, `secrets.rs`) and grants (today's apply, §4).
 
-- **`holon revert <slug> --run <seq>`** (or a range, `--runs 4133..4134`): the runs' writes are
-  undone, newest first.
-- **`holon revert <slug> --deploy <seq>`:** the version before that deploy is deployed again.
-- **`holon restore <slug> --to <seq>`:** code and state as they were after that link, in one
-  link.
+The restore entry and `--dry-run` list the runs since the point that had such effects, by kind
+and target, from their `performed`: so whoever restores knows what the outside world saw, and
+Holon never claims to have undone it.
 
-**State.** For each key a reverted run wrote, the key gets back the value the run found, **if it
-still holds what the run left**. If a later link changed it, that is a **conflict**: the revert
-names the later links that touched the key (the resource timeline's blame, host-resources §5),
-and either reverts them too (if asked: `--with-later`) or leaves the key and says so. The revert
-is applied as a run's commit is: under the state lock, each key checked as expected, so it
-never races live runs.
+## 6. Seeing it
 
-- **State and collections** revert from the chain itself.
-- **Files in bound folders** revert when the text they had is still kept (`blobs.rs`); a file
-  whose earlier text was swept is left and listed.
-- **External databases** revert only with **before-images**: when a run's transaction commits,
-  the rows its writes changed are read first in the same transaction and logged (or kept by hash),
-  as a database's own undo log does. That costs a read per write, so it is an admin's setting per
-  database (`--revertible`, §11, fork 4). Without it, a database's writes are listed, not undone.
+- **`holon history <slug>`**: the timeline, filterable by kind, route, cell, collection, version
+  and time; `--json` for tools.
+- **A cell's or a collection's history:** the entries that changed it, by whom and on which
+  version, with the values before and after (host-resources' timeline, for the deployment's own
+  resources).
+- **Two versions side by side:** the documents of any two units on the timeline, as text.
+- **The editor:** the deployment's timeline, each entry opening its run in view mode, its
+  version, or its state; a restore's preview and its button.
+- **MCP:** `history` and `restore`, the latter waiting for approval when an agent asks.
+- **`holon verify`** checks, beyond what it checks today, that each entry's state follows from the
+  one before it (its writes applied to the root before give the root after), from the oldest
+  entry the export carries whole.
 
-**Code.** Reverting a deploy is a deploy link of the earlier unit, **checked against today's
-policy and grant**, not those it had then: a secret revoked since stays revoked, and a permission
-the earlier version needs that isn't granted now waits for approval like any other.
+## 7. Retention
 
-**Effects outside: compensation, not undo.** A sent mail or a made payout can't be unwritten.
-A flow may name an **action that compensates** a route's effects:
+Points are kept as long as the timeline keeps their entries; the log's 500-run window is what
+bounds that today.
 
-```holon
-route POST /payouts (req) {
-  …
-}
+- **Deploys and restores are kept for good**, with the state they left: those are the points
+  people go back to ("the version that worked, as it was"), and they are few.
+- **Runs** are kept by the deployment's retention: the 500 newest, or a setting by age. A run past
+  it keeps its header (seq, `prev`, roots, unit), so the chain still checks, and drops its body;
+  a state no kept entry names can be swept from the store.
 
-action refund_payout (original) compensates POST /payouts {
-  http.post("api.bank.example", "/refunds", body: { payout: original.outputs.id })
-}
-```
+## 8. Not in this design
 
-The action receives the reverted run's record (its request, outputs and effects). A revert runs it
-once per reverted run, each a new run link, with the revert link naming them. Effects with no
-compensating action are listed in the revert link for a person to handle. Compensations are runs:
-logged, granted, verifiable.
+Left out on purpose; each would need conflict rules, ordering or semantics that aren't Holon's to
+decide:
 
-**Who may revert.** Reverting writes to a deployment, so it needs the role a deploy needs, and
-where the policy says so (payments), an approval by someone else (approvals-L4, step 2.1). An
-agent may revert as its grant allows; its revert waits for approval like its deploys.
+- **Reverting one run or a range** while keeping later ones: a state no run computed.
+- **Merging** two states or two versions.
+- **Compensating** effects outside (refunds, retractions): a flow's own business, in its own
+  routes and actions.
+- **Before-images of external databases**, to put their rows back.
+- **Rewriting history**, to erase or shorten it: retention drops bodies (§7), never entries.
+- **A diff of a new version against recorded runs** before approval: a fit for approvals-L4, if
+  it is wanted.
 
-**A preview first.** Every revert can be asked with `--dry-run` (the editor shows it before the
-button acts): which keys change, which conflict, which files and rows can't be restored, which
-compensations would run, which effects nobody compensates.
+## 9. Samples
 
-## 7. Erasure
+- **`price-rollback`:** a prices flow with a collection. Deploy v1, set prices, deploy a v2 that
+  writes them wrong, then restore to before v2: code and state back, the timeline showing all of
+  it. Deployed by the e2e tests, which restore through the editor and check a quote again.
 
-An append-only chain and a person's right to have their data deleted meet here. Rewriting history
-would break every later hash, so it isn't how Holon erases:
+## 10. Slices
 
-- **Values an admin marks personal** (a collection, or fields of one) are kept **encrypted**, each
-  subject under its own key, sealed as waiting runs already are (`sealing.rs`). The chain hashes
-  what it holds, so it never depends on the clear value.
-- **Erasing a subject deletes the key.** The chain still checks; the values are gone; replay, the
-  diff and revert treat such a value as erased and say so, as they treat a swept file's text.
-- **Card data** (PCI) should never enter a run's log at all: the existing secret rules (`taint.rs`)
-  are the place for it, not erasure after the fact.
+1. **Roots in run lines:** `state_after`, `state_before` by root, states and documents kept by
+   hash.
+2. **Deploy, grant and restore entries** in the deployment's chain.
+3. **Restore** of code, state or both, `--dry-run`, the CLI and the server's endpoint.
+4. **Seeing it:** `holon history`, a cell's history, the editor's timeline and restore, MCP.
+5. **Retention and verify** of whole states.
 
-## 8. What it doesn't do
+## 11. Forks, surfaced
 
-- **No merges.** Runs that conflict run again; they are never merged. Merging two decisions would
-  give a result neither run computed.
-- **No rewriting.** Erasure is by deleted keys (§7), retention by dropped bodies (§4); every hash
-  stays.
-- **No undo of the outside world.** Effects are compensated by actions or listed for a person
-  (§6), never claimed undone.
-- **No time travel of external state.** A database, a bucket or a mailbox is seen as the runs saw
-  it; only before-images (§6) let Holon put rows back.
+1. **Whether a restore of code alone is allowed when the state's cells don't match the older
+   code.** *Lean:* allowed, with the differing cells in the dry run.
+2. **Retention:** by count or by age. *Lean:* by age, with deploys and restores kept for good.
+3. **Whether `--to` a version means just before it was replaced, or just after it was deployed.**
+   *Lean:* just before it was replaced: the version as it had run.
 
-## 9. Seeing it
+## 12. What stays true
 
-- **`holon history <slug>`**: the chain, link by link, filtered by kind, key or time.
-- **The editor:** the deployment's history as a timeline of runs, deploys, grants and reverts; a
-  key's history (who wrote it, when; host-resources' timeline); a version's diff (§5); a revert's
-  preview and its button.
-- **The MCP tools** gain `history` and `revert`, the latter waiting for approval when an agent
-  asks.
-
-## 10. Samples
-
-- **`payout-revert`:** a payouts flow with a compensating action. Deploy v1, send payouts, deploy
-  a v2 that doubles the fee (its diff shows it before approval), approve it anyway, send more,
-  then restore to before v2: code back, state back, the payouts v2 made refunded by the action.
-- **`notes-history`:** a collection flow whose history, blame and single-run revert show in the
-  editor, with a conflict when a later run touched the same key.
-
-Each deployed by the e2e tests, with a local stand-in for the bank.
-
-## 11. Slices
-
-1. **Roots in run links:** `root_before`, `root_after`, `writes`; `state_before` reduced to what
-   was read. Verify checks roots where lines have them.
-2. **Deploy and grant links** in the deployment's chain.
-3. **Whole-chain verify** with checkpoints; headers and bodies, retention.
-4. **The diff before approval** (§5), in the deploy approval and `holon deploy`.
-5. **Reverting state:** runs and ranges, conflicts, files from kept texts, `--dry-run`.
-6. **Reverting code and restoring to a link.**
-7. **Compensating actions.**
-8. **Before-images** for databases marked revertible.
-9. **Erasure** by sealed personal values.
-
-## 12. Forks, surfaced
-
-1. **Diff runs independently, or in sequence on a branch of state.** In sequence, each replayed
-   run would read what the previous replayed runs wrote, closer to "what if v2 had been live", but
-   one difference changes every later run, and it can't run in parallel. *Lean:* independently.
-2. **Whether a deploy needs its diff.** *Lean:* shown whenever a version waits for approval; the
-   policy may require it (an agent's version can't be approved without one).
-3. **Conflicts in a range revert:** stop at the first, or undo what can be undone and list the
-   rest. *Lean:* the dry run shows both; the revert does what can be done and lists the rest.
-4. **Before-images per database or per table.** *Lean:* per database, an admin's setting.
-5. **What a compensating action receives:** the reverted run's whole record, or only its outputs
-   and effects. *Lean:* outputs and effects, plus the request; never its secrets.
-6. **Retention:** by count of links, by age, or by bytes. *Lean:* by age (what an audit asks
-   for), with a count as a floor.
-7. **A revert of a revert.** It's a link like any other, so it can be reverted. *Lean:* allowed.
-
-## 13. What stays true
-
-- History is appended to, never rewritten: every link's hash stays valid for as long as it's
-  kept.
-- A revert is a link, with who, why and what it couldn't undo.
-- Code comes back checked against today's grant, never yesterday's.
-- What happened outside is compensated or listed, never claimed undone.
-- What can't be checked or restored is said, never guessed.
+- A version that ran is never lost; going back to it is one entry.
+- History is appended to, never rewritten.
+- Code comes back checked against today's grant.
+- What happened outside Holon is listed, never claimed undone.

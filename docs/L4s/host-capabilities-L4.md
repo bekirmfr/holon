@@ -677,10 +677,10 @@ Five tracks, so five worktrees at most; tracks that touch the same files (`kind.
 | 2.2 | **Telemetry and audit export:** OpenTelemetry over HTTP (a trace per run; metrics for runs, failures, latency, a feed's or queue's lag), the activity log and run heads to a SIEM, health and readiness endpoints (§2's server features) | telemetry-L4 | 1.6 for lag | M |
 | 2.3 | **Who touched what:** resources with ids, addresses and a timeline across deployments ([host resources](host-resources-L4.md), designed), and each connection's own record (§8, fork 20) | host-resources-L4, revised | 1.4, 1.6 | L |
 | 2.4 | **A sandbox for agents:** walls from the grant, the operator's container runtime first, then Linux's own; the outbound proxy; writes at commit; agents' shell through MCP (§5.8) | sandbox-L4 | 1.7 | L |
-| 2.5 | **History:** runs, deploys and grants as one chain with state roots, a diff of a new version against recorded runs before approval, reverts of state and code as new links, compensating actions ([history](history-L4.md), designed) | history-L4 | 2.1, 2.3 | L |
+| 2.5 | **History:** one timeline per deployment of its runs, deploys and grant changes, and restoring its code, its state or both to any earlier point, as a new entry ([history](history-L4.md), designed) | history-L4 | 2.1 for approved restores | M |
 
 Samples: 2.1 `four-eyes-payout`; 2.4 `agent-reconcile` (an agent's script in the sandbox,
-reading statements, writing a report); 2.5 `payout-revert` and `notes-history`. 2.2 and 2.3 are the server's, shown in the server manual
+reading statements, writing a report); 2.5 `price-rollback`. 2.2 and 2.3 are the server's, shown in the server manual
 and checked by e2e tests of their own.
 
 If a first outside job comes before Tier 2, **2.1 is the step to pull forward**: it needs nothing
