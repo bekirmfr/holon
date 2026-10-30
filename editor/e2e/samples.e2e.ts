@@ -77,7 +77,7 @@ async function viewNewestRun(page: Page) {
 const samplesRs = readFileSync(new URL("../../crates/holon-author/src/samples.rs", import.meta.url), "utf8");
 const SAMPLE_TITLES = [...samplesRs.matchAll(/^\s*title: "(.*)",$/gm)].map((m) => m[1]);
 /** Slugs with clock triggers: stopped after their batch so they don't tick the whole run. */
-const CLOCK_SLUGS = new Set(["heartbeat", "ticker"]);
+const CLOCK_SLUGS = new Set(["heartbeat", "ticker", "rolling-log"]);
 const TITLE_TO_SLUG = new Map([...samplesRs.matchAll(/^\s*name: "([^"]+)",\s*\n\s*title: "([^"]+)",/gm)].map((m) => [m[2], m[1]]));
 
 test("the flows page lists every sample", async ({ page }) => {
@@ -1069,6 +1069,8 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   expect(kept).toEqual([0, 1, 2, 3, 4].map((i) => kept[0] + i));
   const state = (await (await request.get(`${SERVER}/deployments/rolling-log/state`, { headers: auth })).json()) as { state: { beats: { value: number } } };
   expect(Number(state.state.beats.value), "every beat counted, kept or not").toBeGreaterThan(5);
+  // Its clock would beat for the rest of the run.
+  await request.post(`${SERVER}/deployments/rolling-log/stop`, { data: {}, headers: auth });
 });
 
 test("guarded-api's token rolls back under ⚙ once a dry run has said what it would do, and nothing changes until then", async ({ page, request, adminToken }) => {
