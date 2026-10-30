@@ -74,7 +74,11 @@ async function viewNewestRun(page: Page) {
  *  a test for each group of SAMPLES_PER_TEST below, so they spread over shards (ci.yml) rather
  *  than make one long test, without a fresh page and editor for each sample (a test each was
  *  half again as slow). */
-const SAMPLE_TITLES = [...readFileSync(new URL("../../crates/holon-author/src/samples.rs", import.meta.url), "utf8").matchAll(/^\s*title: "(.*)",$/gm)].map((m) => m[1]);
+const samplesRs = readFileSync(new URL("../../crates/holon-author/src/samples.rs", import.meta.url), "utf8");
+const SAMPLE_TITLES = [...samplesRs.matchAll(/^\s*title: "(.*)",$/gm)].map((m) => m[1]);
+/** Slugs with clock triggers: stopped after their batch so they don't tick the whole run. */
+const CLOCK_SLUGS = new Set(["heartbeat", "ticker"]);
+const TITLE_TO_SLUG = new Map([...samplesRs.matchAll(/^\s*name: "([^"]+)",\s*\n\s*title: "([^"]+)",/gm)].map((m) => [m[2], m[1]]));
 
 test("the flows page lists every sample", async ({ page }) => {
   await page.goto("/");
@@ -89,7 +93,7 @@ test("the flows page lists every sample", async ({ page }) => {
 const SAMPLES_PER_TEST = 8;
 for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
   const titles = SAMPLE_TITLES.slice(first, first + SAMPLES_PER_TEST);
-  test(`samples ${first + 1} to ${first + titles.length} open from the flows page and deploy`, async ({ page }) => {
+  test(`samples ${first + 1} to ${first + titles.length} open from the flows page and deploy`, async ({ page, request, adminToken }) => {
     await page.goto("/");
     for (const title of titles) {
       // Its database is a MongoDB, bound only where the environment names one (CI does).
@@ -98,6 +102,13 @@ for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
         await openSample(page, title, false);
         await deploy(page);
       });
+    }
+    // Stop clock-driven flows so they don't keep ticking for the rest of the run.
+    for (const title of titles) {
+      const slug = TITLE_TO_SLUG.get(title);
+      if (slug && CLOCK_SLUGS.has(slug)) {
+        await request.post(`${SERVER}/deployments/${slug}/stop`, { data: {}, headers: { Authorization: `Bearer ${adminToken}` } });
+      }
     }
   });
 }
