@@ -213,7 +213,7 @@ const sourceLabel = (source: string) => (source === "local" ? "sealed here" : so
  * has no value), a way to set a new version (a value, an env variable, a Vault field), and its
  * history, from which an older version can be rolled back to.
  */
-function SecretRow({ slug, name, info, envNames, onChanged }: { slug: string | null; name: string; info?: SecretInfo; envNames: string[]; onChanged: () => void }) {
+function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: { slug: string | null; name: string; info?: SecretInfo; envNames: string[]; onChanged: () => void; readOnly?: boolean }) {
   const kindOf = (source?: string): Kind => (source?.startsWith("env:") ? "env" : source?.startsWith("vault:") ? "vault" : "value");
   const [kind, setKind] = useState<Kind>(kindOf(info?.source));
   const [text, setText] = useState("");
@@ -264,7 +264,7 @@ function SecretRow({ slug, name, info, envNames, onChanged }: { slug: string | n
           {info ? `v${info.version} · ${sourceLabel(info.source)}${info.problem ? " · can't be read" : ""}` : "not set"}
         </span>
       </span>
-      <span style={{ display: "inline-flex", gap: 4 }}>
+      {!readOnly && <span style={{ display: "inline-flex", gap: 4 }}>
         <select
           value={kind}
           onChange={(e) => {
@@ -332,7 +332,7 @@ function SecretRow({ slug, name, info, envNames, onChanged }: { slug: string | n
             ×
           </button>
         )}
-      </span>
+      </span>}
       {msg && <span style={{ gridColumn: "1 / -1", color: "#9fb4d4", whiteSpace: "normal", maxWidth: 420 }}>{msg}</span>}
       {history && (
         <span style={{ gridColumn: "1 / -1", display: "grid", gap: 3, padding: "4px 8px", borderLeft: "2px solid #1b2a45", marginLeft: 4 }}>
@@ -381,6 +381,7 @@ function OptionalPermissions({
   setSettings,
   clocked,
   fileFolders,
+  readOnly = false,
 }: {
   capabilities: string[];
   settings: FlowSettings;
@@ -389,6 +390,7 @@ function OptionalPermissions({
   clocked: boolean;
   /** The folders its file handlers watch: a file there starts them, so that is never optional. */
   fileFolders: string[];
+  readOnly?: boolean;
 }) {
   const optional = settings.requirements?.optional ?? [];
   const trigger = manifestTrigger(capabilities);
@@ -417,7 +419,7 @@ function OptionalPermissions({
               {unused ? " (no longer used)" : ""}
             </span>
             <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-              <input type="checkbox" checked={optional.includes(item)} onChange={(e) => toggle(item, e.target.checked)} />
+              <input type="checkbox" checked={optional.includes(item)} onChange={(e) => toggle(item, e.target.checked)} disabled={readOnly} />
               <span style={{ color: optional.includes(item) ? "#7e8ea8" : "#e0c36f" }}>{optional.includes(item) ? "optional" : "required"}</span>
             </span>
           </label>
@@ -440,7 +442,7 @@ export function actionNames(capabilities: string[]): string[] {
  * for as `AgentRuns("reset")`, which a person approves; unticked, an agent is refused it. One
  * ticked that the flow no longer has is shown so it can be cleared (deploy refuses it).
  */
-function AgentsMayRun({ capabilities, settings, setSettings }: { capabilities: string[]; settings: FlowSettings; setSettings: (s: FlowSettings) => void }) {
+function AgentsMayRun({ capabilities, settings, setSettings, readOnly = false }: { capabilities: string[]; settings: FlowSettings; setSettings: (s: FlowSettings) => void; readOnly?: boolean }) {
   const agents = settings.requirements?.agents ?? [];
   const actions = actionNames(capabilities);
   const listed = [...new Set([...actions, ...agents])].sort();
@@ -465,7 +467,7 @@ function AgentsMayRun({ capabilities, settings, setSettings }: { capabilities: s
               action {name}
               {unused ? " (no longer in the flow)" : ""}
             </span>
-            <input type="checkbox" aria-label={`agents may run ${name}`} checked={agents.includes(name)} onChange={(e) => toggle(name, e.target.checked)} style={{ justifySelf: "start" }} />
+            <input type="checkbox" aria-label={`agents may run ${name}`} checked={agents.includes(name)} onChange={(e) => toggle(name, e.target.checked)} disabled={readOnly} style={{ justifySelf: "start" }} />
           </label>
         );
       })}
@@ -518,6 +520,7 @@ export function DeployPanel({
   capabilities,
   clocks = [],
   fileFolders = [],
+  readOnly = false,
 }: {
   open: boolean;
   onOpen: (open: boolean) => void;
@@ -528,6 +531,7 @@ export function DeployPanel({
   capabilities: string[];
   clocks?: string[];
   fileFolders?: string[];
+  readOnly?: boolean;
 }) {
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
   const [secrets, setSecrets] = useState<SecretInfo[]>([]);
@@ -552,6 +556,7 @@ export function DeployPanel({
       if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
+  const [hideDefaults, setHideDefaults] = useState(false);
 
   if (!open) {
     return (
@@ -576,6 +581,13 @@ export function DeployPanel({
     <aside className="hl-deploy" role="complementary" aria-label="Deployment settings">
       <div className="hl-panel-header">
         <span className="hl-panel-header__title">deployment</span>
+        <label
+          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "#3d4f66", cursor: "pointer", marginLeft: "auto", marginRight: 4, userSelect: "none" }}
+          title="hide settings that are still at their defaults"
+        >
+          <input type="checkbox" checked={hideDefaults} onChange={(e) => setHideDefaults(e.target.checked)} style={{ cursor: "pointer", accentColor: "#7e8ea8" }} />
+          hide defaults
+        </label>
         <button
           className="hl-panel-header__btn"
           onClick={() => onOpen(false)}
@@ -589,49 +601,54 @@ export function DeployPanel({
           overflowY: "auto",
           padding: "8px 12px",
           display: "grid",
-          gridTemplateColumns: "auto auto",
-          gap: 6,
-          alignItems: "center",
+          gridTemplateColumns: "minmax(0, 140px) 1fr",
+          gap: "4px 8px",
+          alignItems: "start",
           alignContent: "start",
           fontSize: 11,
           color: "#9fb4d4",
-          whiteSpace: "nowrap",
         }}
       >
         <GroupHead label="server" open={openGroups.has("server")} onToggle={() => toggleGroup("server")} first />
         {openGroups.has("server") && (
           <>
             <span title="the port a flow with routes (request nodes) answers on">port</span>
-            <input value={settings.port} onChange={(e) => setSettings({ ...settings, port: e.target.value })} style={input} />
-            <span title="web pages on other sites that may call its routes (CORS): * for any, or origins like https://example.com">web pages from</span>
-            <input
-              value={settings.browsers ?? ""}
-              placeholder="none (* or https://site)"
-              onChange={(e) => setSettings({ ...settings, browsers: e.target.value })}
-              style={input}
-            />
+            <input value={settings.port} onChange={(e) => setSettings({ ...settings, port: e.target.value })} disabled={readOnly} style={{ ...input, width: "100%" }} />
+            {(!hideDefaults || !!settings.browsers) && (
+              <>
+                <span title="web pages on other sites that may call its routes (CORS): * for any, or origins like https://example.com">web pages from</span>
+                <input
+                  value={settings.browsers ?? ""}
+                  placeholder="none (* or https://site)"
+                  onChange={(e) => setSettings({ ...settings, browsers: e.target.value })}
+                  disabled={readOnly}
+                  style={{ ...input, width: "100%" }}
+                />
+              </>
+            )}
             {clocks.length > 0 ? (
               <>
                 <span title="its every nodes: each runs its group on its own period">clocks</span>
                 <span style={{ color: "#e6eefb" }}>{clocks.join(", ")}</span>
               </>
-            ) : (
+            ) : (!hideDefaults || !!settings.interval) ? (
               <>
                 <span title="how often a flow without routes runs on the clock, in seconds">interval (s)</span>
                 <input
                   value={settings.interval}
                   placeholder="clock flows"
                   onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
-                  style={input}
+                  disabled={readOnly}
+                  style={{ ...input, width: "100%" }}
                 />
               </>
-            )}
+            ) : null}
           </>
         )}
         <GroupHead label="limits" open={openGroups.has("limits")} onToggle={() => toggleGroup("limits")} />
         {openGroups.has("limits") && (
           <>
-            {LIMITS.map(([name, label]) => (
+            {LIMITS.filter(([name]) => !hideDefaults || req?.limits?.[name] !== undefined).map(([name, label]) => (
               <label key={name} style={{ display: "contents" }}>
                 <span>{label}</span>
                 <input
@@ -639,46 +656,61 @@ export function DeployPanel({
                   placeholder={policy ? String(policy.defaults[name]) : ""}
                   title={policy ? `default ${policy.defaults[name]}, ceiling ${policy.ceilings[name]}` : undefined}
                   onChange={(e) => setSettings({ ...settings, requirements: withLimit(req, name, e.target.value) })}
-                  style={{ ...input, width: 84 }}
+                  disabled={readOnly}
+                  style={{ ...input, width: "100%" }}
                 />
               </label>
             ))}
+            {hideDefaults && !Object.keys(req?.limits ?? {}).length && (
+              <span style={{ gridColumn: "1 / -1", color: "#3d4f66", fontStyle: "italic" }}>none set</span>
+            )}
           </>
         )}
         <GroupHead label="network" open={openGroups.has("network")} onToggle={() => toggleGroup("network")} />
         {openGroups.has("network") && (
           <>
-            <span title="hosts it may call over plain HTTP; this host must allow plain HTTP at all">plain HTTP to</span>
-            <input
-              value={(req?.plain_http ?? []).join(", ")}
-              placeholder="none"
-              autoComplete="off"
-              disabled={noPlainHttp && !hasPlainHttp}
-              title={noPlainHttp ? "this host never grants plain HTTP" + (hasPlainHttp ? ": clear this to deploy" : "") : "comma-separated host[:port]"}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
-                })
-              }
-              style={{ ...input, width: 140, ...(noPlainHttp && hasPlainHttp ? { borderColor: "#e0916f" } : {}) }}
-            />
-            <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
-            <input
-              type="checkbox"
-              checked={req?.private_addresses ?? false}
-              disabled={policy !== null && !policy.allow_private_addresses}
-              title={policy && !policy.allow_private_addresses ? "this host never grants private addresses" : undefined}
-              onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
-              style={{ justifySelf: "start" }}
-            />
+            {(!hideDefaults || hasPlainHttp) && (
+              <>
+                <span title="hosts it may call over plain HTTP; this host must allow plain HTTP at all">plain HTTP to</span>
+                <input
+                  value={(req?.plain_http ?? []).join(", ")}
+                  placeholder="none"
+                  autoComplete="off"
+                  disabled={readOnly || (noPlainHttp && !hasPlainHttp)}
+                  title={noPlainHttp ? "this host never grants plain HTTP" + (hasPlainHttp ? ": clear this to deploy" : "") : "comma-separated host[:port]"}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
+                    })
+                  }
+                  style={{ ...input, width: "100%", ...(noPlainHttp && hasPlainHttp ? { borderColor: "#e0916f" } : {}) }}
+                />
+              </>
+            )}
+            {(!hideDefaults || req?.private_addresses) && (
+              <>
+                <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
+                <input
+                  type="checkbox"
+                  checked={req?.private_addresses ?? false}
+                  disabled={readOnly || (policy !== null && !policy.allow_private_addresses)}
+                  title={policy && !policy.allow_private_addresses ? "this host never grants private addresses" : undefined}
+                  onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
+                  style={{ justifySelf: "start" }}
+                />
+              </>
+            )}
+            {hideDefaults && !hasPlainHttp && !req?.private_addresses && (
+              <span style={{ gridColumn: "1 / -1", color: "#3d4f66", fontStyle: "italic" }}>none set</span>
+            )}
           </>
         )}
         <GroupHead label="permissions" open={openGroups.has("permissions")} onToggle={() => toggleGroup("permissions")} />
         {openGroups.has("permissions") && (
           <>
-            <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} />
-            <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} />
+            <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} readOnly={readOnly} />
+            <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} readOnly={readOnly} />
             {capabilities.length === 0 && !(settings.requirements?.optional?.length) && !(settings.requirements?.agents?.length) && (
               <span style={{ gridColumn: "1 / -1", color: "#3d4f66", fontStyle: "italic" }}>none</span>
             )}
@@ -693,7 +725,7 @@ export function DeployPanel({
                   <span style={{ gridColumn: "1 / -1", color: "#7e8ea8", fontStyle: "italic" }}>name the flow first</span>
                 )}
                 {secretNames.map((name) => (
-                  <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} envNames={envNames} onChanged={reloadSecrets} />
+                  <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} envNames={envNames} onChanged={reloadSecrets} readOnly={readOnly} />
                 ))}
               </>
             )}

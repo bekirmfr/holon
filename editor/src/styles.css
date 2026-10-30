@@ -28,6 +28,13 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ── Scrollbars ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-dim); }
+* { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+
 .hl-app { display: flex; flex-direction: column; height: 100%; }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
@@ -180,6 +187,13 @@ body {
 .hl-view__bottom { grid-column: 1 / -1; grid-row: 2; border-top: 1px solid var(--line); }
 .hl-view__edge { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 2; }
 .hl-view__edge:hover { background: #6fd3e033; }
+.hl-view__edge::after {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 2px; height: 2px; border-radius: 50%; background: var(--ink-dim);
+  opacity: 0.35; box-shadow: -5px 0 0 var(--ink-dim), 5px 0 0 var(--ink-dim);
+  transform: translate(-50%, -50%); transition: opacity 0.15s; pointer-events: none;
+}
+.hl-view__edge:hover::after { opacity: 0.75; }
 
 /* The flow's text, between the canvas and the Inspector (TextPane.tsx). */
 .hl-canvas--text { grid-template-columns: minmax(0, 1fr) var(--text-width, 420px) min(340px, 30%); }
@@ -191,6 +205,23 @@ body {
 }
 .hl-text__edge { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; }
 .hl-text__edge:hover { background: #6fd3e033; }
+.hl-text__edge::after {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 2px; height: 2px; border-radius: 50%; background: var(--ink-dim);
+  opacity: 0.35; box-shadow: 0 -5px 0 var(--ink-dim), 0 5px 0 var(--ink-dim);
+  transform: translate(-50%, -50%); transition: opacity 0.15s; pointer-events: none;
+}
+.hl-text__edge:hover::after { opacity: 0.75; }
+/* Draggable divider between run panes (ViewPanes.tsx). */
+.hl-divider { position: relative; flex-shrink: 0; }
+.hl-divider:hover { background: #6fd3e033; }
+.hl-divider::after {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 2px; height: 2px; border-radius: 50%; background: var(--ink-dim);
+  opacity: 0.35; box-shadow: 0 -5px 0 var(--ink-dim), 0 5px 0 var(--ink-dim);
+  transform: translate(-50%, -50%); transition: opacity 0.15s; pointer-events: none;
+}
+.hl-divider:hover::after { opacity: 0.75; }
 .hl-text__head {
   display: flex; align-items: center; gap: 8px; padding: 5px 8px;
   background: var(--panel-2); border-bottom: 1px solid var(--line-soft); font-size: 12px;

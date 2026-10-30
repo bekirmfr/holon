@@ -756,6 +756,7 @@ function LogTab({
         </div>
         {/* Draggable divider */}
         <div
+          className="hl-divider"
           style={{ width: 5, cursor: "col-resize", background: "transparent", flexShrink: 0 }}
           onPointerDown={onDivider}
           title="drag to resize"

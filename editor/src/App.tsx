@@ -1018,6 +1018,7 @@ function Canvas({
         capabilities={flowCapabilities}
         clocks={derived.clocks.map((c) => c.label)}
         fileFolders={derived.files.map((f) => f.folder)}
+        readOnly={viewing !== null}
       />
     )}
     </div>
