@@ -714,63 +714,61 @@ function LogTab({
 
   return (
     <>
-    <div style={{ display: "flex", flex: 1, minHeight: 0, flexDirection: "column" }}>
-      <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
-        <input
-          placeholder={leftView === "runs" ? "filter runs…" : "filter history…"}
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
-        />
-        <button
-          onClick={() => {
-            setLeftView(leftView === "runs" ? "history" : "runs");
-            setFilter("");
-          }}
-          aria-pressed={leftView === "history"}
-          title={leftView === "runs" ? "what was done to it: deploys, restores, grants, pauses; going back to one" : "back to the runs"}
-          style={{ ...small, color: leftView === "history" ? "#0e1a2f" : "#9fb4d4", background: leftView === "history" ? "#6fd3e0" : "transparent" }}
-        >
-          history
-        </button>
-        {filter && leftView === "runs" && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
-        <span style={{ flex: 1 }} />
-        {selectedSeqs.size > 0 && (
-          <>
-            <span style={{ color: dim, fontSize: 10 }}>{selectedSeqs.size} selected</span>
-            <button style={{ ...small, padding: "0 5px" }} title="copy selected runs as JSON" onClick={copySelected}>⎘</button>
-            <button style={{ ...small, padding: "0 5px" }} title="export selected runs as JSON" onClick={exportSelected}>↓</button>
-            {selectedSeqs.size === 2 && (
-              <button style={{ ...small, padding: "0 5px" }} title="compare selected runs" onClick={openCompare}>⇔</button>
-            )}
-            <button style={{ ...small, padding: "0 4px" }} title="clear selection" onClick={() => setSelectedSeqs(new Set())}>×</button>
-          </>
-        )}
-      </div>
-      {restorer.modal}
-      {restorer.note && (
-        <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad, padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
-          {restorer.note.text}
+    <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
+      {/* Left column: filter bar + history or runs */}
+      <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+          <input
+            placeholder={leftView === "runs" ? "filter runs…" : "filter history…"}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
+          />
+          <button
+            onClick={() => {
+              setLeftView(leftView === "runs" ? "history" : "runs");
+              setFilter("");
+            }}
+            aria-pressed={leftView === "history"}
+            title={leftView === "runs" ? "what was done to it: deploys, restores, grants, pauses; going back to one" : "back to the runs"}
+            style={{ ...small, color: leftView === "history" ? "#0e1a2f" : "#9fb4d4", background: leftView === "history" ? "#6fd3e0" : "transparent" }}
+          >
+            history
+          </button>
+          {filter && leftView === "runs" && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
+          <span style={{ flex: 1 }} />
+          {selectedSeqs.size > 0 && (
+            <>
+              <span style={{ color: dim, fontSize: 10 }}>{selectedSeqs.size} selected</span>
+              <button style={{ ...small, padding: "0 5px" }} title="copy selected runs as JSON" onClick={copySelected}>⎘</button>
+              <button style={{ ...small, padding: "0 5px" }} title="export selected runs as JSON" onClick={exportSelected}>↓</button>
+              {selectedSeqs.size === 2 && (
+                <button style={{ ...small, padding: "0 5px" }} title="compare selected runs" onClick={openCompare}>⇔</button>
+              )}
+              <button style={{ ...small, padding: "0 4px" }} title="clear selection" onClick={() => setSelectedSeqs(new Set())}>×</button>
+            </>
+          )}
         </div>
-      )}
-      <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* Left: the history, or the run list */}
-        {leftView === "history" && (
-          <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
-            <HistoryList
-              timeline={timeline}
-              query={filter}
-              pickedKey={pickedKey}
-              onPick={pickItem}
-              targetFor={targetFor}
-              busy={restorer.busy}
-              onRestore={restorer.restore}
-              onShowVersion={onShowVersion}
-              error={history.error}
-            />
+        {restorer.modal}
+        {restorer.note && (
+          <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad, padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+            {restorer.note.text}
           </div>
         )}
-        <div style={{ display: leftView === "runs" ? "flex" : "none", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
+        {leftView === "history" && (
+          <HistoryList
+            timeline={timeline}
+            query={filter}
+            pickedKey={pickedKey}
+            onPick={pickItem}
+            targetFor={targetFor}
+            busy={restorer.busy}
+            onRestore={restorer.restore}
+            onShowVersion={onShowVersion}
+            error={history.error}
+          />
+        )}
+        <div style={{ display: leftView === "runs" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
           <div style={{ display: "flex", gap: 10, padding: "2px 6px", borderBottom: "1px solid #1b2a45", fontSize: 10, flexShrink: 0 }}>
             <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} style={{ width: 12, cursor: "pointer", accentColor: "#6fd3e0", flexShrink: 0 }} title={allVisibleSelected ? "deselect all visible" : "select all visible"} />
             <SortHeader k="seq" label="#" w={30} />
@@ -846,6 +844,7 @@ function LogTab({
             })}
           </div>
         </div>
+      </div>
         {/* Draggable divider */}
         <div
           className="hl-divider"
@@ -948,7 +947,6 @@ function LogTab({
             />
           )}
         </div>
-      </div>
     </div>
     {compareRuns && <CompareModal a={compareRuns[0]} b={compareRuns[1]} onClose={() => setCompareRuns(null)} />}
     </>
