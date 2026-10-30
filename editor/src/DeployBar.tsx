@@ -592,6 +592,7 @@ export function DeployPanel({
           gridTemplateColumns: "auto auto",
           gap: 6,
           alignItems: "center",
+          alignContent: "start",
           fontSize: 11,
           color: "#9fb4d4",
           whiteSpace: "nowrap",
@@ -678,6 +679,9 @@ export function DeployPanel({
           <>
             <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} />
             <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} />
+            {capabilities.length === 0 && !(settings.requirements?.optional?.length) && !(settings.requirements?.agents?.length) && (
+              <span style={{ gridColumn: "1 / -1", color: "#3d4f66", fontStyle: "italic" }}>none</span>
+            )}
           </>
         )}
         {secretNames.length > 0 && (
