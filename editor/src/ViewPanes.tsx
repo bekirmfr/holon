@@ -1,13 +1,18 @@
 // View mode's panes around the canvas of a deployed flow. The bottom pane shows the flow log
 // live (every request, trigger and tick). Left side: a sortable, filterable run list with copy
-// and export buttons and a capability-badge column. Right side: two tabs — Details (what the run
+// and export buttons, a capability-badge column and ↺ (go back to the run), or (its history
+// button) the deployment's history, what was done to it, any row of which is picked into the
+// details and gone back to (HistoryPane.tsx). Right side: two tabs — Details (what the run
 // read and produced) and Timeline (one row per node, timed by the server). The width of the
 // split is draggable and remembered. The side pane shows the selected run's flow state as of the
 // current step, and the selected node: its params, and the inputs and outputs it had in that run
 // (replayed, replay.ts).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { downloadRuns, getCollectionItems, getLog, type LogEntry } from "./server";
+import { downloadRuns, getCollectionItems, getLog, type LogEntry, type VersionEntry } from "./server";
+import { BackButton, everything, HistoryList, itemDetails, useHistory, useRestore } from "./HistoryPane";
+import { CellHistoryButton } from "./CellHistory";
+import { buildTimeline, targetOf, type CodeText, type TimelineItem } from "./timeline";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
@@ -239,10 +244,19 @@ export function BottomPane({
   diagnosis,
   onShowNode,
   onFitToNodes,
+  onShowVersion,
+  onRestored,
+  codeText,
 }: {
   slug: string;
   selected: LogEntry | null;
   onSelect: (e: LogEntry | null) => void;
+  /** A version's flow as text (its unit's), for a restore's diff. */
+  codeText?: CodeText;
+  /** Show a version's canvas (the history's). */
+  onShowVersion?: (v: VersionEntry) => void;
+  /** After a restore from the history: the deployment changed. */
+  onRestored?: () => void;
   /** The step shown (index into `order`), or null for the whole run. */
   step: number | null;
   onStep: (step: number | null) => void;
@@ -307,13 +321,29 @@ export function BottomPane({
   const [live, setLive] = useState(() => selected === null);
 
   const newest = entries[entries.length - 1];
+  // The run live last showed: one picked elsewhere instead (a cell's history's row) stops live,
+  // so it stays shown rather than the newest coming back over it.
+  const followed = useRef<number | null>(null);
   useEffect(() => {
-    if (live && newest && newest.seq !== selected?.seq) onSelect(newest);
+    if (!live || !newest) return;
+    if (selected && followed.current !== null && selected.seq !== followed.current && selected.seq !== newest.seq) {
+      setLive(false);
+      return;
+    }
+    if (newest.seq !== selected?.seq) {
+      followed.current = newest.seq;
+      onSelect(newest);
+    }
   }, [live, newest, selected, onSelect]);
 
   const pick = (e: LogEntry) => {
     setLive(false);
     onSelect(e);
+  };
+  // A history row that isn't a run: no run shown, and live stops so none comes back.
+  const unpick = () => {
+    setLive(false);
+    onSelect(null);
   };
 
   return (
@@ -352,6 +382,7 @@ export function BottomPane({
         entries={entries}
         selected={selected}
         pick={pick}
+        unpick={unpick}
         slug={slug}
         head={chain.head}
         breaks={chain.breaks}
@@ -366,6 +397,15 @@ export function BottomPane({
         diagnosis={diagnosis ?? null}
         onShowNode={onShowNode}
         onFitToNodes={onFitToNodes}
+        onShowVersion={
+          onShowVersion &&
+          ((v) => {
+            setLive(false);
+            onShowVersion(v);
+          })
+        }
+        onRestored={onRestored}
+        codeText={codeText}
       />
     </div>
   );
@@ -418,6 +458,7 @@ function LogTab({
   entries,
   selected,
   pick,
+  unpick,
   slug,
   head,
   breaks,
@@ -432,10 +473,18 @@ function LogTab({
   diagnosis,
   onShowNode,
   onFitToNodes,
+  onShowVersion,
+  onRestored,
+  codeText,
 }: {
+  onShowVersion?: (v: VersionEntry) => void;
+  onRestored?: () => void;
+  codeText?: CodeText;
   entries: LogEntry[];
   selected: LogEntry | null;
   pick: (e: LogEntry) => void;
+  /** Show no run: a history row that isn't one is picked. */
+  unpick: () => void;
   slug: string;
   head: string;
   breaks: number[];
@@ -455,9 +504,37 @@ function LogTab({
   const [sortBy, setSortBy] = useState<SortKey>("seq");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [rightTab, setRightTab] = useState<"details" | "errors" | "timeline">("details");
+  const [leftView, setLeftView] = useState<"runs" | "history">("runs");
   const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
   const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set());
   const [compareRuns, setCompareRuns] = useState<[LogEntry, LogEntry] | null>(null);
+
+  // The history: the timeline of its runs, versions and events, a row of it picked (a run picked
+  // in the list is its row too), and going back to one.
+  const history = useHistory(slug);
+  const currentUnit = history.versions.find((v) => v.current)?.unit;
+  const timeline = useMemo(() => buildTimeline(entries, history.events, history.versions), [entries, history.events, history.versions]);
+  const byKey = useMemo(() => new Map(timeline.map((item, i) => [item.key, i])), [timeline]);
+  const targetFor = useCallback((item: TimelineItem) => targetOf(timeline, byKey.get(item.key) ?? 0, currentUnit), [timeline, byKey, currentUnit]);
+  const refreshHistory = history.refresh;
+  const restoreDone = useCallback(() => {
+    refreshHistory();
+    onRestored?.();
+  }, [refreshHistory, onRestored]);
+  const restorer = useRestore(slug, restoreDone, history.versions, codeText);
+  const [pickedKey, setPickedKey] = useState<string | null>(null);
+  const pickedIndex = pickedKey === null ? undefined : byKey.get(pickedKey);
+  const pickedItem = leftView === "history" && pickedIndex !== undefined ? timeline[pickedIndex] : undefined;
+  const pickRun = (e: LogEntry) => {
+    setPickedKey(`r${e.seq}`);
+    pick(e);
+  };
+  const pickItem = (item: TimelineItem) => {
+    restorer.setNote(null);
+    setPickedKey(item.key);
+    if (item.kind === "run") pick(item.run);
+    else unpick();
+  };
 
   useEffect(() => {
     if (diagnosis) setRightTab("errors");
@@ -661,12 +738,23 @@ function LogTab({
       <ChainBar slug={slug} head={head} breaks={breaks} />
       <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
         <input
-          placeholder="filter runs…"
+          placeholder={leftView === "runs" ? "filter runs…" : "filter history…"}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
         />
-        {filter && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
+        <button
+          onClick={() => {
+            setLeftView(leftView === "runs" ? "history" : "runs");
+            setFilter("");
+          }}
+          aria-pressed={leftView === "history"}
+          title={leftView === "runs" ? "what was done to it: deploys, restores, grants, pauses; going back to one" : "back to the runs"}
+          style={{ ...small, color: leftView === "history" ? "#0e1a2f" : "#9fb4d4", background: leftView === "history" ? "#6fd3e0" : "transparent" }}
+        >
+          history
+        </button>
+        {filter && leftView === "runs" && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
         <span style={{ flex: 1 }} />
         {selectedSeqs.size > 0 && (
           <>
@@ -680,9 +768,30 @@ function LogTab({
           </>
         )}
       </div>
+      {restorer.modal}
+      {restorer.note && (
+        <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad, padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+          {restorer.note.text}
+        </div>
+      )}
       <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* Left: run list */}
-        <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
+        {/* Left: the history, or the run list */}
+        {leftView === "history" && (
+          <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
+            <HistoryList
+              timeline={timeline}
+              query={filter}
+              pickedKey={pickedKey}
+              onPick={pickItem}
+              targetFor={targetFor}
+              busy={restorer.busy}
+              onRestore={restorer.restore}
+              onShowVersion={onShowVersion}
+              error={history.error}
+            />
+          </div>
+        )}
+        <div style={{ display: leftView === "runs" ? "flex" : "none", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
           <div style={{ display: "flex", gap: 10, padding: "2px 6px", borderBottom: "1px solid #1b2a45", fontSize: 10, flexShrink: 0 }}>
             <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} style={{ width: 12, cursor: "pointer", accentColor: "#6fd3e0", flexShrink: 0 }} title={allVisibleSelected ? "deselect all visible" : "select all visible"} />
             <SortHeader k="seq" label="#" w={30} />
@@ -692,7 +801,7 @@ function LogTab({
             <ColHeader label="actions" col="actions" w={56} />
             <ColHeader sk="status" label="st" col="status" w={26} />
             <SortHeader k="duration" label="ms" w={52} />
-            <span style={{ width: 44, flexShrink: 0 }} />
+            <span style={{ width: 64, flexShrink: 0 }} />
           </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 0 8px" }}>
             {sorted.length === 0 && (
@@ -705,7 +814,7 @@ function LogTab({
               return (
                 <div
                   key={e.seq}
-                  onClick={() => pick(e)}
+                  onClick={() => pickRun(e)}
                   onDoubleClick={() => {
                     if (order.length > 0 && selected?.seq === e.seq) onFitToNodes(order);
                     else fitPendingSeq.current = e.seq;
@@ -745,9 +854,13 @@ function LogTab({
                     {e.status ?? ""}
                   </span>
                   <span style={{ color: dim, width: 52, textAlign: "right", flexShrink: 0 }}>{e.duration_ms.toFixed(2)}</span>
-                  <span style={{ display: "flex", gap: 2, width: 44, flexShrink: 0 }}>
+                  <span style={{ display: "flex", gap: 2, width: 64, flexShrink: 0 }}>
                     <button style={{ ...small, padding: "0px 4px", fontSize: 10 }} title="copy run as JSON" onClick={(ev) => copyRun(e, ev)}>⎘</button>
                     <button style={{ ...small, padding: "0px 4px", fontSize: 10 }} title="download run as JSON" onClick={(ev) => exportRun(e, ev)}>↓</button>
+                    {byKey.has(`r${e.seq}`) && (() => {
+                      const target = targetFor(timeline[byKey.get(`r${e.seq}`)!]);
+                      return <BackButton target={target} busy={restorer.busy} onBack={() => restorer.restore(target, everything(target))} />;
+                    })()}
                   </span>
                 </div>
               );
@@ -774,7 +887,13 @@ function LogTab({
           />
           {rightTab === "details" ? (
             <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 4 }}>
-              {selected ? (
+              {pickedItem && pickedItem.kind !== "run" ? (
+                <div className="hl-history__details" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {itemDetails(pickedItem, targetFor(pickedItem)).map(([name, value]) => (
+                    <Field key={name} name={name} value={value} color={value.startsWith("no: ") ? dim : undefined} />
+                  ))}
+                </div>
+              ) : selected ? (
                 <>
                   {selected.url && (
                     <div style={{ color: ink }}>{selected.method} {selected.url}</div>
@@ -1174,6 +1293,8 @@ export type InspectorRun = {
   timing: { start_us: number; end_us: number } | undefined;
   /** For a holon: its own nodes, as the run went (null for any other node). */
   inside: InsideStep[] | null;
+  /** Open another run of the deployment in view mode, by its seq: a cell's history's rows. */
+  openRun?: (seq: number) => void;
 };
 
 type InspectorTab = "node" | "state";
@@ -1221,7 +1342,7 @@ export function Inspector({
       <Tabs tabs={tabs} tab={tab} onTab={setTab} />
       <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
         {tab === "state" && run ? (
-          <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} />
+          <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} onOpenRun={run.openRun} />
         ) : (
           <>
             <ComponentTab node={node} run={run} source={source ?? null} />
@@ -1250,6 +1371,7 @@ function StateTab({
   after,
   changed,
   collections,
+  onOpenRun,
 }: {
   slug: string;
   run: LogEntry | null;
@@ -1258,6 +1380,7 @@ function StateTab({
   after: Record<string, WValue>;
   changed: string[];
   collections: CollectionAtStep[];
+  onOpenRun?: (seq: number) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   if (!run) return <div>select a run</div>;
@@ -1283,13 +1406,16 @@ function StateTab({
       {allKeys.length === 0 && collections.length === 0 && <div>no state: nothing read or written</div>}
       {changedKeys.map((k) => (
         <div key={k} style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: changedBg }}>
-          <div style={{ color: "#e0c36f", marginBottom: 2 }}>{k} · changed</div>
+          <div style={{ color: "#e0c36f", marginBottom: 2, display: "flex", gap: 6, alignItems: "baseline" }}>
+            <span style={{ flex: 1 }}>{k} · changed</span>
+            <CellHistoryButton slug={slug} name={k} onOpenRun={onOpenRun} />
+          </div>
           <Field name="before" value={show(before[k])} rawValue={before[k]} />
           <Field name="after" value={show(after[k])} color="#e0c36f" rawValue={after[k]} />
         </div>
       ))}
       {changedCollections.map((c) => (
-        <CollectionBox key={c.name} slug={slug} c={c} compact />
+        <CollectionBox key={c.name} slug={slug} c={c} compact onOpenRun={onOpenRun} />
       ))}
       {counted.length === 0 && unchangedCount > 0 && (
         <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} · no change · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
@@ -1298,7 +1424,7 @@ function StateTab({
         <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} unchanged · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
       )}
       {modalOpen && (
-        <StateModal slug={slug} run={run} step={step} order={order} after={after} changed={changed} collections={collections} onClose={() => setModalOpen(false)} />
+        <StateModal slug={slug} run={run} step={step} order={order} after={after} changed={changed} collections={collections} onOpenRun={onOpenRun} onClose={() => setModalOpen(false)} />
       )}
     </>
   );
@@ -1312,6 +1438,7 @@ function StateModal({
   after,
   changed,
   collections,
+  onOpenRun,
   onClose,
 }: {
   slug: string;
@@ -1321,6 +1448,7 @@ function StateModal({
   after: Record<string, WValue>;
   changed: string[];
   collections: CollectionAtStep[];
+  onOpenRun?: (seq: number) => void;
   onClose: () => void;
 }) {
   const [viewValue, setViewValue] = useState<{ value: WValue; name: string } | null>(null);
@@ -1388,7 +1516,12 @@ function StateModal({
                   const afterVal = after[k];
                   return (
                     <tr key={k} style={{ background: bg }}>
-                      <td style={{ ...cell, color: moved ? "#e0c36f" : ink, fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>{k}</td>
+                      <td style={{ ...cell, color: moved ? "#e0c36f" : ink, fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>
+                        <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
+                          <span style={{ flex: 1 }}>{k}</span>
+                          <CellHistoryButton slug={slug} name={k} onOpenRun={onOpenRun} />
+                        </div>
+                      </td>
                       <td style={{ ...cell }}>
                         <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
                           <span style={{ color: ink, flex: 1, fontFamily: "var(--mono)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{show(beforeVal)}</span>
@@ -1414,7 +1547,7 @@ function StateModal({
           {collections.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 14px" }}>
               {collections.map((c) => (
-                <CollectionBox key={c.name} slug={slug} c={c} />
+                <CollectionBox key={c.name} slug={slug} c={c} onOpenRun={onOpenRun} />
               ))}
             </div>
           )}
@@ -1426,7 +1559,7 @@ function StateModal({
   );
 }
 
-function CollectionBox({ slug, c, compact = false }: { slug: string; c: CollectionAtStep; compact?: boolean }) {
+function CollectionBox({ slug, c, compact = false, onOpenRun }: { slug: string; c: CollectionAtStep; compact?: boolean; onOpenRun?: (seq: number) => void }) {
   const [fetched, setFetched] = useState<Record<string, WValue | null>>({});
   const [all, setAll] = useState<{ items: [string, WValue][]; next: string | null; pageNum: number; cursors: (string | null)[] } | null>(null);
   const [error, setError] = useState("");
@@ -1450,10 +1583,13 @@ function CollectionBox({ slug, c, compact = false }: { slug: string; c: Collecti
   const changedItems = c.items.filter(itemChanged).length;
   return (
     <div style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: changedItems > 0 ? changedBg : "transparent" }}>
-      <div style={{ color: changedItems > 0 ? "#e0c36f" : ink, marginBottom: 2 }} title={c.root ? `root ${c.root}` : "no items before this run"}>
-        {c.name}
-        <span style={{ color: dim }}> · collection</span>
-        {changedItems > 0 ? ` · ${changedItems} item${changedItems === 1 ? "" : "s"} changed` : ""}
+      <div style={{ color: changedItems > 0 ? "#e0c36f" : ink, marginBottom: 2, display: "flex", gap: 6, alignItems: "baseline" }} title={c.root ? `root ${c.root}` : "no items before this run"}>
+        <span style={{ flex: 1 }}>
+          {c.name}
+          <span style={{ color: dim }}> · collection</span>
+          {changedItems > 0 ? ` · ${changedItems} item${changedItems === 1 ? "" : "s"} changed` : ""}
+        </span>
+        <CellHistoryButton slug={slug} name={c.name} collection onOpenRun={onOpenRun} />
       </div>
       {c.items.map((i) => {
         // An empty collection before the run (no root) had nothing: no need to ask.
@@ -1461,12 +1597,12 @@ function CollectionBox({ slug, c, compact = false }: { slug: string; c: Collecti
         const moved = itemChanged(i);
         const was = before === undefined ? "…" : before === null ? "(none)" : show(before);
         return (
-          <Field
-            key={i.key}
-            name={i.key}
-            value={i.after === undefined ? `${was} · read` : `${was} → ${i.after === null ? "(deleted)" : show(i.after)}`}
-            color={moved ? "#e0c36f" : undefined}
-          />
+          <div key={i.key} style={{ display: "flex", gap: 4, alignItems: "baseline" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Field name={i.key} value={i.after === undefined ? `${was} · read` : `${was} → ${i.after === null ? "(deleted)" : show(i.after)}`} color={moved ? "#e0c36f" : undefined} />
+            </div>
+            <CellHistoryButton slug={slug} name={c.name} item={i.key} onOpenRun={onOpenRun} />
+          </div>
         );
       })}
       {c.listed.map((l, n) => (

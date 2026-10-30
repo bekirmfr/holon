@@ -151,6 +151,7 @@ mod arrivals;
 mod auth;
 mod blobs;
 mod calls;
+mod changes;
 mod channels;
 mod claims;
 mod oidc;
@@ -487,6 +488,7 @@ const USAGE: &str = "usage: holon <command>
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
   history <slug> [--last N]          a deployment's timeline: its runs, and what was done to it
+                                     (--cell NAME: the runs that changed one value)
   restore <slug> [--to N --code]     a deployment's versions; an earlier one's code or state back
   folder add|list|remove             bind a name flows use to a folder on this machine (admin)
   database add|list|remove           bind a name flows use to a database on this machine (admin)

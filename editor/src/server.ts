@@ -321,6 +321,10 @@ export type DeployPreview = {
   refused: string | null;
   /** Secrets it reads that aren't set yet: those nodes stay empty until they are. */
   missing_secrets: string[];
+  /** What the slug's grant covers now (null: not deployed yet): beside `items`, what changes. */
+  granted_now?: string[] | null;
+  /** Secrets an agent's deploy leaves out, for a person to grant back. */
+  withheld?: string[];
 };
 
 /** A secret as the server lists it: never its value. `source`: `local` (sealed by the server),
@@ -376,6 +380,29 @@ export async function getSecretHistory(slug: string, name: string): Promise<Secr
 }
 
 /** Make `version` current again, as a new version; answers it. */
+/** What rolling a secret back would do, changing nothing: the version made current again, the
+ *  one current now, the new version it would be, and its source. Never a value. */
+export type SecretRollbackPreview = {
+  to: number;
+  current: number;
+  version: number;
+  source: string;
+  /** Each value's fingerprint, as the log marks it (`#a1b2c3d4`), never the value; the current
+   *  one's is absent when it can't be read now. */
+  to_print?: string;
+  current_print?: string | null;
+};
+
+/** `POST …/secrets/<name>/rollback` with `dry_run`: refused as the roll back would be. */
+export async function previewSecretRollback(slug: string, name: string, version: number): Promise<SecretRollbackPreview> {
+  const res = await api(`${secretUrl(slug, name)}/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version, dry_run: true }),
+  });
+  return asJson<SecretRollbackPreview>(res);
+}
+
 export async function rollbackSecret(slug: string, name: string, version: number): Promise<number> {
   const res = await api(`${secretUrl(slug, name)}/rollback`, {
     method: "POST",
@@ -621,6 +648,9 @@ export type LogEntry = {
   events?: Record<string, WValue>;
   /** The secrets the run was given: the version and fingerprint their marks name (`v3 #a1b2c3d4`). */
   secrets?: Record<string, string>;
+  /** The state it left, by hash in the content store: what a restore to this run puts back.
+   *  Absent when it didn't commit, and in runs from before rc.30. */
+  state_after?: string;
 };
 
 /** The requests one round made: each node (by its path in the run's root unit), its request,
@@ -664,6 +694,178 @@ export async function getDeployedDocument(slug: string, unit?: string): Promise<
   const q = unit ? `?unit=${encodeURIComponent(unit)}` : "";
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/document${q}`);
   return asJson<FlowDocument>(res);
+}
+
+/** One version a deployment was deployed with (`GET /deployments/<slug>/versions`). */
+export type VersionEntry = {
+  number: number;
+  unit: string;
+  /** Unix seconds. */
+  deployed_at: number;
+  by?: string | null;
+  /** The version whose code it restored, when it was a restore. */
+  restored_from?: number | null;
+  /** The one deployed now. */
+  current: boolean;
+  /** What its deploy asked is kept, so its code can be restored (rc.30 on). */
+  restorable: boolean;
+  /** Its canvas is kept. */
+  canvas: boolean;
+  /** The state it left is kept, so it can be put back. */
+  state_kept: boolean;
+  /** The log's seq at its deploy: its first run's (absent from before rc.30). */
+  first_seq?: number | null;
+};
+
+/** `GET /deployments/<slug>/versions` — every version, newest first. */
+export async function getVersions(slug: string): Promise<VersionEntry[]> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/versions`);
+  return (await asJson<{ versions: VersionEntry[] }>(res)).versions;
+}
+
+/** One change to a cell (changes.rs): a run that changed it (`seq`), or something between two
+ *  runs that moved it (`between`, with the events there: a restore, a deploy). Its value before
+ *  and after; for a whole collection, the items it changed instead. */
+export type CellChange = {
+  seq?: number;
+  between?: [number, number];
+  events?: { kind: string; what: string; by?: string | null; at_ms: number }[];
+  at_ms?: number | null;
+  kind?: string;
+  route?: string | null;
+  method?: string | null;
+  url?: string | null;
+  status?: number | null;
+  failed?: boolean;
+  unit?: string;
+  by?: string | null;
+  before?: WValue | null;
+  after?: WValue | null;
+  items?: Record<string, { before: WValue | null; after: WValue | null }>;
+  more_items?: boolean;
+};
+
+/** A cell's history: `GET /deployments/<slug>/changes`, newest first. */
+export type CellHistory = {
+  name: string;
+  item: string | null;
+  collection: boolean;
+  /** Its value now (none for a whole collection). */
+  now: WValue | null;
+  changes: CellChange[];
+  /** Older changes not answered: `before` the oldest one's seq reads them. */
+  more: boolean;
+};
+
+/** The runs that changed a cell (`state.name`), a collection, or one item of it (`item`). */
+export async function getChanges(slug: string, name: string, opts: { item?: string; before?: number; limit?: number } = {}): Promise<CellHistory> {
+  const q = new URLSearchParams({ name });
+  if (opts.item !== undefined) q.set("item", opts.item);
+  if (opts.before !== undefined) q.set("before", String(opts.before));
+  if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/changes?${q}`);
+  // A server from before answers the route with a bare 404 (a missing deployment's has a reason).
+  if (res.status === 404 && !(await res.clone().text()).trim()) {
+    throw new Error("this server can't show a cell's history yet: it is older than this editor; update it (holon update) and start it again");
+  }
+  return asJson<CellHistory>(res);
+}
+
+/** Something done to a deployment (events.rs): a deploy, a restore, a grant, a secret, a binding,
+ *  a pause or a run, by whom (none: the host did it). */
+export type DeploymentEvent = {
+  seq: number;
+  /** The hash of the event before it in its chain. */
+  prev?: string;
+  at_ms: number;
+  /** The run log's next seq when it happened: it comes before that run. */
+  run_seq: number;
+  kind: "deploy" | "restore" | "grant" | "secret" | "binding" | "lifecycle" | string;
+  what: string;
+  by?: string;
+  version?: number;
+  session?: number;
+  name?: string;
+  /** The point whose state a restore put back: `version 3`, `run 41`. */
+  from?: string;
+};
+
+/** `GET /deployments/<slug>/events` — everything done to it, oldest first. A server from before
+ *  keeps none: it answers the route with a bare 404, and this says so. */
+export async function getEvents(slug: string): Promise<{ events: DeploymentEvent[]; head: string; breaks: number[] }> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/events`);
+  if (res.status === 404 && !(await res.clone().text()).trim()) {
+    throw new Error("this server keeps no history of what was done to a deployment yet: update it (holon update) and start it again");
+  }
+  return asJson(res);
+}
+
+/** A point to go back to: a version (the state it left, and its code) or a run (the state it left,
+ *  and the code it ran on). */
+export type RestorePoint = { version: number } | { run: number };
+
+/** What putting a point's state back would change (a restore's dry run). */
+export type StateChange = {
+  from: string;
+  changed: string[];
+  added: string[];
+  removed: string[];
+  runs_since: number;
+  /** Outside effects the runs since performed, by capability: a restore doesn't undo them. */
+  effects_since: Record<string, number>;
+  /** Each key it touches (the first 50), as it is now and as it would be; null: absent. A
+   *  collection's are in `collections` instead. */
+  values?: Record<string, { now: WValue | null; then: WValue | null }>;
+  /** Each collection it touches, by name: the items that differ, by key; `more` when it shows or
+   *  compared only some. */
+  collections?: Record<string, { items: Record<string, { now: WValue | null; then: WValue | null }>; more: boolean }>;
+  /** The files the runs since wrote, which a restore never puts back; `files_more` when there are
+   *  more than it names. */
+  files?: FileSince[];
+  files_more?: boolean;
+};
+
+/** What a run's file write left: its kind, and the content's hash and size (none for a delete). */
+export type FileWritten = { kind: "write" | "copy" | "delete"; hash: string | null; size: number | null; run: number };
+
+/** A file the runs since a point wrote, as a restore's dry run names it: how many writes and by
+ *  which runs (the last ten), what the last left, what the last write before the point left
+ *  (`at_point`: none if no run wrote it before), and how it is on disk now (`disk`: none if it
+ *  isn't there; `unreadable`: why it can't be checked). `outside`: the disk isn't what the last
+ *  write left. Its text then and now, when the log has it and it is small. */
+export type FileSince = {
+  folder: string;
+  name: string;
+  writes: number;
+  runs: number[];
+  last: FileWritten;
+  at_point: FileWritten | null;
+  disk: { hash: string; size: number | null } | null;
+  unreadable: string | null;
+  outside: boolean;
+  then_text: string | null;
+  now_text: string | null;
+};
+
+/** A restore's dry run: the deploy's preview when it deploys code (`code`: the version), and the
+ *  state change when it puts state back. */
+export type RestorePreview = Partial<DeployPreview> & { code: number | null; state?: StateChange };
+
+/** What a restore did: the version it deployed (as `version`, restoring `code`), and the session
+ *  the state put back started. */
+export type RestoreDone = { code?: number; version?: number; unit?: string; state?: { from: string; session: number } };
+
+/** `POST /deployments/<slug>/restore` — go back to `point`: its code, its state, or both. With
+ *  `dryRun`, it changes nothing and says what it would; else `acknowledge` is what the dry run
+ *  asked to approve. */
+export async function restoreDeployment(
+  slug: string,
+  point: RestorePoint,
+  what: { code: boolean; state: boolean },
+  opts: { dryRun: true } | { acknowledge: string[] },
+): Promise<RestorePreview | RestoreDone> {
+  const body = { ...point, ...what, ...("dryRun" in opts ? { dry_run: true } : { acknowledge: opts.acknowledge }) };
+  return asJson(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/restore`, body));
 }
 
 /** `GET /deployments/<slug>/sessions` — every run session, oldest first. */

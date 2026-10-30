@@ -22,7 +22,8 @@ const USAGE: &str = "usage: holon mcp [--server PORT|URL]
        holon mcp hosts [add NAME --config PATH --like HOST | remove NAME]
 
 An MCP server on stdin and stdout, for an agent's host to start (Claude Code, an IDE): tools to
-look up the language, check a flow, deploy it, call it, list its runs and explain one. It reaches
+look up the language, check a flow, deploy it, call it, list its runs and explain one, read a
+deployment's history and see what a restore would change (only ever a dry run). It reaches
 holon serve as holon export does: --server (or HOLON_SERVER) if given, else the one server you
 run on this machine, signed in as you. Its tools never approve what a flow may do: a deploy that
 needs approval is saved for a person to deploy from the editor. It asks as an agent, so the server
@@ -35,7 +36,7 @@ Codex, Zed and more: `holon mcp hosts` lists them, and adds your own). `--help` 
 const INSTRUCTIONS: &str = "Holon runs small services (flows) written in its own language, and \
 shows what each may do before it runs. Call `reference` first for the language and its leaves, \
 `check` a text before deploying it, then `deploy`, `call` and `explain`; `deployments` and `flows` \
-show what is already there, with its text, and `save` keeps a flow without deploying it. A first \
+show what is already there, with its text, and `save` keeps a flow without deploying it. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. A first \
 deploy, and any version that needs a new permission, waits for a person to approve it in the \
 editor: tell the user what it asks for and where, and deploy again once they have.";
 
@@ -104,7 +105,7 @@ fn json_of(api: &dyn Api, method: &str, path: &str, body: Option<Body>) -> Resul
 }
 
 /// A path segment, escaped.
-fn seg(s: &str) -> String {
+pub(crate) fn seg(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
@@ -207,6 +208,40 @@ fn tool_list() -> Value {
             "description": "One recorded run as the program: the flow's text with the value each statement had, where a missing value came from, what it answered, the effects it performed and the calls it made. The latest run unless one is named.",
             "inputSchema": { "type": "object", "properties": { "slug": slug, "run": { "type": "integer", "description": "the run's number (from call or runs); the latest when left out" } }, "required": ["slug"] },
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "history",
+            "title": "A deployment's history",
+            "description": "A deployment's timeline, oldest first: its runs, each with its number and the version it ran on, and what was done to it between them, by whom: deploys, restores, grant changes, secrets set or rolled back (never their values), folders and databases bound, pausing and stopping. Where to look when a flow began to answer differently: what changed just before. With a cell, that one value's history instead: the runs that changed it (state.NAME, a collection, or one item of it), each with its value before and after, and a restore or deploy between runs that moved it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": slug,
+                    "last": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "the newest runs to show, with the events among them (default 20)" },
+                    "events": { "type": "boolean", "description": "every event, kept for good, without the runs" },
+                    "cell": { "type": "string", "description": "a cell's name (moves, for state.moves) or a collection's (balances): its history instead" },
+                    "item": { "type": "string", "description": "with a collection as cell, one item's key: balances[\"a\"] is cell balances, item a" }
+                },
+                "required": ["slug"]
+            },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "restore",
+            "title": "What a restore would change",
+            "description": "A dry run of going back to an earlier version or run: nothing changes. The code it would deploy again (its text beside the text deployed now, and the permissions it would add or drop), the state keys and collection items it would put back (now → then), the runs since that point with what they did outside their state, which a restore doesn't undo, and the files they wrote, an edit made outside a run named. It never restores: a person does, in the editor or with `holon restore`; tell the user what it would change and how.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": slug,
+                    "version": { "type": "integer", "description": "a version's number (history shows which version each run ran on)" },
+                    "run": { "type": "integer", "description": "a run's number: the state it left, and the code it ran on" },
+                    "code": { "type": "boolean", "description": "deploy that point's code again" },
+                    "state": { "type": "boolean", "description": "put back the state that point left" }
+                },
+                "required": ["slug"]
+            },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
         }
     ])
 }
@@ -235,6 +270,14 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
         "flows" => flows(&*connect()?, args.get("name").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
         "runs" => runs(&*connect()?, arg(args, "slug")?, args.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 200)),
         "explain" => explain(&*connect()?, arg(args, "slug")?, args.get("run").and_then(Value::as_u64)),
+        "history" => {
+            let last = args.get("last").and_then(Value::as_u64).unwrap_or(20).clamp(1, 1000);
+            match args.get("cell").and_then(Value::as_str).filter(|c| !c.trim().is_empty()) {
+                Some(cell) => cell_history(&*connect()?, arg(args, "slug")?, cell, args.get("item").and_then(Value::as_str), last),
+                None => history(&*connect()?, arg(args, "slug")?, last, args.get("events").and_then(Value::as_bool) == Some(true)),
+            }
+        }
+        "restore" => restore(&*connect()?, args),
         other => Err(format!("there is no tool \"{other}\"")),
     }
 }
@@ -595,6 +638,194 @@ fn explain(api: &dyn Api, slug: &str, run: Option<u64>) -> Result<String, String
     agent::explain(slug, &document, &entry)
 }
 
+/// `slug`'s timeline, as `holon history` prints it: its newest `last` runs and the events among
+/// them, or every event.
+fn history(api: &dyn Api, slug: &str, last: u64, events_only: bool) -> Result<String, String> {
+    let path = format!("/deployments/{}", seg(slug));
+    let events = list_of(json_of(api, "GET", &format!("{path}/events"), None)?, Some("events"));
+    let runs = if events_only { Vec::new() } else { list_of(json_of(api, "GET", &format!("{path}/log?limit={last}"), None)?, Some("entries")) };
+    let versions = crate::history::version_numbers(&json_of(api, "GET", &format!("{path}/versions"), None)?);
+    let lines = crate::history::timeline(&runs, &events, &versions, events_only);
+    if lines.is_empty() {
+        return Ok(format!("\"{slug}\" has nothing in its history yet."));
+    }
+    let shown = if events_only { "every event".to_string() } else { format!("its newest {} run(s), with the events among them", runs.len()) };
+    Ok(format!(
+        "{slug}'s history, oldest first ({shown}): `#N` is run N, `vN` the version it ran on, and an event comes before the run after it.\n\n{}\n\n`explain` with a run's number shows what it did; `restore` with a version or a run says what going back to it would change.",
+        lines.join("\n")
+    ))
+}
+
+/// One cell's history: the runs that changed it, oldest first, with its value before and after.
+fn cell_history(api: &dyn Api, slug: &str, cell: &str, item: Option<&str>, last: u64) -> Result<String, String> {
+    let path = format!("/deployments/{}", seg(slug));
+    let item = item.map(|i| format!("&item={}", seg(i))).unwrap_or_default();
+    let answer = json_of(api, "GET", &format!("{path}/changes?name={}{item}&limit={}", seg(cell), last.min(200)), None)?;
+    let versions = crate::history::version_numbers(&json_of(api, "GET", &format!("{path}/versions"), None)?);
+    let lines = crate::history::change_lines(&answer, &versions);
+    Ok(format!(
+        "{}\n\n`explain` with a run's number shows how it came to that value; `restore` with the run before says what putting it back would change.",
+        lines.join("\n")
+    ))
+}
+
+/// What going back to a version or a run would change, as the server's dry run answers it. An
+/// agent restores nothing (deploy.rs refuses it more than a dry run): a person does.
+fn restore(api: &dyn Api, args: &Value) -> Result<String, String> {
+    let slug = arg(args, "slug")?;
+    let flag = |k: &str| args.get(k).and_then(Value::as_bool) == Some(true);
+    let (code, state) = (flag("code"), flag("state"));
+    let (point, at, to) = match (args.get("version").and_then(Value::as_u64), args.get("run").and_then(Value::as_u64)) {
+        (Some(n), None) => (format!("version {n}"), json!({ "version": n }), format!("--to {n}")),
+        (None, Some(seq)) => (format!("run {seq}"), json!({ "run": seq }), format!("--to-run {seq}")),
+        (Some(_), Some(_)) => return Err("name one point to go back to: `version` or `run`, not both".into()),
+        (None, None) => return Err("name the point to go back to: `version` (a version's number) or `run` (a run's), as `history` shows them".into()),
+    };
+    if !code && !state {
+        return Err("say what it would restore: `code`, `state`, or both".into());
+    }
+    let mut body = json!({ "code": code, "state": state, "dry_run": true });
+    for (k, v) in at.as_object().into_iter().flatten() {
+        body[k] = v.clone();
+    }
+    let preview = json_of(api, "POST", &format!("/deployments/{}/restore", seg(slug)), Some(Body::Json(body)))?;
+    let strings = |v: &Value| -> Vec<String> { v.as_array().into_iter().flatten().filter_map(|i| i.as_str().map(str::to_string)).collect() };
+    let listed = |items: &[String]| items.iter().map(|i| format!("  - {}", agent::describe(i))).collect::<Vec<_>>().join("\n");
+    let mut out = vec![format!("Dry run: nothing changed. Going back to {point} of \"{slug}\":")];
+    if let Some(why) = preview["refused"].as_str() {
+        out.push(format!("Its code can't be deployed on {} now: {why}", api.server()));
+    }
+    match preview["code"].as_u64() {
+        None if code => out.push(format!("{point} ran on the code deployed now: there is no code to deploy again, only its state.")),
+        None => {}
+        Some(n) => {
+            let needs = strings(&preview["needs_approval"]);
+            out.push(if needs.is_empty() {
+                format!("Its code, version {n}'s, would deploy again as a new version, under the grant it has now.")
+            } else {
+                format!("Its code, version {n}'s, would deploy again once a person approves what today's grant doesn't cover:\n{}", listed(&needs))
+            });
+            let asks = strings(&preview["items"]);
+            let unasked: Vec<String> = strings(&preview["granted_now"]).into_iter().filter(|i| !asks.contains(i)).collect();
+            if !unasked.is_empty() {
+                out.push(format!("Granted now, and not asked for by its code:\n{}", listed(&unasked)));
+            }
+            out.push(code_diff(api, slug, n).unwrap_or_else(|e| format!("Its text can't be compared: {e}")));
+        }
+    }
+    let missing = strings(&preview["missing_secrets"]);
+    if !missing.is_empty() {
+        out.push(format!("Its secrets not set now (their nodes stay empty until an admin sets them): {}", missing.join(", ")));
+    }
+    if preview["state"].is_object() {
+        out.push(crate::restore::state_lines(&preview["state"]));
+        out.extend(state_values(&preview["state"]));
+    }
+    let what = match (code, state) {
+        (true, true) => "--code --state",
+        (true, false) => "--code",
+        _ => "--state",
+    };
+    out.push(format!("\nA person restores it: in the editor, ↺ on that run or in the history beside the runs, or `holon restore {slug} {to} {what}`."));
+    Ok(out.join("\n"))
+}
+
+/// The state's keys and collection items a restore would put back, now → then.
+fn state_values(change: &Value) -> Vec<String> {
+    let line = |name: String, v: &Value| format!("  {name}: {} → {}", agent::show(&v["now"]), agent::show(&v["then"]));
+    let mut out: Vec<String> = change["values"].as_object().into_iter().flatten().map(|(k, v)| line(k.clone(), v)).collect();
+    for (name, c) in change["collections"].as_object().into_iter().flatten() {
+        out.extend(c["items"].as_object().into_iter().flatten().map(|(key, v)| line(format!("{name}[{}]", Value::from(key.as_str())), v)));
+        if c["more"] == true {
+            out.push(format!("  {name}: and more items"));
+        }
+    }
+    if !out.is_empty() {
+        out.insert(0, "Now → as it would be put back:".into());
+    }
+    out
+}
+
+/// Version `number`'s text beside the text deployed now, as a line diff. Both with the text's
+/// names, or both printed plainly when only one has them (a canvas deploy keeps none), so a name
+/// alone never reads as a change.
+fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String, String> {
+    let path = format!("/deployments/{}", seg(slug));
+    let versions = json_of(api, "GET", &format!("{path}/versions"), None)?;
+    let unit = versions["versions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|v| v["number"].as_u64() == Some(number))
+        .and_then(|v| v["unit"].as_str())
+        .ok_or_else(|| format!("version {number} isn't listed"))?
+        .to_string();
+    let now = json_of(api, "GET", &format!("{path}/document"), None)?;
+    let then = json_of(api, "GET", &format!("{path}/document?unit={unit}"), None)?;
+    let named = |d: &Value| d.get("source").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty()) || d.get("bindings").and_then(Value::as_object).is_some_and(|b| !b.is_empty());
+    let plain = |d: &Value| {
+        let mut d = d.clone();
+        if let Some(o) = d.as_object_mut() {
+            o.remove("source");
+            o.remove("bindings");
+        }
+        d
+    };
+    let (now_text, then_text, note) = if named(&now) == named(&then) {
+        (agent::text_of(slug, &now)?, agent::text_of(slug, &then)?, "")
+    } else {
+        (agent::text_of(slug, &plain(&now))?, agent::text_of(slug, &plain(&then))?, "\n(Both printed without the text's names: one of them was deployed from the canvas, which keeps none.)")
+    };
+    let lines = line_diff(&now_text, &then_text);
+    if lines.is_empty() {
+        return Ok(format!("Version {number}'s text is the text deployed now."));
+    }
+    Ok(format!("Its text (- deployed now, + version {number}'s):\n{}{note}", lines.join("\n")))
+}
+
+/// A line diff of `a` to `b`: `- ` for a's lines, `+ ` for b's, `  ` for both, with the unchanged
+/// lines more than two away from a change cut to `  …`. Empty when they're the same.
+fn line_diff(a: &str, b: &str) -> Vec<String> {
+    let (a, b): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
+    if a.len() * b.len() > 4_000_000 {
+        return vec![format!("  (too long to compare line by line: {} lines and {})", a.len(), b.len())];
+    }
+    // common[i][j]: the most lines a[i..] and b[j..] have in common, in order.
+    let mut common = vec![vec![0u32; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            common[i][j] = if a[i] == b[j] { common[i + 1][j + 1] + 1 } else { common[i + 1][j].max(common[i][j + 1]) };
+        }
+    }
+    let mut all: Vec<(char, &str)> = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            all.push((' ', a[i]));
+            (i, j) = (i + 1, j + 1);
+        } else if i < a.len() && (j == b.len() || common[i + 1][j] >= common[i][j + 1]) {
+            all.push(('-', a[i]));
+            i += 1;
+        } else {
+            all.push(('+', b[j]));
+            j += 1;
+        }
+    }
+    if all.iter().all(|(sign, _)| *sign == ' ') {
+        return Vec::new();
+    }
+    let near = |k: usize| all[k.saturating_sub(2)..(k + 3).min(all.len())].iter().any(|(sign, _)| *sign != ' ');
+    let mut out: Vec<String> = Vec::new();
+    for (k, (sign, line)) in all.iter().enumerate() {
+        if *sign != ' ' || near(k) {
+            out.push(format!("{sign} {line}"));
+        } else if out.last().map(String::as_str) != Some("  …") {
+            out.push("  …".into());
+        }
+    }
+    out
+}
+
 // ── the protocol ────────────────────────────────────────────────────────────────────────────
 
 /// The answer to one JSON-RPC message; none for a notification.
@@ -914,6 +1145,62 @@ mod tests {
         assert_eq!(person.send("POST", "/deployments/agent-slugs/stop", None).unwrap().0, 200);
     }
 
+    /// An agent reads a deployment's history, and sees what going back would change: the code's
+    /// text beside today's, the prices put back. It restores nothing: a person does.
+    #[test]
+    fn an_agent_reads_the_history_and_sees_a_restore_as_a_dry_run_only() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let text = include_str!("../../holon-author/samples/price-rollback.holon").replace("port 8160", "port 18170");
+        // Proposed by the agent (its unit stored), approved by the person.
+        assert!(deploy(&agent, &text, None).unwrap().starts_with("Not deployed yet"));
+        let plan = agent::plan(&text).unwrap();
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "price-rollback", "unit": plan.unit })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "price-rollback", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        // Version 2, with another fee, from the agent: it needs nothing more.
+        assert!(deploy(&agent, &text.replace("fee = 0.5", "fee = 5"), None).unwrap().starts_with("Deployed \"price-rollback\""));
+        let put = |price: u64| call(&agent, &json!({ "slug": "price-rollback", "method": "PUT", "path": "/prices/tea", "body": { "price": price } })).unwrap();
+        let first = put(4);
+        put(40);
+        let first = first.split("This was run ").nth(1).unwrap().split(':').next().unwrap().parse::<u64>().unwrap();
+
+        let history = tool_as(&agent, "history", json!({ "slug": "price-rollback" })).unwrap();
+        assert!(history.contains("deployed version 1") && history.contains("deployed version 2"), "{history}");
+        assert!(history.contains(&format!("#{first}")) && history.contains("PUT /prices/tea  200  v2"), "{history}");
+        assert!(history.find("deployed version 2").unwrap() < history.find(&format!("#{first}")).unwrap(), "oldest first: {history}");
+        let events = tool_as(&agent, "history", json!({ "slug": "price-rollback", "events": true })).unwrap();
+        assert!(!events.contains("PUT /prices"), "events only: {events}");
+        // One item's history: the two runs that priced tea, each with the price before and after.
+        let tea = tool_as(&agent, "history", json!({ "slug": "price-rollback", "cell": "prices", "item": "tea" })).unwrap();
+        assert!(tea.starts_with("prices[\"tea\"], oldest first, now 40:"), "{tea}");
+        assert!(tea.contains(&format!("#{first}")) && tea.contains("nothing → 4") && tea.contains("4 → 40"), "{tea}");
+        assert!(tool_as(&agent, "history", json!({ "slug": "price-rollback", "cell": "fee" })).unwrap().starts_with("state.fee: no run in the log changed it"));
+
+        // Version 1's code: its text beside today's, the fee the one line changed.
+        let code = tool_as(&agent, "restore", json!({ "slug": "price-rollback", "version": 1, "code": true })).unwrap();
+        assert!(code.starts_with("Dry run: nothing changed. Going back to version 1"), "{code}");
+        assert!(code.contains("version 1's, would deploy again as a new version"), "{code}");
+        assert!(code.contains("-   fee = 5\n+   fee = 0.5"), "{code}");
+        assert!(code.contains("holon restore price-rollback --to 1 --code"), "{code}");
+        // The first PUT's state: tea back to 4, and the run since, which did nothing outside.
+        let put_back = tool_as(&agent, "restore", json!({ "slug": "price-rollback", "run": first, "state": true })).unwrap();
+        assert!(put_back.contains("prices[\"tea\"]: 40 → 4"), "{put_back}");
+        assert!(put_back.contains(&format!("1 run(s) logged since run {first}")), "{put_back}");
+        assert!(tool_as(&agent, "restore", json!({ "slug": "price-rollback", "run": first })).unwrap_err().contains("`code`, `state`, or both"));
+
+        // Nothing changed, and the server answers an agent's restore no more than the dry run.
+        let restore = |dry_run: bool| Some(Body::Json(json!({ "run": first, "state": true, "dry_run": dry_run })));
+        let refused = json_of(&agent, "POST", "/deployments/price-rollback/restore", restore(false)).unwrap_err();
+        assert!(refused.contains("refused") && refused.contains("only as a dry run"), "{refused}");
+        let quote = call(&agent, &json!({ "slug": "price-rollback", "method": "GET", "path": "/quote/tea" })).unwrap();
+        assert!(quote.contains("\"price\":40") && quote.contains("\"fee\":5"), "{quote}");
+        assert!(json_of(&person, "POST", "/deployments/price-rollback/restore", restore(false)).unwrap()["state"]["session"].is_u64(), "a person restores it");
+        assert_eq!(person.send("POST", "/deployments/price-rollback/stop", None).unwrap().0, 200);
+    }
+
     /// An agent runs a flow's action only as its grant lets agents: a person asks for it (the
     /// deploy settings' `agents`) and approves `AgentRuns("reset")`; taking it back refuses the
     /// agent again and leaves the flow running. A person runs it either way.
@@ -1134,7 +1421,7 @@ mod tests {
         assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(answers[0]["result"]["serverInfo"]["name"], "holon");
         let names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["reference", "check", "save", "deploy", "call", "run", "deployments", "flows", "runs", "explain"]);
+        assert_eq!(names, ["reference", "check", "save", "deploy", "call", "run", "deployments", "flows", "runs", "explain", "history", "restore"]);
         assert_eq!(answers[2]["result"]["isError"], false);
         assert!(answers[2]["result"]["content"][0]["text"].as_str().unwrap().starts_with("concat("));
         assert_eq!(answers[3]["result"]["isError"], true, "a mistake is a tool's failure, said: {}", answers[3]);

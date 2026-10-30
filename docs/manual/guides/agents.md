@@ -60,11 +60,14 @@ The tools `holon mcp` offers:
 | `flows` | the saved flows; with a name, its text |
 | `runs` | a deployment's latest runs, one line each |
 | `explain` | one run as the program: each statement's value, where a missing value came from, the effects and calls |
+| `history` | a deployment's timeline: its runs, each with the version it ran on, and what was done to it between them, by whom (deploys, restores, grant changes, secrets, pausing); with a `cell`, the runs that changed that value, before and after |
+| `restore` | a dry run of going back to a version or a run: the code's text beside today's, the permissions, the state's keys and items now → then, the runs since and the files they wrote; it changes nothing |
 
 `check` and `reference` need no server; the rest reach the one `holon mcp` connects to.
 
 The agent role **never** approves a grant, starts, pauses, stops or deletes a deployment, sets a
-secret, or replaces a flow someone else saved. The server enforces this, not the tool.
+secret, restores one, or replaces a flow someone else saved. The server enforces this, not the
+tool: it answers an agent's restore only as a dry run.
 
 An agent runs a flow's [action](actions.md) only once you let it: in the deploy settings (**⚙**),
 **agents may run** lists the flow's actions, and each one you tick asks for `AgentRuns("name")`,
@@ -115,6 +118,13 @@ Agents work well with Holon when they use the tools in this order:
 
 `explain` is the agent's view of what the editor's view mode shows you: the flow's text with the
 value of each statement in a run, and, for a value that is missing, where it went missing.
+
+When a flow that worked starts answering differently, `history` is where to look: the deploy, the
+grant change or the secret set just before the first run that went wrong. `explain` that run and
+the one before it to see what changed, and `restore` with the run before says what going back would
+do: the code's text beside today's, the prices or counts it would put back, and what the runs since
+did outside their state, which a restore doesn't undo. The agent then tells you; you restore it, in
+the editor's history or with `holon restore`.
 
 ## Without MCP
 

@@ -130,8 +130,9 @@ holon restore <slug> --to <seq> --dry-run    what it would do, and change nothin
   (a cell it doesn't know, a shape it doesn't expect). `--dry-run` shows the cells that differ
   between the two points, so whoever restores sees it.
 - **Who may restore:** whoever may deploy to the deployment. Where the policy asks for an approval
-  of deploys (approvals-L4, step 2.1), a restore asks for one too. An agent may restore as its
-  grant allows; its restore waits for approval like its deploys.
+  of deploys (approvals-L4, step 2.1), a restore asks for one too. An agent sees a restore only as
+  its dry run (built: the server refuses it more), and tells the person, who restores it. *Later:*
+  an agent's restore saved for a person to approve, as its deploys are.
 
 ## 5. What a restore doesn't touch
 
@@ -156,7 +157,7 @@ Holon never claims to have undone it.
 - **Two versions side by side:** the documents of any two units on the timeline, as text.
 - **The editor:** the deployment's timeline, each entry opening its run in view mode, its
   version, or its state; a restore's preview and its button.
-- **MCP:** `history` and `restore`, the latter waiting for approval when an agent asks.
+- **MCP:** `history` and `restore` (built), the latter a dry run only.
 - **`holon verify`** checks, beyond what it checks today, that each entry's state follows from the
   one before it (its writes applied to the root before give the root after), from the oldest
   entry the export carries whole.
@@ -224,7 +225,26 @@ Reordered so restoring code, which changes nothing already logged, comes first:
      `GET /deployments/<slug>/events`, `holon history <slug>` merging events and runs, exports
      carrying events and `holon verify` checking their chain.
    - **3a, the editor's timeline** and restore button, MCP's `history` and `restore`, agents
-     restoring, a cell's history.
+     restoring, a cell's history, in three steps:
+     - **the editor** (built): view mode's history button beside the runs' filter: versions
+       and events (runs when asked) merged newest first, filtered by kind and by words; any row picked shows its details,
+       and restores its code, its state or both (a dry run, then a dialog that says what changes
+       and approves what the code needs, as a deploy's does): a run or a version itself, anything
+       else how it was right after (the version then; the state the run before it left, or the
+       restore before it put back, which its event names as `from`); ↺ on a row restores what it
+       can; a version's canvas shows. The price-rollback e2e restores through it;
+     - **MCP and agents** (built): a `history` tool, the timeline as `holon history` prints it,
+       and a `restore` tool that is the dry run only: the code's text beside today's (a line
+       diff, names on both sides or neither), the permissions, the state's keys and collection
+       items now → then, the runs since and the files they wrote. The server answers an agent's
+       restore no more than that; a person restores it. An agent's restore waiting for a
+       person's approval, as its deploys do, is later;
+     - **a cell's history** (built): the runs that changed a cell, a collection or one item of
+       it, with values before and after (`GET …/changes`, changes.rs): walking the log in order,
+       a run whose snapshot holds another value than the last one changed it, so a run that only
+       read it while another wrote isn't named; a value moved between runs where an event (a
+       restore, a deploy) came between is a row of its own. `holon history --cell`, MCP's
+       `history` with a cell, and ⧗ in view mode's flow state. The sample balance-trail.
 4. **Retention and verify** of whole states.
 
 ## 11. Forks, surfaced

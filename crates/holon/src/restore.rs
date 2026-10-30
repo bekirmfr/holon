@@ -207,8 +207,11 @@ pub(crate) fn cli(args: &[String]) -> i32 {
 }
 
 /// What putting a state back would change, as a dry run answers it: the keys, and the runs since.
-fn state_lines(change: &serde_json::Value) -> String {
-    let keys = |k: &str| -> Vec<&str> { change[k].as_array().into_iter().flatten().filter_map(|v| v.as_str()).collect() };
+pub(crate) fn state_lines(change: &serde_json::Value) -> String {
+    // A collection's key in the state (`#collection:prices`) said as a person reads it.
+    let keys = |k: &str| -> Vec<String> {
+        change[k].as_array().into_iter().flatten().filter_map(|v| v.as_str()).map(|key| key.strip_prefix("#collection:").map_or_else(|| key.to_string(), |c| format!("the collection {c}"))).collect()
+    };
     let from = change["from"].as_str().unwrap_or("that point");
     let (changed, added, removed) = (keys("changed"), keys("added"), keys("removed"));
     let mut lines = vec![if changed.is_empty() && added.is_empty() && removed.is_empty() {
@@ -234,7 +237,46 @@ fn state_lines(change: &serde_json::Value) -> String {
         (_, true) => format!("{runs} run(s) logged since {from}, which did nothing outside its state"),
         (_, false) => format!("{runs} run(s) logged since {from} also did, outside its state, what a restore doesn't undo: {}", effects.join(", ")),
     });
+    let files = change["files"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if !files.is_empty() {
+        lines.push("files the runs since wrote, which a restore doesn't put back:".to_string());
+        lines.extend(files.iter().map(|f| format!("  {}", file_line(f))));
+        if change["files_more"].as_bool() == Some(true) {
+            lines.push("  and more".to_string());
+        }
+    }
     lines.join("\n")
+}
+
+/// A file the runs since a point wrote, as a dry run says it: how many writes, by which runs,
+/// and whether it is on disk as the last one left it (`changed outside a run` when not).
+pub(crate) fn file_line(f: &serde_json::Value) -> String {
+    let n = f["writes"].as_u64().unwrap_or_default();
+    let runs: Vec<String> = f["runs"].as_array().into_iter().flatten().filter_map(|r| r.as_u64()).map(|r| r.to_string()).collect();
+    let more = if (runs.len() as u64) < n { "…, " } else { "" };
+    let last = f["last"]["run"].as_u64().unwrap_or_default();
+    let how = match f["last"]["kind"].as_str() {
+        Some("copy") => "copied over",
+        Some("delete") => "deleted",
+        _ => "written",
+    };
+    let mut line = format!(
+        "{}/{}: {n} write{} since, by run{} {more}{} (the last {how})",
+        f["folder"].as_str().unwrap_or_default(),
+        f["name"].as_str().unwrap_or_default(),
+        if n == 1 { "" } else { "s" },
+        if n == 1 { "" } else { "s" },
+        runs.join(", ")
+    );
+    if let Some(why) = f["unreadable"].as_str() {
+        line.push_str(&format!("; can't be checked on disk now: {why}"));
+    } else if f["outside"].as_bool() == Some(true) {
+        line.push_str(&match f["disk"]["hash"].as_str() {
+            Some(h) => format!("; changed outside a run since run {last}: on disk now #{}, not what run {last} left", &h[..8.min(h.len())]),
+            None => format!("; gone from disk since run {last}, which left it"),
+        });
+    }
+    line
 }
 
 /// A capability a run performed, as the dry run counts it.

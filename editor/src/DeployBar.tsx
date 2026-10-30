@@ -5,12 +5,14 @@
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { describeItem, manifestTrigger } from "./holon";
+import { useDryRun, type DryRunReport } from "./DryRun";
 import {
   deleteSecret,
   getEnvSecretNames,
   getPermissions,
   getSecretHistory,
   listSecrets,
+  previewSecretRollback,
   rollbackSecret,
   setSecret,
   type DeploymentEntry,
@@ -18,6 +20,7 @@ import {
   type Requirements,
   type SecretHistory,
   type SecretInfo,
+  type SecretRollbackPreview,
 } from "./server";
 
 /** A flow's deploy settings, saved with it. `port` is for a flow with routes (a server),
@@ -208,6 +211,40 @@ const OTHER = "\u0000other";
 const when = (epoch: number) => new Date(epoch * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
 const sourceLabel = (source: string) => (source === "local" ? "sealed here" : source);
 
+/** A secret's roll back, as its dry run says it: which version comes back, as what, and what is
+ *  kept; each value told apart by its fingerprint, as the log marks it, never shown. */
+export function secretRollbackReport(slug: string, name: string, p: SecretRollbackPreview): DryRunReport {
+  const mark = (print?: string | null) => (print ? ` #${print}` : "");
+  const same = !!p.to_print && p.to_print === p.current_print;
+  return {
+    title: `Roll back the secret ${name} of "${slug}" to version ${p.to}?`,
+    changes: [`secret ${name}: v${p.current}${mark(p.current_print)} → v${p.version}${mark(p.to_print)}, version ${p.to}'s value${same ? " (the same value)" : ""}`],
+    diffs: async () => [
+      {
+        title: `secret ${name}`,
+        legend: "− current now   + current after",
+        lines: [
+          { sign: "-", text: `v${p.current}${mark(p.current_print)}  current now; kept, and can be rolled back to` },
+          { sign: "+", text: `v${p.version}${mark(p.to_print)}  version ${p.to}'s value (${sourceLabel(p.source)})` },
+        ],
+        whole: true,
+        note: `Values are told apart by their fingerprints, as the log marks them (#…), never shown${same ? ": these two are the same value" : ""}.${p.current_print === null ? ` Version ${p.current}'s value can't be read now.` : ""}`,
+      },
+    ],
+    sections: [
+      {
+        heading: "secret",
+        lines: [
+          `Version ${p.to} (${sourceLabel(p.source)}) is current again, as version ${p.version}: the flow reads it from its next run.`,
+          `Version ${p.current}, current now, is kept, and can be rolled back to.`,
+          "Its value is never shown.",
+        ],
+      },
+    ],
+    action: "Roll back",
+  };
+}
+
 /**
  * One secret in the deploy settings: its current version and where it comes from (or why it
  * has no value), a way to set a new version (a value, an env variable, a Vault field), and its
@@ -222,6 +259,7 @@ function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: 
   const [typing, setTyping] = useState(false);
   const picking = kind === "env" && envNames.length > 0 && !typing;
   const [history, setHistory] = useState<SecretHistory | null>(null);
+  const dryRun = useDryRun();
   // The row follows where the secret comes from once that's known (the list loads after it).
   useEffect(() => {
     if (info) setKind(kindOf(info.source));
@@ -249,11 +287,17 @@ function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: 
     deleteSecret(slug, name)
       .then(() => changed("removed"))
       .catch(fail);
-  const rollback = (to: number) =>
-    slug &&
-    rollbackSecret(slug, name, to)
-      .then((v) => changed(`version ${to} is current again, as version ${v}`))
-      .catch(fail);
+  // A dry run first, its result shown; rolled back once approved.
+  const rollback = async (to: number) => {
+    if (!slug) return;
+    try {
+      if (!(await dryRun.ask(secretRollbackReport(slug, name, await previewSecretRollback(slug, name, to))))) return;
+      const v = await rollbackSecret(slug, name, to);
+      changed(`version ${to} is current again, as version ${v}`);
+    } catch (e) {
+      fail(e);
+    }
+  };
   const k = KINDS.find((x) => x.kind === kind)!;
   const status = info ? (info.problem ? "#e0916f" : "#9ad29f") : "#e0916f";
   return (
@@ -333,6 +377,7 @@ function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: 
           </button>
         )}
       </span>}
+      {dryRun.modal}
       {msg && <span style={{ gridColumn: "1 / -1", color: "#9fb4d4", whiteSpace: "normal", maxWidth: 420 }}>{msg}</span>}
       {history && (
         <span style={{ gridColumn: "1 / -1", display: "grid", gap: 3, padding: "4px 8px", borderLeft: "2px solid #1b2a45", marginLeft: 4 }}>

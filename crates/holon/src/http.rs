@@ -232,6 +232,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         {
             return durable::handle_get_runs(&state.deployments, slug);
         }
+        if let Some(slug) = rest.strip_suffix("/changes")
+            && method == "GET"
+        {
+            return changes::handle_get_changes(state, slug, request);
+        }
         if let Some(slug) = rest.strip_suffix("/history") {
             if method == "GET" {
                 return handle_get_history(&state.deployments, slug);

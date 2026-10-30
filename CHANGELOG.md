@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- **A cell's history: which run changed a value.** `holon history <slug> --cell NAME [--item
+  KEY]` lists the runs that changed one cell, a collection or one of its items, each with the
+  value before and after it, a restore or a deploy that moved it between two runs as a row of its
+  own; a run that only read it isn't named. In the editor, ⧗ beside a cell or an item in view
+  mode's Flow state lists it, a run's row opening that run; `holon mcp`'s `history` tool takes a
+  `cell`; `GET /deployments/<slug>/changes` answers it. The new **balance-trail** sample moves
+  money between accounts: its e2e restores a state between moves and reads one account's history.
+
+- **An agent reads a deployment's history and sees what a restore would change.** `holon mcp`
+  has two more tools. `history` is the timeline `holon history` prints: the runs, each with the
+  version it ran on, and what was done between them, by whom. `restore` is a restore's dry run:
+  the code's text beside today's, as a line diff, the permissions, the state's keys and
+  collection items now → then, the runs since and the files they wrote. It changes nothing: the
+  server answers an agent's restore only as a dry run, and the agent tells a person, who restores
+  it in the editor or with `holon restore`.
+
+- **A state restore's dry run names the files the runs since wrote, and an edit made outside a
+  run.** A restore never puts a bound folder's files back; its dry run (`holon restore
+  --dry-run`, and the editor's window) now names each file the runs since that point wrote, once
+  however many times: how many writes, by which runs, and whether it is on disk as the last one
+  left it (`changed outside a run since run 48`, `gone from disk`). The editor's diff shows a
+  file's text then beside now when the log has it (a run read that content); else the two hashes.
+  The new **stock-sheet** sample keeps counts in a collection and a line per change in a file:
+  its e2e edits the file by hand and restores the counts, the file left as it is.
+
+- **A dry run says what it changes, and its diff compares it with what is there now.** The
+  dry-run window opens with what it changes, a line each: the code deployed (as which version, in
+  place of which), the permissions added and dropped, the state's keys and a collection's items;
+  for a secret, each version by its fingerprint. Its **diff** button shows each part beside what
+  is there now: the flow's text line by line, with its author's names; the grant item by item; the
+  state's values, a collection's items by key (`prices["tea"]: 40` → `4`), redacted as the
+  control plane is; a secret's `v3 #c9027077 → v4 #0820d784`, never a value. A restore's dry run
+  answers the grant now (`granted_now`) and the values and items it would put back; a secret's,
+  each value's fingerprint (`to_print`, `current_print`).
+
+- **What the history changes is a dry run first, its result shown before you approve it.** A
+  restore (code, state, both, ↺) shows its dry run in a window of its own, part by part: the code
+  deployed again and the permissions to approve, the keys the state changes and what the runs
+  since did outside; nothing changes until it is approved. A secret's **roll back** (⚙ → ▸) does
+  too: `POST …/secrets/<name>/rollback` takes `"dry_run": true` and says which version comes back,
+  as what, and the one kept, never a value. The **guarded-api** sample's e2e rolls its token back
+  through it.
+
+- **The editor shows a deployment's history, and restores from it.** View mode's **history** button,
+  beside the runs' filter, shows what was done to it and its versions newest first, filtered by
+  kind and by words (its runs too, when asked). Any row picked shows its details, and any row is
+  gone back to: a run or a version to itself, a restore, a grant or a pause to how it was right
+  after (the version then, the state then). Picked, it restores its code, its state or both; **↺**
+  on a row, there or in the run list, restores what it can: a dry run first, confirmed in a dialog
+  that says what changes and asks to approve what today's grant doesn't cover; **canvas** shows a
+  version's. `GET /deployments/<slug>/versions` also answers each version's `first_seq`, and a
+  restore's event the point it put back (`from`). The **price-rollback** sample's e2e restores
+  through it, a restore's row with ↺ too.
+
 - **What was done to a deployment is on its timeline.** Deploys, restores, grant changes (revoked,
   granted back, lowered), secrets set, removed or rolled back (name, version and source, never a
   value), folders and databases bound for it, and pausing, stopping and running, each with who and
