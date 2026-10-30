@@ -79,7 +79,9 @@ has a source:
 Env and vault secrets are read again every minute. A value must be at least six characters.
 
 Each change makes a new version; **▸** shows the last five, and **roll back** makes an old one
-current again (as a new version). The history says who changed what, never the values.
+current again (as a new version), once a dry run has said which version comes back, as what, and
+that the current one is kept (`POST …/secrets/<name>/rollback` with `"dry_run": true` says it and
+changes nothing). The history says who changed what, never the values.
 
 A secret's value never appears in the run log, the editor, an export or a replay: wherever it
 would, it shows as `‹secret:name v3 #a1b2c3d4›`: the name, the version the value is of, and a
@@ -293,13 +295,14 @@ left, or what the restore before it put back (a restore names the point it put b
 its event). Picked:
 
 - **canvas** (a version) shows the canvas it was deployed with;
-- **code**, **state** or **both** restore it, as `holon restore` does: a dry run first, and a
-  dialog that says what it changes (the keys, and what the runs since did outside, which a restore
-  doesn't undo) and asks to approve what the code needs that today's grant doesn't cover. A
-  button that can't apply is off, and says why: the version deployed now, a state not kept.
+- **code**, **state** or **both** restore it, as `holon restore` does: a dry run first, its
+  result in a dry-run window (nothing has changed yet) that says what it would change, part by
+  part (the code; the keys, and what the runs since did outside, which a restore doesn't undo),
+  and asks to approve what the code needs that today's grant doesn't cover. A button that can't
+  apply is off, and says why: the version deployed now, a state not kept.
 
 **↺** on a row, in the history or the run list, restores whatever of it can be, through the same
-dry run and dialog.
+dry run and window.
 
 Events are **recorded, never restored**: [going back](#going-back-to-an-earlier-version) puts back
 code and state only, and the grant, secrets and bindings stay as they are now. They are kept for

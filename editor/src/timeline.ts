@@ -3,6 +3,7 @@
 // can go back to, and what a restore's dry run says, worded as `holon restore` words it.
 
 import { describeItem } from "./holon";
+import type { DryRunReport } from "./DryRun";
 import type { DeploymentEvent, LogEntry, RestoreDone, RestorePoint, RestorePreview, StateChange, VersionEntry } from "./server";
 
 export type TimelineItem =
@@ -213,41 +214,40 @@ export function restoreParts(target: Target, what: { code: boolean; state: boole
   return [...(code ? [{ point: code, what: { code: true, state: false } }] : []), ...(state ? [{ point: state, what: { code: false, state: true } }] : [])];
 }
 
-/** A restore's confirmation, from the dry run of each of its parts; and the button that confirms
- *  it. `describe` says a permission (core's words, through wasm). */
-export function restoreMessage(
+/** A restore's dry run, as the dry-run window shows it (DryRun.tsx), from the dry run of each of
+ *  its parts: what it goes back to, what its code and its state would do, and what it asks to
+ *  approve. `describe` says a permission (core's words, through wasm). */
+export function restoreReport(
   slug: string,
   target: Pick<Target, "label" | "event">,
   parts: (RestorePart & { preview: RestorePreview })[],
   describe: (item: string) => string = describeItem,
-): { lines: string[]; action: string } {
+): DryRunReport {
   const code = parts.some((p) => p.what.code);
   const state = parts.some((p) => p.what.state);
   const which = code && state ? "code and state" : code ? "code" : "state";
-  const lines = [`Restore "${slug}" to ${target.label}: its ${which}?`];
+  const sections: DryRunReport["sections"] = [];
   if (target.event) {
     const had = parts.flatMap((p) => [
       ...(p.what.code ? [`${pointLabel(p.point)}'s code`] : []),
       ...(p.what.state ? [`the state ${pointLabel(p.point)} left`] : []),
     ]);
-    lines.push("", `As it was after "${target.event.what}": ${had.join(", and ")}.`);
+    sections.push({ heading: "as it was then", lines: [`As it was after "${target.event.what}": ${had.join(", and ")}.`] });
   }
-  const needs = parts.flatMap((p) => p.preview.needs_approval ?? []);
+  const approvals: string[] = [];
   for (const { point, what, preview } of parts) {
     if (what.code) {
-      if (preview.code === null) lines.push("", `${pointLabel(point)} ran on the code deployed now: only its state is restored.`);
+      if (preview.code === null) sections.push({ heading: "code", lines: [`${pointLabel(point)} ran on the code deployed now: only its state is restored.`] });
       else {
-        lines.push("", `Version ${preview.code}'s code is deployed again, as a new version, checked against the grant "${slug}" has now.`);
-        const asks = preview.needs_approval ?? [];
-        if (asks.length > 0) lines.push("", "It needs your approval to:", ...asks.map((i) => `• ${describe(i)}`));
-        if ((preview.missing_secrets ?? []).length > 0) {
-          lines.push("", `Not set now: ${preview.missing_secrets!.join(", ")} (those nodes stay empty until they are).`);
-        }
+        const lines = [`Version ${preview.code}'s code is deployed again, as a new version, checked against the grant "${slug}" has now.`];
+        if ((preview.missing_secrets ?? []).length > 0) lines.push(`Not set now: ${preview.missing_secrets!.join(", ")} (those nodes stay empty until they are).`);
+        sections.push({ heading: "code", lines });
+        approvals.push(...(preview.needs_approval ?? []).map(describe));
       }
     }
-    if (preview.state) lines.push("", ...stateLines(preview.state));
+    if (preview.state) sections.push({ heading: "state", lines: stateLines(preview.state) });
   }
-  return { lines, action: needs.length > 0 ? "Approve and restore" : "Restore" };
+  return { title: `Restore "${slug}" to ${target.label}: its ${which}?`, sections, approvals, action: approvals.length > 0 ? "Approve and restore" : "Restore" };
 }
 
 /** What a restore did, in a line. */

@@ -127,7 +127,7 @@ static SAMPLES: &[Sample] = &[
         port: Some("8109"),
         interval: None,
         secrets: &[
-            SampleSecret { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back under ⚙ → ▸", from: None },
+            SampleSecret { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back under ⚙ → ▸ (a dry run says what it would do first)", from: None },
             SampleSecret { name: "receipt_key", what: "the key receipts are signed with", from: Some("env:HOLON_SECRET_RECEIPT_KEY") },
         ],
         // Without the receipt key it still answers, the receipt "unsigned": revoking it doesn't pause it.

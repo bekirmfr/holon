@@ -376,6 +376,20 @@ export async function getSecretHistory(slug: string, name: string): Promise<Secr
 }
 
 /** Make `version` current again, as a new version; answers it. */
+/** What rolling a secret back would do, changing nothing: the version made current again, the
+ *  one current now, the new version it would be, and its source. Never a value. */
+export type SecretRollbackPreview = { to: number; current: number; version: number; source: string };
+
+/** `POST …/secrets/<name>/rollback` with `dry_run`: refused as the roll back would be. */
+export async function previewSecretRollback(slug: string, name: string, version: number): Promise<SecretRollbackPreview> {
+  const res = await api(`${secretUrl(slug, name)}/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version, dry_run: true }),
+  });
+  return asJson<SecretRollbackPreview>(res);
+}
+
 export async function rollbackSecret(slug: string, name: string, version: number): Promise<number> {
   const res = await api(`${secretUrl(slug, name)}/rollback`, {
     method: "POST",

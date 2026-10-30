@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTimeline, filterOf, itemText, parsePoint, restoreMessage, restoreParts, restoredLine, runOptions, stateLines, targetOf, versionOptions } from "./timeline";
+import { buildTimeline, filterOf, itemText, parsePoint, restoreReport, restoreParts, restoredLine, runOptions, stateLines, targetOf, versionOptions } from "./timeline";
 import type { DeploymentEvent, LogEntry, VersionEntry } from "./server";
 
 const run = (seq: number, at_ms: number, extra: Partial<LogEntry> = {}): LogEntry => ({
@@ -95,14 +95,15 @@ describe("a restore's words", () => {
   });
 
   it("asks for approval when the code needs it", () => {
-    const asked = restoreMessage("prices", { label: "version 1" }, [{ point: { version: 1 }, what: { code: true, state: true }, preview: { code: 1, needs_approval: ["Clock"], missing_secrets: [], state: change } }], (i) => `read ${i}`);
+    const asked = restoreReport("prices", { label: "version 1" }, [{ point: { version: 1 }, what: { code: true, state: true }, preview: { code: 1, needs_approval: ["Clock"], missing_secrets: [], state: change } }], (i: string) => `read ${i}`);
     expect(asked.action).toBe("Approve and restore");
-    expect(asked.lines[0]).toBe('Restore "prices" to version 1: its code and state?');
-    expect(asked.lines).toContain("It needs your approval to:");
-    expect(asked.lines).toContain("• read Clock");
-    const plain = restoreMessage("prices", { label: "run 7" }, [{ point: { run: 7 }, what: { code: false, state: true }, preview: { code: null, state: change } }]);
+    expect(asked.title).toBe('Restore "prices" to version 1: its code and state?');
+    expect(asked.sections.map((x) => x.heading)).toEqual(["code", "state"]);
+    expect(asked.approvals).toEqual(["read Clock"]);
+    const plain = restoreReport("prices", { label: "run 7" }, [{ point: { run: 7 }, what: { code: false, state: true }, preview: { code: null, state: change } }]);
     expect(plain.action).toBe("Restore");
-    expect(plain.lines.join("\n")).not.toMatch(/code/);
+    expect(plain.sections.map((x) => x.heading)).toEqual(["state"]);
+    expect(plain.approvals).toEqual([]);
   });
 
   it("says what it did", () => {
@@ -167,9 +168,9 @@ describe("going back to a row", () => {
 
   it("says how it was then, and what each part does", () => {
     const then = { label: "event #2", event: { seq: 2, at_ms: 0, run_seq: 3, kind: "lifecycle", what: "paused" } };
-    const said = restoreMessage("prices", then, [{ point: { run: 2 }, what: { code: false, state: true }, preview: { code: null, state: { ...change0, from: "run 2" } } }]);
-    expect(said.lines[0]).toBe('Restore "prices" to event #2: its state?');
-    expect(said.lines).toContain('As it was after "paused": the state run 2 left.');
+    const said = restoreReport("prices", then, [{ point: { run: 2 }, what: { code: false, state: true }, preview: { code: null, state: { ...change0, from: "run 2" } } }]);
+    expect(said.title).toBe('Restore "prices" to event #2: its state?');
+    expect(said.sections[0]).toEqual({ heading: "as it was then", lines: ['As it was after "paused": the state run 2 left.'] });
   });
 });
 

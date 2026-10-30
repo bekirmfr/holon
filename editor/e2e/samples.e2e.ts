@@ -636,7 +636,8 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   // Its details beside it, no run shown.
   await expect(bottom.locator(".hl-history__details")).toContainText(`deployed version ${before}`);
   await restoreBar.getByRole("button", { name: "code", exact: true }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("dialog", { name: "dry run" });
+  await expect(dialog).toContainText("Nothing has changed yet: this is what it would do.");
   await expect(dialog).toContainText(`Version ${before}'s code is deployed again, as a new version`);
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(bottom.locator(".hl-history__note")).toHaveText(`restored: version ${before}'s code is deployed again, as version ${now + 1}`);
@@ -958,6 +959,35 @@ test("an env secret is picked from the server's HOLON_SECRET_… names, its dote
   // A name the server doesn't list is typed.
   await names.selectOption({ label: "another name…" });
   await expect(settings.getByPlaceholder("HOLON_SECRET_GEMINI_API_KEY")).toBeVisible();
+});
+
+test("guarded-api's token rolls back under ⚙ once a dry run has said what it would do, and nothing changes until then", async ({ page, request, adminToken }) => {
+  const asAdmin = { Authorization: `Bearer ${adminToken}` };
+  const set = (value: string) => request.post(`${SERVER}/deployments/guarded-api/secrets/api_token`, { data: { value }, headers: asAdmin });
+  expect((await set(`e2e-token-one-${Date.now()}`)).ok()).toBe(true);
+  expect((await set(`e2e-token-two-${Date.now()}`)).ok()).toBe(true);
+  const versions = async () =>
+    ((await (await request.get(`${SERVER}/deployments/guarded-api/secrets/api_token`, { headers: asAdmin })).json()) as { versions: { version: number; current: boolean }[] }).versions;
+  const [now, before] = (await versions()).map((v) => v.version);
+
+  await openSample(page, "Token-guarded API");
+  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "deploy settings" });
+  await settings.getByTitle("versions and changes; roll back to an older version").first().click();
+  const rollBack = settings.getByTitle(`make version ${before} current again`);
+  // The dry run: what it would do, never the value; cancelled, nothing changed.
+  await rollBack.click();
+  const dryRun = page.getByRole("dialog", { name: "dry run" });
+  await expect(dryRun).toContainText(`Version ${before} (sealed here) is current again, as version ${now + 1}`);
+  await expect(dryRun).toContainText(`Version ${now}, current now, is kept`);
+  await dryRun.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dryRun).toHaveCount(0);
+  expect((await versions())[0]).toEqual({ version: now, current: true, source: "local", set_at: expect.any(Number) });
+  // Approved: rolled back, as a new version.
+  await rollBack.click();
+  await dryRun.getByRole("button", { name: "Roll back", exact: true }).click();
+  await expect(settings).toContainText(`version ${before} is current again, as version ${now + 1}`);
+  expect((await versions())[0]).toMatchObject({ version: now + 1, current: true });
 });
 
 test("calc's match answers the chosen arm or 400 when it has no value, and view mode shows the other arms as not run", async ({ page, request }) => {

@@ -127,6 +127,16 @@ pub(crate) struct VersionInfo {
     pub(crate) current: bool,
 }
 
+/// What rolling a secret back would do, as a dry run says it: the version made current again, the
+/// one current now, the new version it would be, and its source. Never a value.
+#[derive(Serialize, Debug, PartialEq)]
+pub(crate) struct RollbackPreview {
+    pub(crate) to: u32,
+    pub(crate) current: u32,
+    pub(crate) version: u32,
+    pub(crate) source: String,
+}
+
 /// One entry of the audit log: never a value.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct SecretEvent {
@@ -394,20 +404,34 @@ impl SecretStore {
     /// Make version `to` of `slug`'s `name` current again, as a new version (history is kept);
     /// that version's number. Refused unless `to` is kept, isn't current, and still reads.
     pub(crate) fn rollback(&self, slug: &str, name: &str, to: u32, by: Option<&str>) -> Result<u32, String> {
-        let old = {
-            let slugs = self.slugs.lock().unwrap();
-            let versions = slugs.get(slug).and_then(|s| s.secrets.get(name)).ok_or_else(|| format!("{slug:?} has no secret {name:?}"))?;
-            if versions.last().is_some_and(|v| v.version == to) {
-                return Err(format!("version {to} is already current"));
-            }
-            versions.iter().find(|v| v.version == to).cloned().ok_or_else(|| format!("version {to} isn't kept (the last {MAX_VERSIONS} are)"))?
-        };
+        let (old, _) = self.rollback_from(slug, name, to)?;
         let value = self.value_of(slug, name, &old).map_err(|e| format!("version {to} can't be read: {e}"))?;
         let sealed = (old.source == "local").then_some(value);
         let version = self.add_version(slug, name, &old.source, sealed.as_deref().map(|v| v.as_str()), true)?;
         self.persist()?;
         self.event(slug, name, "rolled back", Some(version), Some(&old.source), Some(format!("to version {to}")), by);
         Ok(version)
+    }
+
+    /// What `rollback` would do, changing nothing: refused as it would be (`to` not kept, already
+    /// current, or not readable now).
+    pub(crate) fn rollback_preview(&self, slug: &str, name: &str, to: u32) -> Result<RollbackPreview, String> {
+        let (old, current) = self.rollback_from(slug, name, to)?;
+        self.value_of(slug, name, &old).map_err(|e| format!("version {to} can't be read: {e}"))?;
+        Ok(RollbackPreview { to, current, version: current + 1, source: old.source })
+    }
+
+    /// The kept version `to` of `slug`'s `name`, and the number of the one current now; refused
+    /// when `to` isn't kept or is the current one.
+    fn rollback_from(&self, slug: &str, name: &str, to: u32) -> Result<(Stored, u32), String> {
+        let slugs = self.slugs.lock().unwrap();
+        let versions = slugs.get(slug).and_then(|s| s.secrets.get(name)).ok_or_else(|| format!("{slug:?} has no secret {name:?}"))?;
+        let current = versions.last().map_or(0, |v| v.version);
+        if current == to {
+            return Err(format!("version {to} is already current"));
+        }
+        let old = versions.iter().find(|v| v.version == to).cloned().ok_or_else(|| format!("version {to} isn't kept (the last {MAX_VERSIONS} are)"))?;
+        Ok((old, current))
     }
 
     /// `slug`'s secret `name`: its kept versions, newest first, and its last audit events.
@@ -1138,6 +1162,11 @@ mod tests {
         store.set("api", "k", "third-value", None).unwrap();
         assert!(store.rollback("api", "k", 3, None).unwrap_err().contains("already current"));
         assert!(store.rollback("api", "k", 9, None).unwrap_err().contains("isn't kept"));
+        // A dry run says what it would do, and does nothing.
+        assert!(store.rollback_preview("api", "k", 3).unwrap_err().contains("already current"));
+        let preview = store.rollback_preview("api", "k", 2).unwrap();
+        assert_eq!(preview, RollbackPreview { to: 2, current: 3, version: 4, source: "env:HOLON_SECRET_K".into() });
+        assert_eq!(store.list("api")[0].version, 3);
         assert_eq!(store.rollback("api", "k", 1, None).unwrap(), 4);
         assert_eq!(*store.vault("api").lock().unwrap().current["k"], "first-value", "re-sealed for its new version");
         assert_eq!(store.rollback("api", "k", 2, None).unwrap(), 5);

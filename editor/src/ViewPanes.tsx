@@ -750,6 +750,7 @@ function LogTab({
           </>
         )}
       </div>
+      {restorer.modal}
       {restorer.note && (
         <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad, padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
           {restorer.note.text}

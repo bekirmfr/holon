@@ -63,7 +63,7 @@ export const TOPICS: Topic[] = [
     title: "Runs, replay and view mode",
     paragraphs: [
       "Every run is logged with what it received, what it did outside (requests, writes) and what it answered. View mode replays a run on the version it ran on, shows each node's values, and steps through it; a failed run opens where it failed.",
-      "The history button, beside the runs' filter, shows every version deployed and what was done to it (grants, secrets, pauses), by whom. Pick any row there to see its details and restore its code, its state or both, or press ↺ on a row (there or in the run list) to go back to it: you see what it would change before it does.",
+      "The history button, beside the runs' filter, shows every version deployed and what was done to it (grants, secrets, pauses), by whom. Pick any row there to see its details and restore its code, its state or both, or press ↺ on a row (there or in the run list) to go back to it: a dry run shows what it would change, and nothing changes until you approve it.",
     ],
   },
   {
@@ -83,7 +83,7 @@ export const TOPICS: Topic[] = [
   {
     title: "Secrets",
     paragraphs: [
-      "A secret node reads a secret by name; set its value under ⚙ → secrets, per deployment. Values are sealed on the server, versioned, can be rolled back, and are never shown again or logged.",
+      "A secret node reads a secret by name; set its value under ⚙ → secrets, per deployment. Values are sealed on the server, versioned, can be rolled back (a dry run says what it would do first), and are never shown again or logged.",
     ],
   },
   {

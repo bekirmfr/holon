@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **What the history changes is a dry run first, its result shown before you approve it.** A
+  restore (code, state, both, ↺) shows its dry run in a window of its own, part by part: the code
+  deployed again and the permissions to approve, the keys the state changes and what the runs
+  since did outside; nothing changes until it is approved. A secret's **roll back** (⚙ → ▸) does
+  too: `POST …/secrets/<name>/rollback` takes `"dry_run": true` and says which version comes back,
+  as what, and the one kept, never a value. The **guarded-api** sample's e2e rolls its token back
+  through it.
+
 - **The editor shows a deployment's history, and restores from it.** View mode's **history** button,
   beside the runs' filter, shows what was done to it and its versions newest first, filtered by
   kind and by words (its runs too, when asked). Any row picked shows its details, and any row is

@@ -1262,6 +1262,8 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     assert_eq!(history("nope").status_code, 404);
     let rollback = |v: u32| route(&state, &req("POST", "/deployments/s/secrets/api_key/rollback", serde_json::to_vec(&serde_json::json!({ "version": v })).unwrap()));
     assert_eq!(rollback(2).status_code, 400, "already current");
+    let dry = route(&state, &req("POST", "/deployments/s/secrets/api_key/rollback", br#"{"version":1,"dry_run":true}"#.to_vec()));
+    assert_eq!(String::from_utf8(body_bytes(dry)).unwrap(), r#"{"to":1,"current":2,"version":3,"source":"local"}"#, "a dry run: what it would do, never a value");
     assert_eq!(String::from_utf8(body_bytes(rollback(1))).unwrap(), r#"{"version":3}"#);
     assert_eq!(*state.secrets.vault("s").lock().unwrap().current["api_key"], value);
 

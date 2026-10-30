@@ -3,9 +3,9 @@
 // and going back to any point in it (docs/L4s/history-L4.md §4). Each row is picked (its details
 // show beside it) and goes back: a run or a version to itself, anything else to how it was right
 // after. A row picked shows what can be restored to it: its code, its state, or both; ↺ on a row
-// restores what it can. Each restore is a dry run first, confirmed in a dialog that says what it
-// changes and asks to approve what the code needs that today's grant doesn't cover, as a deploy
-// does.
+// restores what it can. Each restore is a dry run first, its result shown in the dry-run window
+// (DryRun.tsx): what it changes, and what the code needs that today's grant doesn't cover, to
+// approve as a deploy's is; nothing changes until it is approved.
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { getEvents, getVersions, restoreDeployment, type DeploymentEvent, type RestoreDone, type RestorePoint, type RestorePreview, type VersionEntry } from "./server";
@@ -14,7 +14,7 @@ import {
   itemText,
   pointLabel,
   restoredLine,
-  restoreMessage,
+  restoreReport,
   restoreParts,
   TIMELINE_FILTERS,
   versionWhat,
@@ -23,7 +23,7 @@ import {
   type TimelineFilter,
   type TimelineItem,
 } from "./timeline";
-import { useDialog } from "./Dialog";
+import { useDryRun } from "./DryRun";
 
 const POLL_MS = 3000;
 const dim = "#7e8ea8";
@@ -71,9 +71,10 @@ export function useHistory(slug: string) {
   return { events, versions, error, refresh };
 }
 
-/** Going back to a target: each part's dry run, one dialog, then each part, the code first. */
+/** Going back to a target: each part's dry run, their report in the dry-run window, and once
+ *  approved each part, the code first. `modal` is the window, to be rendered. */
 export function useRestore(slug: string, onDone: () => void) {
-  const dialog = useDialog();
+  const dryRun = useDryRun();
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const restore = useCallback(
@@ -97,8 +98,7 @@ export function useRestore(slug: string, onDone: () => void) {
           }
           previewed.push({ ...part, preview });
         }
-        const { lines, action } = restoreMessage(slug, target, previewed);
-        if (!(await dialog.confirm(lines.join("\n"), action))) return;
+        if (!(await dryRun.ask(restoreReport(slug, target, previewed)))) return;
         for (const p of previewed) {
           done.push({ point: p.point, done: (await restoreDeployment(slug, p.point, p.what, { acknowledge: p.preview.needs_approval ?? [] })) as RestoreDone });
         }
@@ -111,9 +111,9 @@ export function useRestore(slug: string, onDone: () => void) {
         if (done.length > 0) onDone();
       }
     },
-    [slug, dialog, onDone],
+    [slug, dryRun.ask, onDone],
   );
-  return { restore, busy, note, setNote };
+  return { restore, busy, note, setNote, modal: dryRun.modal };
 }
 
 /** What ↺ restores of a target: whatever of its code and state it can. */

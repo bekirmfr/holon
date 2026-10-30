@@ -543,7 +543,7 @@ fn preview_value(
 /// `{"from": "vault:…"}` for one kept elsewhere: secret_sources.rs) sets one, as a new version;
 /// `DELETE` removes it, every version. `GET /deployments/<slug>/secrets/<name>` — its kept
 /// versions and audit events; `POST …/<name>/rollback` (`{"version": n}`) makes an older version
-/// current again, as a new one.
+/// current again, as a new one; with `"dry_run": true` it changes nothing and says what it would.
 /// A slug may have secrets before it is first deployed.
 /// `by`: who asked (access.rs), named in the audit.
 pub(crate) fn handle_secrets(
@@ -581,8 +581,14 @@ pub(crate) fn handle_secrets(
             #[derive(Deserialize)]
             struct Rollback {
                 version: u32,
+                #[serde(default)]
+                dry_run: bool,
             }
             match serde_json::from_slice::<Rollback>(&bytes) {
+                Ok(body) if body.dry_run => match secrets.rollback_preview(slug, name, body.version) {
+                    Ok(preview) => Response::json(&preview),
+                    Err(e) => err(400, e),
+                },
                 Ok(body) => match secrets.rollback(slug, name, body.version, by) {
                     Ok(version) => {
                         note(name, format!("rolled the secret {name} back to version {}, as version {version}", body.version));
