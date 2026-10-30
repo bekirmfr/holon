@@ -1213,11 +1213,11 @@ export function Inspector({
   }
   return (
     <div className="nodrag nowheel hl-inspector" style={paneStyle} role="complementary" aria-label="Inspector">
-      <Tabs tabs={tabs} tab={tab} onTab={setTab}>
-        <button className="hl-inspector__close" onClick={() => onOpen(false)} title="fold the Inspector away" aria-label="fold the Inspector">
-          ›
-        </button>
-      </Tabs>
+      <div className="hl-panel-header">
+        <span className="hl-panel-header__title">inspector</span>
+        <button className="hl-panel-header__btn" onClick={() => onOpen(false)} title="fold the Inspector away" aria-label="fold the Inspector">›</button>
+      </div>
+      <Tabs tabs={tabs} tab={tab} onTab={setTab} />
       <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
         {tab === "state" && run ? (
           <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} />

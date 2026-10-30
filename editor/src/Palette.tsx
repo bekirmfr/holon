@@ -214,6 +214,13 @@ export function Palette({
 
   return (
     <aside className="hl-palette">
+      <div className="hl-panel-header">
+        <span className="hl-panel-header__title">palette</span>
+        {onOpen && (
+          <button className="hl-panel-header__btn" onClick={() => onOpen(false)} title="hide palette" aria-label="hide palette">‹</button>
+        )}
+      </div>
+      <div style={{ flex: "1 1 0", overflowY: "auto" }}>
       {/* ── FLOWS ─────────────────────────────────────────────────────── */}
       <button
         style={headStyle}
@@ -313,19 +320,6 @@ export function Palette({
             {allPaletteOpen ? "−" : "+"}
           </button>
         )}
-        {onOpen && (
-          <button
-            onClick={() => onOpen(false)}
-            title="hide palette"
-            style={{
-              font: "inherit", background: "transparent", border: "none",
-              color: "var(--ink-dim)", cursor: "pointer", fontSize: 13,
-              padding: "0 10px 0 0", lineHeight: 1, flexShrink: 0,
-            }}
-          >
-            ‹
-          </button>
-        )}
       </div>
 
       {sections.has("palette") && (
@@ -378,6 +372,7 @@ export function Palette({
           })}
         </div>
       )}
+      </div>
     </aside>
   );
 }

@@ -65,7 +65,6 @@ body {
   border-right: 1px solid var(--line);
   background: var(--panel-2);
   min-height: 0;
-  overflow-y: auto;
 }
 .hl-palette--closed {
   flex: 0 0 28px;
@@ -141,14 +140,23 @@ body {
 .hl-canvas__flow { position: relative; min-width: 0; min-height: 0; }
 .hl-canvas--viewing { grid-template-rows: minmax(0, 1fr) var(--view-height, 34%); }
 .hl-inspector { grid-column: 2; grid-row: 1; border-left: 1px solid var(--line); }
-.hl-inspector__close, .hl-inspector__fold {
-  font: inherit; background: transparent; border: none; color: var(--ink-dim); cursor: pointer;
+.hl-panel-header {
+  display: flex; align-items: center; padding: 0 4px 0 14px;
+  height: 32px; flex-shrink: 0; border-bottom: 1px solid var(--line-soft);
 }
-.hl-inspector__close { font-size: 14px; padding: 2px 6px; }
-.hl-inspector__close:hover, .hl-inspector__fold:hover { color: var(--ink); }
+.hl-panel-header__title {
+  flex: 1; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-dim);
+}
+.hl-panel-header__btn {
+  font: inherit; font-size: 14px; background: transparent; border: none;
+  color: var(--ink-dim); cursor: pointer; padding: 2px 6px;
+}
+.hl-panel-header__btn:hover { color: var(--ink); }
 .hl-inspector__fold {
   writing-mode: vertical-rl; font-size: 11px; letter-spacing: 0.06em; padding: 10px 0; width: 100%;
+  font: inherit; background: transparent; border: none; color: var(--ink-dim); cursor: pointer;
 }
+.hl-inspector__fold:hover { color: var(--ink); }
 .hl-view__bottom { grid-column: 1 / -1; grid-row: 2; border-top: 1px solid var(--line); }
 .hl-view__edge { position: absolute; top: -3px; left: 0; right: 0; height: 6px; cursor: row-resize; z-index: 2; }
 .hl-view__edge:hover { background: #6fd3e033; }
