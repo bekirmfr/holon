@@ -1053,12 +1053,11 @@ test("balance-trail: a cell's history lists the runs that changed it and the res
 
 test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, while its state counts every beat", async ({ page, request, adminToken }) => {
   await openSample(page, "Rolling log (retention)");
-  // Its retention opens with it, under ⚙: fewer runs than the host's default, which asks nobody.
-  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
-  const settings = page.getByRole("dialog", { name: "deploy settings" });
+  // Its retention opens with it, in the deployment settings: fewer runs than the host's default,
+  // which asks nobody.
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await expect(settings.getByLabel("runs the log keeps")).toHaveValue("5");
   await expect(settings.getByLabel("days the log keeps runs")).toHaveValue("1");
-  await settings.getByRole("button", { name: "done" }).click();
   await deploy(page);
   const auth = { Authorization: `Bearer ${adminToken}` };
   const seqs = async () =>
