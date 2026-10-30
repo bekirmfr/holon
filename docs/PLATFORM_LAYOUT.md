@@ -719,8 +719,8 @@ passed. The flow log now keeps each node's outputs (redacted), and replay shows 
 node. Left for M3: a run against Stripe and Slack themselves (`stripe listen`, a real incoming
 webhook).
 
-**Status (2026-10-25).** M0 to M2 are met, and the product around them has grown since (releases
-0.1.0-rc.1 to rc.21, each in `CHANGELOG.md`):
+**Status (2026-10-30).** M0 to M2 are met, and the product around them has grown since (releases
+0.1.0-rc.1 to rc.29, each in `CHANGELOG.md`):
 
 - **One command**, `holon`, installed and updated from a release, its state in `~/.holon`
   (`holon migrate` moves an older layout), the editor embedded in it.
@@ -731,10 +731,18 @@ webhook).
   `holon mcp setup` for every major agent host; `holon lsp` and a VS Code extension for people.
 - **What flows can do**, each grown from friction agents met writing flows: collections, `match`,
   lazy choices, holons, key claims (one outbound call per key), `respond` with headers, WebAssembly
-  modules and JavaScript as one node, named folders on the host, runs on files new, changed or removed; 28 samples, each deployed by the
-  end-to-end tests.
+  modules and JavaScript as one node, named folders on the host, runs on files new, changed or removed,
+  databases, channels, flows calling flows' actions; 46 samples, each deployed by the end-to-end
+  tests.
 - **What a run leaves**: a hash-chained record per deployment, `holon export` and `holon verify`
   to check it offline, `explain`, and replay in the editor.
+- **History, and going back** (`docs/L4s/history-L4.md`): every deploy a numbered version, kept
+  for good; what was done to a deployment (deploys, restores, grant changes, secrets, bindings,
+  pausing and running) a chain of events of its own; one timeline of both (`holon history`, view
+  mode's ⧗); a version's code or a run's state restored, a dry run first that says what it changes
+  (the code's diff, the state now and then, the files the runs since wrote); a cell's history, the
+  runs that changed a value; how long the log keeps runs, a deploy setting. An agent reads all of
+  it through `holon mcp` and may only dry-run a restore.
 
 What hasn't happened: nobody but the author has used it, and no flow has run against real Stripe
 or Slack.
