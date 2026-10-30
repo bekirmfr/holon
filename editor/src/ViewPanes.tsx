@@ -869,6 +869,7 @@ function LogTab({
         </div>
         {/* Draggable divider */}
         <div
+          className="hl-divider"
           style={{ width: 5, cursor: "col-resize", background: "transparent", flexShrink: 0 }}
           onPointerDown={onDivider}
           title="drag to resize"
@@ -1296,7 +1297,7 @@ export type InspectorRun = {
   openRun?: (seq: number) => void;
 };
 
-type InspectorTab = "node" | "unit" | "state";
+type InspectorTab = "node" | "state";
 
 /**
  * The Inspector, on the canvas's right in both modes: the selected node (its docs, params and
@@ -1322,7 +1323,7 @@ export function Inspector({
 }) {
   const [picked, setTab] = useState<InspectorTab>("node");
   const tab = picked === "state" && !run ? "node" : picked;
-  const tabs: [InspectorTab, string][] = [["node", "Node"], ["unit", "Unit"], ...(run ? [["state", "Flow state"] as [InspectorTab, string]] : [])];
+  const tabs: [InspectorTab, string][] = [["node", "Node"], ...(run ? [["state", "Flow state"] as [InspectorTab, string]] : [])];
   if (!open) {
     return (
       <div className="nodrag nowheel hl-inspector hl-inspector--closed" style={paneStyle}>
@@ -1334,18 +1335,19 @@ export function Inspector({
   }
   return (
     <div className="nodrag nowheel hl-inspector" style={paneStyle} role="complementary" aria-label="Inspector">
-      <Tabs tabs={tabs} tab={tab} onTab={setTab}>
-        <button className="hl-inspector__close" onClick={() => onOpen(false)} title="fold the Inspector away" aria-label="fold the Inspector">
-          ›
-        </button>
-      </Tabs>
+      <div className="hl-panel-header">
+        <span className="hl-panel-header__title">inspector</span>
+        <button className="hl-panel-header__btn" onClick={() => onOpen(false)} title="fold the Inspector away" aria-label="fold the Inspector">›</button>
+      </div>
+      <Tabs tabs={tabs} tab={tab} onTab={setTab} />
       <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
         {tab === "state" && run ? (
           <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} onOpenRun={run.openRun} />
-        ) : tab === "unit" ? (
-          node ? unit : <div>select a node to see what its unit is made of</div>
         ) : (
-          <ComponentTab node={node} run={run} source={source ?? null} />
+          <>
+            <ComponentTab node={node} run={run} source={source ?? null} />
+            {node && unit && <Section title="unit">{unit}</Section>}
+          </>
         )}
       </div>
     </div>

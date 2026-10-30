@@ -6,7 +6,7 @@
 import { useCallback, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
 import { restoreDocument } from "./docUnits";
-import { blankTab, type FlowMeta, type Mode, type TabState } from "./tabs";
+import { blankTab, settingsOf, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { getDeployedDocument, getFlow, getLog, type DeploymentEntry, type FlowDocument } from "./server";
 import { newHistory, snapshotOf, type Snapshot } from "./useCanvasHistory";
 import type { History } from "./history";
@@ -92,6 +92,7 @@ export function useModeSwitch({
         viewDoc: doc,
         meta: {
           ...base.meta,
+          settings: settingsOf(doc.server),
           viewing: slug,
           viewUnit: deployments.find((d) => d.slug === slug)?.unit ?? null,
           viewTrace: doc.trace,
