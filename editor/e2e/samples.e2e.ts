@@ -1,7 +1,7 @@
 // Every sample, through the real editor and a real server (playwright.config.ts): opened from the
 // flows page, deployed through the consent screen, and, for the ones that answer requests here,
 // sent one and replayed exactly in view mode. What CLAUDE.md asks of a sample by hand ("run live
-// once"), kept from rotting by CI. A sample deploys on its own port plus 1000 (set under ⚙), so a
+// once"), kept from rotting by CI. A sample deploys on its own port plus 1000 (set in the deployment settings panel), so a
 // developer's deployments on the samples' ports are left alone, plus 100 for each slot past the
 // first (ports.mjs), so runs side by side don't meet.
 
@@ -22,18 +22,16 @@ async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
-/** Deploy the open flow through ⚙ and the consent screen; its port moved up by `by` (the slot's
- *  SAMPLE_SHIFT, ports.mjs), and
- *  whatever else `set` sets under ⚙. Answers the port it serves on (null for a flow without routes). */
+/** Deploy the open flow through the deployment settings panel and the consent screen; its port
+ *  moved up by `by` (the slot's SAMPLE_SHIFT, ports.mjs), and whatever else `set` sets in the
+ *  panel. Answers the port it serves on (null for a flow without routes). */
 async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
-  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
-  const settings = page.getByRole("dialog", { name: "deploy settings" });
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
   const portField = settings.locator("input").first();
   const given = Number(await portField.inputValue());
   const port = Number.isInteger(given) && given > 0 ? given + by : null;
   if (port) await portField.fill(String(port));
   if (set) await set(settings);
-  await settings.getByRole("button", { name: "done" }).click();
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).click();
   // Wait for the server's answer to the deploy, which comes once the flow listens on its port
   // (http.rs syncs the listeners first). The tab's "deployed" can't say so: it shows as soon as a
@@ -45,15 +43,11 @@ async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) =
   return port;
 }
 
-/** Wait until text typed into the Text pane has compiled: ⚙ then says its port. Opened again if a
- *  compile that lands after the click rebuilds the canvas and closes it. */
+/** Wait until text typed into the Text pane has compiled: the deployment settings panel then says
+ *  its port. */
 async function settingsSayPort(page: Page, port: string) {
-  const settings = page.getByRole("dialog", { name: "deploy settings" });
-  await expect(async () => {
-    if (!(await settings.isVisible())) await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
-    await expect(settings.locator("input").first()).toHaveValue(port, { timeout: 1_000 });
-  }).toPass({ timeout: 15_000 });
-  await settings.getByRole("button", { name: "done" }).click();
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  await expect(settings.locator("input").first()).toHaveValue(port, { timeout: 15_000 });
 }
 
 /** Drop the palette entry `entry` (a primitive's name, or `flow:<name>` for a saved flow) on the
@@ -530,8 +524,6 @@ test("shop runs billing's actions: an order calls billing and stores what it ans
   const billing = await deploy(page);
   await openSample(page, "Shop (a flow calling another's actions)", false);
   // The shop asks to run billing's actions, which its approval says in words.
-  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
-  await page.getByRole("dialog", { name: "deploy settings" }).getByRole("button", { name: "done" }).click();
   const shop = await deploy(page);
   const at = (port: number | null, path: string) => `http://127.0.0.1:${port}${path}`;
   const id = `o-${Date.now()}`;
@@ -960,8 +952,7 @@ test("an env secret is picked from the server's HOLON_SECRET_… names, its dote
   await page.route(`${SERVER}/deployments/gemini-chat/secrets/gemini_api_key`, (route) =>
     route.request().method() === "POST" ? ((posted = route.request().postDataJSON()), route.fulfill({ json: { version: 1 } })) : route.continue(),
   );
-  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
-  const settings = page.getByRole("dialog", { name: "deploy settings" });
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await settings.locator("select", { has: page.locator('option[value="vault"]') }).selectOption("env");
   // The variable the secret's name suggests is chosen; the one just added is there too.
   const names = settings.locator("select", { has: page.locator("option", { hasText: "another name…" }) });
@@ -1061,8 +1052,7 @@ test("guarded-api's token rolls back under ⚙ once a dry run has said what it w
   const [now, before] = (await versions()).map((v) => v.version);
 
   await openSample(page, "Token-guarded API");
-  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
-  const settings = page.getByRole("dialog", { name: "deploy settings" });
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await settings.getByTitle("versions and changes; roll back to an older version").first().click();
   const rollBack = settings.getByTitle(`make version ${before} current again`);
   // The dry run: what it would do, never the value; cancelled, nothing changed.
