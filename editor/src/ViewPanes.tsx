@@ -346,6 +346,18 @@ export function BottomPane({
     onSelect(null);
   };
 
+  const [chainNote, setChainNote] = useState("");
+  const copyHead = () =>
+    navigator.clipboard.writeText(chain.head).then(
+      () => setChainNote("head copied"),
+      () => setChainNote(chain.head),
+    );
+  const exportChainRuns = () =>
+    downloadRuns(slug).then(
+      () => setChainNote(`saved ${slug}-runs.json · check it anywhere: holon verify ${slug}-runs.json`),
+      (e: unknown) => setChainNote(e instanceof Error ? e.message : String(e)),
+    );
+
   return (
     <div ref={pane} className="nodrag nowheel hl-view__bottom" style={paneStyle} role="region" aria-label="run">
       <div className="hl-view__edge" onPointerDown={onEdge} title="drag to resize" />
@@ -361,6 +373,21 @@ export function BottomPane({
           </span>
         )}
         {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
+        {chain.head && (
+          <>
+            {chain.breaks.length > 0 ? (
+              <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
+                ✗ chain breaks at run {chain.breaks.join(", ")}: changed outside holon
+              </span>
+            ) : (
+              <span style={{ color: dim }} title="each run names the hash of the one before it">chain unbroken</span>
+            )}
+            <span style={{ color: dim }}>head <span style={{ color: ink }} title={chain.head}>{chain.head.slice(0, 12)}</span></span>
+            <button style={small} onClick={copyHead} title="copy the head: what a witness holds, and what holon verify --head checks">copy</button>
+            <button style={small} onClick={exportChainRuns} title="save the runs and the units they ran, for holon verify">export runs</button>
+            {chainNote && <span style={{ color: dim }}>{chainNote}</span>}
+          </>
+        )}
         <div style={{ flex: 1 }} />
         <button
           style={{ ...small, color: live ? "#0e1a2f" : "#9fb4d4", background: live ? good : "transparent" }}
@@ -383,8 +410,6 @@ export function BottomPane({
         pick={pick}
         unpick={unpick}
         slug={slug}
-        head={chain.head}
-        breaks={chain.breaks}
         order={order}
         nodes={nodes}
         timings={timings}
@@ -410,46 +435,6 @@ export function BottomPane({
   );
 }
 
-/** The run log as a record: the head it chains up to (what a witness holds), any run changed
- *  outside holon, and its runs exported for `holon verify`, which runs each again, offline. */
-function ChainBar({ slug, head, breaks }: { slug: string; head: string; breaks: number[] }) {
-  const [note, setNote] = useState("");
-  const exportRuns = () =>
-    downloadRuns(slug).then(
-      () => setNote(`saved ${slug}-runs.json · check it anywhere: holon verify ${slug}-runs.json`),
-      (e: unknown) => setNote(e instanceof Error ? e.message : String(e)),
-    );
-  const copy = () =>
-    navigator.clipboard.writeText(head).then(
-      () => setNote("head copied"),
-      () => setNote(head),
-    );
-  if (!head) return null;
-  return (
-    <div className="hl-view__chain" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "4px 8px", borderBottom: "1px solid #1b2a45" }}>
-      {breaks.length > 0 ? (
-        <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
-          ✗ chain breaks at run {breaks.join(", ")}: changed outside holon
-        </span>
-      ) : (
-        <span style={{ color: dim }} title="each run names the hash of the one before it">
-          chain unbroken
-        </span>
-      )}
-      <span style={{ color: dim }}>
-        head <span style={{ color: ink }} title={head}>{head.slice(0, 12)}</span>
-      </span>
-      <button style={small} onClick={copy} title="copy the head: what a witness holds, and what holon verify --head checks">
-        copy
-      </button>
-      <button style={small} onClick={exportRuns} title="save the runs and the units they ran, for holon verify">
-        export runs
-      </button>
-      {note && <span style={{ color: dim }}>{note}</span>}
-    </div>
-  );
-}
-
 type SortKey = "seq" | "time" | "session" | "label" | "status" | "duration";
 type FilterableCol = "session" | "label" | "actions" | "status";
 
@@ -459,8 +444,6 @@ function LogTab({
   pick,
   unpick,
   slug,
-  head,
-  breaks,
   order,
   nodes,
   timings,
@@ -485,8 +468,6 @@ function LogTab({
   /** Show no run: a history row that isn't one is picked. */
   unpick: () => void;
   slug: string;
-  head: string;
-  breaks: number[];
   order: string[];
   nodes: ViewNode[];
   timings: Map<string, { start_us: number; end_us: number }>;
@@ -734,7 +715,6 @@ function LogTab({
   return (
     <>
     <div style={{ display: "flex", flex: 1, minHeight: 0, flexDirection: "column" }}>
-      <ChainBar slug={slug} head={head} breaks={breaks} />
       <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
         <input
           placeholder={leftView === "runs" ? "filter runs…" : "filter history…"}
