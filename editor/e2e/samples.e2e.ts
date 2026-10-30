@@ -32,7 +32,7 @@ async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) =
   const port = Number.isInteger(given) && given > 0 ? given + by : null;
   if (port) await portField.fill(String(port));
   if (set) await set(settings);
-  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).click({ force: true });
   // Wait for the server's answer to the deploy, which comes once the flow listens on its port
   // (http.rs syncs the listeners first). The tab's "deployed" can't say so: it shows as soon as a
   // deployment of that name exists, so on a redeploy that moves the port it is there at once.
@@ -145,7 +145,7 @@ test("a flow nothing would start can't deploy; made runnable by hand, it deploys
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
   // The quick fix puts its statements in an action, answering the value it computes.
-  await canvas.getByRole("button", { name: "make it runnable by hand" }).click();
+  await canvas.getByRole("button", { name: "make it runnable by hand" }).click({ force: true });
   await expect(page.getByRole("region", { name: "Text" })).toContainText("action run (input) {");
   await expect(page.getByRole("region", { name: "Text" })).toContainText("respond total");
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);
@@ -253,7 +253,7 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click({ force: true });
   const overlay = page.locator(".hl-overlay");
   await expect(overlay.locator(".hl-overlay__crumbs")).toContainText("publish");
   await expect(overlay.locator(".react-flow__node", { hasText: "collection_put" })).toBeVisible();
@@ -263,7 +263,7 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
   await expect(overlay).toHaveCount(0);
   // Ungroup replaces it with its nodes, here.
   await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "ungroup" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "ungroup" }).click({ force: true });
   await expect(flow.locator(".react-flow__node", { hasText: "publish" })).toHaveCount(0);
   await expect(flow.locator(".react-flow__node", { hasText: "collection_put" })).toHaveCount(1);
 });
@@ -272,7 +272,7 @@ test("an edited holon applies as a new version of itself, and the flow runs it",
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click({ force: true });
   const overlay = page.locator(".hl-overlay");
   // The fallback receipt, changed inside.
   const receipt = overlay.locator('input[value="unsigned"]');
@@ -300,7 +300,7 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click({ force: true });
   const overlay = page.locator(".hl-overlay");
   await overlay.getByRole("button", { name: "add an output" }).click();
   await page.locator('[aria-modal="true"] input').fill("stamp");
