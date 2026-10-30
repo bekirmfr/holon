@@ -81,7 +81,8 @@ Env and vault secrets are read again every minute. A value must be at least six 
 Each change makes a new version; **▸** shows the last five, and **roll back** makes an old one
 current again (as a new version), once a dry run has said which version comes back, as what, and
 that the current one is kept (`POST …/secrets/<name>/rollback` with `"dry_run": true` says it and
-changes nothing). The history says who changed what, never the values.
+changes nothing). Its **diff** tells the two values apart by their fingerprints, as the log marks
+them (`v2 #a1b2c3d4 → v4 #e5f6a7b8`). The history says who changed what, never the values.
 
 A secret's value never appears in the run log, the editor, an export or a replay: wherever it
 would, it shows as `‹secret:name v3 #a1b2c3d4›`: the name, the version the value is of, and a
@@ -223,6 +224,13 @@ Nothing is rewritten: what a restore replaces stays restorable in turn.
 - **`--dry-run`** says what it would do: what the code would ask, which keys the state would change,
   and how many runs were logged since that point and what they did outside the state: calls out,
   file and database writes, messages. A restore doesn't undo those: a refund sent stays sent.
+- **Files** in a bound folder are never put back, but a state restore's dry run names each one the
+  runs since wrote, once however many times: how many writes, by which runs, and whether it is on
+  disk as the last one left it. One changed by anything but a run (an edit by hand, another
+  program) says `changed outside a run since run 48`; one removed, `gone from disk`. The log keeps
+  a write by its hash, never its text, so the editor's diff shows a file's text then beside now
+  only when a run read that content (the log keeps reads as the folder says) and it is small;
+  otherwise it says the two hashes.
 - **Before rc.30**, versions open on their canvas but don't restore their code (what their deploys
   asked wasn't kept), and neither versions nor runs kept the state they left. Open or import one and
   update again.
@@ -230,7 +238,8 @@ Nothing is rewritten: what a restore replaces stays restorable in turn.
   `{"version": N}` or `{"run": SEQ}`, with `"code": true`, `"state": true` or both, and
   `"dry_run": true` or `"acknowledge": […]`).
 
-The sample **price-rollback** walks through it.
+The sample **price-rollback** walks through it; **stock-sheet** restores a state whose runs also
+wrote a file.
 
 ## Running, pausing, stopping
 
@@ -298,8 +307,13 @@ its event). Picked:
 - **code**, **state** or **both** restore it, as `holon restore` does: a dry run first, its
   result in a dry-run window (nothing has changed yet) that says what it would change, part by
   part (the code; the keys, and what the runs since did outside, which a restore doesn't undo),
-  and asks to approve what the code needs that today's grant doesn't cover. A button that can't
-  apply is off, and says why: the version deployed now, a state not kept.
+  and asks to approve what the code needs that today's grant doesn't cover. It opens with what
+  it changes, a line each (`code: version 5's is deployed again, as version 12, in place of
+  version 11`, the permissions added and dropped, the keys and items of the state). Its **diff**
+  button compares each part with what is there now: the flow's text, line by line, deployed now
+  beside the restored version's; the grant, item by item; and each state key, a collection's
+  items by key as the flow reads them (`prices["tea"]: 40` → `4`). A button that can't apply is
+  off, and says why: the version deployed now, a state not kept.
 
 **↺** on a row, in the history or the run list, restores whatever of it can be, through the same
 dry run and window.

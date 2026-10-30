@@ -1680,6 +1680,127 @@ pub(crate) fn sweep(folders: &Folders, deployments: &Mutex<BTreeMap<String, Depl
     folders.blobs.sweep(&live, now_ms.saturating_sub(spare_ms))
 }
 
+/// How many files a restore's dry run names, and the most of a file's text it shows.
+const FILES_SINCE: usize = 50;
+const FILE_DIFF_TEXT: u64 = 64 * 1024;
+
+/// One file write, copy or delete a run performed, as the log keeps it: what it left (its hash,
+/// none for a delete) and its size.
+struct Written {
+    kind: &'static str,
+    hash: Option<String>,
+    size: Option<u64>,
+}
+
+/// The folder and file a logged `FileWrite(folder)` names, and what it left.
+fn written(p: &PerformedEntry) -> Option<(String, String, Written)> {
+    let folder = p.capability.strip_prefix("FileWrite(\"")?.strip_suffix("\")")?.to_string();
+    let field = |r: &BTreeMap<String, Value>, k: &str| match r.get(k) {
+        Some(Value::Text(t)) => Some(t.clone()),
+        _ => None,
+    };
+    match p.payload.clone().into_core() {
+        Value::Text(file) => Some((folder, file, Written { kind: "delete", hash: None, size: None })),
+        Value::Record(r) => {
+            let file = field(&r, "name")?;
+            if let Some(Value::Record(from)) = r.get("from") {
+                return Some((folder, file, Written { kind: "copy", hash: field(from, "hash"), size: None }));
+            }
+            let size = match r.get("size") {
+                Some(Value::Number(n)) => Some(*n as u64),
+                _ => None,
+            };
+            Some((folder, file, Written { kind: "write", hash: field(&r, "hash"), size }))
+        }
+        _ => None,
+    }
+}
+
+/// The files the runs `since` a point wrote, copied over or deleted, for a restore's dry run: a
+/// restore never puts them back. Each once, however many times: how many, by which runs, what the
+/// last left; how it was at the point (what the last write before it, in `before`, left); and how
+/// it is on disk now, `outside` when that isn't what the last write left (an edit no run made,
+/// or a file a run's write never reached). Their text, when it can be had and is small: the
+/// disk's, or a kept read of the same content (by its hash: the entry's text, or the blob store's).
+pub(crate) fn files_since(folders: &Scoped, before: &[LogEntry], since: &[LogEntry]) -> serde_json::Value {
+    let landed = |entries: &[LogEntry]| -> Vec<(u64, String, String, Written)> {
+        entries
+            .iter()
+            .filter(|e| e.error.is_none())
+            .flat_map(|e| e.performed.iter().filter_map(|p| written(p).map(|(folder, file, w)| (e.seq, folder, file, w))))
+            .collect()
+    };
+    let mut files: BTreeMap<(String, String), (Vec<u64>, Written)> = BTreeMap::new();
+    for (seq, folder, file, w) in landed(since) {
+        let entry = files.entry((folder, file)).or_insert_with(|| (Vec::new(), Written { kind: "", hash: None, size: None }));
+        entry.0.push(seq);
+        entry.1 = w;
+    }
+    let mut at_point: BTreeMap<(String, String), (u64, Written)> = BTreeMap::new();
+    for (seq, folder, file, w) in landed(before) {
+        if files.contains_key(&(folder.clone(), file.clone())) {
+            at_point.insert((folder, file), (seq, w));
+        }
+    }
+    // A kept read's text, by the hash of its content: any run's, whole files only.
+    let read_text = |hash: &str| -> Option<String> {
+        before.iter().chain(since).flat_map(|e| &e.reads).find_map(|r| {
+            let f = r.file.as_ref().filter(|f| f.hash == hash && f.range.is_none() && f.size <= FILE_DIFF_TEXT)?;
+            match &r.answer {
+                Some(SValue::Text(t)) => Some(t.clone()),
+                _ => f.blob.as_ref().and_then(|b| folders.all.blobs.get(b).ok().flatten()).and_then(|bytes| String::from_utf8(bytes).ok()),
+            }
+        })
+    };
+    let more = files.len() > FILES_SINCE;
+    let listed: Vec<serde_json::Value> = files
+        .into_iter()
+        .take(FILES_SINCE)
+        .map(|((folder, file), (runs, last))| {
+            let disk = folders.handle(&folder, &file);
+            let (disk_hash, disk_size) = match &disk {
+                Ok(Some(Value::Record(h))) => (
+                    match h.get("hash") {
+                        Some(Value::Text(t)) => Some(t.clone()),
+                        _ => None,
+                    },
+                    match h.get("size") {
+                        Some(Value::Number(n)) => Some(*n as u64),
+                        _ => None,
+                    },
+                ),
+                _ => (None, None),
+            };
+            let unreadable = disk.as_ref().err().cloned();
+            let outside = unreadable.is_none() && disk_hash != last.hash;
+            let then = at_point.get(&(folder.clone(), file.clone()));
+            let text = |hash: &Option<String>| -> Option<String> {
+                let hash = hash.as_deref()?;
+                if disk_hash.as_deref() == Some(hash) && disk_size.is_some_and(|s| s <= FILE_DIFF_TEXT) {
+                    if let Ok(Some(bytes)) = folders.read(&folder, &file, FILE_DIFF_TEXT) {
+                        return String::from_utf8(bytes).ok();
+                    }
+                }
+                read_text(hash)
+            };
+            serde_json::json!({
+                "folder": folder,
+                "name": file,
+                "writes": runs.len(),
+                "runs": runs.iter().rev().take(10).rev().collect::<Vec<_>>(),
+                "last": { "kind": last.kind, "hash": last.hash, "size": last.size, "run": runs.last() },
+                "at_point": then.map(|(seq, w)| serde_json::json!({ "kind": w.kind, "hash": w.hash, "size": w.size, "run": seq })),
+                "disk": unreadable.is_none().then(|| disk_hash.as_ref().map(|h| serde_json::json!({ "hash": h, "size": disk_size }))).flatten(),
+                "unreadable": unreadable,
+                "outside": outside,
+                "then_text": then.and_then(|(_, w)| text(&w.hash)),
+                "now_text": text(&disk_hash),
+            })
+        })
+        .collect();
+    serde_json::json!({ "files": listed, "more": more })
+}
+
 /// The folder a copy's handle names, for a performed `FileWrite` that is a copy (`{name, from}`):
 /// a folder the deployment must be granted to read.
 pub(crate) fn copied_from(payload: &Value) -> Option<&str> {

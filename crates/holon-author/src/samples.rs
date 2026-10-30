@@ -127,7 +127,7 @@ static SAMPLES: &[Sample] = &[
         port: Some("8109"),
         interval: None,
         secrets: &[
-            SampleSecret { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back under ⚙ → ▸ (a dry run says what it would do first)", from: None },
+            SampleSecret { name: "api_token", what: "the bearer token callers send; set a new one to rotate it, roll back under ⚙ → ▸ (a dry run says what it would do first, its diff each version's fingerprint)", from: None },
             SampleSecret { name: "receipt_key", what: "the key receipts are signed with", from: Some("env:HOLON_SECRET_RECEIPT_KEY") },
         ],
         // Without the receipt key it still answers, the receipt "unsigned": revoking it doesn't pause it.
@@ -633,7 +633,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "price-rollback",
         title: "Price rollback (an earlier version's code, or its prices, back)",
-        description: "Every deploy is a version, kept for good, and every run keeps the state it left. Deploy this, set a price, then deploy a version with another fee: holon restore price-rollback --to N --code deploys an earlier one's code again, as a new version that names it, its prices as they are. Set a wrong price, and --to N --state puts back the prices version N left, in a new session, the wrong ones kept as the last session's; --to-run SEQ does the same for a run. Restored code is checked against today's grant, not the one it had. holon history shows it all among the runs: each deploy and restore, by whom. In the editor, view mode's history is the same timeline: pick any row in it, and restore its code, its state or both (a restore's row goes back to what it put back), or press ↺ on a row, each a dry run first, confirmed in a dialog that says what it changes.",
+        description: "Every deploy is a version, kept for good, and every run keeps the state it left. Deploy this, set a price, then deploy a version with another fee: holon restore price-rollback --to N --code deploys an earlier one's code again, as a new version that names it, its prices as they are. Set a wrong price, and --to N --state puts back the prices version N left, in a new session, the wrong ones kept as the last session's; --to-run SEQ does the same for a run. Restored code is checked against today's grant, not the one it had. holon history shows it all among the runs: each deploy and restore, by whom. In the editor, view mode's history is the same timeline: pick any row in it, and restore its code, its state or both (a restore's row goes back to what it put back), or press ↺ on a row, each a dry run first, confirmed in a window that says what it changes, its diff showing the text, the grant and the prices beside what is there now.",
         shows: &["versions", "holon restore", "state restore", "holon history", "the editor's history", "collections"],
         port: Some("8160"),
         interval: None,
@@ -642,6 +642,19 @@ static SAMPLES: &[Sample] = &[
         browsers: None,
         try_it: r#"curl -X PUT -d '{"price":4}' http://127.0.0.1:8160/prices/tea, then curl http://127.0.0.1:8160/quote/tea answers a total of 4.5; change fee = 0.5 to fee = 5 and deploy again (a total of 9); holon restore price-rollback lists the versions, and holon restore price-rollback --to N --code (N: the one before) answers 4.5 again, tea still priced 4. Then curl -X PUT -d '{"price":40}' http://127.0.0.1:8160/prices/tea (a total of 40.5): holon restore price-rollback --to N --state --dry-run says what would change, and without --dry-run tea is 4 again; holon history price-rollback shows the runs, deploys and restores. Or in the editor: view, then history, pick the version before, and press code (then, after the wrong price, state; after another, ↺ on that restore's row puts its prices back)"#,
         text: include_str!("../samples/price-rollback.holon"),
+    },
+    Sample {
+        name: "stock-sheet",
+        title: "Stock sheet (its state restored, its files not)",
+        description: "Keeps stock counts in a collection and adds each change as a line to a file in a bound folder. Restoring its state puts the counts back, never the file: a file is an outside effect, as a call is. The restore's dry run names each file the runs since wrote, how many times and by which runs, and checks it on disk: one changed by anything but a run (an edit by hand) says so. Its diff shows the file's text then beside now, when the log has it (a run read it) and the file is small.",
+        shows: &["restore", "dry run", "named folders", "file writes", "edits outside a run"],
+        port: Some("8161"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"first bind the folder (an admin): holon folder add sheets ~/holon-sheets; then curl -X PUT -d '{"count":4}' http://127.0.0.1:8161/stock/tea and curl -X PUT -d '{"count":40}' http://127.0.0.1:8161/stock/tea; curl http://127.0.0.1:8161/sheet shows both lines. holon restore stock-sheet --to-run SEQ --state --dry-run (SEQ: the first PUT's run) puts tea back to 4 and names sheets/changes.txt, written once since, not put back; add a line to ~/holon-sheets/changes.txt by hand and the dry run says it was changed outside a run. In the editor: view, history, ↺ on the first PUT, then diff"#,
+        text: include_str!("../samples/stock-sheet.holon"),
     },
 ];
 

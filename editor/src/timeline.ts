@@ -2,9 +2,10 @@
 // with, and what was done to it (events.rs), merged as `holon history` merges them; the points it
 // can go back to, and what a restore's dry run says, worded as `holon restore` words it.
 
-import { describeItem } from "./holon";
-import type { DryRunReport } from "./DryRun";
-import type { DeploymentEvent, LogEntry, RestoreDone, RestorePoint, RestorePreview, StateChange, VersionEntry } from "./server";
+import { describeItem, type WValue } from "./holon";
+import type { Diff, DryRunReport } from "./DryRun";
+import { diffCounts, keyLines, lineDiff, setDiff } from "./diff";
+import type { DeploymentEvent, FileSince, LogEntry, RestoreDone, RestorePoint, RestorePreview, StateChange, VersionEntry } from "./server";
 
 export type TimelineItem =
   | { kind: "run"; key: string; at_ms: number; run: LogEntry }
@@ -108,6 +109,20 @@ function effectWord(name: string): string {
     { HttpRequest: "call(s) out", FileWrite: "file write(s)", DbWrite: "database write(s)", ChannelSend: "message(s) sent", RunsAction: "action(s) run", Spawn: "run(s) started" }[name] ??
     name
   );
+}
+
+/** A file the runs since a point wrote, as a dry run says it (as `holon restore --dry-run` does):
+ *  how many writes, by which runs, and whether it is on disk as the last one left it. */
+export function fileLine(f: FileSince): string {
+  const n = f.writes;
+  const more = f.runs.length < n ? "…, " : "";
+  const how = { write: "written", copy: "copied over", delete: "deleted" }[f.last.kind] ?? "written";
+  let line = `${f.folder}/${f.name}: ${n} write${n === 1 ? "" : "s"} since, by run${n === 1 ? "" : "s"} ${more}${f.runs.join(", ")} (the last ${how})`;
+  const last = f.last.run;
+  if (f.unreadable) line += `; can't be checked on disk now: ${f.unreadable}`;
+  else if (f.outside)
+    line += f.disk ? `; changed outside a run since run ${last}: on disk now #${f.disk.hash.slice(0, 8)}, not what run ${last} left` : `; gone from disk since run ${last}, which left it`;
+  return line;
 }
 
 /** What putting a state back would change: the keys, and the runs since with what they did outside. */
@@ -215,13 +230,15 @@ export function restoreParts(target: Target, what: { code: boolean; state: boole
 }
 
 /** A restore's dry run, as the dry-run window shows it (DryRun.tsx), from the dry run of each of
- *  its parts: what it goes back to, what its code and its state would do, and what it asks to
- *  approve. `describe` says a permission (core's words, through wasm). */
+ *  its parts: what it changes, a line each, what it goes back to, what its code and its state
+ *  would do, and what it asks to approve. `versions` are the deployment's (the one deployed now,
+ *  the number the restored code gets); `describe` says a permission (core's words, through wasm). */
 export function restoreReport(
   slug: string,
   target: Pick<Target, "label" | "event">,
   parts: (RestorePart & { preview: RestorePreview })[],
   describe: (item: string) => string = describeItem,
+  versions: VersionEntry[] = [],
 ): DryRunReport {
   const code = parts.some((p) => p.what.code);
   const state = parts.some((p) => p.what.state);
@@ -246,8 +263,152 @@ export function restoreReport(
       }
     }
     if (preview.state) sections.push({ heading: "state", lines: stateLines(preview.state) });
+    const files = preview.state?.files ?? [];
+    if (files.length > 0)
+      sections.push({
+        heading: "files, not put back",
+        lines: [...files.map(fileLine), ...(preview.state?.files_more ? ["and more"] : []), "A restore never changes a folder's files: these stay as they are now."],
+      });
   }
-  return { title: `Restore "${slug}" to ${target.label}: its ${which}?`, sections, approvals, action: approvals.length > 0 ? "Approve and restore" : "Restore" };
+  return {
+    title: `Restore "${slug}" to ${target.label}: its ${which}?`,
+    changes: restoreChanges(parts, versions),
+    sections,
+    approvals,
+    action: approvals.length > 0 ? "Approve and restore" : "Restore",
+  };
+}
+
+/** What a restore changes, a line each: the code deployed, the grant, the state. */
+export function restoreChanges(parts: (RestorePart & { preview: RestorePreview })[], versions: VersionEntry[]): string[] {
+  const changes: string[] = [];
+  const now = versions.find((v) => v.current)?.number;
+  const next = versions.reduce((n, v) => Math.max(n, v.number), 0) + 1;
+  for (const { preview } of parts) {
+    if (preview.code !== null && preview.code !== undefined) {
+      changes.push(`code: version ${preview.code}'s is deployed again, as version ${next}${now !== undefined ? `, in place of version ${now}` : ""}`);
+      const grant = grantDiff(preview);
+      if (grant) {
+        const { added, removed } = diffCounts(grant);
+        const kept = grant.length - added - removed;
+        changes.push(added + removed === 0 ? `permissions: unchanged (${kept} kept)` : `permissions: ${added} added, ${removed} dropped, ${kept} kept`);
+      }
+    }
+    if (preview.state) {
+      const s = preview.state;
+      const said = [
+        [s.changed.length, "changed"],
+        [s.added.length, "brought back"],
+        [s.removed.length, "dropped"],
+      ]
+        .filter(([n]) => n)
+        .map(([n, word]) => `${n} key${n === 1 ? "" : "s"} ${word}`);
+      const items = Object.entries(s.collections ?? {}).map(([name, c]) => {
+        const n = Object.keys(c.items).length;
+        return `${name}: ${n}${c.more ? "+" : ""} item${n === 1 && !c.more ? "" : "s"}`;
+      });
+      const detail = items.length > 0 ? ` (${items.join(", ")})` : "";
+      changes.push(said.length === 0 ? `state: as ${s.from} left it, the same as now` : `state: as ${s.from} left it, ${said.join(", ")}${detail}`);
+      const files = s.files ?? [];
+      if (files.length > 0) {
+        const outside = files.filter((f) => f.outside).length;
+        const n = `${files.length}${s.files_more ? "+" : ""}`;
+        changes.push(`files: left as they are (${n} written since${outside > 0 ? `, ${outside} of them changed outside a run` : ""})`);
+      }
+    }
+  }
+  return changes;
+}
+
+/** The grant now beside the one the restored code would have (its items, less what is
+ *  withheld): null when there is no grant now or no code is deployed. */
+function grantDiff(preview: RestorePreview) {
+  if (!preview.granted_now || !preview.items) return null;
+  const withheld = new Set(preview.withheld ?? []);
+  return setDiff(preview.granted_now, preview.items.filter((i) => !withheld.has(i)));
+}
+
+/** A version's flow as text: printed with the names its text gave its nodes (`named`), when it
+ *  was deployed from text, and without (`plain`) always. */
+export type VersionText = { plain: string; named?: string };
+/** Print a version (its unit) as text. */
+export type CodeText = (unit: string) => Promise<VersionText>;
+
+/** A restore's diff, part by part: the flow's text deployed now beside the restored version's
+ *  (`codeText` prints a version's unit), the grant, and each state key it touches. */
+export async function restoreDiffs(parts: (RestorePart & { preview: RestorePreview })[], versions: VersionEntry[], codeText: CodeText): Promise<Diff[]> {
+  const diffs: Diff[] = [];
+  const now = versions.find((v) => v.current);
+  for (const { preview } of parts) {
+    if (preview.code !== null && preview.code !== undefined) {
+      const then = versions.find((v) => v.number === preview.code);
+      const legend = `− version ${now?.number ?? "?"}, deployed now   + version ${preview.code}`;
+      try {
+        if (!now || !then) throw new Error("the versions aren't listed");
+        const [before, after] = await Promise.all([codeText(now.unit), codeText(then.unit)]);
+        // Names only when both have them: else a name the other lacks reads as a change.
+        const named = before.named !== undefined && after.named !== undefined;
+        const lines = lineDiff((named ? before.named! : before.plain).split("\n"), (named ? after.named! : after.plain).split("\n"));
+        const unnamed = [before.named === undefined && now.number, after.named === undefined && then.number].filter((n) => n !== false);
+        const notes = [
+          diffCounts(lines).added + diffCounts(lines).removed === 0 ? "The same text: only the version changes." : "",
+          !named ? `Printed without the text's names: version ${unnamed.join(" and version ")} ${unnamed.length > 1 ? "were" : "was"} deployed from the canvas, which keeps none.` : "",
+        ].filter(Boolean);
+        diffs.push({ title: "code", legend, lines, note: notes.join(" ") || undefined });
+      } catch (e) {
+        diffs.push({ title: "code", legend, lines: [], note: `The text can't be compared: ${e instanceof Error ? e.message : String(e)}` });
+      }
+      const grant = grantDiff(preview);
+      if (grant) diffs.push({ title: "permissions", legend: "− granted now, dropped   + added   kept", lines: grant, whole: true });
+    }
+    if (preview.state) diffs.push(stateDiff(preview.state));
+    for (const f of preview.state?.files ?? []) diffs.push(fileDiff(f, preview.state!.from));
+  }
+  return diffs;
+}
+
+/** How a file the runs since `from` wrote changed since, which a restore leaves as it is: its text
+ *  then beside now, when the log has both; else what is known, by hash. */
+export function fileDiff(f: FileSince, from: string): Diff {
+  const short = (h: string | null | undefined) => (h ? `#${h.slice(0, 8)}` : "none");
+  const notes = ["A restore leaves it as it is now."];
+  if (f.outside) notes.push(f.disk ? `Changed outside a run since run ${f.last.run}.` : `Gone from disk since run ${f.last.run}.`);
+  if (f.unreadable) notes.push(`It can't be checked on disk now: ${f.unreadable}.`);
+  const lines = (text: string | null, absent: boolean) => (absent ? [] : text === null ? null : text.replace(/\n$/, "").split("\n"));
+  const then = f.at_point ? lines(f.then_text, f.at_point.hash === null) : null;
+  const now = f.unreadable ? null : lines(f.now_text, f.disk === null);
+  if (!f.at_point) notes.push(`No run wrote it before ${from}: its text then isn't known.`);
+  else if (then === null) notes.push(`Its text at ${from} isn't in the log (no run read it): ${short(f.at_point.hash)} then, ${short(f.disk?.hash)} now.`);
+  else if (now === null && !f.unreadable) notes.push(`It is too big to show: ${short(f.at_point.hash)} then, ${short(f.disk?.hash)} now.`);
+  return {
+    title: `file ${f.folder}/${f.name}`,
+    legend: `− at ${from}   + now on disk`,
+    lines: then !== null && now !== null ? lineDiff(then, now) : [],
+    note: notes.join(" "),
+  };
+}
+
+/** The keys a state restore touches, as they are now beside as they would be. */
+export function stateDiff(change: StateChange): Diff {
+  type Pair = { now: WValue | null; then: WValue | null };
+  // A key's value, or a collection's item as the flow reads it: `prices["tea"]`.
+  const shown: [string, Pair][] = [
+    ...Object.entries(change.values ?? {}),
+    ...Object.entries(change.collections ?? {}).flatMap(([name, c]) => Object.entries(c.items).map(([k, v]): [string, Pair] => [`${name}[${JSON.stringify(k)}]`, v])),
+  ].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const side = (pick: (v: Pair) => WValue | null) =>
+    shown.flatMap(([k, pair]) => {
+      const v = pick(pair);
+      return v ? keyLines(k, v) : [];
+    });
+  const touched = change.changed.length + change.added.length + change.removed.length;
+  const keys = Object.keys(change.values ?? {}).length + Object.keys(change.collections ?? {}).length;
+  const partial = Object.entries(change.collections ?? {}).filter(([, c]) => c.more).map(([name]) => name);
+  const notes = [
+    touched === 0 ? "No key changes." : touched > keys ? `${touched - keys} more key(s) change: their values aren't shown.` : "",
+    partial.length > 0 ? `Only some of ${partial.join(", ")}'s items are compared or shown.` : "",
+  ].filter(Boolean);
+  return { title: "state", legend: `− now   + as ${change.from} left it`, lines: lineDiff(side((v) => v.now), side((v) => v.then)), note: notes.join(" ") || undefined };
 }
 
 /** What a restore did, in a line. */

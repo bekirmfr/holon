@@ -128,13 +128,17 @@ pub(crate) struct VersionInfo {
 }
 
 /// What rolling a secret back would do, as a dry run says it: the version made current again, the
-/// one current now, the new version it would be, and its source. Never a value.
+/// one current now, the new version it would be, and its source. Never a value: each value's
+/// fingerprint instead, as the log marks it (`#a1b2c3d4`), so the two can be told apart; the
+/// current one's is absent when it can't be read now.
 #[derive(Serialize, Debug, PartialEq)]
 pub(crate) struct RollbackPreview {
     pub(crate) to: u32,
     pub(crate) current: u32,
     pub(crate) version: u32,
     pub(crate) source: String,
+    pub(crate) to_print: String,
+    pub(crate) current_print: Option<String>,
 }
 
 /// One entry of the audit log: never a value.
@@ -417,17 +421,19 @@ impl SecretStore {
     /// current, or not readable now).
     pub(crate) fn rollback_preview(&self, slug: &str, name: &str, to: u32) -> Result<RollbackPreview, String> {
         let (old, current) = self.rollback_from(slug, name, to)?;
-        self.value_of(slug, name, &old).map_err(|e| format!("version {to} can't be read: {e}"))?;
-        Ok(RollbackPreview { to, current, version: current + 1, source: old.source })
+        let value = self.value_of(slug, name, &old).map_err(|e| format!("version {to} can't be read: {e}"))?;
+        let current_print = current.as_ref().and_then(|c| self.value_of(slug, name, c).ok()).map(|v| self.sealer.fingerprint(&v));
+        let current = current.map_or(0, |c| c.version);
+        Ok(RollbackPreview { to, current, version: current + 1, source: old.source, to_print: self.sealer.fingerprint(&value), current_print })
     }
 
-    /// The kept version `to` of `slug`'s `name`, and the number of the one current now; refused
-    /// when `to` isn't kept or is the current one.
-    fn rollback_from(&self, slug: &str, name: &str, to: u32) -> Result<(Stored, u32), String> {
+    /// The kept version `to` of `slug`'s `name`, and the one current now; refused when `to` isn't
+    /// kept or is the current one.
+    fn rollback_from(&self, slug: &str, name: &str, to: u32) -> Result<(Stored, Option<Stored>), String> {
         let slugs = self.slugs.lock().unwrap();
         let versions = slugs.get(slug).and_then(|s| s.secrets.get(name)).ok_or_else(|| format!("{slug:?} has no secret {name:?}"))?;
-        let current = versions.last().map_or(0, |v| v.version);
-        if current == to {
+        let current = versions.last().cloned();
+        if current.as_ref().is_some_and(|c| c.version == to) {
             return Err(format!("version {to} is already current"));
         }
         let old = versions.iter().find(|v| v.version == to).cloned().ok_or_else(|| format!("version {to} isn't kept (the last {MAX_VERSIONS} are)"))?;
@@ -1165,7 +1171,11 @@ mod tests {
         // A dry run says what it would do, and does nothing.
         assert!(store.rollback_preview("api", "k", 3).unwrap_err().contains("already current"));
         let preview = store.rollback_preview("api", "k", 2).unwrap();
-        assert_eq!(preview, RollbackPreview { to: 2, current: 3, version: 4, source: "env:HOLON_SECRET_K".into() });
+        let print = |v: &str| store.sealer.fingerprint(v);
+        assert_eq!(
+            preview,
+            RollbackPreview { to: 2, current: 3, version: 4, source: "env:HOLON_SECRET_K".into(), to_print: print("from-the-env"), current_print: Some(print("third-value")) }
+        );
         assert_eq!(store.list("api")[0].version, 3);
         assert_eq!(store.rollback("api", "k", 1, None).unwrap(), 4);
         assert_eq!(*store.vault("api").lock().unwrap().current["k"], "first-value", "re-sealed for its new version");

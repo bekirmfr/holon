@@ -377,10 +377,26 @@ const OTHER = "\u0000other";
 const when = (epoch: number) => new Date(epoch * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
 const sourceLabel = (source: string) => (source === "local" ? "sealed here" : source);
 
-/** A secret's roll back, as its dry run says it: which version comes back, as what, and what is kept. */
-function secretRollbackReport(slug: string, name: string, p: SecretRollbackPreview): DryRunReport {
+/** A secret's roll back, as its dry run says it: which version comes back, as what, and what is
+ *  kept; each value told apart by its fingerprint, as the log marks it, never shown. */
+export function secretRollbackReport(slug: string, name: string, p: SecretRollbackPreview): DryRunReport {
+  const mark = (print?: string | null) => (print ? ` #${print}` : "");
+  const same = !!p.to_print && p.to_print === p.current_print;
   return {
     title: `Roll back the secret ${name} of "${slug}" to version ${p.to}?`,
+    changes: [`secret ${name}: v${p.current}${mark(p.current_print)} → v${p.version}${mark(p.to_print)}, version ${p.to}'s value${same ? " (the same value)" : ""}`],
+    diffs: async () => [
+      {
+        title: `secret ${name}`,
+        legend: "− current now   + current after",
+        lines: [
+          { sign: "-", text: `v${p.current}${mark(p.current_print)}  current now; kept, and can be rolled back to` },
+          { sign: "+", text: `v${p.version}${mark(p.to_print)}  version ${p.to}'s value (${sourceLabel(p.source)})` },
+        ],
+        whole: true,
+        note: `Values are told apart by their fingerprints, as the log marks them (#…), never shown${same ? ": these two are the same value" : ""}.${p.current_print === null ? ` Version ${p.current}'s value can't be read now.` : ""}`,
+      },
+    ],
     sections: [
       {
         heading: "secret",

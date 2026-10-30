@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **A state restore's dry run names the files the runs since wrote, and an edit made outside a
+  run.** A restore never puts a bound folder's files back; its dry run (`holon restore
+  --dry-run`, and the editor's window) now names each file the runs since that point wrote, once
+  however many times: how many writes, by which runs, and whether it is on disk as the last one
+  left it (`changed outside a run since run 48`, `gone from disk`). The editor's diff shows a
+  file's text then beside now when the log has it (a run read that content); else the two hashes.
+  The new **stock-sheet** sample keeps counts in a collection and a line per change in a file:
+  its e2e edits the file by hand and restores the counts, the file left as it is.
+
+- **A dry run says what it changes, and its diff compares it with what is there now.** The
+  dry-run window opens with what it changes, a line each: the code deployed (as which version, in
+  place of which), the permissions added and dropped, the state's keys and a collection's items;
+  for a secret, each version by its fingerprint. Its **diff** button shows each part beside what
+  is there now: the flow's text line by line, with its author's names; the grant item by item; the
+  state's values, a collection's items by key (`prices["tea"]: 40` → `4`), redacted as the
+  control plane is; a secret's `v3 #c9027077 → v4 #0820d784`, never a value. A restore's dry run
+  answers the grant now (`granted_now`) and the values and items it would put back; a secret's,
+  each value's fingerprint (`to_print`, `current_print`).
+
 - **What the history changes is a dry run first, its result shown before you approve it.** A
   restore (code, state, both, ↺) shows its dry run in a window of its own, part by part: the code
   deployed again and the permissions to approve, the keys the state changes and what the runs

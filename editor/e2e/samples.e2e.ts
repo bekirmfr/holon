@@ -639,6 +639,16 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   const dialog = page.getByRole("dialog", { name: "dry run" });
   await expect(dialog).toContainText("Nothing has changed yet: this is what it would do.");
   await expect(dialog).toContainText(`Version ${before}'s code is deployed again, as a new version`);
+  // What it changes, a line each; its diff: the text deployed now beside version before's (both
+  // printed plainly: the version before was deployed from the canvas, which keeps no names), and
+  // the grant.
+  await expect(dialog.locator(".hl-dryrun__changes")).toContainText(`code: version ${before}'s is deployed again, as version ${now + 1}, in place of version ${now}`);
+  await dialog.getByRole("button", { name: "diff", exact: true }).click();
+  const codeDiff = dialog.locator('.hl-dryrun__diffpart[data-title="code"]');
+  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="-"]')).toHaveText(["-   c = 5"]);
+  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="+"]')).toHaveText(["+   c = 0.5"]);
+  await expect(codeDiff).toContainText(`version ${before} was deployed from the canvas, which keeps none`);
+  await expect(dialog.locator('.hl-dryrun__diffpart[data-title="permissions"]')).toContainText('CollectionRead("prices")');
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(bottom.locator(".hl-history__note")).toHaveText(`restored: version ${before}'s code is deployed again, as version ${now + 1}`);
   expect(await total()).toBe(4.5);
@@ -649,6 +659,11 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   await pickBefore();
   await restoreBar.getByRole("button", { name: "state", exact: true }).click();
   await expect(dialog).toContainText(`The state version ${before} left is put back: it changes #collection:prices.`);
+  // Its diff: the collection's items that differ, as the flow reads them, not its root.
+  await expect(dialog.locator(".hl-dryrun__changes")).toContainText(`state: as version ${before} left it, 1 key changed (prices: 1 item)`);
+  await dialog.getByRole("button", { name: "diff", exact: true }).click();
+  const stateDiff = dialog.locator('.hl-dryrun__diffpart[data-title="state"] .hl-dryrun__line');
+  await expect(stateDiff).toHaveText([`- prices["${tea}"]: 40`, `+ prices["${tea}"]: 4`]);
   expect(await total()).toBe(40.5);
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(bottom.locator(".hl-history__note")).toContainText(`the state version ${before} left is live again, in session`);
@@ -961,6 +976,44 @@ test("an env secret is picked from the server's HOLON_SECRET_… names, its dote
   await expect(settings.getByPlaceholder("HOLON_SECRET_GEMINI_API_KEY")).toBeVisible();
 });
 
+test("stock-sheet: a state restore's dry run names the file the runs since wrote, an edit by hand, and its diff; the restore leaves the file", async ({ page, request, adminToken }) => {
+  const { rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const sheet = join(FOLDERS, "sheets", "changes.txt");
+  rmSync(sheet, { force: true });
+  await openSample(page, "Stock sheet (its state restored, its files not)");
+  const port = await deploy(page);
+  const item = `tea-${Date.now()}`;
+  for (const count of [4, 40]) expect((await request.put(`http://127.0.0.1:${port}/stock/${item}`, { data: { count } })).status()).toBe(200);
+  const auth = { Authorization: `Bearer ${adminToken}` };
+  const log = (await (await request.get(`${SERVER}/deployments/stock-sheet/log`, { headers: auth })).json()) as { entries: { seq: number }[] };
+  const [first, second] = log.entries.slice(-2).map((e) => e.seq);
+  // Edited by hand after the runs: not what the last one left.
+  const written = readFileSync(sheet, "utf8");
+  expect(written).toBe(`${item}: 4\n${item}: 40\n`);
+  writeFileSync(sheet, `${written}checked by hand\n`);
+
+  // ↺ on the first PUT's run: its state only (its code is the code deployed now).
+  await viewNewestRun(page);
+  await page.locator(".hl-view__bottom").getByRole("button", { name: `restore to run ${first}`, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "dry run" });
+  await expect(dialog.locator(".hl-dryrun__changes")).toContainText("files: left as they are (1 written since, 1 of them changed outside a run)");
+  const files = dialog.locator(".hl-dryrun__section").filter({ hasText: "files, not put back" });
+  await expect(files).toContainText(`sheets/changes.txt: 1 write since, by run ${second} (the last written); changed outside a run since run ${second}`);
+  // Its diff: the file then (a later run read it) beside now, the edit by hand and all.
+  await dialog.getByRole("button", { name: "diff", exact: true }).click();
+  const fileDiff = dialog.locator('.hl-dryrun__diffpart[data-title="file sheets/changes.txt"]');
+  await expect(fileDiff.locator(".hl-dryrun__line")).toHaveText([`  ${item}: 4`, `+ ${item}: 40`, "+ checked by hand"]);
+  await expect(fileDiff).toContainText(`A restore leaves it as it is now. Changed outside a run since run ${second}.`);
+  await expect(dialog.locator('.hl-dryrun__diffpart[data-title="state"] .hl-dryrun__line')).toHaveText([`- stock["${item}"]: 40`, `+ stock["${item}"]: 4`]);
+
+  // Restored: the count back, the file as it was left.
+  await dialog.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(page.locator(".hl-history__note")).toContainText(`the state run ${first} left is live again`);
+  expect(await (await request.get(`http://127.0.0.1:${port}/stock/${item}`)).json()).toEqual({ item, count: 4 });
+  expect(readFileSync(sheet, "utf8")).toBe(`${written}checked by hand\n`);
+});
+
 test("guarded-api's token rolls back under ⚙ once a dry run has said what it would do, and nothing changes until then", async ({ page, request, adminToken }) => {
   const asAdmin = { Authorization: `Bearer ${adminToken}` };
   const set = (value: string) => request.post(`${SERVER}/deployments/guarded-api/secrets/api_token`, { data: { value }, headers: asAdmin });
@@ -980,6 +1033,10 @@ test("guarded-api's token rolls back under ⚙ once a dry run has said what it w
   const dryRun = page.getByRole("dialog", { name: "dry run" });
   await expect(dryRun).toContainText(`Version ${before} (sealed here) is current again, as version ${now + 1}`);
   await expect(dryRun).toContainText(`Version ${now}, current now, is kept`);
+  // What it changes, and its diff: each version by its fingerprint, as the log marks it.
+  await expect(dryRun.locator(".hl-dryrun__changes")).toContainText(new RegExp(`secret api_token: v${now} #[0-9a-f]{8} → v${now + 1} #[0-9a-f]{8}, version ${before}'s value`));
+  await dryRun.getByRole("button", { name: "diff", exact: true }).click();
+  await expect(dryRun.locator(".hl-dryrun__line")).toHaveText([new RegExp(`^- v${now} #[0-9a-f]{8}  current now`), new RegExp(`^\\+ v${now + 1} #[0-9a-f]{8}  version ${before}'s value`)]);
   await dryRun.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dryRun).toHaveCount(0);
   expect((await versions())[0]).toEqual({ version: now, current: true, source: "local", set_at: expect.any(Number) });

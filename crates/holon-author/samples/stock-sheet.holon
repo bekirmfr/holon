@@ -1,0 +1,19 @@
+flow stock-sheet
+port 8161
+collection stock
+folder sheets
+
+route PUT /stock/:item (req) {
+  stock[req.params.item] = req.json.count
+  before = sheets["changes.txt"] ?? ""
+  sheets["changes.txt"] = "{before}{req.params.item}: {req.json.count}\n"
+  respond { item: req.params.item, count: req.json.count }
+}
+
+route GET /stock/:item (req) {
+  respond { item: req.params.item, count: stock[req.params.item] }
+}
+
+route GET /sheet (req) {
+  respond sheets["changes.txt"], headers: { "content-type": "text/plain; charset=utf-8" }
+}

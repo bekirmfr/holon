@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, getLog, type LogEntry, type VersionEntry } from "./server";
 import { BackButton, everything, HistoryList, itemDetails, useHistory, useRestore } from "./HistoryPane";
-import { buildTimeline, targetOf, type TimelineItem } from "./timeline";
+import { buildTimeline, targetOf, type CodeText, type TimelineItem } from "./timeline";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
@@ -245,10 +245,13 @@ export function BottomPane({
   onFitToNodes,
   onShowVersion,
   onRestored,
+  codeText,
 }: {
   slug: string;
   selected: LogEntry | null;
   onSelect: (e: LogEntry | null) => void;
+  /** A version's flow as text (its unit's), for a restore's diff. */
+  codeText?: CodeText;
   /** Show a version's canvas (the history's). */
   onShowVersion?: (v: VersionEntry) => void;
   /** After a restore from the history: the deployment changed. */
@@ -390,6 +393,7 @@ export function BottomPane({
           })
         }
         onRestored={onRestored}
+        codeText={codeText}
       />
     </div>
   );
@@ -459,9 +463,11 @@ function LogTab({
   onFitToNodes,
   onShowVersion,
   onRestored,
+  codeText,
 }: {
   onShowVersion?: (v: VersionEntry) => void;
   onRestored?: () => void;
+  codeText?: CodeText;
   entries: LogEntry[];
   selected: LogEntry | null;
   pick: (e: LogEntry) => void;
@@ -503,7 +509,7 @@ function LogTab({
     refreshHistory();
     onRestored?.();
   }, [refreshHistory, onRestored]);
-  const restorer = useRestore(slug, restoreDone);
+  const restorer = useRestore(slug, restoreDone, history.versions, codeText);
   const [pickedKey, setPickedKey] = useState<string | null>(null);
   const pickedIndex = pickedKey === null ? undefined : byKey.get(pickedKey);
   const pickedItem = leftView === "history" && pickedIndex !== undefined ? timeline[pickedIndex] : undefined;

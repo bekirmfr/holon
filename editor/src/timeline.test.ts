@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildTimeline, filterOf, itemText, parsePoint, restoreReport, restoreParts, restoredLine, runOptions, stateLines, targetOf, versionOptions } from "./timeline";
-import type { DeploymentEvent, LogEntry, VersionEntry } from "./server";
+import { buildTimeline, fileDiff, fileLine, filterOf, itemText, parsePoint, restoreDiffs, restoreReport, restoreParts, restoredLine, runOptions, stateDiff, stateLines, targetOf, versionOptions } from "./timeline";
+import type { DeploymentEvent, FileSince, LogEntry, VersionEntry } from "./server";
 
 const run = (seq: number, at_ms: number, extra: Partial<LogEntry> = {}): LogEntry => ({
   seq,
@@ -104,6 +104,110 @@ describe("a restore's words", () => {
     expect(plain.action).toBe("Restore");
     expect(plain.sections.map((x) => x.heading)).toEqual(["state"]);
     expect(plain.approvals).toEqual([]);
+  });
+
+  it("says what it changes, a line each: the code, the grant, the state", () => {
+    const state = { from: "version 1", changed: ["total"], added: ["cart"], removed: ["seen", "last"], runs_since: 2, effects_since: {} };
+    const preview = { code: 1, needs_approval: ["Clock"], missing_secrets: [], items: ["Clock", "NetworkIngress"], granted_now: ["NetworkIngress", 'StateWrite("x")'], state };
+    const asked = restoreReport("prices", { label: "version 1" }, [{ point: { version: 1 }, what: { code: true, state: true }, preview }], (i: string) => i, [version(2, { current: true }), version(1)]);
+    expect(asked.changes).toEqual([
+      "code: version 1's is deployed again, as version 3, in place of version 2",
+      "permissions: 1 added, 1 dropped, 1 kept",
+      "state: as version 1 left it, 1 key changed, 1 key brought back, 2 keys dropped",
+    ]);
+    const same = restoreReport("prices", { label: "run 7" }, [{ point: { run: 7 }, what: { code: false, state: true }, preview: { code: null, state: { ...state, changed: [], added: [], removed: [] } } }]);
+    expect(same.changes).toEqual(["state: as version 1 left it, the same as now"]);
+  });
+
+  it("diffs the code deployed now with the restored version's, the grant, and each state key", async () => {
+    const values = { total: { now: { type: "Number" as const, value: 40 }, then: { type: "Number" as const, value: 4.5 } }, seen: { now: { type: "Boolean" as const, value: true }, then: null } };
+    const state = { from: "version 1", changed: ["total"], added: [], removed: ["seen"], runs_since: 1, effects_since: {}, values };
+    const preview = { code: 1, items: ["Clock"], granted_now: ["Clock", "NetworkEgress"], withheld: [], state };
+    const texts: Record<string, string> = { u1: "flow p\n  a = 1\n", u2: "flow p\n  a = 2\n" };
+    const diffs = await restoreDiffs([{ point: { version: 1 }, what: { code: true, state: true }, preview }], [version(2, { current: true }), version(1)], async (u) => ({
+      plain: texts[u],
+      named: texts[u],
+    }));
+    expect(diffs.map((d) => [d.title, d.legend])).toEqual([
+      ["code", "− version 2, deployed now   + version 1"],
+      ["permissions", "− granted now, dropped   + added   kept"],
+      ["state", "− now   + as version 1 left it"],
+    ]);
+    expect(diffs[0].lines.map((l) => l.sign + l.text)).toEqual([" flow p", "-  a = 2", "+  a = 1", " "]);
+    expect(diffs[1].lines.map((l) => l.sign + l.text)).toEqual([" Clock", "-NetworkEgress"]);
+    expect(diffs[2].lines.map((l) => l.sign + l.text)).toEqual(["-seen: true", "-total: 40", "+total: 4.5"]);
+    // A version whose text can't be had: said, not a failure.
+    const missing = await restoreDiffs([{ point: { version: 1 }, what: { code: true, state: false }, preview: { code: 1 } }], [version(2, { current: true }), version(1)], async () => {
+      throw new Error("not kept");
+    });
+    expect(missing[0]).toMatchObject({ title: "code", lines: [], note: "The text can't be compared: not kept" });
+  });
+
+  it("compares two versions by their text's names only when both have them", async () => {
+    // Version 2 deployed from text (`fee`), version 1 from the canvas (no names: `c`).
+    const texts: Record<string, { plain: string; named?: string }> = {
+      u2: { plain: "c = 5\nrespond c", named: "fee = 5\nrespond fee" },
+      u1: { plain: "c = 0.5\nrespond c" },
+    };
+    const [code] = await restoreDiffs([{ point: { version: 1 }, what: { code: true, state: false }, preview: { code: 1 } }], [version(2, { current: true }), version(1)], async (u) => texts[u]);
+    expect(code.lines.map((l) => l.sign + l.text)).toEqual(["-c = 5", "+c = 0.5", " respond c"]);
+    expect(code.note).toBe("Printed without the text's names: version 1 was deployed from the canvas, which keeps none.");
+  });
+
+  it("says when a state diff leaves keys out", () => {
+    const d = stateDiff({ from: "run 3", changed: ["a", "b"], added: [], removed: [], runs_since: 0, effects_since: {}, values: { a: { now: { type: "Number", value: 1 }, then: { type: "Number", value: 2 } } } });
+    expect(d.note).toBe("1 more key(s) change: their values aren't shown.");
+    expect(stateDiff({ from: "run 3", changed: [], added: [], removed: [], runs_since: 0, effects_since: {} }).note).toBe("No key changes.");
+  });
+
+  it("shows a collection's items that differ, as the flow reads them, not its root", () => {
+    const n = (value: number) => ({ type: "Number" as const, value });
+    const prices = { items: { tea: { now: n(40), then: n(4) }, cake: { now: null, then: n(3) } }, more: false };
+    const change = { from: "version 1", changed: ["#collection:prices"], added: [], removed: [], runs_since: 1, effects_since: {}, values: {}, collections: { prices } };
+    const d = stateDiff(change);
+    expect(d.lines.map((l) => l.sign + l.text)).toEqual(['-prices["tea"]: 40', '+prices["cake"]: 3', '+prices["tea"]: 4']);
+    expect(d.note).toBeUndefined();
+    const report = restoreReport("p", { label: "version 1" }, [{ point: { version: 1 }, what: { code: false, state: true }, preview: { code: null, state: change } }]);
+    expect(report.changes).toEqual(["state: as version 1 left it, 1 key changed (prices: 2 items)"]);
+    expect(stateDiff({ ...change, collections: { prices: { ...prices, more: true } } }).note).toBe("Only some of prices's items are compared or shown.");
+  });
+
+  it("names the files the runs since wrote, which it leaves as they are, and an edit outside a run", async () => {
+    const h = (c: string) => c.repeat(64);
+    const sheet: FileSince = {
+      folder: "sheets",
+      name: "changes.txt",
+      writes: 3,
+      runs: [5, 6, 7],
+      last: { kind: "write", hash: h("b"), size: 20, run: 7 },
+      at_point: { kind: "write", hash: h("a"), size: 7, run: 4 },
+      disk: { hash: h("c"), size: 30 },
+      unreadable: null,
+      outside: true,
+      then_text: "tea: 4\n",
+      now_text: "tea: 4\ntea: 40\nby hand\n",
+    };
+    expect(fileLine(sheet)).toBe("sheets/changes.txt: 3 writes since, by runs 5, 6, 7 (the last written); changed outside a run since run 7: on disk now #cccccccc, not what run 7 left");
+    expect(fileLine({ ...sheet, writes: 1, runs: [7], outside: false })).toBe("sheets/changes.txt: 1 write since, by run 7 (the last written)");
+    expect(fileLine({ ...sheet, disk: null })).toMatch(/; gone from disk since run 7, which left it$/);
+    expect(fileLine({ ...sheet, unreadable: "no folder sheets" })).toMatch(/; can't be checked on disk now: no folder sheets$/);
+
+    const state = { from: "run 4", changed: ["#collection:stock"], added: [], removed: [], runs_since: 3, effects_since: { FileWrite: 3 }, values: {}, files: [sheet] };
+    const report = restoreReport("stock-sheet", { label: "run 4" }, [{ point: { run: 4 }, what: { code: false, state: true }, preview: { code: null, state } }]);
+    expect(report.changes).toContain("files: left as they are (1 written since, 1 of them changed outside a run)");
+    expect(report.sections.map((s) => s.heading)).toEqual(["state", "files, not put back"]);
+
+    // Its diff: how it changed since, then beside now; a restore leaves it so.
+    const d = fileDiff(sheet, "run 4");
+    expect([d.title, d.legend]).toEqual(["file sheets/changes.txt", "− at run 4   + now on disk"]);
+    expect(d.lines.map((l) => l.sign + l.text)).toEqual([" tea: 4", "+tea: 40", "+by hand"]);
+    expect(d.note).toBe("A restore leaves it as it is now. Changed outside a run since run 7.");
+    const diffs = await restoreDiffs([{ point: { run: 4 }, what: { code: false, state: true }, preview: { code: null, state } }], [], async () => ({ plain: "" }));
+    expect(diffs.map((x) => x.title)).toEqual(["state", "file sheets/changes.txt"]);
+    // Its text then not in the log: by hash. No run wrote it before: unknown. Gone: all removed.
+    expect(fileDiff({ ...sheet, then_text: null }, "run 4")).toMatchObject({ lines: [], note: expect.stringContaining("isn't in the log (no run read it): #aaaaaaaa then, #cccccccc now.") });
+    expect(fileDiff({ ...sheet, at_point: null }, "run 4").note).toContain("No run wrote it before run 4");
+    expect(fileDiff({ ...sheet, disk: null, now_text: null }, "run 4").lines.map((l) => l.sign + l.text)).toEqual(["-tea: 4"]);
   });
 
   it("says what it did", () => {

@@ -321,6 +321,10 @@ export type DeployPreview = {
   refused: string | null;
   /** Secrets it reads that aren't set yet: those nodes stay empty until they are. */
   missing_secrets: string[];
+  /** What the slug's grant covers now (null: not deployed yet): beside `items`, what changes. */
+  granted_now?: string[] | null;
+  /** Secrets an agent's deploy leaves out, for a person to grant back. */
+  withheld?: string[];
 };
 
 /** A secret as the server lists it: never its value. `source`: `local` (sealed by the server),
@@ -378,7 +382,16 @@ export async function getSecretHistory(slug: string, name: string): Promise<Secr
 /** Make `version` current again, as a new version; answers it. */
 /** What rolling a secret back would do, changing nothing: the version made current again, the
  *  one current now, the new version it would be, and its source. Never a value. */
-export type SecretRollbackPreview = { to: number; current: number; version: number; source: string };
+export type SecretRollbackPreview = {
+  to: number;
+  current: number;
+  version: number;
+  source: string;
+  /** Each value's fingerprint, as the log marks it (`#a1b2c3d4`), never the value; the current
+   *  one's is absent when it can't be read now. */
+  to_print?: string;
+  current_print?: string | null;
+};
 
 /** `POST …/secrets/<name>/rollback` with `dry_run`: refused as the roll back would be. */
 export async function previewSecretRollback(slug: string, name: string, version: number): Promise<SecretRollbackPreview> {
@@ -752,6 +765,38 @@ export type StateChange = {
   runs_since: number;
   /** Outside effects the runs since performed, by capability: a restore doesn't undo them. */
   effects_since: Record<string, number>;
+  /** Each key it touches (the first 50), as it is now and as it would be; null: absent. A
+   *  collection's are in `collections` instead. */
+  values?: Record<string, { now: WValue | null; then: WValue | null }>;
+  /** Each collection it touches, by name: the items that differ, by key; `more` when it shows or
+   *  compared only some. */
+  collections?: Record<string, { items: Record<string, { now: WValue | null; then: WValue | null }>; more: boolean }>;
+  /** The files the runs since wrote, which a restore never puts back; `files_more` when there are
+   *  more than it names. */
+  files?: FileSince[];
+  files_more?: boolean;
+};
+
+/** What a run's file write left: its kind, and the content's hash and size (none for a delete). */
+export type FileWritten = { kind: "write" | "copy" | "delete"; hash: string | null; size: number | null; run: number };
+
+/** A file the runs since a point wrote, as a restore's dry run names it: how many writes and by
+ *  which runs (the last ten), what the last left, what the last write before the point left
+ *  (`at_point`: none if no run wrote it before), and how it is on disk now (`disk`: none if it
+ *  isn't there; `unreadable`: why it can't be checked). `outside`: the disk isn't what the last
+ *  write left. Its text then and now, when the log has it and it is small. */
+export type FileSince = {
+  folder: string;
+  name: string;
+  writes: number;
+  runs: number[];
+  last: FileWritten;
+  at_point: FileWritten | null;
+  disk: { hash: string; size: number | null } | null;
+  unreadable: string | null;
+  outside: boolean;
+  then_text: string | null;
+  now_text: string | null;
 };
 
 /** A restore's dry run: the deploy's preview when it deploys code (`code`: the version), and the

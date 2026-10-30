@@ -31,6 +31,7 @@ import {
   type ReplayNode,
 } from "./replay";
 import { stable } from "./textSync";
+import { printHolon } from "./holonText";
 import { getDeployedDocument, type DeploymentEntry, type FlowDocument, type LogEntry, type VersionEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
 import type { FlowMeta } from "./tabs";
@@ -122,6 +123,16 @@ export function useViewMode(input: ViewModeInput) {
         .catch(() => setShownVersion(`version ${v.number}'s canvas isn't kept`));
     },
     [viewing, ev, restoring, setNodes, setEdges, viewDoc, setViewTrace, setViewUnit, setSelectedRun, setStep],
+  );
+  // A version's flow as text, for the diff of a restore's dry run: printed, and with the names
+  // its text gave its nodes when it was deployed from text, so two versions compare as they read.
+  const codeText = useCallback(
+    async (unit: string) => {
+      const doc = await getDeployedDocument(viewing ?? "", unit);
+      const plain = printHolon(viewing, doc, ev);
+      return { plain, named: doc.bindings ? printHolon(viewing, doc, ev, new Map(Object.entries(doc.bindings))) : undefined };
+    },
+    [viewing, ev],
   );
   const note = onOtherVersion
     ? versionNote || "loading the version it ran on…"
@@ -338,6 +349,7 @@ export function useViewMode(input: ViewModeInput) {
     note,
     /** Why the deployment isn't answering on its port, when it isn't. */
     listenError: viewed?.listen_error,
+    codeText,
     timings,
     exchanges,
     flowState,
@@ -410,6 +422,7 @@ export function ViewModePanes({ view, flow, nodes, onRestored }: { view: ViewMod
         onFitToNodes={view.fitToNodes}
         onShowVersion={view.showVersion}
         onRestored={onRestored}
+        codeText={view.codeText}
       />
     </>
   );

@@ -13,11 +13,13 @@ import {
   filterOf,
   itemText,
   pointLabel,
+  restoreDiffs,
   restoredLine,
   restoreReport,
   restoreParts,
   TIMELINE_FILTERS,
   versionWhat,
+  type CodeText,
   type RestorePart,
   type Target,
   type TimelineFilter,
@@ -73,7 +75,7 @@ export function useHistory(slug: string) {
 
 /** Going back to a target: each part's dry run, their report in the dry-run window, and once
  *  approved each part, the code first. `modal` is the window, to be rendered. */
-export function useRestore(slug: string, onDone: () => void) {
+export function useRestore(slug: string, onDone: () => void, versions: VersionEntry[] = [], codeText?: CodeText) {
   const dryRun = useDryRun();
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -98,7 +100,9 @@ export function useRestore(slug: string, onDone: () => void) {
           }
           previewed.push({ ...part, preview });
         }
-        if (!(await dryRun.ask(restoreReport(slug, target, previewed)))) return;
+        const report = restoreReport(slug, target, previewed, undefined, versions);
+        if (codeText) report.diffs = () => restoreDiffs(previewed, versions, codeText);
+        if (!(await dryRun.ask(report))) return;
         for (const p of previewed) {
           done.push({ point: p.point, done: (await restoreDeployment(slug, p.point, p.what, { acknowledge: p.preview.needs_approval ?? [] })) as RestoreDone });
         }
@@ -111,7 +115,7 @@ export function useRestore(slug: string, onDone: () => void) {
         if (done.length > 0) onDone();
       }
     },
-    [slug, dryRun.ask, onDone],
+    [slug, dryRun.ask, onDone, versions, codeText],
   );
   return { restore, busy, note, setNote, modal: dryRun.modal };
 }

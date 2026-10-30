@@ -522,6 +522,8 @@ fn preview_value(
         "items": items,
         "needs_approval": needs,
         "already_granted": granted,
+        // What the slug's grant covers now (none for a first deploy): beside `items`, what changes.
+        "granted_now": previous.as_ref().map(|g| &g.items),
         // Secrets it can run without that an agent's deploy leaves out, for a person to grant back.
         "withheld": withheld,
         "refused": policy.refuses(&manifest).or_else(|| {
@@ -1391,16 +1393,45 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
 }
 
 /// What putting `snapshot` back would change: the keys whose values differ, those it brings back
-/// and those it drops, and the runs logged since `label`, with the outside effects they performed
-/// (calls, files, database rows, messages), which a restore doesn't undo. Writes to the
-/// deployment's own state and collections aren't counted: those are what it puts back.
+/// and those it drops (each with its value now and then; a collection, its items that differ),
+/// and the runs logged since `label`, with the outside effects they performed (calls, files,
+/// database rows, messages), which a restore doesn't undo. Writes to the deployment's own state
+/// and collections aren't counted: those are what it puts back.
 fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since: &[LogEntry]) -> Result<serde_json::Value, Response> {
     let back = crate::restore::snapshot_refs(snapshot, &state.store).map_err(|e| err(500, format!("the state {label} left can't be read: {e}")))?;
-    let live = state.deployments.lock().unwrap().get(slug).and_then(|d| d.state.clone());
-    let now = live.map(|arc| arc.state.lock().unwrap().refs()).unwrap_or_default();
+    let (live, redactor, before) = match state.deployments.lock().unwrap().get(slug) {
+        Some(d) => {
+            // The runs before the point: what a file was there, the last write before it.
+            let first = since.first().map_or(u64::MAX, |e| e.seq);
+            let before = if since.is_empty() { Vec::new() } else { d.log.after(None, usize::MAX).into_iter().filter(|e| e.seq < first).collect() };
+            (d.state.clone(), Some(Redactor::of(&d.secrets)), before)
+        }
+        None => (None, None, Vec::new()),
+    };
+    let now = live.as_ref().map(|arc| arc.state.lock().unwrap().refs()).unwrap_or_default();
     let changed: Vec<&String> = back.iter().filter(|(k, h)| now.get(*k).is_some_and(|n| n != *h)).map(|(k, _)| k).collect();
     let added: Vec<&String> = back.keys().filter(|k| !now.contains_key(*k)).collect();
     let removed: Vec<&String> = now.keys().filter(|k| !back.contains_key(*k)).collect();
+    // Each key it touches, as it is now and as it would be (null: absent), for a diff; a
+    // collection's, the items that differ, its root saying nothing to a person. Past
+    // STATE_DIFF_KEYS keys, the names alone say what changes. Redacted as the control plane is.
+    let unreadable = |e: StoreError| err(500, format!("the state {label} left can't be read: {e:?}"));
+    let mut values = serde_json::Map::new();
+    let mut collections = serde_json::Map::new();
+    for key in changed.iter().chain(&added).chain(&removed).take(STATE_DIFF_KEYS) {
+        let then = back.get(*key).map(|h| state.store.get_value(h)).transpose().map_err(unreadable)?.flatten();
+        let now = live.as_ref().and_then(|arc| arc.state.lock().unwrap().get(key).cloned());
+        if let Some(name) = key.strip_prefix("#collection:") {
+            collections.insert(name.to_string(), collection_change(&state.store, now.as_ref(), then.as_ref()).map_err(|e| err(500, format!("the state {label} left can't be read: {e}")))?);
+        } else {
+            values.insert((*key).clone(), serde_json::json!({ "now": now.as_ref().map(SValue::from_core), "then": then.as_ref().map(SValue::from_core) }));
+        }
+    }
+    let files = folders::files_since(&folders::Scoped::new(Arc::clone(&state.folders), slug), &before, since);
+    let mut values = serde_json::json!({ "values": values, "collections": collections, "files": files });
+    if let Some(r) = &redactor {
+        r.json(&mut values);
+    }
     let mut effects: BTreeMap<&str, u64> = BTreeMap::new();
     for p in since.iter().flat_map(|e| &e.performed) {
         let name = p.capability.split('(').next().unwrap_or_default();
@@ -1413,9 +1444,48 @@ fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since
         "changed": changed,
         "added": added,
         "removed": removed,
+        "values": values["values"],
+        "collections": values["collections"],
+        // The files the runs since wrote, which a restore doesn't put back, as they are now.
+        "files": values["files"]["files"],
+        "files_more": values["files"]["more"],
         "runs_since": since.len(),
         "effects_since": effects,
     }))
+}
+
+/// How many keys a restore's dry run shows the values of.
+const STATE_DIFF_KEYS: usize = 50;
+/// How many items of a collection a restore's dry run compares, and shows of those that differ.
+const COLLECTION_DIFF_READ: usize = 1000;
+const COLLECTION_DIFF_ITEMS: usize = 50;
+
+/// The items that differ between a collection now and as a restore would put it back (each its
+/// cell's value, a root; absent: no collection), as `{now, then}` by key; `more` when it compared
+/// or shows only some of them.
+fn collection_change(store: &SharedStore, now: Option<&Value>, then: Option<&Value>) -> Result<serde_json::Value, String> {
+    let read = |cell: Option<&Value>| -> Result<(BTreeMap<String, Value>, bool), String> {
+        let Some(root) = cell.and_then(|v| match v {
+            Value::Text(hex) => parse_hash(hex),
+            _ => None,
+        }) else {
+            return Ok((BTreeMap::new(), false));
+        };
+        let items = holon_host::collection::list(store, &root, "", None, COLLECTION_DIFF_READ + 1).map_err(|e| format!("{e:?}"))?;
+        let more = items.len() > COLLECTION_DIFF_READ;
+        Ok((items.into_iter().take(COLLECTION_DIFF_READ).collect(), more))
+    };
+    let ((now, more_now), (then, more_then)) = (read(now)?, read(then)?);
+    // A side cut short is read up to its last key: past the first such key, neither is compared.
+    let bound = [(more_now, &now), (more_then, &then)].into_iter().filter(|(more, _)| *more).filter_map(|(_, side)| side.keys().next_back()).min();
+    let keys: BTreeSet<&String> =
+        now.keys().chain(then.keys()).filter(|k| bound.is_none_or(|b| *k <= b) && now.get(*k) != then.get(*k)).collect();
+    let items: serde_json::Map<String, serde_json::Value> = keys
+        .iter()
+        .take(COLLECTION_DIFF_ITEMS)
+        .map(|k| ((*k).clone(), serde_json::json!({ "now": now.get(*k).map(SValue::from_core), "then": then.get(*k).map(SValue::from_core) })))
+        .collect();
+    Ok(serde_json::json!({ "items": items, "more": more_now || more_then || keys.len() > COLLECTION_DIFF_ITEMS }))
 }
 
 /// Make `loaded` `slug`'s live state, in a new session: the one it replaces is kept as the ending

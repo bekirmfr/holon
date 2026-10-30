@@ -1263,7 +1263,12 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     let rollback = |v: u32| route(&state, &req("POST", "/deployments/s/secrets/api_key/rollback", serde_json::to_vec(&serde_json::json!({ "version": v })).unwrap()));
     assert_eq!(rollback(2).status_code, 400, "already current");
     let dry = route(&state, &req("POST", "/deployments/s/secrets/api_key/rollback", br#"{"version":1,"dry_run":true}"#.to_vec()));
-    assert_eq!(String::from_utf8(body_bytes(dry)).unwrap(), r#"{"to":1,"current":2,"version":3,"source":"local"}"#, "a dry run: what it would do, never a value");
+    let dry: serde_json::Value = serde_json::from_slice(&body_bytes(dry)).unwrap();
+    assert_eq!((dry["to"].clone(), dry["current"].clone(), dry["version"].clone(), dry["source"].clone()), (1.into(), 2.into(), 3.into(), "local".into()));
+    // Each value's fingerprint, as the log marks it, never the value: the two differ.
+    let (to, current) = (dry["to_print"].as_str().unwrap(), dry["current_print"].as_str().unwrap());
+    assert!(to.len() == 8 && current.len() == 8 && to != current, "{dry}");
+    assert!(!dry.to_string().contains(value) && !dry.to_string().contains("another-value"), "a dry run: what it would do, never a value");
     assert_eq!(String::from_utf8(body_bytes(rollback(1))).unwrap(), r#"{"version":3}"#);
     assert_eq!(*state.secrets.vault("s").lock().unwrap().current["api_key"], value);
 
@@ -3371,6 +3376,9 @@ fn every_deploy_is_a_version_and_restoring_one_is_a_new_one() {
     // v1 writes `a`, which the grant v2 has now doesn't cover: approved again, not inherited.
     let preview = body_json(restore(serde_json::json!({ "version": 1, "code": true, "dry_run": true })));
     assert_eq!(preview["needs_approval"], serde_json::json!(["StateWrite(\"a\")"]));
+    // What is granted now, beside what the code asks for: a grant diff.
+    assert!(!preview["granted_now"].as_array().unwrap().contains(&"StateWrite(\"a\")".into()), "{preview}");
+    assert!(preview["items"].as_array().unwrap().contains(&"StateWrite(\"a\")".into()), "{preview}");
     assert_eq!(versions().as_array().unwrap().len(), 2, "a dry run deploys nothing");
     let unapproved = restore(serde_json::json!({ "version": 1, "code": true }));
     assert_eq!(unapproved.status_code, 400);
@@ -3420,6 +3428,9 @@ fn a_runs_or_a_versions_state_is_put_back_in_a_new_session() {
 
     let dry = body_json(restore(serde_json::json!({ "run": one, "state": true, "dry_run": true })));
     assert_eq!(dry["state"]["changed"], serde_json::json!(["a"]));
+    // Each key it touches, as it is now and as it would be: a state diff.
+    assert_eq!(dry["state"]["values"]["a"]["now"]["value"], "two");
+    assert_eq!(dry["state"]["values"]["a"]["then"]["value"], "one");
     assert_eq!((dry["state"]["runs_since"].clone(), dry["state"]["effects_since"].clone()), (1.into(), serde_json::json!({})));
     assert!(dry["code"].is_null(), "no code to deploy");
     assert!(now().contains("\"two\""), "a dry run changes nothing");
@@ -3484,6 +3495,8 @@ fn a_runs_code_and_state_come_back_together() {
     assert_eq!(dry["code"], 1, "the version it ran on");
     assert_eq!(dry["needs_approval"], serde_json::json!(["StateWrite(\"a\")"]));
     assert_eq!(dry["state"]["removed"], serde_json::json!(["b"]), "b was written since");
+    assert!(dry["state"]["values"]["b"]["then"].is_null() && !dry["state"]["values"]["b"]["now"].is_null(), "{dry}");
+    assert_eq!(dry["state"]["collections"], serde_json::json!({}), "no collection here");
     let unapproved = restore(serde_json::json!({ "run": seq, "code": true, "state": true }));
     assert_eq!(unapproved.status_code, 400);
     assert_eq!(body_json(route(&state, &req("GET", "/deployments/both/versions", vec![])))["versions"].as_array().unwrap().len(), 2, "nothing changed");
@@ -5172,6 +5185,58 @@ claim_wait_ms = 100").unwrap());
         assert_eq!((first.0, second.0), (200, 503), "{engine}: {}", second.1);
         assert_eq!(hits_of(&hits, "/slow"), 5, "{engine}: the one turned away sent nothing");
     }
+}
+
+/// A restore's dry run names the files the runs since wrote, which it never puts back: each once,
+/// with how many writes and by which runs, its text then (a later run read it, so the log has it)
+/// and now; once an edit by hand changes it on disk, it says so, and the CLI's words say it too.
+#[test]
+fn a_restores_dry_run_names_the_files_written_since_and_an_edit_outside_a_run() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-files-since-{}-{}", std::process::id(), rand::random::<u32>()));
+    let sheets = dir.join("sheets");
+    std::fs::create_dir_all(&sheets).unwrap();
+    let body = serde_json::json!({ "name": "sheets", "path": sheets.display().to_string(), "access": "read-write", "keep": "bytes" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/stock-sheet.holon"), "");
+    assert_eq!(data_call(&state, &slug, "PUT", "/stock/tea", r#"{"count":4}"#).0, 200);
+    assert_eq!(data_call(&state, &slug, "PUT", "/stock/tea", r#"{"count":40}"#).0, 200);
+    let seqs: Vec<u64> = log_entries(&state, &slug).iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    let (first, second) = (seqs[0], seqs[1]);
+    let dry = || {
+        let body = serde_json::json!({ "run": first, "state": true, "dry_run": true }).to_string().into_bytes();
+        body_json(route(&state, &req("POST", &format!("/deployments/{slug}/restore"), body)))["state"].clone()
+    };
+
+    let change = dry();
+    let file = &change["files"][0];
+    assert_eq!((file["folder"].clone(), file["name"].clone(), file["writes"].clone()), ("sheets".into(), "changes.txt".into(), 1.into()), "{change}");
+    assert_eq!((file["runs"].clone(), file["last"]["kind"].clone(), file["at_point"]["run"].clone()), (serde_json::json!([second]), "write".into(), first.into()));
+    assert_eq!(file["outside"], false, "on disk as run {second} left it");
+    assert_eq!((file["then_text"].clone(), file["now_text"].clone()), ("tea: 4\n".into(), "tea: 4\ntea: 40\n".into()), "then: the read run {second} kept");
+    assert_eq!(change["collections"]["stock"]["items"]["tea"]["then"]["value"], 4.0);
+    let said = crate::restore::file_line(file);
+    assert_eq!(said, format!("sheets/changes.txt: 1 write since, by run {second} (the last written)"));
+
+    // Edited by hand: not what the last run left. A restore still doesn't put it back.
+    std::fs::write(sheets.join("changes.txt"), "tea: 4\ntea: 40\nchecked by hand\n").unwrap();
+    let file = dry()["files"][0].clone();
+    assert_eq!((file["outside"].clone(), file["now_text"].clone()), (true.into(), "tea: 4\ntea: 40\nchecked by hand\n".into()));
+    let on_disk = blake3::hash(b"tea: 4\ntea: 40\nchecked by hand\n").to_hex().to_string();
+    assert!(
+        crate::restore::file_line(&file).ends_with(&format!("; changed outside a run since run {second}: on disk now #{}, not what run {second} left", &on_disk[..8])),
+        "{}",
+        crate::restore::file_line(&file)
+    );
+    std::fs::remove_file(sheets.join("changes.txt")).unwrap();
+    assert!(crate::restore::file_line(&dry()["files"][0]).ends_with(&format!("; gone from disk since run {second}, which left it")));
+
+    // Restored: the counts back, the file as it is.
+    let body = serde_json::json!({ "run": first, "state": true }).to_string().into_bytes();
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/restore"), body)).status_code, 200);
+    assert!(data_call(&state, &slug, "GET", "/stock/tea", "").1.contains("\"count\":4"));
+    assert!(!sheets.join("changes.txt").exists(), "a restore doesn't touch files");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A flow reads and writes files in the folders an admin bound, by name: deploying waits for the
