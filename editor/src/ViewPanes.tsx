@@ -1175,7 +1175,7 @@ export type InspectorRun = {
   inside: InsideStep[] | null;
 };
 
-type InspectorTab = "node" | "unit" | "state";
+type InspectorTab = "node" | "state";
 
 /**
  * The Inspector, on the canvas's right in both modes: the selected node (its docs, params and
@@ -1201,7 +1201,7 @@ export function Inspector({
 }) {
   const [picked, setTab] = useState<InspectorTab>("node");
   const tab = picked === "state" && !run ? "node" : picked;
-  const tabs: [InspectorTab, string][] = [["node", "Node"], ["unit", "Unit"], ...(run ? [["state", "Flow state"] as [InspectorTab, string]] : [])];
+  const tabs: [InspectorTab, string][] = [["node", "Node"], ...(run ? [["state", "Flow state"] as [InspectorTab, string]] : [])];
   if (!open) {
     return (
       <div className="nodrag nowheel hl-inspector hl-inspector--closed" style={paneStyle}>
@@ -1221,10 +1221,11 @@ export function Inspector({
       <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
         {tab === "state" && run ? (
           <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} />
-        ) : tab === "unit" ? (
-          node ? unit : <div>select a node to see what its unit is made of</div>
         ) : (
-          <ComponentTab node={node} run={run} source={source ?? null} />
+          <>
+            <ComponentTab node={node} run={run} source={source ?? null} />
+            {node && unit && <Section title="unit">{unit}</Section>}
+          </>
         )}
       </div>
     </div>
