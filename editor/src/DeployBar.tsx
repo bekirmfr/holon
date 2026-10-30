@@ -473,6 +473,36 @@ function AgentsMayRun({ capabilities, settings, setSettings }: { capabilities: s
   );
 }
 
+function GroupHead({ label, open, onToggle, first = false }: {
+  label: string; open: boolean; onToggle: () => void; first?: boolean;
+}) {
+  return (
+    <button
+      style={{
+        gridColumn: "1 / -1",
+        display: "flex",
+        alignItems: "center",
+        width: "100%",
+        font: "inherit",
+        background: "transparent",
+        border: "none",
+        borderTop: first ? "none" : "1px solid #1b2a45",
+        color: "#7e8ea8",
+        cursor: "pointer",
+        textAlign: "left",
+        padding: first ? "0 0 5px" : "8px 0 5px",
+        fontSize: 10,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+      }}
+      onClick={onToggle}
+    >
+      {label}
+      <span style={{ fontSize: 9, opacity: 0.5, marginLeft: "auto" }}>{open ? "▾" : "▸"}</span>
+    </button>
+  );
+}
+
 /**
  * The deployment settings panel: port, interval, limits, permissions, and secrets, rendered as
  * a persistent right-side panel. The ⚙ button in the canvas header opens it; the panel's own
@@ -512,6 +542,16 @@ export function DeployPanel({
   useEffect(() => {
     if (open) getEnvSecretNames().then((r) => setEnvNames(r.names)).catch(() => setEnvNames([]));
   }, [open]);
+
+  const [openGroups, setOpenGroups] = useState<Set<string>>(
+    () => new Set(["server", "limits", "network", "permissions", "secrets"])
+  );
+  const toggleGroup = (key: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
 
   if (!open) {
     return (
@@ -557,80 +597,104 @@ export function DeployPanel({
           whiteSpace: "nowrap",
         }}
       >
-        <span title="the port a flow with routes (request nodes) answers on">port</span>
-        <input value={settings.port} onChange={(e) => setSettings({ ...settings, port: e.target.value })} style={input} />
-        <span title="web pages on other sites that may call its routes (CORS): * for any, or origins like https://example.com">web pages from</span>
-        <input
-          value={settings.browsers ?? ""}
-          placeholder="none (* or https://site)"
-          onChange={(e) => setSettings({ ...settings, browsers: e.target.value })}
-          style={input}
-        />
-        {clocks.length > 0 ? (
+        <GroupHead label="server" open={openGroups.has("server")} onToggle={() => toggleGroup("server")} first />
+        {openGroups.has("server") && (
           <>
-            <span title="its every nodes: each runs its group on its own period">clocks</span>
-            <span style={{ color: "#e6eefb" }}>{clocks.join(", ")}</span>
-          </>
-        ) : (
-          <>
-            <span title="how often a flow without routes runs on the clock, in seconds">interval (s)</span>
+            <span title="the port a flow with routes (request nodes) answers on">port</span>
+            <input value={settings.port} onChange={(e) => setSettings({ ...settings, port: e.target.value })} style={input} />
+            <span title="web pages on other sites that may call its routes (CORS): * for any, or origins like https://example.com">web pages from</span>
             <input
-              value={settings.interval}
-              placeholder="clock flows"
-              onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
+              value={settings.browsers ?? ""}
+              placeholder="none (* or https://site)"
+              onChange={(e) => setSettings({ ...settings, browsers: e.target.value })}
               style={input}
             />
+            {clocks.length > 0 ? (
+              <>
+                <span title="its every nodes: each runs its group on its own period">clocks</span>
+                <span style={{ color: "#e6eefb" }}>{clocks.join(", ")}</span>
+              </>
+            ) : (
+              <>
+                <span title="how often a flow without routes runs on the clock, in seconds">interval (s)</span>
+                <input
+                  value={settings.interval}
+                  placeholder="clock flows"
+                  onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
+                  style={input}
+                />
+              </>
+            )}
           </>
         )}
-        <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="what it needs beyond its graph; the host must grant it">
-          needs (blank: this host's default)
-        </span>
-        {LIMITS.map(([name, label]) => (
-          <label key={name} style={{ display: "contents" }}>
-            <span>{label}</span>
-            <input
-              value={req?.limits?.[name] ?? ""}
-              placeholder={policy ? String(policy.defaults[name]) : ""}
-              title={policy ? `default ${policy.defaults[name]}, ceiling ${policy.ceilings[name]}` : undefined}
-              onChange={(e) => setSettings({ ...settings, requirements: withLimit(req, name, e.target.value) })}
-              style={{ ...input, width: 84 }}
-            />
-          </label>
-        ))}
-        <span title="hosts it may call over plain HTTP; this host must allow plain HTTP at all">plain HTTP to</span>
-        <input
-          value={(req?.plain_http ?? []).join(", ")}
-          placeholder="none"
-          autoComplete="off"
-          disabled={noPlainHttp && !hasPlainHttp}
-          title={noPlainHttp ? "this host never grants plain HTTP" + (hasPlainHttp ? ": clear this to deploy" : "") : "comma-separated host[:port]"}
-          onChange={(e) =>
-            setSettings({
-              ...settings,
-              requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
-            })
-          }
-          style={{ ...input, width: 140, ...(noPlainHttp && hasPlainHttp ? { borderColor: "#e0916f" } : {}) }}
-        />
-        <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
-        <input
-          type="checkbox"
-          checked={req?.private_addresses ?? false}
-          disabled={policy !== null && !policy.allow_private_addresses}
-          title={policy && !policy.allow_private_addresses ? "this host never grants private addresses" : undefined}
-          onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
-          style={{ justifySelf: "start" }}
-        />
-        <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} />
-        <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} />
-        {secretNames.length > 0 && (
-          <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
-            secrets{slug ? "" : " (name the flow first)"}
-          </span>
+        <GroupHead label="limits" open={openGroups.has("limits")} onToggle={() => toggleGroup("limits")} />
+        {openGroups.has("limits") && (
+          <>
+            {LIMITS.map(([name, label]) => (
+              <label key={name} style={{ display: "contents" }}>
+                <span>{label}</span>
+                <input
+                  value={req?.limits?.[name] ?? ""}
+                  placeholder={policy ? String(policy.defaults[name]) : ""}
+                  title={policy ? `default ${policy.defaults[name]}, ceiling ${policy.ceilings[name]}` : undefined}
+                  onChange={(e) => setSettings({ ...settings, requirements: withLimit(req, name, e.target.value) })}
+                  style={{ ...input, width: 84 }}
+                />
+              </label>
+            ))}
+          </>
         )}
-        {secretNames.map((name) => (
-          <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} envNames={envNames} onChanged={reloadSecrets} />
-        ))}
+        <GroupHead label="network" open={openGroups.has("network")} onToggle={() => toggleGroup("network")} />
+        {openGroups.has("network") && (
+          <>
+            <span title="hosts it may call over plain HTTP; this host must allow plain HTTP at all">plain HTTP to</span>
+            <input
+              value={(req?.plain_http ?? []).join(", ")}
+              placeholder="none"
+              autoComplete="off"
+              disabled={noPlainHttp && !hasPlainHttp}
+              title={noPlainHttp ? "this host never grants plain HTTP" + (hasPlainHttp ? ": clear this to deploy" : "") : "comma-separated host[:port]"}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
+                })
+              }
+              style={{ ...input, width: 140, ...(noPlainHttp && hasPlainHttp ? { borderColor: "#e0916f" } : {}) }}
+            />
+            <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
+            <input
+              type="checkbox"
+              checked={req?.private_addresses ?? false}
+              disabled={policy !== null && !policy.allow_private_addresses}
+              title={policy && !policy.allow_private_addresses ? "this host never grants private addresses" : undefined}
+              onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
+              style={{ justifySelf: "start" }}
+            />
+          </>
+        )}
+        <GroupHead label="permissions" open={openGroups.has("permissions")} onToggle={() => toggleGroup("permissions")} />
+        {openGroups.has("permissions") && (
+          <>
+            <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} />
+            <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} />
+          </>
+        )}
+        {secretNames.length > 0 && (
+          <>
+            <GroupHead label="secrets" open={openGroups.has("secrets")} onToggle={() => toggleGroup("secrets")} />
+            {openGroups.has("secrets") && (
+              <>
+                {!slug && (
+                  <span style={{ gridColumn: "1 / -1", color: "#7e8ea8", fontStyle: "italic" }}>name the flow first</span>
+                )}
+                {secretNames.map((name) => (
+                  <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} envNames={envNames} onChanged={reloadSecrets} />
+                ))}
+              </>
+            )}
+          </>
+        )}
       </div>
     </aside>
   );
