@@ -321,8 +321,19 @@ export function BottomPane({
   const [live, setLive] = useState(() => selected === null);
 
   const newest = entries[entries.length - 1];
+  // The run live last showed: one picked elsewhere instead (a cell's history's row) stops live,
+  // so it stays shown rather than the newest coming back over it.
+  const followed = useRef<number | null>(null);
   useEffect(() => {
-    if (live && newest && newest.seq !== selected?.seq) onSelect(newest);
+    if (!live || !newest) return;
+    if (selected && followed.current !== null && selected.seq !== followed.current && selected.seq !== newest.seq) {
+      setLive(false);
+      return;
+    }
+    if (newest.seq !== selected?.seq) {
+      followed.current = newest.seq;
+      onSelect(newest);
+    }
   }, [live, newest, selected, onSelect]);
 
   const pick = (e: LogEntry) => {
