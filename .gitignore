@@ -14,3 +14,5 @@
 .holon-store/
 # The dev launch config's (.claude/launch.json) copy of the same, kept apart from a default run's.
 .holon/
+# Temporary folder for tests
+temp/
