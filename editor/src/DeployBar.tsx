@@ -4,7 +4,6 @@
 // of its manifest). The deployment is named after the flow, so there is no separate slug.
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { createPortal } from "react-dom";
 import { describeItem, manifestTrigger } from "./holon";
 import {
   deleteSecret,
@@ -95,69 +94,25 @@ export function DeployBar({
   entry,
   outOfDate,
   busy,
-  settings,
-  setSettings,
   onDeploy,
   onAction,
-  slug,
-  secretNames,
-  capabilities,
-  clocks = [],
-  fileFolders = [],
   startsNothing = false,
   onMakeRunnable,
+  onSettingsOpen,
 }: {
   /** This flow's deployment, if it has one. */
   entry: DeploymentEntry | undefined;
   /** The canvas no longer matches what is deployed (known for servers; null when unknown). */
   outOfDate: boolean | null;
   busy: boolean;
-  settings: FlowSettings;
-  setSettings: (s: FlowSettings) => void;
   onDeploy: () => void;
   onAction: (action: "run" | "pause" | "stop") => void;
-  /** What the flow asks for, by consent name: each but its trigger can be marked optional. */
-  capabilities: string[];
-  /** The flow's name: its deployment's slug, and whose secrets these are. */
-  slug: string | null;
-  /** The secret names the canvas reads. */
-  secretNames: string[];
-  /** Its clocks' labels (`every 2s`), when it has `every` nodes: their periods are on the
-   *  canvas, so it takes no interval. */
-  clocks?: string[];
-  /** The folders its file handlers (`on file` blocks) watch: what starts them is never optional. */
-  fileFolders?: string[];
   /** Nothing would start a run (no route, clock, file handler or action): deploy is greyed. */
   startsNothing?: boolean;
   /** The quick fix for that: its statements put in `action run (input) { … }`. */
   onMakeRunnable?: () => void;
+  onSettingsOpen?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [policy, setPolicy] = useState<HostPolicy | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
-  useEffect(() => {
-    if (open && !policy) getPermissions().then(setPolicy).catch(() => {});
-  }, [open, policy]);
-  // The secrets set: versions and sources, never values (the server never sends one back).
-  const [secrets, setSecrets] = useState<SecretInfo[]>([]);
-  const reloadSecrets = () => {
-    if (slug) listSecrets(slug).then(setSecrets).catch(() => setSecrets([]));
-  };
-  useEffect(reloadSecrets, [open, slug]);
-  // The env variables a secret can name, for an admin (the server re-reads its dotenv file, so a
-  // line just added shows); anyone else gets none and types the name.
-  const [envNames, setEnvNames] = useState<string[]>([]);
-  useEffect(() => {
-    if (open) getEnvSecretNames().then((r) => setEnvNames(r.names)).catch(() => setEnvNames([]));
-  }, [open]);
-  const req = settings.requirements;
-  const noPlainHttp = policy !== null && !policy.allow_plain_http;
-  const hasPlainHttp = (req?.plain_http ?? []).length > 0;
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
   const title = startsNothing
@@ -227,130 +182,9 @@ export function DeployBar({
           )}
         </>
       )}
-      <button style={base} onClick={() => setOpen(!open)} title="deploy settings: port, clock interval, what it needs">
+      <button style={base} onClick={onSettingsOpen} title="deploy settings: port, clock interval, what it needs">
         ⚙
       </button>
-      {open &&
-        // A modal on the page itself: inside the canvas header it would be clipped by the canvas.
-        createPortal(
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="deploy settings"
-            onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}
-            style={{
-              position: "fixed",
-              inset: 0,
-              background: "rgba(5, 10, 20, 0.6)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 1000,
-            }}
-          >
-            <div
-              style={{
-                maxHeight: "calc(100vh - 32px)",
-                maxWidth: "calc(100vw - 32px)",
-                overflow: "auto",
-                background: "#0b1527",
-                border: "1px solid #1b2a45",
-                borderRadius: 6,
-                padding: 14,
-                display: "grid",
-                gridTemplateColumns: "auto auto",
-                gap: 6,
-                alignItems: "center",
-                fontSize: 11,
-                color: "#9fb4d4",
-                whiteSpace: "nowrap",
-              }}
-            >
-              <span style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                <span style={{ color: "#e6eefb", fontSize: 13, flex: 1 }}>deploy settings{slug ? ` · ${slug}` : ""}</span>
-                <button style={primary} onClick={() => setOpen(false)} title="close (Esc); settings are kept as you type">
-                  done
-                </button>
-              </span>
-              <span title="the port a flow with routes (request nodes) answers on">port</span>
-              <input value={settings.port} onChange={(e) => setSettings({ ...settings, port: e.target.value })} style={input} />
-              <span title="web pages on other sites that may call its routes (CORS): * for any, or origins like https://example.com">web pages from</span>
-              <input
-                value={settings.browsers ?? ""}
-                placeholder="none (* or https://site)"
-                onChange={(e) => setSettings({ ...settings, browsers: e.target.value })}
-                style={input}
-              />
-              {clocks.length > 0 ? (
-                <>
-                  <span title="its every nodes: each runs its group on its own period">clocks</span>
-                  <span style={{ color: "#e6eefb" }}>{clocks.join(", ")}</span>
-                </>
-              ) : (
-                <>
-                  <span title="how often a flow without routes runs on the clock, in seconds">interval (s)</span>
-                  <input
-                    value={settings.interval}
-                    placeholder="clock flows"
-                    onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
-                    style={input}
-                  />
-                </>
-              )}
-              <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="what it needs beyond its graph; the host must grant it">
-                needs (blank: this host's default)
-              </span>
-              {LIMITS.map(([name, label]) => (
-                <label key={name} style={{ display: "contents" }}>
-                  <span>{label}</span>
-                  <input
-                    value={req?.limits?.[name] ?? ""}
-                    placeholder={policy ? String(policy.defaults[name]) : ""}
-                    title={policy ? `default ${policy.defaults[name]}, ceiling ${policy.ceilings[name]}` : undefined}
-                    onChange={(e) => setSettings({ ...settings, requirements: withLimit(req, name, e.target.value) })}
-                    style={{ ...input, width: 84 }}
-                  />
-                </label>
-              ))}
-              <span title="hosts it may call over plain HTTP; this host must allow plain HTTP at all">plain HTTP to</span>
-              <input
-                value={(req?.plain_http ?? []).join(", ")}
-                placeholder="none"
-                autoComplete="off"
-                // A host this policy refuses stays here to be cleared, not greyed out with it.
-                disabled={noPlainHttp && !hasPlainHttp}
-                title={noPlainHttp ? "this host never grants plain HTTP" + (hasPlainHttp ? ": clear this to deploy" : "") : "comma-separated host[:port]"}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
-                  })
-                }
-                style={{ ...input, width: 140, ...(noPlainHttp && hasPlainHttp ? { borderColor: "#e0916f" } : {}) }}
-              />
-              <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
-              <input
-                type="checkbox"
-                checked={req?.private_addresses ?? false}
-                disabled={policy !== null && !policy.allow_private_addresses}
-                title={policy && !policy.allow_private_addresses ? "this host never grants private addresses" : undefined}
-                onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
-                style={{ justifySelf: "start" }}
-              />
-              <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} />
-              <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} />
-              {secretNames.length > 0 && (
-                <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
-                  secrets{slug ? "" : " (name the flow first)"}
-                </span>
-              )}
-              {secretNames.map((name) => (
-                <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} envNames={envNames} onChanged={reloadSecrets} />
-              ))}
-            </div>
-          </div>,
-          document.body,
-        )}
     </span>
   );
 }
@@ -636,5 +470,168 @@ function AgentsMayRun({ capabilities, settings, setSettings }: { capabilities: s
         );
       })}
     </>
+  );
+}
+
+/**
+ * The deployment settings panel: port, interval, limits, permissions, and secrets, rendered as
+ * a persistent right-side panel. The ⚙ button in the canvas header opens it; the panel's own
+ * header closes it. Open/closed state is owned by the parent (App.tsx).
+ */
+export function DeployPanel({
+  open,
+  onOpen,
+  settings,
+  setSettings,
+  slug,
+  secretNames,
+  capabilities,
+  clocks = [],
+  fileFolders = [],
+}: {
+  open: boolean;
+  onOpen: (open: boolean) => void;
+  settings: FlowSettings;
+  setSettings: (s: FlowSettings) => void;
+  slug: string | null;
+  secretNames: string[];
+  capabilities: string[];
+  clocks?: string[];
+  fileFolders?: string[];
+}) {
+  const [policy, setPolicy] = useState<HostPolicy | null>(null);
+  const [secrets, setSecrets] = useState<SecretInfo[]>([]);
+  const [envNames, setEnvNames] = useState<string[]>([]);
+  const reloadSecrets = () => {
+    if (slug) listSecrets(slug).then(setSecrets).catch(() => setSecrets([]));
+  };
+  useEffect(() => {
+    if (open && !policy) getPermissions().then(setPolicy).catch(() => {});
+  }, [open, policy]);
+  useEffect(reloadSecrets, [open, slug]);
+  useEffect(() => {
+    if (open) getEnvSecretNames().then((r) => setEnvNames(r.names)).catch(() => setEnvNames([]));
+  }, [open]);
+
+  if (!open) {
+    return (
+      <aside className="hl-deploy hl-deploy--closed">
+        <button
+          className="hl-deploy__fold"
+          onClick={() => onOpen(true)}
+          title="deployment settings"
+          aria-label="open deployment settings"
+        >
+          deployment
+        </button>
+      </aside>
+    );
+  }
+
+  const req = settings.requirements;
+  const noPlainHttp = policy !== null && !policy.allow_plain_http;
+  const hasPlainHttp = (req?.plain_http ?? []).length > 0;
+
+  return (
+    <aside className="hl-deploy" role="complementary" aria-label="Deployment settings">
+      <div className="hl-panel-header">
+        <span className="hl-panel-header__title">deployment</span>
+        <button
+          className="hl-panel-header__btn"
+          onClick={() => onOpen(false)}
+          title="hide deployment panel"
+          aria-label="hide deployment panel"
+        >›</button>
+      </div>
+      <div
+        style={{
+          flex: "1 1 0",
+          overflowY: "auto",
+          padding: "8px 12px",
+          display: "grid",
+          gridTemplateColumns: "auto auto",
+          gap: 6,
+          alignItems: "center",
+          fontSize: 11,
+          color: "#9fb4d4",
+          whiteSpace: "nowrap",
+        }}
+      >
+        <span title="the port a flow with routes (request nodes) answers on">port</span>
+        <input value={settings.port} onChange={(e) => setSettings({ ...settings, port: e.target.value })} style={input} />
+        <span title="web pages on other sites that may call its routes (CORS): * for any, or origins like https://example.com">web pages from</span>
+        <input
+          value={settings.browsers ?? ""}
+          placeholder="none (* or https://site)"
+          onChange={(e) => setSettings({ ...settings, browsers: e.target.value })}
+          style={input}
+        />
+        {clocks.length > 0 ? (
+          <>
+            <span title="its every nodes: each runs its group on its own period">clocks</span>
+            <span style={{ color: "#e6eefb" }}>{clocks.join(", ")}</span>
+          </>
+        ) : (
+          <>
+            <span title="how often a flow without routes runs on the clock, in seconds">interval (s)</span>
+            <input
+              value={settings.interval}
+              placeholder="clock flows"
+              onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
+              style={input}
+            />
+          </>
+        )}
+        <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="what it needs beyond its graph; the host must grant it">
+          needs (blank: this host's default)
+        </span>
+        {LIMITS.map(([name, label]) => (
+          <label key={name} style={{ display: "contents" }}>
+            <span>{label}</span>
+            <input
+              value={req?.limits?.[name] ?? ""}
+              placeholder={policy ? String(policy.defaults[name]) : ""}
+              title={policy ? `default ${policy.defaults[name]}, ceiling ${policy.ceilings[name]}` : undefined}
+              onChange={(e) => setSettings({ ...settings, requirements: withLimit(req, name, e.target.value) })}
+              style={{ ...input, width: 84 }}
+            />
+          </label>
+        ))}
+        <span title="hosts it may call over plain HTTP; this host must allow plain HTTP at all">plain HTTP to</span>
+        <input
+          value={(req?.plain_http ?? []).join(", ")}
+          placeholder="none"
+          autoComplete="off"
+          disabled={noPlainHttp && !hasPlainHttp}
+          title={noPlainHttp ? "this host never grants plain HTTP" + (hasPlainHttp ? ": clear this to deploy" : "") : "comma-separated host[:port]"}
+          onChange={(e) =>
+            setSettings({
+              ...settings,
+              requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
+            })
+          }
+          style={{ ...input, width: 140, ...(noPlainHttp && hasPlainHttp ? { borderColor: "#e0916f" } : {}) }}
+        />
+        <span title="this machine and its network: loopback, private and link-local addresses">private addresses</span>
+        <input
+          type="checkbox"
+          checked={req?.private_addresses ?? false}
+          disabled={policy !== null && !policy.allow_private_addresses}
+          title={policy && !policy.allow_private_addresses ? "this host never grants private addresses" : undefined}
+          onChange={(e) => setSettings({ ...settings, requirements: { ...req, private_addresses: e.target.checked } })}
+          style={{ justifySelf: "start" }}
+        />
+        <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} />
+        <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} />
+        {secretNames.length > 0 && (
+          <span style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }} title="kept by the server, never shown again">
+            secrets{slug ? "" : " (name the flow first)"}
+          </span>
+        )}
+        {secretNames.map((name) => (
+          <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} envNames={envNames} onChanged={reloadSecrets} />
+        ))}
+      </div>
+    </aside>
   );
 }

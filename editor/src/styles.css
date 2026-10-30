@@ -103,6 +103,26 @@ body {
 }
 .hl-palette__name { font-size: 13px; }
 
+/* ── Deployment panel: right of the canvas, mirrors the palette's fold pattern ─ */
+.hl-deploy {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--panel-2);
+  min-height: 0;
+}
+.hl-deploy--closed {
+  flex: 0 0 28px;
+  overflow: hidden;
+}
+.hl-deploy__fold {
+  writing-mode: vertical-rl; font: inherit; font-size: 11px; letter-spacing: 0.06em;
+  background: transparent; border: none; color: var(--ink-dim); cursor: pointer;
+  padding: 10px 0; width: 100%;
+}
+.hl-deploy__fold:hover { color: var(--ink); }
+
 /* ── Tabs: one per open flow, above the canvas ───────────────────────────── */
 .hl-main { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
 /* Under the tabs: the palette (a flow tab's, in edit mode) beside the canvas. */

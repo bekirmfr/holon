@@ -44,7 +44,7 @@ import { structuralKey } from "./flowDoc";
 import { knownNames, rememberName, restoreDocument } from "./docUnits";
 import { DialogProvider, useDialog } from "./Dialog";
 import { ServerPanel } from "./ServerPanel";
-import { DeployBar, DEFAULT_SETTINGS } from "./DeployBar";
+import { DeployBar, DeployPanel, DEFAULT_SETTINGS } from "./DeployBar";
 import { templateNames } from "./templates";
 import { primitiveName, unitFor } from "./canvasUnits";
 import {
@@ -162,6 +162,13 @@ function Canvas({
   const onPaletteOpen = useCallback((open: boolean) => {
     setPaletteOpen(open);
     try { localStorage.setItem("holon.palette", open ? "open" : "closed"); } catch { /* ignore */ }
+  }, []);
+  const [deployPanelOpen, setDeployPanelOpen] = useState(() => {
+    try { return localStorage.getItem("holon.deploy") !== "closed"; } catch { return false; }
+  });
+  const onDeployPanelOpen = useCallback((open: boolean) => {
+    setDeployPanelOpen(open);
+    try { localStorage.setItem("holon.deploy", open ? "open" : "closed"); } catch { /* ignore */ }
   }, []);
 
   const canvasKey = useMemo(() => structuralKey(nodes, edges), [nodes, edges]);
@@ -840,16 +847,10 @@ function Canvas({
                   entry={deployedEntry}
                   outOfDate={outOfDate}
                   busy={deployBusy}
-                  settings={settings}
-                  setSettings={setSettings}
                   onDeploy={onDeployFlow}
                   onAction={onFlowAction}
-                  slug={flowName}
-                  secretNames={secretNames}
-                  capabilities={flowCapabilities}
-                  clocks={derived.clocks.map((c) => c.label)}
-                  fileFolders={derived.files.map((f) => f.folder)}
                   startsNothing={startsNothing}
+                  onSettingsOpen={() => onDeployPanelOpen(true)}
                   onMakeRunnable={() => {
                     try {
                       textPane.rewrite(runnableByHand);
@@ -1006,6 +1007,19 @@ function Canvas({
         </div>
       )}
     </div>
+    {shown === "canvas" && (
+      <DeployPanel
+        open={deployPanelOpen}
+        onOpen={onDeployPanelOpen}
+        settings={settings}
+        setSettings={setSettings}
+        slug={flowName}
+        secretNames={secretNames}
+        capabilities={flowCapabilities}
+        clocks={derived.clocks.map((c) => c.label)}
+        fileFolders={derived.files.map((f) => f.folder)}
+      />
+    )}
     </div>
     </div>
     </NodeActions.Provider>
