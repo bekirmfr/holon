@@ -216,7 +216,6 @@ test("the Inspector shows the selected node in edit mode: its ports, and its uni
   // part of that expression.
   await expect(inspector).toContainText("as text, line");
   await expect(inspector.locator(".hl-inspector__source")).toHaveText('respond "Hello, {req.params.name}"');
-  await inspector.getByRole("button", { name: "Unit", exact: true }).click();
   await expect(inspector).toContainText("Pure");
   // Folded to a strip, and opened again.
   await inspector.getByRole("button", { name: "fold the Inspector" }).click();
