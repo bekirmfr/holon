@@ -43,8 +43,8 @@ import { Inspector } from "./ViewPanes";
 import { structuralKey } from "./flowDoc";
 import { knownNames, rememberName, restoreDocument } from "./docUnits";
 import { DialogProvider, useDialog } from "./Dialog";
-import { ServerPanel } from "./ServerPanel";
-import { DeployBar, DEFAULT_SETTINGS } from "./DeployBar";
+import { ToolsPanel } from "./ServerPanel";
+import { DeployBar, DeployPanel, DEFAULT_SETTINGS } from "./DeployBar";
 import { templateNames } from "./templates";
 import { primitiveName, unitFor } from "./canvasUnits";
 import {
@@ -155,6 +155,27 @@ function Canvas({
     } catch {
       // Not remembered, then.
     }
+  }, []);
+  const [paletteOpen, setPaletteOpen] = useState(() => {
+    try { return localStorage.getItem("holon.palette") !== "closed"; } catch { return true; }
+  });
+  const onPaletteOpen = useCallback((open: boolean) => {
+    setPaletteOpen(open);
+    try { localStorage.setItem("holon.palette", open ? "open" : "closed"); } catch { /* ignore */ }
+  }, []);
+  const [deployPanelOpen, setDeployPanelOpen] = useState(() => {
+    try { return localStorage.getItem("holon.deploy") !== "closed"; } catch { return false; }
+  });
+  const onDeployPanelOpen = useCallback((open: boolean) => {
+    setDeployPanelOpen(open);
+    try { localStorage.setItem("holon.deploy", open ? "open" : "closed"); } catch { /* ignore */ }
+  }, []);
+  const [toolsPanelOpen, setToolsPanelOpen] = useState(() => {
+    try { return localStorage.getItem("holon.tools") !== "closed"; } catch { return true; }
+  });
+  const onToolsPanelOpen = useCallback((open: boolean) => {
+    setToolsPanelOpen(open);
+    try { localStorage.setItem("holon.tools", open ? "open" : "closed"); } catch { /* ignore */ }
   }, []);
 
   const canvasKey = useMemo(() => structuralKey(nodes, edges), [nodes, edges]);
@@ -775,6 +796,8 @@ function Canvas({
         flows={savedFlows.filter((f) => f !== flowName)}
         market={{ url: market.url, error: market.error, entries: market.catalog }}
         docs={docs}
+        open={paletteOpen}
+        onOpen={onPaletteOpen}
       />
     )}
     <div
@@ -831,16 +854,10 @@ function Canvas({
                   entry={deployedEntry}
                   outOfDate={outOfDate}
                   busy={deployBusy}
-                  settings={settings}
-                  setSettings={setSettings}
                   onDeploy={onDeployFlow}
                   onAction={onFlowAction}
-                  slug={flowName}
-                  secretNames={secretNames}
-                  capabilities={flowCapabilities}
-                  clocks={derived.clocks.map((c) => c.label)}
-                  fileFolders={derived.files.map((f) => f.folder)}
                   startsNothing={startsNothing}
+                  onSettingsOpen={() => onDeployPanelOpen(true)}
                   onMakeRunnable={() => {
                     try {
                       textPane.rewrite(runnableByHand);
@@ -870,24 +887,6 @@ function Canvas({
                 onBoundaryChange={setBoundaryValue}
                 onExcludeOutput={excludeOutput}
                 error={projError}
-              />
-            </Panel>
-          )}
-          {!viewing && (
-            <Panel position="bottom-left" style={{ marginLeft: 56 }}>
-              <ServerPanel
-                key={flowName ?? ""}
-                ev={ev}
-                endpoints={derived.endpoints}
-                clocks={derived.clocks}
-                files={derived.files}
-                actions={derived.actions}
-                errors={derived.errors}
-                liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
-                tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
-                role={me.role}
-                outOfDate={outOfDate === true}
-                onViewRun={(seq) => flowName && onView(flowName, seq)}
               />
             </Panel>
           )}
@@ -997,6 +996,38 @@ function Canvas({
         </div>
       )}
     </div>
+    {shown === "canvas" && (
+      <ToolsPanel
+        key={flowName ?? ""}
+        open={toolsPanelOpen}
+        onOpen={onToolsPanelOpen}
+        ev={ev}
+        endpoints={derived.endpoints}
+        clocks={derived.clocks}
+        files={derived.files}
+        actions={derived.actions}
+        errors={derived.errors}
+        liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
+        tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
+        role={me.role}
+        outOfDate={outOfDate === true}
+        onViewRun={(seq) => flowName && onView(flowName, seq)}
+      />
+    )}
+    {shown === "canvas" && (
+      <DeployPanel
+        open={deployPanelOpen}
+        onOpen={onDeployPanelOpen}
+        settings={settings}
+        setSettings={setSettings}
+        slug={flowName}
+        secretNames={secretNames}
+        capabilities={flowCapabilities}
+        clocks={derived.clocks.map((c) => c.label)}
+        fileFolders={derived.files.map((f) => f.folder)}
+        readOnly={viewing !== null}
+      />
+    )}
     </div>
     </div>
     </NodeActions.Provider>
