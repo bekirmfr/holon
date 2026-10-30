@@ -283,15 +283,23 @@ Beside its runs, a deployment keeps what was done to it, each with who and when:
 `--last N` shows the newest N runs (20 by default) and the events among them; `--events`, every
 event, without the runs. `GET /deployments/<slug>/events` answers them as JSON.
 
-In the editor, view mode's **history** (beside **runs**, above the run list) is the same
-timeline, newest first, filtered by kind: runs, deploys, access (grants, secrets, bindings) and
-lifecycle. Pick a version or a run in it:
+In the editor, view mode's **history** button (beside "filter runs…", above the run list) shows
+the same timeline, newest first, without the runs (the run list has them; **runs** puts them
+back), filtered by kind: deploys, access (grants, secrets, bindings) and lifecycle, and by the
+words in the filter. Any row of it is picked, and its details show beside it; and any row is gone
+back to: a run or a version to itself, anything else (a restore, a grant, a pause) to how it was
+right after it: the version deployed then, and the state then, which is what the run before it
+left, or what the restore before it put back (a restore names the point it put back, `from` in
+its event). Picked:
 
 - **canvas** (a version) shows the canvas it was deployed with;
 - **code**, **state** or **both** restore it, as `holon restore` does: a dry run first, and a
   dialog that says what it changes (the keys, and what the runs since did outside, which a restore
   doesn't undo) and asks to approve what the code needs that today's grant doesn't cover. A
   button that can't apply is off, and says why: the version deployed now, a state not kept.
+
+**↺** on a row, in the history or the run list, restores whatever of it can be, through the same
+dry run and dialog.
 
 Events are **recorded, never restored**: [going back](#going-back-to-an-earlier-version) puts back
 code and state only, and the grant, secrets and bindings stay as they are now. They are kept for

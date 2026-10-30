@@ -2,12 +2,16 @@
 
 ## Unreleased
 
-- **The editor shows a deployment's history, and restores from it.** View mode's **history**, beside
-  its runs, merges runs, versions and events newest first, filtered by kind. A version or a run
-  picked there restores its code, its state or both: a dry run first, confirmed in a dialog that
-  says what changes and asks to approve what today's grant doesn't cover; **canvas** shows a
-  version's. `GET /deployments/<slug>/versions` also answers each version's `first_seq`. The
-  **price-rollback** sample's e2e restores through it.
+- **The editor shows a deployment's history, and restores from it.** View mode's **history** button,
+  beside the runs' filter, shows what was done to it and its versions newest first, filtered by
+  kind and by words (its runs too, when asked). Any row picked shows its details, and any row is
+  gone back to: a run or a version to itself, a restore, a grant or a pause to how it was right
+  after (the version then, the state then). Picked, it restores its code, its state or both; **↺**
+  on a row, there or in the run list, restores what it can: a dry run first, confirmed in a dialog
+  that says what changes and asks to approve what today's grant doesn't cover; **canvas** shows a
+  version's. `GET /deployments/<slug>/versions` also answers each version's `first_seq`, and a
+  restore's event the point it put back (`from`). The **price-rollback** sample's e2e restores
+  through it, a restore's row with ↺ too.
 
 - **What was done to a deployment is on its timeline.** Deploys, restores, grant changes (revoked,
   granted back, lowered), secrets set, removed or rolled back (name, version and source, never a

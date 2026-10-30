@@ -45,6 +45,10 @@ pub(crate) struct Event {
     /// The secret, folder or database it was about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) name: Option<String>,
+    /// The point whose state a restore put back (`"version 3"`, `"run 41"`): where going back to
+    /// the restore goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) from: Option<String>,
 }
 
 /// What an event says beyond its kind and words.
@@ -53,6 +57,7 @@ pub(crate) struct Detail {
     pub(crate) version: Option<u32>,
     pub(crate) session: Option<u32>,
     pub(crate) name: Option<String>,
+    pub(crate) from: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -117,6 +122,7 @@ impl Events {
             version: detail.version,
             session: detail.session,
             name: detail.name,
+            from: detail.from,
         };
         let line = match serde_json::to_string(&event) {
             Ok(line) => line,

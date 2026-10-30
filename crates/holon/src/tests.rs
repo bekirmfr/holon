@@ -3539,7 +3539,7 @@ fn what_was_done_to_a_deployment_is_its_events() {
     assert!(events[3]["by"].is_null() && events[5]["by"].is_null(), "the host's own: by nobody");
     assert_eq!((events[0]["run_seq"].clone(), events[1]["run_seq"].clone()), (0.into(), 1.into()), "the secret was set after run 0");
     assert_eq!(events[1]["name"], "api_key");
-    assert_eq!(events[10]["session"], 3);
+    assert_eq!((events[10]["session"].clone(), events[10]["from"].clone()), (3.into(), "run 0".into()), "what going back to the restore puts back");
     assert!(listed["breaks"].as_array().unwrap().is_empty());
 
     // Exported with the runs, checked, and never holding a secret's value.

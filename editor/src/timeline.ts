@@ -65,6 +65,18 @@ export function filterOf(item: TimelineItem): TimelineFilter {
   return k === "deploy" || k === "restore" ? "versions" : k === "lifecycle" ? "lifecycle" : "access";
 }
 
+/** What a version row says: deployed, or restored as it. */
+export const versionWhat = (v: VersionEntry) =>
+  v.restored_from ? `restored version ${v.restored_from}'s code, as version ${v.number}` : `deployed version ${v.number}`;
+
+/** An item's words, as its row shows them: what the history's filter matches. */
+export function itemText(item: TimelineItem): string {
+  const by = (who: string | null | undefined) => (who ? `by ${who}` : "by the host");
+  if (item.kind === "run") return `run #${item.run.seq} ${item.run.route ?? item.run.kind} s${item.run.session}`;
+  if (item.kind === "version") return `deploy ${versionWhat(item.version)} ${by(item.version.by)}`;
+  return `${item.event.kind} ${item.event.what} ${by(item.event.by)}`;
+}
+
 /** A point's name, as a restore says it: `version 2`, `run 41`. */
 export const pointLabel = (p: RestorePoint) => ("version" in p ? `version ${p.version}` : `run ${p.run}`);
 
@@ -121,36 +133,129 @@ export function stateLines(change: StateChange): string[] {
   return lines;
 }
 
-/** A restore's confirmation, from its dry run; and the button that confirms it. `describe` says a
- *  permission (core's words, through wasm). */
-export function restoreMessage(
-  slug: string,
-  point: RestorePoint,
-  what: { code: boolean; state: boolean },
-  preview: RestorePreview,
-  describe: (item: string) => string = describeItem,
-): { lines: string[]; action: string } {
-  const which = what.code && what.state ? "code and state" : what.code ? "code" : "state";
-  const lines = [`Restore "${slug}" to ${pointLabel(point)}: its ${which}?`];
-  const needs = preview.needs_approval ?? [];
-  if (what.code) {
-    if (preview.code === null) lines.push("", `${pointLabel(point)} ran on the code deployed now: only its state is restored.`);
-    else {
-      lines.push("", `Version ${preview.code}'s code is deployed again, as a new version, checked against the grant "${slug}" has now.`);
-      if (needs.length > 0) lines.push("", "It needs your approval to:", ...needs.map((i) => `• ${describe(i)}`));
-      if ((preview.missing_secrets ?? []).length > 0) {
-        lines.push("", `Not set now: ${preview.missing_secrets!.join(", ")} (those nodes stay empty until they are).`);
-      }
+/** Where going back to a row goes: the point its code comes from and the point its state comes
+ *  from, and why not, for each, when it can't. A run's and a version's are themselves; anything
+ *  else done to it (a restore, a grant, a pause), how it was right after: the version deployed
+ *  then, and the state then (what the run before it left, or the restore before it put back). */
+export type Target = {
+  label: string;
+  code: RestorePoint | null;
+  state: RestorePoint | null;
+  why: PointOptions;
+  /** The event it is, when it is one: what happened then. */
+  event?: DeploymentEvent;
+};
+
+/** A point named as a restore names it (`version 3`, `run 41`), or null. */
+export function parsePoint(label: string | undefined): RestorePoint | null {
+  const m = /^(version|run) (\d+)$/.exec(label ?? "");
+  if (!m) return null;
+  return m[1] === "version" ? { version: Number(m[2]) } : { run: Number(m[2]) };
+}
+
+/** Where `timeline[i]` goes back to. `timeline` is all of it, newest first, its runs too. */
+export function targetOf(timeline: TimelineItem[], i: number, currentUnit: string | undefined): Target {
+  const item = timeline[i];
+  if (item.kind === "run") {
+    const p = { run: item.run.seq };
+    return { label: `run ${item.run.seq}`, code: p, state: p, why: runOptions(item.run, currentUnit) };
+  }
+  const version = item.version;
+  if (version) {
+    const p = { version: version.number };
+    return { label: `version ${version.number}`, code: p, state: p, why: versionOptions(version) };
+  }
+  if (item.kind !== "event") throw new Error("unreachable: a version item has its version");
+  const event = item.event;
+  const before = timeline.slice(i + 1);
+  // The code: the version deployed then.
+  const deployed = before.map((x) => (x.kind === "run" ? undefined : x.version)).find((v) => v !== undefined);
+  const code = deployed
+    ? { point: { version: deployed.number }, why: deployed.current ? "the code it had then is the code deployed now" : versionOptions(deployed).code }
+    : { point: null, why: "no version was deployed before it" };
+  // The state: a restore's is what it put back; anything else's, what was there before it.
+  const state = event.kind === "restore" ? restoredState(event) : stateBefore(before);
+  return { label: `event #${event.seq}`, code: code.point, state: state.point, why: { code: code.why, state: state.why }, event };
+}
+
+/** The point a restore put back: its `from`, or, recorded before it had one, its words. */
+function restoredState(event: DeploymentEvent): { point: RestorePoint | null; why: string | null } {
+  const point = parsePoint(event.from) ?? parsePoint(/^put back the state (.+) left, in session \d+$/.exec(event.what)?.[1]);
+  return point ? { point, why: null } : { point: null, why: "it was recorded before a restore named the point it put back" };
+}
+
+/** The state as it was after `before` (newest first): the last run's that committed one, or what
+ *  a restore after it put back. */
+function stateBefore(before: TimelineItem[]): { point: RestorePoint | null; why: string | null } {
+  for (const x of before) {
+    if (x.kind === "run") {
+      if (x.run.state_after) return { point: { run: x.run.seq }, why: null };
+      continue;
+    }
+    if (x.kind !== "event") continue;
+    if (x.event.kind === "restore") return restoredState(x.event);
+    // A run after a stop starts from a state of its own, unless it goes on from the latest.
+    if (x.event.kind === "lifecycle" && x.event.session !== undefined && !x.event.what.startsWith("ran from latest")) {
+      return { point: null, why: `its state then came from a stop ("${x.event.what}"), which isn't a point to go back to` };
     }
   }
-  if (preview.state) lines.push("", ...stateLines(preview.state));
+  return { point: null, why: "no run had left a state before it" };
+}
+
+/** One call a restore makes: a point, and what of it. Code and state from one point go together;
+ *  from two, one after the other, the code first. */
+export type RestorePart = { point: RestorePoint; what: { code: boolean; state: boolean } };
+
+export function restoreParts(target: Target, what: { code: boolean; state: boolean }): RestorePart[] {
+  const code = what.code && target.why.code === null ? target.code : null;
+  const state = what.state && target.why.state === null ? target.state : null;
+  if (code && state && pointLabel(code) === pointLabel(state)) return [{ point: code, what: { code: true, state: true } }];
+  return [...(code ? [{ point: code, what: { code: true, state: false } }] : []), ...(state ? [{ point: state, what: { code: false, state: true } }] : [])];
+}
+
+/** A restore's confirmation, from the dry run of each of its parts; and the button that confirms
+ *  it. `describe` says a permission (core's words, through wasm). */
+export function restoreMessage(
+  slug: string,
+  target: Pick<Target, "label" | "event">,
+  parts: (RestorePart & { preview: RestorePreview })[],
+  describe: (item: string) => string = describeItem,
+): { lines: string[]; action: string } {
+  const code = parts.some((p) => p.what.code);
+  const state = parts.some((p) => p.what.state);
+  const which = code && state ? "code and state" : code ? "code" : "state";
+  const lines = [`Restore "${slug}" to ${target.label}: its ${which}?`];
+  if (target.event) {
+    const had = parts.flatMap((p) => [
+      ...(p.what.code ? [`${pointLabel(p.point)}'s code`] : []),
+      ...(p.what.state ? [`the state ${pointLabel(p.point)} left`] : []),
+    ]);
+    lines.push("", `As it was after "${target.event.what}": ${had.join(", and ")}.`);
+  }
+  const needs = parts.flatMap((p) => p.preview.needs_approval ?? []);
+  for (const { point, what, preview } of parts) {
+    if (what.code) {
+      if (preview.code === null) lines.push("", `${pointLabel(point)} ran on the code deployed now: only its state is restored.`);
+      else {
+        lines.push("", `Version ${preview.code}'s code is deployed again, as a new version, checked against the grant "${slug}" has now.`);
+        const asks = preview.needs_approval ?? [];
+        if (asks.length > 0) lines.push("", "It needs your approval to:", ...asks.map((i) => `• ${describe(i)}`));
+        if ((preview.missing_secrets ?? []).length > 0) {
+          lines.push("", `Not set now: ${preview.missing_secrets!.join(", ")} (those nodes stay empty until they are).`);
+        }
+      }
+    }
+    if (preview.state) lines.push("", ...stateLines(preview.state));
+  }
   return { lines, action: needs.length > 0 ? "Approve and restore" : "Restore" };
 }
 
 /** What a restore did, in a line. */
-export function restoredLine(point: RestorePoint, done: RestoreDone): string {
+export function restoredLine(done: { point: RestorePoint; done: RestoreDone }[]): string {
   const said: string[] = [];
-  if (done.code !== undefined) said.push(`version ${done.code}'s code is deployed again, as version ${done.version}`);
-  if (done.state) said.push(`the state ${pointLabel(point)} left is live again, in session ${done.state.session} (session ${done.state.session - 1} keeps the one it replaced)`);
+  for (const { point, done: d } of done) {
+    if (d.code !== undefined) said.push(`version ${d.code}'s code is deployed again, as version ${d.version}`);
+    if (d.state) said.push(`the state ${pointLabel(point)} left is live again, in session ${d.state.session} (session ${d.state.session - 1} keeps the one it replaced)`);
+  }
   return said.length > 0 ? `restored: ${said.join("; ")}` : "nothing to restore";
 }

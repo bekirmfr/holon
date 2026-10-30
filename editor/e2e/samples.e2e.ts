@@ -633,6 +633,8 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   await pickBefore();
   const restoreBar = bottom.locator(".hl-history__restore");
   await expect(restoreBar).toContainText(`version ${before}`);
+  // Its details beside it, no run shown.
+  await expect(bottom.locator(".hl-history__details")).toContainText(`deployed version ${before}`);
   await restoreBar.getByRole("button", { name: "code", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText(`Version ${before}'s code is deployed again, as a new version`);
@@ -650,12 +652,24 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(bottom.locator(".hl-history__note")).toContainText(`the state version ${before} left is live again, in session`);
   expect(await total()).toBe(4.5);
-  // The history shows it, newest first, by whom.
-  await expect(bottom.locator(".hl-history__row").first()).toContainText(`put back the state version ${before} left`);
+  // The history shows it, newest first, by whom; picked, its details say what it put back.
+  const restored = bottom.locator(".hl-history__row").first();
+  await expect(restored).toContainText(`put back the state version ${before} left`);
+  await restored.click();
+  await expect(bottom.locator(".hl-history__details")).toContainText(`the state version ${before} left`);
+  // A wrong price again, and ↺ on the restore goes back to it: the prices it put back.
+  expect((await request.put(`http://127.0.0.1:${port}/prices/${tea}`, { data: { price: 40 } })).status()).toBe(200);
+  expect(await total()).toBe(40.5);
+  await restored.locator(".hl-history__back").click();
+  await expect(dialog).toContainText(`As it was after "put back the state version ${before} left`);
+  await expect(dialog).toContainText(`The state version ${before} left is put back: it changes #collection:prices.`);
+  await dialog.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(bottom.locator(".hl-history__note")).toContainText(`the state version ${before} left is live again, in session`);
+  expect(await total()).toBe(4.5);
   // Each deploy and restore is on its timeline, by whom.
   const events = await request.get(`${SERVER}/deployments/price-rollback/events`, { headers: auth });
-  const said = ((await events.json()) as { events: { kind: string; what: string; by?: string }[] }).events.slice(-4);
-  expect(said.map((e) => e.kind)).toEqual(["deploy", "deploy", "deploy", "restore"]);
+  const said = ((await events.json()) as { events: { kind: string; what: string; by?: string }[] }).events.slice(-5);
+  expect(said.map((e) => e.kind)).toEqual(["deploy", "deploy", "deploy", "restore", "restore"]);
   expect(said[2].what).toBe(`restored version ${before}'s code, as version ${now + 1}`);
   expect(said.every((e) => typeof e.by === "string")).toBe(true);
 });

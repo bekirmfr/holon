@@ -225,11 +225,13 @@ Reordered so restoring code, which changes nothing already logged, comes first:
      carrying events and `holon verify` checking their chain.
    - **3a, the editor's timeline** and restore button, MCP's `history` and `restore`, agents
      restoring, a cell's history, in three steps:
-     - **the editor** (built): view mode's history beside its runs, runs, versions and events
-       merged newest first and filtered by kind; a version or a run picked restores its code, its
-       state or both (a dry run, then a dialog that says what changes and approves what the code
-       needs, as a deploy's does), or shows a version's canvas. The price-rollback e2e restores
-       through it;
+     - **the editor** (built): view mode's history button beside the runs' filter: versions
+       and events (runs when asked) merged newest first, filtered by kind and by words; any row picked shows its details,
+       and restores its code, its state or both (a dry run, then a dialog that says what changes
+       and approves what the code needs, as a deploy's does): a run or a version itself, anything
+       else how it was right after (the version then; the state the run before it left, or the
+       restore before it put back, which its event names as `from`); ↺ on a row restores what it
+       can; a version's canvas shows. The price-rollback e2e restores through it;
      - **MCP and agents:** `history` and `restore` tools, an agent's restore waiting for approval
        as its deploys do;
      - **a cell's history:** the runs that changed a cell or a collection, with values before and

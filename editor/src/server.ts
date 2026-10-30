@@ -700,6 +700,8 @@ export async function getVersions(slug: string): Promise<VersionEntry[]> {
  *  a pause or a run, by whom (none: the host did it). */
 export type DeploymentEvent = {
   seq: number;
+  /** The hash of the event before it in its chain. */
+  prev?: string;
   at_ms: number;
   /** The run log's next seq when it happened: it comes before that run. */
   run_seq: number;
@@ -709,6 +711,8 @@ export type DeploymentEvent = {
   version?: number;
   session?: number;
   name?: string;
+  /** The point whose state a restore put back: `version 3`, `run 41`. */
+  from?: string;
 };
 
 /** `GET /deployments/<slug>/events` — everything done to it, oldest first. A server from before

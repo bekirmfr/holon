@@ -1,7 +1,8 @@
 // View mode's panes around the canvas of a deployed flow. The bottom pane shows the flow log
 // live (every request, trigger and tick). Left side: a sortable, filterable run list with copy
-// and export buttons and a capability-badge column, or the deployment's history, where a version
-// or a run is restored (HistoryPane.tsx). Right side: two tabs — Details (what the run
+// and export buttons, a capability-badge column and ↺ (go back to the run), or (its history
+// button) the deployment's history, what was done to it, any row of which is picked into the
+// details and gone back to (HistoryPane.tsx). Right side: two tabs — Details (what the run
 // read and produced) and Timeline (one row per node, timed by the server). The width of the
 // split is draggable and remembered. The side pane shows the selected run's flow state as of the
 // current step, and the selected node: its params, and the inputs and outputs it had in that run
@@ -9,7 +10,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, getLog, type LogEntry, type VersionEntry } from "./server";
-import { HistoryList } from "./HistoryPane";
+import { BackButton, everything, HistoryList, itemDetails, useHistory, useRestore } from "./HistoryPane";
+import { buildTimeline, targetOf, type TimelineItem } from "./timeline";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
@@ -323,6 +325,11 @@ export function BottomPane({
     setLive(false);
     onSelect(e);
   };
+  // A history row that isn't a run: no run shown, and live stops so none comes back.
+  const unpick = () => {
+    setLive(false);
+    onSelect(null);
+  };
 
   return (
     <div ref={pane} className="nodrag nowheel hl-view__bottom" style={paneStyle} role="region" aria-label="run">
@@ -360,6 +367,7 @@ export function BottomPane({
         entries={entries}
         selected={selected}
         pick={pick}
+        unpick={unpick}
         slug={slug}
         head={chain.head}
         breaks={chain.breaks}
@@ -434,6 +442,7 @@ function LogTab({
   entries,
   selected,
   pick,
+  unpick,
   slug,
   head,
   breaks,
@@ -456,6 +465,8 @@ function LogTab({
   entries: LogEntry[];
   selected: LogEntry | null;
   pick: (e: LogEntry) => void;
+  /** Show no run: a history row that isn't one is picked. */
+  unpick: () => void;
   slug: string;
   head: string;
   breaks: number[];
@@ -479,6 +490,33 @@ function LogTab({
   const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
   const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set());
   const [compareRuns, setCompareRuns] = useState<[LogEntry, LogEntry] | null>(null);
+
+  // The history: the timeline of its runs, versions and events, a row of it picked (a run picked
+  // in the list is its row too), and going back to one.
+  const history = useHistory(slug);
+  const currentUnit = history.versions.find((v) => v.current)?.unit;
+  const timeline = useMemo(() => buildTimeline(entries, history.events, history.versions), [entries, history.events, history.versions]);
+  const byKey = useMemo(() => new Map(timeline.map((item, i) => [item.key, i])), [timeline]);
+  const targetFor = useCallback((item: TimelineItem) => targetOf(timeline, byKey.get(item.key) ?? 0, currentUnit), [timeline, byKey, currentUnit]);
+  const refreshHistory = history.refresh;
+  const restoreDone = useCallback(() => {
+    refreshHistory();
+    onRestored?.();
+  }, [refreshHistory, onRestored]);
+  const restorer = useRestore(slug, restoreDone);
+  const [pickedKey, setPickedKey] = useState<string | null>(null);
+  const pickedIndex = pickedKey === null ? undefined : byKey.get(pickedKey);
+  const pickedItem = leftView === "history" && pickedIndex !== undefined ? timeline[pickedIndex] : undefined;
+  const pickRun = (e: LogEntry) => {
+    setPickedKey(`r${e.seq}`);
+    pick(e);
+  };
+  const pickItem = (item: TimelineItem) => {
+    restorer.setNote(null);
+    setPickedKey(item.key);
+    if (item.kind === "run") pick(item.run);
+    else unpick();
+  };
 
   useEffect(() => {
     if (diagnosis) setRightTab("errors");
@@ -681,25 +719,23 @@ function LogTab({
     <div style={{ display: "flex", flex: 1, minHeight: 0, flexDirection: "column" }}>
       <ChainBar slug={slug} head={head} breaks={breaks} />
       <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
-        <span className="hl-view__lists" style={{ display: "flex" }}>
-          {(["runs", "history"] as const).map((v) => (
-            <button
-              key={v}
-              onClick={() => setLeftView(v)}
-              aria-pressed={leftView === v}
-              title={v === "runs" ? "the runs it logged" : "its runs, versions and what was done to it; going back to one"}
-              style={{ ...small, borderRadius: v === "runs" ? "3px 0 0 3px" : "0 3px 3px 0", color: leftView === v ? "#0e1a2f" : "#9fb4d4", background: leftView === v ? "#6fd3e0" : "transparent" }}
-            >
-              {v}
-            </button>
-          ))}
-        </span>
         <input
-          placeholder="filter runs…"
+          placeholder={leftView === "runs" ? "filter runs…" : "filter history…"}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          style={{ ...small, background: "#0e1a2f", color: ink, width: 160, display: leftView === "runs" ? undefined : "none" }}
+          style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
         />
+        <button
+          onClick={() => {
+            setLeftView(leftView === "runs" ? "history" : "runs");
+            setFilter("");
+          }}
+          aria-pressed={leftView === "history"}
+          title={leftView === "runs" ? "what was done to it: deploys, restores, grants, pauses; going back to one" : "back to the runs"}
+          style={{ ...small, color: leftView === "history" ? "#0e1a2f" : "#9fb4d4", background: leftView === "history" ? "#6fd3e0" : "transparent" }}
+        >
+          history
+        </button>
         {filter && leftView === "runs" && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
         <span style={{ flex: 1 }} />
         {selectedSeqs.size > 0 && (
@@ -714,11 +750,26 @@ function LogTab({
           </>
         )}
       </div>
+      {restorer.note && (
+        <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad, padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+          {restorer.note.text}
+        </div>
+      )}
       <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
         {/* Left: the history, or the run list */}
         {leftView === "history" && (
           <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
-            <HistoryList slug={slug} runs={entries} selected={selected} pick={pick} onShowVersion={onShowVersion} onRestored={onRestored} />
+            <HistoryList
+              timeline={timeline}
+              query={filter}
+              pickedKey={pickedKey}
+              onPick={pickItem}
+              targetFor={targetFor}
+              busy={restorer.busy}
+              onRestore={restorer.restore}
+              onShowVersion={onShowVersion}
+              error={history.error}
+            />
           </div>
         )}
         <div style={{ display: leftView === "runs" ? "flex" : "none", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
@@ -731,7 +782,7 @@ function LogTab({
             <ColHeader label="actions" col="actions" w={56} />
             <ColHeader sk="status" label="st" col="status" w={26} />
             <SortHeader k="duration" label="ms" w={52} />
-            <span style={{ width: 44, flexShrink: 0 }} />
+            <span style={{ width: 64, flexShrink: 0 }} />
           </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 0 8px" }}>
             {sorted.length === 0 && (
@@ -744,7 +795,7 @@ function LogTab({
               return (
                 <div
                   key={e.seq}
-                  onClick={() => pick(e)}
+                  onClick={() => pickRun(e)}
                   onDoubleClick={() => {
                     if (order.length > 0 && selected?.seq === e.seq) onFitToNodes(order);
                     else fitPendingSeq.current = e.seq;
@@ -784,9 +835,13 @@ function LogTab({
                     {e.status ?? ""}
                   </span>
                   <span style={{ color: dim, width: 52, textAlign: "right", flexShrink: 0 }}>{e.duration_ms.toFixed(2)}</span>
-                  <span style={{ display: "flex", gap: 2, width: 44, flexShrink: 0 }}>
+                  <span style={{ display: "flex", gap: 2, width: 64, flexShrink: 0 }}>
                     <button style={{ ...small, padding: "0px 4px", fontSize: 10 }} title="copy run as JSON" onClick={(ev) => copyRun(e, ev)}>⎘</button>
                     <button style={{ ...small, padding: "0px 4px", fontSize: 10 }} title="download run as JSON" onClick={(ev) => exportRun(e, ev)}>↓</button>
+                    {byKey.has(`r${e.seq}`) && (() => {
+                      const target = targetFor(timeline[byKey.get(`r${e.seq}`)!]);
+                      return <BackButton target={target} busy={restorer.busy} onBack={() => restorer.restore(target, everything(target))} />;
+                    })()}
                   </span>
                 </div>
               );
@@ -812,7 +867,13 @@ function LogTab({
           />
           {rightTab === "details" ? (
             <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 4 }}>
-              {selected ? (
+              {pickedItem && pickedItem.kind !== "run" ? (
+                <div className="hl-history__details" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {itemDetails(pickedItem, targetFor(pickedItem)).map(([name, value]) => (
+                    <Field key={name} name={name} value={value} color={value.startsWith("no: ") ? dim : undefined} />
+                  ))}
+                </div>
+              ) : selected ? (
                 <>
                   {selected.url && (
                     <div style={{ color: ink }}>{selected.method} {selected.url}</div>

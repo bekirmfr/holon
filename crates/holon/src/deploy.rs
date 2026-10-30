@@ -1424,7 +1424,7 @@ fn put_state_back(state: &AppState, slug: &str, loaded: State, label: &str, by: 
     *live = loaded;
     drop(live);
     let session = dep.life.sessions.last().map_or(0, |s| s.number);
-    dep.note("restore", format!("put back the state {label} left, in session {session}"), by, crate::events::Detail { session: Some(session), ..Default::default() });
+    dep.note("restore", format!("put back the state {label} left, in session {session}"), by, crate::events::Detail { session: Some(session), from: Some(label.to_string()), ..Default::default() });
     Ok(session)
 }
 

@@ -63,7 +63,7 @@ export const TOPICS: Topic[] = [
     title: "Runs, replay and view mode",
     paragraphs: [
       "Every run is logged with what it received, what it did outside (requests, writes) and what it answered. View mode replays a run on the version it ran on, shows each node's values, and steps through it; a failed run opens where it failed.",
-      "Its history, beside the runs, shows every version deployed and what was done to it (grants, secrets, pauses), by whom. Pick a version or a run there to restore its code, its state or both: you see what it would change before it does.",
+      "The history button, beside the runs' filter, shows every version deployed and what was done to it (grants, secrets, pauses), by whom. Pick any row there to see its details and restore its code, its state or both, or press ↺ on a row (there or in the run list) to go back to it: you see what it would change before it does.",
     ],
   },
   {
