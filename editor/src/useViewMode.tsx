@@ -31,7 +31,7 @@ import {
   type ReplayNode,
 } from "./replay";
 import { stable } from "./textSync";
-import { getDeployedDocument, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
+import { getDeployedDocument, type DeploymentEntry, type FlowDocument, type LogEntry, type VersionEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
 import type { FlowMeta } from "./tabs";
 
@@ -101,11 +101,35 @@ export function useViewMode(input: ViewModeInput) {
       stale = true;
     };
   }, [viewing, runUnit, viewUnit, ev, restoring, setNodes, setEdges, viewDoc, setViewTrace, setViewUnit]);
+  // A version picked in the history, its canvas shown with no run selected: which, or why not.
+  const [shownVersion, setShownVersion] = useState<string | null>(null);
+  const showVersion = useCallback(
+    (v: VersionEntry) => {
+      if (!viewing) return;
+      setSelectedRun(null);
+      setStep(null);
+      getDeployedDocument(viewing, v.unit)
+        .then((doc) => {
+          restoreDocument(doc, ev);
+          restoring.current = true;
+          setNodes(doc.nodes as PrimitiveNodeType[]);
+          setEdges(doc.edges as Edge[]);
+          viewDoc.current = doc;
+          setViewTrace(doc.trace);
+          setViewUnit(v.unit);
+          setShownVersion(`version ${v.number}'s canvas${v.current ? ", deployed now" : ""}`);
+        })
+        .catch(() => setShownVersion(`version ${v.number}'s canvas isn't kept`));
+    },
+    [viewing, ev, restoring, setNodes, setEdges, viewDoc, setViewTrace, setViewUnit, setSelectedRun, setStep],
+  );
   const note = onOtherVersion
     ? versionNote || "loading the version it ran on…"
-    : viewUnit && currentUnit && viewUnit !== currentUnit
-      ? `shown on the version it ran on (${viewUnit.slice(0, 8)}…), an earlier deploy`
-      : "";
+    : !selectedRun && shownVersion
+      ? shownVersion
+      : viewUnit && currentUnit && viewUnit !== currentUnit
+        ? `shown on the version it ran on (${viewUnit.slice(0, 8)}…), an earlier deploy`
+        : "";
 
   // One node of a replay: its unit, evaluated on the inputs its wires brought.
   const evalNode = useCallback(
@@ -331,6 +355,7 @@ export function useViewMode(input: ViewModeInput) {
     onSelectRun,
     onStep,
     onNodeClick,
+    showVersion,
   };
 }
 
@@ -358,8 +383,9 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
   };
 }
 
-/** View mode's bottom pane: the log and the timeline (the Inspector, on the right, is App's). */
-export function ViewModePanes({ view, flow, nodes }: { view: ViewMode; flow: FlowMeta; nodes: PrimitiveNodeType[] }) {
+/** View mode's bottom pane: the log, the history and the timeline (the Inspector, on the right,
+ *  is App's). `onRestored`: a restore from the history changed the deployment. */
+export function ViewModePanes({ view, flow, nodes, onRestored }: { view: ViewMode; flow: FlowMeta; nodes: PrimitiveNodeType[]; onRestored?: () => void }) {
   const { viewing, selectedRun, step } = flow;
   if (!viewing) return null;
   const { replayed } = view;
@@ -382,6 +408,8 @@ export function ViewModePanes({ view, flow, nodes }: { view: ViewMode; flow: Flo
         diagnosis={replayed?.diagnosis ?? null}
         onShowNode={view.showNode}
         onFitToNodes={view.fitToNodes}
+        onShowVersion={view.showVersion}
+        onRestored={onRestored}
       />
     </>
   );

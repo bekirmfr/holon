@@ -1143,8 +1143,8 @@ pub(crate) fn handle_get_document(store: &SharedStore, deployments: &Mutex<BTree
 }
 
 /// `GET /deployments/<slug>/versions` — every version deployed, newest first: its number, unit,
-/// when and by whom, the version it restored, whether it is the one deployed now, and whether it
-/// can be restored (what its deploy asked is kept).
+/// when and by whom, the version it restored, whether it is the one deployed now, whether it
+/// can be restored (what its deploy asked is kept), and the log's seq at its deploy.
 pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
     let deployments = deployments.lock().unwrap();
     let Some(dep) = deployments.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
@@ -1166,6 +1166,8 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
                 "canvas": v.document_ref.is_some(),
                 // The state it left is kept: the one the next version carried.
                 "state_kept": dep.versions.get(i + 1).is_some_and(|next| next.state_at_deploy.is_some()),
+                // Where it starts in the log: the seq its first run got (absent from before rc.30).
+                "first_seq": v.first_seq,
             })
         })
         .collect();

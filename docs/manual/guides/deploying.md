@@ -283,6 +283,16 @@ Beside its runs, a deployment keeps what was done to it, each with who and when:
 `--last N` shows the newest N runs (20 by default) and the events among them; `--events`, every
 event, without the runs. `GET /deployments/<slug>/events` answers them as JSON.
 
+In the editor, view mode's **history** (beside **runs**, above the run list) is the same
+timeline, newest first, filtered by kind: runs, deploys, access (grants, secrets, bindings) and
+lifecycle. Pick a version or a run in it:
+
+- **canvas** (a version) shows the canvas it was deployed with;
+- **code**, **state** or **both** restore it, as `holon restore` does: a dry run first, and a
+  dialog that says what it changes (the keys, and what the runs since did outside, which a restore
+  doesn't undo) and asks to approve what the code needs that today's grant doesn't cover. A
+  button that can't apply is off, and says why: the version deployed now, a state not kept.
+
 Events are **recorded, never restored**: [going back](#going-back-to-an-earlier-version) puts back
 code and state only, and the grant, secrets and bindings stay as they are now. They are kept for
 good, in a hash chain of their own beside the run log, which an export carries and `holon verify`

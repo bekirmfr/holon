@@ -621,6 +621,9 @@ export type LogEntry = {
   events?: Record<string, WValue>;
   /** The secrets the run was given: the version and fingerprint their marks name (`v3 #a1b2c3d4`). */
   secrets?: Record<string, string>;
+  /** The state it left, by hash in the content store: what a restore to this run puts back.
+   *  Absent when it didn't commit, and in runs from before rc.30. */
+  state_after?: string;
 };
 
 /** The requests one round made: each node (by its path in the run's root unit), its request,
@@ -664,6 +667,94 @@ export async function getDeployedDocument(slug: string, unit?: string): Promise<
   const q = unit ? `?unit=${encodeURIComponent(unit)}` : "";
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/document${q}`);
   return asJson<FlowDocument>(res);
+}
+
+/** One version a deployment was deployed with (`GET /deployments/<slug>/versions`). */
+export type VersionEntry = {
+  number: number;
+  unit: string;
+  /** Unix seconds. */
+  deployed_at: number;
+  by?: string | null;
+  /** The version whose code it restored, when it was a restore. */
+  restored_from?: number | null;
+  /** The one deployed now. */
+  current: boolean;
+  /** What its deploy asked is kept, so its code can be restored (rc.30 on). */
+  restorable: boolean;
+  /** Its canvas is kept. */
+  canvas: boolean;
+  /** The state it left is kept, so it can be put back. */
+  state_kept: boolean;
+  /** The log's seq at its deploy: its first run's (absent from before rc.30). */
+  first_seq?: number | null;
+};
+
+/** `GET /deployments/<slug>/versions` — every version, newest first. */
+export async function getVersions(slug: string): Promise<VersionEntry[]> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/versions`);
+  return (await asJson<{ versions: VersionEntry[] }>(res)).versions;
+}
+
+/** Something done to a deployment (events.rs): a deploy, a restore, a grant, a secret, a binding,
+ *  a pause or a run, by whom (none: the host did it). */
+export type DeploymentEvent = {
+  seq: number;
+  at_ms: number;
+  /** The run log's next seq when it happened: it comes before that run. */
+  run_seq: number;
+  kind: "deploy" | "restore" | "grant" | "secret" | "binding" | "lifecycle" | string;
+  what: string;
+  by?: string;
+  version?: number;
+  session?: number;
+  name?: string;
+};
+
+/** `GET /deployments/<slug>/events` — everything done to it, oldest first. A server from before
+ *  keeps none: it answers the route with a bare 404, and this says so. */
+export async function getEvents(slug: string): Promise<{ events: DeploymentEvent[]; head: string; breaks: number[] }> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/events`);
+  if (res.status === 404 && !(await res.clone().text()).trim()) {
+    throw new Error("this server keeps no history of what was done to a deployment yet: update it (holon update) and start it again");
+  }
+  return asJson(res);
+}
+
+/** A point to go back to: a version (the state it left, and its code) or a run (the state it left,
+ *  and the code it ran on). */
+export type RestorePoint = { version: number } | { run: number };
+
+/** What putting a point's state back would change (a restore's dry run). */
+export type StateChange = {
+  from: string;
+  changed: string[];
+  added: string[];
+  removed: string[];
+  runs_since: number;
+  /** Outside effects the runs since performed, by capability: a restore doesn't undo them. */
+  effects_since: Record<string, number>;
+};
+
+/** A restore's dry run: the deploy's preview when it deploys code (`code`: the version), and the
+ *  state change when it puts state back. */
+export type RestorePreview = Partial<DeployPreview> & { code: number | null; state?: StateChange };
+
+/** What a restore did: the version it deployed (as `version`, restoring `code`), and the session
+ *  the state put back started. */
+export type RestoreDone = { code?: number; version?: number; unit?: string; state?: { from: string; session: number } };
+
+/** `POST /deployments/<slug>/restore` — go back to `point`: its code, its state, or both. With
+ *  `dryRun`, it changes nothing and says what it would; else `acknowledge` is what the dry run
+ *  asked to approve. */
+export async function restoreDeployment(
+  slug: string,
+  point: RestorePoint,
+  what: { code: boolean; state: boolean },
+  opts: { dryRun: true } | { acknowledge: string[] },
+): Promise<RestorePreview | RestoreDone> {
+  const body = { ...point, ...what, ...("dryRun" in opts ? { dry_run: true } : { acknowledge: opts.acknowledge }) };
+  return asJson(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/restore`, body));
 }
 
 /** `GET /deployments/<slug>/sessions` — every run session, oldest first. */

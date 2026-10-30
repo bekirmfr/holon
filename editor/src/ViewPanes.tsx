@@ -1,13 +1,15 @@
 // View mode's panes around the canvas of a deployed flow. The bottom pane shows the flow log
 // live (every request, trigger and tick). Left side: a sortable, filterable run list with copy
-// and export buttons and a capability-badge column. Right side: two tabs — Details (what the run
+// and export buttons and a capability-badge column, or the deployment's history, where a version
+// or a run is restored (HistoryPane.tsx). Right side: two tabs — Details (what the run
 // read and produced) and Timeline (one row per node, timed by the server). The width of the
 // split is draggable and remembered. The side pane shows the selected run's flow state as of the
 // current step, and the selected node: its params, and the inputs and outputs it had in that run
 // (replayed, replay.ts).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { downloadRuns, getCollectionItems, getLog, type LogEntry } from "./server";
+import { downloadRuns, getCollectionItems, getLog, type LogEntry, type VersionEntry } from "./server";
+import { HistoryList } from "./HistoryPane";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
@@ -239,10 +241,16 @@ export function BottomPane({
   diagnosis,
   onShowNode,
   onFitToNodes,
+  onShowVersion,
+  onRestored,
 }: {
   slug: string;
   selected: LogEntry | null;
   onSelect: (e: LogEntry | null) => void;
+  /** Show a version's canvas (the history's). */
+  onShowVersion?: (v: VersionEntry) => void;
+  /** After a restore from the history: the deployment changed. */
+  onRestored?: () => void;
   /** The step shown (index into `order`), or null for the whole run. */
   step: number | null;
   onStep: (step: number | null) => void;
@@ -366,6 +374,14 @@ export function BottomPane({
         diagnosis={diagnosis ?? null}
         onShowNode={onShowNode}
         onFitToNodes={onFitToNodes}
+        onShowVersion={
+          onShowVersion &&
+          ((v) => {
+            setLive(false);
+            onShowVersion(v);
+          })
+        }
+        onRestored={onRestored}
       />
     </div>
   );
@@ -432,7 +448,11 @@ function LogTab({
   diagnosis,
   onShowNode,
   onFitToNodes,
+  onShowVersion,
+  onRestored,
 }: {
+  onShowVersion?: (v: VersionEntry) => void;
+  onRestored?: () => void;
   entries: LogEntry[];
   selected: LogEntry | null;
   pick: (e: LogEntry) => void;
@@ -455,6 +475,7 @@ function LogTab({
   const [sortBy, setSortBy] = useState<SortKey>("seq");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [rightTab, setRightTab] = useState<"details" | "errors" | "timeline">("details");
+  const [leftView, setLeftView] = useState<"runs" | "history">("runs");
   const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
   const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set());
   const [compareRuns, setCompareRuns] = useState<[LogEntry, LogEntry] | null>(null);
@@ -660,13 +681,26 @@ function LogTab({
     <div style={{ display: "flex", flex: 1, minHeight: 0, flexDirection: "column" }}>
       <ChainBar slug={slug} head={head} breaks={breaks} />
       <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+        <span className="hl-view__lists" style={{ display: "flex" }}>
+          {(["runs", "history"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setLeftView(v)}
+              aria-pressed={leftView === v}
+              title={v === "runs" ? "the runs it logged" : "its runs, versions and what was done to it; going back to one"}
+              style={{ ...small, borderRadius: v === "runs" ? "3px 0 0 3px" : "0 3px 3px 0", color: leftView === v ? "#0e1a2f" : "#9fb4d4", background: leftView === v ? "#6fd3e0" : "transparent" }}
+            >
+              {v}
+            </button>
+          ))}
+        </span>
         <input
           placeholder="filter runs…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
+          style={{ ...small, background: "#0e1a2f", color: ink, width: 160, display: leftView === "runs" ? undefined : "none" }}
         />
-        {filter && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
+        {filter && leftView === "runs" && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
         <span style={{ flex: 1 }} />
         {selectedSeqs.size > 0 && (
           <>
@@ -681,8 +715,13 @@ function LogTab({
         )}
       </div>
       <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* Left: run list */}
-        <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
+        {/* Left: the history, or the run list */}
+        {leftView === "history" && (
+          <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
+            <HistoryList slug={slug} runs={entries} selected={selected} pick={pick} onShowVersion={onShowVersion} onRestored={onRestored} />
+          </div>
+        )}
+        <div style={{ display: leftView === "runs" ? "flex" : "none", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
           <div style={{ display: "flex", gap: 10, padding: "2px 6px", borderBottom: "1px solid #1b2a45", fontSize: 10, flexShrink: 0 }}>
             <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} style={{ width: 12, cursor: "pointer", accentColor: "#6fd3e0", flexShrink: 0 }} title={allVisibleSelected ? "deselect all visible" : "select all visible"} />
             <SortHeader k="seq" label="#" w={30} />
