@@ -963,6 +963,7 @@ function LogTab({
               step={step}
               onStep={onStep}
               onPickNode={onPickNode}
+              onShowNode={onShowNode}
               issues={issues}
             />
           )}
@@ -1093,6 +1094,7 @@ function TimelineTab({
   step,
   onStep,
   onPickNode,
+  onShowNode,
   issues,
 }: {
   run: LogEntry | null;
@@ -1104,6 +1106,7 @@ function TimelineTab({
   step: number | null;
   onStep: (s: number | null) => void;
   onPickNode: (id: string) => void;
+  onShowNode: (id: string) => void;
   /** Each node's part in a failed run. */
   issues: Map<string, Issue>;
 }) {
@@ -1180,6 +1183,7 @@ function TimelineTab({
               onStep(i);
               onPickNode(id);
             }}
+            onDoubleClick={() => onShowNode(id)}
             style={{
               display: "flex",
               gap: 8,
