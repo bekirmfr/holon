@@ -6,7 +6,7 @@
 // current step, and the selected node: its params, and the inputs and outputs it had in that run
 // (replayed, replay.ts).
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, getLog, type LogEntry } from "./server";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
@@ -897,8 +897,6 @@ function runSectionsForCompare(e: LogEntry): RunSection[] {
 
 function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: () => void }) {
   const [viewValue, setViewValue] = useState<{ value: WValue; name: string } | null>(null);
-  const PAGE = 25;
-  const [page, setPage] = useState(0);
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === "Escape") { if (viewValue) setViewValue(null); else onClose(); } };
     window.addEventListener("keydown", fn);
