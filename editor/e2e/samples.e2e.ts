@@ -27,7 +27,7 @@ async function openSample(page: Page, title: string, reload = true) {
  *  panel. Answers the port it serves on (null for a flow without routes). */
 async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
-  const portField = settings.locator("input").first();
+  const portField = settings.getByRole("textbox").first();
   const given = Number(await portField.inputValue());
   const port = Number.isInteger(given) && given > 0 ? given + by : null;
   if (port) await portField.fill(String(port));
@@ -47,7 +47,7 @@ async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) =
  *  its port. */
 async function settingsSayPort(page: Page, port: string) {
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
-  await expect(settings.locator("input").first()).toHaveValue(port, { timeout: 15_000 });
+  await expect(settings.getByRole("textbox").first()).toHaveValue(port, { timeout: 15_000 });
 }
 
 /** Drop the palette entry `entry` (a primitive's name, or `flow:<name>` for a saved flow) on the
