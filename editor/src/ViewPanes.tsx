@@ -6,7 +6,7 @@
 // current step, and the selected node: its params, and the inputs and outputs it had in that run
 // (replayed, replay.ts).
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, getLog, type LogEntry } from "./server";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
@@ -778,15 +778,15 @@ function LogTab({
                   {selected.url && (
                     <div style={{ color: ink }}>{selected.method} {selected.url}</div>
                   )}
-                  {selected.request && <Field name="request" value={formatValue(selected.request)} />}
+                  {selected.request && <Field name="request" value={formatValue(selected.request)} rawValue={selected.request} />}
                   {selected.sourced.map(([cap, v]) => (
-                    <Field key={cap} name={cap.toLowerCase()} value={formatValue(v)} />
+                    <Field key={cap} name={cap.toLowerCase()} value={formatValue(v)} rawValue={v} />
                   ))}
                   {selected.performed.map((p, i) => (
-                    <Field key={i} name={`did ${p.capability}`} value={formatValue(p.payload)} />
+                    <Field key={i} name={`did ${p.capability}`} value={formatValue(p.payload)} rawValue={p.payload} />
                   ))}
                   {selected.response_body !== null && (
-                    <Field name={`answered ${selected.status}`} value={selected.response_body || "(empty)"} />
+                    <Field name={`answered ${selected.status}`} value={selected.response_body || "(empty)"} rawValue={selected.response_body ? { type: "Text" as const, value: selected.response_body } : undefined} />
                   )}
                   {selected.error && <Field name="error" value={selected.error} color={bad} />}
                   {(selected.rounds ?? []).map((r, i) =>
@@ -807,7 +807,7 @@ function LogTab({
                     <Field name="waiting at" value={(selected.parked ?? []).join(", ")} color="#e0c36f" />
                   )}
                   {Object.entries(selected.events ?? {}).map(([name, v]) => (
-                    <Field key={name} name={`event ${name}`} value={formatValue(v)} />
+                    <Field key={name} name={`event ${name}`} value={formatValue(v)} rawValue={v} />
                   ))}
                   {selected.run_id && (
                     <Field name="run" value={`${selected.run_id.slice(0, 16)}… · grant ${(selected.grant ?? "").slice(0, 12)}…`} color={dim} />
@@ -853,25 +853,30 @@ function LogTab({
   );
 }
 
-function Field({ name, value, color }: { name: string; value: string; color?: string }) {
+function Field({ name, value, color, rawValue }: { name: string; value: string; color?: string; rawValue?: WValue }) {
+  const [modalOpen, setModalOpen] = useState(false);
   return (
     <div style={{ display: "flex", gap: 8 }}>
       {/* A long name (a hash used as a key) wraps within its share instead of crowding out the value. */}
       <span style={{ color: dim, minWidth: 90, maxWidth: "40%", flexShrink: 0, overflowWrap: "anywhere" }}>{name}</span>
       <span style={{ color: color ?? ink, overflowWrap: "anywhere", whiteSpace: "pre-wrap", flex: 1, minWidth: 0 }}>{value}</span>
+      {rawValue != null && (
+        <button onClick={() => setModalOpen(true)} style={{ ...small, padding: "0px 4px", fontSize: 10, lineHeight: 1.4, flexShrink: 0 }} title="view value">⤢</button>
+      )}
+      {modalOpen && rawValue != null && <ValueModal value={rawValue} portName={name} onClose={() => setModalOpen(false)} />}
     </div>
   );
 }
 
-type RunSection = { key: string; value: string; color?: string };
+type RunSection = { key: string; value: string; color?: string; rawValue?: WValue };
 
 function runSectionsForCompare(e: LogEntry): RunSection[] {
   const s: RunSection[] = [];
   if (e.url) s.push({ key: `${e.method ?? "GET"} ${e.url}`, value: "" });
-  if (e.request) s.push({ key: "request", value: formatValue(e.request) });
-  for (const [cap, v] of e.sourced) s.push({ key: cap.toLowerCase(), value: formatValue(v) });
-  for (const p of e.performed) s.push({ key: `did ${p.capability.toLowerCase()}`, value: formatValue(p.payload) });
-  if (e.response_body !== null) s.push({ key: "answered", value: `${e.status ?? ""}: ${e.response_body || "(empty)"}` });
+  if (e.request) s.push({ key: "request", value: formatValue(e.request), rawValue: e.request });
+  for (const [cap, v] of e.sourced) s.push({ key: cap.toLowerCase(), value: formatValue(v), rawValue: v });
+  for (const p of e.performed) s.push({ key: `did ${p.capability.toLowerCase()}`, value: formatValue(p.payload), rawValue: p.payload });
+  if (e.response_body !== null) s.push({ key: "answered", value: `${e.status ?? ""}: ${e.response_body || "(empty)"}`, rawValue: e.response_body ? { type: "Text" as const, value: e.response_body } : undefined });
   if (e.error) s.push({ key: "error", value: e.error, color: bad });
   const rounds = e.rounds ?? [];
   if (rounds.length > 0) {
@@ -885,17 +890,20 @@ function runSectionsForCompare(e: LogEntry): RunSection[] {
   }
   if ((e.retries ?? 0) > 0) s.push({ key: "ran again", value: `${e.retries}×`, color: "#e0c36f" });
   if ((e.parked ?? []).length > 0) s.push({ key: "waiting at", value: (e.parked ?? []).join(", "), color: "#e0c36f" });
-  for (const [name, v] of Object.entries(e.events ?? {})) s.push({ key: `event ${name}`, value: formatValue(v) });
+  for (const [name, v] of Object.entries(e.events ?? {})) s.push({ key: `event ${name}`, value: formatValue(v), rawValue: v });
   if (e.run_id) s.push({ key: "run", value: `${e.run_id.slice(0, 16)}… · grant ${(e.grant ?? "").slice(0, 12)}…`, color: dim });
   return s;
 }
 
 function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: () => void }) {
+  const [viewValue, setViewValue] = useState<{ value: WValue; name: string } | null>(null);
+  const PAGE = 25;
+  const [page, setPage] = useState(0);
   useEffect(() => {
-    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") { if (viewValue) setViewValue(null); else onClose(); } };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
-  }, [onClose]);
+  }, [onClose, viewValue]);
 
   const sa = runSectionsForCompare(a);
   const sb = runSectionsForCompare(b);
@@ -924,6 +932,7 @@ function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: ()
           <span />
           <span style={{ color: ink, fontWeight: 600 }}>#{b.seq} · {time(b.at_ms)} · {runLabel(b)}</span>
         </div>
+        {viewValue && <ValueModal value={viewValue.value} portName={viewValue.name} onClose={() => setViewValue(null)} />}
         <div style={{ overflowY: "auto", flex: 1, padding: "4px 0" }}>
           {allKeys.map((key) => {
             const rowA = mapA.get(key);
@@ -933,12 +942,14 @@ function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: ()
             const keyColor = !bothPresent ? dim : identical ? "#6fd3e0" : "#e0c36f";
             return (
               <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 110px 1fr", padding: "4px 14px", gap: 8, borderBottom: "1px solid #1b2a4520", alignItems: "start" }}>
-                <div style={{ color: rowA?.color ?? (rowA ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16 }}>
-                  {rowA?.value !== undefined ? (rowA.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}
+                <div style={{ color: rowA?.color ?? (rowA ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16, display: "flex", alignItems: "flex-start", gap: 4 }}>
+                  <span style={{ flex: 1 }}>{rowA?.value !== undefined ? (rowA.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}</span>
+                  {rowA?.rawValue && <button onClick={(e) => { e.stopPropagation(); setViewValue({ value: rowA!.rawValue!, name: `${key} · run #${a.seq}` }); }} style={{ ...small, padding: "0px 4px", fontSize: 9, flexShrink: 0, lineHeight: 1.4 }} title="view value">⤢</button>}
                 </div>
                 <div style={{ color: keyColor, fontSize: 10, textAlign: "center", paddingTop: 3, fontWeight: bothPresent ? 600 : 400, wordBreak: "break-word" }}>{key}</div>
-                <div style={{ color: rowB?.color ?? (rowB ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16 }}>
-                  {rowB?.value !== undefined ? (rowB.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}
+                <div style={{ color: rowB?.color ?? (rowB ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16, display: "flex", alignItems: "flex-start", gap: 4 }}>
+                  <span style={{ flex: 1 }}>{rowB?.value !== undefined ? (rowB.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}</span>
+                  {rowB?.rawValue && <button onClick={(e) => { e.stopPropagation(); setViewValue({ value: rowB!.rawValue!, name: `${key} · run #${b.seq}` }); }} style={{ ...small, padding: "0px 4px", fontSize: 9, flexShrink: 0, lineHeight: 1.4 }} title="view value">⤢</button>}
                 </div>
               </div>
             );
@@ -1248,70 +1259,192 @@ function StateTab({
   changed: string[];
   collections: CollectionAtStep[];
 }) {
+  const [modalOpen, setModalOpen] = useState(false);
   if (!run) return <div>select a run</div>;
   const before = run.state_before;
-  // A collection's root is a state cell; it shows as its collection, below, not as a hash.
-  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !isCollectionCell(k)).sort();
+  const allKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !isCollectionCell(k)).sort();
+  const changedKeys = allKeys.filter((k) => changed.includes(k));
+  const unchangedCount = allKeys.length - changedKeys.length;
   const items = collections.reduce((n, c) => n + c.items.filter(itemChanged).length, 0);
   const counted = [
-    changed.length > 0 ? `${changed.length} key${changed.length === 1 ? "" : "s"}` : "",
+    changedKeys.length > 0 ? `${changedKeys.length} key${changedKeys.length === 1 ? "" : "s"}` : "",
     items > 0 ? `${items} item${items === 1 ? "" : "s"}` : "",
   ].filter(Boolean);
+  const changedCollections = collections.filter((c) => c.items.some(itemChanged));
   return (
     <>
-      <div style={{ color: dim }}>
-        {step === null ? `after the whole run (${order.length} nodes)` : `after node ${step + 1} of ${order.length}`}
-        {counted.length > 0 ? ` · ${counted.join(" and ")} changed` : " · no change"}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <div style={{ color: dim, flex: 1, fontSize: 11 }}>
+          {step === null ? `after the whole run (${order.length} nodes)` : `after node ${step + 1} of ${order.length}`}
+          {counted.length > 0 ? ` · ${counted.join(" and ")} changed` : " · no change"}
+        </div>
+        <button onClick={() => setModalOpen(true)} style={{ ...small, padding: "0px 4px", fontSize: 10, lineHeight: 1.4, flexShrink: 0 }} title="view full state">⤢</button>
       </div>
-      {keys.length === 0 && collections.length === 0 && <div>no state: nothing read or written</div>}
-      {keys.map((k) => {
-        const moved = changed.includes(k);
-        return (
-          <div
-            key={k}
-            style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: moved ? changedBg : "transparent" }}
-          >
-            <div style={{ color: moved ? "#e0c36f" : ink, marginBottom: 2 }}>
-              {k}
-              {moved ? " · changed" : ""}
-            </div>
-            <Field name="before" value={show(before[k])} />
-            {moved && <Field name="after" value={show(after[k])} color="#e0c36f" />}
-          </div>
-        );
-      })}
-      {collections.map((c) => (
-        <CollectionBox key={c.name} slug={slug} c={c} />
+      {allKeys.length === 0 && collections.length === 0 && <div>no state: nothing read or written</div>}
+      {changedKeys.map((k) => (
+        <div key={k} style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: changedBg }}>
+          <div style={{ color: "#e0c36f", marginBottom: 2 }}>{k} · changed</div>
+          <Field name="before" value={show(before[k])} rawValue={before[k]} />
+          <Field name="after" value={show(after[k])} color="#e0c36f" rawValue={after[k]} />
+        </div>
       ))}
-      <div style={{ color: dim }}>writes are committed when the run finishes: the next run reads “after”.</div>
+      {changedCollections.map((c) => (
+        <CollectionBox key={c.name} slug={slug} c={c} compact />
+      ))}
+      {counted.length === 0 && unchangedCount > 0 && (
+        <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} · no change · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
+      )}
+      {counted.length > 0 && unchangedCount > 0 && (
+        <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} unchanged · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
+      )}
+      {modalOpen && (
+        <StateModal slug={slug} run={run} step={step} order={order} after={after} changed={changed} collections={collections} onClose={() => setModalOpen(false)} />
+      )}
     </>
   );
 }
 
-/**
- * A collection as the run saw and changed it: each item it read or wrote, before → after (a
- * before the log doesn't hold, for an item it wrote without reading, is fetched as of the root the
- * run started from), the listings it made, and every item as the run found it, a page at a time.
- */
-function CollectionBox({ slug, c }: { slug: string; c: CollectionAtStep }) {
+function StateModal({
+  slug,
+  run,
+  step,
+  order,
+  after,
+  changed,
+  collections,
+  onClose,
+}: {
+  slug: string;
+  run: LogEntry;
+  step: number | null;
+  order: string[];
+  after: Record<string, WValue>;
+  changed: string[];
+  collections: CollectionAtStep[];
+  onClose: () => void;
+}) {
+  const [viewValue, setViewValue] = useState<{ value: WValue; name: string } | null>(null);
+  const PAGE = 25;
+  const [page, setPage] = useState(0);
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") { if (viewValue) setViewValue(null); else onClose(); } };
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onClose, viewValue]);
+
+  const before = run.state_before;
+  const allKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !isCollectionCell(k)).sort();
+  const pageCount = Math.max(1, Math.ceil(allKeys.length / PAGE));
+  const pageKeys = allKeys.slice(page * PAGE, (page + 1) * PAGE);
+  const cell: CSSProperties = { padding: "5px 8px", fontSize: 11, borderBottom: "1px solid #111d30", verticalAlign: "top" as const };
+  const vBtn = (v: WValue | undefined | null, name: string) =>
+    v ? <button onClick={(e) => { e.stopPropagation(); setViewValue({ value: v, name }); }} style={{ ...small, padding: "0px 4px", fontSize: 9, lineHeight: 1.4, flexShrink: 0 }} title="view value">&#x2922;</button> : null;
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(5,10,20,0.75)", display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, width: "min(96vw, 860px)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #1b2a45", flexShrink: 0, gap: 8 }}>
+          <span style={{ color: ink, fontWeight: 600 }}>Full state</span>
+          <span style={{ color: dim, fontSize: 11 }}>{step === null ? `after the whole run (${order.length} nodes)` : `after node ${step + 1} of ${order.length}`}</span>
+          <span style={{ flex: 1 }} />
+          {allKeys.length > PAGE && (
+            <span style={{ color: dim, fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+              <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} style={{ ...small, padding: "0 5px" }}>&#x2039;</button>
+              {page + 1} / {pageCount}
+              <button onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={page === pageCount - 1} style={{ ...small, padding: "0 5px" }}>&#x203a;</button>
+            </span>
+          )}
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: dim, cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1 }} title="close">&#xD7;</button>
+        </div>
+        <div style={{ ...scroll, display: "flex", flexDirection: "column" }}>
+          {allKeys.length === 0 && collections.length === 0 && <div style={{ color: dim, padding: 14 }}>no state: nothing read or written</div>}
+          {allKeys.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+              <colgroup>
+                <col style={{ width: "180px" }} />
+                <col />
+                <col />
+              </colgroup>
+              <thead>
+                <tr style={{ background: "#0a1525", position: "sticky", top: 0, zIndex: 1 }}>
+                  <th style={{ ...cell, color: dim, fontWeight: 400, textAlign: "left", fontSize: 10 }}>
+                    key {allKeys.length > PAGE && <span style={{ color: "#4d5f7d" }}>({page * PAGE + 1}&ndash;{Math.min((page + 1) * PAGE, allKeys.length)} of {allKeys.length})</span>}
+                  </th>
+                  <th style={{ ...cell, color: dim, fontWeight: 400, textAlign: "left", fontSize: 10 }}>before</th>
+                  <th style={{ ...cell, color: dim, fontWeight: 400, textAlign: "left", fontSize: 10 }}>after</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageKeys.map((k) => {
+                  const moved = changed.includes(k);
+                  const bg = moved ? changedBg : "transparent";
+                  const beforeVal = before[k];
+                  const afterVal = after[k];
+                  return (
+                    <tr key={k} style={{ background: bg }}>
+                      <td style={{ ...cell, color: moved ? "#e0c36f" : ink, fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>{k}</td>
+                      <td style={{ ...cell }}>
+                        <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
+                          <span style={{ color: ink, flex: 1, fontFamily: "var(--mono)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{show(beforeVal)}</span>
+                          {vBtn(beforeVal, k + " · before")}
+                        </div>
+                      </td>
+                      <td style={{ ...cell }}>
+                        {moved ? (
+                          <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
+                            <span style={{ color: "#e0c36f", flex: 1, fontFamily: "var(--mono)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{show(afterVal)}</span>
+                            {vBtn(afterVal, k + " · after")}
+                          </div>
+                        ) : (
+                          <span style={{ color: dim }}>&#x2014;</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          {collections.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 14px" }}>
+              {collections.map((c) => (
+                <CollectionBox key={c.name} slug={slug} c={c} />
+              ))}
+            </div>
+          )}
+          <div style={{ color: dim, fontSize: 11, padding: "6px 14px 10px" }}>writes are committed when the run finishes: the next run reads "after".</div>
+        </div>
+      </div>
+      {viewValue && <ValueModal value={viewValue.value} portName={viewValue.name} onClose={() => setViewValue(null)} />}
+    </div>
+  );
+}
+
+function CollectionBox({ slug, c, compact = false }: { slug: string; c: CollectionAtStep; compact?: boolean }) {
   const [fetched, setFetched] = useState<Record<string, WValue | null>>({});
-  const [all, setAll] = useState<{ items: [string, WValue][]; next: string | null } | null>(null);
+  const [all, setAll] = useState<{ items: [string, WValue][]; next: string | null; pageNum: number; cursors: (string | null)[] } | null>(null);
   const [error, setError] = useState("");
   const unread = c.items.filter((i) => i.before === undefined).map((i) => i.key);
-  const unreadKey = unread.join("\u0000");
+  const unreadKey = unread.join("\x00");
   useEffect(() => {
     if (!c.root) return;
-    for (const key of unreadKey ? unreadKey.split("\u0000") : []) {
+    for (const key of unreadKey ? unreadKey.split("\x00") : []) {
       getCollectionItems(slug, c.name, { root: c.root, key })
         .then((r) => setFetched((f) => ({ ...f, [key]: r.items[0]?.[1] ?? null })))
         .catch(() => setFetched((f) => ({ ...f, [key]: null })));
     }
   }, [slug, c.name, c.root, unreadKey]);
   useEffect(() => setAll(null), [c.root]);
-  const page = (after: string | null) => {
+  const fetchPage = (cursor: string | null, pageNum: number, cursors: (string | null)[]) => {
     setError("");
-    getCollectionItems(slug, c.name, { root: c.root, after, limit: 20 })
-      .then((r) => setAll((a) => ({ items: [...(after ? (a?.items ?? []) : []), ...r.items], next: r.next ?? null })))
+    getCollectionItems(slug, c.name, { root: c.root, after: cursor, limit: 20 })
+      .then((r) => setAll({ items: r.items, next: r.next ?? null, pageNum, cursors }))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   };
   const changedItems = c.items.filter(itemChanged).length;
@@ -1344,28 +1477,24 @@ function CollectionBox({ slug, c }: { slug: string; c: CollectionAtStep }) {
         </div>
       ))}
       {c.items.length === 0 && c.listed.length === 0 && <div style={{ color: dim }}>not read or written by this run</div>}
-      {c.root && (
+      {c.root && !compact && (
         <div style={{ marginTop: 4 }}>
           {all === null ? (
-            <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => page(null)} title="every item, as this run found the collection">
+            <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => fetchPage(null, 1, [null])} title="every item, as this run found the collection">
               show all ▸
             </span>
           ) : (
             <>
-              <div style={{ color: dim }}>as the run found it:</div>
+              <div style={{ color: dim, marginBottom: 2 }}>as the run found it – page {all.pageNum}:</div>
               {all.items.map(([k, v]) => (
                 <Field key={k} name={k} value={show(v)} />
               ))}
               {all.items.length === 0 && <div style={{ color: dim }}>empty</div>}
-              <span style={{ display: "flex", gap: 10 }}>
-                {all.next && (
-                  <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => page(all.next)}>
-                    more ▸
-                  </span>
-                )}
-                <span style={{ cursor: "pointer", color: dim }} onClick={() => setAll(null)}>
-                  hide
-                </span>
+              <span style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                <button disabled={all.pageNum === 1} onClick={() => fetchPage(all.cursors[all.pageNum - 2], all.pageNum - 1, all.cursors)} style={{ ...small, padding: "0 5px" }}>‹</button>
+                <span style={{ color: dim, fontSize: 11 }}>page {all.pageNum}</span>
+                <button disabled={!all.next} onClick={() => all.next && fetchPage(all.next, all.pageNum + 1, [...all.cursors, all.next])} style={{ ...small, padding: "0 5px" }}>›</button>
+                <span style={{ cursor: "pointer", color: dim, marginLeft: 4, fontSize: 11 }} onClick={() => setAll(null)}>hide</span>
               </span>
             </>
           )}
@@ -1528,7 +1657,7 @@ function renderValueContent(v: WValue, renderer: RendererKind, portName: string,
       };
       const kind = extKind[ext] ?? "File";
       const noteText = kept === "kept by hash"
-        ? "Content not stored in the run log — this folder keeps a hash only. To view contents here, set the folder’s keep to “bytes”."
+        ? `Content not stored in the run log — this folder keeps a hash only. To view contents here, set the folder’s keep to “bytes”.`
         : kept;
       return (
         <div style={{ padding: "24px 16px", textAlign: "center" }}>
