@@ -6,12 +6,15 @@
 //! random, ingress) are its whole input. The editor's view mode replays entries node by node
 //! from just this, to show what every node computed and to step through a past run.
 //!
-//! The newest entries per deployment (the host's `--keep-runs`, [`DEFAULT_KEEP`] without it) are
-//! kept in memory, and in a file of the deployment's own beside the deployments file
-//! (`<deployments>.logs/<slug>.jsonl`, a JSON line per entry, owner-only), so a restart reads
-//! them back and replay still has them. An entry is written as the control plane serves it:
-//! secrets and tokens already redacted. The file is cut back to the newest it keeps once it holds
-//! twice that; a line half-written by a crash is skipped.
+//! The newest entries per deployment are kept in memory, and in a file of the deployment's own
+//! beside the deployments file (`<deployments>.logs/<slug>.jsonl`, a JSON line per entry,
+//! owner-only), so a restart reads them back and replay still has them. How many, and for how
+//! long, is the deployment's retention (its `keep_runs` and `keep_run_days` limits,
+//! permissions.rs; the host's `--keep-runs`, [`DEFAULT_KEEP`] without it, at any age). An entry is
+//! written as the control plane serves it: secrets and tokens already redacted. The file is cut
+//! back to the newest it keeps once it holds twice that, or once its oldest line is a day past the
+//! age it keeps; it always keeps its newest line, which carries the numbering and the chain on. A
+//! line half-written by a crash is skipped.
 //!
 //! The file is a hash chain: each entry's `prev` is the BLAKE3 hash of the line before it, exactly
 //! as written. Cutting the file back keeps the newest lines byte for byte, so the chain still
@@ -353,6 +356,10 @@ pub struct Log {
     entries: VecDeque<LogEntry>,
     /// How many entries it keeps.
     keep: usize,
+    /// How old an entry it keeps, in milliseconds (none: any age).
+    max_age_ms: Option<u64>,
+    /// When the file's oldest line ran (0: no file, or nothing in it).
+    file_oldest_ms: u64,
     /// Where it is kept beside memory (none: memory only, a `:memory:` deployments file).
     file: Option<PathBuf>,
     /// How many lines the file holds.
@@ -395,10 +402,17 @@ impl Log {
 
     /// [`Log::open`], keeping `keep` entries.
     pub fn open_keeping(file: Option<PathBuf>, keep: usize) -> Log {
+        Log::open_retaining(file, keep, None)
+    }
+
+    /// [`Log::open`], keeping `keep` entries, none older than `max_age_ms`.
+    pub fn open_retaining(file: Option<PathBuf>, keep: usize, max_age_ms: Option<u64>) -> Log {
         let mut log = Log {
             next_seq: 0,
             entries: VecDeque::new(),
             keep: keep.max(1),
+            max_age_ms,
+            file_oldest_ms: 0,
             file,
             written: 0,
             cut: false,
@@ -419,17 +433,63 @@ impl Log {
                     log.breaks.push(entry.seq);
                 }
                 chained |= !entry.prev.is_empty();
+                if log.entries.is_empty() {
+                    log.file_oldest_ms = entry.at_ms;
+                }
                 log.head = line_hash(line);
                 log.next_seq = log.next_seq.max(entry.seq + 1);
                 log.entries.push_back(entry);
             }
         }
-        while log.entries.len() > log.keep {
-            log.entries.pop_front();
-        }
-        // Only the entries kept count (the file's first line has nothing before it to check).
-        log.breaks.retain(|seq| log.entries.front().is_some_and(|oldest| *seq >= oldest.seq));
+        log.prune(now_ms());
+        log.cut_back_if_aged();
         log
+    }
+
+    /// Keep `keep` entries from now on, none older than `max_age_ms` (none: any age): the
+    /// deployment's retention, set at deploy and load and when its grant changes. Keeping more
+    /// than it did reads back what the file still holds.
+    pub fn retain(&mut self, keep: usize, max_age_ms: Option<u64>) {
+        let keep = keep.max(1);
+        if (keep, max_age_ms) == (self.keep, self.max_age_ms) {
+            return;
+        }
+        if keep > self.keep && self.file.is_some() {
+            let slug = self.slug.take();
+            *self = Log::open_retaining(self.file.take(), keep, max_age_ms);
+            self.slug = slug;
+            return;
+        }
+        (self.keep, self.max_age_ms) = (keep, max_age_ms);
+        self.prune(now_ms());
+        self.cut_back_if_aged();
+    }
+
+    /// Drop the entries past what it keeps: the oldest past `keep`, and any older than its age.
+    /// Only the entries kept count for breaks (the oldest has nothing before it to check).
+    fn prune(&mut self, now_ms: u64) {
+        let cutoff = self.max_age_ms.map(|age| now_ms.saturating_sub(age));
+        while self.entries.len() > self.keep || self.entries.front().is_some_and(|e| cutoff.is_some_and(|c| e.at_ms < c)) {
+            self.entries.pop_front();
+        }
+        self.breaks.retain(|seq| self.entries.front().is_some_and(|oldest| *seq >= oldest.seq));
+    }
+
+    /// Whether the file's oldest line is a day past the age it keeps: time to cut it back.
+    fn file_aged(&self, now_ms: u64) -> bool {
+        const DAY_MS: u64 = 24 * 3600 * 1000;
+        self.file.is_some()
+            && self.file_oldest_ms != 0
+            && self.max_age_ms.is_some_and(|age| self.file_oldest_ms.saturating_add(age).saturating_add(DAY_MS) < now_ms)
+    }
+
+    /// Cut the file back when its oldest line is past the age it keeps, a run or not.
+    fn cut_back_if_aged(&mut self) {
+        if self.file_aged(now_ms())
+            && let Err(e) = self.cut_back(None)
+        {
+            eprintln!("holon: could not cut back the flow log in {:?}: {e}", self.file);
+        }
     }
 
     /// Append `entry`, numbering it and chaining it to the one before, and drop the oldest past
@@ -447,42 +507,27 @@ impl Log {
         };
         self.head = line_hash(&line);
         self.export("run", entry.seq, &self.head, entry.at_ms);
+        let at_ms = entry.at_ms;
         self.entries.push_back(entry);
-        while self.entries.len() > self.keep {
-            self.entries.pop_front();
-        }
-        if let Err(e) = self.keep_line(&line) {
+        self.prune(now_ms());
+        if let Err(e) = self.keep_line(&line, at_ms) {
             eprintln!("holon: could not keep the flow log in {:?}: {e}", self.file);
         }
     }
 
-    /// Write the newest entry's `line` to the file: appended, or, once the file would hold twice
-    /// what the log keeps, the file cut back to the newest it keeps, those lines as they were.
-    fn keep_line(&mut self, line: &str) -> std::io::Result<()> {
+    /// Write the newest entry's `line` (a run at `at_ms`) to the file: appended, or, once the
+    /// file would hold twice what the log keeps or its oldest line is past the age it keeps, the
+    /// file cut back to what it keeps.
+    fn keep_line(&mut self, line: &str, at_ms: u64) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        if self.written + 1 > 2 * self.keep {
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
-            let lines: Vec<&str> = text.lines().filter(|l| serde_json::from_str::<LogEntry>(l).is_ok()).collect();
-            let kept: Vec<&str> = lines[lines.len().saturating_sub(self.keep - 1)..].iter().copied().chain([line]).collect();
-            let mut all = String::new();
-            for l in &kept {
-                all.push_str(l);
-                all.push('\n');
-            }
-            // The witness hears that the runs before the oldest kept are gone by the host's choice.
-            if let Ok(oldest) = serde_json::from_str::<LogEntry>(kept[0])
-                && !oldest.prev.is_empty()
-            {
-                let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-                self.export("trim", oldest.seq, &oldest.prev, now_ms);
-            }
-            crate::sealing::write_private(&path, all.as_bytes())?;
-            self.written = all.lines().count();
-            self.cut = false;
-            return Ok(());
+        if self.written + 1 > 2 * self.keep || self.file_aged(now_ms()) {
+            return self.cut_back(Some(line));
+        }
+        if self.written == 0 {
+            self.file_oldest_ms = at_ms;
         }
         use std::io::Write;
         let text = if std::mem::take(&mut self.cut) { format!("\n{line}\n") } else { format!("{line}\n") };
@@ -500,6 +545,50 @@ impl Log {
         }
         file.write_all(text.as_bytes())?;
         self.written += 1;
+        Ok(())
+    }
+
+    /// Rewrite the file as the lines it keeps, byte for byte, then `line` (the newest entry's,
+    /// when there is one): the newest `keep`, none older than its age, but always the newest
+    /// line, which carries the numbering and the chain on.
+    fn cut_back(&mut self, line: Option<&str>) -> std::io::Result<()> {
+        let Some(path) = self.file.clone() else { return Ok(()) };
+        let cutoff = self.max_age_ms.map(|age| now_ms().saturating_sub(age));
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut lines: Vec<(&str, LogEntry)> =
+            text.lines().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok().map(|e| (l, e))).collect();
+        if let Some(line) = line
+            && let Ok(e) = serde_json::from_str::<LogEntry>(line)
+        {
+            lines.push((line, e));
+        }
+        let newest = lines.len().saturating_sub(1);
+        let start = lines.len().saturating_sub(self.keep);
+        let kept: Vec<&(&str, LogEntry)> = lines
+            .iter()
+            .enumerate()
+            .filter(|(i, (_, e))| *i == newest || (*i >= start && cutoff.is_none_or(|c| e.at_ms >= c)))
+            .map(|(_, l)| l)
+            .collect();
+        if kept.len() == lines.len() && line.is_none() {
+            return Ok(());
+        }
+        let mut all = String::new();
+        for (l, _) in &kept {
+            all.push_str(l);
+            all.push('\n');
+        }
+        // The witness hears that the runs before the oldest kept are gone by the host's choice.
+        if let Some((_, oldest)) = kept.first()
+            && !oldest.prev.is_empty()
+            && kept.len() < lines.len()
+        {
+            self.export("trim", oldest.seq, &oldest.prev, now_ms());
+        }
+        self.file_oldest_ms = kept.first().map_or(0, |(_, e)| e.at_ms);
+        crate::sealing::write_private(&path, all.as_bytes())?;
+        self.written = kept.len();
+        self.cut = false;
         Ok(())
     }
 
@@ -557,6 +646,11 @@ impl Log {
         let want = SValue::from_core(&holon_core::Value::Text(text.to_string()));
         self.entries.iter().any(|e| e.state_before.get(key) == Some(&want))
     }
+}
+
+/// Now, in milliseconds since the epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 /// A response body as log text: lossy UTF-8, cut at 64 KiB.
@@ -732,6 +826,51 @@ mod tests {
         assert_eq!(paths, vec![vec![0, 0, 1], vec![0, 0], vec![0]], "depth 4 left out; inner steps finish first");
         assert!(t.timeline.iter().all(|n| n.end_us >= n.start_us));
         assert!(t.timeline[2].start_us <= t.timeline[0].start_us, "the outer step started first");
+    }
+
+    /// A deployment's retention by age: runs older than it keeps drop from memory, the file is
+    /// cut back once its oldest line is a day past it (the newest line always kept, so numbering
+    /// and the chain go on), and keeping more again reads back what the file still holds.
+    #[test]
+    fn a_log_keeps_runs_by_age_and_reads_back_more_when_it_keeps_more() {
+        const DAY: u64 = 24 * 3600 * 1000;
+        let dir = temp_dir("age");
+        let path = dir.join("slug.jsonl");
+        let now = now_ms();
+        let mut log = Log::open_keeping(Some(path.clone()), 10);
+        for days_ago in [40, 35, 3, 1] {
+            log.push(LogEntry { at_ms: now - days_ago * DAY, ..entry() });
+        }
+        let seqs = |log: &Log| log.after(None, 100).iter().map(|e| e.seq).collect::<Vec<_>>();
+        let lines = || std::fs::read_to_string(&path).unwrap().lines().count();
+
+        log.retain(10, Some(30 * DAY));
+        assert_eq!(seqs(&log), [2, 3], "the two older than 30 days dropped");
+        assert_eq!(lines(), 2, "and the file was cut back to the two it keeps");
+        let back = Log::open_retaining(Some(path.clone()), 10, Some(30 * DAY));
+        assert!(back.breaks().is_empty(), "the chain checks from the oldest kept: {:?}", back.breaks());
+        assert_eq!(back.head(), log.head());
+
+        // All of them past the age: the newest line stays in the file, so the next run goes on
+        // from it.
+        log.retain(10, Some(DAY / 2));
+        assert_eq!(seqs(&log), Vec::<u64>::new());
+        assert_eq!(lines(), 1);
+        log.push(LogEntry { at_ms: now, ..entry() });
+        assert_eq!(seqs(&log), [4]);
+        let back = Log::open_retaining(Some(path.clone()), 10, Some(DAY / 2));
+        assert_eq!((back.next_seq(), back.head()), (5, log.head()));
+
+        // Fewer by count, then more again: what the file holds comes back.
+        let mut log = Log::open_keeping(Some(path.clone()), 10);
+        for _ in 0..4 {
+            log.push(LogEntry { at_ms: now, ..entry() });
+        }
+        log.retain(2, None);
+        assert_eq!(seqs(&log), [7, 8]);
+        log.retain(10, None);
+        assert_eq!(seqs(&log), [3, 4, 5, 6, 7, 8], "read back from the file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

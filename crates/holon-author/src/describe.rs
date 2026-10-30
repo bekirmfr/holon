@@ -15,6 +15,14 @@ pub fn describe_item(item: &str) -> String {
     if let Some(n) = arg("Limit").and_then(|a| a.strip_prefix(&format!("{}=", holon_core::MEMORY_LIMIT)).and_then(|v| v.parse::<u64>().ok())) {
         return format!("give that code up to {} MiB of memory per call", n / (1024 * 1024));
     }
+    // How long its log keeps runs (docs/L4s/history-L4.md §7): said the same whether it is more
+    // than the host's default or less.
+    if let Some(n) = arg("Limit").and_then(|a| a.strip_prefix("keep_runs=").map(str::to_string)) {
+        return format!("keep its newest {n} runs in its log");
+    }
+    if let Some(n) = arg("Limit").and_then(|a| a.strip_prefix("keep_run_days=").map(str::to_string)) {
+        return format!("keep its runs in its log for up to {n} days");
+    }
     type Say = fn(&str) -> String;
     let named: [(&str, Say); 20] = [
         ("HttpRequest", |a| format!("call https://{a}")),
@@ -87,6 +95,8 @@ mod tests {
         assert_eq!(describe_item(r#"HttpRequest("hooks.slack.com")"#), "call https://hooks.slack.com");
         assert_eq!(describe_item(r#"SecretRead("api_token")"#), r#"read the secret "api_token""#);
         assert_eq!(describe_item("Limit(max_requests=80)"), "raise max_requests to 80");
+        assert_eq!(describe_item("Limit(keep_runs=2000)"), "keep its newest 2000 runs in its log");
+        assert_eq!(describe_item("Limit(keep_run_days=30)"), "keep its runs in its log for up to 30 days");
         assert_eq!(describe_item(r#"DbRead("shop/orders")"#), r#"read the table "orders" of the database "shop""#);
         assert_eq!(describe_item(r#"DbWrite("shop/public.orders")"#), r#"insert, update and delete rows of the table "public.orders" of the database "shop""#);
         // A module's budgets read as what the code may consume, not as a limit raised.

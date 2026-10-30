@@ -875,6 +875,50 @@ fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
     assert_eq!(manifest["not_granted"], serde_json::json!([]));
 }
 
+/// How long a deployment's log keeps its runs is a deploy setting, held to the host's policy:
+/// keeping fewer is the author's to choose, keeping more than the default asks (it is the host's
+/// disk), and past the ceiling is refused. A grant lowered later holds the log at once.
+#[test]
+fn a_deployment_keeps_as_many_runs_as_its_retention_says() {
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nkeep_runs = 5\n[ceilings]\nkeep_runs = 50").unwrap());
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"k\")"]);
+    let keeping = |n: u64| serde_json::json!({ "acknowledge": ack, "requirements": { "limits": { "keep_runs": n } } });
+    let seqs = || -> Vec<u64> {
+        let log = body_json(route(&state, &req("GET", "/deployments/w/log", vec![])));
+        log["entries"].as_array().unwrap().iter().map(|e| e["seq"].as_u64().unwrap()).collect()
+    };
+    let run = |n: usize| {
+        for _ in 0..n {
+            assert_eq!(route(&state, &req("POST", "/trigger/w", b"x".to_vec())).status_code, 200);
+        }
+    };
+
+    assert_eq!(deploy_json(&state, "w", writer, keeping(2)).status_code, 200, "keeping fewer asks nobody");
+    run(4);
+    assert_eq!(seqs(), [2, 3]);
+
+    let more = deploy_json(&state, "w", writer, keeping(20));
+    assert!(body_json(more)["error"].as_str().unwrap().contains("Limit(keep_runs=20)"), "keeping more than the default asks");
+    let mut approved = keeping(20);
+    approved["acknowledge"].as_array_mut().unwrap().push(serde_json::json!("Limit(keep_runs=20)"));
+    assert_eq!(deploy_json(&state, "w", writer, approved).status_code, 200);
+    run(8);
+    assert_eq!(seqs(), (2..12).collect::<Vec<u64>>(), "the two it kept, and eight more");
+
+    let past = deploy_json(&state, "w", writer, keeping(100));
+    assert!(body_json(past)["error"].as_str().unwrap().contains("ceiling of 50"));
+
+    // The host lowers it: the log keeps that many from now on.
+    let lower = serde_json::to_vec(&serde_json::json!({ "lower": { "keep_runs": 3 } })).unwrap();
+    assert_eq!(route(&state, &req("POST", "/deployments/w/grant", lower)).status_code, 200);
+    assert_eq!(seqs(), [9, 10, 11]);
+    let missing = route(&state, &req("POST", "/deployments/w/restore", serde_json::to_vec(&serde_json::json!({ "run": 1, "state": true, "dry_run": true })).unwrap()));
+    let message = body_json(missing)["error"].as_str().unwrap_or_default().to_string();
+    assert!(message.contains("it keeps the newest 3 runs"), "{message}");
+}
+
 /// With the exceptions granted (a host whose policy allows them, a deployment that asks), an
 /// outbound request reaches a server on this machine over plain HTTP and its answer flows on.
 #[test]

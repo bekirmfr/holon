@@ -88,6 +88,8 @@ can change both columns ([Server configuration](server.md#the-policy)).
 | `max_db_read_bytes` | bytes a run reads from databases | 16777216 (16 MiB) | 268435456 |
 | `db_statement_ms` | time one SQL statement may take | 5000 | 60000 |
 | `max_db_statements` | SQL statements a run sends, reads and writes | 100 | 10000 |
+| `keep_runs` | runs the deployment's log keeps, the newest | 500 (`--keep-runs`) | 20000 |
+| `keep_run_days` | days the deployment's log keeps a run | 3650 (any age) | 3650 |
 
 A run past its time budget fails and performs nothing. An outbound call past a limit doesn't
 fail the run: it answers `{status: 0, error, message}`, with `error` one of `timeout`, `connect`,

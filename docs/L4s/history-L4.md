@@ -46,7 +46,8 @@ Most of what this needs is in the store already; what's missing is keeping it an
 - **The run log** (`recorder.rs`) is a hash chain per deployment (each line's `prev`, checked
   when the log is opened). Each line holds its unit, its grant's hash, `state_before` (the
   whole state map, copied) and `performed` (its writes and other effects). There is no state
-  after; the log keeps the newest 500 runs (`--keep-runs`).
+  after; the log keeps the newest 500 runs (`--keep-runs`; since slice 4 the deployment's
+  retention, §7).
 - **Deploys and grants** are in the activity log (`activity.rs`): `{at, action, target, by}`, no
   unit hash, no chain, across all deployments.
 - **Sessions already keep states** (`lifecycle.rs`): stopping a deployment ends its session and
@@ -164,14 +165,23 @@ Holon never claims to have undone it.
 
 ## 7. Retention
 
-Points are kept as long as the timeline keeps their entries; the log's 500-run window is what
-bounds that today.
+Points are kept as long as the timeline keeps their entries.
 
 - **Deploys and restores are kept for good**, with the state they left: those are the points
-  people go back to ("the version that worked, as it was"), and they are few.
-- **Runs** are kept by the deployment's retention: the 500 newest, or a setting by age. A run past
-  it keeps its header (seq, `prev`, roots, unit), so the chain still checks, and drops its body;
-  a state no kept entry names can be swept from the store.
+  people go back to ("the version that worked, as it was"), and they are few. They are events
+  (events.rs), which no retention cuts.
+- **Runs** are kept by the deployment's retention (built): two limits, `keep_runs` (the newest
+  that many; the host's `--keep-runs`, 500 without it) and `keep_run_days` (none older; any age by
+  default), set in the deploy settings and held to the host's policy, as every limit is: fewer than
+  the default is the author's to choose, more asks for approval (the host's disk), past the
+  ceiling (20000 runs, ten years) is refused. A grant lowered later holds the log at once. A run
+  past it is cut from the front of the file, which keeps its newest line so numbering and the
+  chain go on; the chain checks from the oldest kept, and a witness hears a `trim` (heads.rs).
+- **Later:** a run past retention keeping its header (seq, `prev`, roots, unit) so the chain checks
+  across it, which needs a line's hash to cover its header and its body's hash rather than the
+  line; and sweeping a state no kept entry names from the store. Retention from the text (a
+  header line), so `holon mcp` and `holon new --sample` carry it: today it is a deploy setting
+  only, as every limit is.
 
 ## 8. Not in this design
 
@@ -246,12 +256,15 @@ Reordered so restoring code, which changes nothing already logged, comes first:
        restore, a deploy) came between is a row of its own. `holon history --cell`, MCP's
        `history` with a cell, and ⧗ in view mode's flow state. The sample balance-trail.
 4. **Retention and verify** of whole states.
+     - **retention** (built): `keep_runs` and `keep_run_days`, limits in the deploy settings (§7).
+       The sample rolling-log keeps 5 runs, a day at most.
 
 ## 11. Forks, surfaced
 
 1. **Whether a restore of code alone is allowed when the state's cells don't match the older
    code.** *Lean:* allowed, with the differing cells in the dry run.
-2. **Retention:** by count or by age. *Lean:* by age, with deploys and restores kept for good.
+2. **Retention:** by count or by age. *Taken:* both, each a limit, with deploys and restores kept
+   for good.
 3. **Whether `--to` a version means just before it was replaced, or just after it was deployed.**
    *Lean:* just before it was replaced: the version as it had run.
 

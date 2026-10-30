@@ -107,7 +107,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--data-host IP` | where deployed flows' own servers listen (default `127.0.0.1`) |
 | `--allow-host HOST` | a host name it answers to besides localhost; repeatable |
 | `--allow-origin ORIGIN` | an origin the editor may be served from, besides localhost's; repeatable |
-| `--keep-runs N` | runs each deployment's log keeps (default 500; or `HOLON_KEEP_RUNS`) |
+| `--keep-runs N` | runs each deployment's log keeps unless its deploy settings say (the `keep_runs` limit's default: 500 without it; or `HOLON_KEEP_RUNS`) |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
 | `--secrets-key os\|env:VAR\|file:PATH` | where the secrets file's key is kept (default: the OS key store) |
 | `--new-secrets-key` | print a fresh key for `--secrets-key env:VAR`, and exit |

@@ -63,6 +63,8 @@ const LIMITS: [string, string][] = [
   ["channel_keep", "packs a channel keeps"],
   ["channel_buffer", "packs a subscriber may fall behind"],
   ["max_subscribers", "subscribers per channel"],
+  ["keep_runs", "runs the log keeps"],
+  ["keep_run_days", "days the log keeps runs"],
 ];
 
 /** `requirements` with `limit` set to `text` (blank: back to the host default). */

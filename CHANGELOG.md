@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **How long a deployment keeps its runs is a deploy setting.** Two limits, under ⚙: **runs the
+  log keeps** (`keep_runs`; the host's `--keep-runs`, 500 without it) and **days the log keeps
+  runs** (`keep_run_days`; any age without it). Keeping fewer than the host's default asks nobody;
+  keeping more asks for approval, as it is the host's disk, and `holon.toml` sets the defaults and
+  the ceilings (20000 runs, ten years). A grant lowered later holds the log at once. Deploys,
+  restores and grant changes are events, kept for good either way. The new **rolling-log** sample
+  ticks every second and keeps its newest 5 runs, while its state counts every beat.
+
 - **A run is labelled with the version it ran on, not the newest of its code.** A version
   deployed again (a restore of its code) is a new number with the same code: the timeline and a
   cell's history now name the number that was deployed when the run happened.

@@ -16,7 +16,10 @@ The editor checks the chain as it shows the log. In view mode, above the run lis
 - **head** and its first twelve hex digits, with **copy**.
 
 A deployment keeps its newest 500 runs by default (`holon serve --keep-runs N`). Older ones are
-trimmed, and the chain is checked from the oldest kept run.
+trimmed, and the chain is checked from the oldest kept run. How many, and for how long, is a
+deploy setting of its own: under ⚙, **runs the log keeps** and **days the log keeps runs**. Fewer
+than the host's default is the author's to choose; more asks for approval, as it is the host's
+disk (the sample **rolling-log** keeps 5, a day at most).
 
 What was done to the deployment (its [events](deploying.md#the-timeline): deploys, restores, grant
 changes, secrets, bindings, pausing and running) is a chain of its own, kept for good, so it is

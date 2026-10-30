@@ -46,12 +46,21 @@ pub struct Sample {
     /// Web pages from other sites it answers (deploy settings' `browsers`: `*`, or origins).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browsers: Option<&'static str>,
+    /// Limits away from the host's defaults (deploy settings' **needs**), by name: the copy opened
+    /// asks for them, as a person setting them under ⚙ would. The text has no line for them.
+    #[serde(skip_serializing_if = "<[_]>::is_empty", serialize_with = "limits_map")]
+    pub limits: &'static [(&'static str, u64)],
     /// How to try it once deployed.
     pub try_it: &'static str,
     /// The flow, in the language (docs/LANGUAGE.md): the file beside this crate's `src`, in
     /// `samples/`, in the canonical form `holon fmt` writes. `holon new --sample` and the flows
     /// page's download write it as it is, its names and all.
     pub text: &'static str,
+}
+
+/// A sample's limits as the deploy settings keep them: a map by name.
+fn limits_map<S: serde::Serializer>(limits: &&'static [(&'static str, u64)], s: S) -> Result<S::Ok, S::Error> {
+    s.collect_map(limits.iter().copied())
 }
 
 /// Every sample, in the order the flows page lists them.
@@ -71,6 +80,11 @@ pub fn sample(name: &str) -> Option<&'static Sample> {
 pub fn build(sample: &Sample) -> Result<FlowDocument, String> {
     let mut doc = lang::compile(sample.text).map(|l| l.doc).map_err(|e| format!("sample \"{}\": {e}", sample.name))?;
     doc.extra.insert("source".into(), serde_json::Value::String(sample.text.to_string()));
+    if !sample.limits.is_empty() {
+        let server = doc.server.get_or_insert_with(Default::default);
+        let limits: serde_json::Map<String, serde_json::Value> = sample.limits.iter().map(|(k, n)| (k.to_string(), (*n).into())).collect();
+        server.requirements.get_or_insert_with(Default::default).extra.insert("limits".into(), limits.into());
+    }
     Ok(doc)
 }
 
@@ -87,6 +101,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "curl http://127.0.0.1:8101/hello/Ada",
         text: include_str!("../samples/hello-api.holon"),
     },
@@ -100,6 +115,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X PUT -H "Content-Type: application/json" -d '{"text":"buy milk"}' http://127.0.0.1:8102/notes/1, then GET /notes (?after=1 for the next page), GET /notes/1, DELETE /notes/1. GET /notes/9 fails (404): open the run in view mode to see where, and why"#,
         text: include_str!("../samples/notes-api.holon"),
     },
@@ -116,6 +132,7 @@ static SAMPLES: &[Sample] = &[
         ],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "stripe listen --forward-to 127.0.0.1:8103/stripe, then stripe trigger payment_intent.succeeded",
         text: include_str!("../samples/stripe-to-slack.holon"),
     },
@@ -133,6 +150,7 @@ static SAMPLES: &[Sample] = &[
         // Without the receipt key it still answers, the receipt "unsigned": revoking it doesn't pause it.
         optional: &[RECEIPT_KEY],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -H "Authorization: Bearer <api_token>" http://127.0.0.1:8117/me answers a receipt; without it, or after the token is rotated, 401; revoke receipt_key and it answers "unsigned""#,
         text: include_str!("../samples/guarded-api.holon"),
     },
@@ -146,6 +164,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "receipt_key", what: r#"signs each publish receipt; optional: without it receipts read "unsigned""#, from: None }],
         optional: &[RECEIPT_KEY],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X POST -H "Content-Type: application/json" -d '{"title": "Hello Holon World", "author": "Ada Lovelace"}' http://127.0.0.1:8110/slugs answers the two slugs and a receipt; GET /slugs lists what was published; view a run to see the holons replayed and the post written, and expand a holon to see inside"#,
         text: include_str!("../samples/slugs.holon"),
     },
@@ -159,6 +178,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "curl http://127.0.0.1:8111/repos/bekirmfr/holon/issues/7",
         text: include_str!("../samples/issue-links.holon"),
     },
@@ -172,6 +192,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X POST -H "Content-Type: application/json" -d '{"tax":0.25,"items":[{"name":"tea","price":4,"qty":2},{"name":"cake","price":3,"qty":1}]}' http://127.0.0.1:8112/quote"#,
         text: include_str!("../samples/quote.holon"),
     },
@@ -185,6 +206,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X PUT -d '{"price":4}' http://127.0.0.1:8113/prices/tea and again for cake at 3, then curl -X POST -d '{"items":[{"name":"tea","qty":2},{"name":"cake","qty":1}]}' http://127.0.0.1:8113/basket (an unpriced item: 404)"#,
         text: include_str!("../samples/basket.holon"),
     },
@@ -198,6 +220,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X POST -d '{"event":"gig","count":3}' http://127.0.0.1:8114/tickets (a count of 2.5, -1 or 20000: 400)"#,
         text: include_str!("../samples/tickets.holon"),
     },
@@ -211,6 +234,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl http://127.0.0.1:8115/id/ada twice: the same id, and the second run sends no request (or set one: curl -X PUT -d '{"id":"x"}' http://127.0.0.1:8115/id/bob)"#,
         text: include_str!("../samples/cache-aside.holon"),
     },
@@ -224,6 +248,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -d '{"op":"add","a":1,"b":0}' http://127.0.0.1:8116/calc answers 1; with "op":"div" it answers 400"#,
         text: include_str!("../samples/calc.holon"),
     },
@@ -237,8 +262,23 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "deploy it, wait, then look at its state on the deployed page (or GET /deployments/heartbeat/state)",
         text: include_str!("../samples/heartbeat.holon"),
+    },
+    Sample {
+        name: "rolling-log",
+        title: "Rolling log (retention)",
+        description: "A clock flow that keeps only its newest 5 runs, none older than a day: how long a deployment's log keeps its runs is a deploy setting (keep_runs, keep_run_days), and keeping fewer than the host's default asks nobody.",
+        shows: &["retention", "keep_runs", "keep_run_days", "clock", "state across runs"],
+        port: None,
+        interval: Some("1"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        limits: &[("keep_runs", 5), ("keep_run_days", 1)],
+        try_it: "deploy it, wait a few seconds: view mode's runs list holds the newest 5 (holon history rolling-log), its seqs climbing, while its state counts every beat",
+        text: include_str!("../samples/rolling-log.holon"),
     },
     Sample {
         name: "approval",
@@ -250,6 +290,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X POST -H "Content-Type: application/json" -d '{"item":"book"}' http://127.0.0.1:8105/orders (answers /paid/<token>), then open that path; the order is written to state "last_order". curl -N http://127.0.0.1:8105/orders/live shows each order's progress: "waiting for payment", then "paid""#,
         text: include_str!("../samples/approval.holon"),
     },
@@ -263,6 +304,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "curl http://127.0.0.1:8106/slideshow (calls https://httpbin.org/json, answers its title)",
         text: include_str!("../samples/fetch-json.holon"),
     },
@@ -276,6 +318,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "signing_key", what: "any secret of 6 characters or more to sign with", from: None }],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X POST -H "Content-Type: application/json" -d 'hello' http://127.0.0.1:8107/sign; then export its runs and holon verify checks each run given the signature its log entry kept (the key is never in the log)"#,
         text: include_str!("../samples/sign-payload.holon"),
     },
@@ -289,6 +332,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "seq 50 | xargs -P 20 -I{} curl -s -X POST http://127.0.0.1:8108/posts/1/like, then GET /posts/1/likes (\"50 likes\") and GET /likes; the log marks runs that ran again",
         text: include_str!("../samples/likes.holon"),
     },
@@ -302,6 +346,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "curl http://127.0.0.1:8155/hit twice (\"hit 2\"), curl -X POST http://127.0.0.1:8155/visits/ada, then GET /last (\"ada\")",
         text: include_str!("../samples/counter.holon"),
     },
@@ -315,6 +360,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "witness_key", what: "the token servers send (their HOLON_EXPORT_HEADS_TOKEN)", from: None }],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "start a server with HOLON_EXPORT_HEADS_TOKEN set to the witness key and --export-heads http://127.0.0.1:8130/heads, let any deployment run, then GET http://127.0.0.1:8130/batches",
         text: include_str!("../samples/witness.holon"),
     },
@@ -328,6 +374,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X POST -d '{"amount":5}' http://127.0.0.1:8131/accounts/ada a few times, save GET /deployments/<slug>/export (signed in) as runs.json, then holon verify runs.json"#,
         text: include_str!("../samples/ledger.holon"),
     },
@@ -341,6 +388,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "publish_key", what: "the key publishers send (Authorization: Bearer <key>) to publish or yank", from: None }],
         optional: &[],
         browsers: Some("*"),
+        limits: &[],
         try_it: "set it as the editor's marketplace (flows page), publish a saved flow without routes from the flows page, and place it from the palette's marketplace; GET http://127.0.0.1:8120/listings lists them",
         text: include_str!("../samples/marketplace.holon"),
     },
@@ -354,6 +402,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "curl -X POST --data-binary kitten http://127.0.0.1:8117/words, then sitting and mitten; curl http://127.0.0.1:8117/nearest/kittne answers { best: \"kitten\", distance: 2 }; a word nobody added yet answers 404",
         text: include_str!("../samples/nearest.holon"),
     },
@@ -367,6 +416,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "printf 'city,temp\nOslo,4\nRome,19\nOslo,6\n' | curl -s -X POST --data-binary @- http://127.0.0.1:8119/tally answers rows 3 and two columns (city: text, 2 distinct; temp: number, 4 to 19, mean 9.67); curl http://127.0.0.1:8119/tally/last repeats it with when",
         text: include_str!("../samples/tally.holon"),
     },
@@ -380,6 +430,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "curl -X POST -H 'Idempotency-Key: k1' -H 'Content-Type: application/json' -d '{\"amount\":42}' http://127.0.0.1:8121/charges twice: the same id, the second replayed: true; send it with amount 43 for a 409; run two at once with a fresh key and `explain` shows the second claimed charges[k2], waited, and sent nothing",
         text: include_str!("../samples/idempotent.holon"),
     },
@@ -393,6 +444,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "open http://127.0.0.1:8122/ in a browser and sign it; or curl -s -d 'name=Ada&note=Hello' http://127.0.0.1:8122/sign -o /dev/null -w '%{http_code}' answers 303, and curl http://127.0.0.1:8122/ shows the entry",
         text: include_str!("../samples/guestbook.holon"),
     },
@@ -406,6 +458,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the folders (an admin): holon folder add inbox ~/holon-inbox --read-only and holon folder add reports ~/holon-reports; put sales.csv (region,amount / north,10 / south,32) in the inbox; then curl -s -X POST -H 'content-type: application/json' -d '{\"name\":\"sales.csv\"}' http://127.0.0.1:8123/report answers rows 2, curl http://127.0.0.1:8123/reports/sales.csv.md shows the report (amount: 42), and curl http://127.0.0.1:8123/reports lists it",
         text: include_str!("../samples/inbox-report.holon"),
     },
@@ -419,6 +472,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the folders (an admin): holon folder add logs ~/holon-logs --read-only and holon folder add archive ~/holon-archive; put any app.log in the logs folder; then curl http://127.0.0.1:8124/logs/app.log/tail answers its last 20 lines, curl http://127.0.0.1:8124/logs/app.log/head its first 256 bytes, curl -s -X POST -H 'content-type: application/json' -d '{\"name\":\"app.log\"}' http://127.0.0.1:8124/archive copies it into the archive under its hash, and curl http://127.0.0.1:8124/archive lists the archive",
         text: include_str!("../samples/log-archive.holon"),
     },
@@ -432,6 +486,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the folder (an admin): holon folder add journal ~/holon-journal --keep 7d --cap 10M; then curl -s -X POST -d 'first line' http://127.0.0.1:8125/journal/today and curl -s -X POST -d 'second line' http://127.0.0.1:8125/journal/today append to today.txt, curl http://127.0.0.1:8125/journal/today shows both lines, and curl http://127.0.0.1:8125/journal lists the pages; holon folder sweep removes now the texts no run kept within 7 days refers to",
         text: include_str!("../samples/journal.holon"),
     },
@@ -445,6 +500,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "open http://127.0.0.1:8126/ in two browsers and add a ticket in one: it shows in both; or curl -N http://127.0.0.1:8126/live in one terminal and curl -s -H 'content-type: application/json' -d '{\"title\":\"fix the door\"}' http://127.0.0.1:8126/tickets in another: the first prints id: … and data: {\"at\":…,\"title\":\"fix the door\"}",
         text: include_str!("../samples/live-board.holon"),
     },
@@ -458,6 +514,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "anthropic_api_key", what: "an Anthropic API key (sk-ant-…), from console.anthropic.com", from: None }],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "open http://127.0.0.1:8127/ and ask something: the answer shows as it is written; or curl -N -H 'content-type: application/json' -d '{\"prompt\":\"a haiku about rivers\"}' http://127.0.0.1:8127/chat prints the events as they come. GET / lists what was asked before. For the room: curl -N http://127.0.0.1:8127/room/live in one terminal, then curl -s -H 'content-type: application/json' -d '{\"prompt\":\"a haiku about rivers\"}' http://127.0.0.1:8127/room in another: the first prints the pieces as they come, then {\"prompt\":…,\"said\":…}",
         text: include_str!("../samples/chat-proxy.holon"),
     },
@@ -471,6 +528,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[SampleSecret { name: "gemini_api_key", what: "a Gemini API key, free from aistudio.google.com (Get API key)", from: None }],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "open http://127.0.0.1:8128/ and ask something: the answer shows as it is written; or curl -N -H 'content-type: application/json' -d '{\"prompt\":\"a haiku about rivers\"}' http://127.0.0.1:8128/chat prints the events as they come. GET / lists what was asked before.",
         text: include_str!("../samples/gemini-chat.holon"),
     },
@@ -484,6 +542,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the folder (an admin): holon folder add ledger ~/holon-ledger; deploy it, then deploy a copy renamed shared-ledger-2 on port 8141; post to both at once, for i in $(seq 20); do curl -s -X POST -d \"a $i\" http://127.0.0.1:8140/lines & curl -s -X POST -d \"b $i\" http://127.0.0.1:8141/lines & done; wait, and curl http://127.0.0.1:8140/lines shows all 40 lines",
         text: include_str!("../samples/shared-ledger.holon"),
     },
@@ -497,6 +556,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the database (an admin): holon database add shop ~/holon-shop.db --schema \"create table if not exists orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0); create table if not exists refunds (order_id integer not null, amount numeric not null, status integer)\"; deploy it, then curl -X POST -d '{\"customer\":\"ada\",\"total\":\"12.50\"}' http://127.0.0.1:8150/orders, curl http://127.0.0.1:8150/orders/ada, and curl -X POST http://127.0.0.1:8150/order/1/refund twice: the second changes no row. On Postgres instead: start the server with HOLON_SECRET_SHOP_URL=postgres://user:password@host/shop in its environment and bind holon database add shop env:HOLON_SECRET_SHOP_URL --schema \"create table if not exists orders (id integer generated by default as identity primary key, customer text not null, total numeric(10,2) not null, refunded integer not null default 0); create table if not exists refunds (order_id integer not null, amount numeric(10,2) not null, status integer)\" (MySQL: mysql://…, and id integer primary key auto_increment); totals then come back exact, as text",
         text: include_str!("../samples/orders-api.holon"),
     },
@@ -510,6 +570,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "bind shop as orders-api says (its schema makes both tables) and deploy orders-api and this; place an order (curl -X POST -d '{\"customer\":\"ada\",\"total\":5}' http://127.0.0.1:8150/orders), then refund it twice at once: curl -X POST http://127.0.0.1:8151/refund/1 & curl -X POST http://127.0.0.1:8151/refund/1; one answers 200, the other 409, and curl http://127.0.0.1:8151/refunds/1 lists one refund",
         text: include_str!("../samples/refund-once.holon"),
     },
@@ -523,6 +584,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the database (an admin): holon database add tickets ~/holon-tickets.db --lock run --schema \"create table if not exists counter (id integer primary key, n integer not null); insert or ignore into counter values (1, 0); create table if not exists issued (n integer primary key, holder text not null)\"; deploy, then take twenty at once: for i in $(seq 20); do curl -s -X POST -d '{\"name\":\"p'$i'\"}' http://127.0.0.1:8152/ticket & done; wait; curl http://127.0.0.1:8152/tickets lists 1 to 20, one each, and the deployment's log shows no run ran again",
         text: include_str!("../samples/ticket-numbers.holon"),
     },
@@ -536,6 +598,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the database (an admin): holon database add bank ~/holon-bank.db --schema \"create table if not exists accounts (id integer primary key, balance integer not null); insert or ignore into accounts values (1, 100); create table if not exists payouts (account integer not null, amount integer not null, status integer)\"; deploy, then curl -X POST -d '{\"amount\":30}' http://127.0.0.1:8153/payout/1 answers an approve link; curl -X POST -d '{\"amount\":50}' http://127.0.0.1:8153/deposit/1 (150); curl -X POST -d '{\"by\":\"ops\"}' http://127.0.0.1:8153<the link> pays it; curl http://127.0.0.1:8153/accounts/1 says 120, the deposit kept",
         text: include_str!("../samples/approved-payout.holon"),
     },
@@ -549,6 +612,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "start the server with HOLON_SECRET_NOTES_URL=mongodb+srv://user:password@cluster0.example.mongodb.net/notes (Atlas; or mongodb://127.0.0.1:27017/notes?replicaSet=rs0) in its environment and bind it (an admin): holon database add notes env:HOLON_SECRET_NOTES_URL; deploy, then curl -X POST -d '{\"id\":\"n1\",\"text\":\"buy milk\",\"tags\":[\"home\"]}' http://127.0.0.1:8154/notes/ada, curl http://127.0.0.1:8154/notes/ada, curl http://127.0.0.1:8154/notes/ada/tagged/home, and curl -X POST http://127.0.0.1:8154/notes/ada/n1/done twice: the second finds no open note",
         text: include_str!("../samples/atlas-notes.holon"),
     },
@@ -562,6 +626,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the folders (an admin): holon folder add drop ~/holon-drop --read-only and holon folder add receipts ~/holon-receipts; deploy, then copy any file into ~/holon-drop: within two seconds ~/holon-receipts holds <file>.json with its size, its hash and how many bytes httpbin.org received, and the deployment's log shows the run",
         text: include_str!("../samples/drop-box.holon"),
     },
@@ -575,6 +640,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the folders (an admin): holon folder add inbox ~/holon-inbox --read-only, holon folder add outbox ~/holon-outbox --read-only and holon folder add audit ~/holon-audit; deploy, then copy a .csv into ~/holon-inbox, delete a file from it, or drop any file into ~/holon-outbox: within two seconds ~/holon-audit/<folder>/ holds an entry for each change; a .txt dropped into the inbox starts nothing",
         text: include_str!("../samples/file-audit.holon"),
     },
@@ -588,6 +654,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "open http://127.0.0.1:8156/: a new tick shows every 2 seconds; curl http://127.0.0.1:8156/count answers how many so far; run reset from the editor's server panel (or POST {\"to\": 0} to /trigger/ticker/reset on the holon server) to set it back, or from the deployed page; to let an agent run it (holon mcp's run tool), tick reset under ⚙ → agents may run, deploy and approve it",
         text: include_str!("../samples/ticker.holon"),
     },
@@ -601,6 +668,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "first bind the folder (an admin): holon folder add board ~/holon-board --read-only; deploy, open http://127.0.0.1:8157/, then copy any file into ~/holon-board: within two seconds the page shows it, with its size, and deleting it shows that too",
         text: include_str!("../samples/drop-board.holon"),
     },
@@ -614,6 +682,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "deploy it first, then the sample shop; run charge from the editor's server panel with {\"id\": \"a1\", \"amount\": 5}, then curl http://127.0.0.1:8158/charges/a1; in the deployed shop, an order's run shows up here as an action run by the flow shop",
         text: include_str!("../samples/billing.holon"),
     },
@@ -627,6 +696,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: "deploy the sample billing first; then curl -X POST -H \"Content-Type: application/json\" -d '{\"id\":\"o1\",\"amount\":5}' http://127.0.0.1:8159/orders answers {\"id\":\"o1\",\"total\":6}; GET /orders/o1 reads the order, and billing's log has the charge run by the flow shop; stop billing and the same request answers 502; DELETE /orders/o1 runs billing's refund",
         text: include_str!("../samples/shop.holon"),
     },
@@ -640,6 +710,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X PUT -d '{"price":4}' http://127.0.0.1:8160/prices/tea, then curl http://127.0.0.1:8160/quote/tea answers a total of 4.5; change fee = 0.5 to fee = 5 and deploy again (a total of 9); holon restore price-rollback lists the versions, and holon restore price-rollback --to N --code (N: the one before) answers 4.5 again, tea still priced 4. Then curl -X PUT -d '{"price":40}' http://127.0.0.1:8160/prices/tea (a total of 40.5): holon restore price-rollback --to N --state --dry-run says what would change, and without --dry-run tea is 4 again; holon history price-rollback shows the runs, deploys and restores. Or in the editor: view, then history, pick the version before, and press code (then, after the wrong price, state; after another, ↺ on that restore's row puts its prices back)"#,
         text: include_str!("../samples/price-rollback.holon"),
     },
@@ -653,6 +724,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"first bind the folder (an admin): holon folder add sheets ~/holon-sheets; then curl -X PUT -d '{"count":4}' http://127.0.0.1:8161/stock/tea and curl -X PUT -d '{"count":40}' http://127.0.0.1:8161/stock/tea; curl http://127.0.0.1:8161/sheet shows both lines. holon restore stock-sheet --to-run SEQ --state --dry-run (SEQ: the first PUT's run) puts tea back to 4 and names sheets/changes.txt, written once since, not put back; add a line to ~/holon-sheets/changes.txt by hand and the dry run says it was changed outside a run. In the editor: view, history, ↺ on the first PUT, then diff"#,
         text: include_str!("../samples/stock-sheet.holon"),
     },
@@ -666,6 +738,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
+        limits: &[],
         try_it: r#"curl -X POST -d '{"amount":100}' http://127.0.0.1:8162/accounts/a/move, then the same with b and 5, and a with -30: curl http://127.0.0.1:8162/accounts/a answers 70. holon history balance-trail --cell balances --item a lists the two runs that moved a (nothing → 100, 100 → 70), not b's; --cell moves lists all three. Put the state the first run left back (holon restore balance-trail --to-run SEQ --state) and move a by 1: its history shows the restore between the runs (70 → 100) and the new run (100 → 101). In the editor: view, pick a run, Flow state, ⧗ beside balances or one of its items"#,
         text: include_str!("../samples/balance-trail.holon"),
     },
@@ -719,6 +792,11 @@ mod tests {
             for secret in s.secrets {
                 assert!(s.text.contains(&format!("secret.{}", secret.name)), "{}: reads secret.{}", s.name, secret.name);
             }
+            // Its limits have no line in the text: the copy opened asks for them.
+            let built = build(s).unwrap();
+            let limits = built.server.and_then(|v| v.requirements).and_then(|r| r.extra.get("limits").cloned());
+            let want: serde_json::Map<String, serde_json::Value> = s.limits.iter().map(|(k, n)| (k.to_string(), (*n).into())).collect();
+            assert_eq!(limits.unwrap_or_else(|| serde_json::json!({})), serde_json::Value::Object(want), "{}: limits", s.name);
         }
     }
 

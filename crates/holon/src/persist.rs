@@ -218,7 +218,8 @@ pub(crate) fn load_deployments(
             .map_err(|e| format!("deployment {slug:?} in {path:?}: {e}"))?;
 
         println!("loaded deployment {:?} from {path:?} (triggers: {triggers:?})", record.slug);
-        let log = Log::for_deployment(path, &record.slug);
+        let mut log = Log::for_deployment(path, &record.slug);
+        log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
         if !log.breaks().is_empty() {
             let runs: Vec<String> = log.breaks().iter().map(u64::to_string).collect();
             eprintln!(

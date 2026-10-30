@@ -296,8 +296,9 @@ the host default, always within what was granted.
 **Limits that exist today move under the same model:** the data plane's inbound body cap
 (hardcoded 8 MiB, `MAX_BODY_BYTES`; the default becomes 10 MiB to match the outbound one) and the
 flow log's retention become host defaults with ceilings, which a deployment may ask to raise.
-Retention is a host setting already (`--keep-runs N` or `HOLON_KEEP_RUNS`, 500 runs per deployment
-without it); the ceiling and a deployment's own ask are left for later. The kept log is a hash
+Retention is two limits, `keep_runs` and `keep_run_days`: the host's default (`--keep-runs N` or
+`HOLON_KEEP_RUNS`, 500 runs per deployment without it, of any age) and ceiling, and a deployment's
+own ask in its deploy settings, more than the default needing approval. The kept log is a hash
 chain (`recorder.rs`): each entry names the line before it, and a run changed or removed outside
 holon shows as a break, at load and in `GET /deployments/<slug>/log` (`head`, `breaks`). Heads go
 to a witness outside the server with `--export-heads URL` (`heads.rs`): batched every 5 s, queued

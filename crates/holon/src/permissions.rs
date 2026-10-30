@@ -33,7 +33,7 @@ use crate::to_hex;
 /// bytes. The two module limits are what a flow's module bodies may compute and hold per call
 /// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
 /// gets, so the policy has ceilings for them and no `[limits]` entry.
-pub(crate) const LIMIT_NAMES: [&str; 30] = [
+pub(crate) const LIMIT_NAMES: [&str; 32] = [
     "connect_timeout_ms",
     "request_timeout_ms",
     "claim_wait_ms",
@@ -62,6 +62,8 @@ pub(crate) const LIMIT_NAMES: [&str; 30] = [
     "channel_keep",
     "channel_buffer",
     "max_subscribers",
+    "keep_runs",
+    "keep_run_days",
     holon_core::FUEL_LIMIT,
     holon_core::MEMORY_LIMIT,
 ];
@@ -150,6 +152,49 @@ impl DbLimits {
     }
 }
 
+/// How long a deployment's log keeps its runs (`docs/L4s/history-L4.md` §7): the newest
+/// `keep_runs`, none older than `keep_run_days`. It is the host's disk, so keeping more than the
+/// default asks, and keeping less is the author's to choose. Deploys, restores and grant changes
+/// are events, kept for good either way.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LogLimits {
+    pub(crate) keep_runs: u64,
+    pub(crate) keep_run_days: u64,
+}
+
+impl LogLimits {
+    /// What a deployment gets without asking: the host's `--keep-runs` (500 without it), of any
+    /// age (ten years is the most a log keeps).
+    pub(crate) fn defaults() -> LogLimits {
+        LogLimits { keep_runs: crate::recorder::keep() as u64, keep_run_days: LogLimits::ceilings().keep_run_days }
+    }
+
+    /// What no grant can exceed: a log is held in memory, so forty times the default runs (or the
+    /// host's `--keep-runs`, when that is more).
+    pub(crate) fn ceilings() -> LogLimits {
+        LogLimits { keep_runs: 20_000.max(crate::recorder::keep() as u64), keep_run_days: 3650 }
+    }
+
+    /// What it keeps, as a person reads it: `the newest 500 runs`, `…, none older than 30 days`.
+    pub(crate) fn kept(&self) -> String {
+        match self.max_age_ms() {
+            Some(_) => format!("the newest {} runs, none older than {} days", self.keep_runs, self.keep_run_days),
+            None => format!("the newest {} runs", self.keep_runs),
+        }
+    }
+
+    /// The age it keeps, in milliseconds: none when it is the most a log keeps.
+    pub(crate) fn max_age_ms(&self) -> Option<u64> {
+        (self.keep_run_days < LogLimits::ceilings().keep_run_days).then(|| self.keep_run_days * 24 * 3600 * 1000)
+    }
+}
+
+/// `numbers` applied over `base`'s log limits.
+fn numbers_to_log(base: &LogLimits, numbers: &BTreeMap<String, u64>) -> LogLimits {
+    let n = |k: &str, d: u64| numbers.get(k).copied().unwrap_or(d);
+    LogLimits { keep_runs: n("keep_runs", base.keep_runs), keep_run_days: n("keep_run_days", base.keep_run_days) }
+}
+
 /// `numbers` applied over `base`'s database limits.
 fn numbers_to_databases(base: &DbLimits, numbers: &BTreeMap<String, u64>) -> DbLimits {
     let n = |k: &str, d: u64| numbers.get(k).copied().unwrap_or(d);
@@ -162,8 +207,16 @@ fn numbers_to_databases(base: &DbLimits, numbers: &BTreeMap<String, u64>) -> DbL
 }
 
 /// The limits as numbers by name: the request-run limits, the clock run's budget, the
-/// durable-run limits, the file limits, the database limits and the channel limits.
-fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &DurableLimits, files: &FileLimits, databases: &DbLimits, channels: &ChannelLimits) -> BTreeMap<String, u64> {
+/// durable-run limits, the file limits, the database limits, the channel limits and the log's.
+fn limits_to_numbers(
+    request: &Limits,
+    clock_budget: Duration,
+    durable: &DurableLimits,
+    files: &FileLimits,
+    databases: &DbLimits,
+    channels: &ChannelLimits,
+    log: &LogLimits,
+) -> BTreeMap<String, u64> {
     let ms = |d: Duration| d.as_millis() as u64;
     BTreeMap::from([
         ("connect_timeout_ms".into(), ms(request.connect_timeout)),
@@ -194,6 +247,8 @@ fn limits_to_numbers(request: &Limits, clock_budget: Duration, durable: &Durable
         ("channel_keep".into(), channels.channel_keep),
         ("channel_buffer".into(), channels.channel_buffer),
         ("max_subscribers".into(), channels.max_subscribers),
+        ("keep_runs".into(), log.keep_runs),
+        ("keep_run_days".into(), log.keep_run_days),
     ])
 }
 
@@ -366,6 +421,8 @@ pub(crate) struct Policy {
     pub(crate) databases: DbLimits,
     /// The channel limits a deployment gets without asking.
     pub(crate) channels: ChannelLimits,
+    /// How long a deployment's log keeps its runs without asking.
+    pub(crate) log: LogLimits,
     /// What no grant can exceed.
     pub(crate) ceilings: BTreeMap<String, u64>,
     /// Items granted without asking: exact (`HttpRequest("hooks.slack.com")`) or a whole kind
@@ -378,7 +435,7 @@ pub(crate) struct Policy {
 
 impl Default for Policy {
     fn default() -> Policy {
-        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &DbLimits::ceilings(), &ChannelLimits::ceilings());
+        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &DbLimits::ceilings(), &ChannelLimits::ceilings(), &LogLimits::ceilings());
         ceilings.insert(holon_core::FUEL_LIMIT.into(), MODULE_FUEL_CEILING);
         ceilings.insert(holon_core::MEMORY_LIMIT.into(), MODULE_MEMORY_CEILING);
         Policy {
@@ -388,6 +445,7 @@ impl Default for Policy {
             files: FileLimits::defaults(),
             databases: DbLimits::defaults(),
             channels: ChannelLimits::defaults(),
+            log: LogLimits::defaults(),
             ceilings,
             auto: Vec::new(),
             allow_plain_http: false,
@@ -459,6 +517,7 @@ impl Policy {
         policy.files = numbers_to_files(&policy.files, &defaults);
         policy.databases = numbers_to_databases(&policy.databases, &defaults);
         policy.channels = numbers_to_channels(&policy.channels, &defaults);
+        policy.log = numbers_to_log(&policy.log, &defaults);
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
         policy.allow_private_addresses = file.grants.allow_private_addresses;
@@ -467,7 +526,7 @@ impl Policy {
 
     /// The defaults, by name.
     pub(crate) fn defaults(&self) -> BTreeMap<String, u64> {
-        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases, &self.channels)
+        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases, &self.channels, &self.log)
     }
 
     /// Whether `item` is granted without asking.
@@ -749,6 +808,8 @@ pub(crate) struct Permit {
     pub(crate) databases: DbLimits,
     /// What its runs may send on its channels, and how many may subscribe.
     pub(crate) channels: ChannelLimits,
+    /// How long its log keeps its runs.
+    pub(crate) log: LogLimits,
     pub(crate) outbound: Outbound,
     /// The grant's hash (hex), for the flow log.
     pub(crate) grant: String,
@@ -775,6 +836,7 @@ impl Permit {
         let files = numbers_to_files(&policy.files, &clamped);
         let databases = numbers_to_databases(&policy.databases, &clamped);
         let channels = numbers_to_channels(&policy.channels, &clamped);
+        let log = numbers_to_log(&policy.log, &clamped);
         let hosts = |items: &BTreeSet<String>| -> BTreeSet<String> {
             items
                 .iter()
@@ -797,7 +859,7 @@ impl Permit {
                 && grant.items.contains("PrivateAddresses")
                 && policy.allow_private_addresses,
         };
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, outbound, grant: to_hex(&grant.hash()) }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, log, outbound, grant: to_hex(&grant.hash()) }
     }
 
     /// Whether the grant covers this capability.

@@ -1051,6 +1051,26 @@ test("balance-trail: a cell's history lists the runs that changed it and the res
   await expect(inspector).toContainText("100 → 70");
 });
 
+test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, while its state counts every beat", async ({ page, request, adminToken }) => {
+  await openSample(page, "Rolling log (retention)");
+  // Its retention opens with it, under ⚙: fewer runs than the host's default, which asks nobody.
+  await page.locator(".hl-canvas").getByRole("button", { name: "⚙", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "deploy settings" });
+  await expect(settings.getByLabel("runs the log keeps")).toHaveValue("5");
+  await expect(settings.getByLabel("days the log keeps runs")).toHaveValue("1");
+  await settings.getByRole("button", { name: "done" }).click();
+  await deploy(page);
+  const auth = { Authorization: `Bearer ${adminToken}` };
+  const seqs = async () =>
+    ((await (await request.get(`${SERVER}/deployments/rolling-log/log`, { headers: auth })).json()) as { entries: { seq: number }[] }).entries.map((e) => e.seq);
+  // A beat a second: past the fifth, the oldest drop off the front, the seqs climbing on.
+  await expect.poll(async () => (await seqs())[0] ?? 0, { timeout: 20_000 }).toBeGreaterThan(0);
+  const kept = await seqs();
+  expect(kept).toEqual([0, 1, 2, 3, 4].map((i) => kept[0] + i));
+  const state = (await (await request.get(`${SERVER}/deployments/rolling-log/state`, { headers: auth })).json()) as { state: { beats: { value: number } } };
+  expect(Number(state.state.beats.value), "every beat counted, kept or not").toBeGreaterThan(5);
+});
+
 test("guarded-api's token rolls back under ⚙ once a dry run has said what it would do, and nothing changes until then", async ({ page, request, adminToken }) => {
   const asAdmin = { Authorization: `Bearer ${adminToken}` };
   const set = (value: string) => request.post(`${SERVER}/deployments/guarded-api/secrets/api_token`, { data: { value }, headers: asAdmin });

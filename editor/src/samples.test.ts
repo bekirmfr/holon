@@ -27,6 +27,7 @@ import { describeItem, manifestItems, manifestTrigger, permissionKind } from "./
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { buildSample, samples } from "./samples";
+import { settingsOf } from "./tabs";
 import { bindingsOf, compileHolon, runnableByHand } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
@@ -87,6 +88,8 @@ describe("sample flows", () => {
         expect(caps).toContain(item);
         expect(item).not.toBe(manifestTrigger(caps));
       }
+      // Its limits open with it, in the deploy settings: what the deploy asks for.
+      expect(settingsOf(doc.server).requirements?.limits ?? {}).toEqual(s.limits ?? {});
     });
   }
 

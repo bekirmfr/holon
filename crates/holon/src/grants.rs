@@ -44,6 +44,7 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
         _ => {}
     }
     dep.permit = Arc::new(Permit::new(dep.unit, &dep.grant, policy));
+    dep.log.retain(dep.permit.log.keep_runs as usize, dep.permit.log.max_age_ms());
 }
 
 /// What the grant view says about a deployment: its grant, the grant's hash, and why it can't

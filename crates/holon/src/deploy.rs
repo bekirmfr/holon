@@ -334,10 +334,11 @@ fn deploy(
             }
             None => Lifecycle::deployed(now_secs),
         };
-        let (log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
+        let (mut log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
             Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
             None => (Log::for_deployment(deployments_path, &body.slug), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug)),
         };
+        log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
         // Every deploy is a version, kept for good with what it asked, so it can be deployed
         // again; one deployed without a canvas keeps the canvas it had.
         version = versions.last().map_or(1, |v| v.number + 1);
@@ -1335,7 +1336,7 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
                     if seq >= dep.log.next_seq() {
                         format!("{slug:?} has no run {seq} yet")
                     } else {
-                        format!("run {seq} isn't in {slug:?}'s log any more: it keeps the newest {} runs", crate::recorder::keep())
+                        format!("run {seq} isn't in {slug:?}'s log any more: it keeps {}", dep.permit.log.kept())
                     },
                 ));
             };
