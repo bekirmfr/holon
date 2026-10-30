@@ -22,7 +22,7 @@ export default defineConfig({
   workers: 1,
   timeout: 180_000,
   expect: { timeout: 15_000 },
-  reporter: process.env.CI ? "github" : "list",
+  reporter: process.env.CI ? [["github"], ["list"]] : "list",
   use: { baseURL: `http://localhost:${PORTS.editor}`, trace: "retain-on-failure" },
   webServer: [
     {
