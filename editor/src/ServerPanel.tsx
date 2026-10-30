@@ -131,6 +131,7 @@ export function ToolsPanel({
   outOfDate = false,
   onViewRun,
 }: ToolsPanelProps) {
+  const [serverOpen, setServerOpen] = useState(true);
   const [req, setReq] = useState<TesterRequest>({ method: "GET", url: "/", headers: "", body: "" });
   const [result, setResult] = useState<TesterResult | null>(null);
   const [sending, setSending] = useState(false);
@@ -198,121 +199,139 @@ export function ToolsPanel({
           color: "#9fb4d4",
         }}
       >
-        <div style={{ fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--ink-dim)", paddingBottom: 4, borderBottom: "1px solid var(--line-soft)" }}>server</div>
-        {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && actions.length === 0 && errors.length === 0 && (
-          <div style={{ color: "#3d4f66", fontStyle: "italic" }}>drop a request node (palette, http) and wire it to a respond node to add a route</div>
-        )}
-        {clocks.map((c) => (
-          <div key={c.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ color: "#6fd3e0", ...lbl }}>every</span>
-            <span style={{ flex: 1, color: "#e6eefb" }}>{c.label.slice("every ".length)}</span>
-            <button
-              style={{ ...btn, opacity: tickSlug ? 1 : 0.4 }}
-              disabled={!tickSlug}
-              title={tickSlug ? "run this clock's group once, now, on the deployment" : "deploy the flow to tick it"}
-              onClick={() => tick(c.label)}
-            >
-              tick now
-            </button>
-          </div>
-        ))}
-        {ticked && <div style={{ color: "#9fb4d4" }}>{ticked}</div>}
-        {files.map((f) => (
-          <div key={f.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each file its line is for, in the folder ${f.folder} on the host`}>
-            <span style={{ color: "#6fd3e0", ...lbl }}>on file</span>
-            <span style={{ flex: 1, color: "#e6eefb" }}>{f.label.slice("on file ".length)}</span>
-          </div>
-        ))}
-        <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
-        {endpoints.map((e) => (
-          <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ color: "#6fd3e0", ...lbl }}>{e.method}</span>
-            <span style={{ flex: 1, color: "#e6eefb" }}>{e.path}</span>
-            <button
-              style={btn}
-              title="load this route into the request tester"
-              onClick={() => setReq({ ...req, method: e.method, url: e.path })}
-            >
-              test
-            </button>
-          </div>
-        ))}
-        {errors.map((e) => (
-          <div key={e} style={{ color: "#e0916f" }}>
-            {e}
-          </div>
-        ))}
-
-        {/* ── request tester ── */}
-        <div style={{ borderTop: "1px solid #1b2a45", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-          <div style={{ color: "#e6eefb", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 2 }}>request</div>
-          <div style={{ display: "flex", gap: 4 }}>
-            <select value={req.method} onChange={(e) => setReq({ ...req, method: e.target.value as Method })} style={field}>
-              {METHODS.map((m) => (
-                <option key={m}>{m}</option>
-              ))}
-            </select>
-            <input
-              value={req.url}
-              onChange={(e) => setReq({ ...req, url: e.target.value })}
-              placeholder="/todos/1?full=1"
-              style={{ ...field, flex: 1, minWidth: 0 }}
-            />
-          </div>
-          <textarea
-            value={req.headers}
-            onChange={(e) => setReq({ ...req, headers: e.target.value })}
-            placeholder={"headers, one per line\ncontent-type: application/json"}
-            rows={2}
-            style={{ ...field, resize: "vertical" }}
-          />
-          <textarea
-            value={req.body}
-            onChange={(e) => setReq({ ...req, body: e.target.value })}
-            placeholder={'body, e.g. {"title": "buy milk"}'}
-            rows={3}
-            style={{ ...field, resize: "vertical" }}
-          />
-          <div style={{ display: "flex", gap: 6 }}>
-            <button
-              style={{ ...btn, opacity: canSend && endpoints.length > 0 ? 1 : 0.4 }}
-              disabled={!canSend || endpoints.length === 0}
-              onClick={sendLocal}
-              title="answer it in the browser, from the draft endpoints (no stored state)"
-            >
-              send local
-            </button>
-            <button
-              style={{ ...btn, opacity: canSend && liveSlug && !sending ? 1 : 0.4 }}
-              disabled={!canSend || !liveSlug || sending}
-              onClick={sendLive}
-              title={liveSlug ? `send it to the deployed server "${liveSlug}"` : "deploy the server (or type its slug) first"}
-            >
-              {sending ? "sending…" : "send live"}
-            </button>
-          </div>
-          {result &&
-            ("error" in result ? (
-              <div style={{ color: "#e0916f" }}>{result.error}</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <div>
-                  <span style={{ color: result.status < 400 ? "#9ad29f" : "#e0916f" }}>← {result.status}</span>
-                  <span> · {result.from === "live" ? `live (${liveSlug})` : "local"}</span>
-                </div>
-                {result.headers.map(([k, v]) => (
-                  <div key={k} style={{ color: "#7f93b3" }}>
-                    {k}: {v}
-                  </div>
-                ))}
-                {result.body && (
-                  <pre style={{ ...field, margin: 0, whiteSpace: "pre-wrap", maxHeight: 160, overflowY: "auto" }}>
-                    {showBody(result.body)}
-                  </pre>
-                )}
+        <button
+          style={{
+            display: "flex", alignItems: "center", width: "100%",
+            font: "inherit", background: "transparent", border: "none",
+            borderBottom: "1px solid var(--line-soft)",
+            color: "var(--ink-dim)", cursor: "pointer", textAlign: "left",
+            padding: "0 0 5px", fontSize: 10, letterSpacing: "0.12em",
+            textTransform: "uppercase",
+          }}
+          onClick={() => setServerOpen((v) => !v)}
+          aria-expanded={serverOpen}
+        >
+          server
+          <span style={{ fontSize: 9, opacity: 0.5, marginLeft: "auto" }}>{serverOpen ? "▾" : "▸"}</span>
+        </button>
+        {serverOpen && (
+          <>
+            {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && actions.length === 0 && errors.length === 0 && (
+              <div style={{ color: "#3d4f66", fontStyle: "italic" }}>drop a request node (palette, http) and wire it to a respond node to add a route</div>
+            )}
+            {clocks.map((c) => (
+              <div key={c.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span style={{ color: "#6fd3e0", ...lbl }}>every</span>
+                <span style={{ flex: 1, color: "#e6eefb" }}>{c.label.slice("every ".length)}</span>
+                <button
+                  style={{ ...btn, opacity: tickSlug ? 1 : 0.4 }}
+                  disabled={!tickSlug}
+                  title={tickSlug ? "run this clock's group once, now, on the deployment" : "deploy the flow to tick it"}
+                  onClick={() => tick(c.label)}
+                >
+                  tick now
+                </button>
               </div>
             ))}
-        </div>
+            {ticked && <div style={{ color: "#9fb4d4" }}>{ticked}</div>}
+            {files.map((f) => (
+              <div key={f.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each file its line is for, in the folder ${f.folder} on the host`}>
+                <span style={{ color: "#6fd3e0", ...lbl }}>on file</span>
+                <span style={{ flex: 1, color: "#e6eefb" }}>{f.label.slice("on file ".length)}</span>
+              </div>
+            ))}
+            <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
+            {endpoints.map((e) => (
+              <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span style={{ color: "#6fd3e0", ...lbl }}>{e.method}</span>
+                <span style={{ flex: 1, color: "#e6eefb" }}>{e.path}</span>
+                <button
+                  style={btn}
+                  title="load this route into the request tester"
+                  onClick={() => setReq({ ...req, method: e.method, url: e.path })}
+                >
+                  test
+                </button>
+              </div>
+            ))}
+            {errors.map((e) => (
+              <div key={e} style={{ color: "#e0916f" }}>
+                {e}
+              </div>
+            ))}
+
+            {/* ── request tester ── */}
+            <div style={{ borderTop: "1px solid #1b2a45", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ color: "#e6eefb", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 2 }}>request</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <select value={req.method} onChange={(e) => setReq({ ...req, method: e.target.value as Method })} style={field}>
+                  {METHODS.map((m) => (
+                    <option key={m}>{m}</option>
+                  ))}
+                </select>
+                <input
+                  value={req.url}
+                  onChange={(e) => setReq({ ...req, url: e.target.value })}
+                  placeholder="/todos/1?full=1"
+                  style={{ ...field, flex: 1, minWidth: 0 }}
+                />
+              </div>
+              <textarea
+                value={req.headers}
+                onChange={(e) => setReq({ ...req, headers: e.target.value })}
+                placeholder={"headers, one per line\ncontent-type: application/json"}
+                rows={2}
+                style={{ ...field, resize: "vertical" }}
+              />
+              <textarea
+                value={req.body}
+                onChange={(e) => setReq({ ...req, body: e.target.value })}
+                placeholder={'body, e.g. {"title": "buy milk"}'}
+                rows={3}
+                style={{ ...field, resize: "vertical" }}
+              />
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  style={{ ...btn, opacity: canSend && endpoints.length > 0 ? 1 : 0.4 }}
+                  disabled={!canSend || endpoints.length === 0}
+                  onClick={sendLocal}
+                  title="answer it in the browser, from the draft endpoints (no stored state)"
+                >
+                  send local
+                </button>
+                <button
+                  style={{ ...btn, opacity: canSend && liveSlug && !sending ? 1 : 0.4 }}
+                  disabled={!canSend || !liveSlug || sending}
+                  onClick={sendLive}
+                  title={liveSlug ? `send it to the deployed server "${liveSlug}"` : "deploy the server (or type its slug) first"}
+                >
+                  {sending ? "sending…" : "send live"}
+                </button>
+              </div>
+              {result &&
+                ("error" in result ? (
+                  <div style={{ color: "#e0916f" }}>{result.error}</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <div>
+                      <span style={{ color: result.status < 400 ? "#9ad29f" : "#e0916f" }}>← {result.status}</span>
+                      <span> · {result.from === "live" ? `live (${liveSlug})` : "local"}</span>
+                    </div>
+                    {result.headers.map(([k, v]) => (
+                      <div key={k} style={{ color: "#7f93b3" }}>
+                        {k}: {v}
+                      </div>
+                    ))}
+                    {result.body && (
+                      <pre style={{ ...field, margin: 0, whiteSpace: "pre-wrap", maxHeight: 160, overflowY: "auto" }}>
+                        {showBody(result.body)}
+                      </pre>
+                    )}
+                  </div>
+                ))}
+            </div>
+          </>
+        )}
       </div>
     </aside>
   );
