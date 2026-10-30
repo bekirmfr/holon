@@ -43,7 +43,7 @@ import { Inspector } from "./ViewPanes";
 import { structuralKey } from "./flowDoc";
 import { knownNames, rememberName, restoreDocument } from "./docUnits";
 import { DialogProvider, useDialog } from "./Dialog";
-import { ServerPanel } from "./ServerPanel";
+import { ToolsPanel } from "./ServerPanel";
 import { DeployBar, DeployPanel, DEFAULT_SETTINGS } from "./DeployBar";
 import { templateNames } from "./templates";
 import { primitiveName, unitFor } from "./canvasUnits";
@@ -169,6 +169,13 @@ function Canvas({
   const onDeployPanelOpen = useCallback((open: boolean) => {
     setDeployPanelOpen(open);
     try { localStorage.setItem("holon.deploy", open ? "open" : "closed"); } catch { /* ignore */ }
+  }, []);
+  const [toolsPanelOpen, setToolsPanelOpen] = useState(() => {
+    try { return localStorage.getItem("holon.tools") !== "closed"; } catch { return true; }
+  });
+  const onToolsPanelOpen = useCallback((open: boolean) => {
+    setToolsPanelOpen(open);
+    try { localStorage.setItem("holon.tools", open ? "open" : "closed"); } catch { /* ignore */ }
   }, []);
 
   const canvasKey = useMemo(() => structuralKey(nodes, edges), [nodes, edges]);
@@ -883,24 +890,6 @@ function Canvas({
               />
             </Panel>
           )}
-          {!viewing && (
-            <Panel position="bottom-left" style={{ marginLeft: 56 }}>
-              <ServerPanel
-                key={flowName ?? ""}
-                ev={ev}
-                endpoints={derived.endpoints}
-                clocks={derived.clocks}
-                files={derived.files}
-                actions={derived.actions}
-                errors={derived.errors}
-                liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
-                tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
-                role={me.role}
-                outOfDate={outOfDate === true}
-                onViewRun={(seq) => flowName && onView(flowName, seq)}
-              />
-            </Panel>
-          )}
         </ReactFlow>
         {nodes.length === 0 && page === "canvas" && (
           <div className="hl-canvas__empty">drag a primitive here to place it</div>
@@ -1007,6 +996,24 @@ function Canvas({
         </div>
       )}
     </div>
+    {shown === "canvas" && (
+      <ToolsPanel
+        key={flowName ?? ""}
+        open={toolsPanelOpen}
+        onOpen={onToolsPanelOpen}
+        ev={ev}
+        endpoints={derived.endpoints}
+        clocks={derived.clocks}
+        files={derived.files}
+        actions={derived.actions}
+        errors={derived.errors}
+        liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
+        tickSlug={deployedEntry && deployedEntry.status === "running" ? (flowName ?? "") : ""}
+        role={me.role}
+        outOfDate={outOfDate === true}
+        onViewRun={(seq) => flowName && onView(flowName, seq)}
+      />
+    )}
     {shown === "canvas" && (
       <DeployPanel
         open={deployPanelOpen}
