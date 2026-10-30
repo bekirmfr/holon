@@ -121,8 +121,8 @@ jobs:
   #    Playwright (editor/playwright.config.ts) with throwaway state. Every sample opens and
   #    deploys through the consent screen; requests replay exactly in view mode. In two shards,
   #    each on its own runner with its own servers; `--fully-parallel` lets a shard take single
-  #    tests rather than whole files (samples.e2e.ts holds most of them), and each still runs its
-  #    tests one at a time, in order.
+  #    tests rather than whole files (samples.e2e.ts holds most of them), and each still runs
+  #    its tests one at a time, in order.
   e2e:
     runs-on: ubuntu-latest
     # The atlas-notes sample's MongoDB (editor/e2e/server.mjs binds it).
@@ -131,7 +131,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - run: bash .github/start-mongodb.sh
@@ -172,7 +172,7 @@ jobs:
           fi
         working-directory: editor
         timeout-minutes: 12
-      - run: npx playwright test --fully-parallel --shard=${{ matrix.shard }}/3
+      - run: npx playwright test --fully-parallel --shard=${{ matrix.shard }}/2
         working-directory: editor
       - uses: actions/upload-artifact@v4
         if: failure()
