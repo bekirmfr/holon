@@ -4,8 +4,6 @@
 //! before that one. `--cell` is one cell's history instead (changes.rs: `…/changes`): the runs
 //! that changed it, with the value before and after.
 
-use std::collections::BTreeMap;
-
 use crate::local::admin_call;
 
 const HISTORY_USAGE: &str = "usage: holon history <slug> [--last N] [--events] [--server PORT|URL]
@@ -72,7 +70,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             Err(code) => return code,
         };
         let versions = match get(format!("/deployments/{slug}/versions")) {
-            Ok(v) => version_numbers(&v),
+            Ok(v) => Versions::of(&v),
             Err(code) => return code,
         };
         for line in change_lines(&answer, &versions) {
@@ -97,7 +95,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         }
     };
     let versions = match get(format!("/deployments/{slug}/versions")) {
-        Ok(v) => version_numbers(&v),
+        Ok(v) => Versions::of(&v),
         Err(code) => return code,
     };
     let lines = timeline(&runs, &events, &versions, events_only);
@@ -110,15 +108,42 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-/// Each version's number by its unit, from `GET …/versions`: listed newest first, so the newest
-/// version with a unit names it.
-pub(crate) fn version_numbers(listed: &serde_json::Value) -> BTreeMap<String, u64> {
-    listed["versions"].as_array().into_iter().flatten().rev().filter_map(|v| Some((v["unit"].as_str()?.to_string(), v["number"].as_u64()?))).collect()
+/// A deployment's versions (`GET …/versions`), to name the one a run ran on.
+pub(crate) struct Versions(Vec<Version>);
+
+struct Version {
+    number: u64,
+    unit: String,
+    /// Its first run's seq: the log's next one when it was deployed (absent before rc.30).
+    first_seq: Option<u64>,
+}
+
+impl Versions {
+    pub(crate) fn of(listed: &serde_json::Value) -> Versions {
+        // Listed newest first; kept oldest first.
+        Versions(
+            listed["versions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .rev()
+                .filter_map(|v| Some(Version { number: v["number"].as_u64()?, unit: v["unit"].as_str()?.to_string(), first_seq: v["first_seq"].as_u64() }))
+                .collect(),
+        )
+    }
+
+    /// The version run `seq` ran on, its code `unit`: of the versions with that code, the last one
+    /// deployed by then, not a later one that restored the same code. A version from before rc.30
+    /// doesn't say when it was deployed: then the newest of those.
+    pub(crate) fn ran_on(&self, unit: &str, seq: u64) -> Option<u64> {
+        let same: Vec<&Version> = self.0.iter().filter(|v| v.unit == unit).collect();
+        same.iter().rev().find(|v| v.first_seq.is_some_and(|f| f <= seq)).or_else(|| same.iter().rev().find(|v| v.first_seq.is_none())).or(same.last()).map(|v| v.number)
+    }
 }
 
 /// The timeline's lines, oldest first: each event before the run whose seq it names, and, with
 /// runs, only the events from the oldest run shown on (all of them when there is none).
-pub(crate) fn timeline(runs: &[serde_json::Value], events: &[serde_json::Value], versions: &BTreeMap<String, u64>, events_only: bool) -> Vec<String> {
+pub(crate) fn timeline(runs: &[serde_json::Value], events: &[serde_json::Value], versions: &Versions, events_only: bool) -> Vec<String> {
     let from = if events_only { 0 } else { runs.first().and_then(|r| r["seq"].as_u64()).unwrap_or_default() };
     let mut items: Vec<(u64, u8, String)> = events
         .iter()
@@ -133,7 +158,7 @@ pub(crate) fn timeline(runs: &[serde_json::Value], events: &[serde_json::Value],
 
 /// A cell's history (`GET …/changes`), oldest first: a heading with its value now, then each
 /// change as its run's line (or the events between two runs), its values after it.
-pub(crate) fn change_lines(answer: &serde_json::Value, versions: &BTreeMap<String, u64>) -> Vec<String> {
+pub(crate) fn change_lines(answer: &serde_json::Value, versions: &Versions) -> Vec<String> {
     let show = |v: &serde_json::Value| holon_author::agent::show(v);
     let name = answer["name"].as_str().unwrap_or_default();
     let what = match answer["item"].as_str() {
@@ -175,7 +200,7 @@ fn when(at_ms: Option<u64>) -> String {
 }
 
 /// `#41  run        2026-10-30T09:12:03  PUT /prices/tea  200  v5`
-fn run_line(r: &serde_json::Value, versions: &BTreeMap<String, u64>) -> String {
+fn run_line(r: &serde_json::Value, versions: &Versions) -> String {
     let what = match (r["method"].as_str(), r["url"].as_str()) {
         (Some(m), Some(u)) => format!("{m} {u}"),
         _ => r["kind"].as_str().unwrap_or("run").to_string(),
@@ -187,7 +212,7 @@ fn run_line(r: &serde_json::Value, versions: &BTreeMap<String, u64>) -> String {
     if r["error"].is_string() {
         line.push_str("  failed");
     }
-    match r["unit"].as_str().and_then(|u| versions.get(u)) {
+    match r["unit"].as_str().and_then(|u| versions.ran_on(u, r["seq"].as_u64().unwrap_or_default())) {
         Some(n) => line.push_str(&format!("  v{n}")),
         None => line.push_str(&format!("  {}", r["unit"].as_str().map_or("", |u| &u[..u.len().min(12)]))),
     }
@@ -216,7 +241,7 @@ mod tests {
             json!({ "run_seq": 5, "at_ms": 0, "kind": "grant", "what": "revoked Clock", "by": "maria" }),
             json!({ "run_seq": 5, "at_ms": 0, "kind": "lifecycle", "what": "paused: it may no longer read the clock" }),
         ];
-        let versions = BTreeMap::from([("aa".to_string(), 3)]);
+        let versions = Versions::of(&json!({ "versions": [{ "number": 3, "unit": "aa" }] }));
         let lines = timeline(&runs, &events, &versions, false);
         assert_eq!(
             lines,
@@ -231,6 +256,21 @@ mod tests {
         assert_eq!(timeline(&[], &events, &versions, true).len(), 3, "--events: every one");
     }
 
+    /// A run is named by the version it ran on: a later version that restored the same code
+    /// isn't it.
+    #[test]
+    fn a_run_names_the_version_deployed_when_it_ran() {
+        // Newest first, as the server lists them: v3 restored v1's code at run 20.
+        let versions = Versions::of(&json!({ "versions": [
+            { "number": 3, "unit": "aa", "first_seq": 20 },
+            { "number": 2, "unit": "bb", "first_seq": 10 },
+            { "number": 1, "unit": "aa", "first_seq": 0 },
+        ] }));
+        assert_eq!([versions.ran_on("aa", 4), versions.ran_on("bb", 12), versions.ran_on("aa", 21), versions.ran_on("zz", 1)], [Some(1), Some(2), Some(3), None]);
+        let old = Versions::of(&json!({ "versions": [{ "number": 2, "unit": "aa", "first_seq": 9 }, { "number": 1, "unit": "aa" }] }));
+        assert_eq!(old.ran_on("aa", 3), Some(1), "before rc.30, a version doesn't say when");
+    }
+
     #[test]
     fn a_cells_changes_read_oldest_first_with_the_values_after_each() {
         let n = |v: f64| json!({ "type": "Number", "value": v });
@@ -242,7 +282,7 @@ mod tests {
                 { "seq": 5, "at_ms": 0, "method": "POST", "url": "/accounts/a/move", "kind": "request", "status": 200, "unit": "aa", "failed": false, "before": null, "after": n(100.0) },
             ]
         });
-        let versions = BTreeMap::from([("aa".to_string(), 1)]);
+        let versions = Versions::of(&json!({ "versions": [{ "number": 1, "unit": "aa" }] }));
         assert_eq!(
             change_lines(&answer, &versions),
             [

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cellName, cellRows } from "./cellChanges";
+import { cellName, cellRows, ranOn } from "./cellChanges";
 import type { CellHistory, VersionEntry } from "./server";
 
 const n = (value: number) => ({ type: "Number", value }) as const;
@@ -10,6 +10,19 @@ describe("cellName", () => {
     expect(cellName({ name: "moves", item: null, collection: false })).toBe("state.moves");
     expect(cellName({ name: "balances", item: "a", collection: true })).toBe('balances["a"]');
     expect(cellName({ name: "balances", item: null, collection: true })).toBe("balances");
+  });
+});
+
+describe("ranOn", () => {
+  it("names the version deployed when the run ran, not a later one that restored its code", () => {
+    // Newest first, as the server lists them: v3 restored v1's code at run 20.
+    const versions = [
+      { number: 3, unit: "aa", first_seq: 20 },
+      { number: 2, unit: "bb", first_seq: 10 },
+      { number: 1, unit: "aa", first_seq: 0 },
+    ] as VersionEntry[];
+    expect([ranOn(versions, "aa", 4), ranOn(versions, "bb", 12), ranOn(versions, "aa", 21), ranOn(versions, "zz", 1)]).toEqual([1, 2, 3, undefined]);
+    expect(ranOn([{ number: 2, unit: "aa", first_seq: 9 }, { number: 1, unit: "aa" }] as VersionEntry[], "aa", 3)).toBe(1);
   });
 });
 

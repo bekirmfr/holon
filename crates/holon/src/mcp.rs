@@ -644,7 +644,7 @@ fn history(api: &dyn Api, slug: &str, last: u64, events_only: bool) -> Result<St
     let path = format!("/deployments/{}", seg(slug));
     let events = list_of(json_of(api, "GET", &format!("{path}/events"), None)?, Some("events"));
     let runs = if events_only { Vec::new() } else { list_of(json_of(api, "GET", &format!("{path}/log?limit={last}"), None)?, Some("entries")) };
-    let versions = crate::history::version_numbers(&json_of(api, "GET", &format!("{path}/versions"), None)?);
+    let versions = crate::history::Versions::of(&json_of(api, "GET", &format!("{path}/versions"), None)?);
     let lines = crate::history::timeline(&runs, &events, &versions, events_only);
     if lines.is_empty() {
         return Ok(format!("\"{slug}\" has nothing in its history yet."));
@@ -661,7 +661,7 @@ fn cell_history(api: &dyn Api, slug: &str, cell: &str, item: Option<&str>, last:
     let path = format!("/deployments/{}", seg(slug));
     let item = item.map(|i| format!("&item={}", seg(i))).unwrap_or_default();
     let answer = json_of(api, "GET", &format!("{path}/changes?name={}{item}&limit={}", seg(cell), last.min(200)), None)?;
-    let versions = crate::history::version_numbers(&json_of(api, "GET", &format!("{path}/versions"), None)?);
+    let versions = crate::history::Versions::of(&json_of(api, "GET", &format!("{path}/versions"), None)?);
     let lines = crate::history::change_lines(&answer, &versions);
     Ok(format!(
         "{}\n\n`explain` with a run's number shows how it came to that value; `restore` with the run before says what putting it back would change.",

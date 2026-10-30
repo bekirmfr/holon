@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A run is labelled with the version it ran on, not the newest of its code.** A version
+  deployed again (a restore of its code) is a new number with the same code: the timeline and a
+  cell's history now name the number that was deployed when the run happened.
+
 - **A cell's history: which run changed a value.** `holon history <slug> --cell NAME [--item
   KEY]` lists the runs that changed one cell, a collection or one of its items, each with the
   value before and after it, a restore or a deploy that moved it between two runs as a row of its

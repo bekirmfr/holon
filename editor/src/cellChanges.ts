@@ -30,9 +30,17 @@ export function cellName(h: Pick<CellHistory, "name" | "item" | "collection">): 
   return h.collection ? h.name : `state.${h.name}`;
 }
 
+/** The version run `seq` ran on, its code `unit`: of the versions with that code, the last one
+ *  deployed by then, not a later one that restored the same code (as history.rs names it). A
+ *  version from before rc.30 doesn't say when it was deployed: then the newest of those. */
+export function ranOn(versions: VersionEntry[], unit: string | undefined, seq: number): number | undefined {
+  // Listed newest first.
+  const same = versions.filter((v) => v.unit === unit);
+  return (same.find((v) => v.first_seq != null && v.first_seq <= seq) ?? same.find((v) => v.first_seq == null) ?? same[0])?.number;
+}
+
 /** The rows, newest first, each run named with the version it ran on. */
 export function cellRows(h: CellHistory, versions: VersionEntry[] = []): CellRow[] {
-  const version = (unit: string | undefined) => versions.find((v) => v.unit === unit)?.number;
   return h.changes.map((c: CellChange, i): CellRow => {
     const values = c.items
       ? [...Object.entries(c.items).map(([k, v]) => `${k}: ${shown(v.before)} → ${shown(v.after)}`), ...(c.more_items ? ["and more"] : [])]
@@ -42,7 +50,7 @@ export function cellRows(h: CellHistory, versions: VersionEntry[] = []): CellRow
       const events = (c.events ?? []).map((e) => `${e.kind}: ${e.what}${e.by ? ` by ${e.by}` : ""}`);
       return { key: `b${from}-${to}-${i}`, label: `between runs ${from} and ${to}`, what: events.join("; ") || "outside a run", at_ms: c.at_ms ?? null, values, failed: false };
     }
-    const n = version(c.unit);
+    const n = ranOn(versions, c.unit, c.seq);
     const what = [c.method && c.url ? `${c.method} ${c.url}` : (c.kind ?? "run"), c.status ? String(c.status) : "", n ? `v${n}` : ""].filter(Boolean).join(" · ");
     return { key: `r${c.seq}`, seq: c.seq, label: `run ${c.seq}`, what: c.by ? `${what} · sent by ${c.by}` : what, at_ms: c.at_ms ?? null, values, failed: c.failed === true };
   });
