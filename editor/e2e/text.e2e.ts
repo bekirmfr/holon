@@ -81,7 +81,7 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await page.screenshot({ path: "test-results/text-pane.png" });
 
   // Saved with the text as typed.
-  await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click({ force: true });
+  await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-canvas")).toContainText("saved");
   const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
   const doc = ((await saved.json()) as { document: { source?: string } }).document;
@@ -93,6 +93,6 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await page.keyboard.press("Delete");
   await expect(pane.getByRole("status")).toContainText("a comment was dropped");
   await expect(editor).not.toContainText("# says hello");
-  await page.locator(".hl-canvas").getByRole("button", { name: "⟲" }).click({ force: true });
+  await page.locator(".hl-canvas").getByRole("button", { name: "⟲" }).dispatchEvent("click");
   await expect(editor).toContainText("# says hello, loudly");
 });
