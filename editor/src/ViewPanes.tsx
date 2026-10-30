@@ -362,7 +362,6 @@ export function BottomPane({
         )}
         {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
         <div style={{ flex: 1 }} />
-        <Stepper step={step} steps={order.length} onStep={onStep} />
         <button
           style={{ ...small, color: live ? "#0e1a2f" : "#9fb4d4", background: live ? good : "transparent" }}
           onClick={() => setLive(!live)}
@@ -884,7 +883,9 @@ function LogTab({
             ]}
             tab={rightTab}
             onTab={setRightTab}
-          />
+          >
+            {rightTab === "timeline" && <Stepper step={step} steps={order.length} onStep={onStep} />}
+          </Tabs>
           {rightTab === "details" ? (
             <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 4 }}>
               {pickedItem && pickedItem.kind !== "run" ? (
