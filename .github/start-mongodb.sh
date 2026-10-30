@@ -7,6 +7,7 @@
 # their 20261025 image. 7.0 keeps the older allocator. Holon asks nothing of MongoDB that 7.0
 # lacks (transactions need a replica set, since 4.0).
 set -euo pipefail
+docker rm -f mongo 2>/dev/null || true
 docker run -d --name mongo -p 27017:27017 mongo:7.0 --replSet rs0 --bind_ip_all
 for _ in $(seq 1 60); do
   docker exec mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
