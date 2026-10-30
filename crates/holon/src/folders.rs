@@ -1776,10 +1776,11 @@ pub(crate) fn files_since(folders: &Scoped, before: &[LogEntry], since: &[LogEnt
             let then = at_point.get(&(folder.clone(), file.clone()));
             let text = |hash: &Option<String>| -> Option<String> {
                 let hash = hash.as_deref()?;
-                if disk_hash.as_deref() == Some(hash) && disk_size.is_some_and(|s| s <= FILE_DIFF_TEXT) {
-                    if let Ok(Some(bytes)) = folders.read(&folder, &file, FILE_DIFF_TEXT) {
-                        return String::from_utf8(bytes).ok();
-                    }
+                if disk_hash.as_deref() == Some(hash)
+                    && disk_size.is_some_and(|s| s <= FILE_DIFF_TEXT)
+                    && let Ok(Some(bytes)) = folders.read(&folder, &file, FILE_DIFF_TEXT)
+                {
+                    return String::from_utf8(bytes).ok();
                 }
                 read_text(hash)
             };
