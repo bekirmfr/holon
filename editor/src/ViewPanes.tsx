@@ -6,7 +6,7 @@
 // current step, and the selected node: its params, and the inputs and outputs it had in that run
 // (replayed, replay.ts).
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, getLog, type LogEntry } from "./server";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
@@ -897,6 +897,8 @@ function runSectionsForCompare(e: LogEntry): RunSection[] {
 
 function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: () => void }) {
   const [viewValue, setViewValue] = useState<{ value: WValue; name: string } | null>(null);
+  const PAGE = 25;
+  const [page, setPage] = useState(0);
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === "Escape") { if (viewValue) setViewValue(null); else onClose(); } };
     window.addEventListener("keydown", fn);
@@ -1287,7 +1289,7 @@ function StateTab({
         </div>
       ))}
       {changedCollections.map((c) => (
-        <CollectionBox key={c.name} slug={slug} c={c} />
+        <CollectionBox key={c.name} slug={slug} c={c} compact />
       ))}
       {counted.length === 0 && unchangedCount > 0 && (
         <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} · no change · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
@@ -1321,14 +1323,22 @@ function StateModal({
   collections: CollectionAtStep[];
   onClose: () => void;
 }) {
+  const [viewValue, setViewValue] = useState<{ value: WValue; name: string } | null>(null);
+  const PAGE = 25;
+  const [page, setPage] = useState(0);
   useEffect(() => {
-    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const fn = (e: KeyboardEvent) => { if (e.key === "Escape") { if (viewValue) setViewValue(null); else onClose(); } };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
-  }, [onClose]);
+  }, [onClose, viewValue]);
 
   const before = run.state_before;
   const allKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !isCollectionCell(k)).sort();
+  const pageCount = Math.max(1, Math.ceil(allKeys.length / PAGE));
+  const pageKeys = allKeys.slice(page * PAGE, (page + 1) * PAGE);
+  const cell: CSSProperties = { padding: "5px 8px", fontSize: 11, borderBottom: "1px solid #111d30", verticalAlign: "top" as const };
+  const vBtn = (v: WValue | undefined | null, name: string) =>
+    v ? <button onClick={(e) => { e.stopPropagation(); setViewValue({ value: v, name }); }} style={{ ...small, padding: "0px 4px", fontSize: 9, lineHeight: 1.4, flexShrink: 0 }} title="view value">&#x2922;</button> : null;
 
   return (
     <div
@@ -1336,62 +1346,105 @@ function StateModal({
       onClick={onClose}
     >
       <div
-        style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, width: "min(96vw, 760px)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+        style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, width: "min(96vw, 860px)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #1b2a45", flexShrink: 0, gap: 8 }}>
           <span style={{ color: ink, fontWeight: 600 }}>Full state</span>
           <span style={{ color: dim, fontSize: 11 }}>{step === null ? `after the whole run (${order.length} nodes)` : `after node ${step + 1} of ${order.length}`}</span>
           <span style={{ flex: 1 }} />
-          <button onClick={onClose} style={{ background: "transparent", border: "none", color: dim, cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1 }} title="close">×</button>
+          {allKeys.length > PAGE && (
+            <span style={{ color: dim, fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+              <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} style={{ ...small, padding: "0 5px" }}>&#x2039;</button>
+              {page + 1} / {pageCount}
+              <button onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={page === pageCount - 1} style={{ ...small, padding: "0 5px" }}>&#x203a;</button>
+            </span>
+          )}
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: dim, cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1 }} title="close">&#xD7;</button>
         </div>
-        <div style={{ ...scroll, padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
-          {allKeys.length === 0 && collections.length === 0 && <div style={{ color: dim }}>no state: nothing read or written</div>}
-          {allKeys.map((k) => {
-            const moved = changed.includes(k);
-            const val = after[k] ?? before[k];
-            return (
-              <div key={k} style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: moved ? changedBg : "transparent" }}>
-                <div style={{ color: moved ? "#e0c36f" : ink, marginBottom: 2 }}>{k}{moved ? " · changed" : ""}</div>
-                {moved && <Field name="before" value={show(before[k])} rawValue={before[k]} />}
-                <Field name={moved ? "after" : "value"} value={show(val)} rawValue={val} color={moved ? "#e0c36f" : undefined} />
-              </div>
-            );
-          })}
-          {collections.map((c) => (
-            <CollectionBox key={c.name} slug={slug} c={c} />
-          ))}
-          <div style={{ color: dim, fontSize: 11 }}>writes are committed when the run finishes: the next run reads "after".</div>
+        <div style={{ ...scroll, display: "flex", flexDirection: "column" }}>
+          {allKeys.length === 0 && collections.length === 0 && <div style={{ color: dim, padding: 14 }}>no state: nothing read or written</div>}
+          {allKeys.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+              <colgroup>
+                <col style={{ width: "180px" }} />
+                <col />
+                <col />
+              </colgroup>
+              <thead>
+                <tr style={{ background: "#0a1525", position: "sticky", top: 0, zIndex: 1 }}>
+                  <th style={{ ...cell, color: dim, fontWeight: 400, textAlign: "left", fontSize: 10 }}>
+                    key {allKeys.length > PAGE && <span style={{ color: "#4d5f7d" }}>({page * PAGE + 1}&ndash;{Math.min((page + 1) * PAGE, allKeys.length)} of {allKeys.length})</span>}
+                  </th>
+                  <th style={{ ...cell, color: dim, fontWeight: 400, textAlign: "left", fontSize: 10 }}>before</th>
+                  <th style={{ ...cell, color: dim, fontWeight: 400, textAlign: "left", fontSize: 10 }}>after</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageKeys.map((k) => {
+                  const moved = changed.includes(k);
+                  const bg = moved ? changedBg : "transparent";
+                  const beforeVal = before[k];
+                  const afterVal = after[k];
+                  return (
+                    <tr key={k} style={{ background: bg }}>
+                      <td style={{ ...cell, color: moved ? "#e0c36f" : ink, fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>{k}</td>
+                      <td style={{ ...cell }}>
+                        <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
+                          <span style={{ color: ink, flex: 1, fontFamily: "var(--mono)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{show(beforeVal)}</span>
+                          {vBtn(beforeVal, k + " · before")}
+                        </div>
+                      </td>
+                      <td style={{ ...cell }}>
+                        {moved ? (
+                          <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
+                            <span style={{ color: "#e0c36f", flex: 1, fontFamily: "var(--mono)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{show(afterVal)}</span>
+                            {vBtn(afterVal, k + " · after")}
+                          </div>
+                        ) : (
+                          <span style={{ color: dim }}>&#x2014;</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          {collections.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 14px" }}>
+              {collections.map((c) => (
+                <CollectionBox key={c.name} slug={slug} c={c} />
+              ))}
+            </div>
+          )}
+          <div style={{ color: dim, fontSize: 11, padding: "6px 14px 10px" }}>writes are committed when the run finishes: the next run reads "after".</div>
         </div>
       </div>
+      {viewValue && <ValueModal value={viewValue.value} portName={viewValue.name} onClose={() => setViewValue(null)} />}
     </div>
   );
 }
 
-/**
- * A collection as the run saw and changed it: each item it read or wrote, before → after (a
- * before the log doesn't hold, for an item it wrote without reading, is fetched as of the root the
- * run started from), the listings it made, and every item as the run found it, a page at a time.
- */
-function CollectionBox({ slug, c }: { slug: string; c: CollectionAtStep }) {
+function CollectionBox({ slug, c, compact = false }: { slug: string; c: CollectionAtStep; compact?: boolean }) {
   const [fetched, setFetched] = useState<Record<string, WValue | null>>({});
-  const [all, setAll] = useState<{ items: [string, WValue][]; next: string | null } | null>(null);
+  const [all, setAll] = useState<{ items: [string, WValue][]; next: string | null; pageNum: number; cursors: (string | null)[] } | null>(null);
   const [error, setError] = useState("");
   const unread = c.items.filter((i) => i.before === undefined).map((i) => i.key);
-  const unreadKey = unread.join("\u0000");
+  const unreadKey = unread.join("\x00");
   useEffect(() => {
     if (!c.root) return;
-    for (const key of unreadKey ? unreadKey.split("\u0000") : []) {
+    for (const key of unreadKey ? unreadKey.split("\x00") : []) {
       getCollectionItems(slug, c.name, { root: c.root, key })
         .then((r) => setFetched((f) => ({ ...f, [key]: r.items[0]?.[1] ?? null })))
         .catch(() => setFetched((f) => ({ ...f, [key]: null })));
     }
   }, [slug, c.name, c.root, unreadKey]);
   useEffect(() => setAll(null), [c.root]);
-  const page = (after: string | null) => {
+  const fetchPage = (cursor: string | null, pageNum: number, cursors: (string | null)[]) => {
     setError("");
-    getCollectionItems(slug, c.name, { root: c.root, after, limit: 20 })
-      .then((r) => setAll((a) => ({ items: [...(after ? (a?.items ?? []) : []), ...r.items], next: r.next ?? null })))
+    getCollectionItems(slug, c.name, { root: c.root, after: cursor, limit: 20 })
+      .then((r) => setAll({ items: r.items, next: r.next ?? null, pageNum, cursors }))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   };
   const changedItems = c.items.filter(itemChanged).length;
@@ -1424,28 +1477,24 @@ function CollectionBox({ slug, c }: { slug: string; c: CollectionAtStep }) {
         </div>
       ))}
       {c.items.length === 0 && c.listed.length === 0 && <div style={{ color: dim }}>not read or written by this run</div>}
-      {c.root && (
+      {c.root && !compact && (
         <div style={{ marginTop: 4 }}>
           {all === null ? (
-            <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => page(null)} title="every item, as this run found the collection">
+            <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => fetchPage(null, 1, [null])} title="every item, as this run found the collection">
               show all ▸
             </span>
           ) : (
             <>
-              <div style={{ color: dim }}>as the run found it:</div>
+              <div style={{ color: dim, marginBottom: 2 }}>as the run found it – page {all.pageNum}:</div>
               {all.items.map(([k, v]) => (
                 <Field key={k} name={k} value={show(v)} />
               ))}
               {all.items.length === 0 && <div style={{ color: dim }}>empty</div>}
-              <span style={{ display: "flex", gap: 10 }}>
-                {all.next && (
-                  <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => page(all.next)}>
-                    more ▸
-                  </span>
-                )}
-                <span style={{ cursor: "pointer", color: dim }} onClick={() => setAll(null)}>
-                  hide
-                </span>
+              <span style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                <button disabled={all.pageNum === 1} onClick={() => fetchPage(all.cursors[all.pageNum - 2], all.pageNum - 1, all.cursors)} style={{ ...small, padding: "0 5px" }}>‹</button>
+                <span style={{ color: dim, fontSize: 11 }}>page {all.pageNum}</span>
+                <button disabled={!all.next} onClick={() => all.next && fetchPage(all.next, all.pageNum + 1, [...all.cursors, all.next])} style={{ ...small, padding: "0 5px" }}>›</button>
+                <span style={{ cursor: "pointer", color: dim, marginLeft: 4, fontSize: 11 }} onClick={() => setAll(null)}>hide</span>
               </span>
             </>
           )}
