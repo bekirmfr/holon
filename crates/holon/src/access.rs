@@ -9,8 +9,8 @@
 //! - `editor`: everything a viewer does, and saving, deploying, running, pausing, deleting;
 //! - `admin`: everything, writing secrets and the admin panel (`/admin/…`) included;
 //! - `agent`: what a viewer does, and proposing: storing units, previewing and deploying a flow
-//!   that needs no approval it hasn't had, saving a flow, and calling a deployed one (a run like
-//!   any other). It never approves (deploy.rs refuses its `acknowledge`), never replaces a flow
+//!   that needs no approval it hasn't had, saving a flow, calling a deployed one (a run like any
+//!   other), and a restore's dry run (deploy.rs answers it nothing more). It never approves (deploy.rs refuses its `acknowledge`), never replaces a flow
 //!   someone else saved (flows.rs), and never grants, starts, stops, deletes or writes a secret:
 //!   those are a person's (docs/L4s/agent-surface-L4.md).
 //!
@@ -82,9 +82,11 @@ fn agent_may(method: &str, url: &str) -> bool {
     let runs = || {
         url.strip_prefix("/trigger/").and_then(|r| r.split_once('/')).is_some_and(|(slug, name)| !slug.is_empty() && !name.is_empty() && !name.contains('/'))
     };
+    // A restore, which deploy.rs answers an agent only as a dry run.
+    let restores = || url.strip_prefix("/deployments/").and_then(|r| r.strip_suffix("/restore")).is_some_and(|slug| !slug.is_empty() && !slug.contains('/'));
     match method {
         "GET" => true,
-        "POST" => matches!(url, "/unit" | "/deploy/preview" | "/deploy" | "/flows") || calls() || runs(),
+        "POST" => matches!(url, "/unit" | "/deploy/preview" | "/deploy" | "/flows") || calls() || runs() || restores(),
         _ => false,
     }
 }
@@ -265,7 +267,7 @@ mod tests {
         let (access, [ada, bob, cy]) = server();
         let accounts = access.accounts().unwrap();
         let (claude, _) = accounts.create_token("claude", Role::Agent, "ada").unwrap();
-        for (method, url) in [("GET", "/flows"), ("POST", "/unit"), ("POST", "/deploy/preview"), ("POST", "/deploy"), ("POST", "/flows"), ("POST", "/deployments/a/request"), ("POST", "/trigger/a/reset"), ("GET", "/auth/me")] {
+        for (method, url) in [("GET", "/flows"), ("POST", "/unit"), ("POST", "/deploy/preview"), ("POST", "/deploy"), ("POST", "/flows"), ("POST", "/deployments/a/request"), ("POST", "/trigger/a/reset"), ("POST", "/deployments/a/restore"), ("GET", "/auth/me")] {
             assert_eq!(call(&access, method, url, Some(&claude)), Ok(Some("token:claude".into())), "{method} {url}");
         }
         for (method, url) in [
@@ -273,7 +275,7 @@ mod tests {
             ("POST", "/deployments/a/run"),
             ("POST", "/deployments/a/pause"),
             ("POST", "/deployments/a/stop"),
-            ("POST", "/deployments/a/restore"),
+            ("POST", "/deployments/a/b/restore"),
             ("DELETE", "/deployments/a"),
             ("DELETE", "/flows/a"),
             ("POST", "/deployments/a/secrets/k"),

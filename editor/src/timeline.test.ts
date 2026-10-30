@@ -87,7 +87,7 @@ describe("a restore's words", () => {
 
   it("says the keys and what the runs since did outside", () => {
     expect(stateLines(change)).toEqual([
-      "The state version 1 left is put back: it changes #collection:prices; drops note.",
+      "The state version 1 left is put back: it changes the collection prices; drops note.",
       "3 run(s) logged since version 1 also did, outside its state, what a restore doesn't undo: 2 call(s) out.",
       "The state it replaces is kept, as the ending session's.",
     ]);

@@ -318,6 +318,30 @@ its event). Picked:
 **↺** on a row, in the history or the run list, restores whatever of it can be, through the same
 dry run and window.
 
+### A cell's history
+
+Which run changed a value? `holon history <slug> --cell NAME` lists the runs that changed one
+cell (`state.NAME`) or a collection, oldest first, each with the value before and after it; with
+`--item KEY`, one item of the collection NAME:
+
+```
+balances["a"], oldest first, now 101:
+#5      run        2026-10-30T09:12:01  POST /accounts/a/move  200  v1   nothing → 100
+#7      run        2026-10-30T09:12:09  POST /accounts/a/move  200  v1   100 → 70
+        outside    2026-10-30T09:14:40  between runs 7 and 9: restore: put back the state run 5 left, in session 2   70 → 100
+#9      run        2026-10-30T09:15:02  POST /accounts/a/move  200  v1   100 → 101
+```
+
+A run that only read it isn't named, nor one that changed another item. A restore or a deploy
+that moved it between two runs is a row of its own, so each value follows from the one before.
+For a whole collection, each run's row names the items it changed. `GET
+/deployments/<slug>/changes?name=balances&item=a` answers it as JSON, newest first; it reads the
+newest 2000 runs the log keeps, and `before=SEQ` reads further back.
+
+In the editor, **⧗** beside a cell or a collection's item in view mode's **Flow state** (and in
+its full state) opens the same history, newest first; a run's row opens that run. The sample
+**balance-trail** walks through it.
+
 Events are **recorded, never restored**: [going back](#going-back-to-an-earlier-version) puts back
 code and state only, and the grant, secrets and bindings stay as they are now. They are kept for
 good, in a hash chain of their own beside the run log, which an export carries and `holon verify`

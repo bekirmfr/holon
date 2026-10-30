@@ -1,18 +1,25 @@
 //! `holon history`: a deployment's timeline (docs/L4s/history-L4.md §6), its runs and its events
 //! (events.rs) in one order, over the control plane (`GET /deployments/<slug>/log`, `…/events`,
 //! `…/versions`). An event goes before the run whose seq it names: it happened after the runs
-//! before that one.
+//! before that one. `--cell` is one cell's history instead (changes.rs: `…/changes`): the runs
+//! that changed it, with the value before and after.
 
 use std::collections::BTreeMap;
 
 use crate::local::admin_call;
 
 const HISTORY_USAGE: &str = "usage: holon history <slug> [--last N] [--events] [--server PORT|URL]
+       holon history <slug> --cell NAME [--item KEY] [--last N] [--server PORT|URL]
 
   A deployment's timeline, oldest first: its runs, and what was done to it, by whom: deploys,
   restores, grant changes, secrets (never their values), folders and databases bound for it,
   pausing, stopping and running. --last N: the newest N runs (default 20), with the events among
   them. --events: every event, kept for good, without the runs.
+
+  --cell NAME: one cell's history (state.NAME), or a collection's: the runs that changed it,
+  oldest first, each with its value before and after (a collection's, the items it changed),
+  and a restore or a deploy between two runs that moved it. --item KEY: one item of the
+  collection NAME. --last N: its newest N changes (default 20).
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
@@ -21,6 +28,7 @@ const HISTORY_USAGE: &str = "usage: holon history <slug> [--last N] [--events] [
 pub(crate) fn cli(args: &[String]) -> i32 {
     const WHO: &str = "holon history";
     let (mut slug, mut server, mut last, mut events_only) = (None, None, 20usize, false);
+    let (mut cell, mut item) = (None, None);
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -33,6 +41,8 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                 }
             },
             "--events" => events_only = true,
+            "--cell" => cell = args.next().cloned(),
+            "--item" => item = args.next().cloned(),
             "--help" | "-h" => {
                 println!("{HISTORY_USAGE}");
                 return 0;
@@ -55,6 +65,25 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             1
         })
     };
+    if let Some(cell) = cell {
+        let item = item.map(|i| format!("&item={}", crate::mcp::seg(&i))).unwrap_or_default();
+        let answer = match get(format!("/deployments/{slug}/changes?name={}{item}&limit={}", crate::mcp::seg(&cell), last.clamp(1, 200))) {
+            Ok(v) => v,
+            Err(code) => return code,
+        };
+        let versions = match get(format!("/deployments/{slug}/versions")) {
+            Ok(v) => version_numbers(&v),
+            Err(code) => return code,
+        };
+        for line in change_lines(&answer, &versions) {
+            println!("{line}");
+        }
+        return 0;
+    }
+    if item.is_some() {
+        eprintln!("{WHO}: --item is one item of a collection: give the collection with --cell");
+        return 2;
+    }
     let events = match get(format!("/deployments/{slug}/events")) {
         Ok(v) => v["events"].as_array().cloned().unwrap_or_default(),
         Err(code) => return code,
@@ -67,9 +96,8 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             Err(code) => return code,
         }
     };
-    let versions: BTreeMap<String, u64> = match get(format!("/deployments/{slug}/versions")) {
-        // Newest first: the newest version with a unit names it.
-        Ok(v) => v["versions"].as_array().into_iter().flatten().rev().filter_map(|v| Some((v["unit"].as_str()?.to_string(), v["number"].as_u64()?))).collect(),
+    let versions = match get(format!("/deployments/{slug}/versions")) {
+        Ok(v) => version_numbers(&v),
         Err(code) => return code,
     };
     let lines = timeline(&runs, &events, &versions, events_only);
@@ -82,9 +110,15 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
+/// Each version's number by its unit, from `GET …/versions`: listed newest first, so the newest
+/// version with a unit names it.
+pub(crate) fn version_numbers(listed: &serde_json::Value) -> BTreeMap<String, u64> {
+    listed["versions"].as_array().into_iter().flatten().rev().filter_map(|v| Some((v["unit"].as_str()?.to_string(), v["number"].as_u64()?))).collect()
+}
+
 /// The timeline's lines, oldest first: each event before the run whose seq it names, and, with
 /// runs, only the events from the oldest run shown on (all of them when there is none).
-fn timeline(runs: &[serde_json::Value], events: &[serde_json::Value], versions: &BTreeMap<String, u64>, events_only: bool) -> Vec<String> {
+pub(crate) fn timeline(runs: &[serde_json::Value], events: &[serde_json::Value], versions: &BTreeMap<String, u64>, events_only: bool) -> Vec<String> {
     let from = if events_only { 0 } else { runs.first().and_then(|r| r["seq"].as_u64()).unwrap_or_default() };
     let mut items: Vec<(u64, u8, String)> = events
         .iter()
@@ -95,6 +129,45 @@ fn timeline(runs: &[serde_json::Value], events: &[serde_json::Value], versions: 
     // Stable: events keep their order among themselves, before the run they name.
     items.sort_by_key(|(seq, kind, _)| (*seq, *kind));
     items.into_iter().map(|(_, _, line)| line).collect()
+}
+
+/// A cell's history (`GET …/changes`), oldest first: a heading with its value now, then each
+/// change as its run's line (or the events between two runs), its values after it.
+pub(crate) fn change_lines(answer: &serde_json::Value, versions: &BTreeMap<String, u64>) -> Vec<String> {
+    let show = |v: &serde_json::Value| holon_author::agent::show(v);
+    let name = answer["name"].as_str().unwrap_or_default();
+    let what = match answer["item"].as_str() {
+        Some(item) => format!("{name}[{}]", serde_json::Value::from(item)),
+        None if answer["collection"] == true => format!("the collection {name}"),
+        None => format!("state.{name}"),
+    };
+    let changes = answer["changes"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let now = if answer["collection"] == true && answer["item"].is_null() { String::new() } else { format!(", now {}", show(&answer["now"])) };
+    if changes.is_empty() {
+        return vec![format!("{what}: no run in the log changed it{now}")];
+    }
+    let older = if answer["more"] == true { ", older ones not shown" } else { "" };
+    let mut lines = vec![format!("{what}, oldest first{now}{older}:")];
+    for c in changes.iter().rev() {
+        let values = match c["items"].as_object() {
+            Some(items) => {
+                let mut said: Vec<String> = items.iter().map(|(k, v)| format!("{k}: {} → {}", show(&v["before"]), show(&v["after"]))).collect();
+                if c["more_items"] == true {
+                    said.push("and more".into());
+                }
+                said.join(", ")
+            }
+            None => format!("{} → {}", show(&c["before"]), show(&c["after"])),
+        };
+        if c["seq"].is_u64() {
+            let run = serde_json::json!({ "seq": c["seq"], "at_ms": c["at_ms"], "method": c["method"], "url": c["url"], "kind": c["kind"], "status": c["status"], "unit": c["unit"], "error": if c["failed"] == true { serde_json::json!("failed") } else { serde_json::Value::Null } });
+            lines.push(format!("{}   {values}", run_line(&run, versions)));
+        } else {
+            let between: Vec<String> = c["events"].as_array().into_iter().flatten().map(|e| format!("{}: {}", e["kind"].as_str().unwrap_or_default(), e["what"].as_str().unwrap_or_default())).collect();
+            lines.push(format!("{:<6} {:<10} {}  between runs {} and {}: {}   {values}", "", "outside", when(c["at_ms"].as_u64()), c["between"][0], c["between"][1], between.join("; ")));
+        }
+    }
+    lines
 }
 
 fn when(at_ms: Option<u64>) -> String {
@@ -156,5 +229,30 @@ mod tests {
             "the deploy before the oldest run shown is left out"
         );
         assert_eq!(timeline(&[], &events, &versions, true).len(), 3, "--events: every one");
+    }
+
+    #[test]
+    fn a_cells_changes_read_oldest_first_with_the_values_after_each() {
+        let n = |v: f64| json!({ "type": "Number", "value": v });
+        let answer = json!({
+            "name": "balances", "item": "a", "collection": true, "now": n(100.0), "more": false,
+            "changes": [
+                { "between": [7, 9], "at_ms": 0, "events": [{ "kind": "restore", "what": "put back the state run 5 left, in session 2" }], "before": n(70.0), "after": n(100.0) },
+                { "seq": 7, "at_ms": 0, "method": "POST", "url": "/accounts/a/move", "kind": "request", "status": 200, "unit": "aa", "failed": false, "before": n(100.0), "after": n(70.0) },
+                { "seq": 5, "at_ms": 0, "method": "POST", "url": "/accounts/a/move", "kind": "request", "status": 200, "unit": "aa", "failed": false, "before": null, "after": n(100.0) },
+            ]
+        });
+        let versions = BTreeMap::from([("aa".to_string(), 1)]);
+        assert_eq!(
+            change_lines(&answer, &versions),
+            [
+                "balances[\"a\"], oldest first, now 100:",
+                "#5     run        1970-01-01T00:00:00  POST /accounts/a/move  200  v1   nothing → 100",
+                "#7     run        1970-01-01T00:00:00  POST /accounts/a/move  200  v1   100 → 70",
+                "       outside    1970-01-01T00:00:00  between runs 7 and 9: restore: put back the state run 5 left, in session 2   70 → 100",
+            ]
+        );
+        let whole = json!({ "name": "balances", "collection": true, "more": true, "changes": [{ "seq": 2, "at_ms": 0, "kind": "tick", "unit": "bb", "failed": true, "items": { "b": { "before": n(5.0), "after": null } }, "more_items": false }] });
+        assert_eq!(change_lines(&whole, &versions), ["the collection balances, oldest first, older ones not shown:", "#2     run        1970-01-01T00:00:00  tick  failed  bb   b: 5 → nothing"]);
     }
 }

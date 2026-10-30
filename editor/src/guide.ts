@@ -63,7 +63,7 @@ export const TOPICS: Topic[] = [
     title: "Runs, replay and view mode",
     paragraphs: [
       "Every run is logged with what it received, what it did outside (requests, writes) and what it answered. View mode replays a run on the version it ran on, shows each node's values, and steps through it; a failed run opens where it failed.",
-      "The history button, beside the runs' filter, shows every version deployed and what was done to it (grants, secrets, pauses), by whom. Pick any row there to see its details and restore its code, its state or both, or press ↺ on a row (there or in the run list) to go back to it: a dry run shows what it would change, and its diff compares each part (the flow's text, the grant, the state's values) with what is there now, and names the files the runs since wrote, which a restore leaves as they are, saying when one was changed outside a run; nothing changes until you approve it.",
+      "The history button, beside the runs' filter, shows every version deployed and what was done to it (grants, secrets, pauses), by whom. Pick any row there to see its details and restore its code, its state or both, or press ↺ on a row (there or in the run list) to go back to it: a dry run shows what it would change, and its diff compares each part (the flow's text, the grant, the state's values) with what is there now, and names the files the runs since wrote, which a restore leaves as they are, saying when one was changed outside a run; nothing changes until you approve it. ⧗ beside a cell or an item in the Flow state lists the runs that changed it, each with its value before and after, a restore between them included; a run's row opens it.",
     ],
   },
   {

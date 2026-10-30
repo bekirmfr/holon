@@ -207,8 +207,11 @@ pub(crate) fn cli(args: &[String]) -> i32 {
 }
 
 /// What putting a state back would change, as a dry run answers it: the keys, and the runs since.
-fn state_lines(change: &serde_json::Value) -> String {
-    let keys = |k: &str| -> Vec<&str> { change[k].as_array().into_iter().flatten().filter_map(|v| v.as_str()).collect() };
+pub(crate) fn state_lines(change: &serde_json::Value) -> String {
+    // A collection's key in the state (`#collection:prices`) said as a person reads it.
+    let keys = |k: &str| -> Vec<String> {
+        change[k].as_array().into_iter().flatten().filter_map(|v| v.as_str()).map(|key| key.strip_prefix("#collection:").map_or_else(|| key.to_string(), |c| format!("the collection {c}"))).collect()
+    };
     let from = change["from"].as_str().unwrap_or("that point");
     let (changed, added, removed) = (keys("changed"), keys("added"), keys("removed"));
     let mut lines = vec![if changed.is_empty() && added.is_empty() && removed.is_empty() {

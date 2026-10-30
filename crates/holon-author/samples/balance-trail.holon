@@ -1,0 +1,14 @@
+flow balance-trail
+port 8162
+collection balances
+
+route POST /accounts/:id/move (req) {
+  balance = (balances[req.params.id] ?? 0) + req.json.amount
+  balances[req.params.id] = balance
+  state.moves = (state.moves ?? 0) + 1
+  respond { account: req.params.id, balance: balance }
+}
+
+route GET /accounts/:id (req) {
+  respond { account: req.params.id, balance: balances[req.params.id] ?? 0 }
+}

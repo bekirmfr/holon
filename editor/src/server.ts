@@ -723,6 +723,54 @@ export async function getVersions(slug: string): Promise<VersionEntry[]> {
   return (await asJson<{ versions: VersionEntry[] }>(res)).versions;
 }
 
+/** One change to a cell (changes.rs): a run that changed it (`seq`), or something between two
+ *  runs that moved it (`between`, with the events there: a restore, a deploy). Its value before
+ *  and after; for a whole collection, the items it changed instead. */
+export type CellChange = {
+  seq?: number;
+  between?: [number, number];
+  events?: { kind: string; what: string; by?: string | null; at_ms: number }[];
+  at_ms?: number | null;
+  kind?: string;
+  route?: string | null;
+  method?: string | null;
+  url?: string | null;
+  status?: number | null;
+  failed?: boolean;
+  unit?: string;
+  by?: string | null;
+  before?: WValue | null;
+  after?: WValue | null;
+  items?: Record<string, { before: WValue | null; after: WValue | null }>;
+  more_items?: boolean;
+};
+
+/** A cell's history: `GET /deployments/<slug>/changes`, newest first. */
+export type CellHistory = {
+  name: string;
+  item: string | null;
+  collection: boolean;
+  /** Its value now (none for a whole collection). */
+  now: WValue | null;
+  changes: CellChange[];
+  /** Older changes not answered: `before` the oldest one's seq reads them. */
+  more: boolean;
+};
+
+/** The runs that changed a cell (`state.name`), a collection, or one item of it (`item`). */
+export async function getChanges(slug: string, name: string, opts: { item?: string; before?: number; limit?: number } = {}): Promise<CellHistory> {
+  const q = new URLSearchParams({ name });
+  if (opts.item !== undefined) q.set("item", opts.item);
+  if (opts.before !== undefined) q.set("before", String(opts.before));
+  if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/changes?${q}`);
+  // A server from before answers the route with a bare 404 (a missing deployment's has a reason).
+  if (res.status === 404 && !(await res.clone().text()).trim()) {
+    throw new Error("this server can't show a cell's history yet: it is older than this editor; update it (holon update) and start it again");
+  }
+  return asJson<CellHistory>(res);
+}
+
 /** Something done to a deployment (events.rs): a deploy, a restore, a grant, a secret, a binding,
  *  a pause or a run, by whom (none: the host did it). */
 export type DeploymentEvent = {

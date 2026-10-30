@@ -658,7 +658,7 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   expect(await total()).toBe(40.5);
   await pickBefore();
   await restoreBar.getByRole("button", { name: "state", exact: true }).click();
-  await expect(dialog).toContainText(`The state version ${before} left is put back: it changes #collection:prices.`);
+  await expect(dialog).toContainText(`The state version ${before} left is put back: it changes the collection prices.`);
   // Its diff: the collection's items that differ, as the flow reads them, not its root.
   await expect(dialog.locator(".hl-dryrun__changes")).toContainText(`state: as version ${before} left it, 1 key changed (prices: 1 item)`);
   await dialog.getByRole("button", { name: "diff", exact: true }).click();
@@ -678,7 +678,7 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   expect(await total()).toBe(40.5);
   await restored.locator(".hl-history__back").click();
   await expect(dialog).toContainText(`As it was after "put back the state version ${before} left`);
-  await expect(dialog).toContainText(`The state version ${before} left is put back: it changes #collection:prices.`);
+  await expect(dialog).toContainText(`The state version ${before} left is put back: it changes the collection prices.`);
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(bottom.locator(".hl-history__note")).toContainText(`the state version ${before} left is live again, in session`);
   expect(await total()).toBe(4.5);
@@ -1012,6 +1012,43 @@ test("stock-sheet: a state restore's dry run names the file the runs since wrote
   await expect(page.locator(".hl-history__note")).toContainText(`the state run ${first} left is live again`);
   expect(await (await request.get(`http://127.0.0.1:${port}/stock/${item}`)).json()).toEqual({ item, count: 4 });
   expect(readFileSync(sheet, "utf8")).toBe(`${written}checked by hand\n`);
+});
+
+test("balance-trail: a cell's history lists the runs that changed it and the restore between them, and opens a run", async ({ page, request, adminToken }) => {
+  await openSample(page, "Balance trail (which run changed a value)");
+  const port = await deploy(page);
+  // Accounts of this test's own: an earlier test may have moved others.
+  const account = `a-${Date.now()}`;
+  const move = async (who: string, amount: number) => expect((await request.post(`http://127.0.0.1:${port}/accounts/${who}/move`, { data: { amount } })).status()).toBe(200);
+  await move(account, 100);
+  await move(`${account}-b`, 5);
+  await move(account, -30);
+  const auth = { Authorization: `Bearer ${adminToken}` };
+  const log = (await (await request.get(`${SERVER}/deployments/balance-trail/log`, { headers: auth })).json()) as { entries: { seq: number }[] };
+  const [first, , third] = log.entries.slice(-3).map((e) => e.seq);
+  // The state the first move left put back (a person's restore), then one more move.
+  expect((await request.post(`${SERVER}/deployments/balance-trail/restore`, { headers: auth, data: { run: first, state: true } })).status()).toBe(200);
+  await move(account, 1);
+
+  // View the newest run: its flow state names the account it moved, ⧗ beside it.
+  await viewNewestRun(page);
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await inspector.getByRole("button", { name: "Flow state", exact: true }).click();
+  await inspector.getByRole("button", { name: `history of balances["${account}"]`, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "cell history" });
+  await expect(dialog).toContainText(`balances["${account}"]`);
+  await expect(dialog).toContainText("now 101");
+  const rows = dialog.locator(".hl-cellhistory__row");
+  // Newest first: the last move, the restore between, the move to 70, the first; not b's.
+  await expect(rows.locator(".hl-cellhistory__values")).toHaveText(["100 → 101", "70 → 100", "100 → 70", "(none) → 100"]);
+  await expect(rows.nth(1)).toContainText(`between runs ${third} and`);
+  await expect(rows.nth(1)).toContainText("restore: put back the state");
+  await expect(rows.nth(2)).toContainText(`POST /accounts/${account}/move · 200`);
+
+  // A run's row opens that run: its flow state shows the move it made.
+  await rows.nth(2).getByRole("button", { name: `run ${third}`, exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(inspector).toContainText("100 → 70");
 });
 
 test("guarded-api's token rolls back under ⚙ once a dry run has said what it would do, and nothing changes until then", async ({ page, request, adminToken }) => {

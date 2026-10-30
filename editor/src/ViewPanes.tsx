@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, getLog, type LogEntry, type VersionEntry } from "./server";
 import { BackButton, everything, HistoryList, itemDetails, useHistory, useRestore } from "./HistoryPane";
+import { CellHistoryButton } from "./CellHistory";
 import { buildTimeline, targetOf, type CodeText, type TimelineItem } from "./timeline";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
@@ -1280,6 +1281,8 @@ export type InspectorRun = {
   timing: { start_us: number; end_us: number } | undefined;
   /** For a holon: its own nodes, as the run went (null for any other node). */
   inside: InsideStep[] | null;
+  /** Open another run of the deployment in view mode, by its seq: a cell's history's rows. */
+  openRun?: (seq: number) => void;
 };
 
 type InspectorTab = "node" | "unit" | "state";
@@ -1327,7 +1330,7 @@ export function Inspector({
       </Tabs>
       <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
         {tab === "state" && run ? (
-          <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} />
+          <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} onOpenRun={run.openRun} />
         ) : tab === "unit" ? (
           node ? unit : <div>select a node to see what its unit is made of</div>
         ) : (
@@ -1355,6 +1358,7 @@ function StateTab({
   after,
   changed,
   collections,
+  onOpenRun,
 }: {
   slug: string;
   run: LogEntry | null;
@@ -1363,6 +1367,7 @@ function StateTab({
   after: Record<string, WValue>;
   changed: string[];
   collections: CollectionAtStep[];
+  onOpenRun?: (seq: number) => void;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   if (!run) return <div>select a run</div>;
@@ -1388,13 +1393,16 @@ function StateTab({
       {allKeys.length === 0 && collections.length === 0 && <div>no state: nothing read or written</div>}
       {changedKeys.map((k) => (
         <div key={k} style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: changedBg }}>
-          <div style={{ color: "#e0c36f", marginBottom: 2 }}>{k} · changed</div>
+          <div style={{ color: "#e0c36f", marginBottom: 2, display: "flex", gap: 6, alignItems: "baseline" }}>
+            <span style={{ flex: 1 }}>{k} · changed</span>
+            <CellHistoryButton slug={slug} name={k} onOpenRun={onOpenRun} />
+          </div>
           <Field name="before" value={show(before[k])} rawValue={before[k]} />
           <Field name="after" value={show(after[k])} color="#e0c36f" rawValue={after[k]} />
         </div>
       ))}
       {changedCollections.map((c) => (
-        <CollectionBox key={c.name} slug={slug} c={c} compact />
+        <CollectionBox key={c.name} slug={slug} c={c} compact onOpenRun={onOpenRun} />
       ))}
       {counted.length === 0 && unchangedCount > 0 && (
         <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} · no change · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
@@ -1403,7 +1411,7 @@ function StateTab({
         <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} unchanged · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
       )}
       {modalOpen && (
-        <StateModal slug={slug} run={run} step={step} order={order} after={after} changed={changed} collections={collections} onClose={() => setModalOpen(false)} />
+        <StateModal slug={slug} run={run} step={step} order={order} after={after} changed={changed} collections={collections} onOpenRun={onOpenRun} onClose={() => setModalOpen(false)} />
       )}
     </>
   );
@@ -1417,6 +1425,7 @@ function StateModal({
   after,
   changed,
   collections,
+  onOpenRun,
   onClose,
 }: {
   slug: string;
@@ -1426,6 +1435,7 @@ function StateModal({
   after: Record<string, WValue>;
   changed: string[];
   collections: CollectionAtStep[];
+  onOpenRun?: (seq: number) => void;
   onClose: () => void;
 }) {
   const [viewValue, setViewValue] = useState<{ value: WValue; name: string } | null>(null);
@@ -1493,7 +1503,12 @@ function StateModal({
                   const afterVal = after[k];
                   return (
                     <tr key={k} style={{ background: bg }}>
-                      <td style={{ ...cell, color: moved ? "#e0c36f" : ink, fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>{k}</td>
+                      <td style={{ ...cell, color: moved ? "#e0c36f" : ink, fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>
+                        <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
+                          <span style={{ flex: 1 }}>{k}</span>
+                          <CellHistoryButton slug={slug} name={k} onOpenRun={onOpenRun} />
+                        </div>
+                      </td>
                       <td style={{ ...cell }}>
                         <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
                           <span style={{ color: ink, flex: 1, fontFamily: "var(--mono)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{show(beforeVal)}</span>
@@ -1519,7 +1534,7 @@ function StateModal({
           {collections.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 14px" }}>
               {collections.map((c) => (
-                <CollectionBox key={c.name} slug={slug} c={c} />
+                <CollectionBox key={c.name} slug={slug} c={c} onOpenRun={onOpenRun} />
               ))}
             </div>
           )}
@@ -1531,7 +1546,7 @@ function StateModal({
   );
 }
 
-function CollectionBox({ slug, c, compact = false }: { slug: string; c: CollectionAtStep; compact?: boolean }) {
+function CollectionBox({ slug, c, compact = false, onOpenRun }: { slug: string; c: CollectionAtStep; compact?: boolean; onOpenRun?: (seq: number) => void }) {
   const [fetched, setFetched] = useState<Record<string, WValue | null>>({});
   const [all, setAll] = useState<{ items: [string, WValue][]; next: string | null; pageNum: number; cursors: (string | null)[] } | null>(null);
   const [error, setError] = useState("");
@@ -1555,10 +1570,13 @@ function CollectionBox({ slug, c, compact = false }: { slug: string; c: Collecti
   const changedItems = c.items.filter(itemChanged).length;
   return (
     <div style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: changedItems > 0 ? changedBg : "transparent" }}>
-      <div style={{ color: changedItems > 0 ? "#e0c36f" : ink, marginBottom: 2 }} title={c.root ? `root ${c.root}` : "no items before this run"}>
-        {c.name}
-        <span style={{ color: dim }}> · collection</span>
-        {changedItems > 0 ? ` · ${changedItems} item${changedItems === 1 ? "" : "s"} changed` : ""}
+      <div style={{ color: changedItems > 0 ? "#e0c36f" : ink, marginBottom: 2, display: "flex", gap: 6, alignItems: "baseline" }} title={c.root ? `root ${c.root}` : "no items before this run"}>
+        <span style={{ flex: 1 }}>
+          {c.name}
+          <span style={{ color: dim }}> · collection</span>
+          {changedItems > 0 ? ` · ${changedItems} item${changedItems === 1 ? "" : "s"} changed` : ""}
+        </span>
+        <CellHistoryButton slug={slug} name={c.name} collection onOpenRun={onOpenRun} />
       </div>
       {c.items.map((i) => {
         // An empty collection before the run (no root) had nothing: no need to ask.
@@ -1566,12 +1584,12 @@ function CollectionBox({ slug, c, compact = false }: { slug: string; c: Collecti
         const moved = itemChanged(i);
         const was = before === undefined ? "…" : before === null ? "(none)" : show(before);
         return (
-          <Field
-            key={i.key}
-            name={i.key}
-            value={i.after === undefined ? `${was} · read` : `${was} → ${i.after === null ? "(deleted)" : show(i.after)}`}
-            color={moved ? "#e0c36f" : undefined}
-          />
+          <div key={i.key} style={{ display: "flex", gap: 4, alignItems: "baseline" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Field name={i.key} value={i.after === undefined ? `${was} · read` : `${was} → ${i.after === null ? "(deleted)" : show(i.after)}`} color={moved ? "#e0c36f" : undefined} />
+            </div>
+            <CellHistoryButton slug={slug} name={c.name} item={i.key} onOpenRun={onOpenRun} />
+          </div>
         );
       })}
       {c.listed.map((l, n) => (

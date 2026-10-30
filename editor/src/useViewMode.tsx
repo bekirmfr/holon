@@ -32,7 +32,7 @@ import {
 } from "./replay";
 import { stable } from "./textSync";
 import { printHolon } from "./holonText";
-import { getDeployedDocument, type DeploymentEntry, type FlowDocument, type LogEntry, type VersionEntry } from "./server";
+import { getDeployedDocument, getLog, type DeploymentEntry, type FlowDocument, type LogEntry, type VersionEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
 import type { FlowMeta } from "./tabs";
 
@@ -239,6 +239,19 @@ export function useViewMode(input: ViewModeInput) {
     },
     [setSelectedRun, setStep],
   );
+  // A run named by its seq (a cell's history's row), read from the log and opened.
+  const openRun = useCallback(
+    (seq: number) => {
+      if (!viewing) return;
+      getLog(viewing, seq > 0 ? seq - 1 : undefined)
+        .then((r) => {
+          const e = r.entries.find((x) => x.seq === seq);
+          if (e) onSelectRun(e);
+        })
+        .catch(() => {});
+    },
+    [viewing, onSelectRun],
+  );
 
   // Stepping through a run follows the node at that step in the side pane.
   const onStep = useCallback(
@@ -365,6 +378,7 @@ export function useViewMode(input: ViewModeInput) {
     /** Picks a node for the side pane, without moving the canvas. */
     pickNode: setInspectNode,
     onSelectRun,
+    openRun,
     onStep,
     onNodeClick,
     showVersion,
@@ -392,6 +406,7 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
     notRun: inspectNode && replayed?.notRun.has(inspectNode) ? whyNotRun(view.viewNodes, replayed.notRun.get(inspectNode)!) : undefined,
     timing: inspectNode ? view.timings.get(inspectNode) : undefined,
     inside: view.inside,
+    openRun: view.openRun,
   };
 }
 

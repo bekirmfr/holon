@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A cell's history: which run changed a value.** `holon history <slug> --cell NAME [--item
+  KEY]` lists the runs that changed one cell, a collection or one of its items, each with the
+  value before and after it, a restore or a deploy that moved it between two runs as a row of its
+  own; a run that only read it isn't named. In the editor, ⧗ beside a cell or an item in view
+  mode's Flow state lists it, a run's row opening that run; `holon mcp`'s `history` tool takes a
+  `cell`; `GET /deployments/<slug>/changes` answers it. The new **balance-trail** sample moves
+  money between accounts: its e2e restores a state between moves and reads one account's history.
+
+- **An agent reads a deployment's history and sees what a restore would change.** `holon mcp`
+  has two more tools. `history` is the timeline `holon history` prints: the runs, each with the
+  version it ran on, and what was done between them, by whom. `restore` is a restore's dry run:
+  the code's text beside today's, as a line diff, the permissions, the state's keys and
+  collection items now → then, the runs since and the files they wrote. It changes nothing: the
+  server answers an agent's restore only as a dry run, and the agent tells a person, who restores
+  it in the editor or with `holon restore`.
+
 - **A state restore's dry run names the files the runs since wrote, and an edit made outside a
   run.** A restore never puts a bound folder's files back; its dry run (`holon restore
   --dry-run`, and the editor's window) now names each file the runs since that point wrote, once

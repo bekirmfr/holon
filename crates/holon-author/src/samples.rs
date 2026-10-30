@@ -633,7 +633,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "price-rollback",
         title: "Price rollback (an earlier version's code, or its prices, back)",
-        description: "Every deploy is a version, kept for good, and every run keeps the state it left. Deploy this, set a price, then deploy a version with another fee: holon restore price-rollback --to N --code deploys an earlier one's code again, as a new version that names it, its prices as they are. Set a wrong price, and --to N --state puts back the prices version N left, in a new session, the wrong ones kept as the last session's; --to-run SEQ does the same for a run. Restored code is checked against today's grant, not the one it had. holon history shows it all among the runs: each deploy and restore, by whom. In the editor, view mode's history is the same timeline: pick any row in it, and restore its code, its state or both (a restore's row goes back to what it put back), or press ↺ on a row, each a dry run first, confirmed in a window that says what it changes, its diff showing the text, the grant and the prices beside what is there now.",
+        description: "Every deploy is a version, kept for good, and every run keeps the state it left. Deploy this, set a price, then deploy a version with another fee: holon restore price-rollback --to N --code deploys an earlier one's code again, as a new version that names it, its prices as they are. Set a wrong price, and --to N --state puts back the prices version N left, in a new session, the wrong ones kept as the last session's; --to-run SEQ does the same for a run. Restored code is checked against today's grant, not the one it had. holon history shows it all among the runs: each deploy and restore, by whom. In the editor, view mode's history is the same timeline: pick any row in it, and restore its code, its state or both (a restore's row goes back to what it put back), or press ↺ on a row, each a dry run first, confirmed in a window that says what it changes, its diff showing the text, the grant and the prices beside what is there now. An agent sees the same through holon mcp: its history tool is the timeline, and its restore tool the dry run, never the restore.",
         shows: &["versions", "holon restore", "state restore", "holon history", "the editor's history", "collections"],
         port: Some("8160"),
         interval: None,
@@ -655,6 +655,19 @@ static SAMPLES: &[Sample] = &[
         browsers: None,
         try_it: r#"first bind the folder (an admin): holon folder add sheets ~/holon-sheets; then curl -X PUT -d '{"count":4}' http://127.0.0.1:8161/stock/tea and curl -X PUT -d '{"count":40}' http://127.0.0.1:8161/stock/tea; curl http://127.0.0.1:8161/sheet shows both lines. holon restore stock-sheet --to-run SEQ --state --dry-run (SEQ: the first PUT's run) puts tea back to 4 and names sheets/changes.txt, written once since, not put back; add a line to ~/holon-sheets/changes.txt by hand and the dry run says it was changed outside a run. In the editor: view, history, ↺ on the first PUT, then diff"#,
         text: include_str!("../samples/stock-sheet.holon"),
+    },
+    Sample {
+        name: "balance-trail",
+        title: "Balance trail (which run changed a value)",
+        description: "Moves money in and out of accounts, a balance per account in a collection and a count of moves in its state. A cell's history answers which run changed a value: the runs that changed one balance (or the count, or any account), newest first, each with the value before and after it, and a restore between two runs that moved it as a row of its own, so each value follows from the one before. holon history balance-trail --cell balances --item a prints it; in the editor, ⧗ beside a cell or an item in view mode's flow state lists it, each run a click away; an agent asks holon mcp's history tool with a cell.",
+        shows: &["cell history", "state", "collections", "restore", "audit"],
+        port: Some("8162"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X POST -d '{"amount":100}' http://127.0.0.1:8162/accounts/a/move, then the same with b and 5, and a with -30: curl http://127.0.0.1:8162/accounts/a answers 70. holon history balance-trail --cell balances --item a lists the two runs that moved a (nothing → 100, 100 → 70), not b's; --cell moves lists all three. Put the state the first run left back (holon restore balance-trail --to-run SEQ --state) and move a by 1: its history shows the restore between the runs (70 → 100) and the new run (100 → 101). In the editor: view, pick a run, Flow state, ⧗ beside balances or one of its items"#,
+        text: include_str!("../samples/balance-trail.holon"),
     },
 ];
 

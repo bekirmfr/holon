@@ -5190,6 +5190,61 @@ claim_wait_ms = 100").unwrap());
 /// A restore's dry run names the files the runs since wrote, which it never puts back: each once,
 /// with how many writes and by which runs, its text then (a later run read it, so the log has it)
 /// and now; once an edit by hand changes it on disk, it says so, and the CLI's words say it too.
+/// A cell's history: the runs that changed one cell, a collection or one item of it, newest
+/// first, with the value before and after; a restore between two runs is a change of its own,
+/// named by its event, so each value follows from the one before. A run that touched another
+/// item isn't named.
+#[test]
+fn a_cells_history_is_the_runs_that_changed_it_and_a_restore_between_them() {
+    let state = claims_state("");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/balance-trail.holon"), "");
+    for (account, amount) in [("a", 100), ("b", 5), ("a", -30)] {
+        assert_eq!(data_call(&state, &slug, "POST", &format!("/accounts/{account}/move"), &format!(r#"{{"amount":{amount}}}"#)).0, 200);
+    }
+    let seqs: Vec<u64> = log_entries(&state, &slug).iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    let (r1, r2, r3) = (seqs[0], seqs[1], seqs[2]);
+    let body = serde_json::json!({ "run": r1, "state": true }).to_string().into_bytes();
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/restore"), body)).status_code, 200);
+    assert!(data_call(&state, &slug, "POST", "/accounts/a/move", r#"{"amount":1}"#).1.contains("\"balance\":101"));
+    let r4 = *log_entries(&state, &slug).iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>().last().unwrap();
+    let changes = |query: &str| body_json(route(&state, &req("GET", &format!("/deployments/{slug}/changes?{query}"), vec![])));
+    let n = |v: &serde_json::Value| v["value"].as_f64();
+
+    // One item: the runs that moved a, the restore between, newest first; b's run isn't named.
+    let a = changes("name=balances&item=a");
+    assert_eq!((a["collection"].clone(), n(&a["now"])), (true.into(), Some(101.0)), "{a}");
+    let list = a["changes"].as_array().unwrap();
+    let summary: Vec<(Option<u64>, Option<f64>, Option<f64>)> = list.iter().map(|c| (c["seq"].as_u64(), n(&c["before"]), n(&c["after"]))).collect();
+    assert_eq!(summary, [(Some(r4), Some(100.0), Some(101.0)), (None, Some(70.0), Some(100.0)), (Some(r3), Some(100.0), Some(70.0)), (Some(r1), None, Some(100.0))], "{a}");
+    assert_eq!(list[1]["between"], serde_json::json!([r3, r4]));
+    assert_eq!(list[1]["events"][0]["kind"], "restore", "{a}");
+    assert_eq!((list[0]["method"].clone(), list[0]["url"].clone(), list[0]["status"].clone()), ("POST".into(), "/accounts/a/move".into(), 200.into()));
+    assert_eq!(a["more"], false);
+
+    // A cell: every run moved it.
+    let moves = changes("name=moves");
+    let counted: Vec<(Option<f64>, Option<f64>)> = moves["changes"].as_array().unwrap().iter().map(|c| (n(&c["before"]), n(&c["after"]))).collect();
+    assert_eq!(counted, [(Some(1.0), Some(2.0)), (Some(3.0), Some(1.0)), (Some(2.0), Some(3.0)), (Some(1.0), Some(2.0)), (None, Some(1.0))], "{moves}");
+    assert_eq!(moves["collection"], false);
+
+    // A whole collection: each change names the items it changed.
+    let all = changes("name=balances");
+    let items: Vec<Vec<String>> = all["changes"].as_array().unwrap().iter().map(|c| c["items"].as_object().unwrap().keys().cloned().collect()).collect();
+    assert_eq!(items, [vec!["a"], vec!["a", "b"], vec!["a"], vec!["b"], vec!["a"]], "{all}");
+    assert_eq!(all["changes"][1]["items"]["b"]["after"], serde_json::Value::Null, "the restore took b away");
+    assert_eq!(all["changes"][3]["seq"], r2);
+
+    // Paged: the newest two, then from before the older one.
+    let page = changes("name=balances&item=a&limit=2");
+    assert_eq!((page["changes"].as_array().unwrap().len(), page["more"].clone()), (2, true.into()));
+    let older = changes(&format!("name=balances&item=a&before={r3}"));
+    assert_eq!(older["changes"].as_array().unwrap().iter().map(|c| c["seq"].as_u64()).collect::<Vec<_>>(), [Some(r1)]);
+    for bad in ["", "name=moves&item=a"] {
+        assert_eq!(route(&state, &req("GET", &format!("/deployments/{slug}/changes?{bad}"), vec![])).status_code, 400, "{bad}");
+    }
+    assert_eq!(route(&state, &req("GET", "/deployments/nobody/changes?name=x", vec![])).status_code, 404);
+}
+
 #[test]
 fn a_restores_dry_run_names_the_files_written_since_and_an_edit_outside_a_run() {
     let state = claims_state("");

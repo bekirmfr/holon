@@ -129,7 +129,8 @@ export function fileLine(f: FileSince): string {
 export function stateLines(change: StateChange): string[] {
   const parts: string[] = [];
   for (const [word, list] of [["changes", change.changed], ["brings back", change.added], ["drops", change.removed]] as const) {
-    if (list.length > 0) parts.push(`${word} ${list.join(", ")}`);
+    // A collection's key in the state (`#collection:prices`) said as a person reads it.
+    if (list.length > 0) parts.push(`${word} ${list.map((k) => (k.startsWith("#collection:") ? `the collection ${k.slice("#collection:".length)}` : k)).join(", ")}`);
   }
   const lines = [
     parts.length === 0

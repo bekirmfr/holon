@@ -1198,7 +1198,7 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
 /// Both together: the code first, then the state, and nothing changes if the state can't be read.
 /// `"dry_run": true` changes nothing and says what it would: the deploy's preview for code, and for
 /// state, the keys it would change and the runs logged since that point, with the outside effects
-/// they performed, which a restore doesn't undo.
+/// they performed, which a restore doesn't undo. An agent asks only that: it restores nothing.
 pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Request, by: Option<&str>, agent: bool) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -1210,6 +1210,10 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
     };
     if !restore.code && !restore.state {
         return err(400, "say what to restore: \"code\": true, \"state\": true, or both");
+    }
+    // An agent sees what a restore would change; restoring is a person's (access.rs).
+    if agent && !restore.dry_run {
+        return err(403, "an agent sees a restore only as a dry run (\"dry_run\": true): restoring is a person's, in the editor or with holon restore");
     }
     let point = match (restore.version, restore.run) {
         (Some(n), None) => Point::Version(n),
@@ -1463,7 +1467,7 @@ const COLLECTION_DIFF_ITEMS: usize = 50;
 /// The items that differ between a collection now and as a restore would put it back (each its
 /// cell's value, a root; absent: no collection), as `{now, then}` by key; `more` when it compared
 /// or shows only some of them.
-fn collection_change(store: &SharedStore, now: Option<&Value>, then: Option<&Value>) -> Result<serde_json::Value, String> {
+pub(crate) fn collection_change(store: &SharedStore, now: Option<&Value>, then: Option<&Value>) -> Result<serde_json::Value, String> {
     let read = |cell: Option<&Value>| -> Result<(BTreeMap<String, Value>, bool), String> {
         let Some(root) = cell.and_then(|v| match v {
             Value::Text(hex) => parse_hash(hex),
