@@ -124,7 +124,7 @@ jobs:
   #    tests rather than whole files (samples.e2e.ts holds most of them), and each still runs
   #    its tests one at a time, in order.
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     # The atlas-notes sample's MongoDB (editor/e2e/server.mjs binds it).
     env:
       HOLON_TEST_MONGODB: mongodb://127.0.0.1:27017/holontest?replicaSet=rs0
