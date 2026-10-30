@@ -156,6 +156,13 @@ function Canvas({
       // Not remembered, then.
     }
   }, []);
+  const [paletteOpen, setPaletteOpen] = useState(() => {
+    try { return localStorage.getItem("holon.palette") !== "closed"; } catch { return true; }
+  });
+  const onPaletteOpen = useCallback((open: boolean) => {
+    setPaletteOpen(open);
+    try { localStorage.setItem("holon.palette", open ? "open" : "closed"); } catch { /* ignore */ }
+  }, []);
 
   const canvasKey = useMemo(() => structuralKey(nodes, edges), [nodes, edges]);
   useEffect(() => {
@@ -775,6 +782,8 @@ function Canvas({
         flows={savedFlows.filter((f) => f !== flowName)}
         market={{ url: market.url, error: market.error, entries: market.catalog }}
         docs={docs}
+        open={paletteOpen}
+        onOpen={onPaletteOpen}
       />
     )}
     <div
