@@ -346,6 +346,18 @@ export function BottomPane({
     onSelect(null);
   };
 
+  const [chainNote, setChainNote] = useState("");
+  const copyHead = () =>
+    navigator.clipboard.writeText(chain.head).then(
+      () => setChainNote("head copied"),
+      () => setChainNote(chain.head),
+    );
+  const exportChainRuns = () =>
+    downloadRuns(slug).then(
+      () => setChainNote(`saved ${slug}-runs.json · check it anywhere: holon verify ${slug}-runs.json`),
+      (e: unknown) => setChainNote(e instanceof Error ? e.message : String(e)),
+    );
+
   return (
     <div ref={pane} className="nodrag nowheel hl-view__bottom" style={paneStyle} role="region" aria-label="run">
       <div className="hl-view__edge" onPointerDown={onEdge} title="drag to resize" />
@@ -361,8 +373,22 @@ export function BottomPane({
           </span>
         )}
         {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
+        {chain.head && (
+          <>
+            {chain.breaks.length > 0 ? (
+              <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
+                ✗ chain breaks at run {chain.breaks.join(", ")}: changed outside holon
+              </span>
+            ) : (
+              <span style={{ color: dim }} title="each run names the hash of the one before it">chain unbroken</span>
+            )}
+            <span style={{ color: dim }}>head <span style={{ color: ink }} title={chain.head}>{chain.head.slice(0, 12)}</span></span>
+            <button style={small} onClick={copyHead} title="copy the head: what a witness holds, and what holon verify --head checks">copy</button>
+            <button style={small} onClick={exportChainRuns} title="save the runs and the units they ran, for holon verify">export runs</button>
+            {chainNote && <span style={{ color: dim }}>{chainNote}</span>}
+          </>
+        )}
         <div style={{ flex: 1 }} />
-        <Stepper step={step} steps={order.length} onStep={onStep} />
         <button
           style={{ ...small, color: live ? "#0e1a2f" : "#9fb4d4", background: live ? good : "transparent" }}
           onClick={() => setLive(!live)}
@@ -384,8 +410,6 @@ export function BottomPane({
         pick={pick}
         unpick={unpick}
         slug={slug}
-        head={chain.head}
-        breaks={chain.breaks}
         order={order}
         nodes={nodes}
         timings={timings}
@@ -411,46 +435,6 @@ export function BottomPane({
   );
 }
 
-/** The run log as a record: the head it chains up to (what a witness holds), any run changed
- *  outside holon, and its runs exported for `holon verify`, which runs each again, offline. */
-function ChainBar({ slug, head, breaks }: { slug: string; head: string; breaks: number[] }) {
-  const [note, setNote] = useState("");
-  const exportRuns = () =>
-    downloadRuns(slug).then(
-      () => setNote(`saved ${slug}-runs.json · check it anywhere: holon verify ${slug}-runs.json`),
-      (e: unknown) => setNote(e instanceof Error ? e.message : String(e)),
-    );
-  const copy = () =>
-    navigator.clipboard.writeText(head).then(
-      () => setNote("head copied"),
-      () => setNote(head),
-    );
-  if (!head) return null;
-  return (
-    <div className="hl-view__chain" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "4px 8px", borderBottom: "1px solid #1b2a45" }}>
-      {breaks.length > 0 ? (
-        <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
-          ✗ chain breaks at run {breaks.join(", ")}: changed outside holon
-        </span>
-      ) : (
-        <span style={{ color: dim }} title="each run names the hash of the one before it">
-          chain unbroken
-        </span>
-      )}
-      <span style={{ color: dim }}>
-        head <span style={{ color: ink }} title={head}>{head.slice(0, 12)}</span>
-      </span>
-      <button style={small} onClick={copy} title="copy the head: what a witness holds, and what holon verify --head checks">
-        copy
-      </button>
-      <button style={small} onClick={exportRuns} title="save the runs and the units they ran, for holon verify">
-        export runs
-      </button>
-      {note && <span style={{ color: dim }}>{note}</span>}
-    </div>
-  );
-}
-
 type SortKey = "seq" | "time" | "session" | "label" | "status" | "duration";
 type FilterableCol = "session" | "label" | "actions" | "status";
 
@@ -460,8 +444,6 @@ function LogTab({
   pick,
   unpick,
   slug,
-  head,
-  breaks,
   order,
   nodes,
   timings,
@@ -486,8 +468,6 @@ function LogTab({
   /** Show no run: a history row that isn't one is picked. */
   unpick: () => void;
   slug: string;
-  head: string;
-  breaks: number[];
   order: string[];
   nodes: ViewNode[];
   timings: Map<string, { start_us: number; end_us: number }>;
@@ -734,64 +714,61 @@ function LogTab({
 
   return (
     <>
-    <div style={{ display: "flex", flex: 1, minHeight: 0, flexDirection: "column" }}>
-      <ChainBar slug={slug} head={head} breaks={breaks} />
-      <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
-        <input
-          placeholder={leftView === "runs" ? "filter runs…" : "filter history…"}
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
-        />
-        <button
-          onClick={() => {
-            setLeftView(leftView === "runs" ? "history" : "runs");
-            setFilter("");
-          }}
-          aria-pressed={leftView === "history"}
-          title={leftView === "runs" ? "what was done to it: deploys, restores, grants, pauses; going back to one" : "back to the runs"}
-          style={{ ...small, color: leftView === "history" ? "#0e1a2f" : "#9fb4d4", background: leftView === "history" ? "#6fd3e0" : "transparent" }}
-        >
-          history
-        </button>
-        {filter && leftView === "runs" && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
-        <span style={{ flex: 1 }} />
-        {selectedSeqs.size > 0 && (
-          <>
-            <span style={{ color: dim, fontSize: 10 }}>{selectedSeqs.size} selected</span>
-            <button style={{ ...small, padding: "0 5px" }} title="copy selected runs as JSON" onClick={copySelected}>⎘</button>
-            <button style={{ ...small, padding: "0 5px" }} title="export selected runs as JSON" onClick={exportSelected}>↓</button>
-            {selectedSeqs.size === 2 && (
-              <button style={{ ...small, padding: "0 5px" }} title="compare selected runs" onClick={openCompare}>⇔</button>
-            )}
-            <button style={{ ...small, padding: "0 4px" }} title="clear selection" onClick={() => setSelectedSeqs(new Set())}>×</button>
-          </>
-        )}
-      </div>
-      {restorer.modal}
-      {restorer.note && (
-        <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad, padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
-          {restorer.note.text}
+    <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
+      {/* Left column: filter bar + history or runs */}
+      <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+          <input
+            placeholder={leftView === "runs" ? "filter runs…" : "filter history…"}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
+          />
+          <button
+            onClick={() => {
+              setLeftView(leftView === "runs" ? "history" : "runs");
+              setFilter("");
+            }}
+            aria-pressed={leftView === "history"}
+            title={leftView === "runs" ? "what was done to it: deploys, restores, grants, pauses; going back to one" : "back to the runs"}
+            style={{ ...small, color: leftView === "history" ? "#0e1a2f" : "#9fb4d4", background: leftView === "history" ? "#6fd3e0" : "transparent" }}
+          >
+            history
+          </button>
+          {filter && leftView === "runs" && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
+          <span style={{ flex: 1 }} />
+          {selectedSeqs.size > 0 && (
+            <>
+              <span style={{ color: dim, fontSize: 10 }}>{selectedSeqs.size} selected</span>
+              <button style={{ ...small, padding: "0 5px" }} title="copy selected runs as JSON" onClick={copySelected}>⎘</button>
+              <button style={{ ...small, padding: "0 5px" }} title="export selected runs as JSON" onClick={exportSelected}>↓</button>
+              {selectedSeqs.size === 2 && (
+                <button style={{ ...small, padding: "0 5px" }} title="compare selected runs" onClick={openCompare}>⇔</button>
+              )}
+              <button style={{ ...small, padding: "0 4px" }} title="clear selection" onClick={() => setSelectedSeqs(new Set())}>×</button>
+            </>
+          )}
         </div>
-      )}
-      <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* Left: the history, or the run list */}
-        {leftView === "history" && (
-          <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
-            <HistoryList
-              timeline={timeline}
-              query={filter}
-              pickedKey={pickedKey}
-              onPick={pickItem}
-              targetFor={targetFor}
-              busy={restorer.busy}
-              onRestore={restorer.restore}
-              onShowVersion={onShowVersion}
-              error={history.error}
-            />
+        {restorer.modal}
+        {restorer.note && (
+          <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad, padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+            {restorer.note.text}
           </div>
         )}
-        <div style={{ display: leftView === "runs" ? "flex" : "none", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
+        {leftView === "history" && (
+          <HistoryList
+            timeline={timeline}
+            query={filter}
+            pickedKey={pickedKey}
+            onPick={pickItem}
+            targetFor={targetFor}
+            busy={restorer.busy}
+            onRestore={restorer.restore}
+            onShowVersion={onShowVersion}
+            error={history.error}
+          />
+        )}
+        <div style={{ display: leftView === "runs" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
           <div style={{ display: "flex", gap: 10, padding: "2px 6px", borderBottom: "1px solid #1b2a45", fontSize: 10, flexShrink: 0 }}>
             <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} style={{ width: 12, cursor: "pointer", accentColor: "#6fd3e0", flexShrink: 0 }} title={allVisibleSelected ? "deselect all visible" : "select all visible"} />
             <SortHeader k="seq" label="#" w={30} />
@@ -867,6 +844,7 @@ function LogTab({
             })}
           </div>
         </div>
+      </div>
         {/* Draggable divider */}
         <div
           className="hl-divider"
@@ -884,7 +862,9 @@ function LogTab({
             ]}
             tab={rightTab}
             onTab={setRightTab}
-          />
+          >
+            {rightTab === "timeline" && <Stepper step={step} steps={order.length} onStep={onStep} />}
+          </Tabs>
           {rightTab === "details" ? (
             <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 4 }}>
               {pickedItem && pickedItem.kind !== "run" ? (
@@ -962,11 +942,11 @@ function LogTab({
               step={step}
               onStep={onStep}
               onPickNode={onPickNode}
+              onShowNode={onShowNode}
               issues={issues}
             />
           )}
         </div>
-      </div>
     </div>
     {compareRuns && <CompareModal a={compareRuns[0]} b={compareRuns[1]} onClose={() => setCompareRuns(null)} />}
     </>
@@ -1092,6 +1072,7 @@ function TimelineTab({
   step,
   onStep,
   onPickNode,
+  onShowNode,
   issues,
 }: {
   run: LogEntry | null;
@@ -1103,6 +1084,7 @@ function TimelineTab({
   step: number | null;
   onStep: (s: number | null) => void;
   onPickNode: (id: string) => void;
+  onShowNode: (id: string) => void;
   /** Each node's part in a failed run. */
   issues: Map<string, Issue>;
 }) {
@@ -1179,6 +1161,7 @@ function TimelineTab({
               onStep(i);
               onPickNode(id);
             }}
+            onDoubleClick={() => onShowNode(id)}
             style={{
               display: "flex",
               gap: 8,

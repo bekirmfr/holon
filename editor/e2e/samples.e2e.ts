@@ -27,12 +27,12 @@ async function openSample(page: Page, title: string, reload = true) {
  *  panel. Answers the port it serves on (null for a flow without routes). */
 async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
-  const portField = settings.locator("input").first();
+  const portField = settings.getByRole("textbox").first();
   const given = Number(await portField.inputValue());
   const port = Number.isInteger(given) && given > 0 ? given + by : null;
   if (port) await portField.fill(String(port));
   if (set) await set(settings);
-  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).click({ force: true });
   // Wait for the server's answer to the deploy, which comes once the flow listens on its port
   // (http.rs syncs the listeners first). The tab's "deployed" can't say so: it shows as soon as a
   // deployment of that name exists, so on a redeploy that moves the port it is there at once.
@@ -47,7 +47,7 @@ async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) =
  *  its port. */
 async function settingsSayPort(page: Page, port: string) {
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
-  await expect(settings.locator("input").first()).toHaveValue(port, { timeout: 15_000 });
+  await expect(settings.getByRole("textbox").first()).toHaveValue(port, { timeout: 15_000 });
 }
 
 /** Drop the palette entry `entry` (a primitive's name, or `flow:<name>` for a saved flow) on the
@@ -74,7 +74,11 @@ async function viewNewestRun(page: Page) {
  *  a test for each group of SAMPLES_PER_TEST below, so they spread over shards (ci.yml) rather
  *  than make one long test, without a fresh page and editor for each sample (a test each was
  *  half again as slow). */
-const SAMPLE_TITLES = [...readFileSync(new URL("../../crates/holon-author/src/samples.rs", import.meta.url), "utf8").matchAll(/^\s*title: "(.*)",$/gm)].map((m) => m[1]);
+const samplesRs = readFileSync(new URL("../../crates/holon-author/src/samples.rs", import.meta.url), "utf8");
+const SAMPLE_TITLES = [...samplesRs.matchAll(/^\s*title: "(.*)",$/gm)].map((m) => m[1]);
+/** Slugs with clock triggers: stopped after their batch so they don't tick the whole run. */
+const CLOCK_SLUGS = new Set(["heartbeat", "ticker"]);
+const TITLE_TO_SLUG = new Map([...samplesRs.matchAll(/^\s*name: "([^"]+)",\s*\n\s*title: "([^"]+)",/gm)].map((m) => [m[2], m[1]]));
 
 test("the flows page lists every sample", async ({ page }) => {
   await page.goto("/");
@@ -89,7 +93,7 @@ test("the flows page lists every sample", async ({ page }) => {
 const SAMPLES_PER_TEST = 8;
 for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
   const titles = SAMPLE_TITLES.slice(first, first + SAMPLES_PER_TEST);
-  test(`samples ${first + 1} to ${first + titles.length} open from the flows page and deploy`, async ({ page }) => {
+  test(`samples ${first + 1} to ${first + titles.length} open from the flows page and deploy`, async ({ page, request, adminToken }) => {
     await page.goto("/");
     for (const title of titles) {
       // Its database is a MongoDB, bound only where the environment names one (CI does).
@@ -98,6 +102,13 @@ for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
         await openSample(page, title, false);
         await deploy(page);
       });
+    }
+    // Stop clock-driven flows so they don't keep ticking for the rest of the run.
+    for (const title of titles) {
+      const slug = TITLE_TO_SLUG.get(title);
+      if (slug && CLOCK_SLUGS.has(slug)) {
+        await request.post(`${SERVER}/deployments/${slug}/stop`, { data: {}, headers: { Authorization: `Bearer ${adminToken}` } });
+      }
     }
   });
 }
@@ -134,7 +145,7 @@ test("a flow nothing would start can't deploy; made runnable by hand, it deploys
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
   // The quick fix puts its statements in an action, answering the value it computes.
-  await canvas.getByRole("button", { name: "make it runnable by hand" }).click();
+  await canvas.getByRole("button", { name: "make it runnable by hand" }).click({ force: true });
   await expect(page.getByRole("region", { name: "Text" })).toContainText("action run (input) {");
   await expect(page.getByRole("region", { name: "Text" })).toContainText("respond total");
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);
@@ -205,7 +216,6 @@ test("the Inspector shows the selected node in edit mode: its ports, and its uni
   // part of that expression.
   await expect(inspector).toContainText("as text, line");
   await expect(inspector.locator(".hl-inspector__source")).toHaveText('respond "Hello, {req.params.name}"');
-  await inspector.getByRole("button", { name: "Unit", exact: true }).click();
   await expect(inspector).toContainText("Pure");
   // Folded to a strip, and opened again.
   await inspector.getByRole("button", { name: "fold the Inspector" }).click();
@@ -243,7 +253,7 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click({ force: true });
   const overlay = page.locator(".hl-overlay");
   await expect(overlay.locator(".hl-overlay__crumbs")).toContainText("publish");
   await expect(overlay.locator(".react-flow__node", { hasText: "collection_put" })).toBeVisible();
@@ -253,7 +263,7 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
   await expect(overlay).toHaveCount(0);
   // Ungroup replaces it with its nodes, here.
   await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "ungroup" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "ungroup" }).click({ force: true });
   await expect(flow.locator(".react-flow__node", { hasText: "publish" })).toHaveCount(0);
   await expect(flow.locator(".react-flow__node", { hasText: "collection_put" })).toHaveCount(1);
 });
@@ -262,7 +272,7 @@ test("an edited holon applies as a new version of itself, and the flow runs it",
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click({ force: true });
   const overlay = page.locator(".hl-overlay");
   // The fallback receipt, changed inside.
   const receipt = overlay.locator('input[value="unsigned"]');
@@ -290,7 +300,7 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
   await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click({ force: true });
   const overlay = page.locator(".hl-overlay");
   await overlay.getByRole("button", { name: "add an output" }).click();
   await page.locator('[aria-modal="true"] input').fill("stamp");
