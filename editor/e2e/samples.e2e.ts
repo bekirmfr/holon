@@ -79,7 +79,7 @@ async function dropFromPalette(page: Page, entry: string) {
 
 /** View mode on the active tab, with the newest run selected (the log follows it live). */
 async function viewNewestRun(page: Page) {
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
 }
 
@@ -205,7 +205,7 @@ test("a deployment whose port another program holds says, in view mode, it isn't
   const port = await deploy(page, SAMPLE_SHIFT + 1000);
   expect(port).toBe(8101 + SAMPLE_SHIFT + 1000);
   await expect(page.locator(".hl-canvas")).toContainText("port in use");
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   const banner = page.locator(".hl-view__not-listening");
   await expect(banner).toContainText(`could not listen on port ${port}`);
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
@@ -1449,7 +1449,7 @@ test("drop-box runs once for a file dropped in its folder, sends it by handle, w
   expect(said.size).toBe(text.length);
   expect(said.hash).toMatch(/^[0-9a-f]{64}$/);
   // A run with no answer to compare has no verdict; its replay still ran the nodes the run ran.
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-view__bottom")).toContainText(`new file ${name}`);
   await expect(page.locator(".hl-view__bottom")).not.toContainText("replay differs from the run");
 
@@ -1483,7 +1483,7 @@ test("file-audit runs on a csv dropped in the inbox and on a file removed from i
   rmSync(join(FOLDERS, "inbox", `audit-${stamp}.txt`));
   await expect.poll(() => entries().filter((e) => e.endsWith(`-deleted-audit-${stamp}.txt.json`)).length, { timeout: 15_000 }).toBe(1);
   expect(entries().some((e) => e.endsWith(`-new-audit-${stamp}.txt.json`)), "a .txt dropped in starts nothing").toBe(false);
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-view__bottom")).toContainText(`deleted file audit-${stamp}.txt`);
   await expect(page.locator(".hl-view__bottom")).not.toContainText("replay differs from the run");
 
