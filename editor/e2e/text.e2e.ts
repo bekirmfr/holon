@@ -24,6 +24,13 @@ async function typeText(editor: Locator, page: Page, text: string) {
 
 const nodeNamed = (page: Page, name: string) => page.locator(`.react-flow__node[data-id^="${name}-"]`);
 
+/** Pick a node on the canvas. Not a pointer click: where the layout puts it, another node or the
+ *  text pane's edge can lie over it. */
+async function pick(node: Locator) {
+  await node.dispatchEvent("click");
+  await node.focus();
+}
+
 test("a wide window opens a flow with its text beside the canvas", async ({ page }) => {
   await page.setViewportSize({ width: 1700, height: 900 });
   await openSample(page, "Hello API");
@@ -58,7 +65,7 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   expect(await nodeNamed(page, "request").getAttribute("style")).toBe(requestAt);
 
   // A node selected on the canvas marks its line, and the range it is written over.
-  await nodeNamed(page, "uppercase").click();
+  await pick(nodeNamed(page, "uppercase"));
   await expect(pane.locator(".hl-text__picked")).toContainText("uppercase(");
   await expect(pane.locator(".hl-text__mark")).toHaveText('uppercase("Hello, {req.params.name}")');
 
@@ -89,7 +96,7 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   expect(doc.source).toContain("uppercase(");
 
   // A canvas change writes the text again: the comment goes, and says so; undo brings it back.
-  await nodeNamed(page, "uppercase").click();
+  await pick(nodeNamed(page, "uppercase"));
   await page.keyboard.press("Delete");
   await expect(pane.getByRole("status")).toContainText("a comment was dropped");
   await expect(editor).not.toContainText("# says hello");
