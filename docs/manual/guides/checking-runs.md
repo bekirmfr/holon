@@ -104,7 +104,9 @@ chained again after the change.
 What it doesn't check, it says, by why:
 
 - the first run here, which began from a state no run here left;
-- a run after a deploy, a restore or a stop, which put a state in place (the events say which);
+- a run after a deploy, a stop, or a restore of a version's state, which put a state in place
+  (the events say which). After a restore of a run's state, the next run is checked: it began
+  from the state that run left;
 - a run whose state holds a secret's or a token's placeholder, whose hash would be the
   placeholder's;
 - runs logged before rc.30, which named no state they left.

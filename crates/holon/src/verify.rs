@@ -229,9 +229,11 @@ pub(crate) struct Report {
 #[derive(Debug, Default)]
 pub(crate) struct States {
     /// The runs that began from the state the run before them left; of those, the ones that ran
-    /// beside another run (`beside`), whose state may be one an earlier run left or began with.
+    /// beside another run (`beside`), whose state may be one an earlier run left or began with,
+    /// and the ones after a restore of a run's state (`restored`), from the state it put back.
     pub(crate) began: Vec<u64>,
     pub(crate) beside: Vec<u64>,
+    pub(crate) restored: Vec<u64>,
     /// The runs that left what their writes make of the state they began with.
     pub(crate) left: Vec<u64>,
     /// What wasn't checked, by why.
@@ -362,6 +364,11 @@ fn span(e: &LogEntry) -> (u64, u64) {
     (e.at_ms, e.at_ms + e.duration_ms.max(0.0).ceil() as u64)
 }
 
+/// Whether an event puts a state in place: a deploy, a restore, a stop and run again.
+fn moves_state(ev: &crate::events::Event) -> bool {
+    matches!(ev.kind.as_str(), "deploy" | "restore" | "lifecycle")
+}
+
 /// Whether two runs ran at once, give or take a millisecond.
 fn beside(a: &LogEntry, b: &LogEntry) -> bool {
     let ((a0, a1), (b0, b1)) = (span(a), span(b));
@@ -420,12 +427,23 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                     Some(p) => match &p.state_after {
                         None => states.unchecked("where it began: the run before it kept no state it left (logged before rc.30)", b.seq),
                         Some(left) if left == h => states.began.push(b.seq),
-                        Some(_)
-                            if events.iter().any(|ev| {
-                                matches!(ev.kind.as_str(), "deploy" | "restore" | "lifecycle") && p.seq < ev.run_seq && ev.run_seq <= b.seq
-                            }) =>
-                        {
-                            states.unchecked("where it began: after a deploy, a restore or a stop, which put a state in place (the events say which)", b.seq)
+                        // A deploy, a restore or a stop between them put a state in place: a
+                        // restore of a run's state, the one that run left (deploy.rs).
+                        Some(_) if let Some(ev) = events.iter().rfind(|ev| moves_state(ev) && p.seq < ev.run_seq && ev.run_seq <= b.seq) => {
+                            let from = ev.from.as_deref().and_then(|f| f.strip_prefix("run ")).and_then(|n| n.parse::<u64>().ok());
+                            match from.and_then(|n| entries.iter().find(|(e, _)| e.seq == n)).and_then(|(e, _)| e.state_after.as_ref().map(|s| (e.seq, s))) {
+                                Some((_, put)) if ev.kind == "restore" && put == h => {
+                                    states.began.push(b.seq);
+                                    states.restored.push(b.seq);
+                                }
+                                Some((n, _)) if ev.kind == "restore" => {
+                                    states.breaks.push((b.seq, format!("it began from a state other than the one the restore before it put back (run {n}'s)")))
+                                }
+                                _ => states.unchecked(
+                                    "where it began: after a deploy, a stop, or a restore of a state not here, which put a state in place (the events say which)",
+                                    b.seq,
+                                ),
+                            }
                         }
                         Some(_) => {
                             let ends = span(b).1 + 1;
@@ -1164,10 +1182,14 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         }
     }
     if let Some(s) = &r.states {
-        let beside = match s.beside.len() {
-            0 => String::new(),
-            n => format!(" ({n} of them beside another run, from a state a run before or beside them left or began with)"),
-        };
+        let mut how = Vec::new();
+        if !s.beside.is_empty() {
+            how.push(format!("{} of them beside another run, from a state a run before or beside them left or began with", s.beside.len()));
+        }
+        if !s.restored.is_empty() {
+            how.push(format!("{} of them after a restore, from the state it put back", s.restored.len()));
+        }
+        let beside = if how.is_empty() { String::new() } else { format!(" ({})", how.join("; ")) };
         out += &format!(
             "  state: {} runs began from the state the run before them left{beside}, {} left what their writes make of the one they began with\n",
             s.began.len(),

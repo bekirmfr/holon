@@ -7,8 +7,9 @@
   state by its snapshot's hash (the one `holon restore --to-run` puts back), made again from the
   log. A state changed between runs, or a write dropped, shows as `run N's state DOESN'T FOLLOW`,
   even in a log chained again after the change. What it can't check it says, by why: the first run
-  here, a run after a deploy, a restore or a stop, a state holding a placeholder. The **ledger**
-  sample's runs check this way.
+  here, a run after a deploy, a stop or a restore of a version's state, a state holding a
+  placeholder; after a restore of a run's state, the next run is checked against what that run
+  left. The **ledger** sample's runs check this way, a restore among them.
 - **How long a deployment keeps its runs is a deploy setting.** Two limits, under ⚙: **runs the
   log keeps** (`keep_runs`; the host's `--keep-runs`, 500 without it) and **days the log keeps
   runs** (`keep_run_days`; any age without it). Keeping fewer than the host's default asks nobody;

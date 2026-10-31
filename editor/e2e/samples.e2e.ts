@@ -1575,4 +1575,16 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const checked = execFileSync(holon, ["verify", mine], { encoding: "utf8" });
   expect(checked).toContain("re-ran 4 runs");
   expect(checked).toMatch(/events: \d+, chain unbroken from the first/);
+
+  // The balances the first posting left put back, and one more: it began from what was put back.
+  const first = (JSON.parse(JSON.parse(readFileSync(mine, "utf8")).lines[0]) as { seq: number }).seq;
+  const put = await request.post(`${SERVER}/deployments/ledger/restore`, { data: { run: first, state: true }, headers: { Authorization: `Bearer ${adminToken}` } });
+  expect(put.status()).toBe(200);
+  const posted = await request.post(`http://127.0.0.1:${port}/accounts/ada`, { data: { amount: 1 } });
+  expect(((await posted.json()) as { balance: number }).balance).toBe(6);
+  const again = join(dir, "restored.json");
+  execFileSync(holon, ["export", "ledger", "--server", SERVER, "-o", again], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  const restored = execFileSync(holon, ["verify", again], { encoding: "utf8" });
+  expect(restored).toContain("(1 of them after a restore, from the state it put back)");
+  expect(restored.trim().endsWith("ok")).toBe(true);
 });

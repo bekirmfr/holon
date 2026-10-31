@@ -4037,6 +4037,23 @@ fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     let (began, beside_another, left, breaks) = states(&beside);
     assert_eq!((began, beside_another, breaks), (vec![1, 2], vec![2], vec![]));
     assert!(left.contains(&0) && !left.contains(&2), "{left:?}");
+
+    // Run 0's state put back, and a run after it: it began from the state the restore put back.
+    let restore = serde_json::json!({ "run": 0, "state": true });
+    assert_eq!(route(&state, &req("POST", "/deployments/follows/restore", restore.to_string().into_bytes())).status_code, 200);
+    assert_eq!(route(&state, &req("POST", "/trigger/follows", b"later".to_vec())).status_code, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/follows/export", vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    let s = report.states.as_ref().unwrap();
+    assert_eq!((&s.began, &s.restored), (&vec![1, 2, 3], &vec![3]));
+    assert!(verify::describe(&report, None).contains("(1 of them after a restore, from the state it put back)"));
+    // Its event rewritten to say run 1's was put back: run 3 didn't begin from that.
+    let mut changed = verify::Export { ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let restored = changed.events.iter().position(|l| l.contains("\"restore\"")).unwrap();
+    changed.events[restored] = changed.events[restored].replace("\"run 0\"", "\"run 1\"");
+    let s = verify::check(&changed, None, &BTreeMap::new()).states.unwrap();
+    assert_eq!(s.breaks, vec![(3, "it began from a state other than the one the restore before it put back (run 1's)".to_string())]);
 }
 
 /// A deployment's runs, exported and checked offline: every run runs again to what its entry
