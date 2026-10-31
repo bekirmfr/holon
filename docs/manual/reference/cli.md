@@ -10,6 +10,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon check`](#holon-check) | compile a flow: its routes, what it may do, or each mistake |
 | [`holon show`](#holon-show) | an outline of a flow |
 | [`holon fmt`](#holon-fmt) | rewrite a flow in the canonical form |
+| [`holon deploy`](#holon-deploy) | compile a flow and deploy it to a running server |
 | [`holon export`](#holon-export) | write a deployment's runs to a file |
 | [`holon verify`](#holon-verify) | check exported runs offline |
 | [`holon history`](#holon-history) | a deployment's timeline: its runs, and what was done to it |
@@ -117,6 +118,23 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:` |
 
 `HOLON_SETUP_CODE` sets the setup code instead of a random one.
+
+## `holon deploy`
+
+```
+holon deploy <file> [--server PORT|URL] [--slug NAME] [--approve]
+```
+
+Compiles the flow and deploys it, as the editor's deploy does: under its own name, or `--slug`.
+From the server you run on this machine, signed in as you; with several running, `--server PORT`
+picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), with an API token in
+`HOLON_TOKEN`.
+
+A first deploy, and a version that asks for something its grant doesn't cover, needs a person's
+approval. Without `--approve`, deploy prints what it asks for and exits 1, deploying nothing:
+approve it in the editor, by deploying it from there. `--approve` approves it here, as you, and
+prints what it approved, in the deployment's timeline as yours. Agents' tools
+([`holon mcp`](#holon-mcp)) never approve: the server refuses an agent's deploy that would.
 
 ## Runs
 

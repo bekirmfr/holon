@@ -485,7 +485,7 @@ const USAGE: &str = "usage: holon <command>
   check <file>                       compile a flow: its routes, what it may do, or each mistake
   show <file>                        an outline: routes, nodes and what feeds them
   fmt <file>                         rewrite a flow in the canonical form
-  deploy <file> [--server PORT|URL]  compile and deploy a flow to a running server
+  deploy <file> [--server PORT|URL]  compile and deploy a flow to a running server (--approve)
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)

@@ -14,23 +14,26 @@ const USAGE: &str = "usage: holon deploy <file> [options]
 
   --server PORT|URL  reach this server (default: the one running on this machine)
   --slug NAME        deploy under this name instead of the flow's own name
+  --approve          approve what it asks for that isn't granted yet, as you, and say what
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
   with an API token in HOLON_TOKEN.
 
-  If the flow needs permissions not yet granted, deploy prints what it needs and exits 1.
-  Open the editor, deploy from there to approve, then run holon deploy again.";
+  If the flow needs permissions not yet granted, deploy prints what it needs and exits 1:
+  approve them in the editor by deploying from there, or here with --approve, as you.";
 
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file: Option<String> = None;
     let mut server_arg: Option<String> = None;
     let mut slug_arg: Option<String> = None;
+    let mut approve = false;
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--server" => server_arg = args.next().cloned(),
             "--slug" => slug_arg = args.next().cloned(),
+            "--approve" => approve = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
                 return 0;
@@ -116,17 +119,19 @@ pub(crate) fn run(args: &[String]) -> i32 {
     };
     let needs = list("needs_approval");
 
-    if !needs.is_empty() {
+    if !needs.is_empty() && !approve {
         eprintln!("holon deploy: \"{slug}\" needs approval before it can deploy.");
         eprintln!("It asks to:");
         for cap in &needs {
             eprintln!("  - {}", agent::describe(cap));
         }
-        eprintln!("\nOpen the editor at {server}, open \"{slug}\" from the flows page, deploy it there to approve, then run holon deploy again.");
+        eprintln!("\nApprove it here with holon deploy --approve, or in the editor at {server}: open \"{slug}\" from the flows page and deploy it there.");
         return 1;
     }
 
-    body["acknowledge"] = json!(plan.may);
+    let mut acknowledge = plan.may.clone();
+    acknowledge.extend(needs.iter().filter(|n| !plan.may.contains(n)).cloned());
+    body["acknowledge"] = json!(acknowledge);
     body["document"] = plan.document.clone();
 
     if let Err(e) = post_json(&server, token.as_deref(), "/deploy", &body) {
@@ -135,6 +140,12 @@ pub(crate) fn run(args: &[String]) -> i32 {
     }
 
     println!("deployed {slug:?} ({}) on {server}", &plan.unit[..12]);
+    if !needs.is_empty() {
+        println!("  approved, as you:");
+        for cap in &needs {
+            println!("    - {}", agent::describe(cap));
+        }
+    }
     if !plan.routes.is_empty() {
         for r in &plan.routes {
             println!("  {r}");
