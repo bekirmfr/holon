@@ -33,6 +33,7 @@ export function useDeployFlow({
   deployments,
   refreshDeployments,
   setError,
+  onDeployed,
 }: {
   flowName: string | null;
   setFlowName: (name: string) => void;
@@ -52,6 +53,7 @@ export function useDeployFlow({
   deployments: DeploymentEntry[];
   refreshDeployments: () => void;
   setError: (msg: string) => void;
+  onDeployed?: () => void;
 }) {
   const [deployBusy, setDeployBusy] = useState(false);
   const deployedEntry = flowName ? deployments.find((d) => d.slug === flowName) : undefined;
@@ -171,12 +173,13 @@ export function useDeployFlow({
       };
       await deployUnit(name, hash, ask, interval, document, requirements);
       refreshDeployments();
+      onDeployed?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeployBusy(false);
     }
-  }, [flowName, setFlowName, dialog, derived, settings, source, live, ev, deployments, refreshDeployments, getViewport, setError]);
+  }, [flowName, setFlowName, dialog, derived, settings, source, live, ev, deployments, refreshDeployments, getViewport, setError, onDeployed]);
 
   const onFlowAction = useCallback(
     (action: "run" | "pause" | "stop") => {

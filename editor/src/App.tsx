@@ -549,6 +549,7 @@ function Canvas({
     deployments,
     refreshDeployments,
     setError: setDeployError,
+    onDeployed: () => onDeployPanelOpen(true),
   });
 
 
