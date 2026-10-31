@@ -39,3 +39,8 @@ publish-prereleases = true
 # (.github/workflows/vscode-extension.yml). Both upload to the release, which needs write access
 # to the repository's contents.
 github-custom-job-permissions = { "legacy-installers" = { contents = "write" }, "vscode-extension" = { contents = "write" } }
+
+# dist 0.32 builds Apple silicon on macos-14, which GitHub retires on 2026-11-02 (it already
+# fails in brownouts): macos-15 instead.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
