@@ -1,7 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.30
 
+A deployment has a history: every deploy is a version kept for good, its code and its state go
+back to any version or run after a dry run says what changes, and what was done to it is on a
+timeline of its own. How long its log keeps runs is a deploy setting, and a flow's text can say
+it. Deployments, logs and state from rc.29 load and run as they are: their kept canvases become
+versions that open but don't restore, and runs from before keep no state to restore.
+
+- **`holon deploy <file>` deploys a flow from the command line.** It compiles the text and deploys
+  it, as the editor's deploy does: to the server running here, signed in as you, or one elsewhere
+  with `--server URL` and an API token in `HOLON_TOKEN`; `--slug` names it. A deploy that needs a
+  person's approval prints what it asks for and stops, deploying nothing; `--approve` approves it
+  there, as you, and prints what it approved.
 - **`holon store sweep` clears the states no kept run names.** Retention cuts old runs from a
   log, but the states they left stayed in the content store; an admin's sweep now removes every
   value nothing kept names: not a kept run, a version, an event, a session, a waiting run or the
