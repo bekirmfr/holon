@@ -67,6 +67,8 @@ notes-api: 42 runs, runs 1 to 42
   re-ran 42 runs: each produced what its log entry says
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret or a resume token (not computed again)
   2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
+  state: 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
+  state not checked (1 run: 1), where it began: no run before it here
 ok
 ```
 
@@ -76,15 +78,42 @@ ok
 2. every unit in the export is what its hash says;
 3. every run, run again from its log entry through the same core, produced what the log says:
    the same outputs, the same effects, the same status. Outbound calls are answered from the log,
-   so nothing is sent.
+   so nothing is sent;
+4. each run's state follows from the one before: it began from the state the run before it left,
+   and left what its writes make of the state it began with (see
+   [The state, run to run](#the-state-run-to-run)).
 
 It exits 0 when everything checks, and 1 otherwise, with what failed:
 
 ```
   chain: BROKEN at run 17: changed, removed or inserted outside holon
   run 23 DIFFERS: …
+  run 30's state DOESN'T FOLLOW: it began from a state the run before it (run 29) didn't leave, nor a run beside it
 FAILED
 ```
+
+### The state, run to run
+
+Each run's log entry holds the state it began with, whole, and names the state it left by its
+hash (a snapshot, the one `holon restore --to-run` puts back). `verify` makes each state's hash
+again from the entries, and checks that a run began from the state the run before it left, and
+that what its writes make of the state it began with is the state it left. So a state can't be
+changed between runs, or a run's writes dropped, without the report saying where, even in a log
+chained again after the change.
+
+What it doesn't check, it says, by why:
+
+- the first run here, which began from a state no run here left;
+- a run after a deploy, a restore or a stop, which put a state in place (the events say which);
+- a run whose state holds a secret's or a token's placeholder, whose hash would be the
+  placeholder's;
+- runs logged before rc.30, which named no state they left.
+
+A collection is compared by its root, not its items: a run that wrote one is checked in the state
+a later run began from, its other cells as it left them. Runs of one deployment run side by side,
+each committing only if what it could read is as it found it: a run that ran beside another may
+have begun from a state an earlier run left, or the other began with, and only the cells it wrote
+are checked in what it left. The report counts those.
 
 A node that computed with a secret or a resume token (a signature, a token check) can't be
 computed again: the log never holds their values, only a placeholder. What the log kept for that

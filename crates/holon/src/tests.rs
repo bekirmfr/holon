@@ -3954,6 +3954,91 @@ fn listening_beyond_loopback_warns_that_it_is_plain_http() {
     assert!(flows.contains("deployed flows' ports (10.0.0.5) take") && !flows.contains("editor"), "{flows}");
 }
 
+/// Each run's state follows from the one before, checked offline: it began from the state the run
+/// before it left, and left what its write makes of it. A state_after rewritten (and the lines
+/// chained again) re-runs as before, but the state no longer follows, there and at the next run;
+/// a run that began from the state another began with ran beside it.
+#[test]
+fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("state-follows");
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "follows", writer, ack).status_code, 200);
+    for body in ["hello", "there", "again"] {
+        assert_eq!(route(&state, &req("POST", "/trigger/follows", body.as_bytes().to_vec())).status_code, 200);
+    }
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/follows/export", vec![])))).unwrap();
+    // A copy with each line changed by `edit`, the runs a second apart, chained again.
+    let rechained = |edit: &dyn Fn(usize, &mut serde_json::Value)| {
+        let mut copy = verify::Export { lines: Vec::new(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let mut prev = String::new();
+        for (i, line) in export.lines.iter().enumerate() {
+            let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+            v["at_ms"] = serde_json::json!(1_800_000_000_000u64 + i as u64 * 1000);
+            v["duration_ms"] = serde_json::json!(2.0);
+            edit(i, &mut v);
+            if !prev.is_empty() {
+                v["prev"] = serde_json::Value::String(prev.clone());
+            }
+            let line = serde_json::to_string(&v).unwrap();
+            prev = recorder::line_hash(&line);
+            copy.lines.push(line);
+        }
+        copy.head = prev;
+        copy
+    };
+    let states = |e: &verify::Export| {
+        let s = verify::check(e, None, &BTreeMap::new()).states.expect("its runs kept the state they left");
+        (s.began, s.beside, s.left, s.breaks)
+    };
+
+    // As the server wrote them (a millisecond apart, so they may have run beside each other).
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    let s = report.states.as_ref().unwrap();
+    assert_eq!((&s.began, &s.breaks), (&vec![1, 2], &vec![]));
+
+    // A second apart, each is checked whole: the first has no run before it here.
+    let apart = rechained(&|_, _| {});
+    let report = verify::check(&apart, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(states(&apart), (vec![1, 2], vec![], vec![0, 1, 2], vec![]));
+    let text = verify::describe(&report, None);
+    assert!(text.contains("state: 2 runs began from the state the run before them left, 3 left what their writes make of the one they began with"), "{text}");
+    assert!(text.contains("state not checked (1 run: 0), where it began: no run before it here"), "{text}");
+
+    // Run 1 says it left another state: it re-runs as before, but its state doesn't follow, nor
+    // does run 2's.
+    let forged = rechained(&|i, v| {
+        if i == 1 {
+            v["state_after"] = serde_json::json!("00".repeat(32));
+        }
+    });
+    let report = verify::check(&forged, None, &BTreeMap::new());
+    assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{:?}", report.reruns);
+    assert!(!report.ok());
+    let breaks = vec![
+        (1, "the state it left isn't the one it began with, its writes applied".to_string()),
+        (2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string()),
+    ];
+    assert_eq!(states(&forged).3, breaks);
+    assert!(verify::describe(&report, None).contains("run 2's state DOESN'T FOLLOW: it began from a state the run before it (run 1) didn't leave"));
+
+    // Run 2 began from the state run 1 began with, as it would have beside it: it follows, and
+    // what it left (beside another) is checked in no later run's state.
+    let first: serde_json::Value = serde_json::from_str(&export.lines[1]).unwrap();
+    let beside = rechained(&|i, v| {
+        if i == 2 {
+            v["state_before"] = first["state_before"].clone();
+            v["at_ms"] = serde_json::json!(1_800_000_000_000u64 + 1001);
+        }
+    });
+    let (began, beside_another, left, breaks) = states(&beside);
+    assert_eq!((began, beside_another, breaks), (vec![1, 2], vec![2], vec![]));
+    assert!(left.contains(&0) && !left.contains(&2), "{left:?}");
+}
+
 /// A deployment's runs, exported and checked offline: every run runs again to what its entry
 /// says. A copy re-chained after changing what a run performed still links, but that run no longer
 /// re-runs to its entry; a witnessed head is found only in the copy it came from.

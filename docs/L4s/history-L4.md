@@ -159,9 +159,11 @@ Holon never claims to have undone it.
 - **The editor:** the deployment's timeline, each entry opening its run in view mode, its
   version, or its state; a restore's preview and its button.
 - **MCP:** `history` and `restore` (built), the latter a dry run only.
-- **`holon verify`** checks, beyond what it checks today, that each entry's state follows from the
-  one before it (its writes applied to the root before give the root after), from the oldest
-  entry the export carries whole.
+- **`holon verify`** checks that each run's state follows from the one before (built): it began
+  from the state the run before it left, and its writes applied to the state it began with give
+  the state it left, each state by its snapshot's hash, made again from `state_before`. A
+  collection by its root (a run that wrote one is checked in a later run's state), and runs that
+  ran beside another as far as their commit shows (firing.rs).
 
 ## 7. Retention
 
@@ -258,6 +260,8 @@ Reordered so restoring code, which changes nothing already logged, comes first:
 4. **Retention and verify** of whole states.
      - **retention** (built): `keep_runs` and `keep_run_days`, limits in the deploy settings (§7).
        The sample rolling-log keeps 5 runs, a day at most.
+     - **verify of whole states** (built): each run began from the state the one before left, and
+       left what its writes make of it (§6). The sample ledger checks it.
 
 ## 11. Forks, surfaced
 

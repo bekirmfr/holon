@@ -1530,8 +1530,8 @@ test("a deployment's runs export from view mode and from holon export, and holon
   expect((await request.post(`http://127.0.0.1:${port}/accounts/ada`, { data: {} })).status()).toBe(400);
   await viewNewestRun(page);
 
-  // Exported from the run log: the head it chains up to, and the file.
-  const chain = page.locator(".hl-view__chain");
+  // Exported from the run log: the head it chains up to, and the file (the run pane's top bar).
+  const chain = page.getByRole("region", { name: "run" });
   await expect(chain).toContainText("chain unbroken");
   const head = (await chain.locator("[title]").filter({ hasText: /^[0-9a-f]{12}$/ }).getAttribute("title"))!;
   expect(head).toMatch(/^[0-9a-f]{64}$/);
@@ -1547,6 +1547,9 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
   const verified = execFileSync(holon, ["verify", file, "--head", head], { encoding: "utf8" });
   expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
+  // And each began from the balances the one before left (the first, from what no run here left).
+  expect(verified).toContain("state: 3 runs began from the state the run before them left");
+  expect(verified).not.toContain("DOESN'T FOLLOW");
   expect(verified).toContain("so no run up to it was changed or removed");
   expect(verified.trim().endsWith("ok")).toBe(true);
 

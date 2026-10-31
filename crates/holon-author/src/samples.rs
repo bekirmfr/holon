@@ -367,7 +367,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "ledger",
         title: "Ledger (every run checkable)",
-        description: "Keeps a balance per account: each post adds its amount and answers the new balance with when it was posted. Export its runs and holon verify runs every posting again, offline, from what its log entry recorded (the balance it read, the clock), and checks it produced what the log says.",
+        description: "Keeps a balance per account: each post adds its amount and answers the new balance with when it was posted. Export its runs and holon verify runs every posting again, offline, from what its log entry recorded (the balance it read, the clock), and checks it produced what the log says, and that each began from the balances the one before left.",
         shows: &["holon verify", "run export", "collections", "clock", "with_field"],
         port: Some("8131"),
         interval: None,

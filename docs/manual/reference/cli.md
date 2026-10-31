@@ -141,7 +141,8 @@ read; `--without-files` ships none. See [Checking runs](../guides/checking-runs.
 holon verify <export.json> [--head HEX] [--files DIR]
 ```
 
-Checks exported runs, offline: the chain, each unit's hash, and every run, run again. `--head`
+Checks exported runs, offline: the chain, each unit's hash, every run, run again, and that each
+run's state follows from the one before. `--head`
 checks that a head a witness holds is in the export. `--files` gives the files runs read whose
 texts the export doesn't hold. Exits 0 when it all checks, 1 when something doesn't, 2 for a file
 it can't read.
