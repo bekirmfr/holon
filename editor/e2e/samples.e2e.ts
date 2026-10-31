@@ -1,9 +1,12 @@
-// Every sample, through the real editor and a real server (playwright.config.ts): opened from the
-// flows page, deployed through the consent screen, and, for the ones that answer requests here,
-// sent one and replayed exactly in view mode. What CLAUDE.md asks of a sample by hand ("run live
-// once"), kept from rotting by CI. A sample deploys on its own port plus 1000 (set in the deployment settings panel), so a
+// UI-layer tests for samples: the real editor, real browser, real server (playwright.config.ts).
+// Each sample is opened from the flows page, deployed through the consent screen, and exercised
+// in view mode. What CLAUDE.md asks of a sample by hand ("run live once"), kept from rotting by CI.
+// A sample deploys on its own port plus 1000 (set in the deployment settings panel), so a
 // developer's deployments on the samples' ports are left alone, plus 100 for each slot past the
 // first (ports.mjs), so runs side by side don't meet.
+//
+// Pure-HTTP tests (no view mode or editor UI after deploy) live in system.e2e.ts: they deploy via
+// `holon deploy` (no browser), so pointer-event layout changes can't break them.
 
 import { appendFileSync, readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
@@ -477,31 +480,6 @@ test("a flow as text: exported as .holon, checked by the command line, imported 
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1);
 });
 
-test("likes answers a count in a sentence: the number as text (as_text), then the words", async ({ page, request }) => {
-  await openSample(page, "Likes counter (runs side by side)");
-  const port = await deploy(page);
-  // A fresh post: liked once, then shown.
-  const post = `e2e-${Date.now()}`;
-  expect((await request.post(`http://127.0.0.1:${port}/posts/${post}/like`)).status()).toBe(200);
-  const shown = await request.get(`http://127.0.0.1:${port}/posts/${post}/likes`);
-  expect(shown.status()).toBe(200);
-  expect(await shown.text()).toBe("1 likes");
-  // Never liked: the count falls back to 0, and as_text writes it.
-  expect(await (await request.get(`http://127.0.0.1:${port}/posts/${post}-never/likes`)).text()).toBe("0 likes");
-});
-
-test("counter counts its hits with no wire to the request, and records the last visit after it is put", async ({ page, request }) => {
-  await openSample(page, "Hit counter (writes run with their route)");
-  const port = await deploy(page);
-  // Each hit's write is tied to its route's request: it runs, though it reads nothing of it.
-  const hit = async () => Number((await (await request.get(`http://127.0.0.1:${port}/hit`)).text()).replace("hit ", ""));
-  const first = await hit();
-  expect(await hit()).toBe(first + 1);
-  // The last visitor is written after the visit is put.
-  const who = `e2e-${Date.now()}`;
-  expect(await (await request.post(`http://127.0.0.1:${port}/visits/${who}`)).text()).toBe(`visited ${who}`);
-  expect(await (await request.get(`http://127.0.0.1:${port}/last`)).text()).toBe(who);
-});
 
 test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, its action sets it by hand, from the editor and the deployed page, and each run replays exactly", async ({ page, request }) => {
   await openSample(page, "Ticker (a clock beside routes)");
@@ -1348,23 +1326,6 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   await expect(page.getByLabel("deployment orders-api", { exact: true })).toContainText("permissions ▾");
 });
 
-test("refund-once, beside orders-api on one database, calls the payment API once for two refunds of one order at once", async ({ page, request }) => {
-  await openSample(page, "Orders API (a database on the host)");
-  const orders = `http://127.0.0.1:${await deploy(page)}`;
-  await openSample(page, "Refund once (two requests, one payment)");
-  const refunds = `http://127.0.0.1:${await deploy(page)}`;
-  const customer = `e2e-refund-${Date.now()}`;
-  expect((await request.post(`${orders}/orders`, { data: { customer, total: 5 } })).status()).toBe(201);
-  const [order] = await (await request.get(`${orders}/orders/${customer}`)).json();
-  // The two at once: one holds the order's row from its call out until it commits; the other
-  // waits, finds the order refunded, and sends nothing.
-  const both = await Promise.all([request.post(`${refunds}/refund/${order.id}`, { timeout: 60_000 }), request.post(`${refunds}/refund/${order.id}`, { timeout: 60_000 })]);
-  expect(both.map((r) => r.status()).sort()).toEqual([200, 409]);
-  const made = await (await request.get(`${refunds}/refunds/${order.id}`)).json();
-  expect(made).toHaveLength(1);
-  expect(made[0].amount).toBe(5);
-  expect((await (await request.get(`${orders}/order/${order.id}`)).json()).refunded).toBe(1);
-});
 
 test("ticket-numbers, on a database held for whole runs, hands out twenty numbers at once one after the other, none running again", async ({ page, request, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
