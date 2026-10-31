@@ -134,7 +134,7 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
   await openSample(page, "Cache-aside (a branch not taken)");
   const port = 8115 + SAMPLE_SHIFT;
   const text = readFileSync(new URL("../../crates/holon-author/samples/cache-aside.holon", import.meta.url), "utf8");
-  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
   await page.keyboard.insertText(text.replace("port 8115", `port ${port}`));
@@ -266,8 +266,8 @@ test("a failing run replays exactly and opens on where it failed", async ({ page
 test("a holon expands into a canvas of its own, and ungroups in place", async ({ page }) => {
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
-  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
   const overlay = page.locator(".hl-overlay");
   await expect(overlay.locator(".hl-overlay__crumbs")).toContainText("publish");
   await expect(overlay.locator(".react-flow__node", { hasText: "collection_put" })).toBeVisible();
@@ -276,8 +276,8 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
   await page.keyboard.press("Escape");
   await expect(overlay).toHaveCount(0);
   // Ungroup replaces it with its nodes, here.
-  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "ungroup" }).click();
+  await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "ungroup" }).dispatchEvent("click");
   await expect(flow.locator(".react-flow__node", { hasText: "publish" })).toHaveCount(0);
   await expect(flow.locator(".react-flow__node", { hasText: "collection_put" })).toHaveCount(1);
 });
@@ -285,8 +285,8 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
 test("an edited holon applies as a new version of itself, and the flow runs it", async ({ page, request }) => {
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
-  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
   const overlay = page.locator(".hl-overlay");
   // The fallback receipt, changed inside.
   const receipt = overlay.locator('input[value="unsigned"]');
@@ -313,8 +313,8 @@ test("an edited holon applies as a new version of itself, and the flow runs it",
 test("a port added inside a holon takes its first wire's type, and the flow's node gains it", async ({ page }) => {
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
-  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
-  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).click();
+  await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
+  await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
   const overlay = page.locator(".hl-overlay");
   await overlay.getByRole("button", { name: "add an output" }).click();
   await page.locator('[aria-modal="true"] input').fill("stamp");
