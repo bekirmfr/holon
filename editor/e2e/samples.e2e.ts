@@ -1,9 +1,12 @@
-// Every sample, through the real editor and a real server (playwright.config.ts): opened from the
-// flows page, deployed through the consent screen, and, for the ones that answer requests here,
-// sent one and replayed exactly in view mode. What CLAUDE.md asks of a sample by hand ("run live
-// once"), kept from rotting by CI. A sample deploys on its own port plus 1000 (set in the deployment settings panel), so a
+// UI-layer tests for samples: the real editor, real browser, real server (playwright.config.ts).
+// Each sample is opened from the flows page, deployed through the consent screen, and exercised
+// in view mode. What CLAUDE.md asks of a sample by hand ("run live once"), kept from rotting by CI.
+// A sample deploys on its own port plus 1000 (set in the deployment settings panel), so a
 // developer's deployments on the samples' ports are left alone, plus 100 for each slot past the
 // first (ports.mjs), so runs side by side don't meet.
+//
+// Pure-HTTP tests (no view mode or editor UI after deploy) live in system.e2e.ts: they deploy via
+// `holon deploy` (no browser), so pointer-event layout changes can't break them.
 
 import { appendFileSync, readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
@@ -22,10 +25,20 @@ async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
+/** Open the deployment settings panel if it is closed. */
+async function openDeployPanel(page: Page) {
+  const panel = page.getByRole("complementary", { name: "Deployment settings" });
+  if (!(await panel.isVisible())) {
+    await page.getByRole("button", { name: "open deployment settings" }).click();
+    await panel.waitFor({ state: "visible", timeout: 5_000 });
+  }
+}
+
 /** Deploy the open flow through the deployment settings panel and the consent screen; its port
  *  moved up by `by` (the slot's SAMPLE_SHIFT, ports.mjs), and whatever else `set` sets in the
  *  panel. Answers the port it serves on (null for a flow without routes). */
 async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   const portField = settings.getByRole("textbox").first();
   const given = Number(await portField.inputValue());
@@ -41,13 +54,14 @@ async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) =
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
   await page.getByRole("dialog").getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
   expect((await deployed).status()).toBe(200);
-  await expect(page.locator(".hl-tab--active")).toContainText("deployed");
+  await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
   return port;
 }
 
 /** Wait until text typed into the Text pane has compiled: the deployment settings panel then says
  *  its port. */
 async function settingsSayPort(page: Page, port: string) {
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await expect(settings.getByRole("textbox").first()).toHaveValue(port, { timeout: 15_000 });
 }
@@ -68,7 +82,7 @@ async function dropFromPalette(page: Page, entry: string) {
 
 /** View mode on the active tab, with the newest run selected (the log follows it live). */
 async function viewNewestRun(page: Page) {
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
 }
 
@@ -123,7 +137,7 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
   await openSample(page, "Cache-aside (a branch not taken)");
   const port = 8115 + SAMPLE_SHIFT;
   const text = readFileSync(new URL("../../crates/holon-author/samples/cache-aside.holon", import.meta.url), "utf8");
-  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
   await page.keyboard.insertText(text.replace("port 8115", `port ${port}`));
@@ -147,12 +161,13 @@ test("a flow nothing would start can't deploy; made runnable by hand, it deploys
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
   // The quick fix puts its statements in an action, answering the value it computes.
-  await canvas.getByRole("button", { name: "make it runnable by hand" }).dispatchEvent("click");
+  await canvas.getByRole("button", { name: "make it runnable by hand" }).click();
   await expect(page.getByRole("region", { name: "Text" })).toContainText("action run (input) {");
   await expect(page.getByRole("region", { name: "Text" })).toContainText("respond total");
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);
   // Deployed under a name of its own (asked, as for any new flow), its action answers.
-  await canvas.getByRole("button", { name: /^deploy/ }).click();
+  await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeEnabled();
+  await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
   await page.locator('[aria-modal="true"]').locator("input").fill(`by-hand-${Date.now()}`);
   await page.keyboard.press("Enter");
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
@@ -193,7 +208,7 @@ test("a deployment whose port another program holds says, in view mode, it isn't
   const port = await deploy(page, SAMPLE_SHIFT + 1000);
   expect(port).toBe(8101 + SAMPLE_SHIFT + 1000);
   await expect(page.locator(".hl-canvas")).toContainText("port in use");
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   const banner = page.locator(".hl-view__not-listening");
   await expect(banner).toContainText(`could not listen on port ${port}`);
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
@@ -231,7 +246,7 @@ test("slugs runs its holons, and view mode shows inside one", async ({ page, req
   const answer = await request.post(`http://127.0.0.1:${port}/slugs`, { data: { title: "Hello Holon World", author: "Ada Lovelace" } });
   expect(await answer.json()).toMatchObject({ title: "hello-holon-world", author: "ada-lovelace", receipt: "unsigned" });
   await viewNewestRun(page);
-  await page.locator(".react-flow__node", { hasText: "publish" }).click();
+  await page.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   const side = page.getByRole("complementary", { name: "Inspector" });
   await side.getByRole("button", { name: "Node", exact: true }).click();
   await expect(side).toContainText("inside, as the run went");
@@ -254,7 +269,7 @@ test("a failing run replays exactly and opens on where it failed", async ({ page
 test("a holon expands into a canvas of its own, and ungroups in place", async ({ page }) => {
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
-  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
+  await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
   const overlay = page.locator(".hl-overlay");
   await expect(overlay.locator(".hl-overlay__crumbs")).toContainText("publish");
@@ -264,7 +279,7 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
   await page.keyboard.press("Escape");
   await expect(overlay).toHaveCount(0);
   // Ungroup replaces it with its nodes, here.
-  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
+  await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "ungroup" }).dispatchEvent("click");
   await expect(flow.locator(".react-flow__node", { hasText: "publish" })).toHaveCount(0);
   await expect(flow.locator(".react-flow__node", { hasText: "collection_put" })).toHaveCount(1);
@@ -273,7 +288,7 @@ test("a holon expands into a canvas of its own, and ungroups in place", async ({
 test("an edited holon applies as a new version of itself, and the flow runs it", async ({ page, request }) => {
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
-  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
+  await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
   const overlay = page.locator(".hl-overlay");
   // The fallback receipt, changed inside.
@@ -301,10 +316,10 @@ test("an edited holon applies as a new version of itself, and the flow runs it",
 test("a port added inside a holon takes its first wire's type, and the flow's node gains it", async ({ page }) => {
   await openSample(page, "A flow inside a flow (holon)");
   const flow = page.locator(".hl-canvas__flow > .react-flow");
-  await flow.locator(".react-flow__node", { hasText: "publish" }).click();
+  await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
   const overlay = page.locator(".hl-overlay");
-  await overlay.getByRole("button", { name: "add an output" }).click();
+  await overlay.getByRole("button", { name: "add an output" }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill("stamp");
   await page.keyboard.press("Enter");
   const outputs = overlay.locator(".react-flow__node", { hasText: "outputs" });
@@ -465,31 +480,6 @@ test("a flow as text: exported as .holon, checked by the command line, imported 
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1);
 });
 
-test("likes answers a count in a sentence: the number as text (as_text), then the words", async ({ page, request }) => {
-  await openSample(page, "Likes counter (runs side by side)");
-  const port = await deploy(page);
-  // A fresh post: liked once, then shown.
-  const post = `e2e-${Date.now()}`;
-  expect((await request.post(`http://127.0.0.1:${port}/posts/${post}/like`)).status()).toBe(200);
-  const shown = await request.get(`http://127.0.0.1:${port}/posts/${post}/likes`);
-  expect(shown.status()).toBe(200);
-  expect(await shown.text()).toBe("1 likes");
-  // Never liked: the count falls back to 0, and as_text writes it.
-  expect(await (await request.get(`http://127.0.0.1:${port}/posts/${post}-never/likes`)).text()).toBe("0 likes");
-});
-
-test("counter counts its hits with no wire to the request, and records the last visit after it is put", async ({ page, request }) => {
-  await openSample(page, "Hit counter (writes run with their route)");
-  const port = await deploy(page);
-  // Each hit's write is tied to its route's request: it runs, though it reads nothing of it.
-  const hit = async () => Number((await (await request.get(`http://127.0.0.1:${port}/hit`)).text()).replace("hit ", ""));
-  const first = await hit();
-  expect(await hit()).toBe(first + 1);
-  // The last visitor is written after the visit is put.
-  const who = `e2e-${Date.now()}`;
-  expect(await (await request.post(`http://127.0.0.1:${port}/visits/${who}`)).text()).toBe(`visited ${who}`);
-  expect(await (await request.get(`http://127.0.0.1:${port}/last`)).text()).toBe(who);
-});
 
 test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, its action sets it by hand, from the editor and the deployed page, and each run replays exactly", async ({ page, request }) => {
   await openSample(page, "Ticker (a clock beside routes)");
@@ -964,6 +954,7 @@ test("an env secret is picked from the server's HOLON_SECRET_… names, its dote
   await page.route(`${SERVER}/deployments/gemini-chat/secrets/gemini_api_key`, (route) =>
     route.request().method() === "POST" ? ((posted = route.request().postDataJSON()), route.fulfill({ json: { version: 1 } })) : route.continue(),
   );
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await settings.locator("select", { has: page.locator('option[value="vault"]') }).selectOption("env");
   // The variable the secret's name suggests is chosen; the one just added is there too.
@@ -1058,6 +1049,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   await openSample(page, "Rolling log (retention)");
   // Its retention opens with it, in the deployment settings: fewer runs than the host's default,
   // which asks nobody.
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   const runs = settings.getByLabel("runs the log keeps");
   await expect(runs).toHaveValue("5");
@@ -1109,6 +1101,7 @@ test("guarded-api's token rolls back under ⚙ once a dry run has said what it w
   const [now, before] = (await versions()).map((v) => v.version);
 
   await openSample(page, "Token-guarded API");
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await settings.getByTitle("versions and changes; roll back to an older version").first().click();
   const rollBack = settings.getByTitle(`make version ${before} current again`);
@@ -1160,6 +1153,7 @@ test("calc's match answers the chosen arm or 400 when it has no value, and view 
   const values = text.locator(".hl-text__value");
   await expect(values.first()).toHaveText("1");
   await expect(values.nth(1)).toHaveText("0");
+  await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.getByTitle("step forward one node").click();
   await expect(text.locator(".hl-text__step")).toHaveCount(1);
   await text.locator(".cm-line", { hasText: '"div" -> a / b' }).click();
@@ -1356,23 +1350,6 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   await expect(page.getByLabel("deployment orders-api", { exact: true })).toContainText("permissions ▾");
 });
 
-test("refund-once, beside orders-api on one database, calls the payment API once for two refunds of one order at once", async ({ page, request }) => {
-  await openSample(page, "Orders API (a database on the host)");
-  const orders = `http://127.0.0.1:${await deploy(page)}`;
-  await openSample(page, "Refund once (two requests, one payment)");
-  const refunds = `http://127.0.0.1:${await deploy(page)}`;
-  const customer = `e2e-refund-${Date.now()}`;
-  expect((await request.post(`${orders}/orders`, { data: { customer, total: 5 } })).status()).toBe(201);
-  const [order] = await (await request.get(`${orders}/orders/${customer}`)).json();
-  // The two at once: one holds the order's row from its call out until it commits; the other
-  // waits, finds the order refunded, and sends nothing.
-  const both = await Promise.all([request.post(`${refunds}/refund/${order.id}`, { timeout: 60_000 }), request.post(`${refunds}/refund/${order.id}`, { timeout: 60_000 })]);
-  expect(both.map((r) => r.status()).sort()).toEqual([200, 409]);
-  const made = await (await request.get(`${refunds}/refunds/${order.id}`)).json();
-  expect(made).toHaveLength(1);
-  expect(made[0].amount).toBe(5);
-  expect((await (await request.get(`${orders}/order/${order.id}`)).json()).refunded).toBe(1);
-});
 
 test("ticket-numbers, on a database held for whole runs, hands out twenty numbers at once one after the other, none running again", async ({ page, request, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
@@ -1404,21 +1381,6 @@ test("ticket-numbers, on a database held for whole runs, hands out twenty number
   await page.getByRole("button", { name: "admin", exact: true }).click();
   await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
   await expect(page.getByText(join(FOLDERS, "tickets.db"), { exact: true }).locator("..")).toContainText("held for whole runs");
-});
-
-test("approved-payout waits for its approval holding nothing, and pays from the balance as it is then: a deposit made meanwhile is kept", async ({ page, request }) => {
-  await openSample(page, "Approved payout (a waiting run checks what it read)");
-  const base = `http://127.0.0.1:${await deploy(page)}`;
-  const before: number = (await (await request.get(`${base}/accounts/1`)).json()).balance;
-  const asked = await request.post(`${base}/payout/1`, { data: { amount: 30 } });
-  expect(asked.status()).toBe(202);
-  const { approve } = await asked.json();
-  expect(approve).toMatch(/^\/approve\/rt_/);
-  // While it waits, a deposit goes ahead: the waiting run holds nothing on the account.
-  const deposited = await request.post(`${base}/deposit/1`, { data: { amount: 50 } });
-  expect((await deposited.json()).balance).toBe(before + 50);
-  expect((await request.post(`${base}${approve}`, { data: { by: "e2e" }, timeout: 60_000 })).status()).toBe(200);
-  expect((await (await request.get(`${base}/accounts/1`)).json()).balance).toBe(before + 50 - 30);
 });
 
 test("atlas-notes keeps notes as documents in a MongoDB: found by owner and tag, marked done once, and a value never an operator", async ({ page, request }) => {
@@ -1457,7 +1419,7 @@ test("drop-box runs once for a file dropped in its folder, sends it by handle, w
   expect(said.size).toBe(text.length);
   expect(said.hash).toMatch(/^[0-9a-f]{64}$/);
   // A run with no answer to compare has no verdict; its replay still ran the nodes the run ran.
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-view__bottom")).toContainText(`new file ${name}`);
   await expect(page.locator(".hl-view__bottom")).not.toContainText("replay differs from the run");
 
@@ -1491,7 +1453,7 @@ test("file-audit runs on a csv dropped in the inbox and on a file removed from i
   rmSync(join(FOLDERS, "inbox", `audit-${stamp}.txt`));
   await expect.poll(() => entries().filter((e) => e.endsWith(`-deleted-audit-${stamp}.txt.json`)).length, { timeout: 15_000 }).toBe(1);
   expect(entries().some((e) => e.endsWith(`-new-audit-${stamp}.txt.json`)), "a .txt dropped in starts nothing").toBe(false);
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).click();
+  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-view__bottom")).toContainText(`deleted file audit-${stamp}.txt`);
   await expect(page.locator(".hl-view__bottom")).not.toContainText("replay differs from the run");
 

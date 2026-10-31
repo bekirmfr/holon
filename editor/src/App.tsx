@@ -164,7 +164,7 @@ function Canvas({
     try { localStorage.setItem("holon.palette", open ? "open" : "closed"); } catch { /* ignore */ }
   }, []);
   const [deployPanelOpen, setDeployPanelOpen] = useState(() => {
-    try { return localStorage.getItem("holon.deploy") !== "closed"; } catch { return false; }
+    try { return localStorage.getItem("holon.deploy") === "open"; } catch { return false; }
   });
   const onDeployPanelOpen = useCallback((open: boolean) => {
     setDeployPanelOpen(open);
@@ -549,6 +549,7 @@ function Canvas({
     deployments,
     refreshDeployments,
     setError: setDeployError,
+    onDeployed: () => onDeployPanelOpen(true),
   });
 
 

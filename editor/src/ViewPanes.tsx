@@ -374,7 +374,7 @@ export function BottomPane({
         )}
         {versionNote && <span style={{ color: dim }}>{versionNote}</span>}
         {chain.head && (
-          <>
+          <div className="hl-view__chain" style={{ display: "contents" }}>
             {chain.breaks.length > 0 ? (
               <span style={{ color: bad }} title="these runs don't follow the run before them in the log file">
                 ✗ chain breaks at run {chain.breaks.join(", ")}: changed outside holon
@@ -386,7 +386,7 @@ export function BottomPane({
             <button style={small} onClick={copyHead} title="copy the head: what a witness holds, and what holon verify --head checks">copy</button>
             <button style={small} onClick={exportChainRuns} title="save the runs and the units they ran, for holon verify">export runs</button>
             {chainNote && <span style={{ color: dim }}>{chainNote}</span>}
-          </>
+          </div>
         )}
         <div style={{ flex: 1 }} />
         <button
