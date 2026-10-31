@@ -28,7 +28,8 @@ pub(crate) struct Event {
     pub(crate) at_ms: u64,
     /// The run log's next seq when it happened: it came after the runs before that one.
     pub(crate) run_seq: u64,
-    /// `"deploy"`, `"restore"`, `"grant"`, `"secret"`, `"binding"` or `"lifecycle"`.
+    /// `"deploy"`, `"restore"`, `"ask"` (an agent's restore, saved for a person to approve),
+    /// `"grant"`, `"secret"`, `"binding"` or `"lifecycle"`.
     pub(crate) kind: String,
     /// What happened, in a few words: `revoked StateWrite("a")`, `paused`.
     pub(crate) what: String,
@@ -49,6 +50,9 @@ pub(crate) struct Event {
     /// the restore goes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) from: Option<String>,
+    /// What an ask would restore of its point (`from`): `"code"`, `"state"`, or both.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) restores: Vec<String>,
 }
 
 /// What an event says beyond its kind and words.
@@ -58,6 +62,7 @@ pub(crate) struct Detail {
     pub(crate) session: Option<u32>,
     pub(crate) name: Option<String>,
     pub(crate) from: Option<String>,
+    pub(crate) restores: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -123,6 +128,7 @@ impl Events {
             session: detail.session,
             name: detail.name,
             from: detail.from,
+            restores: detail.restores,
         };
         let line = match serde_json::to_string(&event) {
             Ok(line) => line,

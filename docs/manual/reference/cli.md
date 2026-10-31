@@ -159,7 +159,8 @@ read; `--without-files` ships none. See [Checking runs](../guides/checking-runs.
 holon verify <export.json> [--head HEX] [--files DIR]
 ```
 
-Checks exported runs, offline: the chain, each unit's hash, and every run, run again. `--head`
+Checks exported runs, offline: the chain, each unit's hash, every run, run again, and that each
+run's state follows from the one before. `--head`
 checks that a head a witness holds is in the export. `--files` gives the files runs read whose
 texts the export doesn't hold. Exits 0 when it all checks, 1 when something doesn't, 2 for a file
 it can't read.
@@ -223,6 +224,22 @@ takes `--server PORT|URL`. See [Files on the host](../guides/files.md).
 
 `sweep` removes, now, the file texts no kept run refers to (the server does it every ten
 minutes).
+
+## `holon store`
+
+```
+holon store sweep [--dry-run] [--server PORT|URL]
+```
+
+Removes from the server's content store the values nothing kept names: the states of runs the
+logs no longer keep (retention cut them, and the log's file has been cut back too: it holds up to
+twice what it keeps, so a keep raised later gets them back), and the values only those states
+held. A value stays
+while a kept run, a version, an event, a session, a waiting run or a live state names it, or a
+value they name does; and for an hour after it was put, whoever names it. Code is never swept.
+Needs an admin. `--dry-run` says how many values and bytes it would remove, removing nothing.
+Prints what it swept, what it keeps, and what it spared as new. An in-memory store
+(`--store :memory:`) has nothing to sweep.
 
 ## `holon database`
 

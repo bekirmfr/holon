@@ -307,7 +307,13 @@ receipts. The `witness` sample is one; a hosted witness that signs its receipts,
 its own log's root, is the paid version. `GET /deployments/<slug>/export` writes the log's lines
 and every unit its runs ran; `holon verify` (`verify.rs`) checks that offline, running every run
 again through `run_rounds` from its entry, its outbound answers and reads from the record, and
-comparing run id, outputs, effects and status (the `ledger` sample). The control plane's own cap stays fixed: it serves
+comparing run id, outputs, effects and status, and checks that each run began from the state
+the one before left and left what its writes make of it, by snapshot hash (the `ledger` sample).
+The states runs cut by retention left are cleared from the content store by an admin's sweep
+(`sweep.rs`, `holon store sweep`, `POST /admin/store/sweep`): every value nothing kept names,
+directly or through another value, any 64-digit hex counting as a name, values put in the last
+hour spared (`SharedStore` notes each put), units never swept.
+The control plane's own cap stays fixed: it serves
 only the editor.
 
 - **Client:** `ureq` (synchronous, rustls). Runs are synchronous, and on the `hyper` data plane

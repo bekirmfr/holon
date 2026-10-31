@@ -1199,7 +1199,11 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
 /// Both together: the code first, then the state, and nothing changes if the state can't be read.
 /// `"dry_run": true` changes nothing and says what it would: the deploy's preview for code, and for
 /// state, the keys it would change and the runs logged since that point, with the outside effects
-/// they performed, which a restore doesn't undo. An agent asks only that: it restores nothing.
+/// they performed, which a restore doesn't undo.
+///
+/// An agent restores nothing: its restore (not a dry run) is saved for a person to approve, an
+/// `ask` event on the deployment's timeline naming the point and what of it, answered 202. The
+/// editor's history offers it as a restore, which a person makes (history-L4 §4).
 pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Request, by: Option<&str>, agent: bool) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -1212,10 +1216,6 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
     if !restore.code && !restore.state {
         return err(400, "say what to restore: \"code\": true, \"state\": true, or both");
     }
-    // An agent sees what a restore would change; restoring is a person's (access.rs).
-    if agent && !restore.dry_run {
-        return err(403, "an agent sees a restore only as a dry run (\"dry_run\": true): restoring is a person's, in the editor or with holon restore");
-    }
     let point = match (restore.version, restore.run) {
         (Some(n), None) => Point::Version(n),
         (None, Some(seq)) => Point::Run(seq),
@@ -1225,6 +1225,10 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
         Ok(p) => p,
         Err(r) => return r,
     };
+    // Restoring is a person's (access.rs): an agent's is saved for one to approve.
+    if agent && !restore.dry_run {
+        return ask_restore(state, slug, point, code.as_ref().map(|(n, _)| *n), put_back.is_some(), by);
+    }
     let code = code.map(|(n, body)| (n, DeployRequestBody { acknowledge: restore.acknowledge, ..body }));
     if restore.dry_run {
         let mut answer = match &code {
@@ -1271,6 +1275,29 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
         answer["state"] = serde_json::json!({ "from": label, "session": session });
     }
     Response::json(&answer)
+}
+
+/// Save an agent's restore for a person to approve: an `ask` event naming the point and what of it
+/// a restore would put back (`code`: the version whose code it deploys again).
+fn ask_restore(state: &AppState, slug: &str, point: Point, code: Option<u32>, with_state: bool, by: Option<&str>) -> Response {
+    let label = match point {
+        Point::Version(n) => format!("version {n}"),
+        Point::Run(seq) => format!("run {seq}"),
+    };
+    let what = match (code, with_state) {
+        (Some(_), true) => format!("asks to restore {label}'s code and the state it left"),
+        (Some(n), false) => format!("asks to deploy version {n}'s code again"),
+        (None, true) => format!("asks to put back the state {label} left"),
+        (None, false) => return err(409, format!("{label} ran on the code deployed now: there is no code to restore")),
+    };
+    let restores: Vec<String> = [(code.is_some(), "code"), (with_state, "state")].into_iter().filter(|(on, _)| *on).map(|(_, part)| part.to_string()).collect();
+    let mut table = state.deployments.lock().unwrap();
+    let Some(dep) = table.get_mut(slug) else { return err(404, format!("no deployment {slug:?}")) };
+    dep.note("ask", what.clone(), by, crate::events::Detail { from: Some(label.clone()), restores: restores.clone(), ..Default::default() });
+    let event = dep.events.entries().last().map(|e| e.seq);
+    drop(table);
+    state.activity.record("asked to restore", slug, by);
+    Response::json(&serde_json::json!({ "asked": true, "event": event, "what": what, "from": label, "restores": restores })).with_status_code(202)
 }
 
 /// The point a restore goes back to.

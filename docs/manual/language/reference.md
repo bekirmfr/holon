@@ -61,6 +61,7 @@ else.
 | `calls FLOW` | Names another deployed flow, by its slug, whose actions this one runs: `FLOW.action(x)` (see [The outside world](#the-outside-world)). A `-` in the slug is `_` in the call: `calls billing-v2`, `billing_v2.charge(x)`. |
 | `on file NAME [deleted] [matching "GLOB"]` | A flow without handlers: runs once for each new file in the folder `NAME` (which it declares too). Several lines may each start it. Beside handlers, it is a block: `on file NAME (f) { … }`. |
 | `optional PERMISSION` | A permission the flow can run without (see below). |
+| `keep N runs [for Dd]` | How many runs the deployment's log keeps, and for how many days: `keep 500 runs`, `keep runs for 30d`, or both, `keep 5 runs for 1d`. The deploy settings' **runs the log keeps** and **days the log keeps runs** (see [Checking runs](../guides/checking-runs.md)). |
 | `browsers ORIGIN, …` | The web origins allowed to call the flow from a browser (CORS), or `*`. |
 
 `optional` takes `secret.NAME` for a secret, or a permission as the server writes it, such as

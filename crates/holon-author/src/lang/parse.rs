@@ -287,6 +287,13 @@ impl Parser {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
+                    // `keep 500 runs` (or `keep runs for 30d`): how long the log keeps runs. No
+                    // statement starts with `keep` and a number or a name, and `keep` stays a name
+                    // everywhere else.
+                    "keep" if self.peek_at(1).tok == Tok::Number || (self.peek_at(1).tok == Tok::Ident && self.peek_at(1).text == "runs") => {
+                        let h = self.header()?;
+                        file.headers.push(h);
+                    }
                     // `on file inbox (f) {` opens a file handler; `on file inbox` alone is the old header.
                     "on" if self.peek_at(1).tok == Tok::Ident && self.peek_at(1).text == "file" && self.on_file_block_ahead() => {
                         file.items.push(Item::OnFile(self.on_file()?))
@@ -334,6 +341,7 @@ impl Parser {
             "calls" => HeaderKind::Calls(self.raw_name("the flow's name")?.text),
             "on" => HeaderKind::OnFile(self.file_on()?),
             "optional" => HeaderKind::Optional(self.consent()?),
+            "keep" => self.keep()?,
             _ => {
                 let mut origins = Vec::new();
                 loop {
@@ -352,6 +360,41 @@ impl Parser {
         let end = self.toks[self.at - 1].span;
         self.end_statement()?;
         Ok(Header { kind, span: head.span.to(end) })
+    }
+
+    /// What `keep` says: `500 runs`, `runs for 30d`, or `500 runs for 30d`.
+    fn keep(&mut self) -> R<HeaderKind> {
+        let runs = if self.is(&Tok::Number) {
+            let t = self.next();
+            match t.text.parse::<u64>() {
+                Ok(n) if n >= 1 => Some(n),
+                _ => return err(t.span.start, format!("keep takes a whole number of runs, 1 or more: {} isn't one", t.text)),
+            }
+        } else {
+            None
+        };
+        let word = self.peek().clone();
+        if !(word.tok == Tok::Ident && word.text == "runs") {
+            return err(word.span.start, format!("expected \"runs\", as in keep 500 runs, found {}", describe(&word)));
+        }
+        self.next();
+        let days = if self.peek().tok == Tok::Ident && self.peek().text == "for" {
+            self.next();
+            let t = self.peek().clone();
+            match t.tok {
+                Tok::Duration(seconds) if seconds >= 86400.0 && seconds % 86400.0 == 0.0 => {
+                    self.next();
+                    Some((seconds / 86400.0) as u64)
+                }
+                _ => return err(t.span.start, format!("expected how long, in whole days, like 30d, found {}", describe(&t))),
+            }
+        } else {
+            None
+        };
+        if runs.is_none() && days.is_none() {
+            return err(word.span.start, "say how many runs the log keeps (keep 500 runs), or for how long (keep runs for 30d)");
+        }
+        Ok(HeaderKind::Keep { runs, days })
     }
 
     /// What `optional` names: `secret.name`, `Name`, `Name("text")`, or the wiring form's quoted

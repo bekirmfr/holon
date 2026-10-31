@@ -20,7 +20,7 @@
           "captures": { "1": { "name": "keyword.other.collection.holon" }, "2": { "name": "variable.other.constant.holon" } }
         },
         {
-          "match": "^\\s*(port|every|interval|browsers|optional)\\b",
+          "match": "^\\s*(port|every|interval|browsers|optional|keep(?=\\s+(?:\\d|runs\\b)))\\b",
           "captures": { "1": { "name": "keyword.other.header.holon" } }
         }
       ]

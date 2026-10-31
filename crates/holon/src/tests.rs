@@ -12,8 +12,11 @@ use holon_core::hash_value;
 use holon_host::fire_sourced_with;
 
 pub(crate) fn test_state() -> AppState {
-    let backend: DynStore = Box::new(MemStore::new());
-    let store = SharedStore::new(backend);
+    test_state_with(SharedStore::new(Box::new(MemStore::new())))
+}
+
+/// The same over `store`: an on-disk one, say.
+fn test_state_with(store: SharedStore) -> AppState {
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let deployments = Arc::new(Mutex::new(BTreeMap::new()));
@@ -878,6 +881,112 @@ fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
 /// How long a deployment's log keeps its runs is a deploy setting, held to the host's policy:
 /// keeping fewer is the author's to choose, keeping more than the default asks (it is the host's
 /// disk), and past the ceiling is refused. A grant lowered later holds the log at once.
+/// A flow's `keep` line is its retention: the plan an agent deploys (`holon mcp`) asks for it,
+/// and the log keeps that many runs.
+#[test]
+fn a_flows_keep_line_is_the_retention_its_deploy_asks_for() {
+    let state = test_state();
+    let plan = holon_author::agent::plan("flow kept
+keep 3 runs
+
+action bump (input) {
+  state.n = (state.n ?? 0) + 1
+}
+").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().expect("its keep line");
+    assert_eq!(requirements, serde_json::json!({ "limits": { "keep_runs": 3 } }));
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    for _ in 0..5 {
+        assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+    }
+    let log = body_json(route(&state, &req("GET", "/deployments/kept/log", vec![])));
+    let seqs: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs, [2, 3, 4]);
+}
+
+#[test]
+fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
+    let dir = unique_temp_path("sweep");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
+    let plan = holon_author::agent::plan("flow kept
+keep 3 runs
+collection notes
+
+action bump (input) {
+  n = (state.n ?? 0) + 1
+  state.n = n
+  notes[\"k{n}\"] = n
+}
+").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    for _ in 0..10 {
+        assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+    }
+    let log = body_json(route(&state, &req("GET", "/deployments/kept/log", vec![])));
+    let kept: Vec<(u64, String)> = log["entries"].as_array().unwrap().iter().map(|e| (e["seq"].as_u64().unwrap(), e["state_after"].as_str().unwrap().to_string())).collect();
+    assert_eq!(kept.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [7, 8, 9]);
+    let files = || std::fs::read_dir(&values).unwrap().count();
+    let before = files();
+    let sweep = |spare: u64, dry_run: bool| sweep::sweep(&state.store, &state.deployments, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64, spare, dry_run).unwrap().unwrap();
+
+    // Everything is new: spared, whoever names it.
+    let new = sweep(sweep::SPARES_MS, false);
+    assert_eq!((new.values, new.spared > 0, files()), (0, true, before));
+    // The dry run counts, and removes nothing.
+    let dry = sweep(0, true);
+    assert!(dry.values > 0 && dry.kept > 0, "{dry:?}");
+    assert_eq!(files(), before);
+    let swept = sweep(0, false);
+    assert_eq!(swept, dry, "the dry run said what it would do");
+    assert!(swept.values >= 7, "at least the seven cut runs' snapshots: {swept:?}");
+    assert_eq!(files(), before - swept.values);
+    assert_eq!(sweep(0, false).values, 0, "and once it has, nothing more");
+
+    // What is kept is whole: each kept run's state, the live state with its collection, the
+    // version's document, and a restore to the oldest kept run.
+    for (seq, snapshot) in &kept {
+        restore::load_snapshot(snapshot, &state.store).unwrap_or_else(|e| panic!("run {seq}'s state: {e}"));
+    }
+    let notes = body_json(route(&state, &req("GET", "/deployments/kept/collections/notes", vec![])));
+    assert_eq!(notes["items"].as_array().unwrap().len(), 10, "{notes}");
+    let versions = body_json(route(&state, &req("GET", "/deployments/kept/versions", vec![])));
+    assert!(versions.to_string().contains("kept"), "{versions}");
+    let back = serde_json::to_vec(&serde_json::json!({ "run": 7, "state": true })).unwrap();
+    assert_eq!(route(&state, &req("POST", "/deployments/kept/restore", back)).status_code, 200);
+    let after = body_json(route(&state, &req("GET", "/deployments/kept/collections/notes", vec![])));
+    assert_eq!(after["items"].as_array().unwrap().len(), 8, "run 7 left eight notes: {after}");
+    assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+
+    // A value nothing names, put just now, waits out the hour; the endpoint says so.
+    state.store.clone().put_value(&Value::Text("nobody's".into())).unwrap();
+    let answer = body_json(route(&state, &req("POST", "/admin/store/sweep", br#"{"dry_run":true}"#.to_vec())));
+    assert_eq!(answer["dry_run"], true);
+    assert_eq!(answer["swept"]["values"], 0, "{answer}");
+    assert!(answer["spared"]["values"].as_u64().unwrap() > 0, "{answer}");
+    assert!(sweep(0, false).values > 0, "past its hour, it goes");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_in_memory_store_has_nothing_to_sweep() {
+    let state = test_state();
+    let answer = route(&state, &req("POST", "/admin/store/sweep", b"{}".to_vec()));
+    assert_eq!(answer.status_code, 409);
+}
+
 #[test]
 fn a_deployment_keeps_as_many_runs_as_its_retention_says() {
     let state = test_state();
@@ -3952,6 +4061,108 @@ fn listening_beyond_loopback_warns_that_it_is_plain_http() {
     assert!(both.contains("no TLS of its own"), "{both}");
     let flows = plain_http_warning(parse_at("7420").unwrap(), [10, 0, 0, 5].into()).unwrap();
     assert!(flows.contains("deployed flows' ports (10.0.0.5) take") && !flows.contains("editor"), "{flows}");
+}
+
+/// Each run's state follows from the one before, checked offline: it began from the state the run
+/// before it left, and left what its write makes of it. A state_after rewritten (and the lines
+/// chained again) re-runs as before, but the state no longer follows, there and at the next run;
+/// a run that began from the state another began with ran beside it.
+#[test]
+fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("state-follows");
+    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "follows", writer, ack).status_code, 200);
+    for body in ["hello", "there", "again"] {
+        assert_eq!(route(&state, &req("POST", "/trigger/follows", body.as_bytes().to_vec())).status_code, 200);
+    }
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/follows/export", vec![])))).unwrap();
+    // A copy with each line changed by `edit`, the runs a second apart, chained again.
+    let rechained = |edit: &dyn Fn(usize, &mut serde_json::Value)| {
+        let mut copy = verify::Export { lines: Vec::new(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let mut prev = String::new();
+        for (i, line) in export.lines.iter().enumerate() {
+            let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+            v["at_ms"] = serde_json::json!(1_800_000_000_000u64 + i as u64 * 1000);
+            v["duration_ms"] = serde_json::json!(2.0);
+            edit(i, &mut v);
+            if !prev.is_empty() {
+                v["prev"] = serde_json::Value::String(prev.clone());
+            }
+            let line = serde_json::to_string(&v).unwrap();
+            prev = recorder::line_hash(&line);
+            copy.lines.push(line);
+        }
+        copy.head = prev;
+        copy
+    };
+    let states = |e: &verify::Export| {
+        let s = verify::check(e, None, &BTreeMap::new()).states.expect("its runs kept the state they left");
+        (s.began, s.beside, s.left, s.breaks)
+    };
+
+    // As the server wrote them (a millisecond apart, so they may have run beside each other).
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    let s = report.states.as_ref().unwrap();
+    assert_eq!((&s.began, &s.breaks), (&vec![1, 2], &vec![]));
+
+    // A second apart, each is checked whole: the first has no run before it here.
+    let apart = rechained(&|_, _| {});
+    let report = verify::check(&apart, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(states(&apart), (vec![1, 2], vec![], vec![0, 1, 2], vec![]));
+    let text = verify::describe(&report, None);
+    assert!(text.contains("state: 2 runs began from the state the run before them left, 3 left what their writes make of the one they began with"), "{text}");
+    assert!(text.contains("state not checked (1 run: 0), where it began: no run before it here"), "{text}");
+
+    // Run 1 says it left another state: it re-runs as before, but its state doesn't follow, nor
+    // does run 2's.
+    let forged = rechained(&|i, v| {
+        if i == 1 {
+            v["state_after"] = serde_json::json!("00".repeat(32));
+        }
+    });
+    let report = verify::check(&forged, None, &BTreeMap::new());
+    assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{:?}", report.reruns);
+    assert!(!report.ok());
+    let breaks = vec![
+        (1, "the state it left isn't the one it began with, its writes applied".to_string()),
+        (2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string()),
+    ];
+    assert_eq!(states(&forged).3, breaks);
+    assert!(verify::describe(&report, None).contains("run 2's state DOESN'T FOLLOW: it began from a state the run before it (run 1) didn't leave"));
+
+    // Run 2 began from the state run 1 began with, as it would have beside it: it follows, and
+    // what it left (beside another) is checked in no later run's state.
+    let first: serde_json::Value = serde_json::from_str(&export.lines[1]).unwrap();
+    let beside = rechained(&|i, v| {
+        if i == 2 {
+            v["state_before"] = first["state_before"].clone();
+            v["at_ms"] = serde_json::json!(1_800_000_000_000u64 + 1001);
+        }
+    });
+    let (began, beside_another, left, breaks) = states(&beside);
+    assert_eq!((began, beside_another, breaks), (vec![1, 2], vec![2], vec![]));
+    assert!(left.contains(&0) && !left.contains(&2), "{left:?}");
+
+    // Run 0's state put back, and a run after it: it began from the state the restore put back.
+    let restore = serde_json::json!({ "run": 0, "state": true });
+    assert_eq!(route(&state, &req("POST", "/deployments/follows/restore", restore.to_string().into_bytes())).status_code, 200);
+    assert_eq!(route(&state, &req("POST", "/trigger/follows", b"later".to_vec())).status_code, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/follows/export", vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    let s = report.states.as_ref().unwrap();
+    assert_eq!((&s.began, &s.restored), (&vec![1, 2, 3], &vec![3]));
+    assert!(verify::describe(&report, None).contains("(1 of them after a restore, from the state it put back)"));
+    // Its event rewritten to say run 1's was put back: run 3 didn't begin from that.
+    let mut changed = verify::Export { ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let restored = changed.events.iter().position(|l| l.contains("\"restore\"")).unwrap();
+    changed.events[restored] = changed.events[restored].replace("\"run 0\"", "\"run 1\"");
+    let s = verify::check(&changed, None, &BTreeMap::new()).states.unwrap();
+    assert_eq!(s.breaks, vec![(3, "it began from a state other than the one the restore before it put back (run 1's)".to_string())]);
 }
 
 /// A deployment's runs, exported and checked offline: every run runs again to what its entry

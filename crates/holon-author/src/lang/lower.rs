@@ -466,8 +466,18 @@ impl<'a> Lowerer<'a> {
     fn settings(&self, file: &File) -> R<Settings> {
         let mut s = Settings::default();
         let mut optional = Vec::new();
+        let mut limits = serde_json::Map::new();
+        let mut kept = false;
         for h in &file.headers {
             match &h.kind {
+                // The limits the deploy settings keep them as (permissions.rs).
+                HeaderKind::Keep { runs, days } => {
+                    if std::mem::replace(&mut kept, true) {
+                        return err(h.span, "one keep line says how long the log keeps runs: this is a second");
+                    }
+                    limits.extend(runs.map(|n| ("keep_runs".to_string(), n.into())));
+                    limits.extend(days.map(|d| ("keep_run_days".to_string(), d.into())));
+                }
                 HeaderKind::Port(p) => s.port = p.clone(),
                 HeaderKind::Every { seconds, .. } => s.interval = number_text(*seconds),
                 HeaderKind::Interval(i) => s.interval = i.clone(),
@@ -481,8 +491,12 @@ impl<'a> Lowerer<'a> {
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
-        if !optional.is_empty() {
-            s.requirements = Some(Requirements { optional: Some(optional), ..Default::default() });
+        let mut requirements = Requirements { optional: Some(optional).filter(|o| !o.is_empty()), ..Default::default() };
+        if !limits.is_empty() {
+            requirements.extra.insert("limits".into(), limits.into());
+        }
+        if requirements != Requirements::default() {
+            s.requirements = Some(requirements);
         }
         Ok(s)
     }

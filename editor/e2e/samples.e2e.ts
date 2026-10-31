@@ -1051,8 +1051,21 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   // which asks nobody.
   await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
-  await expect(settings.getByLabel("runs the log keeps")).toHaveValue("5");
+  const runs = settings.getByLabel("runs the log keeps");
+  await expect(runs).toHaveValue("5");
   await expect(settings.getByLabel("days the log keeps runs")).toHaveValue("1");
+  // Its text's keep line says so, and the two follow each other: the line typed, the settings show
+  // it; the settings changed, the line is written again.
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  const text = page.getByRole("region", { name: "Text" }).locator(".cm-content");
+  await expect(text).toContainText("keep 5 runs for 1d");
+  const source = readFileSync(new URL("../../crates/holon-author/samples/rolling-log.holon", import.meta.url), "utf8");
+  await text.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(source.replace("keep 5 runs for 1d", "keep 7 runs for 1d"));
+  await expect(runs).toHaveValue("7", { timeout: 15_000 });
+  await runs.fill("5");
+  await expect(text).toContainText("keep 5 runs for 1d");
   await deploy(page);
   const auth = { Authorization: `Bearer ${adminToken}` };
   const seqs = async () =>
@@ -1063,6 +1076,17 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   expect(kept).toEqual([0, 1, 2, 3, 4].map((i) => kept[0] + i));
   const state = (await (await request.get(`${SERVER}/deployments/rolling-log/state`, { headers: auth })).json()) as { state: { beats: { value: number } } };
   expect(Number(state.state.beats.value), "every beat counted, kept or not").toBeGreaterThan(5);
+  // The states its cut runs left are a sweep's to clear, once the log's file is cut back too (it
+  // holds up to twice what it keeps, for a keep raised later), past the tenth run. A dry run
+  // counts, removing nothing; all of this run's are new, so spared (a value is swept an hour
+  // after it was put).
+  type Swept = { dry_run: boolean; swept: { values: number }; kept: { values: number }; spared: { values: number } };
+  const dryRun = async () => (await (await request.post(`${SERVER}/admin/store/sweep`, { data: { dry_run: true }, headers: auth })).json()) as Swept;
+  await expect.poll(async () => (await dryRun()).spared.values, { message: "the cut runs' states, put just now", timeout: 30_000 }).toBeGreaterThan(0);
+  const swept = await dryRun();
+  expect(swept.dry_run).toBe(true);
+  expect(swept.kept.values, "what the kept runs and the live state name").toBeGreaterThan(0);
+  expect((await seqs()).length).toBe(5);
   // Its clock would beat for the rest of the run.
   await request.post(`${SERVER}/deployments/rolling-log/stop`, { data: {}, headers: auth });
 });
@@ -1492,8 +1516,8 @@ test("a deployment's runs export from view mode and from holon export, and holon
   expect((await request.post(`http://127.0.0.1:${port}/accounts/ada`, { data: {} })).status()).toBe(400);
   await viewNewestRun(page);
 
-  // Exported from the run log: the head it chains up to, and the file.
-  const chain = page.locator(".hl-view__chain");
+  // Exported from the run log: the head it chains up to, and the file (the run pane's top bar).
+  const chain = page.getByRole("region", { name: "run" });
   await expect(chain).toContainText("chain unbroken");
   const head = (await chain.locator("[title]").filter({ hasText: /^[0-9a-f]{12}$/ }).getAttribute("title"))!;
   expect(head).toMatch(/^[0-9a-f]{64}$/);
@@ -1509,6 +1533,9 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
   const verified = execFileSync(holon, ["verify", file, "--head", head], { encoding: "utf8" });
   expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
+  // And each began from the balances the one before left (the first, from what no run here left).
+  expect(verified).toContain("state: 3 runs began from the state the run before them left");
+  expect(verified).not.toContain("DOESN'T FOLLOW");
   expect(verified).toContain("so no run up to it was changed or removed");
   expect(verified.trim().endsWith("ok")).toBe(true);
 
@@ -1534,4 +1561,16 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const checked = execFileSync(holon, ["verify", mine], { encoding: "utf8" });
   expect(checked).toContain("re-ran 4 runs");
   expect(checked).toMatch(/events: \d+, chain unbroken from the first/);
+
+  // The balances the first posting left put back, and one more: it began from what was put back.
+  const first = (JSON.parse(JSON.parse(readFileSync(mine, "utf8")).lines[0]) as { seq: number }).seq;
+  const put = await request.post(`${SERVER}/deployments/ledger/restore`, { data: { run: first, state: true }, headers: { Authorization: `Bearer ${adminToken}` } });
+  expect(put.status()).toBe(200);
+  const posted = await request.post(`http://127.0.0.1:${port}/accounts/ada`, { data: { amount: 1 } });
+  expect(((await posted.json()) as { balance: number }).balance).toBe(6);
+  const again = join(dir, "restored.json");
+  execFileSync(holon, ["export", "ledger", "--server", SERVER, "-o", again], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  const restored = execFileSync(holon, ["verify", again], { encoding: "utf8" });
+  expect(restored).toContain("(1 of them after a restore, from the state it put back)");
+  expect(restored.trim().endsWith("ok")).toBe(true);
 });

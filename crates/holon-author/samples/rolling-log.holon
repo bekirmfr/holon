@@ -1,5 +1,6 @@
 flow rolling-log
 every 1s
+keep 5 runs for 1d
 
 state.beats = (state.beats ?? 0) + 1
 state.last_beat = now

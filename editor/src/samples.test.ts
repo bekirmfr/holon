@@ -88,8 +88,10 @@ describe("sample flows", () => {
         expect(caps).toContain(item);
         expect(item).not.toBe(manifestTrigger(caps));
       }
-      // Its limits open with it, in the deploy settings: what the deploy asks for.
-      expect(settingsOf(doc.server).requirements?.limits ?? {}).toEqual(s.limits ?? {});
+      // Its `keep` line opens as the limits the deploy asks for.
+      const keep = /^keep (?:(\d+) )?runs(?: for (\d+)d)?$/m.exec(s.text);
+      const limits = keep ? { ...(keep[1] ? { keep_runs: Number(keep[1]) } : {}), ...(keep[2] ? { keep_run_days: Number(keep[2]) } : {}) } : {};
+      expect(settingsOf(doc.server).requirements?.limits ?? {}).toEqual(limits);
     });
   }
 

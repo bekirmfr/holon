@@ -64,7 +64,7 @@ export function filterOf(item: TimelineItem): TimelineFilter {
   if (item.kind === "run") return "runs";
   if (item.kind === "version") return "versions";
   const k = item.event.kind;
-  return k === "deploy" || k === "restore" ? "versions" : k === "lifecycle" ? "lifecycle" : "access";
+  return k === "deploy" || k === "restore" || k === "ask" ? "versions" : k === "lifecycle" ? "lifecycle" : "access";
 }
 
 /** What a version row says: deployed, or restored as it. */
@@ -184,6 +184,13 @@ export function targetOf(timeline: TimelineItem[], i: number, currentUnit: strin
   }
   if (item.kind !== "event") throw new Error("unreachable: a version item has its version");
   const event = item.event;
+  // An agent's restore, saved for a person: what it asks, of the point it names.
+  if (event.kind === "ask") {
+    const point = parsePoint(event.from);
+    const asks = (part: "code" | "state") => (!point ? "it names no point" : event.restores?.includes(part) ? null : `it asks for its ${part === "code" ? "state" : "code"} only`);
+    const why = { code: asks("code"), state: asks("state") };
+    return { label: event.from ?? `event #${event.seq}`, code: why.code === null ? point : null, state: why.state === null ? point : null, why, event };
+  }
   const before = timeline.slice(i + 1);
   // The code: the version deployed then.
   const deployed = before.map((x) => (x.kind === "run" ? undefined : x.version)).find((v) => v !== undefined);

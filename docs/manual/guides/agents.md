@@ -61,13 +61,16 @@ The tools `holon mcp` offers:
 | `runs` | a deployment's latest runs, one line each |
 | `explain` | one run as the program: each statement's value, where a missing value came from, the effects and calls |
 | `history` | a deployment's timeline: its runs, each with the version it ran on, and what was done to it between them, by whom (deploys, restores, grant changes, secrets, pausing); with a `cell`, the runs that changed that value, before and after |
-| `restore` | a dry run of going back to a version or a run: the code's text beside today's, the permissions, the state's keys and items now → then, the runs since and the files they wrote; it changes nothing |
+| `restore` | a dry run of going back to a version or a run: the code's text beside today's, the permissions, the state's keys and items now → then, the runs since and the files they wrote; it changes nothing. With `ask`, it saves the restore for you to approve |
 
 `check` and `reference` need no server; the rest reach the one `holon mcp` connects to.
 
 The agent role **never** approves a grant, starts, pauses, stops or deletes a deployment, sets a
 secret, restores one, or replaces a flow someone else saved. The server enforces this, not the
-tool: it answers an agent's restore only as a dry run.
+tool: it answers an agent's restore only as a dry run, or saves it for you. An agent that asks
+(`restore` with `ask`) leaves a row on the deployment's timeline, "asks to put back the state run
+41 left", by *you* (agent); in the editor's history, pick that row and restore what it asks, after
+the same dry run as any restore. Nothing changes until you do.
 
 An agent runs a flow's [action](actions.md) only once you let it: in the deploy settings (**⚙**),
 **agents may run** lists the flow's actions, and each one you tick asks for `AgentRuns("name")`,

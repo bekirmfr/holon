@@ -836,6 +836,7 @@ a binary operator or a comma. Semicolons are not used.
 ```
 file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
+          | "keep" [number] "runs" ["for" duration]
           | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
           | "folder" ident | "database" ident | "on" fileline
           | "channel" ident | "calls" slug
@@ -848,7 +849,11 @@ handler   = route                                     # a route, §5.2 and §5.1
 ```
 
 Headers are the flow's deploy settings, exactly as today (`Settings`), and its names for the
-outside world. `collection notes` declares a name for the body (§5.4); several may be declared, one
+outside world. `keep 500 runs for 30d` is how long the deployment's log keeps runs, the limits
+`keep_runs` and `keep_run_days`: either part may be left out (`keep 500 runs`, `keep runs for
+30d`), the days whole, one line. It is the deploy settings' two fields, which follow it and which
+it follows; the other limits have no line. `keep` is a header only before a number or `runs`, a
+name everywhere else. `collection notes` declares a name for the body (§5.4); several may be declared, one
 per line. `folder inbox` declares a folder the same way, `database shop` a database on the host,
 and `channel updates` a channel, sent on with `updates.send(v)` (or a call's answer piped to it,
 `updates.pipe(http.post(…))`) and subscribed to as a route's answer, `respond updates.subscribe()`.

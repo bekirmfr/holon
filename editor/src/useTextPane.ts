@@ -19,7 +19,7 @@ import { valueChip } from "./diagnostics";
 import { compileHolon, printHolon, type TextRange } from "./holonText";
 import { dimmed, pickAt } from "./textLink";
 import { carryOver, commentCount, syncedFromCanvas, type Graph, type Synced } from "./textSync";
-import { settingsOf, syncKeyOf, type FlowMeta, type TextState } from "./tabs";
+import { settingsOf, syncKeyOf, TEXT_LIMITS, type FlowMeta, type TextState } from "./tabs";
 
 const WIDTH_KEY = "holon.textWidth";
 /** How long typing pauses before the text is compiled: for the person, not the machine. */
@@ -175,12 +175,13 @@ export function useTextPane({
         const o = old.get(n.id);
         return o ? { ...o, data: n.data, position: n.position } : n;
       });
-      // The settings the text says (port, every, browsers, optional); the limits it doesn't say
-      // are the flow's as they were.
+      // The settings the text says (port, every, browsers, optional, keep); the limits it doesn't
+      // say are the flow's as they were.
       const said = settingsOf(compiled.doc.server);
-      const { optional: _, ...unsaid } = f.settings.requirements ?? {};
+      const { optional: _, limits: was, ...unsaid } = f.settings.requirements ?? {};
       const optional = said.requirements?.optional;
-      const requirements = { ...unsaid, ...(optional && optional.length > 0 ? { optional } : {}) };
+      const limits = { ...Object.fromEntries(Object.entries(was ?? {}).filter(([name]) => !TEXT_LIMITS.includes(name))), ...said.requirements?.limits };
+      const requirements = { ...unsaid, ...(Object.keys(limits).length > 0 ? { limits } : {}), ...(optional && optional.length > 0 ? { optional } : {}) };
       const settings: FlowSettings = { port: said.port, interval: said.interval, ...(Object.keys(requirements).length > 0 ? { requirements } : {}), ...(said.browsers ? { browsers: said.browsers } : {}) };
       const k2 = syncKeyOf(ns, out.edges, settings, f.name);
       synced.current = { key: k2, synced: { ...next, toCanvas: out.toCanvas }, lines: compiled.lines, spans: compiled.spans };

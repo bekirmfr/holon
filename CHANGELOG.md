@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **`holon store sweep` clears the states no kept run names.** Retention cuts old runs from a
+  log, but the states they left stayed in the content store; an admin's sweep now removes every
+  value nothing kept names: not a kept run, a version, an event, a session, a waiting run or the
+  live state, nor any value those name in turn. Anything put in the last hour is spared, and code
+  is never swept. `--dry-run` says what it would remove (`POST /admin/store/sweep`). The
+  **rolling-log** sample says so.
+- **An agent can ask for a restore, and a person approves it.** `holon mcp`'s `restore` tool takes
+  `ask`: after its dry run, the restore is saved on the deployment's timeline as an `ask` event
+  ("asks to put back the state run 41 left", by *you* (agent)), and nothing changes. In the
+  editor's history, that row restores what it asks, code, state or both, after the same dry run
+  as any restore. The server answers an agent's restore this way (202) instead of refusing it.
+- **A flow's text says how long its log keeps runs: `keep 5 runs for 1d`.** A header line for the
+  two retention limits, `keep_runs` and `keep_run_days`, either alone (`keep 500 runs`, `keep runs
+  for 30d`). It is the deploy settings' two fields: typed in the text, ⚙ shows it; changed under
+  ⚙, the line is written again. Flows deployed from their text (`holon mcp`, `holon new`) carry
+  it. The **rolling-log** sample says its retention this way now.
+- **`holon verify` checks that each run's state follows from the one before.** It began from the
+  state the run before it left, and left what its writes make of the state it began with, each
+  state by its snapshot's hash (the one `holon restore --to-run` puts back), made again from the
+  log. A state changed between runs, or a write dropped, shows as `run N's state DOESN'T FOLLOW`,
+  even in a log chained again after the change. What it can't check it says, by why: the first run
+  here, a run after a deploy, a stop or a restore of a version's state, a state holding a
+  placeholder; after a restore of a run's state, the next run is checked against what that run
+  left. The **ledger** sample's runs check this way, a restore among them.
 - **How long a deployment keeps its runs is a deploy setting.** Two limits, under ⚙: **runs the
   log keeps** (`keep_runs`; the host's `--keep-runs`, 500 without it) and **days the log keeps
   runs** (`keep_run_days`; any age without it). Keeping fewer than the host's default asks nobody;

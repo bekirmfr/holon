@@ -22,16 +22,24 @@ use crate::{to_hex, SharedStore};
 /// this way, a deploy the state it carried; `load_snapshot` brings one back.
 pub(crate) fn save_snapshot(state: &State, before: Option<&State>, store: &SharedStore) -> Result<String, String> {
     let mut store = store.clone();
-    let mut refs = BTreeMap::new();
     for (key, value) in state.iter() {
-        let hash = *state.hash_of(key).expect("a key it iterates");
-        if before.and_then(|b| b.hash_of(key)) != Some(&hash) {
+        if before.and_then(|b| b.hash_of(key)) != state.hash_of(key) {
             store.put_value(value).map_err(|e| format!("{e:?}"))?;
         }
-        refs.insert(key.clone(), Value::Text(to_hex(&hash)));
     }
-    let snapshot = store.put_value(&Value::Record(refs)).map_err(|e| format!("{e:?}"))?;
+    let snapshot = store.put_value(&snapshot_record(state)).map_err(|e| format!("{e:?}"))?;
     Ok(to_hex(&snapshot))
+}
+
+/// The hash `save_snapshot` keeps `state` under, made without a store: `holon verify` checks a
+/// run's `state_after` with it.
+pub(crate) fn snapshot_hash(state: &State) -> Result<String, String> {
+    holon_core::hash_value(&snapshot_record(state)).map(|h| to_hex(&h)).map_err(|e| format!("{e:?}"))
+}
+
+/// A snapshot as the store keeps it: each key's value hash (hex).
+fn snapshot_record(state: &State) -> Value {
+    Value::Record(state.iter().map(|(key, _)| (key.clone(), Value::Text(to_hex(state.hash_of(key).expect("a key it iterates"))))).collect())
 }
 
 /// The references a snapshot (`save_snapshot`) holds, key → value hash.
@@ -336,7 +344,15 @@ fn version_line(v: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::version_line;
+    use super::*;
+
+    #[test]
+    fn a_snapshot_hash_made_without_a_store_is_the_one_the_store_keeps() {
+        let store = SharedStore::new(Box::new(holon_host::MemStore::new()));
+        let state = State::from_values(BTreeMap::from([("count".to_string(), Value::Number(3.0)), ("#collection:todos".to_string(), Value::Text("ab".repeat(32)))])).unwrap();
+        assert_eq!(snapshot_hash(&state).unwrap(), save_snapshot(&state, None, &store).unwrap());
+        assert_eq!(snapshot_hash(&State::new()).unwrap(), save_snapshot(&State::new(), None, &store).unwrap());
+    }
 
     #[test]
     fn a_version_line_says_what_it_is() {

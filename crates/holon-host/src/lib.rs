@@ -625,9 +625,13 @@ impl FileStore {
     fn path(&self, key: &Hash) -> PathBuf {
         self.root.join(hex(key))
     }
-    /// Values live in `values/` under the root, apart from units.
+    /// Where its values live: `values/` under the root, apart from units, one file each named by
+    /// its hex hash (the server sweeps the ones nothing names).
+    pub fn values_dir(&self) -> PathBuf {
+        self.root.join("values")
+    }
     fn value_path(&self, key: &Hash) -> PathBuf {
-        self.root.join("values").join(hex(key))
+        self.values_dir().join(hex(key))
     }
 }
 
@@ -671,7 +675,7 @@ impl Store for FileStore {
         let path = self.value_path(&key);
         // Content-addressed: a file already there holds these very bytes (a read verifies it).
         if !path.exists() {
-            fs::create_dir_all(self.root.join("values")).map_err(StoreError::Io)?;
+            fs::create_dir_all(self.values_dir()).map_err(StoreError::Io)?;
             write_atomically(&path, &bytes).map_err(StoreError::Io)?;
         }
         Ok(key)

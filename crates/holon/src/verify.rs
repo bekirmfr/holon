@@ -6,7 +6,9 @@
 //! from its entry: the same unit, request, state, clock and random, the same outbound answers and
 //! collection reads, through the same core and rounds as the server; and compares what it
 //! produces with what the log says the run produced: its run id, its outputs, the effects it
-//! performed and the status it answered.
+//! performed and the status it answered. And it checks that each run's state follows from the one
+//! before (`check_states`): that it began from the state the run before it left, and left what its
+//! writes make of the state it began with.
 //!
 //! A node that computed with a secret or a resume token can't be computed again: the log holds a
 //! placeholder, never the value. What the log kept for that node stands in (`Asserting`), as in
@@ -218,6 +220,41 @@ pub(crate) struct Report {
     pub(crate) events_head_matches: bool,
     /// For a head given to check against: the event it is the hash of, if it is one.
     pub(crate) witnessed_event: Option<u64>,
+    /// Whether each run's state follows from the one before; none when no run kept the state it
+    /// left (a deployment without state, or a log from before rc.30).
+    pub(crate) states: Option<States>,
+}
+
+/// What checking that each run's state follows from the one before found (`check_states`).
+#[derive(Debug, Default)]
+pub(crate) struct States {
+    /// The runs that began from the state the run before them left; of those, the ones that ran
+    /// beside another run (`beside`), whose state may be one an earlier run left or began with,
+    /// and the ones after a restore of a run's state (`restored`), from the state it put back.
+    pub(crate) began: Vec<u64>,
+    pub(crate) beside: Vec<u64>,
+    pub(crate) restored: Vec<u64>,
+    /// The runs that left what their writes make of the state they began with.
+    pub(crate) left: Vec<u64>,
+    /// What wasn't checked, by why.
+    pub(crate) unchecked: BTreeMap<&'static str, Vec<u64>>,
+    /// The runs whose state doesn't follow, and how.
+    pub(crate) breaks: Vec<(u64, String)>,
+}
+
+impl States {
+    fn unchecked(&mut self, why: &'static str, seq: u64) {
+        self.unchecked.entry(why).or_default().push(seq);
+    }
+}
+
+/// What a run's writes make of the state it began with, run again: its cells, each it wrote set
+/// to what it wrote (`wrote`); and the collections it wrote (their keys in the state), whose
+/// roots only their tries would give.
+struct Left {
+    state: State,
+    wrote: BTreeSet<String>,
+    collections: BTreeSet<String>,
 }
 
 /// What the log's record stood in for, running one run again.
@@ -241,6 +278,7 @@ impl Report {
             && (self.witnessed != Some(None) || self.witnessed_event.is_some())
             && self.bad_units.is_empty()
             && !self.reruns.iter().any(|(_, r)| matches!(r, Rerun::Differs(_)))
+            && self.states.as_ref().is_none_or(|s| s.breaks.is_empty())
     }
 }
 
@@ -295,11 +333,14 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
 
     let texts = Texts { blobs: &export.blobs, files };
     let marks = Marks::new();
+    let mut lefts = Vec::new();
     for (i, (entry, _)) in entries.iter().enumerate() {
         let earlier: Vec<&LogEntry> =
             entries[..i].iter().map(|(e, _)| e).filter(|e| !entry.run_id.is_empty() && e.run_id == entry.run_id).collect();
         let mut given = Given::default();
-        let came_to = rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &marks, &mut given);
+        let mut left = None;
+        let came_to = rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &marks, &mut given, &mut left);
+        lefts.push(left);
         if given.nodes > 0 {
             report.given.insert(entry.seq, given.nodes);
         }
@@ -308,7 +349,155 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         }
         report.reruns.push((entry.seq, came_to));
     }
+    let events: Vec<crate::events::Event> = export.events.iter().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    report.states = check_states(&entries, &lefts, &events, &marks);
     report
+}
+
+/// Whether a log entry is of a run: a request no route took ran nothing.
+fn ran(e: &LogEntry) -> bool {
+    !e.run_id.is_empty()
+}
+
+/// When a run ran, to the millisecond, its commit included (`duration_ms` is taken as it returns).
+fn span(e: &LogEntry) -> (u64, u64) {
+    (e.at_ms, e.at_ms + e.duration_ms.max(0.0).ceil() as u64)
+}
+
+/// Whether an event puts a state in place: a deploy, a restore, a stop and run again.
+fn moves_state(ev: &crate::events::Event) -> bool {
+    matches!(ev.kind.as_str(), "deploy" | "restore" | "lifecycle")
+}
+
+/// Whether two runs ran at once, give or take a millisecond.
+fn beside(a: &LogEntry, b: &LogEntry) -> bool {
+    let ((a0, a1), (b0, b1)) = (span(a), span(b));
+    a0 <= b1 + 1 && b0 <= a1 + 1
+}
+
+/// Whether each run's state follows from the one before (docs/L4s/history-L4.md §6): it began
+/// from the state the run before it left, and left what its writes make of the state it began
+/// with. States compare by their snapshot's hash (`restore::snapshot_hash`), made again from each
+/// run's `state_before`; a collection by its root, not its items.
+///
+/// Runs of one deployment run side by side and commit in turn, each only if the cells it could
+/// read are as it found them (firing.rs), and its line is written after its commit. So a run that
+/// ran beside another may have begun from a state an earlier one left or began with, and may have
+/// left cells it couldn't read as the other wrote them: of those, only the cells it wrote are
+/// checked, in a state a later run began from.
+fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[crate::events::Event], marks: &Marks) -> Option<States> {
+    if !entries.iter().any(|(e, _)| e.state_after.is_some()) {
+        return None;
+    }
+    let mut states = States::default();
+    // Each run's state as it began: its snapshot's hash, and the state.
+    let began: Vec<Option<(String, State)>> = entries
+        .iter()
+        .map(|(e, _)| {
+            let values: BTreeMap<String, Value> = e.state_before.iter().map(|(k, v)| (k.clone(), marks.read(v, e.escaped))).collect();
+            if values.values().any(|v| marks.carried(v)) {
+                return None;
+            }
+            let state = State::from_values(values).ok()?;
+            Some((restore::snapshot_hash(&state).ok()?, state))
+        })
+        .collect();
+    let hash = |i: usize| began[i].as_ref().map(|(h, _)| h);
+    for (i, (b, _)) in entries.iter().enumerate() {
+        if !ran(b) {
+            continue;
+        }
+        let others = || entries.iter().enumerate().filter(move |(a, (e, _))| *a != i && ran(e));
+        let side_by_side = others().any(|(_, (a, _))| beside(a, b));
+        let first_part = entries[..i].iter().position(|(e, _)| e.run_id == b.run_id);
+        let resumed = first_part.is_some() || !b.events.is_empty();
+
+        // Where it began.
+        match hash(i) {
+            None => states.unchecked("where it began: its state holds a secret's or a token's placeholder", b.seq),
+            Some(h) if resumed => match first_part {
+                Some(f) if hash(f) == Some(h) => states.began.push(b.seq),
+                Some(f) => states.breaks.push((b.seq, format!("a resumed part begins from the state its run began with (run {}), and it didn't", entries[f].0.seq))),
+                None => states.unchecked("where it began: it is a resumed part, and its run's first part isn't here", b.seq),
+            },
+            Some(h) => {
+                // The run before it that committed: one that failed didn't.
+                match entries[..i].iter().rev().map(|(e, _)| e).find(|e| ran(e) && e.error.is_none()) {
+                    None => states.unchecked("where it began: no run before it here", b.seq),
+                    Some(p) => match &p.state_after {
+                        None => states.unchecked("where it began: the run before it kept no state it left (logged before rc.30)", b.seq),
+                        Some(left) if left == h => states.began.push(b.seq),
+                        // A deploy, a restore or a stop between them put a state in place: a
+                        // restore of a run's state, the one that run left (deploy.rs).
+                        Some(_) if let Some(ev) = events.iter().rfind(|ev| moves_state(ev) && p.seq < ev.run_seq && ev.run_seq <= b.seq) => {
+                            let from = ev.from.as_deref().and_then(|f| f.strip_prefix("run ")).and_then(|n| n.parse::<u64>().ok());
+                            match from.and_then(|n| entries.iter().find(|(e, _)| e.seq == n)).and_then(|(e, _)| e.state_after.as_ref().map(|s| (e.seq, s))) {
+                                Some((_, put)) if ev.kind == "restore" && put == h => {
+                                    states.began.push(b.seq);
+                                    states.restored.push(b.seq);
+                                }
+                                Some((n, _)) if ev.kind == "restore" => {
+                                    states.breaks.push((b.seq, format!("it began from a state other than the one the restore before it put back (run {n}'s)")))
+                                }
+                                _ => states.unchecked(
+                                    "where it began: after a deploy, a stop, or a restore of a state not here, which put a state in place (the events say which)",
+                                    b.seq,
+                                ),
+                            }
+                        }
+                        Some(_) => {
+                            let ends = span(b).1 + 1;
+                            let from_before =
+                                beside(p, b) && others().any(|(a, (e, _))| e.at_ms <= ends && (e.state_after.as_ref() == Some(h) || hash(a) == Some(h)));
+                            let from_beside = others().any(|(_, (e, _))| beside(e, b) && e.state_after.as_ref() == Some(h));
+                            if from_before || from_beside {
+                                states.began.push(b.seq);
+                                states.beside.push(b.seq);
+                            } else {
+                                states.breaks.push((b.seq, format!("it began from a state the run before it (run {}) didn't leave, nor a run beside it", p.seq)));
+                            }
+                        }
+                    },
+                }
+            }
+        }
+
+        // What it left.
+        let (Some(after), Some(left)) = (&b.state_after, &lefts[i]) else { continue };
+        if resumed {
+            states.unchecked("what it left: it is a resumed part, whose writes land on the state as it is by then", b.seq);
+            continue;
+        }
+        if !side_by_side && left.collections.is_empty() {
+            match restore::snapshot_hash(&left.state) {
+                Ok(h) if &h == after => states.left.push(b.seq),
+                _ => states.breaks.push((b.seq, "the state it left isn't the one it began with, its writes applied".into())),
+            }
+            continue;
+        }
+        // The state it left, as a run that began from it found it.
+        let Some((_, then)) = began.iter().flatten().find(|(h, _)| h == after) else {
+            states.unchecked(
+                if side_by_side {
+                    "what it left: it ran beside another run, and no run here began from the state it left"
+                } else {
+                    "what it left: it wrote a collection, and no run here began from the state it left"
+                },
+                b.seq,
+            );
+            continue;
+        };
+        let same = |k: &String| then.hash_of(k) == left.state.hash_of(k);
+        let rest = || then.iter().chain(left.state.iter()).map(|(k, _)| k).filter(|k| !left.collections.contains(*k)).all(same);
+        if !left.wrote.iter().all(same) {
+            states.breaks.push((b.seq, "the state it left doesn't hold what it wrote".into()));
+        } else if !side_by_side && !rest() {
+            states.breaks.push((b.seq, "the state it left isn't the one it began with, its writes applied".into()));
+        } else {
+            states.left.push(b.seq);
+        }
+    }
+    Some(states)
 }
 
 /// The events' chain: unbroken from the first (nothing before it, as they are kept for good) to
@@ -428,7 +617,15 @@ fn what(read: &recorder::LoggedRead) -> String {
 /// Run `entry` again from what it records (and what the earlier parts of the same run, `earlier`,
 /// record: a resumed run's outbound answers and reads), and compare. `given` is set to what the
 /// log's record stood in for: nodes (`Asserting`), and the run id.
-fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl holon_core::Resolver, marks: &Marks, given: &mut Given) -> Rerun {
+fn rerun(
+    entry: &LogEntry,
+    earlier: &[&LogEntry],
+    texts: &Texts,
+    resolver: &impl holon_core::Resolver,
+    marks: &Marks,
+    given: &mut Given,
+    left: &mut Option<Left>,
+) -> Rerun {
     if entry.run_id.is_empty() {
         return Rerun::Skipped("nothing ran: no route took the request".into());
     }
@@ -588,6 +785,26 @@ fn rerun(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, resolver: &impl
     }
     if outcome.error.is_some() {
         differs.push("whether it finished");
+    }
+
+    // What its writes make of the state it began with, for `check_states`: a placeholder in it
+    // would hash as itself, not as the value it stands for.
+    if differs.is_empty() && !state.iter().any(|(_, v)| marks.carried(v)) && !host.performed.iter().any(|(_, p)| marks.carried(p)) {
+        let mut after = state.clone();
+        let (mut wrote, mut collections) = (BTreeSet::new(), BTreeSet::new());
+        for (cap, payload) in &host.performed {
+            match cap {
+                // As the commit writes them (firing.rs).
+                Capability::StateWrite(key) if holon_host::is_storable(payload) && after.insert(key.clone(), payload.clone()).is_ok() => {
+                    wrote.insert(key.clone());
+                }
+                Capability::CollectionWrite(name) => {
+                    collections.insert(collections::cell_key(name));
+                }
+                _ => {}
+            }
+        }
+        *left = Some(Left { state: after, wrote, collections });
     }
 
     match differs.is_empty() {
@@ -962,6 +1179,27 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     for (seq, x) in &r.reruns {
         if let Rerun::Differs(what) = x {
             out += &format!("  run {seq} DIFFERS: {what}\n");
+        }
+    }
+    if let Some(s) = &r.states {
+        let mut how = Vec::new();
+        if !s.beside.is_empty() {
+            how.push(format!("{} of them beside another run, from a state a run before or beside them left or began with", s.beside.len()));
+        }
+        if !s.restored.is_empty() {
+            how.push(format!("{} of them after a restore, from the state it put back", s.restored.len()));
+        }
+        let beside = if how.is_empty() { String::new() } else { format!(" ({})", how.join("; ")) };
+        out += &format!(
+            "  state: {} runs began from the state the run before them left{beside}, {} left what their writes make of the one they began with\n",
+            s.began.len(),
+            s.left.len()
+        );
+        for (why, seqs) in &s.unchecked {
+            out += &format!("  state not checked ({}), {why}\n", count_of(seqs));
+        }
+        for (seq, how) in &s.breaks {
+            out += &format!("  run {seq}'s state DOESN'T FOLLOW: {how}\n");
         }
     }
     out += if r.ok() { "ok\n" } else { "FAILED\n" };

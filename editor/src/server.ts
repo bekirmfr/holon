@@ -780,14 +780,16 @@ export type DeploymentEvent = {
   at_ms: number;
   /** The run log's next seq when it happened: it comes before that run. */
   run_seq: number;
-  kind: "deploy" | "restore" | "grant" | "secret" | "binding" | "lifecycle" | string;
+  kind: "deploy" | "restore" | "ask" | "grant" | "secret" | "binding" | "lifecycle" | string;
   what: string;
   by?: string;
   version?: number;
   session?: number;
   name?: string;
-  /** The point whose state a restore put back: `version 3`, `run 41`. */
+  /** The point whose state a restore put back: `version 3`, `run 41`; an ask's point. */
   from?: string;
+  /** What an ask (an agent's restore, saved for a person to approve) would restore of its point. */
+  restores?: ("code" | "state")[];
 };
 
 /** `GET /deployments/<slug>/events` — everything done to it, oldest first. A server from before

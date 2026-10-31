@@ -228,8 +228,8 @@ fn tool_list() -> Value {
         },
         {
             "name": "restore",
-            "title": "What a restore would change",
-            "description": "A dry run of going back to an earlier version or run: nothing changes. The code it would deploy again (its text beside the text deployed now, and the permissions it would add or drop), the state keys and collection items it would put back (now → then), the runs since that point with what they did outside their state, which a restore doesn't undo, and the files they wrote, an edit made outside a run named. It never restores: a person does, in the editor or with `holon restore`; tell the user what it would change and how.",
+            "title": "What a restore would change, or ask a person for it",
+            "description": "A dry run of going back to an earlier version or run: nothing changes. The code it would deploy again (its text beside the text deployed now, and the permissions it would add or drop), the state keys and collection items it would put back (now → then), the runs since that point with what they did outside their state, which a restore doesn't undo, and the files they wrote, an edit made outside a run named. It never restores: a person does, in the editor or with `holon restore`. With `ask`, it saves the restore for a person to approve, on the deployment's timeline, where the editor's history offers it; tell the user what it would change and where to approve it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -237,11 +237,12 @@ fn tool_list() -> Value {
                     "version": { "type": "integer", "description": "a version's number (history shows which version each run ran on)" },
                     "run": { "type": "integer", "description": "a run's number: the state it left, and the code it ran on" },
                     "code": { "type": "boolean", "description": "deploy that point's code again" },
-                    "state": { "type": "boolean", "description": "put back the state that point left" }
+                    "state": { "type": "boolean", "description": "put back the state that point left" },
+                    "ask": { "type": "boolean", "description": "save it for a person to approve, once the user wants it restored: it restores nothing itself" }
                 },
                 "required": ["slug"]
             },
-            "annotations": { "readOnlyHint": true, "openWorldHint": false }
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }
         }
     ])
 }
@@ -726,7 +727,20 @@ fn restore(api: &dyn Api, args: &Value) -> Result<String, String> {
         (true, false) => "--code",
         _ => "--state",
     };
-    out.push(format!("\nA person restores it: in the editor, ↺ on that run or in the history beside the runs, or `holon restore {slug} {to} {what}`."));
+    if flag("ask") {
+        let mut body = json!({ "code": code, "state": state });
+        for (k, v) in at.as_object().into_iter().flatten() {
+            body[k] = v.clone();
+        }
+        let asked = json_of(api, "POST", &format!("/deployments/{}/restore", seg(slug)), Some(Body::Json(body)))?;
+        let event = asked["event"].as_u64().map_or(String::new(), |n| format!(" (event #{n})"));
+        out.push(format!(
+            "\nSaved for a person to approve{event}: it {}. They see it in the editor's history beside the runs, where restoring it is one click, or run `holon restore {slug} {to} {what}`.",
+            asked["what"].as_str().unwrap_or("asks to restore it")
+        ));
+        return Ok(out.join("\n"));
+    }
+    out.push(format!("\nA person restores it: in the editor, ↺ on that run or in the history beside the runs, or `holon restore {slug} {to} {what}`. With `ask`, this saves it for them to approve."));
     Ok(out.join("\n"))
 }
 
@@ -1191,12 +1205,15 @@ mod tests {
         assert!(put_back.contains(&format!("1 run(s) logged since run {first}")), "{put_back}");
         assert!(tool_as(&agent, "restore", json!({ "slug": "price-rollback", "run": first })).unwrap_err().contains("`code`, `state`, or both"));
 
-        // Nothing changed, and the server answers an agent's restore no more than the dry run.
+        // Nothing changed. Asked, the restore is saved for a person: an event on the timeline, the
+        // state as it was.
         let restore = |dry_run: bool| Some(Body::Json(json!({ "run": first, "state": true, "dry_run": dry_run })));
-        let refused = json_of(&agent, "POST", "/deployments/price-rollback/restore", restore(false)).unwrap_err();
-        assert!(refused.contains("refused") && refused.contains("only as a dry run"), "{refused}");
+        let asked = tool_as(&agent, "restore", json!({ "slug": "price-rollback", "run": first, "state": true, "ask": true })).unwrap();
+        assert!(asked.contains("Saved for a person to approve (event #") && asked.contains(&format!("it asks to put back the state run {first} left")), "{asked}");
         let quote = call(&agent, &json!({ "slug": "price-rollback", "method": "GET", "path": "/quote/tea" })).unwrap();
         assert!(quote.contains("\"price\":40") && quote.contains("\"fee\":5"), "{quote}");
+        let timeline = tool_as(&agent, "history", json!({ "slug": "price-rollback", "events": true })).unwrap();
+        assert!(timeline.contains(&format!("asks to put back the state run {first} left")), "{timeline}");
         assert!(json_of(&person, "POST", "/deployments/price-rollback/restore", restore(false)).unwrap()["state"]["session"].is_u64(), "a person restores it");
         assert_eq!(person.send("POST", "/deployments/price-rollback/stop", None).unwrap().0, 200);
     }

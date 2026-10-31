@@ -165,7 +165,8 @@ Every request is a run in the log, even one no route took.
 Each deployment's log is `deployments.logs/<slug>.jsonl`: one JSON entry per run, each with the
 hash of the one before. It keeps the deployment's retention: the newest `keep_runs` (the host's
 `--keep-runs`, 500 by default), none older than `keep_run_days` (any age by default), both limits
-a deployment may ask for in its deploy settings ([Permissions](permissions.md#limits)). Older runs
+a deployment may ask for in its deploy settings or its text's `keep` line
+([Permissions](permissions.md#limits)). Older runs
 are cut from the front of the file, which keeps its newest line, so the chain goes on; a witness
 hears a `trim`. An entry holds the
 run's request, what it read (clock, randomness, state, files, each outbound response), its

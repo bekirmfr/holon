@@ -132,8 +132,10 @@ holon restore <slug> --to <seq> --dry-run    what it would do, and change nothin
   between the two points, so whoever restores sees it.
 - **Who may restore:** whoever may deploy to the deployment. Where the policy asks for an approval
   of deploys (approvals-L4, step 2.1), a restore asks for one too. An agent sees a restore only as
-  its dry run (built: the server refuses it more), and tells the person, who restores it. *Later:*
-  an agent's restore saved for a person to approve, as its deploys are.
+  its dry run, and tells the person, who restores it (built). Its restore itself is saved for a
+  person to approve (built): an `ask` event on the timeline, naming the point (`from`) and what of
+  it (`restores`: code, state or both), answered 202 with nothing changed; the editor's history
+  offers its row as that restore, which a person makes.
 
 ## 5. What a restore doesn't touch
 
@@ -158,10 +160,13 @@ Holon never claims to have undone it.
 - **Two versions side by side:** the documents of any two units on the timeline, as text.
 - **The editor:** the deployment's timeline, each entry opening its run in view mode, its
   version, or its state; a restore's preview and its button.
-- **MCP:** `history` and `restore` (built), the latter a dry run only.
-- **`holon verify`** checks, beyond what it checks today, that each entry's state follows from the
-  one before it (its writes applied to the root before give the root after), from the oldest
-  entry the export carries whole.
+- **MCP:** `history` and `restore` (built), the latter a dry run, or with `ask` saved for a
+  person to approve.
+- **`holon verify`** checks that each run's state follows from the one before (built): it began
+  from the state the run before it left, and its writes applied to the state it began with give
+  the state it left, each state by its snapshot's hash, made again from `state_before`. A
+  collection by its root (a run that wrote one is checked in a later run's state), and runs that
+  ran beside another as far as their commit shows (firing.rs).
 
 ## 7. Retention
 
@@ -177,11 +182,23 @@ Points are kept as long as the timeline keeps their entries.
   ceiling (20000 runs, ten years) is refused. A grant lowered later holds the log at once. A run
   past it is cut from the front of the file, which keeps its newest line so numbering and the
   chain go on; the chain checks from the oldest kept, and a witness hears a `trim` (heads.rs).
+- **Sweeping the states no kept entry names** (built, an admin's: `holon store sweep`,
+  `POST /admin/store/sweep`, sweep.rs). A run cut by retention leaves its snapshot and the values
+  only it changed in the content store; a sweep removes every value nothing kept names, directly
+  or through another value. Kept: each deployment's live state, its sessions, its versions (their
+  documents and states), its events, its waiting runs and every line its log's file holds (up to twice
+  what it keeps, which a raised keep reads back), then whatever
+  those values name (a snapshot its cells' values, a cell holding a collection its trie, a node
+  its children and item). Any 64-digit hex in them counts as a name, so a reference no one taught
+  the sweep still keeps what it names. A value put in the last hour is spared whoever names it
+  (a run in flight may not have committed it; the run budget's ceiling is 15 minutes), a value
+  that can't be read stops it, and units are never swept. `--dry-run` counts first. The
+  rolling-log sample's e2e runs the dry run beside its cut runs.
 - **Later:** a run past retention keeping its header (seq, `prev`, roots, unit) so the chain checks
   across it, which needs a line's hash to cover its header and its body's hash rather than the
-  line; and sweeping a state no kept entry names from the store. Retention from the text (a
-  header line), so `holon mcp` and `holon new --sample` carry it: today it is a deploy setting
-  only, as every limit is.
+  line; and the store's sweep running on its own, as the folders' does.
+- **Retention from the text** (built): `keep 5 runs for 1d`, a header line for the two limits, so
+  `holon mcp` and `holon new --sample` carry it; the deploy settings' two fields follow it.
 
 ## 8. Not in this design
 
@@ -211,7 +228,7 @@ Reordered so restoring code, which changes nothing already logged, comes first:
 1. **Restoring code** (built). Every deploy is a numbered version kept for good, with its canvas
    (by hash, in the content store) and what its deploy asked; `GET /deployments/<slug>/versions`;
    `POST /deployments/<slug>/restore` and `holon restore <slug> --to N --code`, a deploy like any
-   other, checked against today's grant, with a dry run. Agents can't restore yet.
+   other, checked against today's grant, with a dry run. Agents restore nothing: theirs is saved for a person (§4).
 2. **Restoring state** (built), narrower than first written:
    - **Snapshots by hash, not by root.** A run's line names the state it left (`state_after`): the
      hash of a record, cell by name to value hash, in the content store, with only the values it
@@ -247,8 +264,10 @@ Reordered so restoring code, which changes nothing already logged, comes first:
        and a `restore` tool that is the dry run only: the code's text beside today's (a line
        diff, names on both sides or neither), the permissions, the state's keys and collection
        items now → then, the runs since and the files they wrote. The server answers an agent's
-       restore no more than that; a person restores it. An agent's restore waiting for a
-       person's approval, as its deploys do, is later;
+       restore no more than that; a person restores it. With `ask`, the restore is saved for a
+       person to approve (built): an `ask` event, which the editor's history offers as the
+       restore it asks for, of its point. The agent e2e asks for a run's state through
+       `holon mcp`, and a person restores it from the history;
      - **a cell's history** (built): the runs that changed a cell, a collection or one item of
        it, with values before and after (`GET …/changes`, changes.rs): walking the log in order,
        a run whose snapshot holds another value than the last one changed it, so a run that only
@@ -256,8 +275,11 @@ Reordered so restoring code, which changes nothing already logged, comes first:
        restore, a deploy) came between is a row of its own. `holon history --cell`, MCP's
        `history` with a cell, and ⧗ in view mode's flow state. The sample balance-trail.
 4. **Retention and verify** of whole states.
-     - **retention** (built): `keep_runs` and `keep_run_days`, limits in the deploy settings (§7).
-       The sample rolling-log keeps 5 runs, a day at most.
+     - **retention** (built): `keep_runs` and `keep_run_days`, limits in the deploy settings (§7),
+       and the text's `keep` line (`keep 5 runs for 1d`). The sample rolling-log keeps 5 runs, a
+       day at most.
+     - **verify of whole states** (built): each run began from the state the one before left, and
+       left what its writes make of it (§6). The sample ledger checks it.
 
 ## 11. Forks, surfaced
 
