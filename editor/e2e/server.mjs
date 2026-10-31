@@ -9,7 +9,7 @@
 // through the stand-in identity provider (mock-oidc.mjs) once its admin panel says to.
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,22 @@ const fresh = process.argv.includes("--fresh");
 const port = fresh ? PORTS.fresh : PORTS.server;
 export const SETUP_CODE = "E2E0-SETUP";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+// The editor's wasm bridge (editor/wasm, not in git) is built by hand; one older than its crates
+// lacks what they added since (a new sample has no card on the flows page). The main server
+// rebuilds it, as CI does; the tests wait for that server, so they never see the old one.
+const newest = (path) => {
+  const s = statSync(path);
+  if (!s.isDirectory()) return s.mtimeMs;
+  return Math.max(0, ...readdirSync(path).map((name) => newest(join(path, name))));
+};
+const wasm = join(root, "editor", "wasm", "holon_wasm_bg.wasm");
+const sources = ["holon-core", "holon-author", "holon-module", "holon-wasm"].map((c) => join(root, "crates", c));
+if (!fresh && (!existsSync(wasm) || Math.max(newest(join(root, "Cargo.lock")), ...sources.map(newest)) > statSync(wasm).mtimeMs)) {
+  console.log("e2e: the editor's wasm bridge is older than its crates; rebuilding it");
+  execFileSync("wasm-pack", ["build", "crates/holon-wasm", "--target", "web", "--out-dir", "../../editor/wasm", "--no-opt"], { cwd: root, stdio: "inherit" });
+}
+
 execFileSync("cargo", ["build", "-p", "holon"], { cwd: root, stdio: "inherit" });
 
 // A run stopped abruptly (as a test runner stops its servers on Windows) can't clean up after
