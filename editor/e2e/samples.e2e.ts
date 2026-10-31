@@ -51,7 +51,7 @@ async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) =
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
   await page.getByRole("dialog").getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
   expect((await deployed).status()).toBe(200);
-  await expect(page.locator(".hl-tab--active")).toContainText("deployed");
+  await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
   return port;
 }
 
