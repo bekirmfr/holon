@@ -22,10 +22,20 @@ async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
+/** Open the deployment settings panel if it is closed. */
+async function openDeployPanel(page: Page) {
+  const panel = page.getByRole("complementary", { name: "Deployment settings" });
+  if (!(await panel.isVisible())) {
+    await page.getByRole("button", { name: "open deployment settings" }).click();
+    await panel.waitFor({ state: "visible", timeout: 5_000 });
+  }
+}
+
 /** Deploy the open flow through the deployment settings panel and the consent screen; its port
  *  moved up by `by` (the slot's SAMPLE_SHIFT, ports.mjs), and whatever else `set` sets in the
  *  panel. Answers the port it serves on (null for a flow without routes). */
 async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   const portField = settings.getByRole("textbox").first();
   const given = Number(await portField.inputValue());
@@ -48,6 +58,7 @@ async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) =
 /** Wait until text typed into the Text pane has compiled: the deployment settings panel then says
  *  its port. */
 async function settingsSayPort(page: Page, port: string) {
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await expect(settings.getByRole("textbox").first()).toHaveValue(port, { timeout: 15_000 });
 }
@@ -965,6 +976,7 @@ test("an env secret is picked from the server's HOLON_SECRET_… names, its dote
   await page.route(`${SERVER}/deployments/gemini-chat/secrets/gemini_api_key`, (route) =>
     route.request().method() === "POST" ? ((posted = route.request().postDataJSON()), route.fulfill({ json: { version: 1 } })) : route.continue(),
   );
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await settings.locator("select", { has: page.locator('option[value="vault"]') }).selectOption("env");
   // The variable the secret's name suggests is chosen; the one just added is there too.
@@ -1059,6 +1071,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   await openSample(page, "Rolling log (retention)");
   // Its retention opens with it, in the deployment settings: fewer runs than the host's default,
   // which asks nobody.
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await expect(settings.getByLabel("runs the log keeps")).toHaveValue("5");
   await expect(settings.getByLabel("days the log keeps runs")).toHaveValue("1");
@@ -1086,6 +1099,7 @@ test("guarded-api's token rolls back under ⚙ once a dry run has said what it w
   const [now, before] = (await versions()).map((v) => v.version);
 
   await openSample(page, "Token-guarded API");
+  await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   await settings.getByTitle("versions and changes; roll back to an older version").first().click();
   const rollBack = settings.getByTitle(`make version ${before} current again`);
