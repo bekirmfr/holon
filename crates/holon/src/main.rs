@@ -146,6 +146,7 @@
 
 mod access;
 mod accounts;
+mod deploycmd;
 mod activity;
 mod arrivals;
 mod auth;
@@ -484,6 +485,7 @@ const USAGE: &str = "usage: holon <command>
   check <file>                       compile a flow: its routes, what it may do, or each mistake
   show <file>                        an outline: routes, nodes and what feeds them
   fmt <file>                         rewrite a flow in the canonical form
+  deploy <file> [--server PORT|URL]  compile and deploy a flow to a running server
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
@@ -563,6 +565,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("serve") => serve(rest),
         Some(cmd @ ("new" | "check" | "show" | "fmt")) => std::process::exit(flowcmd::run(cmd, &rest)),
+        Some("deploy") => std::process::exit(deploycmd::run(&rest)),
         Some("verify") => std::process::exit(verify::run(&rest)),
         Some("export") => std::process::exit(verify::export(&rest)),
         Some("restore") => std::process::exit(restore::cli(&rest)),
