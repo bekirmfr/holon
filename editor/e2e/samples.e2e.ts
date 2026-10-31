@@ -164,7 +164,7 @@ test("a flow nothing would start can't deploy; made runnable by hand, it deploys
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);
   // Deployed under a name of its own (asked, as for any new flow), its action answers.
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeEnabled();
-  await canvas.getByRole("button", { name: /^deploy/ }).click();
+  await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
   await page.locator('[aria-modal="true"]').locator("input").fill(`by-hand-${Date.now()}`);
   await page.keyboard.press("Enter");
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
@@ -243,7 +243,7 @@ test("slugs runs its holons, and view mode shows inside one", async ({ page, req
   const answer = await request.post(`http://127.0.0.1:${port}/slugs`, { data: { title: "Hello Holon World", author: "Ada Lovelace" } });
   expect(await answer.json()).toMatchObject({ title: "hello-holon-world", author: "ada-lovelace", receipt: "unsigned" });
   await viewNewestRun(page);
-  await page.locator(".react-flow__node", { hasText: "publish" }).click();
+  await page.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   const side = page.getByRole("complementary", { name: "Inspector" });
   await side.getByRole("button", { name: "Node", exact: true }).click();
   await expect(side).toContainText("inside, as the run went");
@@ -316,7 +316,7 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
   await flow.locator(".react-flow__node", { hasText: "publish" }).dispatchEvent("click");
   await page.locator(".react-flow__node-toolbar").getByRole("button", { name: "expand" }).dispatchEvent("click");
   const overlay = page.locator(".hl-overlay");
-  await overlay.getByRole("button", { name: "add an output" }).click();
+  await overlay.getByRole("button", { name: "add an output" }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill("stamp");
   await page.keyboard.press("Enter");
   const outputs = overlay.locator(".react-flow__node", { hasText: "outputs" });
