@@ -33,7 +33,7 @@ names, and for a server elsewhere keeps the token so no host's file holds it:
 | `runs` | `slug`, `limit?` | the deployment's latest runs, one line each, with who sent a request made through `call` | yes |
 | `explain` | `slug`, `run?` | one run as the program: the flow's text with each statement's value, what was absent and where, the effects, the outbound calls | yes |
 | `history` | `slug`, `last?`, `events?`, `cell?`, `item?` | the deployment's timeline, oldest first: its runs with the version each ran on, and the events among them (deploys, restores, grant changes, secrets, bindings, lifecycle), by whom (history-L4 §6); with a cell, the runs that changed it (or one item of a collection), each with its value before and after | yes |
-| `restore` | `slug`, `version?` or `run?`, `code?`, `state?` | a restore's dry run, changing nothing: the code's text beside today's, what its grant would need, the state's keys and items now → then, the runs since and what they did outside, the files they wrote; how a person restores it | yes |
+| `restore` | `slug`, `version?` or `run?`, `code?`, `state?`, `ask?` | a restore's dry run, changing nothing: the code's text beside today's, what its grant would need, the state's keys and items now → then, the runs since and what they did outside, the files they wrote; how a person restores it. With `ask`, the restore is saved for a person to approve, an `ask` event the editor's history offers as that restore | yes |
 
 Every answer is text written for a reader (the agent, and the person reading over its shoulder),
 not JSON to be parsed: the same sentences `holon check` and the editor use.

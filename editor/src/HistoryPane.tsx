@@ -344,7 +344,8 @@ export function itemDetails(item: TimelineItem, target: Target): [string, string
     fields.push(["what", e.what], ["kind", e.kind], ["when", when(e.at_ms)], ["by", e.by ?? "the host"], ["before run", `#${e.run_seq}`]);
     if (e.session !== undefined) fields.push(["session", String(e.session)]);
     if (e.name) fields.push(["about", e.name]);
-    if (e.from) fields.push(["put back", `the state ${e.from} left`]);
+    if (e.kind === "ask" && e.from) fields.push(["asks", `${e.from}'s ${(e.restores ?? []).join(" and ")}, for a person to restore`]);
+    else if (e.from) fields.push(["put back", `the state ${e.from} left`]);
     fields.push(["event", `#${e.seq}${e.prev ? ` · after ${e.prev.slice(0, 12)}…` : ""}`]);
   }
   const v = item.kind === "run" ? undefined : item.version;

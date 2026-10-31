@@ -234,6 +234,14 @@ describe("going back to a row", () => {
   );
   const at = (key: string) => targetOf(timeline, timeline.findIndex((i) => i.key === key), "u2");
 
+  it("offers an agent's ask as the restore it asks for, of its point", () => {
+    const asks = buildTimeline([run(0, 0, { state_after: "s0" })], [event(0, 1, "ask", "asks to put back the state run 0 left", { from: "run 0", restores: ["state"], by: "agent:codex" })], []);
+    expect(filterOf(asks[0])).toBe("versions");
+    expect(targetOf(asks, 0, undefined)).toMatchObject({ label: "run 0", code: null, state: { run: 0 }, why: { code: "it asks for its state only", state: null } });
+    const both = buildTimeline([], [event(0, 0, "ask", "asks to restore version 1's code and the state it left", { from: "version 1", restores: ["code", "state"] })], []);
+    expect(targetOf(both, 0, undefined)).toMatchObject({ code: { version: 1 }, state: { version: 1 }, why: { code: null, state: null } });
+  });
+
   it("goes back to a run or a version as itself", () => {
     expect(at("r1")).toMatchObject({ label: "run 1", code: { run: 1 }, state: { run: 1 }, why: { code: null, state: null } });
     expect(at("e0")).toMatchObject({ label: "version 1", code: { version: 1 }, state: { version: 1 } });
