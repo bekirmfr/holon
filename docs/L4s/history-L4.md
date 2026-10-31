@@ -182,9 +182,21 @@ Points are kept as long as the timeline keeps their entries.
   ceiling (20000 runs, ten years) is refused. A grant lowered later holds the log at once. A run
   past it is cut from the front of the file, which keeps its newest line so numbering and the
   chain go on; the chain checks from the oldest kept, and a witness hears a `trim` (heads.rs).
+- **Sweeping the states no kept entry names** (built, an admin's: `holon store sweep`,
+  `POST /admin/store/sweep`, sweep.rs). A run cut by retention leaves its snapshot and the values
+  only it changed in the content store; a sweep removes every value nothing kept names, directly
+  or through another value. Kept: each deployment's live state, its sessions, its versions (their
+  documents and states), its events, its waiting runs and every line its log's file holds (up to twice
+  what it keeps, which a raised keep reads back), then whatever
+  those values name (a snapshot its cells' values, a cell holding a collection its trie, a node
+  its children and item). Any 64-digit hex in them counts as a name, so a reference no one taught
+  the sweep still keeps what it names. A value put in the last hour is spared whoever names it
+  (a run in flight may not have committed it; the run budget's ceiling is 15 minutes), a value
+  that can't be read stops it, and units are never swept. `--dry-run` counts first. The
+  rolling-log sample's e2e runs the dry run beside its cut runs.
 - **Later:** a run past retention keeping its header (seq, `prev`, roots, unit) so the chain checks
   across it, which needs a line's hash to cover its header and its body's hash rather than the
-  line; and sweeping a state no kept entry names from the store.
+  line; and the store's sweep running on its own, as the folders' does.
 - **Retention from the text** (built): `keep 5 runs for 1d`, a header line for the two limits, so
   `holon mcp` and `holon new --sample` carry it; the deploy settings' two fields follow it.
 

@@ -243,14 +243,14 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "rolling-log",
         title: "Rolling log (retention)",
-        description: "A clock flow that keeps only its newest 5 runs, none older than a day: its `keep` line says how long a deployment's log keeps its runs (the deploy settings' keep_runs and keep_run_days), and keeping fewer than the host's default asks nobody.",
-        shows: &["keep", "retention", "keep_runs", "keep_run_days", "clock", "state across runs"],
+        description: "A clock flow that keeps only its newest 5 runs, none older than a day: its `keep` line says how long a deployment's log keeps its runs (the deploy settings' keep_runs and keep_run_days), and keeping fewer than the host's default asks nobody. The states its cut runs left stay in the store until an admin's holon store sweep clears what nothing kept names.",
+        shows: &["keep", "retention", "keep_runs", "keep_run_days", "clock", "state across runs", "holon store sweep"],
         port: None,
         interval: Some("1"),
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: "deploy it, wait a few seconds: view mode's runs list holds the newest 5 (holon history rolling-log), its seqs climbing, while its state counts every beat",
+        try_it: "deploy it, wait a few seconds: view mode's runs list holds the newest 5 (holon history rolling-log), its seqs climbing, while its state counts every beat; holon store sweep --dry-run counts the states no kept run names (an hour after they were put, holon store sweep removes them)",
         text: include_str!("../samples/rolling-log.holon"),
     },
     Sample {

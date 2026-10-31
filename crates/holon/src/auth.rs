@@ -47,6 +47,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or("")) {
         return Some(response);
     }
+    // The content store's sweep (sweep.rs).
+    if let Some(response) = crate::sweep::route(state, request, caller.name.as_deref().unwrap_or("")) {
+        return Some(response);
+    }
     // And the databases (databases.rs).
     if let Some(response) = crate::databases::route(state, request, caller.name.as_deref().unwrap_or("")) {
         return Some(response);

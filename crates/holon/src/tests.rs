@@ -12,8 +12,11 @@ use holon_core::hash_value;
 use holon_host::fire_sourced_with;
 
 pub(crate) fn test_state() -> AppState {
-    let backend: DynStore = Box::new(MemStore::new());
-    let store = SharedStore::new(backend);
+    test_state_with(SharedStore::new(Box::new(MemStore::new())))
+}
+
+/// The same over `store`: an on-disk one, say.
+fn test_state_with(store: SharedStore) -> AppState {
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let deployments = Arc::new(Mutex::new(BTreeMap::new()));
@@ -904,6 +907,84 @@ action bump (input) {
     let log = body_json(route(&state, &req("GET", "/deployments/kept/log", vec![])));
     let seqs: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|e| e["seq"].as_u64().unwrap()).collect();
     assert_eq!(seqs, [2, 3, 4]);
+}
+
+#[test]
+fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
+    let dir = unique_temp_path("sweep");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
+    let plan = holon_author::agent::plan("flow kept
+keep 3 runs
+collection notes
+
+action bump (input) {
+  n = (state.n ?? 0) + 1
+  state.n = n
+  notes[\"k{n}\"] = n
+}
+").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    for _ in 0..10 {
+        assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+    }
+    let log = body_json(route(&state, &req("GET", "/deployments/kept/log", vec![])));
+    let kept: Vec<(u64, String)> = log["entries"].as_array().unwrap().iter().map(|e| (e["seq"].as_u64().unwrap(), e["state_after"].as_str().unwrap().to_string())).collect();
+    assert_eq!(kept.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [7, 8, 9]);
+    let files = || std::fs::read_dir(&values).unwrap().count();
+    let before = files();
+    let sweep = |spare: u64, dry_run: bool| sweep::sweep(&state.store, &state.deployments, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64, spare, dry_run).unwrap().unwrap();
+
+    // Everything is new: spared, whoever names it.
+    let new = sweep(sweep::SPARES_MS, false);
+    assert_eq!((new.values, new.spared > 0, files()), (0, true, before));
+    // The dry run counts, and removes nothing.
+    let dry = sweep(0, true);
+    assert!(dry.values > 0 && dry.kept > 0, "{dry:?}");
+    assert_eq!(files(), before);
+    let swept = sweep(0, false);
+    assert_eq!(swept, dry, "the dry run said what it would do");
+    assert!(swept.values >= 7, "at least the seven cut runs' snapshots: {swept:?}");
+    assert_eq!(files(), before - swept.values);
+    assert_eq!(sweep(0, false).values, 0, "and once it has, nothing more");
+
+    // What is kept is whole: each kept run's state, the live state with its collection, the
+    // version's document, and a restore to the oldest kept run.
+    for (seq, snapshot) in &kept {
+        restore::load_snapshot(snapshot, &state.store).unwrap_or_else(|e| panic!("run {seq}'s state: {e}"));
+    }
+    let notes = body_json(route(&state, &req("GET", "/deployments/kept/collections/notes", vec![])));
+    assert_eq!(notes["items"].as_array().unwrap().len(), 10, "{notes}");
+    let versions = body_json(route(&state, &req("GET", "/deployments/kept/versions", vec![])));
+    assert!(versions.to_string().contains("kept"), "{versions}");
+    let back = serde_json::to_vec(&serde_json::json!({ "run": 7, "state": true })).unwrap();
+    assert_eq!(route(&state, &req("POST", "/deployments/kept/restore", back)).status_code, 200);
+    let after = body_json(route(&state, &req("GET", "/deployments/kept/collections/notes", vec![])));
+    assert_eq!(after["items"].as_array().unwrap().len(), 8, "run 7 left eight notes: {after}");
+    assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+
+    // A value nothing names, put just now, waits out the hour; the endpoint says so.
+    state.store.clone().put_value(&Value::Text("nobody's".into())).unwrap();
+    let answer = body_json(route(&state, &req("POST", "/admin/store/sweep", br#"{"dry_run":true}"#.to_vec())));
+    assert_eq!(answer["dry_run"], true);
+    assert_eq!(answer["swept"]["values"], 0, "{answer}");
+    assert!(answer["spared"]["values"].as_u64().unwrap() > 0, "{answer}");
+    assert!(sweep(0, false).values > 0, "past its hour, it goes");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_in_memory_store_has_nothing_to_sweep() {
+    let state = test_state();
+    let answer = route(&state, &req("POST", "/admin/store/sweep", b"{}".to_vec()));
+    assert_eq!(answer.status_code, 409);
 }
 
 #[test]

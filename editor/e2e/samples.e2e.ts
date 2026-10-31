@@ -1084,6 +1084,17 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   expect(kept).toEqual([0, 1, 2, 3, 4].map((i) => kept[0] + i));
   const state = (await (await request.get(`${SERVER}/deployments/rolling-log/state`, { headers: auth })).json()) as { state: { beats: { value: number } } };
   expect(Number(state.state.beats.value), "every beat counted, kept or not").toBeGreaterThan(5);
+  // The states its cut runs left are a sweep's to clear, once the log's file is cut back too (it
+  // holds up to twice what it keeps, for a keep raised later), past the tenth run. A dry run
+  // counts, removing nothing; all of this run's are new, so spared (a value is swept an hour
+  // after it was put).
+  type Swept = { dry_run: boolean; swept: { values: number }; kept: { values: number }; spared: { values: number } };
+  const dryRun = async () => (await (await request.post(`${SERVER}/admin/store/sweep`, { data: { dry_run: true }, headers: auth })).json()) as Swept;
+  await expect.poll(async () => (await dryRun()).spared.values, { message: "the cut runs' states, put just now", timeout: 30_000 }).toBeGreaterThan(0);
+  const swept = await dryRun();
+  expect(swept.dry_run).toBe(true);
+  expect(swept.kept.values, "what the kept runs and the live state name").toBeGreaterThan(0);
+  expect((await seqs()).length).toBe(5);
   // Its clock would beat for the rest of the run.
   await request.post(`${SERVER}/deployments/rolling-log/stop`, { data: {}, headers: auth });
 });

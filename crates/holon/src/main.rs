@@ -191,6 +191,7 @@ mod ranges;
 mod recorder;
 mod restore;
 mod scheduler;
+mod sweep;
 mod sealing;
 mod secret_sources;
 mod secrets;
@@ -266,14 +267,20 @@ type DynStore = Box<dyn Store + Send>;
 /// second clone stays with the server for direct `/unit` reads/writes — both clones lock the
 /// same underlying `Mutex`, so they see the same data. See the module doc for why this exists
 /// instead of a `holon-host` change.
+/// The third part notes the values put lately, for a sweep to spare (sweep.rs).
 #[derive(Clone)]
-struct SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>);
+struct SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>, Arc<sweep::Puts>);
 
 impl SharedStore {
     /// A handle onto `backend`, which no run can yet reach the other deployments through: the
     /// server connects that once its table of deployments exists (`calls::Hub::connect`).
     fn new(backend: DynStore) -> SharedStore {
-        SharedStore(Arc::new(Mutex::new(backend)), Arc::default())
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::default())
+    }
+
+    /// The same onto a `FileStore` keeping its values in `values`, which a sweep may clear.
+    fn on_disk(backend: DynStore, values: PathBuf) -> SharedStore {
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::new(sweep::Puts::at(values)))
     }
 }
 
@@ -285,7 +292,10 @@ impl Store for SharedStore {
         self.0.lock().unwrap().get(key)
     }
     fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
-        self.0.lock().unwrap().put_value(value)
+        let mut store = self.0.lock().unwrap();
+        let hash = store.put_value(value)?;
+        self.2.put(hash);
+        Ok(hash)
     }
     fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
         self.0.lock().unwrap().get_value(key)
@@ -492,6 +502,8 @@ const USAGE: &str = "usage: holon <command>
   restore <slug> [--to N --code]     a deployment's versions; an earlier one's code or state back
   folder add|list|remove             bind a name flows use to a folder on this machine (admin)
   database add|list|remove           bind a name flows use to a database on this machine (admin)
+  store sweep [--dry-run]            clear the stored states no kept run, version or state names
+                                     (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
   mcp setup [HOST…|--all]            add holon mcp to an agent host's settings (mcp hosts: which)
@@ -568,6 +580,7 @@ fn main() {
         Some("restore") => std::process::exit(restore::cli(&rest)),
         Some("history") => std::process::exit(history::cli(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
+        Some("store") => std::process::exit(sweep::cli(&rest)),
         Some("database") => std::process::exit(databases::cli(&rest)),
         // Not in the usage: the server runs it for the admin page's "browse…" (pick.rs).
         Some("pick-folder") => std::process::exit(pick::cli(&rest)),
@@ -953,17 +966,16 @@ fn serve(args: Vec<String>) {
         eprintln!("holon: is another holon running there? Stop it, or pick another address with --at");
         std::process::exit(1);
     });
-    let backend: DynStore = if store_arg == ":memory:" {
+    let store = if store_arg == ":memory:" {
         println!("holon: in-memory store (nothing persists past this run)");
-        Box::new(MemStore::new())
+        SharedStore::new(Box::new(MemStore::new()))
     } else {
         let store = FileStore::new(&store_arg)
             .unwrap_or_else(|e| panic!("could not open store at {store_arg:?}: {e}"));
         println!("holon: file store at {store_arg:?}");
-        Box::new(store)
+        let values = store.values_dir();
+        SharedStore::on_disk(Box::new(store), values)
     };
-
-    let store = SharedStore::new(backend);
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let refuse_to_start = |e: String| -> ! {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`holon store sweep` clears the states no kept run names.** Retention cuts old runs from a
+  log, but the states they left stayed in the content store; an admin's sweep now removes every
+  value nothing kept names: not a kept run, a version, an event, a session, a waiting run or the
+  live state, nor any value those name in turn. Anything put in the last hour is spared, and code
+  is never swept. `--dry-run` says what it would remove (`POST /admin/store/sweep`). The
+  **rolling-log** sample says so.
 - **An agent can ask for a restore, and a person approves it.** `holon mcp`'s `restore` tool takes
   `ask`: after its dry run, the restore is saved on the deployment's timeline as an `ask` event
   ("asks to put back the state run 41 left", by *you* (agent)), and nothing changes. In the

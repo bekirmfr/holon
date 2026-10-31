@@ -20,7 +20,9 @@ trimmed, and the chain is checked from the oldest kept run. How many, and for ho
 deploy setting of its own: under ⚙, **runs the log keeps** and **days the log keeps runs**, or
 the flow's `keep` line, which they follow (`keep 5 runs for 1d`, `keep 500 runs`, `keep runs for
 30d`). Fewer than the host's default is the author's to choose; more asks for approval, as it is
-the host's disk (the sample **rolling-log** keeps 5, a day at most).
+the host's disk (the sample **rolling-log** keeps 5, a day at most). The states a trimmed run
+left stay in the content store until an admin runs `holon store sweep` (`--dry-run` first), which
+removes the ones nothing kept names any more.
 
 What was done to the deployment (its [events](deploying.md#the-timeline): deploys, restores, grant
 changes, secrets, bindings, pausing and running) is a chain of its own, kept for good, so it is
