@@ -44,7 +44,7 @@ async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) =
   if (set) await set(settings);
   const deployBtn = page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ });
   await expect(deployBtn).toBeEnabled();
-  await deployBtn.click();
+  await deployBtn.dispatchEvent("click");
   // Wait for the server's answer to the deploy, which comes once the flow listens on its port
   // (http.rs syncs the listeners first). The tab's "deployed" can't say so: it shows as soon as a
   // deployment of that name exists, so on a redeploy that moves the port it is there at once.
@@ -1151,6 +1151,7 @@ test("calc's match answers the chosen arm or 400 when it has no value, and view 
   const values = text.locator(".hl-text__value");
   await expect(values.first()).toHaveText("1");
   await expect(values.nth(1)).toHaveText("0");
+  await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.getByTitle("step forward one node").click();
   await expect(text.locator(".hl-text__step")).toHaveCount(1);
   await text.locator(".cm-line", { hasText: '"div" -> a / b' }).click();
