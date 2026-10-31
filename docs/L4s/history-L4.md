@@ -181,9 +181,9 @@ Points are kept as long as the timeline keeps their entries.
   chain go on; the chain checks from the oldest kept, and a witness hears a `trim` (heads.rs).
 - **Later:** a run past retention keeping its header (seq, `prev`, roots, unit) so the chain checks
   across it, which needs a line's hash to cover its header and its body's hash rather than the
-  line; and sweeping a state no kept entry names from the store. Retention from the text (a
-  header line), so `holon mcp` and `holon new --sample` carry it: today it is a deploy setting
-  only, as every limit is.
+  line; and sweeping a state no kept entry names from the store.
+- **Retention from the text** (built): `keep 5 runs for 1d`, a header line for the two limits, so
+  `holon mcp` and `holon new --sample` carry it; the deploy settings' two fields follow it.
 
 ## 8. Not in this design
 
@@ -258,8 +258,9 @@ Reordered so restoring code, which changes nothing already logged, comes first:
        restore, a deploy) came between is a row of its own. `holon history --cell`, MCP's
        `history` with a cell, and ⧗ in view mode's flow state. The sample balance-trail.
 4. **Retention and verify** of whole states.
-     - **retention** (built): `keep_runs` and `keep_run_days`, limits in the deploy settings (§7).
-       The sample rolling-log keeps 5 runs, a day at most.
+     - **retention** (built): `keep_runs` and `keep_run_days`, limits in the deploy settings (§7),
+       and the text's `keep` line (`keep 5 runs for 1d`). The sample rolling-log keeps 5 runs, a
+       day at most.
      - **verify of whole states** (built): each run began from the state the one before left, and
        left what its writes make of it (§6). The sample ledger checks it.
 

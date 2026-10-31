@@ -52,6 +52,9 @@ pub enum HeaderKind {
     Every { seconds: f64, text: String },
     /// The wiring form's `interval 10`.
     Interval(String),
+    /// `keep 500 runs for 30d`: how many runs the deployment's log keeps, and for how many days
+    /// (the limits `keep_runs` and `keep_run_days`); either may be left out, not both.
+    Keep { runs: Option<u64>, days: Option<u64> },
     Browsers(Vec<String>),
     Optional(Consent),
     /// `collection notes`: a name the body may use as `notes[k]`.

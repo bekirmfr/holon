@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A flow's text says how long its log keeps runs: `keep 5 runs for 1d`.** A header line for the
+  two retention limits, `keep_runs` and `keep_run_days`, either alone (`keep 500 runs`, `keep runs
+  for 30d`). It is the deploy settings' two fields: typed in the text, ⚙ shows it; changed under
+  ⚙, the line is written again. Flows deployed from their text (`holon mcp`, `holon new`) carry
+  it. The **rolling-log** sample says its retention this way now.
 - **`holon verify` checks that each run's state follows from the one before.** It began from the
   state the run before it left, and left what its writes make of the state it began with, each
   state by its snapshot's hash (the one `holon restore --to-run` puts back), made again from the

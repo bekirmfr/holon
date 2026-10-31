@@ -98,6 +98,9 @@ export const savedKeyOf = (ns: PrimitiveNodeType[], es: Edge[], settings: FlowSe
 /** The text a save keeps with the flow: the pane's, when it was typed and stands for the canvas. */
 export const sourceToSave = (t: TextState, key: string): string | null => (t.typed && t.key === key && t.value !== null && t.value === t.synced ? t.value : null);
 
+/** The limits a flow's text says, in its `keep` line: the rest only the deploy settings do. */
+export const TEXT_LIMITS = ["keep_runs", "keep_run_days"];
+
 /** A document's deploy settings, with the defaults for what it doesn't say. */
 export function settingsOf(server: FlowDocument["server"]): FlowSettings {
   return {

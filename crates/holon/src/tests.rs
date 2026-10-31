@@ -878,6 +878,34 @@ fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
 /// How long a deployment's log keeps its runs is a deploy setting, held to the host's policy:
 /// keeping fewer is the author's to choose, keeping more than the default asks (it is the host's
 /// disk), and past the ceiling is refused. A grant lowered later holds the log at once.
+/// A flow's `keep` line is its retention: the plan an agent deploys (`holon mcp`) asks for it,
+/// and the log keeps that many runs.
+#[test]
+fn a_flows_keep_line_is_the_retention_its_deploy_asks_for() {
+    let state = test_state();
+    let plan = holon_author::agent::plan("flow kept
+keep 3 runs
+
+action bump (input) {
+  state.n = (state.n ?? 0) + 1
+}
+").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().expect("its keep line");
+    assert_eq!(requirements, serde_json::json!({ "limits": { "keep_runs": 3 } }));
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    for _ in 0..5 {
+        assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+    }
+    let log = body_json(route(&state, &req("GET", "/deployments/kept/log", vec![])));
+    let seqs: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs, [2, 3, 4]);
+}
+
 #[test]
 fn a_deployment_keeps_as_many_runs_as_its_retention_says() {
     let state = test_state();

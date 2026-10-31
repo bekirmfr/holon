@@ -1059,8 +1059,21 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   // Its retention opens with it, in the deployment settings: fewer runs than the host's default,
   // which asks nobody.
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
-  await expect(settings.getByLabel("runs the log keeps")).toHaveValue("5");
+  const runs = settings.getByLabel("runs the log keeps");
+  await expect(runs).toHaveValue("5");
   await expect(settings.getByLabel("days the log keeps runs")).toHaveValue("1");
+  // Its text's keep line says so, and the two follow each other: the line typed, the settings show
+  // it; the settings changed, the line is written again.
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  const text = page.getByRole("region", { name: "Text" }).locator(".cm-content");
+  await expect(text).toContainText("keep 5 runs for 1d");
+  const source = readFileSync(new URL("../../crates/holon-author/samples/rolling-log.holon", import.meta.url), "utf8");
+  await text.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(source.replace("keep 5 runs for 1d", "keep 7 runs for 1d"));
+  await expect(runs).toHaveValue("7", { timeout: 15_000 });
+  await runs.fill("5");
+  await expect(text).toContainText("keep 5 runs for 1d");
   await deploy(page);
   const auth = { Authorization: `Bearer ${adminToken}` };
   const seqs = async () =>

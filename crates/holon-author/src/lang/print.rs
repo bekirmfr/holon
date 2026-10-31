@@ -289,6 +289,15 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         if !s.interval.is_empty() && !handlers {
             out.push(header(format!("every {}", duration(&s.interval))));
         }
+        // How long the log keeps runs: the two limits the text says (the rest it doesn't).
+        let limits = s.requirements.as_ref().and_then(|r| r.extra.get("limits"));
+        let limit = |name: &str| limits.and_then(|l| l.get(name)).and_then(serde_json::Value::as_u64).filter(|n| *n >= 1);
+        match (limit("keep_runs"), limit("keep_run_days")) {
+            (Some(n), Some(d)) => out.push(header(format!("keep {n} runs for {d}d"))),
+            (Some(n), None) => out.push(header(format!("keep {n} runs"))),
+            (None, Some(d)) => out.push(header(format!("keep runs for {d}d"))),
+            (None, None) => {}
+        }
         if let Some(b) = s.browsers.as_ref().filter(|b| !b.is_empty()) {
             let origins: Vec<&str> = b.split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).collect();
             out.push(header(format!("browsers {}", origins.join(", "))));
@@ -2134,6 +2143,35 @@ mod tests {
         }
         let clock = compile("flow f\nevery 10s\n\nstate.n = now\n").unwrap_or_else(|e| panic!("{e}")).doc;
         assert!(printed(Some("f"), &clock, &BTreeMap::new()).contains("every 10s"));
+    }
+
+    /// `keep` says how long the log keeps runs: the limits `keep_runs` and `keep_run_days`, either
+    /// alone; printed back as written, with other limits (which the text doesn't say) left out.
+    #[test]
+    fn keep_is_the_logs_two_limits_and_prints_back() {
+        let limits = |src: &str| compile(src).unwrap_or_else(|e| panic!("{e}")).doc.server.and_then(|s| s.requirements).and_then(|r| r.extra.get("limits").cloned());
+        let clock = |keep: &str| format!("flow f\nevery 1s\n{keep}\n\nstate.n = now\n");
+        assert_eq!(limits(&clock("keep 5 runs for 1d")), Some(serde_json::json!({ "keep_runs": 5, "keep_run_days": 1 })));
+        assert_eq!(limits(&clock("keep 500 runs")), Some(serde_json::json!({ "keep_runs": 500 })));
+        assert_eq!(limits(&clock("keep runs for 30d")), Some(serde_json::json!({ "keep_run_days": 30 })));
+        assert_eq!(limits("flow f\nevery 1s\n\nstate.n = now\n"), None);
+        for keep in ["keep 5 runs for 1d", "keep 500 runs", "keep runs for 30d"] {
+            let lowered = compile(&clock(keep)).unwrap();
+            assert_eq!(printed(Some("f"), &lowered.doc, &lowered.names), clock(keep));
+        }
+        // Whole days, written as such; a limit the text doesn't say isn't printed.
+        let mut doc = compile(&clock("keep runs for 48h")).unwrap().doc;
+        let requirements = doc.server.as_mut().unwrap().requirements.as_mut().unwrap();
+        requirements.extra["limits"]["max_requests"] = 80.into();
+        assert_eq!(printed(Some("f"), &doc, &BTreeMap::new()), clock("keep runs for 2d"));
+        // `keep` stays a name.
+        assert!(compile("flow f\n\naction a (input) {\n  keep = input.n\n  respond keep\n}\n").is_ok());
+        let error = |src: &str| compile(src).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("compiled: {src}"));
+        assert!(error(&clock("keep runs")).contains("say how many runs the log keeps"));
+        assert!(error(&clock("keep 0 runs")).contains("1 or more"));
+        assert!(error(&clock("keep 5 runs for 36h")).contains("in whole days"));
+        assert!(error(&clock("keep 5 days")).contains("expected \"runs\""));
+        assert!(error("flow f\nevery 1s\nkeep 5 runs\nkeep runs for 1d\n\nstate.n = now\n").contains("one keep line"));
     }
 
     /// A `js` node (docs/L4s/js-node-L4.md): its body prints back verbatim, a `}` in a string or a

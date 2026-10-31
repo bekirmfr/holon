@@ -103,6 +103,7 @@ pub fn runnable_by_hand(source: &str) -> Result<String, String> {
 const KEYWORDS: &[(&str, &str)] = &[
     ("port", "`port <n>`: the port the flow's server answers its routes on."),
     ("every", "`every <duration>`: how often a flow without routes runs (`10s`, `5m`, `1h`, `1d`)."),
+    ("keep", "`keep <n> runs for <days>d`: how many runs the deployment's log keeps, and for how long (either alone: `keep 500 runs`, `keep runs for 30d`). Fewer than the host's default asks nobody; more asks for approval, up to the host's ceiling."),
     ("collection", "`collection <name>`: a named store of items, used as `name[key]`, `name[key] = v`, `delete name[key]` and `name.list(prefix: p, after: a, limit: 50)`. One permission for each use."),
     ("folder", "`folder <name>`: files on the host, in a folder an admin binds to the name: `name[file]` reads a file's text, `name[file] = text` writes it when the run finishes (`name.create(file, text)` only if no file has that name), `delete name[file]` deletes it, `name.list(prefix: p, after: a, limit: 50)` lists files. One permission to read, one to write."),
     ("database", "`database <name>`: a database an admin binds on the host. `name.query(\"select … where id = $1\", id)` reads rows (a list of records by column name), `name.one(…)` the first row or nothing, `name.exec(\"update … where id = $1\", id, expect: 1)` changes rows when the run finishes, in one transaction with its other writes there (`expect:`: exactly that many, or nothing lands). The SQL is written in quotes; its tables are the permission, one to read each, one to write each. Values go after it as $1, $2, …, never into it. A document database (MongoDB) is called with record literals instead: `name.find(\"notes\", { owner: who }, sort: { at: -1 }, limit: 20)` reads documents, `name.find_one(…)` the first, and `name.insert(\"notes\", { … })`, `name.update(\"notes\", { _id: id }, { \"$set\": { text: t } }, expect: 1)` and `name.delete(\"notes\", { … })` write when the run finishes. The collection is the permission; the records' fields and operators are the flow's, and each computed value goes in as a value, never as an operator."),
@@ -575,6 +576,10 @@ impl Colourer {
                 }
             }
             h if HEADERS.contains(&h) => self.mark(start, end, Class::Keyword),
+            // `keep 500 runs` is a header; `keep = …` a name.
+            "keep" if { let next = self.skip_space(end); self.chars.get(next).is_some_and(char::is_ascii_digit) || self.word(next, self.word_end(next, &[])) == "runs" } => {
+                self.mark(start, end, Class::Keyword)
+            }
             w if !w.is_empty() && !w.starts_with(|c: char| c.is_ascii_digit()) => {
                 // `name = …` (not `==`): a binding.
                 let eq = self.skip_space(end);
@@ -846,6 +851,10 @@ mod tests {
         has(text, "lowercase", Function);
         has(text, "status", Property);
         has(text, "=", Operator);
+        // `keep` is a header before a number or `runs`, and a name otherwise.
+        has("flow f\nkeep 5 runs for 1d\n", "keep", Keyword);
+        has("flow f\nkeep runs for 30d\n", "keep", Keyword);
+        has("flow f\n\naction a (input) {\n  keep = input.n\n}\n", "keep", Definition);
         // Half typed: a string not closed is a string to the line's end, and what follows is read.
         let c = coloured("x = \"not closed\ny = lowercase(x)\n");
         assert!(c.contains(&("\"not closed".to_string(), String)), "{c:?}");

@@ -27,9 +27,6 @@ export type Sample = {
   optional?: string[];
   /** Web pages from other sites it answers (deploy settings' `browsers`: `*`, or origins). */
   browsers?: string;
-  /** Limits away from the host's defaults (deploy settings' needs), by name: the copy opened
-   *  asks for them. The text has no line for them. */
-  limits?: Record<string, number>;
   /** How to try it once deployed. */
   tryIt: string;
   /** The flow in the language, as its file in crates/holon-author/samples/ is written. */
