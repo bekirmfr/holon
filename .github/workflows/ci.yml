@@ -125,9 +125,13 @@ jobs:
   #    its tests one at a time, in order.
   e2e:
     runs-on: [self-hosted, Linux, X64]
-    # The atlas-notes sample's MongoDB (editor/e2e/server.mjs binds it).
     env:
+      # The atlas-notes sample's MongoDB (editor/e2e/server.mjs binds it).
       HOLON_TEST_MONGODB: mongodb://127.0.0.1:27017/holontest?replicaSet=rs0
+      # Builds go beside the checkout, which this runner keeps between runs (checkout's clean
+      # removes target/ inside it), in place of GitHub's cache: saving 600 MB to that from this
+      # runner hung at 0%.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../e2e-target
     strategy:
       fail-fast: false
       matrix:
@@ -138,9 +142,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
           version: v0.15.0
