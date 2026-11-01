@@ -277,7 +277,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     } else {
         waiting.iter().take(8).map(|(slug, w)| Line::from(vec![coloured("● ", WARN), bold(format!("{slug}  ")), Span::raw(w.clone())])).collect()
     };
-    f.render_widget(Paragraph::new(lines).block(panel("Waiting for you (2 to review)", false)), waits);
+    f.render_widget(Paragraph::new(lines).block(panel(&format!("Waiting for you ({})", waiting.len()), false)), waits);
 
     let names: Vec<String> = c.flows.iter().filter_map(|f| f["name"].as_str().map(str::to_string)).collect();
     let line = if names.is_empty() { Line::from(dim("No saved flows.")) } else { Line::from(Span::raw(names.join(", "))) };
