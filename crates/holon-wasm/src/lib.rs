@@ -1057,6 +1057,14 @@ pub fn describe_item_of(item: &str, by_hand: bool) -> String {
     holon_author::describe::describe_item_of(item, by_hand)
 }
 
+/// `item` in words, as [`describe_item_of`], and beside a secret it reads, where the flow sends
+/// it: `sent` is the deploy preview's `sent` (secret → hosts), none when JS passed nothing.
+#[wasm_bindgen]
+pub fn describe_item_sending(item: &str, by_hand: bool, sent: JsValue) -> Result<String, JsError> {
+    let sent: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = if sent.is_undefined() || sent.is_null() { Default::default() } else { from_js(sent, "sent")? };
+    Ok(holon_author::describe::describe_item_sending(item, by_hand, &sent))
+}
+
 /// `.holon` text, in either form, as a flow document: `{name, doc, names, lines, spans}` (each
 /// top-level node's name in the text, the line it is written on, and the range it is written
 /// over as `[from, to]` UTF-16 offsets, by id; docs/L4s/text-graph-link-L4.md). Throws the

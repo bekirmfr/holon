@@ -2,6 +2,8 @@
 //! requirement such as `Limit(max_requests=80)`) lets a flow do, in words: what the editor's
 //! deploy dialog and manifests show, and what `holon check` prints.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 /// `item` in words; an item it doesn't know is said as it is.
 pub fn describe_item(item: &str) -> String {
     let arg = |prefix: &str| -> Option<String> {
@@ -78,6 +80,24 @@ pub fn describe_item_of(item: &str, by_hand: bool) -> String {
     describe_item(item)
 }
 
+/// `item` in words (as [`describe_item_of`]), and beside a secret it reads, where the flow sends
+/// it (core's `sent_secrets`, secret → hosts): "read the secret "k", and send it to
+/// https://api.example.com". It isn't an item of its own; the approval says it here so a person
+/// sees where each secret goes.
+pub fn describe_item_sending(item: &str, by_hand: bool, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
+    let said = describe_item_of(item, by_hand);
+    let name = item.strip_prefix("SecretRead(\"").and_then(|i| i.strip_suffix("\")"));
+    let Some(hosts) = name.and_then(|n| sent.get(n)).filter(|h| !h.is_empty()) else {
+        return said;
+    };
+    let hosts: Vec<String> = hosts.iter().map(|h| format!("https://{h}")).collect();
+    let listed = match hosts.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => hosts.join(""),
+    };
+    format!("{said}, and send it to {listed}")
+}
+
 /// A database capability's argument (`shop/orders`) said as what it lets a flow do: `read table
 /// "orders" of database "shop"`.
 fn table_of(arg: &str, verb: &str) -> String {
@@ -89,7 +109,16 @@ fn table_of(arg: &str, verb: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::describe_item;
+    use super::{describe_item, describe_item_sending};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn says_where_a_secret_is_sent_beside_it() {
+        let sent = BTreeMap::from([("k".to_string(), BTreeSet::from(["a.example.com".to_string(), "b.example.com".to_string()]))]);
+        assert_eq!(describe_item_sending(r#"SecretRead("k")"#, false, &sent), r#"read the secret "k", and send it to https://a.example.com and https://b.example.com"#);
+        assert_eq!(describe_item_sending(r#"SecretRead("j")"#, false, &sent), r#"read the secret "j""#, "a secret sent nowhere");
+        assert_eq!(describe_item_sending("NetworkIngress", true, &sent), "can be run by hand");
+    }
 
     #[test]
     fn says_each_item_in_words() {

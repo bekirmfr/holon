@@ -327,7 +327,7 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     }
     let list = |k: &str| -> Vec<String> { preview.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default() };
     let (needs, missing) = (list("needs_approval"), list("missing_secrets"));
-    let described = |items: &[String]| items.iter().map(|i| format!("  - {}", agent::describe(i))).collect::<Vec<_>>().join("\n");
+    let described = |items: &[String]| items.iter().map(|i| format!("  - {}", agent::describe_sending(i, &plan.sent))).collect::<Vec<_>>().join("\n");
     let secrets_note = if missing.is_empty() {
         String::new()
     } else {
@@ -406,7 +406,7 @@ fn save(api: &dyn Api, text: &str, name: Option<&str>) -> Result<String, String>
     if let Some(by) = save_flow(api, &name, &saved_document(&plan, text))? {
         return Err(format!("not saved: a flow named \"{name}\" saved by {by} is already on {}; save it under another name so theirs isn't replaced", api.server()));
     }
-    let may = if plan.may.is_empty() { "It only computes.".to_string() } else { format!("When deployed, it may:\n{}", plan.may.iter().map(|i| format!("  - {}", agent::describe(i))).collect::<Vec<_>>().join("\n")) };
+    let may = if plan.may.is_empty() { "It only computes.".to_string() } else { format!("When deployed, it may:\n{}", plan.may.iter().map(|i| format!("  - {}", agent::describe_sending(i, &plan.sent))).collect::<Vec<_>>().join("\n")) };
     Ok(format!(
         "Saved \"{name}\" on {}, not deployed: it is on the editor's flows page, where a person can open it, and `deploy` deploys it (a first deploy, or one that needs a new permission, waits for them).\n{may}",
         api.server()

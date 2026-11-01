@@ -107,7 +107,7 @@ static SAMPLES: &[Sample] = &[
         name: "stripe-to-slack",
         title: "Stripe → Slack",
         description: "Verify a Stripe webhook's signature and post the event to a Slack channel; anything unsigned gets 400 and posts nothing.",
-        shows: &["stripe_verify", "secrets", "http_request", "clock", "hmac_sha256", "split"],
+        shows: &["stripe_verify", "secrets", "where secrets go", "http_request", "clock", "hmac_sha256", "split"],
         port: Some("8103"),
         interval: None,
         secrets: &[

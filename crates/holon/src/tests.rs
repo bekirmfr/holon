@@ -4540,6 +4540,23 @@ fn a_route_answers_with_a_secret_only_where_a_person_approved_it() {
     assert!(!serde_json::to_string(&entries).unwrap().contains("tok_live"), "the log never holds it");
 }
 
+/// The deploy preview says where each secret is sent, beside the items it asks for: the Slack
+/// path goes to Slack; the Stripe secret only verifies a signature, so it goes nowhere. The plan
+/// the CLI and the agent tools deploy from says the same.
+#[test]
+fn the_preview_says_where_each_secret_is_sent() {
+    let state = claims_state("");
+    let plan = holon_author::agent::plan(include_str!("../../holon-author/samples/stripe-to-slack.holon")).unwrap();
+    for u in &plan.units {
+        route(&state, &req("POST", "/unit", u.clone()));
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "stripe", "unit": plan.unit })).unwrap())));
+    assert_eq!(preview["sent"], serde_json::json!({ "slack_webhook_path": ["hooks.slack.com"] }));
+    assert_eq!(serde_json::to_value(&plan.sent).unwrap(), preview["sent"]);
+    let said = holon_author::agent::describe_sending("SecretRead(\"slack_webhook_path\")", &plan.sent);
+    assert_eq!(said, "read the secret \"slack_webhook_path\", and send it to https://hooks.slack.com");
+}
+
 /// What is computed from a secret isn't kept: a state, collection or channel write of it is
 /// refused, as a write of its value is (it would sit on disk, in every later snapshot, and in the
 /// channel's packs), while the run's other writes go through; and the run's answer, though the

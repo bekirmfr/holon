@@ -209,10 +209,22 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     let channels: Vec<&str> = file.iter().flat_map(|f| &f.headers).filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.as_str()) } else { None }).collect();
     let requests: Vec<&str> = file.iter().flat_map(|f| &f.items).filter_map(|item| if let Item::Route(r) = item { Some(r.request.text.as_str()) } else { None }).collect();
     let said = |text: String| Some(Hover { span: token.span, text });
+    // Where this flow sends the secret `name`, as its approval says it; nothing when it sends it
+    // nowhere (or the text doesn't compile).
+    let sent_to = |name: &str| -> String {
+        let sent = commands::sent_of(source);
+        match sent.get(name) {
+            Some(hosts) if !hosts.is_empty() => format!(" This flow sends it to {}.", hosts.iter().map(|h| format!("https://{h}")).collect::<Vec<_>>().join(", ")),
+            _ => String::new(),
+        }
+    };
 
     // A member: `secret.key`, `http.post`, `posts.put`, `req.json`; another field says nothing.
     if is(before(1), Tok::Dot) {
         let head = before(2).filter(|t| t.tok == Tok::Ident)?.text.as_str();
+        if head == "secret" {
+            return said(format!("`secret.{word}`: a secret of this flow.{} {}", sent_to(word), line_of(NOUNS, "secret").unwrap_or("")));
+        }
         if let Some(line) = line_of(NOUNS, head) {
             return said(line.into());
         }
@@ -233,7 +245,7 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     // The name a `secret` or `state` header declares.
     let declares = |noun: &str| before(1).is_some_and(|t| t.tok == Tok::Ident && t.text == noun) && !is(before(2), Tok::Dot);
     if declares("secret") {
-        return said(format!("`{word}`: a secret of this flow, used as `secret.{word}`. {}", line_of(NOUNS, "secret").unwrap_or("")));
+        return said(format!("`{word}`: a secret of this flow, used as `secret.{word}`.{} {}", sent_to(word), line_of(NOUNS, "secret").unwrap_or("")));
     }
     if declares("state") {
         return said(format!("`{word}`: a key of this flow's state, used as `state.{word}`. {}", line_of(NOUNS, "state").unwrap_or("")));
@@ -905,6 +917,12 @@ mod tests {
         assert!(flow.contains("POST /slugs") && flow.contains("it may:") && flow.contains("receive requests"), "the flow: {flow}");
         assert!(says(SLUGS, "receipt_key", 0).contains("a secret of this flow, used as `secret.receipt_key`"), "a declared secret");
         assert!(says(SLUGS, "last_post", 0).contains("a key of this flow's state"), "a declared state key");
+        // Where a secret goes, on its header and where it is used; one only verified with goes nowhere.
+        let stripe = include_str!("../samples/stripe-to-slack.holon");
+        assert!(hover(stripe, at(stripe, "secret slack_webhook_path", 0, 7)).unwrap().text.contains("This flow sends it to https://hooks.slack.com."), "a declared secret, sent");
+        assert!(hover(stripe, at(stripe, "secret.slack_webhook_path", 0, 7)).unwrap().text.contains("This flow sends it to https://hooks.slack.com."), "a secret used, sent");
+        let verified = hover(stripe, at(stripe, "secret.stripe_webhook_secret", 0, 7)).unwrap().text;
+        assert!(verified.contains("a secret of this flow") && !verified.contains("sends it"), "{verified}");
         assert_eq!(hover(SLUGS, at(SLUGS, "\"-\"", 0, 1)), None, "inside a string");
         assert_eq!(hover(SLUGS, at(SLUGS, "published.receipt", 0, 10)), None, "a field of a value");
     }

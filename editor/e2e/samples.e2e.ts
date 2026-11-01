@@ -151,6 +151,26 @@ test("browser-key's approval asks to answer with its secret, and once approved i
   expect(await config.json()).toEqual({ maps_key: key, version: 1 });
 });
 
+test("stripe-to-slack's approval says where each secret goes, and unsigned requests get 400", async ({ page, request }) => {
+  await openSample(page, "Stripe → Slack");
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const portField = settings.getByRole("textbox").first();
+  const port = Number(await portField.inputValue()) + SAMPLE_SHIFT;
+  await portField.fill(String(port));
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  const dialog = page.getByRole("dialog");
+  // The Slack path is posted to Slack; the Stripe secret only checks a signature.
+  await expect(dialog).toContainText('read the secret "slack_webhook_path", and send it to https://hooks.slack.com');
+  await expect(dialog).toContainText('read the secret "stripe_webhook_secret"');
+  await expect(dialog).not.toContainText('"stripe_webhook_secret", and send it');
+  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
+  await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
+  expect((await deployed).status()).toBe(200);
+  await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
+  expect((await request.post(`http://127.0.0.1:${port}/stripe`, { data: { type: "x" } })).status()).toBe(400);
+});
+
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
   // The port moved in the text (the text's wins while it is open), so the text still stands for
   // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains

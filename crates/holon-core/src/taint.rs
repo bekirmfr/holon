@@ -20,7 +20,10 @@
 //! The same walk, one secret at a time, finds what a route may answer its caller with
 //! ([`answered_secrets`]): each such secret is a permission of its own, `SecretAnswer("name")`,
 //! that a person approves at deploy. It is core's, so the host grants by the rule the editor and
-//! `holon check` show.
+//! `holon check` show. It also finds where each secret is sent ([`sent_secrets`]): the hosts of
+//! the requests its value, or something computed from it, may reach. That isn't a permission of
+//! its own (the hosts and the secret are each approved, and the graph fixes which goes where
+//! before the flow runs); the approval says it beside the secret, so a person sees it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -68,6 +71,9 @@ pub struct SecretFed {
     /// a node not followed could make. An effect carries no node, only its capability, so a write
     /// to a key counts as derived when any such sink writes that key.
     effects: std::collections::BTreeSet<Capability>,
+    /// The hosts of the outbound requests a secret may reach: in their path, headers or body, as
+    /// it is or computed from it. A node not followed counts every host it could call.
+    sent: BTreeSet<String>,
 }
 
 impl SecretFed {
@@ -206,6 +212,15 @@ impl<R: Resolver> Walk<'_, R> {
                     self.opaque(unit, path, fed);
                     vec![Taint::Derived; unit.outputs.len()]
                 } else {
+                    // A request fed a secret, as it is or computed from it, sends it to its host.
+                    if most > Taint::Clean
+                        && let Some(caps) = capabilities_of(name, &unit.params)
+                    {
+                        fed.sent.extend(caps.iter().filter_map(|c| match c {
+                            Capability::HttpRequest(host) => Some(host),
+                            _ => None,
+                        }));
+                    }
                     // A sink fed something computed from a secret: its effect carries it.
                     if outputs.contains(&Taint::Derived)
                         && let Some(caps) = capabilities_of(name, &unit.params)
@@ -235,7 +250,12 @@ impl<R: Resolver> Walk<'_, R> {
     /// effect it could make.
     fn opaque(&mut self, unit: &Unit, path: &[u32], fed: &mut SecretFed) {
         fed.opaque.push(path.to_vec());
-        fed.effects.extend(capabilities(unit, self.resolver).iter().filter(|c| !c.is_sourced()));
+        let caps = capabilities(unit, self.resolver);
+        fed.sent.extend(caps.iter().filter_map(|c| match c {
+            Capability::HttpRequest(host) => Some(host),
+            _ => None,
+        }));
+        fed.effects.extend(caps.iter().filter(|c| !c.is_sourced()));
     }
 
     fn composite(&mut self, unit: &Unit, children: &[Hash], edges: &[crate::Edge], inputs: &[Taint], path: &mut Vec<u32>, fed: &mut SecretFed) -> Vec<Taint> {
@@ -310,6 +330,25 @@ pub fn answered_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeSet<Strin
         }
     }
     answered
+}
+
+/// Where each secret `root` reads is sent: the hosts of the outbound requests (`http.get`, an
+/// upload, a stream…) its value, or something computed from it, may reach, in their path, headers
+/// or body. A one-way leaf, a Boolean and a call's answer cut it, as for [`answered_secrets`]; a
+/// secret sent nowhere isn't listed. Every pair is known before the flow runs (a request's host is
+/// a frozen param), so the approval says it beside the secret: "read the secret "k", and send it
+/// to https://api.example.com".
+pub fn sent_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeMap<String, BTreeSet<String>> {
+    let mut sent = BTreeMap::new();
+    for cap in capabilities(root, resolver).iter() {
+        if let Capability::SecretRead(name) = cap {
+            let hosts = SecretFed::of_secret(root, resolver, &name).sent;
+            if !hosts.is_empty() {
+                sent.insert(name, hosts);
+            }
+        }
+    }
+    sent
 }
 
 /// A unit's manifest as deployed: [`Capabilities::deployed`], and `SecretAnswer` for each secret
@@ -503,5 +542,47 @@ mod tests {
         assert!(answered_secrets(&signs, &r).is_empty());
         // Not a route: nothing is answered to a caller.
         assert!(answered_secrets(&Unit { params: vec![], ..leaks.clone() }, &r).is_empty());
+    }
+
+    /// `concat("Bearer ", token)` into a request's headers, `hmac(key, request)` into another's
+    /// body, and a third request fed nothing secret: only the first host is where a secret goes.
+    #[test]
+    fn where_each_secret_is_sent_is_known() {
+        let mut r = MapResolver::new();
+        let token = leaf(&mut r, "secret", vec![Param::frozen("name", "token")]);
+        let key = leaf(&mut r, "secret", vec![Param::frozen("name", "key")]);
+        let bearer = leaf(&mut r, "const", vec![Param::frozen("value", "Bearer "), Param::frozen("type", "Text")]);
+        let concat = leaf(&mut r, "concat", vec![]);
+        let empty = leaf(&mut r, "record", vec![]);
+        let headers = leaf(&mut r, "with_field", vec![Param::frozen("name", "authorization")]);
+        let hmac = leaf(&mut r, "hmac_sha256", vec![]);
+        let request = |host: &str| Param::frozen("host", host);
+        let api = leaf(&mut r, "http_request", vec![Param::frozen("method", "GET"), request("api.example.com")]);
+        let hook = leaf(&mut r, "http_request", vec![Param::frozen("method", "POST"), request("hooks.example.com")]);
+        let other = leaf(&mut r, "http_request", vec![Param::frozen("method", "GET"), request("other.example.com")]);
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![token, key, bearer, concat, empty, headers, hmac, api, hook, other],
+                edges: vec![
+                    e(2, 0, 3, 0),
+                    e(0, 0, 3, 1),
+                    e(4, 0, 5, 0),
+                    e(3, 0, 5, 1),
+                    e(5, 0, 7, 1),
+                    e(1, 0, 6, 0),
+                    e(BOUNDARY, 0, 6, 1),
+                    e(6, 0, 8, 2),
+                    e(BOUNDARY, 0, 9, 0),
+                    e(7, 0, BOUNDARY, 0),
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "message".into(), ty: Type::Text }],
+            outputs: vec![Port { name: "answer".into(), ty: Type::Any }],
+        };
+        let sent = sent_secrets(&root, &r);
+        assert_eq!(sent, BTreeMap::from([("token".to_string(), BTreeSet::from(["api.example.com".to_string()]))]), "the key is only hmac'd");
+        // A request's answer is what the far side said: answering with it sends nothing back out.
+        assert!(answered_secrets(&root, &r).is_empty());
     }
 }

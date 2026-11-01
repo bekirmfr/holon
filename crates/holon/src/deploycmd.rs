@@ -95,7 +95,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
         eprintln!("holon deploy: \"{slug}\" needs approval before it can deploy.");
         eprintln!("It asks to:");
         for cap in &needs {
-            eprintln!("  - {}", agent::describe(cap));
+            eprintln!("  - {}", agent::describe_sending(cap, &plan.sent));
         }
         eprintln!("\nApprove it here with holon deploy --approve, or in the editor at {server}: open \"{slug}\" from the flows page and deploy it there.");
         return 1;
@@ -110,7 +110,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
     if !needs.is_empty() {
         println!("  approved, as you:");
         for cap in &needs {
-            println!("    - {}", agent::describe(cap));
+            println!("    - {}", agent::describe_sending(cap, &plan.sent));
         }
     }
     if !plan.routes.is_empty() {

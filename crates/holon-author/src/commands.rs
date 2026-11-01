@@ -13,7 +13,7 @@
 use holon_core::{consent_name, MapResolver, Resolver};
 
 use crate::composites::Names;
-use crate::describe::describe_item_of;
+use crate::describe::describe_item_sending;
 use crate::flow::{derive_server, flow_unit, DerivedServer};
 use crate::lang::ast::Pos;
 use crate::lang::{self, Lowered};
@@ -116,6 +116,17 @@ fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(Strin
     (server, unit)
 }
 
+/// Where each secret the text reads is sent (core's `sent_secrets`, secret → hosts); nothing when
+/// it doesn't compile. What the editor's hover on a secret says.
+pub(crate) fn sent_of(source: &str) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    let mut store = MapResolver::new();
+    let Ok(c) = compile("text", source, &mut store) else {
+        return Default::default();
+    };
+    let (_, unit) = derive(&c, &mut store);
+    unit.ok().and_then(|(hash, _)| holon_core::parse_hash(&hash)).and_then(|h| store.resolve(&h)).map(|root| holon_core::sent_secrets(root, &store)).unwrap_or_default()
+}
+
 /// What the host does around a run that the manifest doesn't say (`docs/L4s/key-claims-L4.md`
 /// §3): a flow that calls out and both reads and writes a collection holds the keys it read in it
 /// from its first outbound request until it commits; a table, its rows, and a folder, its files
@@ -187,20 +198,23 @@ pub fn check(file: &str, source: &str) -> Report {
         out.push(if alone { "a server of actions, run by hand, listening on no port" } else { "and its actions, run by hand" }.into());
         out.extend(server.actions.iter().map(|a| format!("  {}", a.label)));
     }
-    let (caps, modules, mut problems) = match unit {
+    let (caps, modules, sent, mut problems) = match unit {
         Ok((hash, caps)) => {
             out.push(format!("unit {hash}"));
+            let root = holon_core::parse_hash(&hash).and_then(|h| store.resolve(&h));
             // A module (a js node) computes only, so it adds no capability; what it may consume
             // per call is a limit the deploy asks for, said here as the approval will say it.
-            let modules = holon_core::parse_hash(&hash).and_then(|h| store.resolve(&h)).map(|root| holon_core::module_limits_of(root, &store)).unwrap_or_default();
-            (caps, modules, vec![])
+            let modules = root.map(|root| holon_core::module_limits_of(root, &store)).unwrap_or_default();
+            // Where each secret goes, said beside it as the approval says it.
+            let sent = root.map(|root| holon_core::sent_secrets(root, &store)).unwrap_or_default();
+            (caps, modules, sent, vec![])
         }
-        Err(e) => (vec![], Default::default(), vec![e]),
+        Err(e) => (vec![], Default::default(), Default::default(), vec![e]),
     };
     out.push(if caps.is_empty() && modules.is_empty() { "it only computes: it reads and changes nothing outside" } else { "it may:" }.into());
     // A flow with no routes that reads `ingress` is run by hand: its NetworkIngress says so.
     let by_hand = server.endpoints.is_empty();
-    out.extend(caps.iter().map(|c| format!("  {}", describe_item_of(c, by_hand))));
+    out.extend(caps.iter().map(|c| format!("  {}", describe_item_sending(c, by_hand, &sent))));
     if let (Some(fuel), Some(memory)) = (modules.get(holon_core::FUEL_LIMIT), modules.get(holon_core::MEMORY_LIMIT)) {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }
@@ -581,6 +595,16 @@ mod tests {
             r.out[may + 1..],
             ["  receive requests", "  answer its callers with the secret \"token\", or with what is computed from it", "  read the secret \"key\"", "  read the secret \"token\""]
         );
+    }
+
+    /// Beside each secret, where the flow sends it: stripe-to-slack posts its Slack path to Slack,
+    /// and only verifies a signature with the Stripe secret, which sends it nowhere.
+    #[test]
+    fn check_says_where_each_secret_is_sent() {
+        let r = check("stripe-to-slack.holon", include_str!("../samples/stripe-to-slack.holon"));
+        assert_eq!(r.code, 0, "{r:?}");
+        assert!(r.out.iter().any(|l| l == "  read the secret \"slack_webhook_path\", and send it to https://hooks.slack.com"), "{:?}", r.out);
+        assert!(r.out.iter().any(|l| l == "  read the secret \"stripe_webhook_secret\""), "{:?}", r.out);
     }
 
     /// A flow that calls out and both reads and writes a collection is told, apart from what it

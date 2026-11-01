@@ -3,7 +3,7 @@
 //! statement's value, a run in one line, and the language's reference. All of it reads what core
 //! and the language already compute; the server side only moves it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use holon_core::{capabilities, consent_name, encode_preimage, genesis_units, MapResolver, Resolver, UnitBody};
 use serde_json::{json, Value};
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::builder::{closure_of, FlowDocument};
 use crate::commands;
 use crate::composites::Names;
-use crate::describe::describe_item;
+use crate::describe::{describe_item, describe_item_sending};
 use crate::flow::{derive_server, flow_unit, trace_of};
 use crate::lang::print::print_lines;
 use crate::wire::{WParam, WPort, WType};
@@ -36,6 +36,9 @@ pub struct Plan {
     pub browsers: Option<String>,
     /// What it may do, as consent names (`NetworkIngress`, `StateWrite("beats")`), sorted.
     pub may: Vec<String>,
+    /// Where each secret it reads is sent (core's `sent_secrets`): secret → hosts. Said beside the
+    /// secret's item ([`describe_sending`]).
+    pub sent: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// The text compiled into a [`Plan`]; or its mistakes, as `holon check` prints them.
@@ -61,6 +64,7 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     // the person approving sees them (the server merges them into the manifest the same way).
     may.extend(holon_core::module_limits_of(&root, &store).iter().map(|(name, n)| format!("Limit({name}={n})")));
     may.sort();
+    let sent = holon_core::sent_secrets(&root, &store);
     let units = closure_of(&[hash], &store).iter().filter_map(|h| store.resolve(h).and_then(|u| encode_preimage(u).ok())).collect();
     let mut document = serde_json::to_value(&c.doc).map_err(|e| e.to_string())?;
     document["trace"] = json!(trace);
@@ -78,6 +82,7 @@ pub fn plan(source: &str) -> Result<Plan, String> {
         requirements: settings.requirements.as_ref().and_then(|r| serde_json::to_value(r).ok()),
         browsers: settings.browsers.clone(),
         may,
+        sent,
     })
 }
 
@@ -106,6 +111,12 @@ pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").
 pub fn describe(item: &str) -> String {
     describe_item(item)
+}
+
+/// A consent name as a person reads it, and beside a secret it reads, where the flow sends it
+/// (`sent`, as [`Plan::sent`]): "read the secret "k", and send it to https://api.example.com".
+pub fn describe_sending(item: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
+    describe_item_sending(item, false, sent)
 }
 
 // ── values ──────────────────────────────────────────────────────────────────────────────────

@@ -523,6 +523,8 @@ fn preview_value(
         "items": items,
         "needs_approval": needs,
         "already_granted": granted,
+        // Where each secret it reads is sent (secret → hosts): said beside the secret's item.
+        "sent": holon_core::sent_secrets(root_unit, &resolver),
         // What the slug's grant covers now (none for a first deploy): beside `items`, what changes.
         "granted_now": previous.as_ref().map(|g| &g.items),
         // Secrets it can run without that an agent's deploy leaves out, for a person to grant back.

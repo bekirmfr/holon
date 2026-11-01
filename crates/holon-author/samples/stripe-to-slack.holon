@@ -4,6 +4,9 @@
 # event's type to a Slack channel through an incoming webhook. A request that isn't signed by
 # Stripe (or is too old) gets nothing sent, and a 400.
 #
+# Its approval says where each secret goes: "read the secret slack_webhook_path, and send it to
+# https://hooks.slack.com". The Stripe secret only checks a signature, so it is sent nowhere.
+#
 # Before it works, set the header's two secrets under the deployment's settings (the gear):
 #   stripe_webhook_secret   the endpoint's signing secret from Stripe (whsec_...)
 #   slack_webhook_path      your Slack incoming webhook's path (/services/...)

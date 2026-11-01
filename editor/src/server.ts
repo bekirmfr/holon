@@ -328,6 +328,8 @@ export type DeployPreview = {
   needs_approval: string[];
   /** Granted already: by host policy, or by the deployment's current grant. */
   already_granted: string[];
+  /** Where each secret it reads is sent (secret → hosts), said beside the secret's item. */
+  sent?: Record<string, string[]>;
   /** Why the host would refuse it, if it would. */
   refused: string | null;
   /** Secrets it reads that aren't set yet: those nodes stay empty until they are. */

@@ -97,6 +97,13 @@ asks for a permission of its own, `SecretAnswer("token")`: "answer its callers w
 isn't one. A deployment without that grant answers such a request 500, and its log says why; so
 does one whose answer holds a secret's value it didn't compute (a service echoing a header back).
 
+The approval also says where each secret goes. A secret that reaches a request's path, headers or
+body, as it is or computed from it, is listed with the hosts it is sent to: "read the secret
+"slack_webhook_path", and send it to https://hooks.slack.com". That isn't a permission of its own
+(the hosts are, and the graph fixes which secret goes to which before the flow runs); it is said
+there so you see it when you approve, and when you update a flow whose version moves a key to
+another host. `holon check`, `holon deploy` and the editor's hover on `secret.name` say the same.
+
 Until a secret is set, the nodes that read it have no value, and what depends on them doesn't
 run.
 

@@ -85,7 +85,7 @@ pub use module::{
 };
 pub use resolve::{MapResolver, Resolver};
 pub use simulate::{design_eval, mock_of, Simulated};
-pub use taint::{answered_secrets, deployed_capabilities};
+pub use taint::{answered_secrets, deployed_capabilities, sent_secrets};
 pub use triggers::{file_triggers, glob_matches, is_glob, FileTrigger};
 pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;
