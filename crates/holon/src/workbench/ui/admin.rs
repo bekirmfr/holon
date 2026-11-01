@@ -82,6 +82,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     };
     let focused = !a.right;
     let block = panel(&title, focused);
+    if focused {
+        super::keys_here(app, area);
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
     let n = app.admin_rows();
@@ -115,6 +118,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_pane(f: &mut Frame, app: &mut App, area: Rect) {
     let block = panel("", app.admin.right);
+    if app.admin.right {
+        super::keys_here(app, area);
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
     let width = inner.width.saturating_sub(1) as usize;

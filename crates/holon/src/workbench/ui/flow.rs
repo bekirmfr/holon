@@ -206,6 +206,7 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
         f.render_widget(Paragraph::new(lines).block(panel("Waiting", false)), wait_area);
     }
     let block = panel(&format!("Versions ({})", d.versions.len()), true);
+    super::keys_here(app, versions);
     let inner = block.inner(versions);
     f.render_widget(block, versions);
     list(f, app, inner, List::Section, d.versions.len(), Some(app.flow.sel()), true, |i, w| {
@@ -370,6 +371,9 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
         _ => ("Access".to_string(), access_rows(d).len()),
     };
     let block = panel(&title, focused);
+    if focused {
+        super::keys_here(app, left);
+    }
     let inner = block.inner(left);
     f.render_widget(block, left);
     if let (Section::Graph, Some(g)) = (s, app.flow.graph.as_ref()) {
@@ -409,6 +413,9 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
 /// The right pane: its tabs, then what the picked row holds under the tab picked.
 fn pane(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.flow.right;
+    if focused {
+        super::keys_here(app, area);
+    }
     let block = Block::new().borders(Borders::ALL).border_type(ratatui::widgets::BorderType::Rounded).border_style(Style::new().fg(if focused { ACCENT } else { DIM }));
     let inner = block.inner(area);
     f.render_widget(block, area);

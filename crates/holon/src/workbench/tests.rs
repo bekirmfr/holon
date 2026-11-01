@@ -606,6 +606,21 @@ fn the_text_completes_undoes_selects_and_finds() {
 }
 
 #[test]
+fn a_panels_keys_sit_on_its_bottom_edge_and_the_bar_keeps_those_that_work_anywhere() {
+    let (mut app, _) = app();
+    press(&mut app, KeyCode::Char('6'));
+    let shown = screen(&mut app, 140, 30);
+    let lines: Vec<&str> = shown.lines().collect();
+    let edge = lines.iter().position(|l| l.contains("open a copy")).unwrap_or_else(|| panic!("{shown}"));
+    assert!(lines[edge].contains('╰') && edge < lines.len() - 2, "on the samples' bottom edge: {shown}");
+    let bar = lines[lines.len() - 1];
+    assert!(bar.contains("quit") && bar.contains("command") && bar.contains("keys") && !bar.contains("open a copy"), "{bar}");
+    // A key on the edge is a button too.
+    press(&mut app, KeyCode::Char('?'));
+    assert!(matches!(app.modal, Some(Modal::Help { .. })));
+}
+
+#[test]
 fn every_page_draws_narrow_and_wide_and_without_a_server() {
     let (mut app, _) = app();
     tab_with(&mut app, BEATS);

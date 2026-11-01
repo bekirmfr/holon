@@ -119,25 +119,32 @@ pub(super) fn scrollbar(f: &mut Frame, area: Rect, n: usize, top: usize) {
 }
 
 /// A row of keys' chips from `area`'s left, as many as fit: what to press, then what it does;
-/// clicking one presses it.
-pub(super) fn chips(f: &mut Frame, app: &App, area: Rect, keys: &[(&str, &str, KeyCode, KeyModifiers)]) {
+/// clicking one presses it. How many fit.
+pub(super) fn chips(f: &mut Frame, app: &App, area: Rect, keys: &[(&str, &str, KeyCode, KeyModifiers)]) -> usize {
     let mut x = area.x + 1;
-    for (key, what, code, mods) in keys {
+    for (n, (key, what, code, mods)) in keys.iter().enumerate() {
         let k = format!(" {key} ");
         let w = format!(" {what}  ");
         let width = (k.chars().count() + w.chars().count()) as u16;
         if width > (area.x + area.width).saturating_sub(x) {
-            break;
+            return n;
         }
         let rect = Rect { x, y: area.y, width, height: 1 };
         f.render_widget(Paragraph::new(Line::from(vec![Span::styled(k, Style::new().fg(Color::Black).bg(Color::Gray)), dim(w)])), rect);
         app.hit(rect, Click::Key(*code, *mods));
         x += width;
     }
+    keys.len()
+}
+
+/// The panel the keys that work now belong to: they show along its bottom edge.
+pub(super) fn keys_here(app: &App, rect: Rect) {
+    *app.keys_at.borrow_mut() = Some(rect);
 }
 
 pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     app.hits.borrow_mut().clear();
+    *app.keys_at.borrow_mut() = None;
     let [top, body, note, keys] = Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(1), Constraint::Length(1)]).areas(f.area());
     draw_top(f, app, top);
     let main = if body.width >= SIDEBAR_FROM {
@@ -337,11 +344,26 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
     if app.modal.is_none() && app.prompt.is_none() && app.page != Page::Editor {
         keys.insert(keys.len().saturating_sub(1), ("r", "refresh", Char('r'), NONE));
     }
+    if app.modal.is_some() || app.prompt.is_some() {
+        chips(f, app, area, &keys);
+        return;
+    }
+    // The keys that work in one panel show along its bottom edge; along the bottom of the screen,
+    // those that work anywhere (and what didn't fit there).
+    let anywhere = |k: &str| matches!(k, "ctrl+p" | "q" | "r");
+    let mut bar: Vec<(&str, &str, KeyCode, KeyModifiers)> = keys.iter().filter(|(k, ..)| anywhere(k)).copied().collect();
+    if !(app.page == Page::Editor && app.typing) {
+        bar.extend([(":", "command", Char(':'), NONE), ("?", "keys", Char('?'), NONE)]);
+    }
+    let local: Vec<_> = keys.iter().filter(|(k, ..)| !anywhere(k)).copied().collect();
+    let shown = match *app.keys_at.borrow() {
+        Some(rect) => chips(f, app, Rect { x: rect.x + 1, y: rect.y + rect.height.saturating_sub(1), width: rect.width.saturating_sub(3), height: 1 }, &local),
+        None => 0,
+    };
+    bar.extend_from_slice(&local[shown..]);
+    let keys = bar;
     // At the right: the shell line, closed, in what the keys leave (its path shortened to fit,
     // never below a few letters of it). ctrl+` opens it from anywhere, even while typing.
-    if app.modal.is_some() || app.prompt.is_some() {
-        return chips(f, app, area, &keys);
-    }
     let used: usize = 1 + keys.iter().map(|(k, w, ..)| k.chars().count() + w.chars().count() + 5).sum::<usize>();
     let left = (area.width as usize).saturating_sub(used).max(22);
     let shell = format!(" {} ", super::shell::prompt(left.saturating_sub(6)));
@@ -448,6 +470,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     let block = panel(&format!("Deployed on {}", c.server()), true);
     let inner = block.inner(deps);
     f.render_widget(block, deps);
+    keys_here(app, deps);
     if c.deployments.is_empty() {
         f.render_widget(Paragraph::new(dim("Nothing deployed yet. Open a sample (6), or a file with :open <file>, and deploy it with ctrl+d.")).wrap(Wrap { trim: false }), inner);
     } else {
@@ -474,6 +497,7 @@ fn draw_approvals(f: &mut Frame, app: &App, area: Rect) {
     }
     let waiting = app.waiting();
     let block = panel("Approvals", true);
+    keys_here(app, area);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let [about, rows] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
@@ -492,6 +516,7 @@ fn draw_flows(f: &mut Frame, app: &App, area: Rect) {
     let c = app.client.as_ref().unwrap();
     let names = app.flow_names();
     let block = panel(&format!("Flows ({})", names.len()), true);
+    keys_here(app, area);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let [head, rows] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
@@ -526,6 +551,7 @@ fn draw_library(f: &mut Frame, app: &App, area: Rect) {
     let sel = app.sel[5].min(all.len().saturating_sub(1));
     let [left, about] = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(area);
     let block = panel(&format!("Samples ({})", all.len()), true);
+    keys_here(app, left);
     let inner = block.inner(left);
     f.render_widget(block, left);
     list(f, app, inner, List::Page(Page::Library), all.len(), Some(sel), true, |i, w| Line::from(vec![bold(pad(all[i].name, 20)), dim(fit(all[i].title, w.saturating_sub(20)))]));

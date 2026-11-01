@@ -100,6 +100,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             Line::from(dim("ctrl+p finds any of them by name.")),
         ];
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(panel("Editor", true)), area);
+        super::keys_here(app, area);
         return;
     }
     app.sync_graph();
@@ -154,6 +155,7 @@ fn draw_graph_view(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = !g.right || run.is_some();
     let what = if run.is_some() { "what the run played" } else { "as typed" };
     let block = panel(&format!("{}  ({what})", super::flow::graph_title(&g.view)), focused);
+    super::keys_here(app, if g.right && run.is_none() { right } else { left });
     let inner = block.inner(left);
     f.render_widget(block, left);
     super::flow::graph_list(f, app, inner, &g.view, g.sel, focused, List::Graph);
@@ -232,6 +234,7 @@ fn draw_text(f: &mut Frame, app: &mut App, area: Rect) {
     let find = app.find.is_some();
     let height = text.height.saturating_sub(2 + find as u16) as usize;
     app.text_height = height;
+    super::keys_here(app, text);
     let tab = &mut app.tabs[app.tab];
     tab.buf.scroll(height);
     let gutter = tab.buf.lines.len().to_string().len().max(2);
@@ -397,6 +400,8 @@ fn draw_runs_view(f: &mut Frame, app: &mut App, body: Rect) {
         Some(Err(e)) => f.render_widget(Paragraph::new(coloured(e.clone(), BAD)).wrap(Wrap { trim: false }).block(panel("Run", true)), top),
         None => f.render_widget(Paragraph::new(dim("No runs yet: call it, and they show here.")).block(panel("Runs", true)), top),
     }
+    // A run's keys: its list, its steps, its tabs, along the bottom of both.
+    super::keys_here(app, bottom);
     let left_width = (bottom.width * 2 / 5).clamp(24.min(bottom.width), 64);
     let [left, right] = Layout::horizontal([Constraint::Length(left_width), Constraint::Min(10)]).areas(bottom);
     draw_run_list(f, app, left);

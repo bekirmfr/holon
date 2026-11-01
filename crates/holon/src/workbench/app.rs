@@ -369,6 +369,8 @@ pub(crate) struct App {
     pub(crate) text_height: usize,
     /// Where each clickable thing was drawn last, the last drawn on top.
     pub(crate) hits: RefCell<Vec<(Rect, Click)>>,
+    /// The panel the keys that work now belong to, as last drawn: they show along its bottom.
+    pub(crate) keys_at: RefCell<Option<Rect>>,
     /// Where the mouse went down, while it is held: a drag in the text selects.
     pressed: Option<(Rect, Click)>,
     last_click: Option<Click>,
@@ -415,6 +417,7 @@ impl App {
             refreshed: Instant::now(),
             text_height: 20,
             hits: RefCell::new(vec![]),
+            keys_at: RefCell::new(None),
             pressed: None,
             last_click: None,
         }
