@@ -386,12 +386,12 @@ fn flow_status(app: &App, d: &client::Detail) -> Vec<Line<'static>> {
     let mut lines = vec![];
     let items = client::strings(&d.manifest, "items");
     let not_granted = client::strings(&d.manifest, "not_granted");
-    if let Ok(plan) = d.text.as_deref().map_err(String::clone).and_then(agent::plan) {
-        if !plan.routes.is_empty() {
-            lines.push(Line::from(bold("Routes")));
-            lines.extend(plan.routes.iter().map(|r| Line::from(format!("  {r}"))));
-            lines.push(Line::default());
-        }
+    if let Ok(plan) = d.text.as_deref().map_err(String::clone).and_then(agent::plan)
+        && !plan.routes.is_empty()
+    {
+        lines.push(Line::from(bold("Routes")));
+        lines.extend(plan.routes.iter().map(|r| Line::from(format!("  {r}"))));
+        lines.push(Line::default());
     }
     lines.push(Line::from(bold("It may")));
     if items.is_empty() {

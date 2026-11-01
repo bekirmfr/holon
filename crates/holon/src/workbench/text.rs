@@ -93,7 +93,7 @@ impl Buffer {
         if self.col > 0 {
             let line = &self.lines[self.row];
             // In leading spaces, a whole indent at once.
-            let n = if line.chars().take(self.col).all(|c| c == ' ') && self.col % INDENT.len() == 0 { INDENT.len() } else { 1 };
+            let n = if line.chars().take(self.col).all(|c| c == ' ') && self.col.is_multiple_of(INDENT.len()) { INDENT.len() } else { 1 };
             let (a, b) = (at(line, self.col - n), at(line, self.col));
             self.lines[self.row].replace_range(a..b, "");
             self.col -= n;
