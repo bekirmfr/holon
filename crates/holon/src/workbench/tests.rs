@@ -2,18 +2,19 @@
 //! screen: what a person sees and does there.
 
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 
-use super::app::{App, Modal, Page};
-use super::client::Client;
+use super::app::{App, Click, List, Modal, Page, Show, Tone};
+use super::client::{Client, Moment};
+use super::flow::{Row, Section};
 use super::ui;
 use crate::mcp::{Api, Body};
 use crate::tests::{body_bytes, req, test_state};
 use crate::{route, AppState};
 
-/// The router in-process, as the editor's server.
-struct InProcess(&'static AppState);
+/// The router in-process, as the editor's server; signed in, on a server with accounts.
+struct InProcess(&'static AppState, Option<String>);
 
 impl Api for InProcess {
     fn server(&self) -> String {
@@ -25,7 +26,13 @@ impl Api for InProcess {
             Some(Body::Json(v)) => serde_json::to_vec(&v).unwrap(),
             Some(Body::Bytes(b)) => b,
         };
-        let response = route(self.0, &req(method, path, bytes));
+        let mut request = req(method, path, bytes.clone());
+        if let Some(token) = &self.1 {
+            let mut headers: Vec<(String, String)> = request.headers().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            headers.push(("Authorization".into(), format!("Bearer {token}")));
+            request = rouille::Request::fake_http(method, path, headers, bytes);
+        }
+        let response = route(self.0, &request);
         Ok((response.status_code, body_bytes(response)))
     }
 }
@@ -33,8 +40,20 @@ impl Api for InProcess {
 fn app() -> (App, &'static AppState) {
     let state: &'static AppState = Box::leak(Box::new(test_state()));
     let mut app = App::new(None);
-    app.attach(Client::new(Box::new(InProcess(state))));
+    app.attach(Client::new(Box::new(InProcess(state, None))));
     (app, state)
+}
+
+/// The editor on a server with accounts, signed in as its first admin, ada.
+fn admin_app() -> App {
+    let mut state = test_state();
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let (token, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+    state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+    let state: &'static AppState = Box::leak(Box::new(state));
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(InProcess(state, Some(token)))));
+    app
 }
 
 fn press(app: &mut App, code: KeyCode) {
@@ -148,45 +167,392 @@ fn a_saved_flow_waits_for_a_person_who_approves_it_from_the_approvals_page() {
     assert!(app.waiting().is_empty(), "{:?}", app.waiting());
 }
 
-#[test]
-fn a_flows_page_shows_its_runs_and_a_run_explained() {
+/// Deploy BUMP from a tab, and run its action `times` times.
+fn bumped(times: usize) -> (App, &'static AppState) {
     let (mut app, state) = app();
     tab_with(&mut app, BUMP);
     ctrl(&mut app, 'd');
     press(&mut app, KeyCode::Enter);
-    let ran = route(state, &req("POST", "/trigger/bump/bump", b"{}".to_vec()));
-    let status = ran.status_code;
-    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(ran)));
+    for _ in 0..times {
+        let ran = route(state, &req("POST", "/trigger/bump/bump", b"{}".to_vec()));
+        let status = ran.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(ran)));
+    }
     app.refresh();
+    (app, state)
+}
 
+fn pane(app: &App) -> Vec<Row> {
+    app.flow.pane.as_ref().map(|(_, rows)| rows.clone()).unwrap_or_default()
+}
+
+#[test]
+fn a_flows_page_is_a_dashboard_then_each_record_beside_its_tabs() {
+    let (mut app, _) = bumped(2);
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Char('3'));
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.page, Page::Flow);
-    let shown = screen(&mut app, 120, 40);
-    assert!(shown.contains("It may") && shown.contains("state.n = n"), "{shown}");
-    press(&mut app, KeyCode::Right);
-    let shown = screen(&mut app, 120, 40);
-    assert!(shown.contains("run 0:"), "{shown}");
-    press(&mut app, KeyCode::Enter);
-    let Some(Modal::Explain { lines, .. }) = &app.modal else { panic!("{:?}", app.note.as_ref().map(|n| &n.text)) };
-    assert!(lines.iter().any(|l| l.contains("⇒")), "{lines:#?}");
-    press(&mut app, KeyCode::Esc);
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Last 24 h") && shown.contains("Typical run") && shown.contains("It may") && shown.contains("Versions"), "{shown}");
+    assert!(!shown.contains("state.n = n"), "the dashboard doesn't show its text: {shown}");
 
-    // In the editor, the same run over its text, a step at a time.
-    press(&mut app, KeyCode::Char('5'));
-    ctrl(&mut app, 'r');
-    let runs = app.tabs[0].runs.as_ref().expect("view runs");
-    assert!(!runs.noted().is_empty());
+    // Runs: the list on the left, the picked one's tabs on the right.
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.flow.section, Section::Runs);
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Runs, newest first (2)") && shown.contains(" Detail ") && shown.contains(" Timeline "), "{shown}");
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Field(k, v, _) if k == "Run" && v == "#1")), "{:?}", pane(&app));
+    press(&mut app, KeyCode::Down);
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Field(k, v, _) if k == "Run" && v == "#0")), "the pane follows the pick");
+    press(&mut app, KeyCode::Right);
+    assert!(app.flow.right);
+    press(&mut app, KeyCode::Right);
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Code { notes, .. } if notes.iter().any(|n| n.contains('⇒')))), "steps: {:?}", pane(&app));
+    press(&mut app, KeyCode::Right);
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Bar { .. })), "the timeline: {:?}", pane(&app));
+    press(&mut app, KeyCode::Right);
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(_, t) if t == "It didn't fail.")));
+    for (w, h) in [(130, 40), (80, 24), (60, 16)] {
+        for s in [Section::Status, Section::Runs, Section::History, Section::State, Section::Access, Section::Graph] {
+            app.flow_section(s);
+            screen(&mut app, w, h);
+        }
+    }
+
+    // The state, and the runs that changed it.
+    app.flow_section(Section::State);
+    assert_eq!(app.flow.cells.len(), 1);
+    press(&mut app, KeyCode::Enter);
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(_, t) if t.starts_with("state.n"))), "{:?}", pane(&app));
+
+    // Enter on a run: stepped through over its text, in the editor.
+    app.flow_section(Section::Runs);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Editor);
+    assert!(app.tabs[0].runs.as_ref().is_some_and(|r| !r.steps().is_empty()));
     let shown = screen(&mut app, 120, 40);
-    assert!(shown.contains("View runs") && shown.contains("step 1 of"), "{shown}");
+    assert!(shown.contains(" Runs ") && shown.contains("step 1 of") && shown.contains("Timeline"), "{shown}");
+}
+
+/// Two actions: a run of one plays none of the other.
+const TWO: &str = "flow two\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n\naction reset (input) {\n  state.n = 0\n  respond 0\n}\n";
+
+#[test]
+fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_the_graph() {
+    let (mut app, state) = app();
+    tab_with(&mut app, TWO);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    let ran = route(state, &req("POST", "/trigger/two/bump", b"{}".to_vec()));
+    let status = ran.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(ran)));
+    app.refresh();
+    ctrl(&mut app, 'r');
+    let runs = app.tabs[0].runs.as_ref().expect("its runs");
+    let steps = runs.steps();
+    let mut lines = steps.clone();
+    lines.sort();
+    assert_eq!(lines, [3, 4, 5, 6], "a step for each statement it ran (the write after the answer, as it ran): {steps:?}");
+    let text = match &runs.view {
+        Some(Ok(v)) => v.text.clone(),
+        other => panic!("no run: {other:?}"),
+    };
+    let line = |s: &str| text.iter().position(|l| l.contains(s)).unwrap() as u32 + 1;
+
+    // Code and graph side by side: what it played lit, the rest of the text dimmed.
+    ctrl(&mut app, 'b');
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("what the run played") && shown.contains("Timeline") && shown.contains("step 1 of"), "{shown}");
+    let g = app.tabs[0].graph.as_ref().expect("the graph of the text it ran on");
+    assert!(g.view.dim);
+    let lit = g.view.lit();
+    assert!(lit.contains(&line("state.n = n")) && lit.contains(&line("respond n")), "{lit:?}");
+    assert!(!lit.contains(&line("state.n = 0")), "the other action didn't run: {lit:?}");
+
+    // A step picked on the timeline is the row picked on the graph, and the line marked in the code.
+    let row_of = |app: &App| app.tabs[0].graph.as_ref().and_then(|g| g.view.row(g.sel)).map(|r| (r.line, r.last)).unwrap();
+    for (step, &line) in steps.iter().enumerate() {
+        click(&mut app, Click::Row(List::Timeline, step));
+        screen(&mut app, 140, 40);
+        let at = app.tabs[0].runs.as_ref().and_then(|r| r.at()).unwrap();
+        assert_eq!(at, line);
+        let (a, b) = row_of(&app);
+        assert!((a..=b).contains(&at), "step {step} at line {at}: the graph is at {a}..{b}");
+    }
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.tabs[0].runs.as_ref().unwrap().step, 0, "round the end");
+    // And a row clicked on the graph is that step.
+    let respond = (0..app.tabs[0].graph.as_ref().unwrap().view.rows.len()).find(|&i| app.tabs[0].graph.as_ref().unwrap().view.row(i).is_some_and(|r| r.line == line("respond n"))).unwrap();
+    click(&mut app, Click::Row(List::Graph, respond));
+    assert_eq!(app.tabs[0].runs.as_ref().and_then(|r| r.at()), Some(line("respond n")));
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains(&format!("{}▶", line("respond n"))), "the line marked: {shown}");
+
+    // The graph alone: the row's own part of the run beside it.
+    press(&mut app, KeyCode::Char('b'));
+    assert_eq!(app.show, Show::Graph);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("In this run") && shown.contains("respond n") && shown.contains("Ran"), "{shown}");
+    for (w, h) in [(80, 24), (40, 12)] {
+        screen(&mut app, w, h);
+    }
+    // Esc: back to the text, as typed.
+    press(&mut app, KeyCode::Esc);
+    assert!(app.tabs[0].runs.is_none());
+    let shown = screen(&mut app, 140, 40);
+    assert!(!app.tabs[0].graph.as_ref().unwrap().view.dim && shown.contains("as typed"), "{shown}");
+}
+
+#[test]
+fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
+    let (mut app, _) = bumped(1);
+    // A second version, run once: the state is 3 now.
+    tab_with(&mut app, &BUMP.replace("+ 1", "+ 2"));
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    assert!(app.note.as_ref().is_some_and(|n| !n.error), "{:?}", app.note.as_ref().map(|n| &n.text));
+    let c = app.client.as_ref().unwrap();
+    let (lines, failed) = c.action("bump", "bump", "{}").unwrap();
+    assert!(!failed, "{lines:?}");
+    let n = |app: &App| app.client.as_ref().unwrap().state("bump").unwrap()["n"]["value"].as_f64();
+    assert_eq!(n(&app), Some(3.0));
+
+    app.open_flow("bump");
+    app.flow_section(Section::History);
+    let d = app.detail.as_ref().unwrap();
+    let first = d.moments().iter().position(|m| matches!(m, Moment::Run(i) if d.runs[*i]["seq"] == d.runs[0]["seq"])).unwrap();
+    app.flow.sel[Section::History as usize] = first;
+    app.flow_load();
+    press(&mut app, KeyCode::Enter);
+    let Some(Modal::Restore { point, sel, .. }) = &app.modal else { panic!("{:?}", app.note.as_ref().map(|n| &n.text)) };
+    assert!(point.code.is_ok() && point.state.is_ok(), "{point:?}");
+    assert_eq!(*sel, 0, "both, first");
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("Go back to run #") && shown.contains("Its state only"), "{shown}");
+
+    press(&mut app, KeyCode::Enter);
+    let Some(Modal::DryRun { lines, refused, .. }) = &app.modal else { panic!("{:?}", app.note.as_ref().map(|n| &n.text)) };
+    assert!(!refused);
+    assert!(lines.iter().any(|(_, l)| l.contains("Version 1's code deploys again")), "{lines:#?}");
+    assert!(lines.iter().any(|(t, _)| *t == Tone::Removed), "the text it puts back, as a diff: {lines:#?}");
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("Dry run") && shown.contains("Nothing has changed yet"), "{shown}");
+    assert_eq!(n(&app), Some(3.0), "a dry run changes nothing");
+
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    let note = app.note.as_ref().unwrap();
+    assert!(!note.error && note.text.contains("deployed again") && note.text.contains("live again"), "{}", note.text);
+    assert_eq!(n(&app), Some(1.0));
+}
+
+#[test]
+fn the_palette_finds_a_flows_history_and_the_call_form_sends_an_action() {
+    let (mut app, _) = bumped(0);
+    press(&mut app, KeyCode::Esc);
+    ctrl(&mut app, 'p');
+    typed(&mut app, "bump hist");
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("Find anything") && shown.contains("bump history"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!((app.page, app.flow.section), (Page::Flow, Section::History));
+
+    press(&mut app, KeyCode::Char('c'));
+    let Some(Modal::Call(form)) = &app.modal else { panic!("{:?}", app.note.as_ref().map(|n| &n.text)) };
+    assert_eq!(form.items[form.sel].label(), "action bump");
+    press(&mut app, KeyCode::Enter);
+    let Some(Modal::Call(form)) = &app.modal else { panic!() };
+    assert!(!form.answer.is_empty() && form.answer.iter().all(|(t, _)| *t != Tone::Bad), "{:?}", form.answer);
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("Answer"), "{shown}");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.detail.as_ref().unwrap().runs.len(), 1, "the call ran, and the page shows it");
+}
+
+/// Click where something was drawn, as the mouse would.
+#[test]
+fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
+    let (mut app, _) = bumped(1);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('3'));
+    press(&mut app, KeyCode::Enter);
+    app.flow_section(Section::Graph);
+    let g = app.flow.graph.as_ref().expect("built as its section opens");
+    let names: Vec<String> = (0..g.rows.len()).filter_map(|i| g.row(i)).map(|r| r.name.clone()).collect();
+    assert_eq!(names, ["action bump (input)", "n", "state.n", "respond"]);
+    assert!(g.reached.contains(&3), "the newest run's values, by line: {:?}", g.reached);
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Graph: 3 statements") && shown.contains("state.n = n") && shown.contains('●'), "{shown}");
+
+    // What the newest run gave, by the trigger (where this run records it).
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right);
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Code { n: 3, notes, .. } if notes.iter().any(|n| n.contains('⇒')))), "{:?}", pane(&app));
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Esc);
+    // A statement: its text, what it takes from and feeds, its nodes.
+    press(&mut app, KeyCode::Down);
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Field(k, v, _) if k == "Feeds" && v.contains("state.n"))), "{:?}", pane(&app));
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(Tone::Head, t) if t.starts_with("Made of"))), "{:?}", pane(&app));
+
+    // Every node a row, the same statement still picked; enter edits the text there.
+    press(&mut app, KeyCode::Char('a'));
+    let g = app.flow.graph.as_ref().unwrap();
+    assert!(g.every && g.rows.len() > 4);
+    assert_eq!(g.row(app.flow.sel()).map(|r| r.line), Some(4));
+    screen(&mut app, 130, 40);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Editor);
+    assert_eq!(app.tabs[app.tab].buf.row, 3, "on line 4");
+}
+
+#[test]
+fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
+    let (mut app, _) = app();
+    tab_with(&mut app, BUMP);
+    let picked = |app: &App| app.tabs[0].graph.as_ref().and_then(|g| g.view.row(g.sel)).map(|r| r.name.clone()).unwrap_or_default();
+
+    // Both: the text keeps the keys, and the graph follows the cursor.
+    ctrl(&mut app, 'b');
+    assert_eq!(app.show, Show::Both);
+    assert!(app.typing, "the text keeps the keys");
+    app.tabs[0].buf.go(5, 1);
+    let shown = screen(&mut app, 130, 40);
+    assert_eq!(picked(&app), "state.n", "the statement at the cursor");
+    assert!(shown.contains("at the cursor") && shown.contains("flow bump"), "{shown}");
+    click(&mut app, Click::Row(List::Graph, 1));
+    assert_eq!(app.tabs[0].buf.row, 3, "a row clicked: the cursor goes to it, line 4");
+    // Typed, the graph is built again.
+    app.tabs[0].buf.go(6, 99);
+    typed(&mut app, "\nstate.m = n");
+    screen(&mut app, 130, 40);
+    assert!(app.tabs[0].graph.as_ref().unwrap().view.rows.len() == 5, "a statement more");
+    assert_eq!(picked(&app), "state.m");
+    for _ in 0..13 {
+        press(&mut app, KeyCode::Backspace);
+    }
+    assert_eq!(app.tabs[0].buf.text(), BUMP);
+
+    // The graph alone: its keys, at the statement the cursor was in.
+    ctrl(&mut app, 'b');
+    assert_eq!(app.show, Show::Graph);
+    assert!(!app.typing, "its keys are the graph's");
+    let g = app.tabs[0].graph.as_ref().unwrap();
+    let names: Vec<String> = (0..g.view.rows.len()).filter_map(|i| g.view.row(i)).map(|r| r.name.clone()).collect();
+    assert_eq!(names, ["action bump (input)", "n", "state.n", "respond"]);
+    assert_eq!(picked(&app), "respond");
+    press(&mut app, KeyCode::Up);
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("as typed") && shown.contains("state.n = n") && shown.contains("Takes from") && shown.contains('●'), "{shown}");
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.every), "a: every node");
+    assert_eq!(app.tabs[0].buf.text(), BUMP, "nothing typed into the text");
+    screen(&mut app, 80, 24);
+
+    // Enter: the text at the statement picked, the graph beside it.
+    press(&mut app, KeyCode::Enter);
+    assert!(app.show == Show::Both && app.typing);
+    assert_eq!(app.tabs[0].buf.row, 4, "state.n = n, line 5");
+
+    // The buttons on the tab bar pick one; esc leaves the graph for the code; a text that
+    // doesn't compile says so.
+    screen(&mut app, 130, 40);
+    click(&mut app, Click::Show(Show::Graph));
+    assert_eq!(app.show, Show::Graph);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.show == Show::Code && app.typing);
+    tab_with(&mut app, "flow broken\n\nroute GET /x (req) {\n  respond nope(\n}\n");
+    click(&mut app, Click::Show(Show::Both));
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("doesn't compile"), "{shown}");
+}
+
+fn click(app: &mut App, what: Click) {
+    let (rect, _) = *app.hits.borrow().iter().rev().find(|(_, c)| *c == what).unwrap_or_else(|| panic!("{what:?} wasn't drawn"));
+    app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: rect.x, row: rect.y, modifiers: KeyModifiers::NONE });
+}
+
+#[test]
+fn the_mouse_opens_pages_picks_rows_and_presses_buttons() {
+    let (mut app, _) = bumped(1);
+    press(&mut app, KeyCode::Esc);
+    screen(&mut app, 130, 40);
+    click(&mut app, Click::Page(Page::Flows));
+    assert_eq!(app.page, Page::Flows);
+    screen(&mut app, 130, 40);
+    click(&mut app, Click::Row(List::Page(Page::Flows), 0));
+    assert_eq!(app.page, Page::Flows, "a click picks");
+    click(&mut app, Click::Row(List::Page(Page::Flows), 0));
+    assert_eq!(app.page, Page::Flow, "a second click opens");
+    screen(&mut app, 130, 40);
+    click(&mut app, Click::Section(Section::Runs));
+    assert_eq!(app.flow.section, Section::Runs);
+    screen(&mut app, 130, 40);
+    click(&mut app, Click::DetailTab(2));
+    assert_eq!(app.flow.tab(), 2);
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.lines().last().is_some_and(|keys| keys.contains("refresh")), "every page but the editor's says r refreshes:\n{shown}");
+    let keys = shown.lines().last().unwrap_or_default();
+    let ends = if cfg!(windows) { "holon>" } else { "holon$" };
+    assert!(keys.contains(&super::shell::who()) && keys.ends_with(ends), "the shell line, closed, is a prompt: who, and the folder (the crate's, in tests):\n{shown}");
+
+    // The shell line at the bottom right opens with a click, and closes with esc.
+    click(&mut app, Click::Key(KeyCode::Char('`'), KeyModifiers::CONTROL));
+    assert_eq!(app.shell.as_deref(), Some(""));
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.lines().last().is_some_and(|line| line.contains("enter runs it in this terminal")), "{shown}");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.shell.is_none());
+    screen(&mut app, 130, 40);
+    click(&mut app, Click::Key(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert!(matches!(app.modal, Some(Modal::Call(_))), "the keys line's buttons press their keys");
+}
+
+#[test]
+fn the_text_completes_undoes_selects_and_finds() {
+    let (mut app, _) = app();
+    tab_with(&mut app, BEATS);
+    app.tabs[0].buf.go(4, 99);
+    typed(&mut app, "\nx = sta");
+    let complete = app.complete.as_ref().expect("offered as a name is typed");
+    assert!(complete.items.iter().any(|c| c.label == "state"), "{:?}", complete.items.iter().map(|c| &c.label).collect::<Vec<_>>());
+    let at = complete.items.iter().position(|c| c.label == "state").unwrap();
+    app.take_completion(Some(at));
+    assert_eq!(app.tabs[0].buf.lines[4], "x = state");
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("x = state"), "{shown}");
+
+    ctrl(&mut app, 'z');
+    assert_eq!(app.tabs[0].buf.lines[4], "x = sta", "undo takes back the completion");
+    ctrl(&mut app, 'z');
+    assert_eq!(app.tabs[0].buf.lines[4], "x =", "then a word at a time");
+    for _ in 0..3 {
+        ctrl(&mut app, 'z');
+    }
+    assert_eq!(app.tabs[0].buf.text(), BEATS, "and then the line");
+    ctrl(&mut app, 'y');
+    assert_ne!(app.tabs[0].buf.text(), BEATS);
+
+    // Shift+arrows select; ctrl+c copies; ctrl+f finds and selects.
+    app.tabs[0].buf.go(1, 1);
+    app.key(KeyEvent::new(KeyCode::End, KeyModifiers::SHIFT));
+    ctrl(&mut app, 'c');
+    assert_eq!(app.clipboard, "flow beats");
+    assert_eq!(app.to_clipboard.as_deref(), Some("flow beats"), "for the terminal's clipboard too");
+    ctrl(&mut app, 'f');
+    typed(&mut app, "every");
+    assert_eq!(app.tabs[0].buf.selected().as_deref(), Some("every"));
+    assert_eq!(app.tabs[0].buf.row, 1);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.find.is_none());
 }
 
 #[test]
 fn every_page_draws_narrow_and_wide_and_without_a_server() {
     let (mut app, _) = app();
     tab_with(&mut app, BEATS);
-    for page in [Page::Overview, Page::Approvals, Page::Flows, Page::Editor, Page::Library] {
+    for page in [Page::Overview, Page::Approvals, Page::Flows, Page::Editor, Page::Library, Page::Admin] {
         app.page = page;
         for (w, h) in [(80, 24), (140, 45), (40, 12)] {
             screen(&mut app, w, h);
@@ -223,5 +589,137 @@ fn commands_open_files_and_save_them() {
     ctrl(&mut app, 's');
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "flow fresh\n");
     assert!(!app.tabs[0].dirty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Put `text` in the open input dialog, in place of what it holds, and press enter.
+fn answer(app: &mut App, text: &str) {
+    let Some(Modal::Input { value, .. }) = app.modal.as_mut() else { panic!("no input dialog: {:?}", app.note.as_ref().map(|n| &n.text)) };
+    *value = text.to_string();
+    press(app, KeyCode::Enter);
+}
+
+#[test]
+fn a_draft_starts_with_ctrl_n_and_its_first_save_asks_for_a_file() {
+    let dir = std::env::temp_dir().join(format!("holon-draft-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(None);
+    ctrl(&mut app, 'n');
+    assert_eq!((app.page, app.tabs.len(), app.tabs[0].name.as_str()), (Page::Editor, 1, "draft 1"));
+    assert!(app.typing && app.tabs[0].draft && app.tabs[0].dirty());
+    assert_eq!(app.tabs[0].buf.text(), holon_author::commands::STARTER);
+    // n on the page keys starts another, numbered after the first.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('n'));
+    assert_eq!(app.tabs[1].name, "draft 2");
+
+    ctrl(&mut app, 's');
+    let Some(Modal::Input { value, .. }) = &app.modal else { panic!("no dialog") };
+    assert_eq!(value, "my-flow.holon", "named for its flow");
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("Save draft 2 as"), "{shown}");
+    // A file that is there already is never written over from here.
+    let there = dir.join("there.holon");
+    std::fs::write(&there, "flow there\n").unwrap();
+    answer(&mut app, &there.display().to_string());
+    assert!(app.note.as_ref().is_some_and(|n| n.error && n.text.contains("there already")));
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), "flow there\n");
+    assert!(app.tabs[1].draft);
+
+    let file = dir.join("mine.holon");
+    let _ = std::fs::remove_file(&file);
+    ctrl(&mut app, 's');
+    answer(&mut app, &file.display().to_string());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), holon_author::commands::STARTER);
+    let tab = &app.tabs[1];
+    assert!(!tab.draft && !tab.dirty() && tab.name == "mine.holon" && tab.path.as_deref() == Some(file.as_path()));
+    // Saved, it saves to its file without asking.
+    typed(&mut app, "# more\n");
+    ctrl(&mut app, 's');
+    assert!(app.modal.is_none());
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("# more\n"));
+    // The next draft takes the first number free.
+    ctrl(&mut app, 'n');
+    assert_eq!(app.tabs[2].name, "draft 2");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
+    let (mut app, _) = app();
+    press(&mut app, KeyCode::Char('7'));
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("This page is the server's admins'") && shown.contains("no accounts"), "{shown}");
+
+    let mut app = admin_app();
+    press(&mut app, KeyCode::Char('7'));
+    assert_eq!(app.page, Page::Admin);
+    let shown = screen(&mut app, 140, 40);
+    for part in ["People", "API keys", "Folders", "Databases", "Secrets", "Server"] {
+        assert!(shown.contains(part), "{part}: {shown}");
+    }
+
+    // People: invite, then change the role; the link is shown once, and copied.
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "ana editor ana@example.com");
+    let Some(Modal::Lines { title, .. }) = &app.modal else { panic!("no link: {:?}", app.note.as_ref().map(|n| &n.text)) };
+    assert_eq!(title, "ana is invited");
+    assert!(app.to_clipboard.is_some());
+    press(&mut app, KeyCode::Esc);
+    let ana = app.admin.users.iter().position(|u| u["name"] == "ana").expect("ana is listed");
+    app.admin_pick(List::Admin, ana, false);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("ana@example.com") && shown.contains("invited"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    answer(&mut app, "viewer");
+    assert!(app.admin.users.iter().any(|u| u["name"] == "ana" && u["role"] == "viewer"), "{:?}", app.note.as_ref().map(|n| &n.text));
+
+    // API keys: made, shown once, then revoked.
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "nightly viewer");
+    assert!(matches!(&app.modal, Some(Modal::Lines { title, .. }) if title == "nightly: an API key"), "{:?}", app.note.as_ref().map(|n| &n.text));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.admin.tokens.len(), 1);
+    press(&mut app, KeyCode::Delete);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.admin.tokens.is_empty(), "{:?}", app.note.as_ref().map(|n| &n.text));
+
+    // Folders: bound with holon folder add's flags, then unbound.
+    let dir = std::env::temp_dir().join(format!("holon-admin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, &format!("inbox {} --read-only", dir.display()));
+    let f = app.admin.folders.first().unwrap_or_else(|| panic!("not bound: {:?}", app.note.as_ref().map(|n| &n.text)));
+    assert_eq!((f["name"].as_str(), f["access"].as_str()), (Some("inbox"), Some("read")));
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("inbox") && shown.contains("every flow"), "{shown}");
+    press(&mut app, KeyCode::Delete);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.admin.folders.is_empty(), "{:?}", app.note.as_ref().map(|n| &n.text));
+
+    // Databases: a SQLite file, its schema, its tables.
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, &format!("shop {} --schema create table if not exists items (id integer primary key)", dir.join("shop.db").display()));
+    assert_eq!(app.admin.databases.len(), 1, "{:?}", app.note.as_ref().map(|n| &n.text));
+    press(&mut app, KeyCode::Enter);
+    let Some(Modal::Lines { lines, .. }) = &app.modal else { panic!("no tables: {:?}", app.note.as_ref().map(|n| &n.text)) };
+    assert!(lines.iter().any(|(_, l)| l == "items"), "{lines:?}");
+    press(&mut app, KeyCode::Esc);
+
+    // Secrets and the server: their panes read the server.
+    press(&mut app, KeyCode::Tab);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Read from the environment"), "{shown}");
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Signing in through an identity provider"), "{shown}");
+    for (w, h) in [(80, 24), (40, 12)] {
+        screen(&mut app, w, h);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

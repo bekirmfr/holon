@@ -31,6 +31,7 @@ pub mod composites;
 pub mod describe;
 pub mod editing;
 pub mod flow;
+pub mod graph;
 pub mod group;
 pub mod lang;
 pub mod modules;

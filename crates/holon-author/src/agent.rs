@@ -380,6 +380,17 @@ pub struct RunView {
     pub notes: BTreeMap<u32, Vec<String>>,
     /// After the text: claims no line explains, the answer, what it performed and called, why it failed.
     pub after: Vec<String>,
+    /// When each statement ran, in the order they started: what a run's timeline draws.
+    pub steps: Vec<Step>,
+}
+
+/// A statement's part of a run: its line (1-based), and when its steps began and ended, in
+/// microseconds from the run's start (its last round's, for a run that called out).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    pub line: u32,
+    pub start_us: f64,
+    pub end_us: f64,
 }
 
 /// One recorded run, as the flow's text with each statement's value under it: what a person (or
@@ -522,7 +533,32 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
     if let Some(e) = entry.get("error").and_then(Value::as_str) {
         out.push(format!("failed: {e}"));
     }
-    Ok(RunView { head, no_steps, text: text.lines().map(str::to_string).collect(), notes, after: out })
+    let line_of: HashMap<&str, u32> = lines.iter().map(|(id, l)| (id.as_str(), *l)).collect();
+    let steps = steps_of(document, entry, &line_of);
+    Ok(RunView { head, no_steps, text: text.lines().map(str::to_string).collect(), notes, after: out, steps })
+}
+
+/// When each line's nodes ran: the timeline's steps at the run's own depth, by line.
+fn steps_of(document: &Value, entry: &Value, line_of: &HashMap<&str, u32>) -> Vec<Step> {
+    let (map, depth) = run_trace(document, entry);
+    let timeline = entry.get("timeline").and_then(Value::as_array).cloned().unwrap_or_default();
+    let round = |t: &Value| t.get("round").and_then(Value::as_u64).unwrap_or(0);
+    let last = timeline.iter().map(round).max().unwrap_or(0);
+    let mut by_line: BTreeMap<u32, Step> = BTreeMap::new();
+    for t in timeline.iter().filter(|t| round(t) == last) {
+        let path: Vec<u64> = t.get("path").and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+        if depth == 0 || path.len() != depth || (depth == 2 && path[0] != 0) {
+            continue;
+        }
+        let Some(&line) = map.get(path[depth - 1] as usize).and_then(|id| line_of.get(id.as_str())) else { continue };
+        let (start, end) = (t.get("start_us").and_then(Value::as_f64).unwrap_or(0.0), t.get("end_us").and_then(Value::as_f64).unwrap_or(0.0));
+        let step = by_line.entry(line).or_insert(Step { line, start_us: start, end_us: end });
+        step.start_us = step.start_us.min(start);
+        step.end_us = step.end_us.max(end);
+    }
+    let mut steps: Vec<Step> = by_line.into_values().collect();
+    steps.sort_by(|a, b| a.start_us.total_cmp(&b.start_us).then(a.line.cmp(&b.line)));
+    steps
 }
 
 // ── the reference ───────────────────────────────────────────────────────────────────────────
