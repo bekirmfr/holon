@@ -597,6 +597,30 @@ mod tests {
         );
     }
 
+    /// The canvas marks every sink a secret reaches, by node: the request it is sent in, the state
+    /// write the host refuses, the route's answer; a node that only computes with it (stripe's
+    /// verify, an hmac inside) isn't marked.
+    #[test]
+    fn the_canvas_marks_each_sink_a_secret_reaches() {
+        let text = "flow marks\nport 8199\nsecret k\nstate kept\n\nroute GET /x (req) {\n  sent = http.get(\"api.example.com\", \"/v1\", headers: { authorization: \"Bearer {secret.k}\" })\n  state.kept = secret.k\n  respond { key: secret.k, status: sent.status }\n}\n";
+        let marks_of = |text: &str| {
+            let mut store = MapResolver::new();
+            let c = compile("t.holon", text, &mut store).unwrap_or_else(|r| panic!("{r:?}"));
+            let marks = crate::flow::secret_marks(&c.doc.nodes, &c.doc.edges, &mut store, port_of(&c));
+            let kind = |id: &str| c.doc.nodes.iter().find(|n| n.id == id).map(|n| n.data.name.clone()).unwrap_or_default();
+            marks.into_iter().map(|(id, lines)| (c.names.get(&id).cloned().unwrap_or_else(|| kind(&id)), lines)).collect::<std::collections::BTreeMap<String, Vec<String>>>()
+        };
+        let marks = marks_of(text);
+        assert_eq!(marks.get("sent"), Some(&vec!["sends the secret \"k\" to https://api.example.com".to_string()]), "{marks:?}");
+        assert_eq!(marks.get("store_write"), Some(&vec!["would keep the secret \"k\" (write its state \"kept\"): the host refuses it".to_string()]), "{marks:?}");
+        assert_eq!(marks.get("respond"), Some(&vec!["answers its caller with the secret \"k\" (approved apart, at deploy)".to_string()]), "{marks:?}");
+        assert_eq!(marks.len(), 3, "nothing else: {marks:?}");
+
+        let stripe = marks_of(include_str!("../samples/stripe-to-slack.holon"));
+        assert_eq!(stripe.get("sent"), Some(&vec!["sends the secret \"slack_webhook_path\" to https://hooks.slack.com".to_string()]), "{stripe:?}");
+        assert_eq!(stripe.len(), 1, "verifying with the Stripe secret marks nothing: {stripe:?}");
+    }
+
     /// Beside each secret, where the flow sends it: stripe-to-slack posts its Slack path to Slack,
     /// and only verifies a signature with the Stripe secret, which sends it nowhere.
     #[test]

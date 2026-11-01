@@ -74,6 +74,10 @@ pub struct SecretFed {
     /// The hosts of the outbound requests a secret may reach: in their path, headers or body, as
     /// it is or computed from it. A node not followed counts every host it could call.
     sent: BTreeSet<String>,
+    /// Each sink a secret reaches, by the node's path, and what it does: a request it sends, a
+    /// write, a send, a call. A node not followed counts every effect it could make. What the
+    /// editor marks on the canvas.
+    sinks: BTreeSet<(Vec<u32>, Capability)>,
 }
 
 impl SecretFed {
@@ -133,6 +137,19 @@ impl SecretFed {
     /// none of its outputs.
     pub fn derives(&self, path: &[u32]) -> bool {
         self.under_opaque(path) || self.opaque.iter().any(|o| o == path) || self.nodes.get(path).is_some_and(|(_, outs)| outs.contains(&Taint::Derived))
+    }
+
+    /// Each sink a secret reaches: the node's path, and the effect it makes with it.
+    pub fn sinks(&self) -> impl Iterator<Item = (&[u32], &Capability)> {
+        self.sinks.iter().map(|(path, cap)| (path.as_slice(), cap))
+    }
+
+    /// How much of a secret output `port` of the node at `path` may carry.
+    pub fn output(&self, path: &[u32], port: usize) -> Taint {
+        if self.under_opaque(path) || self.opaque.iter().any(|o| o == path) {
+            return Taint::Derived;
+        }
+        self.nodes.get(path).and_then(|(_, outs)| outs.get(port).copied()).unwrap_or_default()
     }
 
     /// How much of a secret input `port` of the node at `path` may carry.
@@ -212,7 +229,9 @@ impl<R: Resolver> Walk<'_, R> {
                     self.opaque(unit, path, fed);
                     vec![Taint::Derived; unit.outputs.len()]
                 } else {
-                    // A request fed a secret, as it is or computed from it, sends it to its host.
+                    // A request fed a secret, as it is or computed from it, sends it to its host;
+                    // any sink fed one does something with it. (A piped stream's channel gets the
+                    // far side's answer, not what was sent.)
                     if most > Taint::Clean
                         && let Some(caps) = capabilities_of(name, &unit.params)
                     {
@@ -220,6 +239,8 @@ impl<R: Resolver> Walk<'_, R> {
                             Capability::HttpRequest(host) => Some(host),
                             _ => None,
                         }));
+                        let sinks = caps.iter().filter(|c| !(c.is_sourced() || name == "http_stream" && matches!(c, Capability::ChannelSend(_))));
+                        fed.sinks.extend(sinks.map(|c| (path.clone(), c)));
                     }
                     // A sink fed something computed from a secret: its effect carries it.
                     if outputs.contains(&Taint::Derived)
@@ -256,6 +277,7 @@ impl<R: Resolver> Walk<'_, R> {
             _ => None,
         }));
         fed.effects.extend(caps.iter().filter(|c| !c.is_sourced()));
+        fed.sinks.extend(caps.iter().filter(|c| !c.is_sourced()).map(|c| (path.to_vec(), c)));
     }
 
     fn composite(&mut self, unit: &Unit, children: &[Hash], edges: &[crate::Edge], inputs: &[Taint], path: &mut Vec<u32>, fed: &mut SecretFed) -> Vec<Taint> {
@@ -582,6 +604,10 @@ mod tests {
         };
         let sent = sent_secrets(&root, &r);
         assert_eq!(sent, BTreeMap::from([("token".to_string(), BTreeSet::from(["api.example.com".to_string()]))]), "the key is only hmac'd");
+        // The sinks each secret reaches, by node: the token's request; nothing for the key.
+        let sinks = |name: &str| SecretFed::of_secret(&root, &r, name).sinks().map(|(p, c)| (p.to_vec(), c.clone())).collect::<Vec<_>>();
+        assert_eq!(sinks("token"), vec![(vec![7], Capability::HttpRequest("api.example.com".into()))]);
+        assert!(sinks("key").is_empty());
         // A request's answer is what the far side said: answering with it sends nothing back out.
         assert!(answered_secrets(&root, &r).is_empty());
     }

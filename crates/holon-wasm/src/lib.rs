@@ -706,6 +706,14 @@ impl Evaluator {
         to_js(&flow::derive_server(&nodes, &wires, &mut self.resolver, port))
     }
 
+    /// What each canvas node does with a secret, by node id: a line for each sink a secret reaches
+    /// there (holon-author's `secret_marks`), for the canvas to mark it. `{}` for a canvas that
+    /// doesn't derive.
+    pub fn secret_marks(&mut self, nodes: JsValue, edges: JsValue, port: &str) -> Result<JsValue, JsError> {
+        let (nodes, wires) = canvas(nodes, edges)?;
+        to_js(&flow::secret_marks(&nodes, &wires, &mut self.resolver, port))
+    }
+
     /// The unit a flow deploys as, stored here: its server when it has routes, else the whole flow
     /// as one composite. Throws why it can't be.
     pub fn flow_unit(&mut self, nodes: JsValue, edges: JsValue, port: &str) -> Result<String, JsError> {

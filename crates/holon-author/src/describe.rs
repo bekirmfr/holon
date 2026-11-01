@@ -98,6 +98,26 @@ pub fn describe_item_sending(item: &str, by_hand: bool, sent: &BTreeMap<String, 
     format!("{said}, and send it to {listed}")
 }
 
+/// What a sink does with the secret `secret` it is fed, as the canvas marks it: "sends the secret
+/// "k" to https://api.example.com"; a write or a call the host refuses says so.
+pub fn describe_secret_sink(secret: &str, sink: &holon_core::Capability) -> String {
+    use holon_core::Capability::*;
+    let what = describe_item(&holon_core::consent_name(sink));
+    match sink {
+        HttpRequest(host) => format!("sends the secret \"{secret}\" to https://{host}"),
+        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => {
+            format!("would keep the secret \"{secret}\" ({what}): the host refuses it")
+        }
+        RunsAction(_) => format!("would hand the secret \"{secret}\" to another flow ({what}): the host refuses it"),
+        _ => format!("{what}, with the secret \"{secret}\""),
+    }
+}
+
+/// A route's answer that carries the secret `secret`, as the canvas marks the node that makes it.
+pub fn describe_secret_answer(secret: &str) -> String {
+    format!("answers its caller with the secret \"{secret}\" (approved apart, at deploy)")
+}
+
 /// A database capability's argument (`shop/orders`) said as what it lets a flow do: `read table
 /// "orders" of database "shop"`.
 fn table_of(arg: &str, verb: &str) -> String {

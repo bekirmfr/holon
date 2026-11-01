@@ -256,6 +256,91 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
     DerivedServer { endpoints, clocks, files, actions, errors, server_hash, trace }
 }
 
+/// What each canvas node does with a secret, for the canvas to mark it: by node id, a line for each
+/// sink a secret reaches there (core's `SecretFed`): a request it is sent in, a write or a call the
+/// host refuses, a route's answer. A holon placed on the canvas is marked for what its insides do.
+/// Nothing for a canvas that doesn't derive.
+pub fn secret_marks(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str) -> BTreeMap<String, Vec<String>> {
+    use holon_core::Resolver as _;
+    let derived = derive_server(nodes, wires, store, port);
+    // Each handler (a route's, a clock's, a file's, an action's: the composite of its nodes, child
+    // 0 of what wraps it), the canvas node each of its children is, and whether its first output
+    // answers a caller (a route's; an action's answer goes back through Holon, withheld).
+    let labelled = derived
+        .endpoints
+        .iter()
+        .map(|e| (&e.hash, format!("{} {}", e.method, e.path), true))
+        .chain(derived.clocks.iter().map(|c| (&c.hash, c.label.clone(), false)))
+        .chain(derived.files.iter().map(|f| (&f.hash, f.label.clone(), false)))
+        .chain(derived.actions.iter().map(|a| (&a.hash, a.label.clone(), false)));
+    let mut handlers: Vec<(Unit, Vec<String>, bool)> = Vec::new();
+    for (hash, label, answers) in labelled {
+        let handler = parse_hash(hash).and_then(|h| store.resolve(&h)).and_then(|wrapper| match &wrapper.body {
+            UnitBody::Composite { children, .. } => children.first().and_then(|c| store.resolve(c)).cloned(),
+            _ => None,
+        });
+        if let (Some(handler), Some(trace)) = (handler, derived.trace.get(&label)) {
+            let nodes = nodes_of(&handler, trace);
+            handlers.push((handler, nodes, answers));
+        }
+    }
+    // A flow without handlers runs whole.
+    if derived.endpoints.is_empty() && derived.clocks.is_empty() && derived.files.is_empty() && derived.actions.is_empty() && derived.errors.is_empty() && !nodes.is_empty() {
+        let whole = flow_unit(nodes, wires, store, port).ok().and_then(|h| store.resolve(&h)).cloned();
+        if let Some(whole) = whole {
+            let all: Vec<&Node> = nodes.iter().collect();
+            let trace = trace_of(&whole, &all);
+            let nodes = nodes_of(&whole, &trace);
+            handlers.push((whole, nodes, false));
+        }
+    }
+    let mut marks: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut mark = |nodes: &[String], child: u32, line: String| {
+        if let Some(id) = nodes.get(child as usize).filter(|id| !id.is_empty()) {
+            let lines = marks.entry(id.clone()).or_default();
+            if !lines.contains(&line) {
+                lines.push(line);
+            }
+        }
+    };
+    for (handler, trace, answers) in &handlers {
+        // A route's answer: the first output that isn't an effect.
+        let response = handler.outputs.iter().position(|p| p.ty != holon_core::Type::Effect).unwrap_or(0) as u32;
+        for cap in holon_core::capabilities(handler, &*store).iter() {
+            let holon_core::Capability::SecretRead(name) = cap else { continue };
+            let fed = holon_core::taint::SecretFed::of_secret(handler, &*store, &name);
+            for (path, sink) in fed.sinks() {
+                if let Some(&child) = path.first() {
+                    mark(trace, child, crate::describe::describe_secret_sink(&name, sink));
+                }
+            }
+            if let (true, UnitBody::Composite { edges, .. }) = (*answers, &handler.body) {
+                for e in edges.iter().filter(|e| e.to_child == holon_core::BOUNDARY && e.to_port == response && e.from_child != holon_core::BOUNDARY) {
+                    if fed.output(&[e.from_child], e.from_port as usize) > holon_core::taint::Taint::Clean {
+                        mark(trace, e.from_child, crate::describe::describe_secret_answer(&name));
+                    }
+                }
+            }
+        }
+    }
+    marks
+}
+
+/// Which canvas node each child of `unit` is, as it is held here: `trace` names them in core's
+/// canonical order (as a deployed unit holds its children, and a run's paths count them), which
+/// the unit made here may not be in yet.
+fn nodes_of(unit: &Unit, trace: &[String]) -> Vec<String> {
+    let UnitBody::Composite { children, edges } = &unit.body else { return vec![] };
+    let Ok(order) = canonical_child_order(children, edges) else { return vec![] };
+    let mut nodes = vec![String::new(); children.len()];
+    for (k, i) in order.into_iter().enumerate() {
+        if let (Some(slot), Some(id)) = (nodes.get_mut(i), trace.get(k)) {
+            *slot = id.clone();
+        }
+    }
+    nodes
+}
+
 /// The unit a flow deploys as, stored: its server when it has routes, else the whole flow grouped
 /// as one composite. Why it can't be, otherwise.
 pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str) -> Result<Hash, String> {

@@ -153,6 +153,10 @@ test("browser-key's approval asks to answer with its secret, and once approved i
 
 test("stripe-to-slack's approval says where each secret goes, and unsigned requests get 400", async ({ page, request }) => {
   await openSample(page, "Stripe → Slack");
+  // The canvas marks the sink the Slack path reaches, and nothing for the verified Stripe secret.
+  const marks = page.locator(".hl-node__secret");
+  await expect(marks).toHaveCount(1);
+  await expect(marks).toHaveText('🔑 sends the secret "slack_webhook_path" to https://hooks.slack.com');
   await openDeployPanel(page);
   const settings = page.getByRole("complementary", { name: "Deployment settings" });
   const portField = settings.getByRole("textbox").first();
