@@ -76,6 +76,61 @@ pub(crate) enum Access {
     Secret { name: String, set: bool },
 }
 
+/// What an env secret's variable starts with (secret_sources.rs).
+pub(crate) const ENV: &str = "HOLON_SECRET_";
+
+/// Setting a secret: where its value comes from, as the web editor's deploy settings ask it.
+pub(crate) struct SecretChoice {
+    pub(crate) slug: String,
+    pub(crate) name: String,
+    pub(crate) set: bool,
+    /// Where it comes from now (`local`, `env:…`, `vault:…`), when set.
+    pub(crate) current: Option<String>,
+    /// The `HOLON_SECRET_…` names the server reads, and its `--dotenv` file.
+    pub(crate) env: Vec<String>,
+    pub(crate) dotenv: Option<String>,
+    pub(crate) sel: usize,
+}
+
+/// One of the places a secret's value can come from.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Source {
+    /// Typed here, sealed on the server.
+    Value,
+    /// One of the names the server reads.
+    Env(String),
+    /// A name typed, the server's list not having it (yet).
+    OtherEnv,
+    Vault,
+}
+
+impl SecretChoice {
+    pub(crate) fn choices(&self) -> Vec<Source> {
+        let mut out = vec![Source::Value];
+        out.extend(self.env.iter().cloned().map(Source::Env));
+        out.extend([Source::OtherEnv, Source::Vault]);
+        out
+    }
+
+    /// The variable its name suggests: `HOLON_SECRET_API_TOKEN` for `api_token`.
+    pub(crate) fn suggested(&self) -> String {
+        format!("{ENV}{}", self.name.to_uppercase())
+    }
+
+    /// Picked first: where it comes from now; else the variable its name suggests, when the
+    /// server reads one; else a value.
+    pub(crate) fn first(&self) -> usize {
+        let choices = self.choices();
+        let at = |s: &Source| choices.iter().position(|c| c == s);
+        let now = match self.current.as_deref() {
+            Some(c) if c.starts_with("vault:") => at(&Source::Vault),
+            Some(c) => c.strip_prefix("env:").and_then(|v| at(&Source::Env(v.to_string()))),
+            None => None,
+        };
+        now.or_else(|| at(&Source::Env(self.suggested()))).unwrap_or(0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Held {
     Granted,
@@ -452,13 +507,11 @@ impl App {
                     })
                 }
                 Some(Access::Secret { name, set }) => {
-                    self.modal = Some(Modal::Input {
-                        title: format!("{} {name}", if set { "Change" } else { "Set" }),
-                        lines: vec![format!("The value {slug} reads as {name}. It is kept on the server, never shown again, here or anywhere."), "Typed as dots. Enter sets it, esc leaves it as it is.".into()],
-                        value: String::new(),
-                        masked: true,
-                        then: Ask::Secret(slug.to_string(), name),
-                    })
+                    let current = d.secrets["secrets"].as_array().into_iter().flatten().find(|s| s["name"] == *name).and_then(|s| s["source"].as_str()).map(str::to_string);
+                    let (env, dotenv) = self.client.as_ref().map(|c| c.env_names()).unwrap_or_default();
+                    let mut choice = SecretChoice { slug: slug.to_string(), name, set, current, env, dotenv, sel: 0 };
+                    choice.sel = choice.first();
+                    self.modal = Some(Modal::SecretSource(choice));
                 }
                 _ => {}
             },
@@ -642,22 +695,81 @@ impl App {
 
     pub(crate) fn answer_input(&mut self) {
         let Some(Modal::Input { value, then, .. }) = self.modal.take() else { return };
-        let (slug, name) = match then {
+        let (slug, name, from) = match then {
             Ask::Admin(a) => return self.admin_answer(a, value),
             Ask::SaveAs(i) => return self.save_as(i, &value),
-            Ask::Secret(slug, name) => (slug, name),
+            Ask::Secret(slug, name) => (slug, name, None),
+            Ask::SecretFrom(slug, name, kind) => (slug, name, Some(kind)),
         };
-        let Some(c) = self.client.as_ref() else { return };
-        if value.is_empty() {
+        if value.trim().is_empty() {
             return self.fail("not set: nothing was typed");
         }
-        match c.set_secret(&slug, &name, &value) {
+        match from {
+            None => self.set_secret(&slug, &name, Err(&value)),
+            Some(kind) => self.set_secret(&slug, &name, Ok(&format!("{kind}:{}", value.trim()))),
+        }
+    }
+
+    /// Set a secret: a value typed (`Err`, never shown again), or where it is read from (`Ok`).
+    fn set_secret(&mut self, slug: &str, name: &str, how: Result<&str, &str>) {
+        let Some(c) = self.client.as_ref() else { return };
+        let set = match how {
+            Ok(from) => c.set_secret_from(slug, name, from),
+            Err(value) => c.set_secret(slug, name, value),
+        };
+        match set {
             Ok(v) => {
+                self.modal = None;
                 self.refresh();
                 let version = v["version"].as_u64().map(|n| format!(" (v{n})")).unwrap_or_default();
-                self.say(format!("set {name}{version} for {slug}"));
+                let from = how.map(|f| format!(", read from {f}")).unwrap_or_default();
+                self.say(format!("set {name}{version} for {slug}{from}"));
             }
             Err(e) => self.fail(e),
+        }
+    }
+
+    /// Where a secret comes from, picked: a value to type, a name the server reads (set at once),
+    /// another name or a Vault field to type.
+    pub(crate) fn secret_source_key(&mut self, k: KeyEvent) {
+        let Some(Modal::SecretSource(c)) = self.modal.as_mut() else { return };
+        let choices = c.choices();
+        match k.code {
+            KeyCode::Esc => self.modal = None,
+            KeyCode::Up | KeyCode::Char('k') => c.sel = c.sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => c.sel = (c.sel + 1).min(choices.len() - 1),
+            KeyCode::Enter => {
+                let (slug, name, set) = (c.slug.clone(), c.name.clone(), c.set);
+                let ask = |title: String, lines: Vec<String>, value: &str, masked: bool, then: Ask| Modal::Input { title, lines, value: value.to_string(), masked, then };
+                self.modal = Some(match &choices[c.sel] {
+                    Source::Env(var) => {
+                        let from = format!("env:{var}");
+                        return self.set_secret(&slug, &name, Ok(&from));
+                    }
+                    Source::Value => ask(
+                        format!("{} {name}", if set { "Change" } else { "Set" }),
+                        vec![format!("The value {slug} reads as {name}. It is sealed on the server, never shown again, here or anywhere."), "Typed as dots. Enter sets it, esc leaves it as it is.".into()],
+                        "",
+                        true,
+                        Ask::Secret(slug, name),
+                    ),
+                    Source::OtherEnv => ask(
+                        format!("{name} from the server's environment"),
+                        vec![format!("A variable of the server's environment or its --dotenv file, starting {ENV}. Its name only: the value stays where it is, read again every minute."), "Enter sets it, esc leaves it as it is.".into()],
+                        ENV,
+                        false,
+                        Ask::SecretFrom(slug, name, "env"),
+                    ),
+                    Source::Vault => ask(
+                        format!("{name} from Vault"),
+                        vec!["A field of a HashiCorp Vault KV v2 secret, as <mount>/<path>#<field> (secret/stripe#api_key), read with the server's VAULT_ADDR and VAULT_TOKEN, again every minute.".into(), "Enter sets it, esc leaves it as it is.".into()],
+                        "",
+                        false,
+                        Ask::SecretFrom(slug, name, "vault"),
+                    ),
+                });
+            }
+            _ => {}
         }
     }
 
@@ -1125,7 +1237,7 @@ fn access_pane(c: &Client, d: &Detail, row: &Access, tab: usize) -> Vec<Row> {
             }
             let reads = d.secrets["reads"].as_array().is_some_and(|r| r.iter().any(|n| n == name));
             rows.push(field("Read", if reads { "by the version deployed now" } else { "not by the version deployed now" }));
-            rows.push(text(Tone::Dim, if *set { "enter: change it · del: remove it" } else { "enter: set it" }));
+            rows.push(text(Tone::Dim, if *set { "enter: change it (a value, a name the server reads, or Vault) · del: remove it" } else { "enter: set it (a value, a name the server reads, or Vault)" }));
             rows
         }
         (Access::Secret { name, .. }, _) => match c.secret_history(&d.slug, name) {

@@ -245,6 +245,9 @@ pub(crate) enum Modal {
     Call(CallForm),
     /// A line typed in: a secret's value (shown as dots), a session's number.
     Input { title: String, lines: Vec<String>, value: String, masked: bool, then: Ask },
+    /// Where a secret's value comes from: typed here, a `HOLON_SECRET_…` name the server reads,
+    /// or a Vault field.
+    SecretSource(super::flow::SecretChoice),
 }
 
 pub(crate) enum Then {
@@ -259,6 +262,8 @@ pub(crate) enum Then {
 
 pub(crate) enum Ask {
     Secret(String, String),
+    /// A secret read from somewhere else: `env:` or `vault:` and what is typed after it.
+    SecretFrom(String, String, &'static str),
     Admin(super::admin::AdminAsk),
     /// A file to save tab `0` to (a draft's first save).
     SaveAs(usize),
@@ -279,6 +284,8 @@ pub(crate) enum List {
     Complete,
     Palette,
     Restore,
+    /// Where a secret comes from: its choices.
+    SecretSource,
     Call,
     /// The editor's problems: a click goes to one.
     Problems,
@@ -1469,6 +1476,7 @@ impl App {
                 _ => {}
             },
             Modal::Restore { .. } => self.restore_key(k),
+            Modal::SecretSource(_) => self.secret_source_key(k),
             Modal::DryRun { .. } => self.dry_run_key(k),
             Modal::Call(_) => self.call_key(k),
             Modal::Input { value, .. } => match k.code {
@@ -1635,6 +1643,12 @@ impl App {
                     *sel = i;
                 }
                 self.restore_key(enter);
+            }
+            List::SecretSource => {
+                if let Some(Modal::SecretSource(c)) = self.modal.as_mut() {
+                    c.sel = i.min(c.choices().len().saturating_sub(1));
+                }
+                self.secret_source_key(enter);
             }
             List::Call => {
                 if let Some(Modal::Call(f)) = self.modal.as_mut() {

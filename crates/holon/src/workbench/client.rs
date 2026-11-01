@@ -227,6 +227,20 @@ impl Client {
         self.post(&format!("/deployments/{}/secrets/{}", seg(slug), seg(name)), json!({ "value": value }))
     }
 
+    /// A secret read from elsewhere: `env:HOLON_SECRET_…` or `vault:<mount>/<path>#<field>`.
+    pub(crate) fn set_secret_from(&self, slug: &str, name: &str, from: &str) -> Result<Value, String> {
+        self.post(&format!("/deployments/{}/secrets/{}", seg(slug), seg(name)), json!({ "from": from }))
+    }
+
+    /// The `HOLON_SECRET_…` names the server reads (its environment and its `--dotenv` file),
+    /// never their values, and that file; nothing for one who isn't an admin.
+    pub(crate) fn env_names(&self) -> (Vec<String>, Option<String>) {
+        match self.get("/admin/secrets/env") {
+            Ok(v) => (v["names"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(), v["dotenv"].as_str().map(str::to_string)),
+            Err(_) => (vec![], None),
+        }
+    }
+
     pub(crate) fn remove_secret(&self, slug: &str, name: &str) -> Result<(), String> {
         self.delete(&format!("/deployments/{}/secrets/{}", seg(slug), seg(name))).map(|_| ())
     }

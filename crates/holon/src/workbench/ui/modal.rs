@@ -226,6 +226,38 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 }
             });
         }
+        Modal::SecretSource(c) => {
+            use crate::workbench::flow::Source;
+            let choices = c.choices();
+            let suggested = c.suggested();
+            let mut about = vec![Line::from(match &c.current {
+                Some(from) => vec![dim("Now: "), Span::raw(format!("read from {from}")), dim(". Setting it makes a new version; the old one stays, to roll back to.")],
+                None => vec![coloured("Not set: ", WARN), dim("a run that reads it gets nothing until it is.")],
+            })];
+            // Where the names come from, and how one gets there: a line in the file, read within a minute.
+            let place = c.dotenv.as_ref().map(|f| format!("the server's environment or {f}")).unwrap_or_else(|| "the server's environment (or a file it is started with --dotenv FILE)".into());
+            if c.env.is_empty() {
+                about.push(Line::from(dim(format!("It reads no {}… name now. A line {suggested}=… in {place} shows here within a minute.", crate::workbench::flow::ENV))));
+            } else if !c.env.contains(&suggested) {
+                about.push(Line::from(dim(format!("{suggested} isn't among the names it reads: a line {suggested}=… in {place} shows here within a minute."))));
+            }
+            let height = (choices.len() as u16).min(12) + about.len() as u16 * 2 + 6;
+            let rect = centred(area, 84, height);
+            let body = frame(f, app, rect, &format!("Where {} gets {}", c.slug, c.name), &[("enter", "choose", KeyCode::Enter, NONE), ("esc", "cancel", KeyCode::Esc, NONE)]);
+            let [top, rows] = Layout::vertical([Constraint::Length(about.len() as u16 * 2), Constraint::Min(1)]).areas(body);
+            f.render_widget(Paragraph::new(about).wrap(Wrap { trim: false }), top);
+            let now = c.current.clone().unwrap_or_default();
+            list(f, app, rows, List::SecretSource, choices.len(), Some(c.sel), true, |i, w| {
+                let (kind, what, note) = match &choices[i] {
+                    Source::Value => ("value", "typed here, sealed on the server".to_string(), if now == "local" { "now" } else { "" }),
+                    Source::Env(v) => ("env", v.clone(), if now == format!("env:{v}") { "now" } else if *v == suggested { "its name" } else { "" }),
+                    Source::OtherEnv => ("env", "another name…".to_string(), ""),
+                    Source::Vault => ("vault", "<mount>/<path>#<field>…".to_string(), if now.starts_with("vault:") { "now" } else { "" }),
+                };
+                let note = if note.is_empty() { String::new() } else { format!("  ← {note}") };
+                Line::from(vec![coloured(format!("{kind:<7}"), ACCENT), Span::raw(fit(&what, w.saturating_sub(8 + note.chars().count()))), dim(note)])
+            });
+        }
         Modal::DryRun { point, lines, refused, scroll, needs, .. } => {
             let buttons: Vec<(&str, &str, KeyCode, KeyModifiers)> = if *refused {
                 vec![("esc", "close", KeyCode::Esc, NONE)]

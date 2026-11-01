@@ -785,3 +785,81 @@ fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A secret is set from the flow's Access section as the web editor sets it: a value typed and
+/// sealed, a `HOLON_SECRET_…` name the server reads (its own name's picked first), another name,
+/// or a Vault field; never a value shown.
+#[test]
+fn a_secret_is_set_as_a_value_a_name_the_server_reads_or_a_vault_field() {
+    use super::flow::{Access, Source, access_rows};
+    let mut state = test_state();
+    let sources = crate::secret_sources::Sources::of(&[("HOLON_SECRET_SIGNING_KEY", "dummy-signing-key"), ("HOLON_SECRET_OTHER_KEY", "dummy-other-key")]);
+    state.secrets = std::sync::Arc::new(crate::secrets::SecretStore::memory().with_sources(sources));
+    let state: &'static AppState = Box::leak(Box::new(state));
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(InProcess(state, None))));
+    tab_with(&mut app, include_str!("../../../holon-author/samples/sign-payload.holon"));
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    app.open_flow("sign-payload");
+    app.flow_section(Section::Access);
+    let at = access_rows(app.detail.as_ref().unwrap()).iter().position(|a| matches!(a, Access::Secret { name, .. } if name == "signing_key")).expect("the secret it reads");
+    let source = |app: &App| app.detail.as_ref().unwrap().secrets["secrets"].as_array().into_iter().flatten().find(|s| s["name"] == "signing_key").and_then(|s| s["source"].as_str()).map(str::to_string);
+    let open = |app: &mut App| {
+        app.flow_pick(List::Section, at);
+        press(app, KeyCode::Enter);
+        screen(app, 130, 40);
+        let Some(Modal::SecretSource(c)) = &app.modal else { panic!("no choice: {:?}", app.note.as_ref().map(|n| &n.text)) };
+        (c.choices(), c.sel)
+    };
+
+    // Not set: the server's names offered, the one its name suggests picked; enter sets it from there.
+    assert_eq!(source(&app), None);
+    let (choices, sel) = open(&mut app);
+    assert_eq!(choices, [Source::Value, Source::Env("HOLON_SECRET_OTHER_KEY".into()), Source::Env("HOLON_SECRET_SIGNING_KEY".into()), Source::OtherEnv, Source::Vault]);
+    assert_eq!(choices[sel], Source::Env("HOLON_SECRET_SIGNING_KEY".into()));
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Where sign-payload gets signing_key") && shown.contains("Not set") && shown.contains("← its name"), "{shown}");
+    assert!(!shown.contains("dummy-"), "names only, never a value: {shown}");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none(), "{:?}", app.note.as_ref().map(|n| &n.text));
+    assert!(app.note.as_ref().is_some_and(|n| !n.error && n.text == "set signing_key (v1) for sign-payload, read from env:HOLON_SECRET_SIGNING_KEY"));
+    assert_eq!(source(&app).as_deref(), Some("env:HOLON_SECRET_SIGNING_KEY"));
+
+    // Set: where it comes from now is picked. A value instead, typed as dots.
+    let (choices, sel) = open(&mut app);
+    assert_eq!(choices[sel], Source::Env("HOLON_SECRET_SIGNING_KEY".into()));
+    assert!(screen(&mut app, 130, 40).contains("← now"));
+    press(&mut app, KeyCode::Home);
+    for _ in 0..sel {
+        press(&mut app, KeyCode::Up);
+    }
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Input { masked: true, .. })));
+    typed(&mut app, "a-typed-signing-key");
+    assert!(!screen(&mut app, 130, 40).contains("a-typed-signing-key"), "typed as dots");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(source(&app).as_deref(), Some("local"));
+
+    // Another name, typed: refused when the server can't read it, set when it can.
+    let (choices, _) = open(&mut app);
+    click(&mut app, Click::Row(List::SecretSource, choices.iter().position(|c| *c == Source::OtherEnv).unwrap()));
+    let Some(Modal::Input { value, masked: false, .. }) = &app.modal else { panic!("no name asked") };
+    assert_eq!(value, "HOLON_SECRET_", "started for you");
+    answer(&mut app, "HOLON_SECRET_NOT_THERE");
+    assert!(app.note.as_ref().is_some_and(|n| n.error && n.text.contains("isn't set")), "{:?}", app.note.as_ref().map(|n| &n.text));
+    assert_eq!(source(&app).as_deref(), Some("local"), "left as it was");
+    let (choices, _) = open(&mut app);
+    click(&mut app, Click::Row(List::SecretSource, choices.iter().position(|c| *c == Source::OtherEnv).unwrap()));
+    answer(&mut app, "HOLON_SECRET_OTHER_KEY");
+    assert_eq!(source(&app).as_deref(), Some("env:HOLON_SECRET_OTHER_KEY"));
+
+    // A Vault field: its form checked by the server.
+    let (choices, _) = open(&mut app);
+    click(&mut app, Click::Row(List::SecretSource, choices.iter().position(|c| *c == Source::Vault).unwrap()));
+    answer(&mut app, "not a vault path");
+    assert!(app.note.as_ref().is_some_and(|n| n.error && n.text.contains("vault:")), "{:?}", app.note.as_ref().map(|n| &n.text));
+    for (w, h) in [(80, 24), (40, 12)] {
+        screen(&mut app, w, h);
+    }
+}

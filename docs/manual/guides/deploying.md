@@ -141,6 +141,12 @@ never their values. The one the secret's name suggests is chosen for you
 **another name…** to type one the list doesn't have. The list is shown to admins only, as only an
 admin sets secrets.
 
+In `holon editor`, the terminal one, the same choice is on the flow's page: its **Access**
+section lists the secrets it reads, and **enter** on one asks where its value comes from (a
+**value** typed as dots, one of the server's **env** names, the one its name suggests picked
+first, **another name…**, or a **vault** field). Holon never writes the `.env` file: add the line
+there yourself, and it is in the list within a minute.
+
 **How it is served.**
 
 - The server reads the file when it starts, then again every minute. An edit reaches the runs

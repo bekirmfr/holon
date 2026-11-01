@@ -167,7 +167,7 @@ bottom. It reaches the server as `holon deploy` does, signed in as you.
 | 1 Overview | what is deployed, what waits for a person, the saved flows |
 | 2 Approvals | each thing waiting for you; enter reviews it: a saved or changed flow opens with what it may do, and you approve it by deploying it |
 | 3 Flows | every deployment and saved flow; enter opens its page, `e` its text |
-| 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value), its history, state and access, and its graph; `g`, `p`, `x` run, pause or stop it |
+| 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; `g`, `p`, `x` run, pause or stop it |
 | 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is |
 | 6 Library | the samples; enter opens a copy |
 | 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders and databases flows use (bound with the same flags as [`holon folder`](#holon-folder) and [`holon database`](#holon-database)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
