@@ -262,26 +262,22 @@ mod tests {
         json!({ "jsonrpc": "2.0", "method": method, "params": params })
     }
 
-    /// Where `needle` first starts in the sample, 0-based (its lines are ASCII): the sample's
-    /// comments may grow without moving what the test points at.
-    fn found(needle: &str) -> (usize, usize) {
-        SLUGS.lines().enumerate().find_map(|(line, text)| text.find(needle).map(|col| (line, col))).unwrap_or_else(|| panic!("{needle:?} not in the sample"))
-    }
-
     #[test]
     fn an_editor_opens_changes_hovers_formats_and_shuts_down() {
         let uri = "file:///slugs.holon";
-        let (lower, lower_at) = found("lowercase(");
-        let (list, list_at) = found("respond posts.");
-        let after_posts = list_at + "respond posts.".len();
         let bad = "flow f\nport 8200\n\nroute GET /a (req) {\n  respond { a: \"😀\", b: nope }\n}\n";
         let messy = "flow f\nport 8200\nroute GET /a (req) {\n    respond   204\n}";
+        // Where `needle` is written in the sample's code (0-based line and character), not in its
+        // comments.
+        let at = |needle: &str| SLUGS.lines().enumerate().find(|(_, l)| !l.trim_start().starts_with('#') && l.contains(needle)).map(|(n, l)| (n, l.find(needle).unwrap())).unwrap();
+        let (word, from) = at("lowercase(");
+        let (list, posts) = at("posts.list()");
         let (sent, code) = session(&[
             request(1, "initialize", json!({ "capabilities": {} })),
             notify("initialized", json!({})),
             notify("textDocument/didOpen", json!({ "textDocument": { "uri": uri, "languageId": "holon", "version": 1, "text": SLUGS } })),
-            request(2, "textDocument/hover", json!({ "textDocument": { "uri": uri }, "position": { "line": lower, "character": lower_at + 2 } })),
-            request(20, "textDocument/completion", json!({ "textDocument": { "uri": uri }, "position": { "line": list, "character": after_posts } })),
+            request(2, "textDocument/hover", json!({ "textDocument": { "uri": uri }, "position": { "line": word, "character": from + 2 } })),
+            request(20, "textDocument/completion", json!({ "textDocument": { "uri": uri }, "position": { "line": list, "character": posts + 6 } })),
             notify("textDocument/didChange", json!({ "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": bad }] })),
             request(3, "textDocument/formatting", json!({ "textDocument": { "uri": uri }, "options": { "tabSize": 2, "insertSpaces": true } })),
             notify("textDocument/didChange", json!({ "textDocument": { "uri": uri, "version": 3 }, "contentChanges": [{ "text": messy }] })),
@@ -294,11 +290,11 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(sent[0]["result"]["capabilities"]["hoverProvider"], true);
         assert_eq!(sent[1]["params"]["diagnostics"], json!([]), "the sample has no mistakes");
-        // Inside `lowercase`: the leaf, and the whole word's range.
+        // `lowercase`, from inside it: the word's whole range.
         let hover = &sent[2]["result"];
         assert!(hover["contents"]["value"].as_str().unwrap().contains("lowercase("), "{hover}");
-        assert_eq!(hover["range"], json!({ "start": { "line": lower, "character": lower_at }, "end": { "line": lower, "character": lower_at + 9 } }));
-        // After `respond posts.`: the collection's methods, as members.
+        assert_eq!(hover["range"], json!({ "start": { "line": word, "character": from }, "end": { "line": word, "character": from + 9 } }));
+        // After `posts.`: the collection's methods, as members.
         let offered = sent[3]["result"].as_array().unwrap();
         assert_eq!(offered.iter().map(|c| c["label"].as_str().unwrap()).collect::<Vec<_>>(), ["get", "put", "delete", "list"]);
         assert_eq!(offered[0]["kind"], 2);
