@@ -27,6 +27,8 @@ import {
   resetAccount,
   revokeToken,
   setOidcSettings,
+  sweepFolders,
+  sweepStore,
   unbindDatabase,
   unbindFolder,
   type AccountEntry,
@@ -132,6 +134,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
   // What reading the policy again said: when, and the deployments it holds off.
   const [reloaded, setReloaded] = useState<{ at: number; attention: [string, string][] } | null>(null);
+  // What the last sweep of the store and of the file texts said.
+  const [swept, setSwept] = useState<{ store?: string; folders?: string }>({});
   const [kind, setKind] = useState("everything");
   const [version, setVersion] = useState(0);
 
@@ -650,6 +654,51 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               bind database
             </button>
           </form>
+
+          <div style={head}>storage</div>
+          <div style={about}>
+            What runs leave on this host that nothing kept names any more: states of runs the logs no longer keep, and the texts of files no kept run read or wrote. Anything put in
+            the last hour, and code, is never swept. The same as <code>holon store sweep</code> and <code>holon folder sweep</code>.
+          </div>
+          <div style={row}>
+            <span style={{ flex: 1 }}>the store: states and values{swept.store && <span style={quiet}> · {swept.store}</span>}</span>
+            <button
+              style={small}
+              title="count what a sweep would remove, then ask"
+              onClick={() =>
+                act(async () => {
+                  const would = await sweepStore(true);
+                  const keeps = `it keeps ${would.kept.values} values (${sizeText(would.kept.bytes)}), and spares ${would.spared.values} put in the last hour`;
+                  if (would.swept.values === 0) {
+                    setSwept((s) => ({ ...s, store: `nothing to sweep: ${keeps}` }));
+                    return;
+                  }
+                  const removes = `${would.swept.values} values (${sizeText(would.swept.bytes)}) nothing kept names`;
+                  if (!(await dialog.confirm(`Sweep the store? It removes ${removes}; ${keeps}. A run whose state is removed can't be restored to.`, "Sweep"))) return;
+                  const done = await sweepStore(false);
+                  setSwept((s) => ({ ...s, store: `swept ${done.swept.values} values, ${sizeText(done.swept.bytes)} freed` }));
+                })
+              }
+            >
+              sweep…
+            </button>
+          </div>
+          <div style={row}>
+            <span style={{ flex: 1 }}>file texts: what runs read and wrote in folders{swept.folders && <span style={quiet}> · {swept.folders}</span>}</span>
+            <button
+              style={small}
+              title="remove the file texts nothing kept names"
+              onClick={async () => {
+                if (!(await dialog.confirm("Sweep the file texts no live run, kept run or folder names? A run whose files are removed can't be shown with them again.", "Sweep"))) return;
+                act(async () => {
+                  const done = await sweepFolders();
+                  setSwept((s) => ({ ...s, folders: `swept ${done.texts} texts, ${sizeText(done.bytes)} freed; it keeps ${done.kept.texts} texts (${sizeText(done.kept.bytes)})` }));
+                });
+              }}
+            >
+              sweep…
+            </button>
+          </div>
         </>
       )}
 

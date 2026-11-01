@@ -59,6 +59,7 @@ The tools `holon mcp` offers:
 | `deployments` | what is deployed; with a slug, one in full: routes, what it may do, what isn't granted, which secrets are set, its text |
 | `flows` | the saved flows; with a name, its text |
 | `runs` | a deployment's latest runs, one line each |
+| `state` | what a deployment keeps now: each state value, and its collections; with a collection, its items (with a key, one) |
 | `explain` | one run as the program: each statement's value, where a missing value came from, the effects and calls |
 | `history` | a deployment's timeline: its runs, each with the version it ran on, and what was done to it between them, by whom (deploys, restores, grant changes, secrets, pausing); with a `cell`, the runs that changed that value, before and after |
 | `restore` | a dry run of going back to a version or a run: the code's text beside today's, the permissions, the state's keys and items now → then, the runs since and the files they wrote; it changes nothing. With `ask`, it saves the restore for you to approve |

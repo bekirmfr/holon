@@ -183,6 +183,17 @@ export async function listTables(name: string, deployment: string | null): Promi
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   return (await asJson<{ tables: string[] }>(await api(`${BASE}/admin/databases/${encodeURIComponent(name)}/tables${only}`))).tables;
 }
+/** Values and bytes, as a sweep counts them. */
+export type Counted = { values: number; bytes: number };
+/** `POST /admin/store/sweep` (sweep.rs): the values nothing kept names, removed (or, as a dry
+ *  run, only counted); what it keeps, and what it spares because it was put in the last hour. */
+export async function sweepStore(dryRun: boolean): Promise<{ dry_run: boolean; swept: Counted; kept: Counted; spared: Counted }> {
+  return asJson(await post(`${BASE}/admin/store/sweep`, { dry_run: dryRun }));
+}
+/** `POST /admin/folders/sweep` (folders.rs): the file texts no live run, kept run or folder names. */
+export async function sweepFolders(): Promise<{ texts: number; chunks: number; bytes: number; kept: { texts: number; chunks: number; bytes: number } }> {
+  return asJson(await post(`${BASE}/admin/folders/sweep`, {}));
+}
 /** One deployment's grant as `GET /admin/grants` lists it (grants.rs): what it holds, what was taken back since. */
 export type HeldGrant = { slug: string; status: DeploymentEntry["status"]; attention: string | null; items: string[]; revoked: string[] };
 export const listGrants = async () => asJson<HeldGrant[]>(await api(`${BASE}/admin/grants`));

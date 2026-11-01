@@ -824,13 +824,18 @@ data: ${JSON.stringify(data)}
     // Without a prompt nothing is called.
     expect((await request.post(`http://127.0.0.1:${port}/chat`, { data: {} })).status()).toBe(400);
     expect(asked).toHaveLength(1);
-    // The room: a piped call's pieces to whoever watches, as they arrive, then the run's pack.
+    // The room: a piped call's pieces to whoever watches, as they arrive, then the run's pack. The
+    // watcher is subscribed once its stream opens: the server subscribes it before it sends the
+    // headers, but logs GET /room/live before both, so the log can say so too soon.
     await chat.evaluate(() => {
-      const w = window as unknown as { heard: string[] };
+      const w = window as unknown as { heard: string[]; open: boolean };
       w.heard = [];
-      new EventSource("/room/live").onmessage = (e) => w.heard.push(e.data);
+      w.open = false;
+      const live = new EventSource("/room/live");
+      live.onopen = () => (w.open = true);
+      live.onmessage = (e) => w.heard.push(e.data);
     });
-    await expect.poll(() => request.get(`${SERVER}/deployments/chat-proxy/log`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.text())).toContain("GET /room/live");
+    await expect.poll(() => chat.evaluate(() => (window as unknown as { open: boolean }).open)).toBe(true);
     const roomed = await request.post(`http://127.0.0.1:${port}/room`, { data: { prompt: "the room" } });
     expect(await roomed.json()).toEqual({ prompt: "the room", said: "Rivers run to the sea." });
     const heard = () => chat.evaluate(() => (window as unknown as { heard: string[] }).heard);
@@ -1087,6 +1092,19 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   expect(swept.dry_run).toBe(true);
   expect(swept.kept.values, "what the kept runs and the live state name").toBeGreaterThan(0);
   expect((await seqs()).length).toBe(5);
+  // The admin page's storage counts first, and asks before it sweeps anything: cancelled, or
+  // with nothing old enough to sweep, it removes nothing.
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  const store = page.getByText("the store: states and values").locator("..");
+  await store.getByRole("button", { name: "sweep…" }).click();
+  const asks = page.getByRole("dialog");
+  await expect(store.getByText(/nothing to sweep: it keeps \d+ values/).or(asks)).toBeVisible();
+  if (await asks.isVisible()) {
+    await expect(asks).toContainText(/Sweep the store\? It removes \d+ values/);
+    await asks.getByRole("button", { name: "Cancel" }).click();
+  }
+  expect((await dryRun()).kept.values).toBeGreaterThan(0);
   // Its clock would beat for the rest of the run.
   await request.post(`${SERVER}/deployments/rolling-log/stop`, { data: {}, headers: auth });
 });

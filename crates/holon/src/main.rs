@@ -146,6 +146,7 @@
 
 mod access;
 mod accounts;
+mod accountscmd;
 mod deploycmd;
 mod activity;
 mod arrivals;
@@ -155,7 +156,9 @@ mod calls;
 mod changes;
 mod channels;
 mod claims;
+mod cmdline;
 mod oidc;
+mod opscmd;
 mod collections;
 mod data;
 mod databases;
@@ -168,12 +171,14 @@ mod events;
 mod mongo;
 mod firing;
 mod fixtures;
+mod grantcmd;
 mod grants;
 mod heads;
 mod history;
 mod jsonedit;
 mod flowcmd;
 mod flows;
+mod flowscmd;
 mod folders;
 mod http;
 mod lifecycle;
@@ -195,6 +200,7 @@ mod scheduler;
 mod sweep;
 mod sealing;
 mod secret_sources;
+mod secretcmd;
 mod secrets;
 mod selfmanage;
 mod taint;
@@ -496,6 +502,19 @@ const USAGE: &str = "usage: holon <command>
   show <file>                        an outline: routes, nodes and what feeds them
   fmt <file>                         rewrite a flow in the canonical form
   deploy <file> [--server PORT|URL]  compile and deploy a flow to a running server (--approve)
+  deployments [<slug>]               what is deployed; one's details and its waiting runs
+  run|pause|stop|remove <slug>       start (--fresh, --session N), hold, end or delete a deployment
+  call <slug> METHOD PATH            send a deployed flow a request (-H, --body)
+  action <slug> <name>               run one of a deployment's actions (--input JSON)
+  trigger <slug> | tick <slug> CLOCK run a flow with no route by hand, or fire a clock now
+  state <slug>                       its live state (--collection NAME, --sessions)
+  grant <slug>                       what it is granted; --revoke, --grant, --lower LIMIT=N
+  grants | policy [--reload]         who holds what (admin); the host's policy
+  secret list|history|set|rollback|remove|env
+                                     a deployment's secrets (a value is piped in, never shown)
+  flows [list|show|save|remove]      the flows saved on the server
+  activity [--last N]                what was done on the server, by whom
+  user | token | oidc                people, API tokens, signing in through a provider (admin)
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
@@ -503,7 +522,7 @@ const USAGE: &str = "usage: holon <command>
                                      (--cell NAME: the runs that changed one value)
   restore <slug> [--to N --code]     a deployment's versions; an earlier one's code or state back
   folder add|list|remove             bind a name flows use to a folder on this machine (admin)
-  database add|list|remove           bind a name flows use to a database on this machine (admin)
+  database add|list|remove|tables    bind a name flows use to a database on this machine (admin)
   store sweep [--dry-run]            clear the stored states no kept run, version or state names
                                      (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
@@ -582,6 +601,22 @@ fn main() {
         Some("export") => std::process::exit(verify::export(&rest)),
         Some("restore") => std::process::exit(restore::cli(&rest)),
         Some("history") => std::process::exit(history::cli(&rest)),
+        Some("deployments") => std::process::exit(opscmd::deployments(&rest)),
+        Some(cmd @ ("run" | "pause" | "stop" | "remove")) => std::process::exit(opscmd::lifecycle(cmd, &rest)),
+        Some("call") => std::process::exit(opscmd::call(&rest)),
+        Some("action") => std::process::exit(opscmd::action(&rest)),
+        Some("trigger") => std::process::exit(opscmd::trigger(&rest)),
+        Some("tick") => std::process::exit(opscmd::tick(&rest)),
+        Some("state") => std::process::exit(opscmd::state(&rest)),
+        Some("grant") => std::process::exit(grantcmd::grant(&rest)),
+        Some("grants") => std::process::exit(grantcmd::grants(&rest)),
+        Some("policy") => std::process::exit(grantcmd::policy(&rest)),
+        Some("secret") => std::process::exit(secretcmd::cli(&rest)),
+        Some("flows") => std::process::exit(flowscmd::flows(&rest)),
+        Some("activity") => std::process::exit(flowscmd::activity(&rest)),
+        Some("user") => std::process::exit(accountscmd::user(&rest)),
+        Some("token") => std::process::exit(accountscmd::token(&rest)),
+        Some("oidc") => std::process::exit(accountscmd::oidc(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("store") => std::process::exit(sweep::cli(&rest)),
         Some("database") => std::process::exit(databases::cli(&rest)),

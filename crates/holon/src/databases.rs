@@ -1439,6 +1439,10 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             let only = for_deployment.as_ref().map_or(String::new(), |d| format!("?deployment={d}"));
             ("DELETE", format!("/admin/databases/{name}{only}"), None)
         }
+        ["tables", name] => {
+            let only = for_deployment.as_ref().map_or(String::new(), |d| format!("?deployment={}", crate::mcp::seg(d)));
+            ("GET", format!("/admin/databases/{}/tables{only}", crate::mcp::seg(name)), None)
+        }
         _ => {
             eprintln!("{DATABASE_USAGE}");
             return 2;
@@ -1469,6 +1473,16 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             }
         }
         "add" => println!("bound {}", line(&serde_json::from_str(&answer).unwrap_or_default())),
+        "tables" => {
+            let tables: serde_json::Value = serde_json::from_str(&answer).unwrap_or_default();
+            let tables: Vec<&str> = tables["tables"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
+            if tables.is_empty() {
+                println!("{} has no table yet", words[1]);
+            }
+            for t in tables {
+                println!("{t}");
+            }
+        }
         _ => println!(
             "unbound {}{}: the database stays where it is",
             words[1],
@@ -1481,6 +1495,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
 const DATABASE_USAGE: &str = "usage: holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--lock run] [--for SLUG]
        holon database list
        holon database remove NAME [--for SLUG]
+       holon database tables NAME [--for SLUG]
        (each takes --server PORT|URL)
 
   Binds a name a flow uses (database shop) to a database, for an admin: a SQLite database's file
@@ -1502,7 +1517,7 @@ const DATABASE_USAGE: &str = "usage: holon database add NAME PATH|SOURCE [--read
   next value, a queue, or contention so high that running again costs more than waiting.
   --for SLUG binds it for that deployment only.
   Removing a binding leaves the database where it is; deployments that use it stop until it is
-  bound again.";
+  bound again. tables: the tables it has, read now (the ones a flow's grant may name).";
 
 #[cfg(test)]
 mod tests {
