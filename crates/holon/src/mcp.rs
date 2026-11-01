@@ -376,7 +376,7 @@ fn save_flow(api: &dyn Api, name: &str, document: &Value) -> Result<Option<Strin
 
 /// The document a flow is saved with: the compiled canvas, and the text as written, comments
 /// and all, so the person who opens it reads what the agent wrote (the editor's text pane).
-fn saved_document(plan: &agent::Plan, text: &str) -> Value {
+pub(crate) fn saved_document(plan: &agent::Plan, text: &str) -> Value {
     let mut document = plan.document.clone();
     document["source"] = json!(text);
     document
@@ -396,12 +396,12 @@ fn save(api: &dyn Api, text: &str, name: Option<&str>) -> Result<String, String>
 }
 
 /// When, as a person reads it.
-fn when(v: &Value) -> String {
+pub(crate) fn when(v: &Value) -> String {
     v.as_u64().map(agent::utc).unwrap_or_else(|| "?".into())
 }
 
 /// The things a deployment waits on a person for, each said as what they do.
-fn waits_for(entry: &Value, saved: Option<&Value>) -> Vec<String> {
+pub(crate) fn waits_for(entry: &Value, saved: Option<&Value>) -> Vec<String> {
     let slug = entry.get("slug").and_then(Value::as_str).unwrap_or("?");
     let mut waits = Vec::new();
     if let Some(a) = entry.get("attention").and_then(Value::as_str) {

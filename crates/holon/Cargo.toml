@@ -36,6 +36,9 @@ jsonwebtoken = "9"
 # starts its run without the folder being walked every second.
 notify = "8"
 rand = "0.10.2"
+# `holon editor` (workbench/): the console as a full-screen terminal app, drawn by ratatui on
+# crossterm (Windows consoles included).
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 # The control plane's HTTP. (The data plane, public-facing, is hyper on tokio instead:
 # src/dataplane.rs, docs/PLATFORM_LAYOUT.md §7b.)
 # rouille (sync, thread-per-request, built on tiny_http) chosen deliberately over an async
