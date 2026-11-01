@@ -85,10 +85,18 @@ pub fn plan(source: &str) -> Result<Plan, String> {
 /// and the agent tools keep it, comments and all) when that still compiles, else printed from the
 /// canvas, with the binding names an agent gave it.
 pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
-    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
-        && plan(source).is_ok()
-    {
-        return Ok(source.to_string());
+    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+        if plan(source).is_ok() {
+            return Ok(source.to_string());
+        }
+        // A text saved before its header had to declare what it reads (`secret signing_key`):
+        // the same text, the lines added (docs/L4s/declared-names-L4.md §5).
+        if let Ok((fixed, _, declared)) = commands::with_declarations(source)
+            && !declared.is_empty()
+            && plan(&fixed).is_ok()
+        {
+            return Ok(fixed);
+        }
     }
     let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
     let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
@@ -527,8 +535,11 @@ keeps a record of every run that replays exactly.
 A FILE
   flow notes-api            its name (what it deploys as)
   port 8102                 the port its routes answer on
+  secret api_token          a secret it reads, as secret.api_token; set before it works
+  optional secret key       a secret it can run without
   collection notes          a named store of items, used as notes[key]
-  optional secret.key       a permission it can run without
+  The header names everything that outlives a run or comes from outside it; the body uses only
+  names the header gave.
 
 HANDLERS (each starts runs; a flow has one or more, each a block)
   route GET /notes/:id (req) {
@@ -571,7 +582,7 @@ OPERATORS
   "no" (respond … missing: 404 answers it).
 
 THE OUTSIDE WORLD (each is one permission the flow asks for)
-  secret.api_token                         a secret, set by an admin
+  secret.api_token                         a secret, set by an admin (declared: secret api_token)
   state.count                              read at the start of the run
   state.count = (state.count ?? 0) + 1     written when the run finishes
   notes[key]  notes[key] = v  delete notes[key]  notes.list(prefix: p, after: a, limit: 50)
@@ -787,6 +798,11 @@ mod tests {
         assert_eq!(text_of("slugs", &document).unwrap(), text, "the text as saved");
         document["source"] = json!("flow slugs\nroute GET /a (req) {\n  respond nope\n}\n");
         assert_eq!(text_of("slugs", &document).unwrap(), printed, "a saved text that doesn't compile gives way to the canvas");
+        // A text saved before secrets were declared: the same text, its header line added.
+        let before = text.replace("optional secret receipt_key\n", "");
+        document["source"] = json!(before);
+        let shown = text_of("slugs", &document).unwrap();
+        assert!(shown.contains("collection posts\nsecret receipt_key\n") && shown.contains("# A flow inside a flow"), "{shown}");
     }
 
     /// A js node that gave nothing says why, in the engine's words, under the statement that

@@ -731,6 +731,14 @@ mod tests {
             assert_eq!(optional, s.optional, "{}: optional", s.name);
             for secret in s.secrets {
                 assert!(s.text.contains(&format!("secret.{}", secret.name)), "{}: reads secret.{}", s.name, secret.name);
+                let declared = [format!("\nsecret {}\n", secret.name), format!("\noptional secret {}\n", secret.name)];
+                assert!(declared.iter().any(|d| s.text.contains(d.as_str())), "{}: its header declares secret {}", s.name, secret.name);
+            }
+            // And every secret the header declares is one the entry says how to set.
+            for line in s.text.lines() {
+                if let Some(name) = line.strip_prefix("secret ").or_else(|| line.strip_prefix("optional secret ")) {
+                    assert!(s.secrets.iter().any(|x| x.name == name), "{}: the entry says what secret {name} is", s.name);
+                }
             }
         }
         // rolling-log's `keep` line is the limits the copy opened asks for.

@@ -228,6 +228,8 @@ pub struct Printer<'s> {
     channels: BTreeSet<String>,
     /// The flows any `flow_call` runs an action of (`calls billing`).
     calls: BTreeSet<String>,
+    /// The secrets any leaf reads, by a name the text can write (`secret signing_key`).
+    secrets: BTreeSet<String>,
     /// The `on file` lines, in order, when the flow runs on files: folder, `deleted`, `matching`.
     on_files: Vec<OnFile>,
     /// With several lines, each `coalesce` of their `file_arrival`s that is `ingress`, and the
@@ -267,6 +269,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         databases: BTreeSet::new(),
         channels: BTreeSet::new(),
         calls: BTreeSet::new(),
+        secrets: BTreeSet::new(),
         on_files: Vec::new(),
         ingress_chains: HashMap::new(),
         holon_defs: HashSet::new(),
@@ -302,9 +305,16 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
             let origins: Vec<&str> = b.split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).collect();
             out.push(header(format!("browsers {}", origins.join(", "))));
         }
-        for o in s.requirements.as_ref().and_then(|r| r.optional.as_ref()).into_iter().flatten() {
-            out.push(header(format!("optional {}", consent(o))));
-        }
+    }
+    // What the flow needs provided, by name: each secret a leaf reads (`optional` when it can do
+    // without), then the other consents it can do without.
+    let optional: Vec<&String> = doc.server.as_ref().and_then(|s| s.requirements.as_ref()).and_then(|r| r.optional.as_ref()).into_iter().flatten().collect();
+    let optional_secrets: BTreeSet<&str> = optional.iter().filter_map(|o| optional_secret(o)).collect();
+    for name in p.secrets.iter().map(String::as_str).chain(optional_secrets.iter().copied()).collect::<BTreeSet<&str>>() {
+        out.push(header(if optional_secrets.contains(name) { format!("optional secret {name}") } else { format!("secret {name}") }));
+    }
+    for o in optional.iter().filter(|o| optional_secret(o).is_none()) {
+        out.push(header(format!("optional {o}")));
     }
     for (folder, deleted, matching) in &p.on_files {
         let mut line = format!("on file {folder}");
@@ -478,24 +488,22 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
     })
 }
 
-/// A consent name as `optional` writes it: a secret by its name, else the server's form.
-fn consent(o: &str) -> String {
-    if let Some(rest) = o.strip_prefix("SecretRead(\"")
-        && let Some(name) = rest.strip_suffix("\")")
-        && plain(name)
-    {
-        return format!("secret.{name}");
-    }
-    o.to_string()
+/// The secret an optional consent names (`SecretRead("receipt_key")`), when the text can declare
+/// it (`optional secret receipt_key`); any other consent `optional` writes in the server's form.
+fn optional_secret(o: &str) -> Option<&str> {
+    o.strip_prefix("SecretRead(\"").and_then(|rest| rest.strip_suffix("\")")).filter(|name| plain(name))
 }
 
 impl<'s> Printer<'s> {
-    /// Every collection, folder, database and channel any leaf names, the holons' leaves included.
+    /// Every collection, folder, database, channel, called flow and secret any leaf names, the
+    /// holons' leaves included.
     fn collect_collections(&mut self, nodes: &[Node]) -> Result<(), String> {
         /// The param naming what a leaf reads or writes: a collection's, a folder's, a
-        /// database's or a channel's (a piped call's `pipe`).
+        /// database's or a channel's (a piped call's `pipe`), a flow's, or a secret's.
         fn named_by(leaf: &str) -> Option<&'static str> {
-            if leaf.starts_with("collection_") {
+            if leaf == "secret" {
+                Some("name")
+            } else if leaf.starts_with("collection_") {
                 Some("collection")
             } else if leaf.starts_with("file_") {
                 Some("folder")
@@ -512,14 +520,19 @@ impl<'s> Printer<'s> {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
+            // A secret the text can't name (`secret.…` takes a word) is spelt out where it's read.
+            if param == "name" && !plain(&name) {
+                return;
+            }
             if !name.is_empty() {
                 match param {
                     "collection" => &mut out.0,
                     "folder" => &mut out.1,
                     "database" => &mut out.2,
                     "flow" => &mut out.4,
+                    "name" => &mut out.5,
                     _ => &mut out.3,
                 }
                 .insert(name);
@@ -549,7 +562,14 @@ impl<'s> Printer<'s> {
             }
         }
         let mut seen = HashSet::new();
-        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases), std::mem::take(&mut self.channels), std::mem::take(&mut self.calls));
+        let mut out: Found = (
+            std::mem::take(&mut self.collections),
+            std::mem::take(&mut self.folders),
+            std::mem::take(&mut self.databases),
+            std::mem::take(&mut self.channels),
+            std::mem::take(&mut self.calls),
+            std::mem::take(&mut self.secrets),
+        );
         for n in nodes {
             match &n.data.body {
                 PlacedBody::Primitive if named_by(&n.data.name).is_some() => {
@@ -563,7 +583,7 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders, self.databases, self.channels, self.calls) = out;
+        (self.collections, self.folders, self.databases, self.channels, self.calls, self.secrets) = out;
         Ok(())
     }
 
@@ -2393,7 +2413,7 @@ mod tests {
 
     #[test]
     fn the_natural_spellings_print_as_written() {
-        let src = "flow f\nport 8200\ncollection notes\n\nholon twice(n) -> o {\n  o = n + n\n}\n\nroute POST /x (req) {\n  item = notes[req.params.id] ?? { k: [1, \"a\"] }\n  ok = req.headers.authorization == \"Bearer {secret.tok}\" && !(item.done)\n  sent = http.post(\"h.example\", \"/p\", body: json({ ..item, n: twice(item.n) }))\n  paid = await paid, expires: 2h\n  notes[req.params.id] = if ok then item else { }\n  state.last = { ..req.json, paid_via: paid.method }\n  respond { status: sent.status } when ok, status: 201, missing: 401\n}\n";
+        let src = "flow f\nport 8200\nsecret tok\ncollection notes\n\nholon twice(n) -> o {\n  o = n + n\n}\n\nroute POST /x (req) {\n  item = notes[req.params.id] ?? { k: [1, \"a\"] }\n  ok = req.headers.authorization == \"Bearer {secret.tok}\" && !(item.done)\n  sent = http.post(\"h.example\", \"/p\", body: json({ ..item, n: twice(item.n) }))\n  paid = await paid, expires: 2h\n  notes[req.params.id] = if ok then item else { }\n  state.last = { ..req.json, paid_via: paid.method }\n  respond { status: sent.status } when ok, status: 201, missing: 401\n}\n";
         let first = compile(src).unwrap_or_else(|e| panic!("{e}"));
         let text = round_trips("f", &first.doc, &first.names);
         for line in [
@@ -2501,8 +2521,9 @@ mod tests {
         assert_eq!(json_literal("{\"done\":false,\"k\":[1,\"x\"]}"), Some("{ done: false, k: [1, \"x\"] }".into()));
         assert_eq!(json_literal("{\"k\": 1}"), None, "a text that doesn't write back the same stays a const");
         assert_eq!(json_literal("{\"k\":[1,\"x\"],\"done\":false}"), None, "unsorted keys don't either");
-        assert_eq!(consent("SecretRead(\"receipt_key\")"), "secret.receipt_key");
-        assert_eq!(consent("HttpRequest(\"h\")"), "HttpRequest(\"h\")");
+        assert_eq!(optional_secret("SecretRead(\"receipt_key\")"), Some("receipt_key"));
+        assert_eq!(optional_secret("SecretRead(\"a key\")"), None);
+        assert_eq!(optional_secret("HttpRequest(\"h\")"), None);
     }
 
     /// A `match` prints back as written, its arms one to a line; the guards it lowers to,

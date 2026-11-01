@@ -196,6 +196,7 @@ it may:
 ```holon
 flow guarded
 port 8106
+secret api_token
 
 route GET /me (req) {
   ok = secure_equals(req.headers.authorization, "Bearer {secret.api_token}")
@@ -203,11 +204,13 @@ route GET /me (req) {
 }
 ```
 
-`secret.api_token` is a secret an admin sets for the deployment. Its value never appears in a
-log, a replay or the editor. `secure_equals` compares in constant time. A caller without the token
+`secret api_token` in the header declares a secret an admin sets for the deployment, and
+`secret.api_token` reads it. The header names everything a flow needs from outside it, so the top
+of the file says what to set before it works; reading one it doesn't name is a mistake, which
+`holon fmt` mends by adding the line. Its value never appears in a log, a replay or the editor. `secure_equals` compares in constant time. A caller without the token
 gets 401.
 
-`optional secret.name` in the headers marks a secret the flow can run without: the deploy can
+`optional secret name` in the headers declares a secret the flow can run without: the deploy can
 leave it out, and `secret.name` then has no value.
 
 ## A webhook
@@ -217,6 +220,8 @@ Putting it together: a Stripe webhook, verified, posted to Slack.
 ```holon
 flow stripe-to-slack
 port 8107
+secret slack_webhook_path
+secret stripe_webhook_secret
 
 route POST /stripe (req) {
   event = stripe.verify(req, secret.stripe_webhook_secret, now).event

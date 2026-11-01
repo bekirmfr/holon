@@ -5,7 +5,7 @@
 # to any web page. A bad version is yanked, never edited. The editor publishes saved flows to it
 # and places what it lists, checking every unit against its hash.
 #
-# Before it works, set one secret under the deployment's settings (the gear):
+# Before it works, set the header's secret under the deployment's settings (the gear):
 #   publish_key   the key publishers send (Authorization: Bearer <key>) to publish or yank
 #
 # Try it: deploy it, set it as the editor's marketplace (flows page), publish one of your saved
@@ -14,6 +14,7 @@
 flow marketplace
 port 8120
 browsers *
+secret publish_key
 collection listings
 
 # Lists the listings, up to 200 at a time, from after a given id.

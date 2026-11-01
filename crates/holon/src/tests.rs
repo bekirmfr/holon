@@ -588,7 +588,7 @@ fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
 #[test]
 fn a_clock_runs_history_never_shows_a_secret() {
     let state = test_state();
-    let plan = holon_author::agent::plan("flow leak\nevery 5s\n\nstate.k = secret.api_key\nstate.encoded = base64(secret.api_key)\n").unwrap();
+    let plan = holon_author::agent::plan("flow leak\nevery 5s\nsecret api_key\n\nstate.k = secret.api_key\nstate.encoded = base64(secret.api_key)\n").unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
@@ -4226,7 +4226,7 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     let value = "whsec_test_123456";
     let set = req("POST", "/deployments/signer/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
     assert_eq!(route(&state, &set).status_code, 200);
-    let text = "flow signer\nport 18199\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
+    let text = "flow signer\nport 18199\nsecret signing_key\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     assert_eq!(slug, "signer");
     let (status, signature, _) = data_call(&state, &slug, "POST", "/sign", "hello");
@@ -4308,7 +4308,7 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
     let value = "tok_live_abcdef123";
     let set = req("POST", "/deployments/gate/secrets/api_token", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
     assert_eq!(route(&state, &set).status_code, 200);
-    let text = "flow gate\nport 18197\ncollection seen\n\nroute POST /me (req) {\n  ok = secure_equals(req.body, \"Bearer {secret.api_token}\")\n  respond \"/paid/{resume_token(paid)}\" when ok, missing: 401\n  paid = await paid, expires: 1h\n  seen[\"last\"] = { at: req.path, via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
+    let text = "flow gate\nport 18197\nsecret api_token\ncollection seen\n\nroute POST /me (req) {\n  ok = secure_equals(req.body, \"Bearer {secret.api_token}\")\n  respond \"/paid/{resume_token(paid)}\" when ok, missing: 401\n  paid = await paid, expires: 1h\n  seen[\"last\"] = { at: req.path, via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     let (status, link, _) = data_call(&state, &slug, "POST", "/me", &format!("Bearer {value}"));
     assert_eq!(status, 200, "{link}");
@@ -4377,6 +4377,9 @@ fn a_secret_computed_into_something_else_stays_out_of_the_log() {
     let text = format!(
         r#"flow leaky
 port 18141
+secret api_key
+secret pem
+secret service_account
 
 route POST /go (req) {{
   basic = http.get("{host}", "/basic", headers: {{ authorization: "Basic {{base64(secret.api_key)}}" }})
@@ -4421,6 +4424,7 @@ fn a_token_a_call_answers_with_a_secret_is_kept_out_of_the_log_and_out_of_state(
     let text = format!(
         r#"flow oauth
 port 18150
+secret client_secret
 
 route POST /call (req) {{
   got = http.post("{host}", "/token", headers: {{ "x-client-secret": secret.client_secret }}, body: req.body)
@@ -4493,6 +4497,7 @@ fn what_is_computed_from_a_secret_is_neither_kept_nor_logged() {
     let state = claims_state("");
     let text = r#"flow derived
 port 18144
+secret api_key
 collection kept
 channel news
 
@@ -5772,7 +5777,7 @@ fn a_run_shows_which_secret_value_it_had_and_still_checks_after_it_rotates() {
         assert_eq!(route(&state, &req("POST", "/deployments/rotor/secrets/signing_key", body)).status_code, 200);
     };
     set("whsec_first_123456");
-    let text = "flow rotor\nport 18149\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
+    let text = "flow rotor\nport 18149\nsecret signing_key\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     assert_eq!(data_call(&state, &slug, "POST", "/sign", "hello").0, 200);
     set("whsec_second_654321");
@@ -5812,6 +5817,7 @@ fn a_secret_as_a_key_is_redacted_and_the_run_checks() {
     let state = claims_state("");
     let text = r#"flow tenants
 port 18147
+secret partner_key
 
 route GET /who (req) {
   tenants = insert({}, secret.partner_key, "acme")
@@ -5855,6 +5861,7 @@ fn a_secret_stays_out_of_files_and_of_what_the_log_keeps_of_them() {
     assert_eq!(bind("out", &out, "read-write"), 200);
     let flow = r#"flow filer
 port 18146
+secret api_key
 folder logs
 folder out
 
@@ -7282,7 +7289,7 @@ fn a_chain_of_calls_is_never_a_loop_and_is_only_so_long() {
 fn a_secret_is_never_sent_to_another_flow() {
     let state = claims_state("");
     deploy_text(&state, BILLING, "127.0.0.1:9");
-    let text = "flow vault\ncalls billing\n\naction leak (input) {\n  r = billing.charge({ id: secret.token, amount: 1 })\n  respond r\n}\n\naction joined (input) {\n  r = billing.charge({ id: \"id-{secret.token}\", amount: 1 })\n  respond r\n}\n";
+    let text = "flow vault\nsecret token\ncalls billing\n\naction leak (input) {\n  r = billing.charge({ id: secret.token, amount: 1 })\n  respond r\n}\n\naction joined (input) {\n  r = billing.charge({ id: \"id-{secret.token}\", amount: 1 })\n  respond r\n}\n";
     let plan = holon_author::agent::plan(text).unwrap();
     for u in &plan.units {
         route(&state, &req("POST", "/unit", u.clone()));

@@ -287,6 +287,12 @@ impl Parser {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
+                    // `secret signing_key` declares what the body reads as `secret.signing_key`;
+                    // before `.` the word is the use.
+                    "secret" if matches!(self.peek_at(1).tok, Tok::Ident) => {
+                        let h = self.header()?;
+                        file.headers.push(h);
+                    }
                     // `keep 500 runs` (or `keep runs for 30d`): how long the log keeps runs. No
                     // statement starts with `keep` and a number or a name, and `keep` stays a name
                     // everywhere else.
@@ -339,6 +345,7 @@ impl Parser {
             "database" => HeaderKind::Database(self.ident("the database's name")?.text),
             "channel" => HeaderKind::Channel(self.ident("the channel's name")?.text),
             "calls" => HeaderKind::Calls(self.raw_name("the flow's name")?.text),
+            "secret" => HeaderKind::Secret(self.ident("the secret's name")?.text),
             "on" => HeaderKind::OnFile(self.file_on()?),
             "optional" => HeaderKind::Optional(self.consent()?),
             "keep" => self.keep()?,
@@ -397,8 +404,8 @@ impl Parser {
         Ok(HeaderKind::Keep { runs, days })
     }
 
-    /// What `optional` names: `secret.name`, `Name`, `Name("text")`, or the wiring form's quoted
-    /// consent name.
+    /// What `optional` names: `secret name` (or, as before, `secret.name`), `Name`, `Name("text")`,
+    /// or the wiring form's quoted consent name.
     fn consent(&mut self) -> R<Consent> {
         if self.is(&Tok::Str) {
             let t = self.next();
@@ -411,9 +418,9 @@ impl Parser {
                 None => Consent::Named { name: text, arg: None },
             });
         }
-        let name = self.ident("a permission: secret.name, or a consent name like HttpRequest(\"host\")")?;
+        let name = self.ident("a permission: secret and its name, or a consent name like HttpRequest(\"host\")")?;
         if name.text == "secret" {
-            self.expect(&Tok::Dot, "\".\" then the secret's name")?;
+            self.eat(&Tok::Dot);
             return Ok(Consent::Secret(self.ident("the secret's name")?.text));
         }
         let arg = if self.eat(&Tok::LParen) {
@@ -1386,6 +1393,20 @@ mod tests {
         assert_eq!(file("every 300\nflow \"my flow\"").headers[0].kind, HeaderKind::Every { seconds: 300.0, text: "300".into() });
     }
 
+    /// `secret x` declares a secret, and `optional secret x` (or, as before, `optional
+    /// secret.x`) one the flow can do without; before `.` the word is a use, a statement.
+    #[test]
+    fn a_secret_is_a_header_before_a_name() {
+        let f = file("secret signing_key\noptional secret receipt_key\noptional secret.old_key\nsecret.out -> verify.secret\n");
+        let kinds: Vec<&HeaderKind> = f.headers.iter().map(|h| &h.kind).collect();
+        assert_eq!(
+            kinds,
+            [&HeaderKind::Secret("signing_key".into()), &HeaderKind::Optional(Consent::Secret("receipt_key".into())), &HeaderKind::Optional(Consent::Secret("old_key".into()))]
+        );
+        assert_eq!(f.items.len(), 1, "the wire is a statement");
+        assert!(parse("secret\n").is_err(), "a secret's header names it");
+    }
+
     // ── definitions ──
 
     #[test]
@@ -1608,19 +1629,19 @@ mod tests {
         ),
         (
             "stripe-to-slack",
-            "flow stripe-to-slack\nport 8103\n\nroute POST /stripe (req) {\n  event = stripe.verify(req, secret.stripe_webhook_secret, now, tolerance: 5m).event\n  sent  = http.post(\"hooks.slack.com\", secret.slack_webhook_path,\n            headers: { \"content-type\": \"application/json\" },\n            body: json({ text: \"Stripe: {event.type}\" }))\n  respond sent.status, missing: 400\n}\n",
+            "flow stripe-to-slack\nport 8103\nsecret slack_webhook_path\nsecret stripe_webhook_secret\n\nroute POST /stripe (req) {\n  event = stripe.verify(req, secret.stripe_webhook_secret, now, tolerance: 5m).event\n  sent  = http.post(\"hooks.slack.com\", secret.slack_webhook_path,\n            headers: { \"content-type\": \"application/json\" },\n            body: json({ text: \"Stripe: {event.type}\" }))\n  respond sent.status, missing: 400\n}\n",
             1,
             0,
         ),
         (
             "guarded-api",
-            "flow guarded-api\nport 8109\noptional secret.receipt_key\n\nroute GET /me (req) {\n  ok      = secure_equals(req.headers.authorization, \"Bearer {secret.api_token}\")\n  receipt = hmac_sha256(secret.receipt_key, req.path, encoding: hex) ?? \"unsigned\"\n  respond { receipt: receipt } when ok, missing: 401\n}\n",
+            "flow guarded-api\nport 8109\nsecret api_token\noptional secret receipt_key\n\nroute GET /me (req) {\n  ok      = secure_equals(req.headers.authorization, \"Bearer {secret.api_token}\")\n  receipt = hmac_sha256(secret.receipt_key, req.path, encoding: hex) ?? \"unsigned\"\n  respond { receipt: receipt } when ok, missing: 401\n}\n",
             1,
             0,
         ),
         (
             "slugs",
-            "flow slugs\nport 8110\ncollection posts\noptional secret.receipt_key\n\nholon slugify(text) -> slug {\n  slug = join(split(lowercase(text), \" \"), \"-\")\n}\n\nholon publish(slug, author) -> (put, saved, receipt) {\n  s       = slug ?? \"\"\n  put     = posts.put(s, { author: author, at: now })\n  saved   = state.set(last_post, s)\n  receipt = hmac_sha256(secret.receipt_key, s, encoding: hex) ?? \"unsigned\"\n}\n\nroute POST /slugs (req) {\n  title     = slugify(req.json.title)\n  author    = slugify(req.json.author)\n  published = publish(title, author)\n  respond { title: title, author: author, receipt: published.receipt }, missing: 400\n}\n\nroute GET /slugs (req) {\n  respond posts.list(limit: 100)\n}\n",
+            "flow slugs\nport 8110\noptional secret receipt_key\ncollection posts\n\nholon slugify(text) -> slug {\n  slug = join(split(lowercase(text), \" \"), \"-\")\n}\n\nholon publish(slug, author) -> (put, saved, receipt) {\n  s       = slug ?? \"\"\n  put     = posts.put(s, { author: author, at: now })\n  saved   = state.set(last_post, s)\n  receipt = hmac_sha256(secret.receipt_key, s, encoding: hex) ?? \"unsigned\"\n}\n\nroute POST /slugs (req) {\n  title     = slugify(req.json.title)\n  author    = slugify(req.json.author)\n  published = publish(title, author)\n  respond { title: title, author: author, receipt: published.receipt }, missing: 400\n}\n\nroute GET /slugs (req) {\n  respond posts.list(limit: 100)\n}\n",
             2,
             2,
         ),
@@ -1646,7 +1667,7 @@ mod tests {
         ),
         (
             "witness",
-            "flow witness\nport 8130\ncollection batches\n\nroute POST /heads (req) {\n  ok    = secure_equals(req.headers.authorization, \"Bearer {secret.witness_key}\")\n  batch = req.json.batch\n  batches[batch] = { ..req.json, witnessed_at: now } when ok\n  respond { batch: batch, witnessed_at: now } when ok, missing: 401\n}\n\nroute GET /batches (req) {\n  respond batches.list(after: req.query.after ?? \"\", limit: 200)\n}\n",
+            "flow witness\nport 8130\nsecret witness_key\ncollection batches\n\nroute POST /heads (req) {\n  ok    = secure_equals(req.headers.authorization, \"Bearer {secret.witness_key}\")\n  batch = req.json.batch\n  batches[batch] = { ..req.json, witnessed_at: now } when ok\n  respond { batch: batch, witnessed_at: now } when ok, missing: 401\n}\n\nroute GET /batches (req) {\n  respond batches.list(after: req.query.after ?? \"\", limit: 200)\n}\n",
             2,
             0,
         ),

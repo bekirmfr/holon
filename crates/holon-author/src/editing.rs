@@ -798,7 +798,7 @@ mod tests {
     fn the_word_under_the_cursor_is_said() {
         assert!(says(SLUGS, "lowercase", 0).contains("lowercase("), "a leaf, by its signature");
         assert!(says(SLUGS, "secret", 1).contains("set by an admin"), "a noun");
-        assert!(hover(SLUGS, at(SLUGS, "secret.receipt_key", 1, 8)).unwrap().text.contains("set by an admin"), "a noun's member");
+        assert!(hover(SLUGS, at(SLUGS, "secret.receipt_key", 0, 8)).unwrap().text.contains("set by an admin"), "a noun's member");
         assert!(hover(SLUGS, at(SLUGS, "posts.put", 0, 6)).unwrap().text.contains("collection `posts`"), "a collection's method");
         assert!(says(SLUGS, "posts.put", 0).contains("a collection of this flow"), "a collection");
         assert!(says(SLUGS, "route", 0).contains("Every statement in it uses `req`"), "a keyword");

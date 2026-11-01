@@ -105,7 +105,7 @@ run code it carries (a js node): up to 200000000 instructions and 16 MiB per cal
 `optional` in a flow's headers marks an item it can run without:
 
 ```
-optional secret.slack_webhook_path
+optional secret slack_webhook_path
 ```
 
 The deploy dialog marks it optional, and a deployment may be granted it or not. Without it, the

@@ -68,7 +68,7 @@ same graph are the same unit.
 |---|---|---|
 | What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist today (two leaves, `as_text` and `coalesce`, were added for it) | §1, §6 |
 | What it is not | General-purpose. No loops, recursion, user types, modules, or standard library growth | §2 |
-| The outside world | Nouns: `req`, `secret.name`, `state.key`, `now`, `random`, a declared `collection` used as `notes[key]`, a declared `folder` used as `inbox[name]`, `http.post(host, path, …)`, `await name` | §5.4 |
+| The outside world | Nouns: `req`, a declared `secret` used as `secret.name`, `state.key`, `now`, `random`, a declared `collection` used as `notes[key]`, a declared `folder` used as `inbox[name]`, `http.post(host, path, …)`, `await name` | §5.4 |
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the effect needs a name | §5.4, §5.10 |
 | Bindings | One form, `name = expr`, everywhere | §5.2 |
 | Calls | `name(inputs…, named…)`: positional arguments are inputs; a named one is an input when the unit has that port, else a param | §5.3 |
@@ -217,6 +217,8 @@ out as plain text and anything else as JSON (the `guestbook` sample).
 ```
 flow stripe-to-slack
 port 8103
+secret slack_webhook_path
+secret stripe_webhook_secret
 
 route POST /stripe (req) {
   event = stripe.verify(req, secret.stripe_webhook_secret, now, tolerance: 5m).event
@@ -228,7 +230,8 @@ route POST /stripe (req) {
 ```
 
 `stripe.verify` is the `stripe_verify` template; it has two outputs, so `.event` selects one
-(§5.7). `secret.x` is a `secret{name: x}` node; `now` a `clock`; `5m` is 300. `http.post` is
+(§5.7). `secret.x` is a `secret{name: x}` node, `x` a secret the header declares (`secret x`):
+someone sets it before the flow works, and the top of the file says so. `now` is a `clock`; `5m` is 300. `http.post` is
 `http_request{method: POST, host: "hooks.slack.com"}` with the path positional and the optional
 inputs named; the host is a literal because it is the permission. `json(x)` is `json_stringify`.
 When the signature fails, `event` is absent, nothing downstream fires, `sent.status` is absent,
@@ -239,7 +242,8 @@ and `respond` answers its `missing` status: 400, and nothing was posted.
 ```
 flow guarded-api
 port 8109
-optional secret.receipt_key
+secret api_token
+optional secret receipt_key
 
 route GET /me (req) {
   ok      = secure_equals(req.headers.authorization, "Bearer {secret.api_token}")
@@ -248,7 +252,9 @@ route GET /me (req) {
 }
 ```
 
-`optional secret.receipt_key` is the deploy setting `optional SecretRead("receipt_key")`.
+`secret api_token` declares the token the route reads; `optional secret receipt_key` declares a
+secret it can run without, the deploy setting `optional SecretRead("receipt_key")` (written
+`optional secret.receipt_key` before secrets were declared, which still reads).
 `req.path`: `path` is not an output of `request`, so it is a field of the request record. `when`
 is `guard(cond, value)`: when `ok` is false the body is absent and the route answers 401.
 
@@ -257,8 +263,8 @@ is `guard(cond, value)`: when `ok` is false the body is absent and the route ans
 ```
 flow slugs
 port 8110
+optional secret receipt_key
 collection posts
-optional secret.receipt_key
 
 holon slugify(text) -> slug {
   slug = join(split(lowercase(text), " "), "-")
@@ -380,6 +386,7 @@ route GET /likes (req) {
 ```
 flow witness
 port 8130
+secret witness_key
 collection batches
 
 route POST /heads (req) {
@@ -802,8 +809,8 @@ around it reaches it as an input after the item (§5.9).
   as record keys (`{ in: 1 }`). A few words are keywords only where they open a handler or end a
   statement: `action` before a name and `(` (elsewhere it is the `action` template's name), `on
   file` (with `deleted` and `matching`) at the start of a line, `calls` before a flow's name at the
-  start of a line (§5.4), and `after` after a statement (§5.11). `on`, `calls` and `after` are
-  names elsewhere.
+  start of a line (§5.4), `secret` before a name at the start of a line (a header, §5.1), and
+  `after` after a statement (§5.11). `on`, `calls` and `after` are names elsewhere.
 - **Nouns:** `req` (the name a route gives its request; any identifier works), `secret`, `state`,
   `now`, `random`, `ingress`, `http`, `stripe`, and every declared collection and folder. `secret`, `state`,
   `http` and `stripe` are namespaces: they take a dot. The nouns are reserved like keywords.
@@ -822,7 +829,8 @@ around it reaches it as an input after the item (§5.9).
 - **Punctuation:** `( ) { } [ ] , : = . -> ..` and the operators of §5.6.
 - **Route paths:** `/` followed by segments of `[A-Za-z0-9_.-]+` or `:name`, as `parse_path`
   accepts. Read as one token after `route METHOD`.
-- **Consent names** (after `optional`): `secret.name` for a secret, or the server's own form,
+- **Consent names** (after `optional`): `secret name` for a secret (`secret.name` reads too), or
+  the server's own form,
   `Name` or `Name("text")` exactly as `consent_name` prints it (`HttpRequest("api.example.com")`).
 
 ## 5. Syntax and lowering
@@ -837,8 +845,8 @@ a binary operator or a comma. Semicolons are not used.
 file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
           | "keep" [number] "runs" ["for" duration]
-          | "browsers" origin ("," origin)* | "optional" consent | "collection" ident
-          | "folder" ident | "database" ident | "on" fileline
+          | "browsers" origin ("," origin)* | "secret" ident | "optional" consent
+          | "collection" ident | "folder" ident | "database" ident | "on" fileline
           | "channel" ident | "calls" slug
 fileline  = "file" ident ["deleted"] ["matching" string]
 item      = holon | handler | statement | wiring      # wiring: the netlist form, §10
@@ -849,7 +857,17 @@ handler   = route                                     # a route, §5.2 and §5.1
 ```
 
 Headers are the flow's deploy settings, exactly as today (`Settings`), and its names for the
-outside world. `keep 500 runs for 30d` is how long the deployment's log keeps runs, the limits
+outside world. **The header names everything that outlives a run or comes from outside it; the
+body uses only names the header gave.** So the top of a file is the whole of what the flow needs
+provided and what it keeps, read without the body: the review an approver makes. A use keeps its
+namespace (`secret.signing_key`), so the line says what the value is.
+
+`secret signing_key` declares a secret the body reads as `secret.signing_key`: someone sets it
+for the deployment before the flow works. `optional secret receipt_key` declares one the flow can
+run without (§5.4); the deploy may leave it out, and its reads then have no value. A use of a
+secret the header doesn't declare is an error at the use, naming the line to add, and `holon fmt`
+adds it, saying what it declared. A declaration nothing uses compiles, and `fmt` drops it, as it
+does a collection's. `secret` is a header only before a name; `secret.x` is the use. `keep 500 runs for 30d` is how long the deployment's log keeps runs, the limits
 `keep_runs` and `keep_run_days`: either part may be left out (`keep 500 runs`, `keep runs for
 30d`), the days whole, one line. It is the deploy settings' two fields, which follow it and which
 it follows; the other limits have no line. `keep` is a header only before a number or `runs`, a
@@ -964,7 +982,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 |---|---|---|
 | `req` | the route's `request` template node, its `request` output | the request |
 | `req.params`, `req.query`, `req.headers`, `req.body`, `req.json` | that output of the request node | its parts |
-| `secret.api_token` | `secret{name: api_token}` | a secret |
+| `secret.api_token` | `secret{name: api_token}` | a secret, declared `secret api_token` |
 | `state.beats` (in an expression) | `store_read{key: beats}` | the state, as the run began |
 | `state.beats = e` | `store_write{key: beats}(e)` | set the state when the run finishes |
 | `state.set(beats, e)` | the same `store_write`, as an expression | the write, as a value to name |

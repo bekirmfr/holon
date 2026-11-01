@@ -31,6 +31,8 @@ A webhook that verifies Stripe's signature and posts the event to Slack:
 ```
 flow stripe-to-slack
 port 8103
+secret slack_webhook_path
+secret stripe_webhook_secret
 
 route POST /stripe (req) {
   verified = stripe.verify(req, secret.stripe_webhook_secret, now)
@@ -139,7 +141,7 @@ grants, starts, stops, deletes or sets a secret.
 | Answer HTTP requests | `route GET /notes/:id (req) { … respond … }` | `hello-api`, `guestbook` |
 | Call other services | `http.get(host, path)`, `http.post(…)`, …: each host is a permission | `fetch-json`, `stripe-to-slack` |
 | Keep state | `state.beats`, and collections keyed by id: `collection notes`, `notes[id]` | `notes-api`, `likes` |
-| Read secrets | `secret.name`: sealed at rest, never in a log or replay | `guarded-api`, `sign-payload` |
+| Read secrets | `secret name` in the header, read as `secret.name`: sealed at rest, never in a log or replay | `guarded-api`, `sign-payload` |
 | Run on a clock | `every 10s` in place of a port: the flow runs on the clock | `heartbeat` |
 | Run on files | `on file drop`: a run per file dropped in a folder, its handle as `ingress`; `deleted` and `matching "*.csv"` for removals and some names, several lines for several folders | `drop-box`, `file-audit` |
 | Wait for a person | `await`: a run parks, and a later request resumes it, days later if need be | `approval` |

@@ -1366,7 +1366,7 @@ mod tests {
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
         state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
         let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
-        let v1 = "flow peek\nport 8231\n\nroute GET /k (req) {\n  respond { k: sha256(secret.api_key) }, missing: 400\n}\n";
+        let v1 = "flow peek\nport 8231\nsecret api_key\n\nroute GET /k (req) {\n  respond { k: sha256(secret.api_key) }, missing: 400\n}\n";
         let v2 = v1.replace("sha256", "base64");
         // A person deploys the version that hashes the key, and sets the key.
         let plan = agent::plan(v1).unwrap();

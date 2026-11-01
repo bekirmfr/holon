@@ -306,10 +306,63 @@ pub fn show(file: &str, source: &str) -> Report {
 
 /// `holon fmt`: the file's text in the canonical form, its comments kept, or its mistake.
 pub fn fmt(file: &str, source: &str) -> Result<String, Report> {
+    fmt_declaring(file, source).map(|(text, _)| text)
+}
+
+/// [`fmt`], and the header lines it added: a name the body uses that the header doesn't declare
+/// (`secret.signing_key` without `secret signing_key`) is declared for it, the one mistake fmt
+/// mends, since it prints from what the text compiles to (docs/L4s/declared-names-L4.md §5).
+pub fn fmt_declaring(file: &str, source: &str) -> Result<(String, Vec<String>), Report> {
+    let (fixed, c, declared) = with_declarations(source).map_err(|e| mistake(file, source, &e))?;
     let mut store = MapResolver::new();
-    let c = compile(file, source, &mut store)?;
+    text::restore(&c.doc, &mut store, &Names::new());
     let printed = lang::print(c.name.as_deref(), &c.doc, &mut store, &Names::new(), &c.names).map_err(|e| Report::failed(format!("{file}: {e}")))?;
-    Ok(with_comments(source, &printed))
+    Ok((with_comments(&fixed, &printed), declared))
+}
+
+/// `source` with a header line for each name its body uses undeclared, compiled, and the lines
+/// added; or its first other mistake, said at its place in `source`.
+pub fn with_declarations(source: &str) -> Result<(String, Lowered, Vec<String>), lang::LowerError> {
+    let mut fixed = source.to_string();
+    let mut declared = Vec::new();
+    // The added lines are together, from the first one's line on.
+    let at = header_end(source) as u32;
+    loop {
+        match lang::compile(&fixed) {
+            Ok(c) => return Ok((fixed, c, declared)),
+            Err(lang::LowerError { declare: Some(line), .. }) if !declared.contains(&line) => {
+                fixed = declare(&fixed, &line);
+                declared.push(line);
+            }
+            Err(mut e) => {
+                let added = declared.len() as u32;
+                for p in [&mut e.span.start, &mut e.span.end] {
+                    if p.line > at + added {
+                        p.line -= added;
+                    }
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// `source` with the header line `line` added: after its last header, or, with none, above its
+/// first line of code. The rest of the text is as it was.
+pub fn declare(source: &str, line: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let at = header_end(source);
+    let mut out: Vec<&str> = lines[..at].to_vec();
+    out.push(line);
+    out.extend(&lines[at..]);
+    out.join("\n") + "\n"
+}
+
+/// How many of `source`'s lines come before a header line added to it: those up to its last
+/// header, or, with none, those before its first line of code.
+fn header_end(source: &str) -> usize {
+    let after = lang::parse(source).ok().and_then(|f| f.headers.iter().map(|h| h.span.end.line as usize).max());
+    after.unwrap_or_else(|| source.lines().position(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).unwrap_or(source.lines().count()))
 }
 
 /// A line split at its `#` comment (one outside a string): the code, and the comment if any.
@@ -675,6 +728,23 @@ route POST /t (req) {
         assert!(fails("  respond updates.watch()").contains("a channel has no \"watch\""));
         assert!(fails("  updates = 1\n  respond 1").contains("a binding may not shadow it"));
         assert!(check("board.holon", "flow board\nport 8200\n\nroute GET /live (req) {\n  respond updates.subscribe()\n}\n").code != 0);
+    }
+
+    /// fmt declares a secret the body reads and the header doesn't name, and says so; the header
+    /// says what the flow needs first, by name (docs/L4s/declared-names-L4.md §4-5).
+    #[test]
+    fn fmt_declares_what_the_body_reads_and_says_so() {
+        let src = "# signs\nflow f\nport 8200\ncollection c\noptional HttpRequest(\"h\")\noptional secret.b\n\n# the route\nroute GET /a (req) {\n  respond { a: secret.a, b: secret.b, c: c[\"k\"] }\n}\n";
+        let (text, declared) = fmt_declaring("f.holon", src).unwrap();
+        assert_eq!(declared, ["secret a"]);
+        assert_eq!(text, "# signs\nflow f\nport 8200\nsecret a\noptional secret b\noptional HttpRequest(\"h\")\ncollection c\n\n# the route\nroute GET /a (req) {\n  respond { a: secret.a, b: secret.b, c: c[\"k\"] }\n}\n");
+        assert_eq!(fmt_declaring("f.holon", &text).unwrap(), (text.clone(), vec![]), "stable, and nothing more to declare");
+        // A declaration nothing reads is dropped, as a collection's is.
+        assert_eq!(fmt("f.holon", "flow f\nport 8200\nsecret unused\n\nroute GET /a (req) {\n  respond 204\n}\n").unwrap(), "flow f\nport 8200\n\nroute GET /a (req) {\n  respond 204\n}\n");
+        // A mistake past the added lines is said where it is in the file.
+        let r = fmt("f.holon", "flow f\nport 8200\n\nroute GET /a (req) {\n  respond secret.a\n  x = nope\n}\n").unwrap_err();
+        assert!(r.err[0].starts_with("f.holon:6:7: unknown name"), "{:?}", r.err);
+        assert_eq!(r.err[1], "    x = nope");
     }
 
     #[test]

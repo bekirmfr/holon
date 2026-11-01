@@ -4,7 +4,7 @@
 # event's type to a Slack channel through an incoming webhook. A request that isn't signed by
 # Stripe (or is too old) gets nothing sent, and a 400.
 #
-# Before it works, set two secrets under the deployment's settings (the gear):
+# Before it works, set the header's two secrets under the deployment's settings (the gear):
 #   stripe_webhook_secret   the endpoint's signing secret from Stripe (whsec_...)
 #   slack_webhook_path      your Slack incoming webhook's path (/services/...)
 #
@@ -14,6 +14,8 @@
 # and "Stripe: payment_intent.succeeded" shows in the channel.
 flow stripe-to-slack
 port 8103
+secret slack_webhook_path
+secret stripe_webhook_secret
 
 # Verify, post to Slack, and answer with Slack's status (400 when the signature fails).
 route POST /stripe (req) {

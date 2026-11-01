@@ -65,8 +65,8 @@ A limit above the host's default needs approval; one above the host's ceiling ca
 
 ## Secrets
 
-A flow names the secrets it reads (`secret.stripe_webhook_secret`); their values are set per
-deployment, by an admin, under **⚙ → secrets**. The flow must have a name first. Each secret
+A flow declares the secrets it reads in its header (`secret stripe_webhook_secret`, read as
+`secret.stripe_webhook_secret`); their values are set per deployment, by an admin, under **⚙ → secrets**. The flow must have a name first. Each secret
 has a source:
 
 - **value**: typed in, sealed on the server (AES-256-GCM, its key in the OS key store by default).
@@ -174,7 +174,7 @@ A flow can mark a need as optional in its headers, so it runs without it:
 ```holon
 flow digest
 port 8130
-optional secret.slack_webhook_path
+optional secret slack_webhook_path
 
 route POST /digest (req) {
   sent = http.post("hooks.slack.com", secret.slack_webhook_path, body: json({ text: req.body }))

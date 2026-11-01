@@ -26,6 +26,9 @@ use crate::wire::{WParam, WPort, WType};
 pub struct LowerError {
     pub span: Span,
     pub message: String,
+    /// The header line that fixes it, when the mistake is a name the header doesn't declare
+    /// (`secret signing_key`): what `holon fmt` adds, and the editor offers.
+    pub declare: Option<String>,
 }
 
 impl fmt::Display for LowerError {
@@ -36,14 +39,19 @@ impl fmt::Display for LowerError {
 
 impl From<ParseError> for LowerError {
     fn from(e: ParseError) -> LowerError {
-        LowerError { span: Span { start: e.pos, end: e.pos }, message: e.message }
+        LowerError { span: Span { start: e.pos, end: e.pos }, message: e.message, declare: None }
     }
 }
 
 type R<T> = Result<T, LowerError>;
 
 fn err<T>(span: Span, message: impl Into<String>) -> R<T> {
-    Err(LowerError { span, message: message.into() })
+    Err(LowerError { span, message: message.into(), declare: None })
+}
+
+/// A use of a name the header doesn't declare: the mistake, with the line that declares it.
+fn undeclared<T>(span: Span, name: &str, what: &str, line: String) -> R<T> {
+    Err(LowerError { span, message: format!("\"{name}\" is not {what} (add `{line}` to the header)"), declare: Some(line) })
 }
 
 /// A text lowered: the flow's name, its document, each top-level node's name in the text by its
@@ -243,6 +251,9 @@ struct Lowerer<'a> {
     /// The flows the header names (`calls billing`), by the noun that calls them (`billing`, or
     /// `billing_v2` for `billing-v2`): their slugs.
     calls: HashMap<String, String>,
+    /// The secrets the header declares (`secret signing_key`, `optional secret receipt_key`):
+    /// the only ones `secret.…` may read.
+    secrets: HashSet<String>,
     /// The streamed call (`http_stream`) the current route's `respond …, stream: true` forwards.
     streamed: Option<String>,
     /// The channel the http call being lowered pipes to (`updates.pipe(http.post(…))`).
@@ -274,6 +285,14 @@ impl<'a> Lowerer<'a> {
         let databases = file.headers.iter().filter_map(|h| if let HeaderKind::Database(d) = &h.kind { Some(d.clone()) } else { None }).collect();
         let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let calls = file.headers.iter().filter_map(|h| if let HeaderKind::Calls(f) = &h.kind { Some((call_noun(f), f.clone())) } else { None }).collect();
+        let secrets = file
+            .headers
+            .iter()
+            .filter_map(|h| match &h.kind {
+                HeaderKind::Secret(n) | HeaderKind::Optional(Consent::Secret(n)) => Some(n.clone()),
+                _ => None,
+            })
+            .collect();
         let folders = file
             .headers
             .iter()
@@ -295,6 +314,7 @@ impl<'a> Lowerer<'a> {
             databases,
             channels,
             calls,
+            secrets,
             streamed: None,
             piping: None,
             on_files,
@@ -487,7 +507,7 @@ impl<'a> Lowerer<'a> {
                     Consent::Named { name, arg: Some(a) } => format!("{name}({a:?})"),
                     Consent::Named { name, arg: None } => name.clone(),
                 }),
-                HeaderKind::Flow(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
@@ -1460,6 +1480,7 @@ impl<'a> Lowerer<'a> {
                 self.node_with("concat", &[], &inputs, e.span)
             }
             ExprKind::Name(n) => self.name(n, e.span),
+            ExprKind::Secret(n) if !self.secrets.contains(n) => undeclared(e.span, n, "a declared secret", format!("secret {n}")),
             ExprKind::Secret(n) => self.node("secret", &[("name".into(), n.clone())], e.span),
             ExprKind::State(k) => self.node("store_read", &[("key".into(), k.clone())], e.span),
             ExprKind::Noun(Noun::Ingress) => self.ingress(e.span),
@@ -2456,7 +2477,7 @@ pub(crate) mod tests {
 
     #[test]
     fn nouns_and_writes_are_one_leaf_each() {
-        let d = compiled("collection notes\nk = \"key\"\nx = secret.tok\ny = state.beats\nz = now\nr = random\ni = ingress\ng = notes[k]\nstate.saved = y\nnotes[k] = x\ndelete notes[k]\np = notes.put(k, x)\nw = state.set(other, x)\n").doc;
+        let d = compiled("collection notes\nsecret tok\nk = \"key\"\nx = secret.tok\ny = state.beats\nz = now\nr = random\ni = ingress\ng = notes[k]\nstate.saved = y\nnotes[k] = x\ndelete notes[k]\np = notes.put(k, x)\nw = state.set(other, x)\n").doc;
         assert_eq!(
             leaves(&d),
             ["const", "secret", "store_read", "clock", "random", "ingress", "collection_get", "store_write", "collection_put", "collection_delete", "collection_put", "store_write"]
@@ -2920,6 +2941,26 @@ route POST /n/:who (req) {
         let d = compiled("folder out\nh = out.file(\"a\")\nout.create(\"b.txt\", \"text\")\nout.create_copy(\"c\", h)\n").doc;
         let got = leaves(&d);
         assert!(got.contains(&"file_create".to_string()) && got.contains(&"file_create_copy".to_string()), "{got:?}");
+    }
+
+    /// A secret is read only by a name the header declares (docs/L4s/declared-names-L4.md §4):
+    /// `secret tok`, or `optional secret tok` for one the flow can do without.
+    #[test]
+    fn a_secret_is_declared_in_the_header() {
+        assert_eq!(compiled("secret tok\nx = secret.tok\n").doc.nodes[0].param("name"), "tok");
+        // Either spelling of the optional line declares it, as the same deploy setting.
+        for header in ["optional secret tok", "optional secret.tok"] {
+            let s = compiled(&format!("{header}\nx = secret.tok\n")).doc.server.unwrap();
+            assert_eq!(s.requirements.unwrap().optional.unwrap(), ["SecretRead(\"tok\")"], "{header}");
+        }
+        let e = compile("flow f\nport 8200\n\nroute GET /a (req) {\n  respond secret.tok\n}\n").unwrap_err();
+        assert_eq!((e.span.start.line, e.span.start.col, e.message.as_str()), (5, 11, "\"tok\" is not a declared secret (add `secret tok` to the header)"));
+        assert_eq!(e.declare.as_deref(), Some("secret tok"), "the line that fixes it");
+        assert_eq!(error("secret tok\nx = secret.other"), (2, 5, "\"other\" is not a declared secret (add `secret other` to the header)".into()));
+        // A holon reads with the flow's declarations.
+        compiled("secret tok\n\nholon signed(t) -> s {\n  s = hmac_sha256(secret.tok, t)\n}\n\nx = signed(\"a\")\n");
+        // A declaration nothing reads compiles.
+        compiled("secret unused\nx = 1\n");
     }
 
     #[test]

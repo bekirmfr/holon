@@ -55,6 +55,7 @@ else.
 | `flow NAME` | The flow's name: what it deploys as. Required. |
 | `port N` | A flow with routes: the port its server answers on. |
 | `every DURATION` | A flow without handlers: how often it runs (`every 10s`, `every 1h`). Beside handlers, a clock is a block: `every 10s { … }`. |
+| `secret NAME` | Declares a secret the flow reads, used as `secret.NAME`: someone sets it before the flow works. One per line. |
 | `collection NAME` | Declares a collection, used as `NAME[key]`. One per line; as many as needed. |
 | `folder NAME` | Declares a named folder on the host, used as `NAME[file]`. |
 | `database NAME` | Declares a named database on the host, used as `NAME.query(sql, …)`. |
@@ -64,10 +65,13 @@ else.
 | `keep N runs [for Dd]` | How many runs the deployment's log keeps, and for how many days: `keep 500 runs`, `keep runs for 30d`, or both, `keep 5 runs for 1d`. The deploy settings' **runs the log keeps** and **days the log keeps runs** (see [Checking runs](../guides/checking-runs.md)). |
 | `browsers ORIGIN, …` | The web origins allowed to call the flow from a browser (CORS), or `*`. |
 
-`optional` takes `secret.NAME` for a secret, or a permission as the server writes it, such as
-`optional HttpRequest("api.example.com")`. A deploy may leave an optional permission out; the
+`optional` takes `secret NAME` for a secret, which it declares too (`secret.NAME` reads as well),
+or a permission as the server writes it, such as `optional HttpRequest("api.example.com")`. A deploy may leave an optional permission out; the
 parts of the flow that need it then have no value.
 
+The header names everything that outlives a run or comes from outside it, and the body uses only
+names the header gave: a use of an undeclared secret or collection is a mistake that names the
+line to add (`holon fmt` adds a missing secret's). A declaration nothing uses is dropped by `fmt`.
 A declaration names something; it grants nothing. What the flow may do is always worked out from
 what it uses.
 
@@ -79,7 +83,8 @@ can't be bound; the mistake names the clash.
 **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `folder` `database` `holon` `js` `route`
 `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`. A keyword
 is fine after a dot (`req.json.in`) and as a record key (`{ in: 1 }`). `action`, `on`, `file`,
-`calls` and `after` are keywords only where they start a handler, declare a flow or tie a statement: `list(after: …)` and
+`calls`, `secret` and `after` are keywords only where they start a handler, declare a flow or a
+secret, or tie a statement: `list(after: …)` and
 `req.query.after` are names.
 
 **Nouns** are the outside world: `req` (or whatever a route names its request), `secret`, `state`,
@@ -196,7 +201,7 @@ Each of these is one building block, and each is one thing the flow may do.
 |---|---|
 | `req`, `req.params`, `req.query`, `req.headers`, `req.body`, `req.json` | the request and its parts (`body` as text, `json` parsed) |
 | `req.path`, `req.method` | fields of the request record |
-| `secret.name` | a secret set for the deployment |
+| `secret.name` | a secret set for the deployment, declared `secret name` |
 | `state.key` | the state under `key`, as the run began |
 | `state.key = e`, `state.set(key, e)` | write it when the run finishes |
 | `now` | the time the run started, in seconds since the epoch |
