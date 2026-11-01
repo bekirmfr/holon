@@ -824,13 +824,18 @@ data: ${JSON.stringify(data)}
     // Without a prompt nothing is called.
     expect((await request.post(`http://127.0.0.1:${port}/chat`, { data: {} })).status()).toBe(400);
     expect(asked).toHaveLength(1);
-    // The room: a piped call's pieces to whoever watches, as they arrive, then the run's pack.
+    // The room: a piped call's pieces to whoever watches, as they arrive, then the run's pack. The
+    // watcher is subscribed once its stream opens: the server subscribes it before it sends the
+    // headers, but logs GET /room/live before both, so the log can say so too soon.
     await chat.evaluate(() => {
-      const w = window as unknown as { heard: string[] };
+      const w = window as unknown as { heard: string[]; open: boolean };
       w.heard = [];
-      new EventSource("/room/live").onmessage = (e) => w.heard.push(e.data);
+      w.open = false;
+      const live = new EventSource("/room/live");
+      live.onopen = () => (w.open = true);
+      live.onmessage = (e) => w.heard.push(e.data);
     });
-    await expect.poll(() => request.get(`${SERVER}/deployments/chat-proxy/log`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.text())).toContain("GET /room/live");
+    await expect.poll(() => chat.evaluate(() => (window as unknown as { open: boolean }).open)).toBe(true);
     const roomed = await request.post(`http://127.0.0.1:${port}/room`, { data: { prompt: "the room" } });
     expect(await roomed.json()).toEqual({ prompt: "the room", said: "Rivers run to the sea." });
     const heard = () => chat.evaluate(() => (window as unknown as { heard: string[] }).heard);
