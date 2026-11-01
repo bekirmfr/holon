@@ -278,7 +278,7 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
     } else {
         match app.page {
             Page::Editor if app.tabs.is_empty() => vec![("n", "new draft", Char('n'), NONE), ("6", "library", Char('6'), NONE), ("3", "flows", Char('3'), NONE), ("ctrl+p", "find", Char('p'), CTRL), ("q", "quit", Char('q'), NONE)],
-            Page::Editor if app.tabs[app.tab].runs.is_some() => vec![("↑↓", "run", Down, NONE), ("→", "next step", Right, NONE), ("←", "step back", Left, NONE), ("tab", "details · errors · timeline", Tab, NONE), ("b", show_next(app.show), Char('b'), NONE), ("esc", "back to editing", Esc, NONE)],
+            Page::Editor if app.tabs[app.tab].runs.is_some() => vec![("↑↓", "run", Down, NONE), ("→", "next step", Right, NONE), ("←", "step back", Left, NONE), ("tab", "details · errors · timeline", Tab, NONE), ("=", if app.values { "hide values" } else { "show values" }, Char('='), NONE), ("b", show_next(app.show), Char('b'), NONE), ("esc", "back to editing", Esc, NONE)],
             Page::Editor if app.show == Show::Graph => vec![
                 ("↑↓", "pick", Down, NONE),
                 ("→", "its detail", Right, NONE),

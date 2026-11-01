@@ -58,7 +58,7 @@ const HELP: &[(&str, &str)] = &[
     ("ctrl+b", "code, then code and its graph side by side, then the graph alone (enter edits there)"),
     ("ctrl+r", "a run over its text: what it played lit, the rest dimmed, each value under its line;"),
     ("", "below, the runs (↑ ↓) and the one picked: tab goes round Details, Errors and Timeline;"),
-    ("", "← → its timeline's steps, marked in the code and the graph; b the layout"),
+    ("", "← → its timeline's steps, marked in the code and the graph; = hides or shows the values; b the layout"),
     ("ctrl+z  ctrl+y", "undo, redo"),
     ("shift+arrows", "select; ctrl+a all; ctrl+c ctrl+x ctrl+v copy, cut, paste"),
     ("ctrl+f", "find; enter the next, shift+enter the one before"),

@@ -276,6 +276,14 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
         screen(&mut app, w, h);
     }
 
+    // Its values under their lines, hidden with = for the code alone, and shown again from the tab bar.
+    assert!(shown.contains("⇒ 1"), "{shown}");
+    press(&mut app, KeyCode::Char('='));
+    let shown = screen(&mut app, 140, 40);
+    assert!(!app.values && !shown.contains('⇒') && shown.contains("values hidden") && shown.contains("respond n"), "{shown}");
+    click(&mut app, Click::Key(KeyCode::Char('='), KeyModifiers::NONE));
+    assert!(app.values && screen(&mut app, 140, 40).contains("⇒ 1"));
+
     // Code and graph side by side: what it played lit, the rest of the text dimmed.
     ctrl(&mut app, 'b');
     let shown = screen(&mut app, 140, 40);

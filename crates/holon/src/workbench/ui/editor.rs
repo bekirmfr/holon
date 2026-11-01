@@ -177,7 +177,7 @@ fn draw_graph_view(f: &mut Frame, app: &mut App, area: Rect) {
 /// The tab bar, each tab a button with its own ✕; on the right, Code / Both / Graph, and Runs.
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let mut x = area.x;
-    let right = 30;
+    let right = if app.tabs[app.tab].runs.is_some() { 39 } else { 30 };
     for (i, t) in app.tabs.iter().enumerate() {
         let here = i == app.tab;
         let style = if here { Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::new().fg(Color::Gray).bg(Color::Indexed(236)) };
@@ -202,12 +202,14 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     app.hit(plus, Click::Key(KeyCode::Char('t'), KeyModifiers::CONTROL));
     // What it shows, each a button (ctrl+b goes round them), then the runs (ctrl+r) over it.
     let runs = app.tabs[app.tab].runs.is_some();
-    let modes = [
+    // Over a run, its values under their lines, or not (=).
+    let values = runs.then_some((" Values ", app.values, ACCENT, Click::Key(KeyCode::Char('='), KeyModifiers::NONE)));
+    let modes = values.into_iter().chain([
         (" Code ", app.show == Show::Code, GOOD, Click::Show(Show::Code)),
         (" Both ", app.show == Show::Both, GOOD, Click::Show(Show::Both)),
         (" Graph ", app.show == Show::Graph, GOOD, Click::Show(Show::Graph)),
         (" Runs ", runs, WARN, Click::Key(KeyCode::Char('r'), KeyModifiers::CONTROL)),
-    ];
+    ]).collect::<Vec<_>>();
     let width: u16 = modes.iter().map(|(l, ..)| l.chars().count() as u16 + 1).sum();
     let mut x = area.x + area.width.saturating_sub(width);
     for (label, on, colour, click) in modes {
@@ -546,14 +548,17 @@ fn draw_run_code(f: &mut Frame, app: &App, area: Rect) {
         let line = Line::from(vec![Span::styled(format!("{n:>width$}{mark}"), number), Span::styled(l.clone(), text)]);
         lines.push(if here { line.style(Style::new().bg(PICKED)) } else { line });
         let indent = l.len() - l.trim_start().len();
-        for note in v.notes.get(&n).into_iter().flatten() {
+        for note in v.notes.get(&n).into_iter().flatten().filter(|_| app.values) {
             let colour = if here { WARN } else if lit.contains(&n) { Color::Indexed(180) } else { DARK };
             lines.push(Line::from(vec![Span::raw(format!("{:>width$} {}", "", " ".repeat(indent))), coloured(note.clone(), colour)]));
         }
     }
     let height = area.height.saturating_sub(2) as usize;
     let scroll = at_row.saturating_sub(height / 3) as u16;
-    let step = if steps.is_empty() { "no steps recorded".to_string() } else { format!("step {} of {}", runs.step + 1, steps.len()) };
+    let mut step = if steps.is_empty() { "no steps recorded".to_string() } else { format!("step {} of {}", runs.step + 1, steps.len()) };
+    if !app.values {
+        step.push_str(" · values hidden");
+    }
     let head = fit(&v.head, (area.width as usize).saturating_sub(step.len() + 12));
     f.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(panel(&format!("{step}  ·  {head}"), true)), area);
 }

@@ -336,6 +336,8 @@ pub(crate) struct App {
     pub(crate) tab: usize,
     /// Code, graph, or both: for every tab.
     pub(crate) show: Show,
+    /// Over a run, each statement's value under its line (`=` hides them, for the code alone).
+    pub(crate) values: bool,
     /// The editor has the keyboard: keys type.
     pub(crate) typing: bool,
     pub(crate) complete: Option<Complete>,
@@ -392,6 +394,7 @@ impl App {
             tabs: vec![],
             tab: 0,
             show: Show::Code,
+            values: true,
             typing: false,
             complete: None,
             find: None,
@@ -834,6 +837,12 @@ impl App {
             }
             Err(e) => self.fail(e),
         }
+    }
+
+    /// Show a run's values under its lines, or hide them for the code alone; for every tab.
+    pub(crate) fn toggle_values(&mut self) {
+        self.values = !self.values;
+        self.say(if self.values { "values shown under their lines: = hides them" } else { "values hidden, the code alone: = shows them" });
     }
 
     /// Open a run in the editor, step by step over its version's text.
@@ -1352,6 +1361,7 @@ impl App {
                 KeyCode::End => runs.step = runs.steps().len().saturating_sub(1),
                 KeyCode::Tab => runs.next_pane(1),
                 KeyCode::BackTab => runs.next_pane(-1),
+                KeyCode::Char('=') => self.toggle_values(),
                 KeyCode::Char('b') => self.next_show(),
                 _ => {}
             }

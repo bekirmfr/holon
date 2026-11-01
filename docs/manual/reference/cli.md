@@ -184,7 +184,8 @@ In the editor, keys type; `esc` leaves the text for the page keys and `i` comes 
 editor's page keys): its first save asks for a file. `ctrl+s` saves (to its file, else on the
 server, not deployed), `ctrl+d` deploys, showing what it may do and what you approve by
 deploying it, `ctrl+r` shows a run over its text (what it played lit, the rest dimmed, each
-statement's value under it). Under it, as in the web editor, a panel: the runs on its left
+statement's value under it; `=` or the tab bar's Values hides the values for the code alone,
+and shows them again). Under it, as in the web editor, a panel: the runs on its left
 (`↑`/`↓` pick one), and on its right the run picked, in tabs (`tab` goes round them): Details
 (what it answered, did and called), Errors (when it failed: why, and on which line) and its
 Timeline, whose steps `←`/`→` go through, each marked in the code and the graph. `alt+f`
