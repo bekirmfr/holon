@@ -1,8 +1,28 @@
+# Stock sheet: its state restored, its files not.
+#
+# Keeps stock counts in a collection and adds each change as a line to a file in a bound folder.
+# Restoring its state puts the counts back, never the file: a file is an outside effect, as a call
+# is. The restore's dry run names each file the runs since wrote, how many times and by which runs,
+# and checks it on disk: one changed by anything but a run (an edit by hand) says so.
+#
+# Before it works, bind the folder (an admin):
+#   holon folder add sheets ~/holon-sheets
+#
+# Try it: deploy it, then
+#   curl -X PUT -d '{"count":4}' http://127.0.0.1:8161/stock/tea
+#   curl -X PUT -d '{"count":40}' http://127.0.0.1:8161/stock/tea
+#   curl http://127.0.0.1:8161/sheet         both lines
+#   holon restore stock-sheet --to-run SEQ --state --dry-run
+# with SEQ the first PUT's run: it would put tea back to 4, and names sheets/changes.txt, written
+# once since, as not put back. Add a line to ~/holon-sheets/changes.txt by hand and the dry run
+# says it was changed outside a run. In the editor: view, history, the restore on the first PUT's
+# row, then diff.
 flow stock-sheet
 port 8161
 collection stock
 folder sheets
 
+# Sets an item's count and adds the change as a line to the sheet.
 route PUT /stock/:item (req) {
   stock[req.params.item] = req.json.count
   before = sheets["changes.txt"] ?? ""
@@ -10,10 +30,12 @@ route PUT /stock/:item (req) {
   respond { item: req.params.item, count: req.json.count }
 }
 
+# An item's count.
 route GET /stock/:item (req) {
   respond { item: req.params.item, count: stock[req.params.item] }
 }
 
+# Every change so far, as plain text.
 route GET /sheet (req) {
   respond sheets["changes.txt"], headers: { "content-type": "text/plain; charset=utf-8" }
 }

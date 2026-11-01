@@ -1,6 +1,21 @@
+# Stripe to Slack: a verified webhook, passed on.
+#
+# Takes Stripe's webhook, checks its signature with the endpoint's signing secret, and posts the
+# event's type to a Slack channel through an incoming webhook. A request that isn't signed by
+# Stripe (or is too old) gets nothing sent, and a 400.
+#
+# Before it works, set two secrets under the deployment's settings (the gear):
+#   stripe_webhook_secret   the endpoint's signing secret from Stripe (whsec_...)
+#   slack_webhook_path      your Slack incoming webhook's path (/services/...)
+#
+# Try it: deploy it, then with the Stripe CLI
+#   stripe listen --forward-to 127.0.0.1:8103/stripe
+#   stripe trigger payment_intent.succeeded
+# and "Stripe: payment_intent.succeeded" shows in the channel.
 flow stripe-to-slack
 port 8103
 
+# Verify, post to Slack, and answer with Slack's status (400 when the signature fails).
 route POST /stripe (req) {
   verified = stripe.verify(req, secret.stripe_webhook_secret, now)
   sent = http.post("hooks.slack.com", secret.slack_webhook_path, headers: { "content-type": "application/json" }, body: json({ text: "Stripe: {verified.event.type}" }))

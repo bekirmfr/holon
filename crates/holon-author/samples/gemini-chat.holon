@@ -1,7 +1,25 @@
+# Gemini chat: a streamed reply, on the free tier.
+#
+# Sends a prompt to Google's Gemini API (the Interactions API) and streams the answer to the
+# caller as it arrives; the page shows the words as they come. Once the answer ends, the flow
+# stores the prompt with what was said, read out of the events by a js holon. A call the API
+# refuses (a bad key, the free tier's rate limit) forwards nothing: the reply is the API's answer,
+# with its status, and the page says so. On the free tier Google may use what is sent to improve
+# its products.
+#
+# Before it works, set one secret under the deployment's settings (the gear):
+#   gemini_api_key   a Gemini API key, free from aistudio.google.com (Get API key)
+#
+# Try it: deploy it, open http://127.0.0.1:8128/ and ask something: the answer shows as it is
+# written. Or
+#   curl -N -H 'content-type: application/json' -d '{"prompt":"a haiku about rivers"}' \
+#     http://127.0.0.1:8128/chat
+# prints the events as they come. The page lists what was asked before.
 flow gemini-chat
 port 8128
 collection chats
 
+# The page: a form whose answer streams in, and the last ten exchanges.
 holon page(past) -> html js {
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const items = Object.values(past).reverse().slice(0, 10).map((c) => `<li><b>${esc(c.prompt)}</b><br>${esc(c.said)}</li>`);
@@ -50,6 +68,7 @@ document.getElementById("ask").onsubmit = async (e) => {
 </script>`;
 }
 
+# Reads the answer's text out of the stream's step.delta events.
 holon answer(events) -> said js {
   let said = "";
   for (const line of String(events).split("\n")) {
@@ -61,13 +80,16 @@ holon answer(events) -> said js {
   return said;
 }
 
+# Serves the page with what was asked before.
 route GET / (req) {
   respond page(chats.list()), headers: { "content-type": "text/html; charset=utf-8" }
 }
 
+# Streams Gemini's answer to the caller and keeps the prompt with what was said.
 route POST /chat (req) {
   prompt = req.json.prompt
   sent = http.post("generativelanguage.googleapis.com", "/v1beta/interactions", headers: { "content-type": "application/json", "x-goog-api-key": secret.gemini_api_key }, body: json({ model: "gemini-3.5-flash-lite", input: prompt, stream: true }), stream: true)
   chats[as_text(now)] = { prompt: prompt, said: answer(sent.body) }
+  # Without a prompt no call is made, and the route answers 400.
   respond sent.body, missing: 400, stream: true
 }

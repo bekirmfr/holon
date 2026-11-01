@@ -44,11 +44,11 @@ route GET /hello/:name (req) {
 }
 "#;
 
-/// A new flow's text: the starter, or the sample `sample` (headed by its title and description).
+/// A new flow's text: the starter, or the sample `sample` (its comments say what it is).
 pub fn new_flow(sample: Option<&str>) -> Result<String, String> {
     let Some(name) = sample else { return Ok(STARTER.into()) };
     let sample = samples::sample(name).ok_or_else(|| format!("no sample \"{name}\" (there are {})", sample_names()))?;
-    Ok(format!("# {}: {}\n{}", sample.title, sample.description, sample.text))
+    Ok(sample.text.into())
 }
 
 /// Every sample's name, for a usage line.
@@ -684,8 +684,8 @@ route POST /t (req) {
         for s in samples::samples() {
             let text = new_flow(Some(s.name)).unwrap();
             assert_eq!(check(&format!("{}.holon", s.name), &text).code, 0, "{}", s.name);
-            // The sample's own text, its names and all, under its title.
-            assert!(text.ends_with(s.text), "{}", s.name);
+            // The sample's own text, its names and comments and all.
+            assert_eq!(text, s.text, "{}", s.name);
         }
         assert_eq!(new_flow(None).unwrap(), STARTER);
         assert_eq!(check("my-flow.holon", STARTER).code, 0);

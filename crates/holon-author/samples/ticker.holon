@@ -1,7 +1,20 @@
+# Ticker: a clock beside routes.
+#
+# A flow with a clock of its own beside its routes: every 2 seconds it counts a tick in its state
+# and sends it on the channel ticks, with the time of the tick. Its page lists each tick as it
+# arrives, and GET /count answers the count. An action, run by hand by its name, sets the count
+# back: a person runs it, and an agent only once a person lets agents run it.
+#
+# Try it: deploy it, open http://127.0.0.1:8156/ and a new tick shows every 2 seconds;
+#   curl http://127.0.0.1:8156/count
+# answers how many so far. To set it back, run reset from the editor's server panel or the
+# deployed page (or POST {"to": 0} to /trigger/ticker/reset on the holon server). To let an agent
+# run it (holon mcp's run tool), tick reset under the gear's "agents may run", deploy and approve.
 flow ticker
 port 8156
 channel ticks
 
+# The page: the count so far, and each new tick as it arrives.
 holon page(count) -> html js {
   return `<!doctype html>
 <meta charset="utf-8">
@@ -22,25 +35,30 @@ new EventSource("/live").onmessage = (e) => {
 </script>`;
 }
 
+# Every 2 seconds: one more tick in the count, and sent on the channel with its time.
 every 2s {
   n = (state.ticks ?? 0) + 1
   state.ticks = n
   ticks.send({ n: n, at: now })
 }
 
+# Run by hand: sets the count to what was sent (0 by default), and answers what it was before.
 action reset (input) {
   state.ticks = input.to ?? 0
   respond { was: state.ticks ?? 0, set: input.to ?? 0 }
 }
 
+# The page, with the count so far.
 route GET / (req) {
   respond page(state.ticks ?? 0), headers: { "content-type": "text/html; charset=utf-8" }
 }
 
+# How many ticks so far.
 route GET /count (req) {
   respond state.ticks ?? 0
 }
 
+# Each new tick as server-sent events, for the page.
 route GET /live (req) {
   respond ticks.subscribe()
 }

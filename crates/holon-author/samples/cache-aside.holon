@@ -1,7 +1,18 @@
+# Cache-aside: a branch not taken.
+#
+# Hands out an id per name, fetched once (a fresh uuid from httpbin.org) and kept in a collection.
+# A name it already has an id for is answered from the collection, and the fetch, the fallback it
+# doesn't need, isn't run at all, so no request goes out. The run log and view mode show the fetch
+# as not run.
+#
+# Try it: deploy it (holon deploy cache-aside.holon), then
+#   curl http://127.0.0.1:8115/id/ada        twice: the same id, and the second run sends no request
+#   curl -X PUT -d '{"id":"x"}' http://127.0.0.1:8115/id/bob      sets bob's id to "x"
 flow cache-aside
 port 8115
 collection ids
 
+# A name's id from the collection, or a fresh one fetched only when it has none, then kept.
 route GET /id/:name (req) {
   name = req.params.name
   id = ids[name] ?? parse_json(http.get("httpbin.org", "/uuid").body).uuid
@@ -9,6 +20,7 @@ route GET /id/:name (req) {
   respond id
 }
 
+# Sets a name's id by hand.
 route PUT /id/:name (req) {
   ids[req.params.name] = req.json.id
   respond req.json.id

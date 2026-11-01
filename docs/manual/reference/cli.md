@@ -51,7 +51,8 @@ These work on any machine, with no server.
 holon new <file> [--sample <name>]
 ```
 
-Writes a starter flow to `<file>`, or the sample named. It never overwrites a file.
+Writes a starter flow to `<file>`, or the sample named, whose comments say what it does and how
+to try it. It never overwrites a file.
 `holon new --help` lists the samples.
 
 ### `holon check`

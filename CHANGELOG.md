@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Every sample says, in its comments, what it does and how to try it.** Each `.holon` file in
+  the samples opens with what the flow is, what it shows, the secrets it needs and the requests
+  to send it, and each route, action and handler has a line on what it does. `holon new --sample`
+  and the editor's copy of a sample keep them (`holon fmt` does), so the heading `holon new` used
+  to add is now the file's own.
+
 ## 0.1.0-rc.30
 
 A deployment has a history: every deploy is a version kept for good, its code and its state go
