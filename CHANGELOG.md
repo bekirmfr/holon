@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- **The `holon` command does what the editor does.** Everything the editor's deployed page,
+  flows page and admin page do now has a command, against the server running here or one
+  elsewhere (`--server URL`, `HOLON_TOKEN`), and those that list take `--json`:
+  - `holon deployments` lists what is deployed, and with a slug, one's details and the runs
+    waiting for an approval or an event; `holon run` (`--fresh`, `--session N`), `pause`, `stop`
+    and `remove --yes` start, hold, end and delete one.
+  - `holon call <slug> METHOD PATH` sends a deployed flow a request, `holon action <slug> <name>
+    --input JSON` runs one of its actions, `holon trigger` runs a flow with no route by hand, and
+    `holon tick <slug> "every 2s"` fires one of its clocks now.
+  - `holon state <slug>` prints its live state as the language writes values; `--collection`
+    lists a collection's items (one with `--key`, every one with `--all`); `--sessions`, each
+    session and the state it left.
+  - `holon grant <slug>` shows a grant and changes it without a redeploy (`--revoke`, `--grant`,
+    `--lower LIMIT=N`, `--keep-running`); `holon grants` is who holds what, and `holon policy`
+    the host's policy, `--reload` holding every deployment to it again.
+  - `holon secret list|history|set|rollback|remove|env`: a value is piped in or named by its
+    source (`--from env:…`, `vault:…`), never an argument and never printed; a rollback's dry run
+    names values by fingerprint.
+  - `holon flows list|show|save|remove`, the saved flows (`save` compiles a file and keeps its
+    text, not deployed), and `holon activity`, what was done on the server, by whom.
+  - `holon user`, `holon token` and `holon oidc`, the admin page's people and sign-in: an invite's
+    link and a new token are printed once.
+  - `holon database tables <name>` lists a bound database's tables.
+
 ## 0.1.0-rc.30
 
 A deployment has a history: every deploy is a version kept for good, its code and its state go

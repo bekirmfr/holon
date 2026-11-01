@@ -183,6 +183,10 @@ Admins manage, from here:
 - **folders**: the named folders flows may use ([Files on the host](files.md));
 - **signing in through an identity provider** (OpenID Connect): its issuer and client id.
 
+Every one of these has a command too: `holon user`, `holon token`, `holon oidc`, `holon folder`,
+`holon database`, `holon store sweep`, `holon grants` and `holon policy`
+([Command line](../reference/cli.md)).
+
 ## The marketplace
 
 A marketplace is itself a flow (the **Marketplace** sample) that holds published holons. Set its
