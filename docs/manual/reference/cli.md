@@ -11,6 +11,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon show`](#holon-show) | an outline of a flow |
 | [`holon fmt`](#holon-fmt) | rewrite a flow in the canonical form |
 | [`holon deploy`](#holon-deploy) | compile a flow and deploy it to a running server |
+| [`holon editor`](#holon-editor) | the editor in a terminal: flows, runs, approvals, and text in tabs |
 | [`holon deployments`](#holon-deployments) | what is deployed, and each one's waiting runs |
 | [`holon run`, `pause`, `stop`, `remove`](#holon-run-pause-stop-remove) | start, hold, end and delete a deployment |
 | [`holon call`](#holon-call) | send a deployed flow a request |
@@ -150,6 +151,35 @@ approval. Without `--approve`, deploy prints what it asks for and exits 1, deplo
 approve it in the editor, by deploying it from there. `--approve` approves it here, as you, and
 prints what it approved, in the deployment's timeline as yours. Agents' tools
 ([`holon mcp`](#holon-mcp)) never approve: the server refuses an agent's deploy that would.
+
+## `holon editor`
+
+```
+holon editor [file.holon | slug] [--server PORT|URL]
+```
+
+The editor in this terminal, on one screen: a bar along the top with the server and what waits
+for you, the pages down the side (folded away below 110 columns), and the keys that work at the
+bottom. It reaches the server as `holon deploy` does, signed in as you.
+
+| Page | |
+|---|---|
+| 1 Overview | what is deployed, what waits for a person, the saved flows |
+| 2 Approvals | each thing waiting for you; enter reviews it: a saved or changed flow opens with what it may do, and you approve it by deploying it |
+| 3 Flows | every deployment and saved flow; enter opens its page, `e` its text |
+| 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value) and its history; `g`, `p`, `x` run, pause or stop it |
+| 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is |
+| 6 Library | the samples; enter opens a copy |
+
+In the editor, keys type; `esc` leaves the text for the page keys and `i` comes back. `ctrl+s`
+saves (to its file, else on the server, not deployed), `ctrl+d` deploys, showing what it may do
+and what you approve by deploying it, `ctrl+r` shows its runs over its text a step at a time (`n`,
+`N`), `ctrl+f` formats it, and `ctrl+←`/`→` and `ctrl+w` move between and close tabs. `:` takes a
+command (`open <file|slug>`, `new <sample>`, `w [file]`, `deploy`, `flow <slug>`, `run`, `pause`
+or `stop <slug>`, `server <port|url>`, `q`), and `?` lists the keys.
+
+A file opens in a tab, and a missing one starts as a new flow; a deployment's name opens its page.
+With no server it still opens, checks and formats files.
 
 ## Running deployments
 

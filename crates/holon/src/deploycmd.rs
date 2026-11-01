@@ -9,6 +9,7 @@ use holon_author::agent;
 use serde_json::{json, Value};
 
 use crate::local;
+use crate::mcp::{Api, Body};
 
 const USAGE: &str = "usage: holon deploy <file> [options]
 
@@ -79,45 +80,16 @@ pub(crate) fn run(args: &[String]) -> i32 {
         }
     };
     let server = target.server.clone();
-    let token = target.token.clone();
+    let api = Person { server: target.server, token: target.token };
 
-    // Stage every unit the root needs, children first.
-    for unit in &plan.units {
-        if let Err(e) = post_bytes(&server, token.as_deref(), "/unit", unit) {
-            eprintln!("holon deploy: staging a unit: {e}");
-            return 1;
-        }
-    }
-
-    // Check whether the deploy needs a person's approval first.
-    let mut body = json!({ "slug": slug, "unit": plan.unit });
-    if let Some(i) = plan.interval_seconds {
-        body["interval_seconds"] = json!(i);
-    }
-    if let Some(r) = &plan.requirements {
-        body["requirements"] = r.clone();
-    }
-    if let Some(b) = &plan.browsers {
-        body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
-    }
-
-    let preview = match post_json(&server, token.as_deref(), "/deploy/preview", &body) {
-        Ok(v) => v,
+    let staged = match stage(&api, &plan, &slug) {
+        Ok(s) => s,
         Err(e) => {
             eprintln!("holon deploy: {e}");
             return 1;
         }
     };
-
-    if let Some(why) = preview.get("refused").and_then(Value::as_str) {
-        eprintln!("holon deploy: this server won't run \"{slug}\": {why}");
-        return 1;
-    }
-
-    let list = |k: &str| -> Vec<String> {
-        preview.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
-    };
-    let needs = list("needs_approval");
+    let needs = staged.needs.clone();
 
     if !needs.is_empty() && !approve {
         eprintln!("holon deploy: \"{slug}\" needs approval before it can deploy.");
@@ -129,12 +101,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
         return 1;
     }
 
-    let mut acknowledge = plan.may.clone();
-    acknowledge.extend(needs.iter().filter(|n| !plan.may.contains(n)).cloned());
-    body["acknowledge"] = json!(acknowledge);
-    body["document"] = plan.document.clone();
-
-    if let Err(e) = post_json(&server, token.as_deref(), "/deploy", &body) {
+    if let Err(e) = commit(&api, &plan, staged, plan.document.clone()) {
         eprintln!("holon deploy: {e}");
         return 1;
     }
@@ -156,9 +123,80 @@ pub(crate) fn run(args: &[String]) -> i32 {
     0
 }
 
-/// POST JSON to `server/path`; the response body, or an error sentence.
-fn post_json(server: &str, token: Option<&str>, path: &str, body: &Value) -> Result<Value, String> {
-    let (status, bytes) = send(server, token, "POST", path, Some(body.to_string().as_bytes()), "application/json")?;
+/// A deploy staged on a server: its units sent, and what the server says deploying it needs.
+pub(crate) struct Staged {
+    /// The deploy request, without its acknowledgements and document yet.
+    body: Value,
+    /// What it asks for that isn't granted yet: a person approves these by deploying it.
+    pub(crate) needs: Vec<String>,
+    /// The secrets it reads that aren't set on the server yet.
+    pub(crate) missing_secrets: Vec<String>,
+}
+
+/// Send `plan`'s units to `server`, and ask what deploying it as `slug` needs a person to approve;
+/// or why the server won't run it. `holon deploy` and `holon editor` deploy through this and
+/// [`commit`], as the editor does through the same two requests.
+pub(crate) fn stage(api: &dyn Api, plan: &agent::Plan, slug: &str) -> Result<Staged, String> {
+    // Stage every unit the root needs, children first.
+    for unit in &plan.units {
+        post_bytes(api, "/unit", unit).map_err(|e| format!("staging a unit: {e}"))?;
+    }
+    let mut body = json!({ "slug": slug, "unit": plan.unit });
+    if let Some(i) = plan.interval_seconds {
+        body["interval_seconds"] = json!(i);
+    }
+    if let Some(r) = &plan.requirements {
+        body["requirements"] = r.clone();
+    }
+    if let Some(b) = &plan.browsers {
+        body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
+    }
+    let preview = post_json(api, "/deploy/preview", &body)?;
+    if let Some(why) = preview.get("refused").and_then(Value::as_str) {
+        return Err(format!("this server won't run \"{slug}\": {why}"));
+    }
+    let list = |k: &str| -> Vec<String> {
+        preview.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
+    };
+    Ok(Staged { body, needs: list("needs_approval"), missing_secrets: list("missing_secrets") })
+}
+
+/// Deploy what [`stage`] staged, with `document` (the plan's, with its text kept or not):
+/// approving what it needs, as whoever `token` signs in as.
+pub(crate) fn commit(api: &dyn Api, plan: &agent::Plan, staged: Staged, document: Value) -> Result<(), String> {
+    let Staged { mut body, needs, .. } = staged;
+    let mut acknowledge = plan.may.clone();
+    acknowledge.extend(needs.iter().filter(|n| !plan.may.contains(n)).cloned());
+    body["acknowledge"] = json!(acknowledge);
+    body["document"] = document;
+    post_json(api, "/deploy", &body).map(|_| ())
+}
+
+/// A server reached as a person: whoever the token signs in as, not as an agent (mcp.rs), so a
+/// deploy can approve what it asks for.
+pub(crate) struct Person {
+    pub(crate) server: String,
+    pub(crate) token: Option<String>,
+}
+
+impl Api for Person {
+    fn server(&self) -> String {
+        self.server.clone()
+    }
+    fn send(&self, method: &str, path: &str, body: Option<Body>) -> Result<(u16, Vec<u8>), String> {
+        let token = self.token.as_deref();
+        match body {
+            None => send(&self.server, token, method, path, None, ""),
+            Some(Body::Json(v)) => send(&self.server, token, method, path, Some(v.to_string().as_bytes()), "application/json"),
+            Some(Body::Bytes(b)) => send(&self.server, token, method, path, Some(&b), "application/octet-stream"),
+        }
+    }
+}
+
+/// Send a request to `api`; the JSON it answered, or an error sentence.
+pub(crate) fn call(api: &dyn Api, method: &str, path: &str, body: Option<Body>) -> Result<Value, String> {
+    let server = api.server();
+    let (status, bytes) = api.send(method, path, body)?;
     let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
         return Ok(value);
@@ -171,9 +209,15 @@ fn post_json(server: &str, token: Option<&str>, path: &str, body: &Value) -> Res
     })
 }
 
-/// POST raw bytes to `server/path`.
-fn post_bytes(server: &str, token: Option<&str>, path: &str, body: &[u8]) -> Result<(), String> {
-    let (status, bytes) = send(server, token, "POST", path, Some(body), "application/octet-stream")?;
+/// POST JSON to `api`'s `path`; the response body, or an error sentence.
+fn post_json(api: &dyn Api, path: &str, body: &Value) -> Result<Value, String> {
+    call(api, "POST", path, Some(Body::Json(body.clone())))
+}
+
+/// POST raw bytes to `api`'s `path`.
+fn post_bytes(api: &dyn Api, path: &str, body: &[u8]) -> Result<(), String> {
+    let server = api.server();
+    let (status, bytes) = api.send("POST", path, Some(Body::Bytes(body.to_vec())))?;
     if (200..300).contains(&status) {
         return Ok(());
     }

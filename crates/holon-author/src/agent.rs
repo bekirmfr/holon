@@ -359,9 +359,49 @@ fn node_name(n: &crate::canvas::Node) -> String {
     }
 }
 
+/// One recorded run laid over the flow's text: what [`explain`] prints, as parts a screen can lay
+/// out (`holon editor` shows each line's notes beside it, and steps through them).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunView {
+    /// The run in one line, with the version it ran on.
+    pub head: String,
+    /// The run recorded no steps, so no line has a value.
+    pub no_steps: bool,
+    /// The flow's text, as the deployed document prints.
+    pub text: Vec<String>,
+    /// By line (1-based): each statement's value there (`⇒ …`), and the claims it took.
+    pub notes: BTreeMap<u32, Vec<String>>,
+    /// After the text: claims no line explains, the answer, what it performed and called, why it failed.
+    pub after: Vec<String>,
+}
+
 /// One recorded run, as the flow's text with each statement's value under it: what a person (or
 /// an agent) reads to see what the program did. `name` heads the text (`flow <name>`).
 pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, String> {
+    let v = run_view(name, document, entry)?;
+    let mut out = vec![v.head];
+    if v.no_steps {
+        out.push("(this run recorded no steps: the values below are left out)".into());
+    }
+    out.push(String::new());
+    let width = v.text.len().to_string().len();
+    for (i, line) in v.text.iter().enumerate() {
+        out.push(format!("{:>width$}  {line}", i + 1));
+        let indent = line.len() - line.trim_start().len();
+        for note in v.notes.get(&((i + 1) as u32)).into_iter().flatten() {
+            out.push(format!("{:>width$}  {}  {note}", "", " ".repeat(indent)));
+        }
+    }
+    out.push(String::new());
+    out.extend(v.after);
+    while out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
+    Ok(out.join("\n"))
+}
+
+/// One recorded run, as [`RunView`]'s parts. `name` heads the text (`flow <name>`).
+pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, String> {
     let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the deployed document doesn't read: {e}"))?;
     let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
     let (text, lines) = print_lines(Some(name), &doc, &mut MapResolver::new(), &Names::new(), &bindings)?;
@@ -427,27 +467,23 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
         }
         origin(id)
     };
-    let mut out = vec![run_line(entry)];
+    let mut head = run_line(entry);
     if let Some(unit) = entry.get("unit").and_then(Value::as_str).filter(|u| u.len() >= 12) {
-        out[0].push_str(&format!(" (version {})", &unit[..12]));
+        head.push_str(&format!(" (version {})", &unit[..12]));
     }
-    if values.is_empty() && ran.is_empty() {
-        out.push("(this run recorded no steps: the values below are left out)".into());
-    }
-    out.push(String::new());
-    let width = text.lines().count().to_string().len();
-    for (i, line) in text.lines().enumerate() {
+    let no_steps = values.is_empty() && ran.is_empty();
+    let mut notes: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    for (i, _) in text.lines().enumerate() {
         let n = (i + 1) as u32;
-        out.push(format!("{n:>width$}  {line}"));
         let Some(ids) = on_line.get(&n) else { continue };
         let here: HashSet<&str> = ids.iter().copied().collect();
         let mut roots: Vec<&str> = ids.iter().copied().filter(|id| !doc.edges.iter().any(|w| w.source == *id && here.contains(w.target.as_str()))).collect();
         roots.sort_by_key(|id| doc.nodes.iter().position(|n| n.id == *id));
-        let indent = line.len() - line.trim_start().len();
+        let here = notes.entry(n).or_default();
         for id in &roots {
             let note = annotate(id);
             if !note.is_empty() {
-                out.push(format!("{:>width$}  {}  ⇒ {note}", "", " ".repeat(indent)));
+                here.push(format!("⇒ {note}"));
             }
         }
         // A node inlined into the statement (a js call inside `respond { … }`) that gave nothing
@@ -456,14 +492,13 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
             if let (Some(why), Some(node)) = (reasons.get(*id), by_id.get(id))
                 && !has(id)
             {
-                out.push(format!("{:>width$}  {}  ⇒ {} gave nothing: {why}", "", " ".repeat(indent), node_name(node)));
+                here.push(format!("⇒ {} gave nothing: {why}", node_name(node)));
             }
         }
-        for note in claims.remove(&n).unwrap_or_default() {
-            out.push(format!("{:>width$}  {}  {note}", "", " ".repeat(indent)));
-        }
+        here.extend(claims.remove(&n).unwrap_or_default());
     }
-    out.push(String::new());
+    notes.retain(|_, v| !v.is_empty());
+    let mut out = Vec::new();
     for note in claims.into_values().flatten() {
         out.push(note);
     }
@@ -480,10 +515,7 @@ pub fn explain(name: &str, document: &Value, entry: &Value) -> Result<String, St
     if let Some(e) = entry.get("error").and_then(Value::as_str) {
         out.push(format!("failed: {e}"));
     }
-    while out.last().is_some_and(String::is_empty) {
-        out.pop();
-    }
-    Ok(out.join("\n"))
+    Ok(RunView { head, no_steps, text: text.lines().map(str::to_string).collect(), notes, after: out })
 }
 
 // ── the reference ───────────────────────────────────────────────────────────────────────────
