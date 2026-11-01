@@ -136,6 +136,8 @@ fn a_saved_flow_waits_for_a_person_who_approves_it_from_the_approvals_page() {
     let waiting = app.waiting();
     assert_eq!(waiting.len(), 1);
     assert!(waiting[0].1.starts_with("to deploy it for the first time"), "{waiting:?}");
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("Waiting for you (1)"), "the overview counts what waits: {shown}");
     press(&mut app, KeyCode::Char('2'));
     let shown = screen(&mut app, 120, 30);
     assert!(shown.contains("beats") && shown.contains("first time"), "{shown}");
