@@ -1420,10 +1420,7 @@ impl SecretSends<'_> {
             _ => return None,
         };
         let name = secrets::secrets_in(request, self.vault).into_iter().find(|name| !self.sent.get(name).is_some_and(|hosts| hosts.contains(&host)))?;
-        let shown = match self.sent.get(&name) {
-            Some(hosts) if !hosts.is_empty() => hosts.iter().map(|h| holon_author::describe::describe_destination(h)).collect::<Vec<_>>().join(", "),
-            _ => "nowhere".to_string(),
-        };
+        let shown = self.sent.get(&name).and_then(|to| holon_author::describe::describe_sent_to(to).0).unwrap_or_else(|| "nowhere".to_string());
         Some(outbound::failure("blocked_secret", format!("the secret {name:?} isn't sent to {host}: this flow's approval shows it going to {shown}")))
     }
 }

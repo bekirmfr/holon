@@ -103,7 +103,11 @@ body, as it is or computed from it, is listed with the hosts it is sent to: "rea
 read's value (`vendor.one("… where license_key = $1", secret.license_key)`) goes to the
 database's server with the query: "…, and send it to the database "vendor"". The rows a read
 answers are what the database said, as a request's response is what the far side said, so
-answering with them isn't answering with the secret. That isn't a permission of its own
+answering with them isn't answering with the secret. What a call answers to a request that
+carried a secret (the access token of a token exchange, a service's echo) is followed too, and
+where it goes is said after: "read the secret "client_secret", and send it to
+https://demo.duendesoftware.com; what is answered to it goes to https://httpbin.dev" (the
+**client-credentials** sample). That isn't a permission of its own
 (the hosts are, and the graph fixes which secret goes to which before the flow runs); it is said
 there so you see it when you approve, and when you update a flow whose version moves a key to
 another host. `holon check`, `holon deploy` and the editor's hover on `secret.name` say the same.

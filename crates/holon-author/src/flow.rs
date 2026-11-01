@@ -314,6 +314,12 @@ pub fn secret_marks(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, por
                     mark(trace, child, crate::describe::describe_secret_sink(&name, sink));
                 }
             }
+            // What is answered to it: the token a token exchange answers, an API's echo.
+            for (path, sink) in holon_core::taint::SecretFed::answers_of(handler, &*store, &name).sinks() {
+                if let Some(&child) = path.first() {
+                    mark(trace, child, crate::describe::describe_answer_sink(&name, sink));
+                }
+            }
             if let (true, UnitBody::Composite { edges, .. }) = (*answers, &handler.body) {
                 for e in edges.iter().filter(|e| e.to_child == holon_core::BOUNDARY && e.to_port == response && e.from_child != holon_core::BOUNDARY) {
                     if fed.output(&[e.from_child], e.from_port as usize) > holon_core::taint::Taint::Clean {

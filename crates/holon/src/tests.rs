@@ -4545,6 +4545,15 @@ route POST /open (req) {{
     assert_eq!(report.reruns[0], (0, verify::Rerun::Matched), "{}", verify::describe(&report, None));
     assert!(matches!(&report.reruns[1], (1, verify::Rerun::Skipped(why)) if why.contains("wrote a secret's value")), "{}", verify::describe(&report, None));
     assert!(report.ok(), "{}", verify::describe(&report, None));
+    // Where the token went: to the host its approval shows what is answered to the secret going.
+    assert_eq!((report.token_requests, report.tokens_outside.len()), (1, 0), "{}", verify::describe(&report, None));
+    assert!(verify::describe(&report, None).contains("tokens: 1 outbound request carried what a call answered to a secret, each to a host its approval shows that going to"));
+    // Changed to say it went elsewhere, it is caught.
+    let mut changed = export;
+    changed.lines[0] = changed.lines[0].replace(&format!("{host}/name"), "elsewhere.test/name");
+    let report = verify::check(&changed, None, &BTreeMap::new());
+    assert_eq!(report.tokens_outside, vec![(0, "answer access_token".to_string(), "elsewhere.test".to_string())], "{}", verify::describe(&report, None));
+    assert!(verify::describe(&report, None).contains("run 0 SENT a token (answer access_token) to elsewhere.test, where its approval doesn't show what is answered to its secret going"));
 }
 
 /// A route that answers with a secret, or with what is computed from it, asks for it at deploy

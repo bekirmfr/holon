@@ -89,25 +89,42 @@ pub fn describe_destination(destination: &str) -> String {
     }
 }
 
+/// Where a secret goes, as core's `sent_secrets` lists it, in words ([`describe_destination`]):
+/// where it is sent itself ("https://api.example.com and the database "shop""), and where what
+/// is answered to it goes (its `answer:` destinations), each when there is one.
+pub fn describe_sent_to(to: &BTreeSet<String>) -> (Option<String>, Option<String>) {
+    let listed = |to: Vec<&str>| -> Option<String> {
+        // The hosts, then the databases.
+        let mut to = to;
+        to.sort_by_key(|d| d.starts_with("db:"));
+        let to: Vec<String> = to.into_iter().map(describe_destination).collect();
+        match to.split_last() {
+            None => None,
+            Some((last, rest)) if !rest.is_empty() => Some(format!("{} and {last}", rest.join(", "))),
+            Some((last, _)) => Some(last.clone()),
+        }
+    };
+    let (answers, own): (Vec<&String>, Vec<&String>) = to.iter().partition(|d| d.starts_with(holon_core::ANSWER));
+    (listed(own.iter().map(|d| d.as_str()).collect()), listed(answers.iter().filter_map(|d| d.strip_prefix(holon_core::ANSWER)).collect()))
+}
+
 /// `item` in words (as [`describe_item_of`]), and beside a secret it reads, where the flow sends
-/// it (core's `sent_secrets`, secret → destinations, [`describe_destination`]): "read the secret
-/// "k", and send it to https://api.example.com and the database "shop"". It isn't an item of its
-/// own; the approval says it here so a person sees where each secret goes.
+/// it, and where what is answered to it goes (core's `sent_secrets`, [`describe_sent_to`]): "read
+/// the secret "k", and send it to https://auth.example.com; what is answered to it goes to
+/// https://api.example.com". It isn't an item of its own; the approval says it here so a person
+/// sees where each secret goes.
 pub fn describe_item_sending(item: &str, by_hand: bool, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
     let said = describe_item_of(item, by_hand);
     let name = item.strip_prefix("SecretRead(\"").and_then(|i| i.strip_suffix("\")"));
-    let Some(hosts) = name.and_then(|n| sent.get(n)).filter(|h| !h.is_empty()) else {
+    let Some(to) = name.and_then(|n| sent.get(n)) else {
         return said;
     };
-    // The hosts, then the databases.
-    let mut hosts: Vec<&String> = hosts.iter().collect();
-    hosts.sort_by_key(|h| h.starts_with("db:"));
-    let hosts: Vec<String> = hosts.into_iter().map(|h| describe_destination(h)).collect();
-    let listed = match hosts.split_last() {
-        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => hosts.join(""),
-    };
-    format!("{said}, and send it to {listed}")
+    match describe_sent_to(to) {
+        (Some(own), Some(answers)) => format!("{said}, and send it to {own}; what is answered to it goes to {answers}"),
+        (Some(own), None) => format!("{said}, and send it to {own}"),
+        (None, Some(answers)) => format!("{said}; what is answered to it goes to {answers}"),
+        (None, None) => said,
+    }
 }
 
 /// What a sink does with the secret `secret` it is fed, as the canvas marks it: "sends the secret
@@ -126,6 +143,24 @@ pub fn describe_secret_sink(secret: &str, sink: &holon_core::Capability) -> Stri
         }
         RunsAction(_) => format!("would hand the secret \"{secret}\" to another flow ({what}): the host refuses it"),
         _ => format!("{what}, with the secret \"{secret}\""),
+    }
+}
+
+/// What a sink does with what is answered to the secret `secret` (core's
+/// `SecretFed::answers_of`: the token a token exchange answers, an API's echo), as the canvas
+/// marks it: "sends what is answered to the secret "k" to https://api.example.com".
+pub fn describe_answer_sink(secret: &str, sink: &holon_core::Capability) -> String {
+    use holon_core::Capability::*;
+    let what = describe_item(&holon_core::consent_name(sink));
+    let answered = format!("what is answered to the secret \"{secret}\"");
+    match sink {
+        HttpRequest(host) => format!("sends {answered} to https://{host}"),
+        DbRead(table) => match table.split_once('/') {
+            Some((database, table)) => format!("sends {answered} to the database \"{database}\", reading its table \"{table}\""),
+            None => format!("{what}, with {answered}"),
+        },
+        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => format!("keeps {answered} ({what}); a token in it is refused"),
+        _ => format!("{what}, with {answered}"),
     }
 }
 
@@ -153,6 +188,14 @@ mod tests {
         let sent = BTreeMap::from([("k".to_string(), BTreeSet::from(["a.example.com".to_string(), "b.example.com".to_string()]))]);
         assert_eq!(describe_item_sending(r#"SecretRead("k")"#, false, &sent), r#"read the secret "k", and send it to https://a.example.com and https://b.example.com"#);
         assert_eq!(describe_item_sending(r#"SecretRead("j")"#, false, &sent), r#"read the secret "j""#, "a secret sent nowhere");
+        let exchanged = BTreeMap::from([("k".to_string(), BTreeSet::from(["auth.example.com".to_string(), "answer:api.example.com".to_string(), "answer:db:shop".to_string()]))]);
+        assert_eq!(
+            describe_item_sending(r#"SecretRead("k")"#, false, &exchanged),
+            r#"read the secret "k", and send it to https://auth.example.com; what is answered to it goes to https://api.example.com and the database "shop""#,
+            "a token exchange"
+        );
+        let api = holon_core::Capability::HttpRequest("api.example.com".into());
+        assert_eq!(super::describe_answer_sink("k", &api), r#"sends what is answered to the secret "k" to https://api.example.com"#);
         let queried = BTreeMap::from([("k".to_string(), BTreeSet::from(["db:audit".to_string(), "hooks.example.com".to_string()]))]);
         assert_eq!(describe_item_sending(r#"SecretRead("k")"#, false, &queried), r#"read the secret "k", and send it to https://hooks.example.com and the database "audit""#, "a database read's parameters");
         let read = holon_core::Capability::DbRead("audit/log".into());

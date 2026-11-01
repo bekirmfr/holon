@@ -620,6 +620,14 @@ mod tests {
         assert_eq!(stripe.get("sent"), Some(&vec!["sends the secret \"slack_webhook_path\" to https://hooks.slack.com".to_string()]), "{stripe:?}");
         assert_eq!(stripe.len(), 1, "verifying with the Stripe secret marks nothing: {stripe:?}");
 
+        // A token exchange: the secret to the OAuth server, what is answered to it to the API.
+        let exchange = marks_of(include_str!("../samples/client-credentials.holon"));
+        assert_eq!(exchange.get("got"), Some(&vec!["sends the secret \"client_secret\" to https://demo.duendesoftware.com".to_string()]), "{exchange:?}");
+        assert_eq!(exchange.get("called"), Some(&vec!["sends what is answered to the secret \"client_secret\" to https://httpbin.dev".to_string()]), "{exchange:?}");
+        assert_eq!(exchange.len(), 2, "{exchange:?}");
+        let echoed = marks_of(include_str!("../samples/echoed-key.holon"));
+        assert_eq!(echoed.get("passed"), Some(&vec!["sends what is answered to the secret \"demo_key\" to https://postman-echo.com".to_string()]), "{echoed:?}");
+
         // A database read the key is a parameter of: the key goes to the database.
         let license = marks_of(include_str!("../samples/license-check.holon"));
         assert_eq!(license.into_values().collect::<Vec<_>>(), vec![vec!["sends the secret \"license_key\" to the database \"vendor\", reading its table \"licenses\"".to_string()]]);

@@ -201,6 +201,22 @@ test("license-check's approval says its key goes to the database, and the route 
   expect(await license.json()).toEqual({ plan: "team", seats: 5 });
 });
 
+test("client-credentials' approval says where the secret goes and where the token it gets goes, and the canvas marks both requests", async ({ page }) => {
+  await openSample(page, "A token exchange, and where the token goes");
+  const marks = page.locator(".hl-node__secret");
+  await expect(marks).toHaveCount(2);
+  await expect(marks.filter({ hasText: "demo.duendesoftware.com" })).toHaveText('🔑 sends the secret "client_secret" to https://demo.duendesoftware.com');
+  await expect(marks.filter({ hasText: "httpbin.dev" })).toHaveText('🔑 sends what is answered to the secret "client_secret" to https://httpbin.dev');
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const portField = settings.getByRole("textbox").first();
+  await portField.fill(String(Number(await portField.inputValue()) + SAMPLE_SHIFT));
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText('read the secret "client_secret", and send it to https://demo.duendesoftware.com; what is answered to it goes to https://httpbin.dev');
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+});
+
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
   // The port moved in the text (the text's wins while it is open), so the text still stands for
   // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains

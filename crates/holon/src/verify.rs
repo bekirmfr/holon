@@ -228,6 +228,11 @@ pub(crate) struct Report {
     /// secret and host.
     pub(crate) secret_requests: usize,
     pub(crate) secrets_outside: Vec<(u64, String, String)>,
+    /// Where the tokens went: the outbound requests that carried one a call answered to a secret
+    /// (`‹token:answer access_token #…›`), and those that went to a host its unit doesn't send
+    /// what is answered to that secret to (its `answer:` destinations): by seq, token and host.
+    pub(crate) token_requests: usize,
+    pub(crate) tokens_outside: Vec<(u64, String, String)>,
 }
 
 /// What checking that each run's state follows from the one before found (`check_states`).
@@ -285,6 +290,7 @@ impl Report {
             && !self.reruns.iter().any(|(_, r)| matches!(r, Rerun::Differs(_)))
             && self.states.as_ref().is_none_or(|s| s.breaks.is_empty())
             && self.secrets_outside.is_empty()
+            && self.tokens_outside.is_empty()
     }
 }
 
@@ -367,16 +373,30 @@ const NOT_SENT: &[&str] = &["blocked_secret", "blocked_host", "blocked_scheme", 
 /// Where the secrets went: each outbound request that carried a secret's value (the log marks it
 /// in the request) went to a host its unit sends that secret to (core's `sent_secrets`, what the
 /// approval showed). A request refused before it left went nowhere.
+///
+/// And where the tokens went: a token a call answered (`‹token:answer access_token #…›` in its
+/// response) is what is answered to the secrets its request carried, or to those of a token it
+/// carried; each request that carried it went to a host its unit sends what is answered to one of
+/// them to (an `answer:` destination). A token whose request carried no secret's mark (one
+/// computed from a secret, withheld) is held to every secret's.
 fn check_sends(entries: &[(LogEntry, &str)], resolver: &impl holon_core::Resolver, marks: &Marks, report: &mut Report) {
     let mut sent_by_unit: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
     for (entry, _) in entries {
+        // Each token this run got, and the secrets it was answered to.
+        let mut answered: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for x in entry.rounds.iter().flat_map(|r| &r.exchanges) {
             let request = marks.read(&x.request, entry.escaped);
+            let response = marks.read(&x.response, entry.escaped);
             let named = marks.secrets_in(&request);
-            if named.is_empty() {
+            let tokens = marks.tokens_in(&request);
+            let owners: BTreeSet<String> = named.iter().cloned().chain(tokens.iter().flat_map(|t| answered.get(t).cloned().unwrap_or_default())).collect();
+            for token in marks.tokens_in(&response) {
+                answered.entry(token).or_default().extend(owners.iter().cloned());
+            }
+            if named.is_empty() && tokens.is_empty() {
                 continue;
             }
-            if let Value::Record(r) = marks.read(&x.response, entry.escaped)
+            if let Value::Record(r) = &response
                 && let Some(Value::Text(error)) = r.get("error")
                 && NOT_SENT.contains(&error.as_str())
             {
@@ -392,10 +412,23 @@ fn check_sends(entries: &[(LogEntry, &str)], resolver: &impl holon_core::Resolve
             let sent = sent_by_unit
                 .entry(entry.unit.clone())
                 .or_insert_with(|| parse_hash(&entry.unit).and_then(|h| resolver.resolve(&h)).map(|u| holon_core::sent_secrets(u, resolver)).unwrap_or_default());
-            report.secret_requests += 1;
+            if !named.is_empty() {
+                report.secret_requests += 1;
+            }
             for name in named {
                 if !sent.get(&name).is_some_and(|hosts| hosts.contains(&host)) {
                     report.secrets_outside.push((entry.seq, name, host.clone()));
+                }
+            }
+            if !tokens.is_empty() {
+                report.token_requests += 1;
+            }
+            let shown = format!("{}{host}", holon_core::ANSWER);
+            for token in tokens {
+                let owners = answered.get(&token).filter(|o| !o.is_empty()).cloned().unwrap_or_else(|| sent.keys().cloned().collect());
+                if !owners.iter().any(|name| sent.get(name).is_some_and(|to| to.contains(&shown))) {
+                    let name = token.split(" #").next().unwrap_or(&token).to_string();
+                    report.tokens_outside.push((entry.seq, name, host.clone()));
                 }
             }
         }
@@ -1015,6 +1048,21 @@ impl Marks {
         found.into_inner()
     }
 
+    /// The tokens whose placeholder is in `v` (as [`Marks::read`] gives it): each as its mark
+    /// reads, `answer access_token #a1b2c3d4`, so one token is told from another by its print.
+    fn tokens_in(&self, v: &Value) -> BTreeSet<String> {
+        let start = format!("{}token:", self.start);
+        let found = std::cell::RefCell::new(BTreeSet::new());
+        secrets::value_holds(v, &|s: &str| {
+            for (i, _) in s.match_indices(start.as_str()) {
+                let rest = &s[i + start.len()..];
+                found.borrow_mut().insert(rest[..rest.find('›').unwrap_or(rest.len())].to_string());
+            }
+            false
+        });
+        found.into_inner()
+    }
+
     /// A value the log wrote (its entry `escaped` or not), as the run is run again with it.
     fn read(&self, v: &SValue, escaped: bool) -> Value {
         let mut v = v.clone();
@@ -1253,6 +1301,16 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     }
     for (seq, name, host) in &r.secrets_outside {
         out += &format!("  run {seq} SENT the secret {name:?} to {host}, where its approval doesn't show it going\n");
+    }
+    if r.token_requests > 0 && r.tokens_outside.is_empty() {
+        out += &format!(
+            "  tokens: {} outbound request{} carried what a call answered to a secret, each to a host its approval shows that going to\n",
+            r.token_requests,
+            if r.token_requests == 1 { "" } else { "s" }
+        );
+    }
+    for (seq, name, host) in &r.tokens_outside {
+        out += &format!("  run {seq} SENT a token ({name}) to {host}, where its approval doesn't show what is answered to its secret going\n");
     }
     if let Some(s) = &r.states {
         let mut how = Vec::new();

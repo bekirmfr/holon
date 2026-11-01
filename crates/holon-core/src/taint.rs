@@ -81,6 +81,10 @@ pub struct SecretFed {
     /// write, a send, a call. A node not followed counts every effect it could make. What the
     /// editor marks on the canvas.
     sinks: BTreeSet<(Vec<u32>, Capability)>,
+    /// The nodes whose answer comes back to something a secret reached: a request or a database
+    /// read fed one, and a node not followed that could make one. Where [`SecretFed::answers_of`]
+    /// starts.
+    asked: BTreeSet<Vec<u32>>,
 }
 
 impl SecretFed {
@@ -94,9 +98,26 @@ impl SecretFed {
         SecretFed::walk(root, resolver, Some(name))
     }
 
+    /// Follow what is answered to the secret `name`: the answers of the requests and reads its
+    /// value, or something computed from it, is sent in (the token a token exchange answers),
+    /// from there on; the secret itself is taken as clean, and an answer to what was answered is
+    /// followed too. A run-time token is a field of such an answer (`access_token`): the graph
+    /// can't tell the field, so it follows the whole answer.
+    pub fn answers_of(root: &Unit, resolver: &impl Resolver, name: &str) -> SecretFed {
+        let asked = SecretFed::of_secret(root, resolver, name).asked;
+        if asked.is_empty() {
+            return SecretFed::default();
+        }
+        SecretFed::walk_from(root, resolver, Some(name), Some(&asked))
+    }
+
     fn walk(root: &Unit, resolver: &impl Resolver, only: Option<&str>) -> SecretFed {
+        SecretFed::walk_from(root, resolver, only, None)
+    }
+
+    fn walk_from(root: &Unit, resolver: &impl Resolver, only: Option<&str>, answers: Option<&BTreeSet<Vec<u32>>>) -> SecretFed {
         let mut fed = SecretFed::default();
-        let mut walk = Walk { resolver, only, holds_secret: HashMap::new() };
+        let mut walk = Walk { resolver, only, answers, holds_secret: HashMap::new() };
         let inputs = vec![Taint::Clean; root.inputs.len()];
         walk.unit(root, &inputs, &mut Vec::new(), &mut fed);
         fed
@@ -168,6 +189,9 @@ struct Walk<'r, R> {
     resolver: &'r R,
     /// The one secret followed, if not every one.
     only: Option<&'r str>,
+    /// Following what is answered to it instead ([`SecretFed::answers_of`]): the nodes whose
+    /// answer is where it starts. The secret leaves are clean then.
+    answers: Option<&'r BTreeSet<Vec<u32>>>,
     /// Whether a unit (by hash) reads a followed secret anywhere in its closure.
     holds_secret: HashMap<Hash, bool>,
 }
@@ -210,7 +234,17 @@ impl<R: Resolver> Walk<'_, R> {
     /// The taint of `unit`'s outputs, given its inputs'; what it reaches is recorded in `fed`.
     fn unit(&mut self, unit: &Unit, inputs: &[Taint], path: &mut Vec<u32>, fed: &mut SecretFed) -> Vec<Taint> {
         let most = inputs.iter().copied().max().unwrap_or_default();
-        let reads = self.reads(unit);
+        let reads = self.reads(unit) && self.answers.is_none();
+        let asked = self.answers.is_some_and(|asked| asked.contains(path.as_slice()));
+        // What a node not followed answers is where following what is answered starts: all of it.
+        if asked && !matches!(&unit.body, UnitBody::Primitive { name } if ANSWERED.contains(&name.as_str())) {
+            let outputs = vec![Taint::Derived; unit.outputs.len()];
+            fed.nodes.insert(path.clone(), (inputs.to_vec(), outputs.clone()));
+            return outputs;
+        }
+        // Following what is answered, a request's answer carries it: where it starts, and an
+        // answer to a request fed it (an API echoing it back, a token exchanged for another).
+        let answering = asked || self.answers.is_some() && most > Taint::Clean;
         let outputs = match &unit.body {
             UnitBody::Primitive { name } => {
                 let outputs: Vec<Taint> = unit
@@ -219,6 +253,7 @@ impl<R: Resolver> Walk<'_, R> {
                     .map(|port| match name.as_str() {
                         "secret" if reads => Taint::Literal,
                         _ if port.ty == Type::Boolean => Taint::Clean,
+                        n if ANSWERED.contains(&n) && answering => Taint::Literal,
                         n if ONE_WAY.contains(&n) || ANSWERED.contains(&n) => Taint::Clean,
                         n if PASSES_LITERALLY.contains(&n) => most,
                         _ if most == Taint::Clean => Taint::Clean,
@@ -227,7 +262,7 @@ impl<R: Resolver> Walk<'_, R> {
                     .collect();
                 // A function applied inside (`map`, `fold`) isn't followed: one that reads a
                 // secret, or is handed one, may compute anything with it.
-                let applies_secret = child_refs(unit).iter().any(|r| self.holds(r));
+                let applies_secret = self.answers.is_none() && child_refs(unit).iter().any(|r| self.holds(r));
                 if applies_secret || (!child_refs(unit).is_empty() && most > Taint::Clean) {
                     self.opaque(unit, path, fed);
                     vec![Taint::Derived; unit.outputs.len()]
@@ -241,6 +276,9 @@ impl<R: Resolver> Walk<'_, R> {
                         fed.sent.extend(caps.iter().filter_map(|c| destination_of(&c)));
                         let sinks = caps.iter().filter(|c| is_sink(c) && !(name == "http_stream" && matches!(c, Capability::ChannelSend(_))));
                         fed.sinks.extend(sinks.map(|c| (path.clone(), c)));
+                        if ANSWERED.contains(&name.as_str()) {
+                            fed.asked.insert(path.clone());
+                        }
                     }
                     // A sink fed something computed from a secret: its effect carries it.
                     if outputs.contains(&Taint::Derived)
@@ -272,6 +310,9 @@ impl<R: Resolver> Walk<'_, R> {
     fn opaque(&mut self, unit: &Unit, path: &[u32], fed: &mut SecretFed) {
         fed.opaque.push(path.to_vec());
         let caps = capabilities(unit, self.resolver);
+        if caps.iter().any(|c| destination_of(&c).is_some()) {
+            fed.asked.insert(path.to_vec());
+        }
         fed.sent.extend(caps.iter().filter_map(|c| destination_of(&c)));
         fed.effects.extend(caps.iter().filter(|c| !c.is_sourced()));
         fed.sinks.extend(caps.iter().filter(is_sink).map(|c| (path.to_vec(), c)));
@@ -279,8 +320,10 @@ impl<R: Resolver> Walk<'_, R> {
 
     fn composite(&mut self, unit: &Unit, children: &[Hash], edges: &[crate::Edge], inputs: &[Taint], path: &mut Vec<u32>, fed: &mut SecretFed) -> Vec<Taint> {
         let derived = vec![Taint::Derived; unit.outputs.len()];
-        // Nothing tainted comes in and nothing inside reads a secret: nothing to follow.
-        if inputs.iter().all(|t| *t == Taint::Clean) && !children.iter().any(|c| self.holds(c)) {
+        // Nothing tainted comes in and nothing inside reads a secret, or answers what one reached:
+        // nothing to follow.
+        let answers_inside = self.answers.is_some_and(|asked| asked.iter().any(|a| a.len() > path.len() && a.starts_with(path)));
+        if inputs.iter().all(|t| *t == Taint::Clean) && !answers_inside && !children.iter().any(|c| self.holds(c)) {
             return vec![Taint::Clean; unit.outputs.len()];
         }
         if path.len() >= MAX_DEPTH {
@@ -358,18 +401,27 @@ pub fn answered_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeSet<Strin
 /// secret sent nowhere isn't listed. Every pair is known before the flow runs (a request's host is
 /// a frozen param), so the approval says it beside the secret: "read the secret "k", and send it
 /// to https://api.example.com".
+///
+/// Where what is answered to it goes ([`SecretFed::answers_of`]: the token a token exchange
+/// answers, an API's echo) is listed with it, each such destination as `answer:` and the
+/// destination (`answer:api.example.com`): "…; what is answered to it goes to
+/// https://api.example.com".
 pub fn sent_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeMap<String, BTreeSet<String>> {
     let mut sent = BTreeMap::new();
     for cap in capabilities(root, resolver).iter() {
         if let Capability::SecretRead(name) = cap {
-            let hosts = SecretFed::of_secret(root, resolver, &name).sent;
-            if !hosts.is_empty() {
-                sent.insert(name, hosts);
+            let mut to = SecretFed::of_secret(root, resolver, &name).sent;
+            to.extend(SecretFed::answers_of(root, resolver, &name).sent.into_iter().map(|d| format!("{ANSWER}{d}")));
+            if !to.is_empty() {
+                sent.insert(name, to);
             }
         }
     }
     sent
 }
+
+/// What marks a destination in [`sent_secrets`] as where what is answered to a secret goes.
+pub const ANSWER: &str = "answer:";
 
 /// A unit's manifest as deployed: [`Capabilities::deployed`], and `SecretAnswer` for each secret
 /// its routes may answer with ([`answered_secrets`]). The host deploys and grants by it, and
@@ -625,6 +677,41 @@ mod tests {
         assert!(sinks("key").is_empty());
         // A request's answer is what the far side said: answering with it sends nothing back out.
         assert!(answered_secrets(&root, &r).is_empty());
+    }
+
+    /// A token exchange: the secret is posted to the auth host, and what that answers (its
+    /// access token) is put in a header to the API. The secret goes to the auth host; what is
+    /// answered to it, to the API, listed as `answer:api.example.com`. A request fed neither
+    /// sends nothing, and the walk from the answers leaves the secret itself clean.
+    #[test]
+    fn where_what_is_answered_to_a_secret_goes_is_known() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "client_secret")]);
+        let empty = leaf(&mut r, "record", vec![]);
+        let headers = leaf(&mut r, "with_field", vec![Param::frozen("name", "authorization")]);
+        let request = |r: &mut MapResolver, method: &str, host: &str| leaf(r, "http_request", vec![Param::frozen("method", method), Param::frozen("host", host)]);
+        let auth = request(&mut r, "POST", "auth.example.com");
+        let api = request(&mut r, "GET", "api.example.com");
+        let other = request(&mut r, "GET", "other.example.com");
+        let root = Unit {
+            body: UnitBody::Composite {
+                // 0 secret → 3 auth's body; 3's answer → 2 headers → 4 api; 5 other fed the input.
+                children: vec![secret, empty, headers, auth, api, other],
+                edges: vec![e(0, 0, 3, 2), e(1, 0, 2, 0), e(3, 0, 2, 1), e(2, 0, 4, 1), e(BOUNDARY, 0, 5, 0), e(4, 0, BOUNDARY, 0)],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "message".into(), ty: Type::Text }],
+            outputs: vec![Port { name: "answer".into(), ty: Type::Any }],
+        };
+        let to = BTreeSet::from(["auth.example.com".to_string(), format!("{ANSWER}api.example.com")]);
+        assert_eq!(sent_secrets(&root, &r), BTreeMap::from([("client_secret".to_string(), to)]));
+        let answers = SecretFed::answers_of(&root, &r, "client_secret");
+        let sinks: Vec<_> = answers.sinks().map(|(p, c)| (p.to_vec(), c.clone())).collect();
+        assert_eq!(sinks, vec![(vec![4], Capability::HttpRequest("api.example.com".into()))], "the auth request isn't where the answer goes");
+        assert_eq!(answers.output(&[0], 0), Taint::Clean, "the secret itself isn't followed from the answers");
+        // The secret alone: its own request, and not the API's.
+        let own: Vec<_> = SecretFed::of_secret(&root, &r, "client_secret").sinks().map(|(p, _)| p.to_vec()).collect();
+        assert_eq!(own, vec![vec![3]]);
     }
 
     /// A secret in a database read's parameters goes to that database: `db:shop`, and the read is

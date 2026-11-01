@@ -395,7 +395,8 @@ only the editor.
   `SecretAnswer("name")` at deploy, and a run whose answer carries a secret not granted so (by
   the graph, or its value found in the answer) is answered 500. Where each secret is sent is
   derived too (`taint::sent_secrets`: the hosts of the requests it reaches, and the databases of
-  the reads it is a value of, `db:shop`) and said beside its
+  the reads it is a value of, `db:shop`; where what is answered to it goes, `answer:api.example.com`,
+  from a second walk, `SecretFed::answers_of`) and said beside its
   `SecretRead` in the approval, `holon check` and the editor; it isn't an item of its own, since
   the hosts are, and the graph fixes the pairs before a run. A request holding a secret's value
   bound for a host its secret isn't shown going to (a value the graph can't follow: echoed back by

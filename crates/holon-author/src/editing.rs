@@ -213,8 +213,10 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     // nowhere (or the text doesn't compile).
     let sent_to = |name: &str| -> String {
         let sent = commands::sent_of(source);
-        match sent.get(name) {
-            Some(hosts) if !hosts.is_empty() => format!(" This flow sends it to {}.", hosts.iter().map(|h| crate::describe::describe_destination(h)).collect::<Vec<_>>().join(", ")),
+        match sent.get(name).map(crate::describe::describe_sent_to) {
+            Some((Some(own), Some(answers))) => format!(" This flow sends it to {own}; what is answered to it goes to {answers}."),
+            Some((Some(own), None)) => format!(" This flow sends it to {own}."),
+            Some((None, Some(answers))) => format!(" What is answered to it goes to {answers}."),
             _ => String::new(),
         }
     };
