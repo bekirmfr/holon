@@ -50,7 +50,10 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     }
     let hash = flow_unit(&c.doc.nodes, &c.doc.edges, &mut store, &settings.port)?;
     let root = store.resolve(&hash).ok_or("the flow's unit wasn't stored")?.clone();
-    let trace = if server.endpoints.is_empty() {
+    // A server's handlers each have their own (a route's, a clock's, an action's…); a flow with
+    // none runs whole.
+    let handlers = !(server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty());
+    let trace = if !handlers {
         let all: Vec<_> = c.doc.nodes.iter().collect();
         BTreeMap::from([("*".to_string(), trace_of(&root, &all))])
     } else {
@@ -214,13 +217,17 @@ struct Recorded {
     reasons: HashMap<String, String>,
 }
 
-/// The document's trace for this run's part (its route's, or the whole flow's): the node id at
-/// each step index, and how deep in a step's path that index sits (a route's steps are `[0, k]`).
+/// The document's trace for this run's part: the node id at each step index, and how deep in a
+/// step's path that index sits. A request's route, or a clock's, file handler's or action's label
+/// (`every 2s`, `on file inbox`, `action reset`), places it one level down, inside its handler
+/// unit (`[0, k]`); else the whole flow's (`"*"`), at the top. As the editor's `placedBy` does.
 fn run_trace(document: &Value, entry: &Value) -> (Vec<String>, usize) {
-    let request = entry.get("kind").and_then(Value::as_str) == Some("request");
-    let key = if request { entry.get("route").and_then(Value::as_str).unwrap_or("") } else { "*" };
+    let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
+    let route = entry.get("route").and_then(Value::as_str).filter(|r| !r.is_empty());
+    let handler = kind == "request" || (matches!(kind, "tick" | "file" | "trigger") && route.is_some());
+    let (key, depth) = if handler { (route.unwrap_or(""), 2) } else { ("*", 1) };
     let map: Vec<String> = document.pointer(&format!("/trace/{}", key.replace('~', "~0").replace('/', "~1"))).and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
-    (map, if request { 2 } else { 1 })
+    (map, depth)
 }
 
 /// The node a recorded step path (`[0, k]`) belongs to.
@@ -772,6 +779,23 @@ mod tests {
         assert!(e.starts_with("text:5:11: unknown name \"nope\""), "{e}");
         assert!(e.contains("^^^^"), "{e}");
         assert!(plan("port 8200\n\nroute GET /a (req) {\n  respond 204\n}\n").unwrap_err().contains("flow <name>"));
+    }
+
+    /// An action's run is placed by its label, one level inside its handler, as a route's is
+    /// (a flow of actions alone too); a write is on its own line.
+    #[test]
+    fn an_actions_run_is_placed_by_its_label_and_a_write_is_on_its_line() {
+        let text = "flow two\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n\naction reset (input) {\n  state.n = 0\n  respond 0\n}\n";
+        let p = plan(text).unwrap();
+        let n = p.document["trace"]["action bump"].as_array().expect("its own trace").len();
+        let timeline: Vec<Value> = (0..n).map(|i| json!({ "path": [0, i], "start_us": i as f64, "end_us": i as f64 + 1.0 })).collect();
+        let entry = json!({ "kind": "trigger", "route": "action bump", "timeline": timeline });
+        let v = run_view("two", &p.document, &entry).unwrap();
+        let noted: Vec<u32> = v.notes.keys().copied().collect();
+        for line in [4, 5, 6] {
+            assert!(noted.contains(&line), "line {line}, {:?}: {noted:?}", v.text[line as usize - 1]);
+        }
+        assert!(!noted.iter().any(|l| *l >= 9), "the other action didn't run: {noted:?}");
     }
 
     /// A flow's text: as it was saved, comments and all, when that still compiles; else printed
