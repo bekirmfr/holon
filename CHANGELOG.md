@@ -25,6 +25,10 @@
   - `holon user`, `holon token` and `holon oidc`, the admin page's people and sign-in: an invite's
     link and a new token are printed once.
   - `holon database tables <name>` lists a bound database's tables.
+- **`holon restore --dry-run` shows the code it would deploy**, beside the code deployed now, as
+  a line diff, as the agents' `restore` tool does.
+- **`holon mcp` has a `state` tool**: what a deployment keeps now, and a collection's items, read
+  only.
 
 ## 0.1.0-rc.30
 

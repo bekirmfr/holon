@@ -410,7 +410,7 @@ Without a point, lists a deployment's versions, newest first: every deploy is on
 | `--code` | deploy that point's code again, as a new version, checked against the grant the deployment has now |
 | `--state` | put back the state that point left, in a new session; the deployment must be running or paused |
 | `--approve` | approve what the code needs that today's grant doesn't cover |
-| `--dry-run` | say what it would do, and what the runs since did outside the state; change nothing |
+| `--dry-run` | say what it would do: that point's text beside the text deployed now, the state it would put back, and what the runs since did outside the state; change nothing |
 
 At least one of `--code` and `--state`. Exits 0 when it is done (or a dry run answered), 1 when the
 server refused it or it needs approving, 2 for a mistake on the command line. See [Going back to an

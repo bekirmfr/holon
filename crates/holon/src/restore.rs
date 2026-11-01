@@ -181,6 +181,10 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             } else {
                 println!("version {n}'s code needs approving what today's grant doesn't cover: {}", needs.join(", "));
             }
+            match crate::mcp::code_diff(&Local { who: WHO, server: server.as_deref() }, &slug, n) {
+                Ok(diff) => println!("{diff}"),
+                Err(e) => eprintln!("{WHO}: its text can't be shown: {e}"),
+            }
         }
         if !preview["state"].is_null() {
             println!("{}", state_lines(&preview["state"]));
@@ -212,6 +216,28 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         None => {}
     }
     0
+}
+
+/// The server this user runs here (or `--server`), as the agent tools' reads reach theirs: for
+/// what they print that a dry run shows too (a version's code beside today's).
+struct Local<'a> {
+    who: &'a str,
+    server: Option<&'a str>,
+}
+
+impl crate::mcp::Api for Local<'_> {
+    fn server(&self) -> String {
+        self.server.unwrap_or("the server").to_string()
+    }
+    fn send(&self, method: &str, path: &str, body: Option<crate::mcp::Body>) -> Result<(u16, Vec<u8>), String> {
+        let body = body.map(|b| match b {
+            crate::mcp::Body::Json(v) => ("application/json", v.to_string().into_bytes()),
+            crate::mcp::Body::Bytes(b) => ("application/octet-stream", b),
+        });
+        // `send` says why it couldn't reach the server itself.
+        let answer = crate::local::send(self.who, self.server, method, path, body).map_err(|_| "the server couldn't be reached".to_string())?;
+        Ok((answer.status, answer.body.into_bytes()))
+    }
 }
 
 /// What putting a state back would change, as a dry run answers it: the keys, and the runs since.
