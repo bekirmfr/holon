@@ -254,6 +254,9 @@ struct Lowerer<'a> {
     /// The secrets the header declares (`secret signing_key`, `optional secret receipt_key`):
     /// the only ones `secret.…` may read.
     secrets: HashSet<String>,
+    /// The state keys the header declares (`state beats`): the only ones `state.…` may read or
+    /// write.
+    state: HashSet<String>,
     /// The streamed call (`http_stream`) the current route's `respond …, stream: true` forwards.
     streamed: Option<String>,
     /// The channel the http call being lowered pipes to (`updates.pipe(http.post(…))`).
@@ -293,6 +296,7 @@ impl<'a> Lowerer<'a> {
                 _ => None,
             })
             .collect();
+        let state = file.headers.iter().filter_map(|h| if let HeaderKind::State(k) = &h.kind { Some(k.clone()) } else { None }).collect();
         let folders = file
             .headers
             .iter()
@@ -315,6 +319,7 @@ impl<'a> Lowerer<'a> {
             channels,
             calls,
             secrets,
+            state,
             streamed: None,
             piping: None,
             on_files,
@@ -507,7 +512,7 @@ impl<'a> Lowerer<'a> {
                     Consent::Named { name, arg: Some(a) } => format!("{name}({a:?})"),
                     Consent::Named { name, arg: None } => name.clone(),
                 }),
-                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
@@ -713,6 +718,7 @@ impl<'a> Lowerer<'a> {
                 Ok(())
             }
             StmtKind::StateWrite { key, value } => {
+                self.check_state(&key.text, key.span)?;
                 if let Some(first) = self.frame().written.get(&key.text) {
                     return err(key.span, format!("state.{} is written twice (first on line {}); a run writes a key once", key.text, first.start.line));
                 }
@@ -816,6 +822,19 @@ impl<'a> Lowerer<'a> {
             }
             None => err(name.span, format!("\"{}\" is not a declared collection (add `collection {}` to the header)", name.text, name.text)),
         }
+    }
+
+    /// Whether `key` is a state key the header declares, or the mistake: a key is a name, and
+    /// the header names it (`state beats`).
+    fn check_state(&self, key: &str, span: Span) -> R<()> {
+        let name = key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !name {
+            return err(span, format!("{key:?} isn't a state key: a key is a name (letters, digits and _), as in state.set(last_post, …)"));
+        }
+        if !self.state.contains(key) {
+            return undeclared(span, key, "declared state", format!("state {key}"));
+        }
+        Ok(())
     }
 
     /// Whether `n` is a declared collection or folder, and which.
@@ -1482,7 +1501,10 @@ impl<'a> Lowerer<'a> {
             ExprKind::Name(n) => self.name(n, e.span),
             ExprKind::Secret(n) if !self.secrets.contains(n) => undeclared(e.span, n, "a declared secret", format!("secret {n}")),
             ExprKind::Secret(n) => self.node("secret", &[("name".into(), n.clone())], e.span),
-            ExprKind::State(k) => self.node("store_read", &[("key".into(), k.clone())], e.span),
+            ExprKind::State(k) => {
+                self.check_state(k, e.span)?;
+                self.node("store_read", &[("key".into(), k.clone())], e.span)
+            }
             ExprKind::Noun(Noun::Ingress) => self.ingress(e.span),
             // In an `every` block, `now` is the time of its tick.
             ExprKind::Noun(Noun::Now) if let FrameKind::Every { tick } = &self.cur().kind => Ok(self.out(&tick.clone())),
@@ -1881,6 +1903,7 @@ impl<'a> Lowerer<'a> {
                     return err(span, "state.set takes the key first, then the value");
                 };
                 let key = self.literal_text(&first.value)?;
+                self.check_state(&key, first.value.span)?;
                 let (inputs, params) = leaf("store_write");
                 self.unit_call("store_write", &inputs, &params, &[("key".to_string(), key)], &args[1..], span)
             }
@@ -2370,7 +2393,7 @@ pub(crate) mod tests {
     #[test]
     fn a_routeless_flow_leaves_optional_inputs_unbound() {
         let got = compiled(
-            "flow poll\nevery 10s\ncollection items\n\npage = http.get(\"h.example\", \"/\")\nrecent = items.list(limit: 5)\nstate.last = { status: page.status, n: length(keys(recent)) }\n",
+            "flow poll\nevery 10s\ncollection items\nstate last\n\npage = http.get(\"h.example\", \"/\")\nrecent = items.list(limit: 5)\nstate.last = { status: page.status, n: length(keys(recent)) }\n",
         );
         let mut store = MapResolver::new();
         text::restore(&got.doc, &mut store, &Names::new());
@@ -2477,7 +2500,7 @@ pub(crate) mod tests {
 
     #[test]
     fn nouns_and_writes_are_one_leaf_each() {
-        let d = compiled("collection notes\nsecret tok\nk = \"key\"\nx = secret.tok\ny = state.beats\nz = now\nr = random\ni = ingress\ng = notes[k]\nstate.saved = y\nnotes[k] = x\ndelete notes[k]\np = notes.put(k, x)\nw = state.set(other, x)\n").doc;
+        let d = compiled("collection notes\nsecret tok\nstate beats\nstate other\nstate saved\nk = \"key\"\nx = secret.tok\ny = state.beats\nz = now\nr = random\ni = ingress\ng = notes[k]\nstate.saved = y\nnotes[k] = x\ndelete notes[k]\np = notes.put(k, x)\nw = state.set(other, x)\n").doc;
         assert_eq!(
             leaves(&d),
             ["const", "secret", "store_read", "clock", "random", "ingress", "collection_get", "store_write", "collection_put", "collection_delete", "collection_put", "store_write"]
@@ -2567,7 +2590,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_holons_effect_statements_leave_as_outputs() {
-        let d = compiled("collection posts\nholon keep(k, v) -> receipt {\n  posts[k] = v\n  state.last = k\n  receipt = \"ok\"\n}\nx = keep(\"a\", 1)\n").doc;
+        let d = compiled("collection posts\nstate last\nholon keep(k, v) -> receipt {\n  posts[k] = v\n  state.last = k\n  receipt = \"ok\"\n}\nx = keep(\"a\", 1)\n").doc;
         let keep = &d.nodes[2];
         let outs: Vec<&str> = keep.data.outputs.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(outs, ["receipt", "put", "write"]);
@@ -2577,7 +2600,7 @@ pub(crate) mod tests {
     /// holon's to its own trigger, an input it gets last, which the block placing it ties.
     #[test]
     fn sinks_are_tied_to_their_block_or_to_what_after_names() {
-        let src = "collection c\n\nholon keep(v) -> saved {\n  saved = state.set(last, v)\n}\n\nroute POST /v/:id (req) {\n  id = req.params.id\n  put = c.put(id, 1)\n  state.last = id after put\n  keep(id)\n  respond id\n}";
+        let src = "collection c\nstate last\n\nholon keep(v) -> saved {\n  saved = state.set(last, v)\n}\n\nroute POST /v/:id (req) {\n  id = req.params.id\n  put = c.put(id, 1)\n  state.last = id after put\n  keep(id)\n  respond id\n}";
         let d = compiled(src).doc;
         let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
         let tie = |leaf: &str| {
@@ -2591,7 +2614,7 @@ pub(crate) mod tests {
         let keep = d.nodes.iter().find(|n| n.data.name == "keep").unwrap();
         assert_eq!(keep.data.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["v", TRIGGER]);
         // One that declares its trigger uses it; a holon with no sink takes none.
-        let d = compiled("holon keep(v, trigger) -> saved {\n  saved = state.set(last, v)\n}\nholon twice(n) -> m {\n  m = n * 2\n}\nkeep(twice(1), trigger: 2)").doc;
+        let d = compiled("state last\nholon keep(v, trigger) -> saved {\n  saved = state.set(last, v)\n}\nholon twice(n) -> m {\n  m = n * 2\n}\nkeep(twice(1), trigger: 2)").doc;
         let ins = |name: &str| d.nodes.iter().find(|n| n.data.name == name).unwrap().data.inputs.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
         assert_eq!(ins("keep"), ["v", TRIGGER]);
         assert_eq!(ins("twice"), ["n"]);
@@ -2646,7 +2669,7 @@ pub(crate) mod tests {
     /// to the tick, and `now` in it the tick's time (docs/L4s/triggers-L4.md §2, §3).
     #[test]
     fn every_blocks_are_clock_handlers_tied_to_their_tick() {
-        let d = compiled("channel ticks\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n  ticks.send(now)\n}\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n").doc;
+        let d = compiled("channel ticks\nstate n\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n  ticks.send(now)\n}\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n").doc;
         let every = d.nodes.iter().find(|n| n.is_template("every")).expect("the tick");
         assert_eq!(every.param("seconds"), "2");
         assert!(!d.nodes.iter().any(|n| n.data.name == "clock"), "now in a block is the tick's");
@@ -2664,7 +2687,7 @@ pub(crate) mod tests {
         assert_eq!(server.errors, Vec::<String>::new());
         assert_eq!((server.endpoints.len(), server.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>()), (1, vec!["every 2s"]));
         // A flow of clocks alone is a server with no port.
-        let d = compiled("every 1h {\n  state.n = (state.n ?? 0) + 1\n}\n").doc;
+        let d = compiled("state n\nevery 1h {\n  state.n = (state.n ?? 0) + 1\n}\n").doc;
         let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
         let read = holon_core::read_server(unit, &store).unwrap();
@@ -2672,21 +2695,21 @@ pub(crate) mod tests {
 
         assert_eq!(error("every 2s {\n  respond 1\n}"), (2, 3, "respond belongs in a route: a clock answers nobody".into()));
         assert_eq!(error("every 2s {\n  n = now\n}").2, "the block does nothing: write something in it (state, a collection, a channel)");
-        assert_eq!(error("every 1.5s {\n  state.n = 1\n}").2, "every 1.5s: a clock runs every whole number of seconds, from 1s to 366d");
-        assert_eq!(error("every 2s {\n  state.a = now\n}\nevery 2s {\n  state.b = now\n}").2, "2s is written twice: one block per period");
-        assert!(error("every 10s\nevery 2s {\n  state.n = now\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
-        assert_eq!(error("every 2s {\n  state.n = ingress\n}").2, "a clock's run receives nothing: `now` in it is the time of the tick (ingress is a flow's run by hand)");
+        assert_eq!(error("state n\nevery 1.5s {\n  state.n = 1\n}").2, "every 1.5s: a clock runs every whole number of seconds, from 1s to 366d");
+        assert_eq!(error("state a\nstate b\nevery 2s {\n  state.a = now\n}\nevery 2s {\n  state.b = now\n}").2, "2s is written twice: one block per period");
+        assert!(error("every 10s\nstate n\nevery 2s {\n  state.n = now\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
+        assert_eq!(error("state n\nevery 2s {\n  state.n = ingress\n}").2, "a clock's run receives nothing: `now` in it is the time of the tick (ingress is a flow's run by hand)");
         // The header form's clock beside handlers would start nothing: refused, naming the block.
         assert_eq!(
             error("every 10s\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}").2,
             "this `every` line is the clock of a flow without handlers: beside routes, put the clock's statements in an `every … { … }` block"
         );
         assert_eq!(
-            error("every 10s\n\naction reset (input) {\n  state.n = 0\n}").2,
+            error("every 10s\nstate n\n\naction reset (input) {\n  state.n = 0\n}").2,
             "this `every` line is the clock of a flow without handlers: beside actions, put the clock's statements in an `every … { … }` block"
         );
         // A write that reads nothing of the tick is still the block's: tied to it.
-        let d = compiled("every 2s {\n  state.n = 1\n}\n").doc;
+        let d = compiled("state n\nevery 2s {\n  state.n = 1\n}\n").doc;
         assert!(d.edges.iter().any(|w| w.source.starts_with("every") && w.input() == TRIGGER));
     }
 
@@ -2694,7 +2717,7 @@ pub(crate) mod tests {
     /// sinks tied to what was sent, `respond v` its answer (docs/L4s/triggers-L4.md §2, §3).
     #[test]
     fn action_blocks_are_actions_tied_to_what_was_sent() {
-        let src = "action reset (input) {\n  state.ticks = input.to ?? 0\n  respond { was: state.ticks ?? 0 }\n}\naction note (n) {\n  state.note = n\n}\nroute GET /n (req) {\n  respond state.ticks ?? 0\n}\n";
+        let src = "state note\nstate ticks\naction reset (input) {\n  state.ticks = input.to ?? 0\n  respond { was: state.ticks ?? 0 }\n}\naction note (n) {\n  state.note = n\n}\nroute GET /n (req) {\n  respond state.ticks ?? 0\n}\n";
         let d = compiled(src).doc;
         let actions: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("action")).collect();
         assert_eq!(actions.iter().map(|n| n.param("name")).collect::<Vec<_>>(), ["reset", "note"]);
@@ -2713,18 +2736,18 @@ pub(crate) mod tests {
         let read = holon_core::read_server(unit, &store).unwrap();
         assert_eq!((read.port, read.routes.len(), read.actions.len()), (Some(8080), 1, 2));
         // A flow of actions alone listens on no port.
-        let d = compiled("action reset (input) {\n  state.n = 0\n}\n").doc;
+        let d = compiled("state n\naction reset (input) {\n  state.n = 0\n}\n").doc;
         let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
         assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
 
         assert_eq!(error("action a (input) {\n  respond 1, status: 201\n}").2, "an action answers with a value alone: status:, missing:, headers: and stream: are a route's");
         assert_eq!(error("action a (input) {\n  n = input\n}").2, "the action does nothing: respond with something, or write something (state, a collection, a channel)");
-        assert_eq!(error("action a (input) {\n  state.n = ingress\n}").2, "in an action what was sent is input: use input in place of ingress");
+        assert_eq!(error("state n\naction a (input) {\n  state.n = ingress\n}").2, "in an action what was sent is input: use input in place of ingress");
         // An `on file` line beside actions: they are blocks, and the file's run goes in one too.
-        assert!(error("on file inbox\n\naction a (input) {\n  state.n = 0\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file inbox (f) { … }` block"));
+        assert!(error("on file inbox\nstate n\n\naction a (input) {\n  state.n = 0\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file inbox (f) { … }` block"));
         assert!(error("on file inbox\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file inbox (f) { … }` block"));
-        assert_eq!(error("action a (x) {\n  state.a = x\n}\naction a (y) {\n  state.b = y\n}").2, "action a is written twice: one block per name");
+        assert_eq!(error("state a\nstate b\naction a (x) {\n  state.a = x\n}\naction a (y) {\n  state.b = y\n}").2, "action a is written twice: one block per name");
         assert_eq!(error("action a (input) {\n  respond 1\n  respond 2\n}").2, "more than one respond in the action (the first is on line 2)");
         // An answer that reads nothing of what was sent is still the action's.
         assert!(compile("action ping (input) {\n  respond \"pong\"\n}\n").is_ok());
@@ -2734,7 +2757,7 @@ pub(crate) mod tests {
     /// its sinks tied to the file, and `f` the file's handle (docs/L4s/triggers-L4.md §2, §3).
     #[test]
     fn on_file_blocks_are_file_handlers_tied_to_their_file() {
-        let src = "folder done\nchannel drops\non file drop (f) {\n  drops.send(f.name)\n  done[f.name] = f\n}\non file drop deleted matching \"*.csv\" (gone) {\n  state.last = gone.name\n}\nroute GET /n (req) {\n  respond state.last\n}\n";
+        let src = "folder done\nchannel drops\nstate last\non file drop (f) {\n  drops.send(f.name)\n  done[f.name] = f\n}\non file drop deleted matching \"*.csv\" (gone) {\n  state.last = gone.name\n}\nroute GET /n (req) {\n  respond state.last\n}\n";
         let d = compiled(src).doc;
         let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_file")).collect();
         assert_eq!(on.iter().map(|n| (n.param("folder"), n.param("on"), n.param("matching"))).collect::<Vec<_>>(), [("drop", "new", ""), ("drop", "deleted", "*.csv")]);
@@ -2758,20 +2781,20 @@ pub(crate) mod tests {
         assert_eq!((read.port, read.files.len()), (Some(8080), 2));
         assert!(holon_core::capabilities(unit, &store).contains(holon_core::Capability::FileArrival("drop".into())));
         // A flow of file handlers alone listens on no port.
-        let d = compiled("on file drop (f) {\n  state.n = f.size\n}\n").doc;
+        let d = compiled("state n\non file drop (f) {\n  state.n = f.size\n}\n").doc;
         let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
         assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
 
         assert_eq!(error("on file a (f) {\n  respond 1\n}"), (2, 3, "respond belongs in a route: a file's run answers nobody".into()));
         assert_eq!(error("on file a (f) {\n  n = f.name\n}").2, "the block does nothing: write something in it (a folder, state, a channel)");
-        assert_eq!(error("on file a (f) {\n  state.n = ingress\n}").2, "in an `on file` block the file is f: use f in place of ingress");
-        assert_eq!(error("on file a (f) {\n  state.a = f\n}\non file a (g) {\n  state.b = g\n}").2, "on file a is written twice: one block per line");
-        assert!(error("on file a matching \"a**\" (f) {\n  state.a = f\n}").2.contains("isn't a pattern of names"));
-        assert!(error("on file b\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file b (f) { … }` block"));
-        assert!(error("every 10s\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
+        assert_eq!(error("state n\non file a (f) {\n  state.n = ingress\n}").2, "in an `on file` block the file is f: use f in place of ingress");
+        assert_eq!(error("state a\nstate b\non file a (f) {\n  state.a = f\n}\non file a (g) {\n  state.b = g\n}").2, "on file a is written twice: one block per line");
+        assert!(error("state a\non file a matching \"a**\" (f) {\n  state.a = f\n}").2.contains("isn't a pattern of names"));
+        assert!(error("on file b\nstate a\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file b (f) { … }` block"));
+        assert!(error("every 10s\nstate a\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
         // The header form is unchanged: `ingress` is the file.
-        assert!(leaves(&compiled("on file inbox\nstate.n = ingress.name\n").doc).contains(&"file_arrival".to_string()));
+        assert!(leaves(&compiled("on file inbox\nstate n\nstate.n = ingress.name\n").doc).contains(&"file_arrival".to_string()));
     }
 
     #[test]
@@ -2791,7 +2814,7 @@ pub(crate) mod tests {
         assert_eq!(error("route GET /a (req) {\n  1 + 1\n  respond 2\n}"), (2, 3, "a value nobody uses: bind it, or remove it".into()));
         // A write that reads nothing of the request is tied to it by its trigger: a route counts
         // its hits (docs/L4s/triggers-L4.md §3).
-        let d = compiled("route GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  respond 2\n}").doc;
+        let d = compiled("state hits\nroute GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  respond 2\n}").doc;
         let tie = d.edges.iter().find(|w| w.target.starts_with("store_write") && w.input() == "trigger").expect("the write is tied");
         assert!(tie.source.starts_with("request") && tie.output() == "request", "{tie:?}");
         // A value that never touches the request isn't in the route's group: said, not dropped.
@@ -2963,6 +2986,25 @@ route POST /n/:who (req) {
         compiled("secret unused\nx = 1\n");
     }
 
+    /// A state key is read and written only by a name the header declares (`state beats`),
+    /// reads and writes alike, in the flow and in its holons.
+    #[test]
+    fn a_state_key_is_declared_in_the_header() {
+        let d = compiled("state beats\nstate.beats = (state.beats ?? 0) + 1\n").doc;
+        assert_eq!(leaves(&d).iter().filter(|l| l.starts_with("store_")).count(), 2);
+        let e = compile("flow f\nevery 1s\nstate beats\n\nstate.beat = 1\n").unwrap_err();
+        assert_eq!((e.span.start.line, e.span.start.col, e.message.as_str()), (5, 1, "\"beat\" is not declared state (add `state beat` to the header)"));
+        assert_eq!(e.declare.as_deref(), Some("state beat"));
+        assert_eq!(error("x = state.n"), (1, 5, "\"n\" is not declared state (add `state n` to the header)".into()));
+        assert_eq!(error("x = state.set(n, 1)"), (1, 15, "\"n\" is not declared state (add `state n` to the header)".into()));
+        assert!(error("state n\nx = state.set(\"a b\", 1)").2.starts_with("\"a b\" isn't a state key: a key is a name"));
+        // A holon writes with the flow's declarations.
+        compiled("state last\n\nholon keep(v) -> saved {\n  saved = state.set(last, v)\n}\n\nx = keep(1)\n");
+        assert_eq!(error("holon keep(v) -> saved {\n  saved = state.set(last, v)\n}\n\nx = keep(1)\n").2, "\"last\" is not declared state (add `state last` to the header)");
+        // `state.x = e` at the top level stays a statement beside the header.
+        compiled("state x\nstate.x = 1\n");
+    }
+
     #[test]
     fn names_collections_and_state_errors() {
         assert_eq!(error("x = y"), (1, 5, "unknown name \"y\"".into()));
@@ -2974,7 +3016,7 @@ route POST /n/:who (req) {
         assert_eq!(error("notes[1] = 2"), (1, 1, "\"notes\" is not a declared collection (add `collection notes` to the header)".into()));
         assert_eq!(error("x = notes.list()"), (1, 5, "\"notes\" is not a declared collection (add `collection notes` to the header)".into()));
         assert_eq!(error("collection notes\nx = notes"), (2, 5, "\"notes\" is a collection: read it as notes[key] or notes.list(…)".into()));
-        assert_eq!(error("state.a = 1\nstate.a = 2"), (2, 1, "state.a is written twice (first on line 1); a run writes a key once".into()));
+        assert_eq!(error("state a\nstate.a = 1\nstate.a = 2"), (3, 1, "state.a is written twice (first on line 2); a run writes a key once".into()));
         assert_eq!(error("x = http.post(h, \"/p\")"), (1, 15, "the host is written as text in quotes: it is the permission the deployment asks for, so it can't come from a wire".into()));
         assert_eq!(error("x = http.fetch(\"h\", \"/p\")"), (1, 10, "http has no \"fetch\": get, post, put, patch, delete or head".into()));
         assert_eq!(error("x = concat(1, k: 2)"), (1, 15, "\"concat\" has no input or param \"k\"".into()));
@@ -3023,16 +3065,16 @@ route POST /n/:who (req) {
         holon_core::eval(unit, &inputs, &store).into_vec().remove(0)
     }
 
-    const PICK: &str = "flow f\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\", \"minus\" -> 0 - v\n    else -> 99\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
+    const PICK: &str = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\", \"minus\" -> 0 - v\n    else -> 99\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
 
     /// `match` is sugar (match-L4.md §4): the guards written out by hand are the same unit.
     #[test]
     fn a_match_is_the_same_unit_as_its_guards_written_by_hand() {
-        let by_hand = "flow f\n\nholon pick(op, v) -> r {\n  m1 = op == \"inv\"\n  m2 = op == \"neg\" || op == \"minus\"\n  r = (1 / v when m1) ?? (0 - v when m2) ?? (99 when !(m1 || m2))\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        let by_hand = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  m1 = op == \"inv\"\n  m2 = op == \"neg\" || op == \"minus\"\n  r = (1 / v when m1) ?? (0 - v when m2) ?? (99 when !(m1 || m2))\n}\n\nstate.x = pick(\"inv\", 1)\n";
         assert_eq!(hash_of(&compiled(PICK).doc), hash_of(&compiled(by_hand).doc));
         // Without an else, the chain alone.
-        let no_else = "flow f\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\" -> 0 - v\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
-        let by_hand = "flow f\n\nholon pick(op, v) -> r {\n  r = (1 / v when op == \"inv\") ?? (0 - v when op == \"neg\")\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        let no_else = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\" -> 0 - v\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        let by_hand = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = (1 / v when op == \"inv\") ?? (0 - v when op == \"neg\")\n}\n\nstate.x = pick(\"inv\", 1)\n";
         assert_eq!(hash_of(&compiled(no_else).doc), hash_of(&compiled(by_hand).doc));
         // One arm and an else: the else guarded by the arm's own comparison, negated.
         let d = compiled("x = 1\ny = match x { 1 -> \"one\", else -> \"other\" }\n").doc;
@@ -3056,7 +3098,7 @@ route POST /n/:who (req) {
         let absent_else = PICK.replace("else -> 99", "else -> 2 / v");
         assert_eq!(picked(&absent_else, t("zzz"), n(0.0)), None, "the else chosen, absent: absent");
         // `equals` doesn't coerce: a number is never a text.
-        let kinds = "flow f\n\nholon pick(op, v) -> r {\n  r = match op {\n    1 -> \"one\"\n    \"1\" -> \"text one\"\n    true -> \"yes\"\n    else -> v\n  }\n}\n\nstate.x = pick(1, 1)\n";
+        let kinds = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = match op {\n    1 -> \"one\"\n    \"1\" -> \"text one\"\n    true -> \"yes\"\n    else -> v\n  }\n}\n\nstate.x = pick(1, 1)\n";
         assert_eq!(picked(kinds, n(1.0), None), t("one"));
         assert_eq!(picked(kinds, t("1"), None), t("text one"));
         assert_eq!(picked(kinds, Some(Boolean(true)), None), t("yes"));

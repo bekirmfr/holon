@@ -41,6 +41,8 @@ route GET /hello/:name (req) {
 ```
 flow heartbeat
 every 10s
+state beats
+state last_beat
 
 state.last_beat = now
 state.beats = (state.beats ?? 0) + 1
@@ -68,7 +70,7 @@ same graph are the same unit.
 |---|---|---|
 | What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist today (two leaves, `as_text` and `coalesce`, were added for it) | §1, §6 |
 | What it is not | General-purpose. No loops, recursion, user types, modules, or standard library growth | §2 |
-| The outside world | Nouns: `req`, a declared `secret` used as `secret.name`, `state.key`, `now`, `random`, a declared `collection` used as `notes[key]`, a declared `folder` used as `inbox[name]`, `http.post(host, path, …)`, `await name` | §5.4 |
+| The outside world | Nouns: `req`, a declared `secret` used as `secret.name`, a declared `state` key used as `state.key`, `now`, `random`, a declared `collection` used as `notes[key]`, a declared `folder` used as `inbox[name]`, `http.post(host, path, …)`, `await name` | §5.4 |
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the effect needs a name | §5.4, §5.10 |
 | Bindings | One form, `name = expr`, everywhere | §5.2 |
 | Calls | `name(inputs…, named…)`: positional arguments are inputs; a named one is an input when the unit has that port, else a param | §5.3 |
@@ -264,6 +266,7 @@ is `guard(cond, value)`: when `ok` is false the body is absent and the route ans
 flow slugs
 port 8110
 optional secret receipt_key
+state last_post
 collection posts
 
 holon slugify(text) -> slug {
@@ -301,6 +304,8 @@ one unit, one hash.
 ```
 flow heartbeat
 every 10s
+state beats
+state last_beat
 
 state.last_beat = now
 state.beats = (state.beats ?? 0) + 1
@@ -316,6 +321,7 @@ what it says.
 ```
 flow approval
 port 8105
+state last_order
 channel orders
 
 route POST /orders (req) {
@@ -684,6 +690,7 @@ call from its record and pipes nothing twice. A piped call needn't be in a route
 ```
 flow ticker
 port 8156
+state ticks
 channel ticks
 
 every 2s {
@@ -809,7 +816,7 @@ around it reaches it as an input after the item (§5.9).
   as record keys (`{ in: 1 }`). A few words are keywords only where they open a handler or end a
   statement: `action` before a name and `(` (elsewhere it is the `action` template's name), `on
   file` (with `deleted` and `matching`) at the start of a line, `calls` before a flow's name at the
-  start of a line (§5.4), `secret` before a name at the start of a line (a header, §5.1), and
+  start of a line (§5.4), `secret` and `state` before a name at the start of a line (headers, §5.1), and
   `after` after a statement (§5.11). `on`, `calls` and `after` are names elsewhere.
 - **Nouns:** `req` (the name a route gives its request; any identifier works), `secret`, `state`,
   `now`, `random`, `ingress`, `http`, `stripe`, and every declared collection and folder. `secret`, `state`,
@@ -845,7 +852,7 @@ a binary operator or a comma. Semicolons are not used.
 file      = header* item*
 header    = "flow" ident | "port" number | "every" duration
           | "keep" [number] "runs" ["for" duration]
-          | "browsers" origin ("," origin)* | "secret" ident | "optional" consent
+          | "browsers" origin ("," origin)* | "secret" ident | "state" ident | "optional" consent
           | "collection" ident | "folder" ident | "database" ident | "on" fileline
           | "channel" ident | "calls" slug
 fileline  = "file" ident ["deleted"] ["matching" string]
@@ -860,14 +867,22 @@ Headers are the flow's deploy settings, exactly as today (`Settings`), and its n
 outside world. **The header names everything that outlives a run or comes from outside it; the
 body uses only names the header gave.** So the top of a file is the whole of what the flow needs
 provided and what it keeps, read without the body: the review an approver makes. A use keeps its
-namespace (`secret.signing_key`), so the line says what the value is.
+namespace (`secret.signing_key`, `state.beats`), so the line says what the value is.
 
 `secret signing_key` declares a secret the body reads as `secret.signing_key`: someone sets it
 for the deployment before the flow works. `optional secret receipt_key` declares one the flow can
 run without (§5.4); the deploy may leave it out, and its reads then have no value. A use of a
 secret the header doesn't declare is an error at the use, naming the line to add, and `holon fmt`
 adds it, saying what it declared. A declaration nothing uses compiles, and `fmt` drops it, as it
-does a collection's. `secret` is a header only before a name; `secret.x` is the use. `keep 500 runs for 30d` is how long the deployment's log keeps runs, the limits
+does a collection's. `secret` is a header only before a name; `secret.x` is the use.
+
+`state beats` declares a key of the flow's state, read as `state.beats` and written as `state.beats
+= e` or `state.set(beats, e)`; the same holds: a key the header doesn't declare is an error at its
+use, reads and writes alike, and `fmt` declares it. A misspelt key (`state.beat` beside
+`state.beats`) is caught there, not left a new, empty key. A holon uses the flow's declarations,
+as it does the flow's collections.
+
+`keep 500 runs for 30d` is how long the deployment's log keeps runs, the limits
 `keep_runs` and `keep_run_days`: either part may be left out (`keep 500 runs`, `keep runs for
 30d`), the days whole, one line. It is the deploy settings' two fields, which follow it and which
 it follows; the other limits have no line. `keep` is a header only before a number or `runs`, a
@@ -983,7 +998,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `req` | the route's `request` template node, its `request` output | the request |
 | `req.params`, `req.query`, `req.headers`, `req.body`, `req.json` | that output of the request node | its parts |
 | `secret.api_token` | `secret{name: api_token}` | a secret, declared `secret api_token` |
-| `state.beats` (in an expression) | `store_read{key: beats}` | the state, as the run began |
+| `state.beats` (in an expression) | `store_read{key: beats}` | the state, as the run began; `beats` declared `state beats` |
 | `state.beats = e` | `store_write{key: beats}(e)` | set the state when the run finishes |
 | `state.set(beats, e)` | the same `store_write`, as an expression | the write, as a value to name |
 | `now` | `clock()` | the time the run started |

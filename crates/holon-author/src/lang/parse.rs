@@ -287,9 +287,9 @@ impl Parser {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
-                    // `secret signing_key` declares what the body reads as `secret.signing_key`;
-                    // before `.` the word is the use.
-                    "secret" if matches!(self.peek_at(1).tok, Tok::Ident) => {
+                    // `secret signing_key` and `state beats` declare what the body uses as
+                    // `secret.signing_key` and `state.beats`; before `.` the word is the use.
+                    "secret" | "state" if matches!(self.peek_at(1).tok, Tok::Ident) => {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
@@ -346,6 +346,7 @@ impl Parser {
             "channel" => HeaderKind::Channel(self.ident("the channel's name")?.text),
             "calls" => HeaderKind::Calls(self.raw_name("the flow's name")?.text),
             "secret" => HeaderKind::Secret(self.ident("the secret's name")?.text),
+            "state" => HeaderKind::State(self.ident("the state key's name")?.text),
             "on" => HeaderKind::OnFile(self.file_on()?),
             "optional" => HeaderKind::Optional(self.consent()?),
             "keep" => self.keep()?,
@@ -1641,14 +1642,14 @@ mod tests {
         ),
         (
             "slugs",
-            "flow slugs\nport 8110\noptional secret receipt_key\ncollection posts\n\nholon slugify(text) -> slug {\n  slug = join(split(lowercase(text), \" \"), \"-\")\n}\n\nholon publish(slug, author) -> (put, saved, receipt) {\n  s       = slug ?? \"\"\n  put     = posts.put(s, { author: author, at: now })\n  saved   = state.set(last_post, s)\n  receipt = hmac_sha256(secret.receipt_key, s, encoding: hex) ?? \"unsigned\"\n}\n\nroute POST /slugs (req) {\n  title     = slugify(req.json.title)\n  author    = slugify(req.json.author)\n  published = publish(title, author)\n  respond { title: title, author: author, receipt: published.receipt }, missing: 400\n}\n\nroute GET /slugs (req) {\n  respond posts.list(limit: 100)\n}\n",
+            "flow slugs\nport 8110\noptional secret receipt_key\nstate last_post\ncollection posts\n\nholon slugify(text) -> slug {\n  slug = join(split(lowercase(text), \" \"), \"-\")\n}\n\nholon publish(slug, author) -> (put, saved, receipt) {\n  s       = slug ?? \"\"\n  put     = posts.put(s, { author: author, at: now })\n  saved   = state.set(last_post, s)\n  receipt = hmac_sha256(secret.receipt_key, s, encoding: hex) ?? \"unsigned\"\n}\n\nroute POST /slugs (req) {\n  title     = slugify(req.json.title)\n  author    = slugify(req.json.author)\n  published = publish(title, author)\n  respond { title: title, author: author, receipt: published.receipt }, missing: 400\n}\n\nroute GET /slugs (req) {\n  respond posts.list(limit: 100)\n}\n",
             2,
             2,
         ),
-        ("heartbeat", "flow heartbeat\nevery 10s\n\nstate.last_beat = now\nstate.beats = (state.beats ?? 0) + 1\nstate.first_beat = state.first_beat ?? now\n", 0, 0),
+        ("heartbeat", "flow heartbeat\nevery 10s\nstate beats\nstate last_beat\n\nstate.last_beat = now\nstate.beats = (state.beats ?? 0) + 1\nstate.first_beat = state.first_beat ?? now\n", 0, 0),
         (
             "approval",
-            "flow approval\nport 8105\n\nroute POST /orders (req) {\n  respond \"/paid/{resume_token(paid)}\"\n  paid = await paid, expires: 1d\n  state.last_order = { ..req.json, paid_via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks, the order is paid\"\n}\n",
+            "flow approval\nport 8105\nstate last_order\n\nroute POST /orders (req) {\n  respond \"/paid/{resume_token(paid)}\"\n  paid = await paid, expires: 1d\n  state.last_order = { ..req.json, paid_via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks, the order is paid\"\n}\n",
             2,
             0,
         ),

@@ -14,6 +14,7 @@
 # shows each order's progress: "waiting for payment", then "paid".
 flow approval
 port 8105
+state last_order
 channel orders
 
 # Answers the pay link, says the order is waiting, then parks until the link is opened.

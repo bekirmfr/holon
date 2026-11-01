@@ -537,6 +537,7 @@ A FILE
   port 8102                 the port its routes answer on
   secret api_token          a secret it reads, as secret.api_token; set before it works
   optional secret key       a secret it can run without
+  state count               a key of its state, used as state.count
   collection notes          a named store of items, used as notes[key]
   The header names everything that outlives a run or comes from outside it; the body uses only
   names the header gave.
@@ -583,7 +584,7 @@ OPERATORS
 
 THE OUTSIDE WORLD (each is one permission the flow asks for)
   secret.api_token                         a secret, set by an admin (declared: secret api_token)
-  state.count                              read at the start of the run
+  state.count                              read at the start of the run (declared: state count)
   state.count = (state.count ?? 0) + 1     written when the run finishes
   notes[key]  notes[key] = v  delete notes[key]  notes.list(prefix: p, after: a, limit: 50)
   now, random                              the run's time (epoch seconds) and one random number

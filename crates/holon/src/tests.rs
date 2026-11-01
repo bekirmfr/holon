@@ -554,7 +554,7 @@ fn clock_ticks_fire_when_due_and_not_before() {
 #[test]
 fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
     let state = test_state();
-    let plan = holon_author::agent::plan("flow beats\nevery 5s\n\nstate.beats = (state.beats ?? 0) + 1\n").unwrap();
+    let plan = holon_author::agent::plan("flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n").unwrap();
     assert!(plan.may.contains(&"Clock".to_string()), "{:?}", plan.may);
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -588,7 +588,7 @@ fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
 #[test]
 fn a_clock_runs_history_never_shows_a_secret() {
     let state = test_state();
-    let plan = holon_author::agent::plan("flow leak\nevery 5s\nsecret api_key\n\nstate.k = secret.api_key\nstate.encoded = base64(secret.api_key)\n").unwrap();
+    let plan = holon_author::agent::plan("flow leak\nevery 5s\nsecret api_key\nstate encoded\nstate k\n\nstate.k = secret.api_key\nstate.encoded = base64(secret.api_key)\n").unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
@@ -888,6 +888,7 @@ fn a_flows_keep_line_is_the_retention_its_deploy_asks_for() {
     let state = test_state();
     let plan = holon_author::agent::plan("flow kept
 keep 3 runs
+state n
 
 action bump (input) {
   state.n = (state.n ?? 0) + 1
@@ -917,6 +918,7 @@ fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let plan = holon_author::agent::plan("flow kept
 keep 3 runs
+state n
 collection notes
 
 action bump (input) {
@@ -4425,6 +4427,9 @@ fn a_token_a_call_answers_with_a_secret_is_kept_out_of_the_log_and_out_of_state(
         r#"flow oauth
 port 18150
 secret client_secret
+state cached
+state expires
+state open_token
 
 route POST /call (req) {{
   got = http.post("{host}", "/token", headers: {{ "x-client-secret": secret.client_secret }}, body: req.body)
@@ -4500,6 +4505,8 @@ port 18144
 secret api_key
 collection kept
 channel news
+state plain
+state token
 
 route POST /go (req) {
   token = "{req.body}:{base64(secret.api_key)}"
@@ -7095,7 +7102,7 @@ fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
     route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![]));
 
     // A flow of actions alone deploys, listening on no port, and is run by name.
-    let slug = deploy_text(&state, "flow notes\n\naction note (n) {\n  state.note = n\n  respond \"noted\"\n}\n", "");
+    let slug = deploy_text(&state, "flow notes\nstate note\n\naction note (n) {\n  state.note = n\n  respond \"noted\"\n}\n", "");
     assert_eq!(state.deployments.lock().unwrap()[&slug].triggers, ["action note"]);
     let r = body_json(route(&state, &req("POST", &format!("/trigger/{slug}/note"), b"\"hi\"".to_vec())));
     assert_eq!(r["answer"], "noted");
@@ -7111,7 +7118,7 @@ fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
     let mut state = claims_state("");
     let path = unique_temp_path("clock-blocks");
     state.deployments_path = path.clone();
-    let text = "flow ticks\nport 18257\n\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n}\n\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n";
+    let text = "flow ticks\nport 18257\nstate n\n\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n}\n\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     let triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
     assert_eq!(triggers, ["Http :18257", "every 2s"]);
@@ -7144,7 +7151,7 @@ fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
     assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 7, "three ticks and four requests");
 
     // Clocks alone: no port, and no interval besides the text's.
-    let alone = deploy_text(&state, "flow beats\n\nevery 1h {\n  state.n = (state.n ?? 0) + 1\n}\n", "127.0.0.1:9");
+    let alone = deploy_text(&state, "flow beats\nstate n\n\nevery 1h {\n  state.n = (state.n ?? 0) + 1\n}\n", "127.0.0.1:9");
     let (triggers, unit, port) = {
         let deployments = state.deployments.lock().unwrap();
         let d = &deployments[&alone];
@@ -7170,7 +7177,7 @@ fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
 
 // ── flow calls (docs/L4s/triggers-L4.md §9, slice 6) ─────────────────────────────────────────────
 
-const BILLING: &str = "flow billing\ncollection charges\n\naction charge (input) {\n  charges[input.id] = input\n  respond { ok: true, total: input.amount * 2 }\n}\n\naction reset (input) {\n  state.resets = (state.resets ?? 0) + 1\n}\n";
+const BILLING: &str = "flow billing\ncollection charges\nstate resets\n\naction charge (input) {\n  charges[input.id] = input\n  respond { ok: true, total: input.amount * 2 }\n}\n\naction reset (input) {\n  state.resets = (state.resets ?? 0) + 1\n}\n";
 const SHOP: &str = "flow shop\nport 18311\ncalls billing\n\nroute POST /orders (req) {\n  charged = billing.charge({ id: req.json.id, amount: req.json.total })\n  respond charged\n}\n\nroute POST /reset (req) {\n  billing.reset()\n  respond 204\n}\n";
 
 fn order(state: &AppState, id: &str, total: f64) -> serde_json::Value {
@@ -7231,7 +7238,7 @@ fn a_call_that_cant_be_made_says_why() {
     let error = |id: &str| order(&state, id, 1.0)["error"].as_str().map(str::to_string);
     assert_eq!(error("a").as_deref(), Some("not_found"), "billing isn't deployed");
 
-    deploy_text(&state, "flow billing\n\naction other (input) {\n  state.n = 1\n}\n", "127.0.0.1:9");
+    deploy_text(&state, "flow billing\nstate n\n\naction other (input) {\n  state.n = 1\n}\n", "127.0.0.1:9");
     assert_eq!(error("b").as_deref(), Some("no_action"), "it has no such action");
 
     deploy_text(&state, BILLING, "127.0.0.1:9");

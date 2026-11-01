@@ -12,6 +12,7 @@
 # then answers the same again, with when it was made.
 flow tally
 port 8119
+state last
 
 # Sums up each column of a CSV: its kind, then min, max and mean, or distinct values and top three.
 holon summarize(csv) -> (rows, columns) js {

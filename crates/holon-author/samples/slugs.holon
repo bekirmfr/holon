@@ -16,6 +16,7 @@
 flow slugs
 port 8110
 optional secret receipt_key
+state last_post
 collection posts
 
 # Turns a text into a slug: lowercase, its words joined with -.

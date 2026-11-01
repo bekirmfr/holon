@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(out, src, "{out}");
         assert_eq!(fmt("f.holon", &out).unwrap(), out, "and again");
         // A body on one line, with a comment after its brace.
-        let one = "flow f\n\nholon tag(x) -> t js { return `#${x}` } # a tag\n\nstate.k = tag(1)\n";
+        let one = "flow f\nstate k\n\nholon tag(x) -> t js { return `#${x}` } # a tag\n\nstate.k = tag(1)\n";
         assert_eq!(fmt("f.holon", one).unwrap(), one);
     }
 
@@ -525,8 +525,8 @@ mod tests {
         let fine = check("f.holon", &src.replace("const x = ;", "const x = a.b.c;"));
         assert_eq!((fine.code, fine.err), (0, vec![]));
         // On the header line, the column is the file's.
-        let one_line = check("f.holon", "flow f\n\nholon bad(a) -> b js { return a + }\nstate.k = bad(1)\n");
-        assert!(one_line.err[0].starts_with("f.holon:3:"), "{:?}", one_line.err);
+        let one_line = check("f.holon", "flow f\nstate k\n\nholon bad(a) -> b js { return a + }\nstate.k = bad(1)\n");
+        assert!(one_line.err[0].starts_with("f.holon:4:"), "{:?}", one_line.err);
         assert_eq!(js_position("SyntaxError: x at line 2, col 13 (native)"), Some((2, 13)));
         assert_eq!(js_position("TypeError: y (unknown at :3:9)\n    at <main> (unknown at :3:9)"), Some((3, 9)));
         assert_eq!(js_position("the source isn't a function"), None);
@@ -536,12 +536,12 @@ mod tests {
     /// says it listens on no port; `show` lists them too.
     #[test]
     fn check_and_show_list_its_clocks() {
-        let r = check("t.holon", "flow t\nport 8080\n\nevery 2s {\n  state.n = 1\n}\n\nroute GET / (req) {\n  respond 1\n}\n");
+        let r = check("t.holon", "flow t\nport 8080\nstate n\n\nevery 2s {\n  state.n = 1\n}\n\nroute GET / (req) {\n  respond 1\n}\n");
         assert_eq!(r.code, 0, "{r:?}");
         assert_eq!(r.out[1..5], ["a server on :8080", "  GET /", "and its clocks", "  every 2s"]);
-        let r = check("b.holon", "flow b\n\nevery 1h {\n  state.n = now\n}\n");
+        let r = check("b.holon", "flow b\nstate n\n\nevery 1h {\n  state.n = now\n}\n");
         assert_eq!(r.out[1..3], ["a server of clocks, listening on no port", "  every 1h"]);
-        assert!(show("b.holon", "flow b\n\nevery 1h {\n  state.n = now\n}\n").out[1..3] == ["  clocks", "    every 1h"]);
+        assert!(show("b.holon", "flow b\nstate n\n\nevery 1h {\n  state.n = now\n}\n").out[1..3] == ["  clocks", "    every 1h"]);
     }
 
     #[test]
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn check_says_a_flow_on_a_schedule_runs_on_the_clock() {
         // `every` starts its runs, so it reads the clock as deployed, though nothing reads `now`.
-        let r = check("beats.holon", "flow beats\nevery 5s\n\nstate.beats = (state.beats ?? 0) + 1\n");
+        let r = check("beats.holon", "flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n");
         assert_eq!(r.code, 0, "{r:?}");
         let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
         assert_eq!(r.out[may + 1..], ["  read the clock", "  read its state \"beats\"", "  write its state \"beats\""]);
@@ -695,7 +695,7 @@ route POST /t (req) {
         assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true)\n  respond sent.body, stream: true, status: 201").contains("takes no status"));
         assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true, body: 1)\n  respond sent.body, stream: true").contains("stream: comes last"));
         assert!(fails("  a = http.post(\"a.com\", \"/x\", stream: true)\n  b = http.post(\"a.com\", \"/y\", stream: true)\n  respond { a: a.body, b: b.body }").contains("one streamed call"));
-        assert!(check("chat.holon", "flow chat\nevery 10s\n\nstate.x = http.get(\"a.com\", \"/x\", stream: true).body\n").err.join("\n").contains("a streamed call is a route's"));
+        assert!(check("chat.holon", "flow chat\nevery 10s\nstate x\n\nstate.x = http.get(\"a.com\", \"/x\", stream: true).body\n").err.join("\n").contains("a streamed call is a route's"));
         // stream: false is a plain call.
         assert_eq!(check("chat.holon", &flow("  sent = http.post(\"a.com\", \"/x\", stream: false)\n  respond sent.body")).code, 0);
     }
@@ -707,7 +707,7 @@ route POST /t (req) {
         assert_eq!(checked.code, 0, "{:?}", checked.err);
         assert_eq!(fmt("room.holon", text).unwrap(), text);
         // Not a route's: a clock flow may pipe too.
-        assert_eq!(check("room.holon", "flow room\nevery 10s\nchannel room\n\nstate.x = room.pipe(http.get(\"a.com\", \"/x\")).body\n").code, 0);
+        assert_eq!(check("room.holon", "flow room\nevery 10s\nchannel room\nstate x\n\nstate.x = room.pipe(http.get(\"a.com\", \"/x\")).body\n").code, 0);
         let fails = |line: &str| check("room.holon", &format!("flow room\nport 8200\nchannel room\n\nroute POST /ask (req) {{\n{line}\n  respond {{ ok: true }}, status: 202\n}}\n")).err.join("\n");
         assert!(fails("  s = room.pipe(http.post(\"a.com\", \"/x\", stream: true))").contains("without stream:"));
         assert!(fails("  s = room.pipe(1)").contains("only a call's answer can be piped"));
@@ -745,6 +745,10 @@ route POST /t (req) {
         let r = fmt("f.holon", "flow f\nport 8200\n\nroute GET /a (req) {\n  respond secret.a\n  x = nope\n}\n").unwrap_err();
         assert!(r.err[0].starts_with("f.holon:6:7: unknown name"), "{:?}", r.err);
         assert_eq!(r.err[1], "    x = nope");
+        // State keys too: after what the flow needs provided, before the stores.
+        let (text, declared) = fmt_declaring("f.holon", "flow f\nport 8200\ncollection c\nsecret a\n\nroute GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  c[\"k\"] = state.set(last, secret.a)\n  respond 204\n}\n").unwrap();
+        assert_eq!(declared, ["state hits", "state last"]);
+        assert!(text.starts_with("flow f\nport 8200\nsecret a\nstate hits\nstate last\ncollection c\n\n"), "{text}");
     }
 
     #[test]

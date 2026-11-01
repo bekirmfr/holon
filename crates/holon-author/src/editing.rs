@@ -733,7 +733,7 @@ mod tests {
     /// block, its value answered, its holons left where they were.
     #[test]
     fn a_flow_nothing_starts_is_made_runnable_by_hand() {
-        let flow = "flow sums\n\nholon double(x) -> y {\n  y = x * 2\n}\n\nstate.last = 3\ndouble(21)\n";
+        let flow = "flow sums\nstate last\n\nholon double(x) -> y {\n  y = x * 2\n}\n\nstate.last = 3\ndouble(21)\n";
         let fixed = runnable_by_hand(flow).unwrap();
         assert!(fixed.contains("action run (input) {") && fixed.contains("respond double(21)"), "{fixed}");
         assert!(fixed.contains("holon double(x) -> y"), "its holon stays: {fixed}");
@@ -746,10 +746,10 @@ mod tests {
         // Its last binding is answered.
         assert!(runnable_by_hand("flow f\n\ntotal = 1 + 2\n").unwrap().contains("respond total"));
         // `input` taken, what was sent is named otherwise.
-        assert!(runnable_by_hand("flow f\n\ninput = 2\nstate.n = input\n").unwrap().contains("action run (sent) {"));
+        assert!(runnable_by_hand("flow f\nstate n\n\ninput = 2\nstate.n = input\n").unwrap().contains("action run (sent) {"));
         // A flow something starts is left alone.
         assert!(runnable_by_hand("flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n").unwrap_err().contains("trigger already"));
-        assert!(runnable_by_hand("flow f\n\nstate.last = ingress\n").unwrap_err().contains("run by hand already"));
+        assert!(runnable_by_hand("flow f\nstate last\n\nstate.last = ingress\n").unwrap_err().contains("run by hand already"));
         assert!(runnable_by_hand("flow f\n\nholon h(x) -> y {\n  y = x\n}\n").unwrap_err().contains("nothing to run"));
     }
 

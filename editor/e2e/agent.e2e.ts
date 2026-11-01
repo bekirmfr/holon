@@ -85,7 +85,7 @@ test("an agent asks through holon mcp to put a run's state back, and a person re
     await agent.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "1" } });
     const name = `tally-${Date.now().toString(36)}`;
     const port = 8191 + SAMPLE_SHIFT;
-    const text = `flow ${name}\nport ${port}\n\nroute POST /add (req) {\n  total = (state.total ?? 0) + req.json.n\n  state.total = total\n  respond total\n}\n\nroute GET /total (req) {\n  respond state.total\n}\n`;
+    const text = `flow ${name}\nport ${port}\nstate total\n\nroute POST /add (req) {\n  total = (state.total ?? 0) + req.json.n\n  state.total = total\n  respond total\n}\n\nroute GET /total (req) {\n  respond state.total\n}\n`;
     expect((await agent.tool("deploy", { text })).text).toContain("Not deployed yet");
     // A person deploys it, approving what it may do.
     await page.goto("/");

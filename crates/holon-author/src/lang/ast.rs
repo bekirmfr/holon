@@ -60,6 +60,9 @@ pub enum HeaderKind {
     /// `secret signing_key`: a secret the flow reads, as `secret.signing_key`; someone sets it
     /// before the flow works (`optional secret …` declares one it can do without).
     Secret(String),
+    /// `state beats`: a key of the flow's state, read as `state.beats` and written as
+    /// `state.beats = …` or `state.set(beats, …)`.
+    State(String),
     /// `collection notes`: a name the body may use as `notes[k]`.
     Collection(String),
     /// `folder inbox`: a folder an admin binds on the host, used as `inbox[name]`.

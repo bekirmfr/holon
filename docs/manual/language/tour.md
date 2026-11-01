@@ -122,6 +122,9 @@ A flow with `every` instead of `port` runs on a clock:
 ```holon
 flow heartbeat
 every 10s
+state beats
+state first_beat
+state last_beat
 
 t = now
 state.last_beat = t
@@ -131,7 +134,8 @@ state.first_beat = state.first_beat ?? t
 
 `state.beats` on the right is the value as the run began; `state.beats = …` writes it when the
 run finishes. So the line means exactly what it says, and a run never sees its own writes. A run
-writes a key once.
+writes a key once. Each key is declared in the header (`state beats`), as a collection is: the top
+of the file lists what the flow keeps, and a misspelt key is a mistake rather than a new one.
 
 Durations are numbers of seconds: `10s`, `5m`, `2h`, `1d`.
 
@@ -140,6 +144,8 @@ A flow with routes keeps its clock in a block of its own, and may have actions b
 ```holon
 flow visits
 port 8207
+state last_hour
+state visits
 
 every 1h {
   state.last_hour = now
@@ -320,6 +326,7 @@ A run can park and finish later, when someone follows a link:
 ```holon
 flow approval
 port 8111
+state last_order
 
 route POST /orders (req) {
   respond "/paid/{resume_token(paid)}"
