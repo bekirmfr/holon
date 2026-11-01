@@ -29,6 +29,8 @@
   a line diff, as the agents' `restore` tool does.
 - **`holon mcp` has a `state` tool**: what a deployment keeps now, and a collection's items, read
   only.
+- **The admin page sweeps storage.** Under resources, **storage** sweeps the content store (it
+  counts what it would remove first, then asks) and the file texts runs read and wrote.
 
 ## 0.1.0-rc.30
 

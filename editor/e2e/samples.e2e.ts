@@ -1087,6 +1087,19 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   expect(swept.dry_run).toBe(true);
   expect(swept.kept.values, "what the kept runs and the live state name").toBeGreaterThan(0);
   expect((await seqs()).length).toBe(5);
+  // The admin page's storage counts first, and asks before it sweeps anything: cancelled, or
+  // with nothing old enough to sweep, it removes nothing.
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  const store = page.getByText("the store: states and values").locator("..");
+  await store.getByRole("button", { name: "sweep…" }).click();
+  const asks = page.getByRole("dialog");
+  await expect(store.getByText(/nothing to sweep: it keeps \d+ values/).or(asks)).toBeVisible();
+  if (await asks.isVisible()) {
+    await expect(asks).toContainText(/Sweep the store\? It removes \d+ values/);
+    await asks.getByRole("button", { name: "Cancel" }).click();
+  }
+  expect((await dryRun()).kept.values).toBeGreaterThan(0);
   // Its clock would beat for the rest of the run.
   await request.post(`${SERVER}/deployments/rolling-log/stop`, { data: {}, headers: auth });
 });
