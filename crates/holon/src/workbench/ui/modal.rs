@@ -2,7 +2,6 @@
 //! the call form, the palette, a line typed in, a yes or no, the keys. Each has its buttons at
 //! the bottom, to press or click.
 
-use holon_author::agent;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -12,9 +11,9 @@ use ratatui::Frame;
 
 use super::{bold, chips, coloured, dim, fit, list, pad, panel, scrollbar, tone, ACCENT, GOOD, WARN};
 use crate::workbench::app::{App, List, Modal, Said, Tone};
-use crate::workbench::client::Client;
 use crate::workbench::flow::restore_options;
 use crate::workbench::palette;
+use crate::workbench::review::{Body, Code, Review, Row};
 
 const NONE: KeyModifiers = KeyModifiers::NONE;
 
@@ -69,6 +68,12 @@ const HELP: &[(&str, &str)] = &[
     ("alt+f", "format, as holon fmt writes it"),
     ("ctrl+pgup pgdn", "the tab before or after; ctrl+w closes this one"),
     ("", ""),
+    ("A deploy to approve, a dry run", ""),
+    ("n  N", "the next hunk or fold, the one before (tab, shift+tab too)"),
+    ("space  → ←", "open or close it (a click on it too); a fold shows its unchanged lines"),
+    ("w  d", "the whole of it, every hunk open; back to the diff"),
+    ("enter  esc", "approve it (deploy, restore); cancel (x too)"),
+    ("", ""),
     ("The mouse", ""),
     ("click", "a page, a tab, a row, a button; in the text, the cursor (shift+click selects)"),
     ("wheel", "scrolls what is under it"),
@@ -99,6 +104,130 @@ fn said(lines: &[Said], width: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// A tinted ground for a line put in, and one taken out.
+const ADDED_GROUND: Color = Color::Rgb(20, 46, 34);
+const REMOVED_GROUND: Color = Color::Rgb(54, 22, 26);
+/// A line taken out: its text quieter than the rest.
+const REMOVED_TEXT: Color = Color::Rgb(150, 112, 112);
+
+/// A review (a deploy to approve, a restore's dry run): its hunks, each opening and closing, its
+/// code numbered and coloured, the names a new permission comes from marked; the focus on a
+/// hunk's head or a fold. `go` is what enter does (none when it can't be done); `foot` stays
+/// under it, outside what scrolls.
+fn reviewed(f: &mut Frame, app: &mut App, area: Rect, review: &mut Review, title: &str, go: &str, foot: Option<(&str, Color)>) {
+    let rows = review.rows();
+    let mut buttons = vec![];
+    if !go.is_empty() {
+        buttons.push(("enter", go, KeyCode::Enter, NONE));
+    }
+    buttons.extend([("n", "next", KeyCode::Char('n'), NONE), ("space", "open/close", KeyCode::Char(' '), NONE)]);
+    buttons.push(if review.whole { ("d", "diff", KeyCode::Char('d'), NONE) } else { ("w", "whole", KeyCode::Char('w'), NONE) });
+    buttons.push(("esc", "cancel", KeyCode::Esc, NONE));
+    let rect = centred(area, 120, rows.len() as u16 + 6 + u16::from(foot.is_some()));
+    let body = frame(f, app, rect, title, &buttons);
+    let [shown, under] = Layout::vertical([Constraint::Min(1), Constraint::Length(u16::from(foot.is_some()))]).areas(body);
+    if let Some((said, colour)) = foot {
+        f.render_widget(Paragraph::new(coloured(said, colour)), under);
+    }
+    review.height = shown.height as usize;
+    review.scroll = review.scroll.min(rows.len().saturating_sub(shown.height as usize));
+    let width = shown.width.saturating_sub(1) as usize;
+    let focus = review.focus().map(|(_, row)| row);
+    let stops = Review::stops(&rows);
+    app.hit(shown, crate::workbench::app::Click::Scroll(List::Dialog));
+    let mut lines = vec![];
+    for (i, row) in rows.iter().enumerate().skip(review.scroll).take(shown.height as usize) {
+        let mut line = review_row(review, *row, width);
+        if focus == Some(i) {
+            line = line.style(Style::new().bg(super::PICKED));
+        }
+        if let Some(stop) = stops.iter().position(|(_, r)| *r == i) {
+            let y = shown.y + (i - review.scroll) as u16;
+            app.hit(Rect { y, height: 1, ..shown }, crate::workbench::app::Click::Row(List::Review, stop));
+        }
+        lines.push(line);
+    }
+    f.render_widget(Paragraph::new(lines), shown);
+    scrollbar(f, shown, rows.len(), review.scroll);
+}
+
+fn review_row(review: &Review, row: Row, width: usize) -> Line<'static> {
+    match row {
+        Row::Top(i) => said_line(&review.top[i], width),
+        Row::Foot(i) => said_line(&review.foot[i], width),
+        Row::Blank => Line::default(),
+        Row::Head(h) => {
+            let hunk = &review.hunks[h];
+            let open = hunk.open || review.whole;
+            let mut spans = vec![coloured(if open { "▾ " } else { "▸ " }, ACCENT), bold(hunk.head.clone())];
+            for (k, (t, s)) in hunk.sum.iter().enumerate() {
+                spans.push(dim(if k == 0 { "   " } else { " · " }));
+                spans.push(Span::styled(s.clone(), tone(*t)));
+            }
+            Line::from(spans)
+        }
+        Row::Fold(_, _, n) => Line::from(dim(format!("{:>6} ⋯ {n} unchanged line{} (space shows them)", "", if n == 1 { "" } else { "s" }))),
+        Row::Code(h, i) => {
+            let Body::Code(code) = &review.hunks[h].body else { return Line::default() };
+            code_line(&code[i], width)
+        }
+        Row::Line(h, i) => {
+            let Body::Lines(lines) = &review.hunks[h].body else { return Line::default() };
+            let (t, s) = &lines[i];
+            Line::from(vec![Span::raw("  "), Span::styled(fit(s, width.saturating_sub(2)), tone(*t))])
+        }
+    }
+}
+
+fn said_line((t, s): &Said, width: usize) -> Line<'static> {
+    Line::from(Span::styled(fit(s, width), tone(*t)))
+}
+
+/// A line of code in a review: its number, its mark, its text coloured on a ground that says
+/// whether it was put in or taken out, the names a permission comes from marked.
+fn code_line(c: &Code, width: usize) -> Line<'static> {
+    let (sign, ground) = match c.kind {
+        '+' => (coloured("+ ", GOOD), Some(ADDED_GROUND)),
+        '-' => (coloured("− ", super::BAD), Some(REMOVED_GROUND)),
+        _ => (Span::raw("  "), None),
+    };
+    let chars: Vec<char> = c.text.chars().collect();
+    let room = width.saturating_sub(7);
+    let mut styles: Vec<Style> = vec![Style::new(); chars.len()];
+    for &(from, to, class) in &c.colours {
+        for s in styles.iter_mut().take(to).skip(from) {
+            *s = super::editor::colour(class);
+        }
+    }
+    if c.kind == '-' {
+        styles.iter_mut().for_each(|s| *s = Style::new().fg(REMOVED_TEXT));
+    }
+    for &(from, to) in &c.marked {
+        for s in styles.iter_mut().take(to).skip(from) {
+            *s = s.fg(WARN).add_modifier(Modifier::UNDERLINED);
+        }
+    }
+    let mut text: Vec<Span<'static>> = vec![];
+    for (ch, style) in chars.iter().zip(styles).take(room) {
+        match text.last_mut() {
+            Some(last) if last.style == style => last.content.to_mut().push(*ch),
+            _ => text.push(Span::styled(ch.to_string(), style)),
+        }
+    }
+    let mut spans = vec![dim(format!("{:>4} ", c.number)), sign];
+    spans.extend(text);
+    if chars.len() > room {
+        spans.push(dim("…"));
+    }
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
+    let line = Line::from(spans);
+    match ground {
+        Some(g) => line.style(Style::new().bg(g)),
+        None => line,
+    }
+}
+
 /// Lines that scroll: as many as fit from `scroll`, kept in range.
 fn scrolled(f: &mut Frame, area: Rect, lines: Vec<Line<'static>>, scroll: &mut usize) {
     let max = lines.len().saturating_sub(area.height as usize);
@@ -109,64 +238,13 @@ fn scrolled(f: &mut Frame, area: Rect, lines: Vec<Line<'static>>, scroll: &mut u
 }
 
 pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    let server = app.client.as_ref().map(Client::server).unwrap_or_default();
     // Taken out while drawn, so the dialog can keep its scroll in range; put back after.
     let Some(mut modal) = app.modal.take() else { return };
     match &mut modal {
-        Modal::Approve { slug, plan, staged, diff, show_diff, scroll, .. } => {
-            let (added, removed) = crate::workbench::diff::counts(diff);
-            let mut lines: Vec<Line> = vec![Line::from(dim(format!("Deploying \"{slug}\" ({}) to {server}.", &plan.unit[..12])))];
-            if *show_diff {
-                lines.push(Line::from(vec![bold("What it changes in the text deployed now  "), coloured(format!("+{added}"), GOOD), dim(" "), coloured(format!("−{removed}"), super::BAD)]));
-                for (k, l) in crate::workbench::diff::hunks(diff, 2) {
-                    let (mark, style) = match k {
-                        '+' => ("+ ", Style::new().fg(GOOD)),
-                        '-' => ("- ", Style::new().fg(super::BAD)),
-                        '…' => ("  ", Style::new().fg(super::DIM)),
-                        _ => ("  ", Style::new()),
-                    };
-                    lines.push(Line::from(Span::styled(format!("{mark}{}", if k == '…' { "…" } else { &l }), style)));
-                }
-            } else {
-                let touches = crate::workbench::flow::touch_lines(&serde_json::json!({ "touches": staged.touches, "settings": staged.settings }));
-                if touches.is_empty() {
-                    lines.push(Line::default());
-                    lines.push(Line::from(dim("It only computes: it touches nothing outside a run.")));
-                }
-                // As wide as the dialog's body: a note too long for it is cut, its row isn't.
-                lines.extend(said(&touches, 86));
-                // Asked beside its code (an agent's new site to answer pages from).
-                let listed: Vec<&str> = staged.touches.as_array().into_iter().flatten().flat_map(|r| r["uses"].as_array().into_iter().flatten()).filter_map(|u| u["item"].as_str()).collect();
-                for n in staged.needs.iter().filter(|n| !listed.contains(&n.as_str())) {
-                    lines.push(Line::from(vec![coloured("  + ", WARN), Span::raw(agent::describe(n))]));
-                }
-                lines.push(Line::default());
-                if staged.needs.is_empty() {
-                    lines.push(Line::from(coloured("Nothing new to approve: its grant covers all of this.", GOOD)));
-                } else {
-                    lines.push(Line::from(coloured(format!("You approve the {} marked +, as you, by deploying it.", staged.needs.len()), WARN)));
-                }
-                if !plan.routes.is_empty() {
-                    lines.push(Line::default());
-                    lines.extend(plan.routes.iter().map(|r| Line::from(dim(format!("  {r}")))));
-                }
-                if !diff.is_empty() {
-                    lines.push(Line::default());
-                    lines.push(Line::from(vec![dim("It changes the text deployed now: "), coloured(format!("+{added} "), GOOD), coloured(format!("−{removed}"), super::BAD), dim(" lines (d shows them)")]));
-                }
-            }
+        Modal::Approve { slug, staged, review, .. } => {
             let title = if staged.needs.is_empty() { format!("Deploy {slug}?") } else { format!("Approve and deploy {slug}?") };
             let go = if staged.needs.is_empty() { "deploy" } else { "approve and deploy" };
-            let mut buttons = vec![("enter", go, KeyCode::Enter, NONE)];
-            if !diff.is_empty() {
-                buttons.push(("d", if *show_diff { "what it may do" } else { "what it changes" }, KeyCode::Char('d'), NONE));
-            }
-            buttons.push(("esc", "cancel", KeyCode::Esc, NONE));
-            let height = (lines.len() as u16 + 4).max(8);
-            let rect = centred(area, 90, height);
-            let body = frame(f, app, rect, &title, &buttons);
-            app.hit(body, crate::workbench::app::Click::Scroll(List::Dialog));
-            scrolled(f, body, lines, scroll);
+            reviewed(f, app, area, review, &title, go, None);
         }
         Modal::Lines { title, lines, scroll } => {
             let rect = centred(area, 100, lines.len() as u16 + 4);
@@ -255,20 +333,10 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(vec![coloured(format!("{kind:<7}"), ACCENT), Span::raw(fit(&what, w.saturating_sub(8 + note.chars().count()))), dim(note)])
             });
         }
-        Modal::DryRun { point, lines, refused, scroll, needs, .. } => {
-            let buttons: Vec<(&str, &str, KeyCode, KeyModifiers)> = if *refused {
-                vec![("esc", "close", KeyCode::Esc, NONE)]
-            } else if needs.is_empty() {
-                vec![("enter", "restore it", KeyCode::Enter, NONE), ("esc", "leave it as it is", KeyCode::Esc, NONE)]
-            } else {
-                vec![("enter", "approve and restore it", KeyCode::Enter, NONE), ("esc", "leave it as it is", KeyCode::Esc, NONE)]
-            };
-            let rect = centred(area, 100, lines.len() as u16 + 6);
-            let body = frame(f, app, rect, &format!("Dry run: going back to {}", point.name), &buttons);
-            let [shown, foot] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(body);
-            app.hit(shown, crate::workbench::app::Click::Scroll(List::Dialog));
-            scrolled(f, shown, said(lines, shown.width as usize), scroll);
-            f.render_widget(Paragraph::new(coloured(if *refused { "It can't be done now." } else { "Nothing has changed yet." }, if *refused { super::BAD } else { WARN })), foot);
+        Modal::DryRun { point, review, refused, needs, .. } => {
+            let go = if *refused { None } else if needs.is_empty() { Some("restore it") } else { Some("approve and restore it") };
+            let foot = if *refused { ("It can't be done now.", super::BAD) } else { ("Nothing has changed yet.", WARN) };
+            reviewed(f, app, area, review, &format!("Dry run: going back to {}", point.name), go.unwrap_or(""), Some(foot));
         }
         Modal::Call(form) => {
             let rect = centred(area, 104, 24.max(form.answer.len() as u16 + 10).min(36));

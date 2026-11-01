@@ -807,6 +807,17 @@ pub(crate) fn state_values(change: &Value) -> Vec<String> {
 /// names, or both printed plainly when only one has them (a canvas deploy keeps none), so a name
 /// alone never reads as a change.
 pub(crate) fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String, String> {
+    let (now_text, then_text, note) = code_texts(api, slug, number)?;
+    let lines = line_diff(&now_text, &then_text);
+    if lines.is_empty() {
+        return Ok(format!("Version {number}'s text is the text deployed now."));
+    }
+    Ok(format!("Its text (- deployed now, + version {number}'s):\n{}{note}", lines.join("\n")))
+}
+
+/// The text deployed now and version `number`'s, printed alike, to compare; and a note when
+/// they had to be printed without their names.
+pub(crate) fn code_texts(api: &dyn Api, slug: &str, number: u64) -> Result<(String, String, &'static str), String> {
     let path = format!("/deployments/{}", seg(slug));
     let versions = json_of(api, "GET", &format!("{path}/versions"), None)?;
     let unit = versions["versions"]
@@ -828,16 +839,11 @@ pub(crate) fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String
         }
         d
     };
-    let (now_text, then_text, note) = if named(&now) == named(&then) {
+    Ok(if named(&now) == named(&then) {
         (agent::text_of(slug, &now)?, agent::text_of(slug, &then)?, "")
     } else {
         (agent::text_of(slug, &plain(&now))?, agent::text_of(slug, &plain(&then))?, "\n(Both printed without the text's names: one of them was deployed from the canvas, which keeps none.)")
-    };
-    let lines = line_diff(&now_text, &then_text);
-    if lines.is_empty() {
-        return Ok(format!("Version {number}'s text is the text deployed now."));
-    }
-    Ok(format!("Its text (- deployed now, + version {number}'s):\n{}{note}", lines.join("\n")))
+    })
 }
 
 /// A line diff of `a` to `b`: `- ` for a's lines, `+ ` for b's, `  ` for both, with the unchanged

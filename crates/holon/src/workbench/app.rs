@@ -16,6 +16,7 @@ use serde_json::Value;
 use super::client::{self, Client, Detail, Point};
 use super::flow::{CallForm, FlowView};
 use super::palette;
+use super::review::{self, Hunk, Review};
 use super::text::Buffer;
 use crate::deploycmd::Staged;
 
@@ -46,14 +47,7 @@ pub(crate) struct Check {
 
 impl Check {
     pub(crate) fn of(text: &str) -> Check {
-        let mut colours: Vec<Vec<(usize, usize, Class)>> = vec![vec![]; text.split('\n').count()];
-        for h in editing::highlight(text) {
-            if let Some(line) = colours.get_mut(h.span.start.line.saturating_sub(1) as usize) {
-                let to = if h.span.end.line == h.span.start.line { h.span.end.col } else { u32::MAX };
-                line.push((h.span.start.col.saturating_sub(1) as usize, to.saturating_sub(1) as usize, h.class));
-            }
-        }
-        Check { mistakes: editing::mistakes(text), colours, plan: agent::plan(text) }
+        Check { mistakes: editing::mistakes(text), colours: review::colours(text), plan: agent::plan(text) }
     }
 }
 
@@ -229,8 +223,8 @@ pub(crate) type Said = (Tone, String);
 
 pub(crate) enum Modal {
     /// A deploy, staged: what it asks for, for a person to approve by deploying it, and what it
-    /// changes in the text deployed now.
-    Approve { slug: String, plan: Box<agent::Plan>, staged: Staged, text: String, tab: usize, diff: Vec<super::diff::Line>, show_diff: bool, scroll: usize },
+    /// changes, in the text deployed now and in what it touches.
+    Approve { slug: String, plan: Box<agent::Plan>, staged: Staged, text: String, tab: usize, review: Review },
     /// Lines to read: a run explained, a cell's history, an answer.
     Lines { title: String, lines: Vec<Said>, scroll: usize },
     Confirm { title: String, lines: Vec<String>, then: Then },
@@ -240,7 +234,7 @@ pub(crate) enum Modal {
     /// Going back to a point: its code, its state, or both.
     Restore { slug: String, point: Point, sel: usize },
     /// What a restore would do, as its dry run answers: confirming it restores.
-    DryRun { slug: String, point: Point, code: bool, state: bool, lines: Vec<Said>, needs: Vec<String>, refused: bool, scroll: usize },
+    DryRun { slug: String, point: Point, code: bool, state: bool, review: Review, needs: Vec<String>, refused: bool },
     /// Sending a deployment a request, running an action, firing a clock.
     Call(CallForm),
     /// A line typed in: a secret's value (shown as dots), a session's number.
@@ -300,6 +294,8 @@ pub(crate) enum List {
     AdminPane,
     /// A dialog's lines.
     Dialog,
+    /// A review's hunks and folds: a click opens or closes one.
+    Review,
 }
 
 /// What a place on screen does when clicked.
@@ -731,17 +727,17 @@ impl App {
         let Some(c) = self.client.as_ref() else {
             return self.fail(format!("no server to deploy to: {}", self.offline.clone().unwrap_or_else(|| "start holon serve".into())));
         };
-        let diff = match c.deployment(&slug).and_then(|_| c.text(&slug, None).ok()) {
-            Some(now) => super::diff::lines(&now, &text),
-            None => vec![],
-        };
+        let now = c.deployment(&slug).and_then(|_| c.text(&slug, None).ok());
         match c.stage(&plan, &slug) {
-            Ok(staged) => self.modal = Some(Modal::Approve { slug, plan: Box::new(plan), staged, text, tab: i, diff, show_diff: false, scroll: 0 }),
+            Ok(staged) => {
+                let review = deploy_review(&slug, &plan, &staged, now.as_deref(), &text, &c.server());
+                self.modal = Some(Modal::Approve { slug, plan: Box::new(plan), staged, text, tab: i, review });
+            }
             Err(e) => self.fail(e),
         }
     }
 
-    /// Deploy what the dialog shows, approving it as us.
+    /// Deploy what the review shows, approving it as us.
     fn approve(&mut self) {
         let Some(Modal::Approve { slug, plan, staged, text, tab, .. }) = self.modal.take() else { return };
         let Some(c) = self.client.as_ref() else { return };
@@ -1419,17 +1415,10 @@ impl App {
         let Some(modal) = self.modal.as_mut() else { return };
         let page = |by: isize, at: &mut usize, n: usize| *at = (*at as isize + by).clamp(0, n.saturating_sub(1) as isize) as usize;
         match modal {
-            Modal::Approve { show_diff, scroll, diff, .. } => match k.code {
+            Modal::Approve { review, .. } => match k.code {
+                _ if review.key(k) => {}
                 KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('a') => self.approve(),
-                KeyCode::Char('d') | KeyCode::Tab if !diff.is_empty() => {
-                    *show_diff = !*show_diff;
-                    *scroll = 0;
-                }
-                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
-                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
-                KeyCode::PageDown => *scroll += 10,
-                KeyCode::Esc | KeyCode::Char('n') => {
+                KeyCode::Esc | KeyCode::Char('x') => {
                     self.modal = None;
                     self.say("not deployed");
                 }
@@ -1678,6 +1667,11 @@ impl App {
             }
             List::Graph | List::GraphPane => self.tab_graph_pick(list, i, again),
             List::Admin | List::AdminPane => self.admin_pick(list, i, again),
+            List::Review => {
+                if let Some(Modal::Approve { review, .. } | Modal::DryRun { review, .. }) = self.modal.as_mut() {
+                    review.click(i);
+                }
+            }
             List::Dialog => {}
         }
     }
@@ -1710,12 +1704,40 @@ impl App {
             List::Graph | List::GraphPane => self.tab_graph_scroll(list, by),
             List::Admin | List::AdminPane => self.admin_scroll(list, by),
             _ => {
-                if let Some(Modal::Lines { scroll, .. } | Modal::Help { scroll } | Modal::Approve { scroll, .. } | Modal::DryRun { scroll, .. }) = self.modal.as_mut() {
+                if let Some(Modal::Lines { scroll, .. } | Modal::Help { scroll } | Modal::Approve { review: Review { scroll, .. }, .. } | Modal::DryRun { review: Review { scroll, .. }, .. }) = self.modal.as_mut() {
                     *scroll = (*scroll as isize + by).max(0) as usize;
                 }
             }
         }
     }
+}
+
+/// What a deploy changes, to look at before approving it: its code against the text deployed now
+/// (none for a first deploy), what it touches, its routes; and what deploying it approves.
+fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&str>, text: &str, server: &str) -> Review {
+    let mut review = Review { top: vec![(Tone::Dim, format!("Deploying \"{slug}\" ({}) to {server}.", &plan.unit[..12]))], ..Review::default() };
+    if let Some(now) = now {
+        review.hunks.extend(review::code("Its code: deployed now → this text", now, text, &staged.touches));
+    }
+    let touched = review::touched(&serde_json::json!({ "touches": staged.touches, "settings": staged.settings }));
+    if touched.is_empty() {
+        review.top.push((Tone::Dim, "It only computes: it touches nothing outside a run.".into()));
+    }
+    review.hunks.extend(touched);
+    // Asked beside its code (an agent's new site to answer pages from).
+    let listed: Vec<&str> = staged.touches.as_array().into_iter().flatten().flat_map(|r| r["uses"].as_array().into_iter().flatten()).filter_map(|u| u["item"].as_str()).collect();
+    let also: Vec<Said> = staged.needs.iter().filter(|n| !listed.contains(&n.as_str())).map(|n| (Tone::Warn, format!("+ {}", agent::describe(n)))).collect();
+    if !also.is_empty() {
+        review.hunks.push(Hunk::lines("Also asked", vec![(Tone::Warn, format!("{} to approve", also.len()))], also, true));
+    }
+    if !plan.routes.is_empty() {
+        review.hunks.push(Hunk::lines("Its routes", vec![(Tone::Dim, plan.routes.len().to_string())], plan.routes.iter().map(|r| (Tone::Plain, r.clone())).collect(), true));
+    }
+    review.foot.push(match staged.needs.len() {
+        0 => (Tone::Good, "Nothing new to approve: its grant covers all of this.".into()),
+        n => (Tone::Warn, format!("You approve the {n} marked +, as you, by deploying it.")),
+    });
+    review
 }
 
 fn load_run(c: &Client, runs: &mut Runs) {

@@ -10,6 +10,7 @@ mod diff;
 mod flow;
 mod graph;
 mod palette;
+mod review;
 mod shell;
 mod text;
 mod ui;

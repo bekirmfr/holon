@@ -359,21 +359,34 @@ fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     assert!(shown.contains("Go back to run #") && shown.contains("Its state only"), "{shown}");
 
     press(&mut app, KeyCode::Enter);
-    let Some(Modal::DryRun { lines, refused, .. }) = &app.modal else { panic!("{:?}", app.note.as_ref().map(|n| &n.text)) };
+    let Some(Modal::DryRun { review, refused, .. }) = &app.modal else { panic!("{:?}", app.note.as_ref().map(|n| &n.text)) };
     assert!(!refused);
+    let lines = review.said();
     assert!(lines.iter().any(|(_, l)| l.contains("Version 1's code deploys again")), "{lines:#?}");
-    assert!(lines.iter().any(|(t, _)| *t == Tone::Removed), "the text it puts back, as a diff: {lines:#?}");
+    assert!(lines.iter().any(|(t, l)| *t == Tone::Removed && l == "-   state.last = n"), "the text it puts back, as a diff: {lines:#?}");
     // What it touches: the key version 1 doesn't keep, gone, and what putting the state back does
     // to each key, with its values now and then.
     let at = |text: &str| lines.iter().position(|(_, l)| l == text).unwrap_or_else(|| panic!("{text:?} in {lines:#?}"));
-    let (n_row, last_row) = (at("  · key n: read, write"), at("  - key last: write"));
+    let (n_row, last_row) = (at("· key n: read, write"), at("- key last: write"));
     assert_eq!(lines[n_row + 1].1.trim(), "putting the state back changes it");
     assert_eq!(lines[last_row + 1].1.trim(), "no longer; putting the state back drops it");
     assert_eq!(lines[last_row].0, Tone::Removed);
     at("  n: 3 → 1");
     let shown = screen(&mut app, 120, 40);
     assert!(shown.contains("Dry run") && shown.contains("Nothing has changed yet"), "{shown}");
+    // Its code numbered, in a hunk that closes; what it keeps in another.
+    assert!(shown.contains("▾ Its code: deployed now → version 1's   +1 · −2") && shown.contains("−   state.last = n") && shown.contains("▾ What it keeps"), "{shown}");
     assert_eq!(n(&app), Some(3.0), "a dry run changes nothing");
+    press(&mut app, KeyCode::Char(' '));
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("▸ Its code") && !shown.contains("state.last = n"), "closed: {shown}");
+    press(&mut app, KeyCode::Char('n'));
+    let Some(Modal::DryRun { review, .. }) = &app.modal else { panic!() };
+    assert_eq!(review.focus().map(|f| f.0), Some(super::review::Stop::Head(1)), "the next hunk");
+    // A click on a head opens it again, or closes it.
+    click(&mut app, Click::Row(List::Review, 0));
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("▾ Its code") && shown.contains("state.last = n"), "{shown}");
 
     press(&mut app, KeyCode::Enter);
     assert!(app.modal.is_none());

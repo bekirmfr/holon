@@ -36,20 +36,6 @@ pub(crate) fn counts(d: &[Line]) -> (usize, usize) {
     (d.iter().filter(|(k, _)| *k == '+').count(), d.iter().filter(|(k, _)| *k == '-').count())
 }
 
-/// The changed lines with `around` kept lines either side; a gap between is one `…` line.
-pub(crate) fn hunks(d: &[Line], around: usize) -> Vec<Line> {
-    let near: Vec<bool> = (0..d.len()).map(|i| d[i.saturating_sub(around)..(i + around + 1).min(d.len())].iter().any(|(k, _)| *k != ' ')).collect();
-    let mut out = vec![];
-    for (i, l) in d.iter().enumerate() {
-        if near[i] {
-            out.push(l.clone());
-        } else if i > 0 && near[i - 1] {
-            out.push(('…', String::new()));
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,7 +45,5 @@ mod tests {
         let d = lines("a\nb\nc\nd\n", "a\nc\nd\ne\n");
         assert_eq!(d, [(' ', "a".into()), ('-', "b".into()), (' ', "c".into()), (' ', "d".into()), ('+', "e".into())]);
         assert_eq!(counts(&d), (1, 1));
-        let long = lines(&"x\n".repeat(10), &format!("{}y\n", "x\n".repeat(10)));
-        assert_eq!(hunks(&long, 1), [(' ', "x".into()), ('+', "y".into())]);
     }
 }

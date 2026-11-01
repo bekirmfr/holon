@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use super::app::{App, Ask, List, Modal, Page, Said, Then, Tone};
 use super::client::{Client, Detail, Moment, Point};
 use super::graph::GraphView;
+use super::review::{self, Hunk, Review};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Section {
@@ -572,49 +573,58 @@ impl App {
             Ok(p) => p,
             Err(e) => return self.fail(e),
         };
-        let mut lines: Vec<Said> = vec![];
+        let mut review = Review::default();
         let refused = preview["refused"].as_str().map(str::to_string);
         if let Some(why) = &refused {
-            lines.push((Tone::Bad, format!("The code of {} can't be deployed on this server now: {why}", point.name)));
+            review.top.push((Tone::Bad, format!("The code of {} can't be deployed on this server now: {why}", point.name)));
         }
         let deploys = preview["code"].as_u64();
         if code && deploys.is_none() && refused.is_none() {
-            lines.push((Tone::Dim, format!("{} ran on the code deployed now: only its state is put back.", point.name)));
+            review.top.push((Tone::Dim, format!("{} ran on the code deployed now: only its state is put back.", point.name)));
         }
         let needs: Vec<String> = preview["needs_approval"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
         if let Some(n) = deploys {
-            lines.push((Tone::Head, "Its code".into()));
             if needs.is_empty() {
-                lines.push((Tone::Good, format!("Version {n}'s code deploys again, with the grant {slug} has now.")));
+                review.top.push((Tone::Good, format!("Version {n}'s code deploys again, with the grant {slug} has now.")));
             } else {
                 let k = needs.len();
-                lines.push((Tone::Warn, format!("Version {n}'s code needs {k} permission{} today's grant doesn't cover, marked +: confirming approves {}, as you.", if k == 1 { "" } else { "s" }, if k == 1 { "it" } else { "them" })));
+                review.top.push((Tone::Warn, format!("Version {n}'s code needs {k} permission{} today's grant doesn't cover, marked +: confirming approves {}, as you.", if k == 1 { "" } else { "s" }, if k == 1 { "it" } else { "them" })));
             }
-            match c.code_diff(slug, n) {
-                Ok(diff) => lines.extend(diff_lines(&diff)),
-                Err(e) => lines.push((Tone::Bad, format!("Its text can't be shown: {e}"))),
+            match c.code_texts(slug, n) {
+                Ok((now, then, note)) => {
+                    match review::code(format!("Its code: deployed now → version {n}'s"), &now, &then, &preview["touches"]) {
+                        Some(hunk) => review.hunks.push(hunk),
+                        None => review.top.push((Tone::Dim, format!("Version {n}'s text is the text deployed now."))),
+                    }
+                    if !note.is_empty() {
+                        review.top.push((Tone::Dim, note.trim().to_string()));
+                    }
+                }
+                Err(e) => review.top.push((Tone::Bad, format!("Its text can't be shown: {e}"))),
             }
         }
-        lines.extend(touch_lines(&preview));
+        review.hunks.extend(review::touched(&preview));
         if !preview["state"].is_null() {
-            lines.push((Tone::Head, "Its state".into()));
+            let mut lines: Vec<Said> = vec![];
             for l in crate::restore::state_lines(&preview["state"]).lines() {
                 let tone = if l.contains("doesn't undo") || l.contains("doesn't put back") { Tone::Warn } else { Tone::Plain };
                 lines.push((tone, l.to_string()));
             }
-            lines.extend(crate::mcp::state_values(&preview["state"]).into_iter().map(|l| (Tone::Plain, l)));
+            let values = crate::mcp::state_values(&preview["state"]);
+            // A value's line is indented, under the line that says what they are.
+            let changes = values.iter().filter(|l| l.starts_with("  ") && l.contains(" → ")).count();
+            lines.extend(values.into_iter().map(|l| (if l.starts_with("  ") { Tone::Plain } else { Tone::Dim }, l)));
+            let sum = if changes == 0 { vec![] } else { vec![(Tone::Warn, format!("{changes} put back"))] };
+            review.hunks.push(Hunk::lines("Its state", sum, lines, true));
         }
-        self.modal = Some(Modal::DryRun { slug: slug.to_string(), point, code, state, lines, needs, refused: refused.is_some(), scroll: 0 });
+        self.modal = Some(Modal::DryRun { slug: slug.to_string(), point, code, state, review, needs, refused: refused.is_some() });
     }
 
     pub(crate) fn dry_run_key(&mut self, k: KeyEvent) {
-        let Some(Modal::DryRun { scroll, refused, .. }) = self.modal.as_mut() else { return };
+        let Some(Modal::DryRun { review, refused, .. }) = self.modal.as_mut() else { return };
         match k.code {
-            KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => *scroll += 1,
-            KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
-            KeyCode::PageDown => *scroll += 10,
-            KeyCode::Esc | KeyCode::Char('n') => {
+            _ if review.key(k) => {}
+            KeyCode::Esc | KeyCode::Char('x') => {
                 self.modal = None;
                 self.say("nothing changed");
             }
@@ -887,32 +897,6 @@ pub(crate) fn diff_lines(diff: &str) -> Vec<Said> {
             (tone, l.to_string())
         })
         .collect()
-}
-
-/// What a dry run (`preview`, a deploy's or a restore's) says the flow touches, coloured by what
-/// the change does to each thing, its note under it: red when the server isn't ready for it.
-pub(crate) fn touch_lines(preview: &Value) -> Vec<Said> {
-    use crate::touches::Mark;
-    let mut out = vec![];
-    for l in crate::touches::lines(&preview["touches"], &preview["settings"]) {
-        let tone = match l.mark {
-            Mark::Head => Tone::Head,
-            Mark::Approve | Mark::Changed => Tone::Warn,
-            Mark::New => Tone::Added,
-            Mark::Gone => Tone::Removed,
-            Mark::Same => Tone::Plain,
-            Mark::Unready => Tone::Bad,
-        };
-        if l.mark == Mark::Head {
-            out.push((tone, l.text));
-            continue;
-        }
-        out.push((tone, format!("  {}{}", l.mark.sign(), l.text)));
-        if !l.note.is_empty() {
-            out.push((if l.mark == Mark::Unready { Tone::Bad } else { Tone::Dim }, format!("      {}", l.note)));
-        }
-    }
-    out
 }
 
 /// An HTTP answer: its status, then its body, laid out when it is JSON.

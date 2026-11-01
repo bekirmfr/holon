@@ -217,6 +217,11 @@ impl Client {
         crate::mcp::code_diff(self.api.as_ref(), slug, n)
     }
 
+    /// The text deployed now and version `n`'s, printed alike; a note when without their names.
+    pub(crate) fn code_texts(&self, slug: &str, n: u64) -> Result<(String, String, &'static str), String> {
+        crate::mcp::code_texts(self.api.as_ref(), slug, n)
+    }
+
     /// Change a grant: revoke items, or grant revoked ones back.
     pub(crate) fn change_grant(&self, slug: &str, revoke: &[String], grant: &[String]) -> Result<(), String> {
         self.post(&format!("/deployments/{}/grant", seg(slug)), json!({ "revoke": revoke, "grant": grant })).map(|_| ())

@@ -14,7 +14,7 @@ use ratatui::Frame;
 use super::{bold, coloured, dim, fit, list, pad, panel, ACCENT, BAD, DARK, DIM, GOOD, PICKED, WARN};
 use crate::workbench::app::{self, App, Click, List, RunPane, Show, Tab};
 
-fn colour(class: Class) -> Style {
+pub(super) fn colour(class: Class) -> Style {
     let c = match class {
         Class::Comment => return Style::new().fg(DIM).add_modifier(Modifier::ITALIC),
         Class::Keyword => Color::Magenta,
