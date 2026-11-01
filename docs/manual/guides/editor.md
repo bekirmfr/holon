@@ -200,7 +200,8 @@ entries appear in the palette to place. Placing one shows what it may do first. 
 ## Other editors
 
 The text is a plain `.holon` file, and `holon lsp` is a language server for any editor that can
-start one: mistakes as you type, hover, completion and formatting. The VS Code extension
+start one: mistakes as you type, hover, completion, formatting, and a quick fix that declares a
+secret or state key the body uses undeclared. The VS Code extension
 (`holon-vscode.vsix`, on each release) highlights the language and starts `holon lsp`.
 
 ## Shortcuts

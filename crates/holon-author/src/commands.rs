@@ -347,6 +347,21 @@ pub fn with_declarations(source: &str) -> Result<(String, Lowered, Vec<String>),
     }
 }
 
+/// The header lines `source` lacks for the names its body uses undeclared, in the order `fmt`
+/// would add them, whatever else is wrong with it: what an editor's quick fix adds.
+pub fn missing_declarations(source: &str) -> Vec<String> {
+    let mut fixed = source.to_string();
+    let mut lines: Vec<String> = Vec::new();
+    while let Err(lang::LowerError { declare: Some(line), .. }) = lang::compile(&fixed) {
+        if lines.contains(&line) {
+            break;
+        }
+        fixed = declare(&fixed, &line);
+        lines.push(line);
+    }
+    lines
+}
+
 /// `source` with the header line `line` added: after its last header, or, with none, above its
 /// first line of code. The rest of the text is as it was.
 pub fn declare(source: &str, line: &str) -> String {
@@ -360,7 +375,7 @@ pub fn declare(source: &str, line: &str) -> String {
 
 /// How many of `source`'s lines come before a header line added to it: those up to its last
 /// header, or, with none, those before its first line of code.
-fn header_end(source: &str) -> usize {
+pub(crate) fn header_end(source: &str) -> usize {
     let after = lang::parse(source).ok().and_then(|f| f.headers.iter().map(|h| h.span.end.line as usize).max());
     after.unwrap_or_else(|| source.lines().position(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).unwrap_or(source.lines().count()))
 }

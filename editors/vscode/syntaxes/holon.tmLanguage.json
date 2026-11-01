@@ -16,8 +16,12 @@
           "captures": { "1": { "name": "keyword.other.flow.holon" }, "2": { "name": "entity.name.namespace.holon" } }
         },
         {
-          "match": "^\\s*(collection|folder)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "^\\s*(collection|folder|secret|state)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": { "1": { "name": "keyword.other.collection.holon" }, "2": { "name": "variable.other.constant.holon" } }
+        },
+        {
+          "match": "^\\s*(optional)\\s+(secret)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "keyword.other.header.holon" }, "2": { "name": "keyword.other.collection.holon" }, "3": { "name": "variable.other.constant.holon" } }
         },
         {
           "match": "^\\s*(port|every|interval|browsers|optional|keep(?=\\s+(?:\\d|runs\\b)))\\b",
