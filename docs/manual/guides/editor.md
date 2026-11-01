@@ -60,9 +60,9 @@ A flow tab is a canvas of nodes and wires.
 - **Undo** is **Ctrl+Z** (**⟲**), redo **Ctrl+Y** or **Ctrl+Shift+Z** (**⟳**), per tab.
 - **Secrets.** Every node a secret's value reaches where it leaves the computation is marked 🔑,
   with what it does with it: a request it is sent in ("sends the secret "slack_webhook_path" to
-  https://hooks.slack.com"), a write or a call the host refuses, the route's answer. A placed
-  holon is marked for what its insides do. A node that only computes with it (an HMAC, Stripe's
-  verify) isn't.
+  https://hooks.slack.com"), a database read it is a value of, a write or a call the host
+  refuses, the route's answer. A placed holon is marked for what its insides do. A node that
+  only computes with it (an HMAC, Stripe's verify) isn't.
 
 ### Holons on the canvas
 

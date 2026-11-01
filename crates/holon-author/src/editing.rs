@@ -214,7 +214,7 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     let sent_to = |name: &str| -> String {
         let sent = commands::sent_of(source);
         match sent.get(name) {
-            Some(hosts) if !hosts.is_empty() => format!(" This flow sends it to {}.", hosts.iter().map(|h| format!("https://{h}")).collect::<Vec<_>>().join(", ")),
+            Some(hosts) if !hosts.is_empty() => format!(" This flow sends it to {}.", hosts.iter().map(|h| crate::describe::describe_destination(h)).collect::<Vec<_>>().join(", ")),
             _ => String::new(),
         }
     };
@@ -923,6 +923,8 @@ mod tests {
         assert!(hover(stripe, at(stripe, "secret.slack_webhook_path", 0, 7)).unwrap().text.contains("This flow sends it to https://hooks.slack.com."), "a secret used, sent");
         let verified = hover(stripe, at(stripe, "secret.stripe_webhook_secret", 0, 7)).unwrap().text;
         assert!(verified.contains("a secret of this flow") && !verified.contains("sends it"), "{verified}");
+        let license = include_str!("../samples/license-check.holon");
+        assert!(hover(license, at(license, "secret.license_key", 0, 7)).unwrap().text.contains("This flow sends it to the database \"vendor\"."), "a query's parameter");
         assert_eq!(hover(SLUGS, at(SLUGS, "\"-\"", 0, 1)), None, "inside a string");
         assert_eq!(hover(SLUGS, at(SLUGS, "published.receipt", 0, 10)), None, "a field of a value");
     }

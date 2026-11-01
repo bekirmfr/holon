@@ -619,6 +619,10 @@ mod tests {
         let stripe = marks_of(include_str!("../samples/stripe-to-slack.holon"));
         assert_eq!(stripe.get("sent"), Some(&vec!["sends the secret \"slack_webhook_path\" to https://hooks.slack.com".to_string()]), "{stripe:?}");
         assert_eq!(stripe.len(), 1, "verifying with the Stripe secret marks nothing: {stripe:?}");
+
+        // A database read the key is a parameter of: the key goes to the database.
+        let license = marks_of(include_str!("../samples/license-check.holon"));
+        assert_eq!(license.into_values().collect::<Vec<_>>(), vec![vec!["sends the secret \"license_key\" to the database \"vendor\", reading its table \"licenses\"".to_string()]]);
     }
 
     /// Beside each secret, where the flow sends it: stripe-to-slack posts its Slack path to Slack,

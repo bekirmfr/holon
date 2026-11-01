@@ -14,7 +14,8 @@
 //!   secret's value is), else logged withheld; so are the run's outputs and its answer.
 //!
 //! What cuts the chain: a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), a Boolean
-//! answer, and an outbound request's response (what the far side said, not what was sent). A
+//! answer, and an outbound request's response or a database read's rows (what the far side said,
+//! not what was sent). A
 //! leaf that isn't known to pass its inputs through as they are makes anything tainted derived.
 //!
 //! The same walk, one secret at a time, finds what a route may answer its caller with
@@ -52,8 +53,9 @@ const PASSES_LITERALLY: &[&str] = &[
     "channel_send", "egress",
 ];
 
-/// Leaves whose output is what the far side answered: an outbound request's response.
-const ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call"];
+/// Leaves whose output is what the far side answered: an outbound request's response, a
+/// database read's rows. (One that echoes a secret back holds its value, where the host finds it.)
+const ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "db_query", "db_one", "db_find", "db_find_one"];
 
 /// Deeper than this, a composite is taken as computing with whatever reaches it.
 const MAX_DEPTH: usize = 128;
@@ -71,8 +73,9 @@ pub struct SecretFed {
     /// a node not followed could make. An effect carries no node, only its capability, so a write
     /// to a key counts as derived when any such sink writes that key.
     effects: std::collections::BTreeSet<Capability>,
-    /// The hosts of the outbound requests a secret may reach: in their path, headers or body, as
-    /// it is or computed from it. A node not followed counts every host it could call.
+    /// Where a secret may be sent ([`destination_of`]): the hosts of the outbound requests it may
+    /// reach, in their path, headers or body, as it is or computed from it, and the databases of
+    /// the reads whose parameters it may reach. A node not followed counts every one it could.
     sent: BTreeSet<String>,
     /// Each sink a secret reaches, by the node's path, and what it does: a request it sends, a
     /// write, a send, a call. A node not followed counts every effect it could make. What the
@@ -235,11 +238,8 @@ impl<R: Resolver> Walk<'_, R> {
                     if most > Taint::Clean
                         && let Some(caps) = capabilities_of(name, &unit.params)
                     {
-                        fed.sent.extend(caps.iter().filter_map(|c| match c {
-                            Capability::HttpRequest(host) => Some(host),
-                            _ => None,
-                        }));
-                        let sinks = caps.iter().filter(|c| !(c.is_sourced() || name == "http_stream" && matches!(c, Capability::ChannelSend(_))));
+                        fed.sent.extend(caps.iter().filter_map(|c| destination_of(&c)));
+                        let sinks = caps.iter().filter(|c| is_sink(c) && !(name == "http_stream" && matches!(c, Capability::ChannelSend(_))));
                         fed.sinks.extend(sinks.map(|c| (path.clone(), c)));
                     }
                     // A sink fed something computed from a secret: its effect carries it.
@@ -272,12 +272,9 @@ impl<R: Resolver> Walk<'_, R> {
     fn opaque(&mut self, unit: &Unit, path: &[u32], fed: &mut SecretFed) {
         fed.opaque.push(path.to_vec());
         let caps = capabilities(unit, self.resolver);
-        fed.sent.extend(caps.iter().filter_map(|c| match c {
-            Capability::HttpRequest(host) => Some(host),
-            _ => None,
-        }));
+        fed.sent.extend(caps.iter().filter_map(|c| destination_of(&c)));
         fed.effects.extend(caps.iter().filter(|c| !c.is_sourced()));
-        fed.sinks.extend(caps.iter().filter(|c| !c.is_sourced()).map(|c| (path.to_vec(), c)));
+        fed.sinks.extend(caps.iter().filter(is_sink).map(|c| (path.to_vec(), c)));
     }
 
     fn composite(&mut self, unit: &Unit, children: &[Hash], edges: &[crate::Edge], inputs: &[Taint], path: &mut Vec<u32>, fed: &mut SecretFed) -> Vec<Taint> {
@@ -356,7 +353,8 @@ pub fn answered_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeSet<Strin
 
 /// Where each secret `root` reads is sent: the hosts of the outbound requests (`http.get`, an
 /// upload, a stream…) its value, or something computed from it, may reach, in their path, headers
-/// or body. A one-way leaf, a Boolean and a call's answer cut it, as for [`answered_secrets`]; a
+/// or body, and the databases of the reads whose parameters it may reach (`db:shop`,
+/// [`destination_of`]). A one-way leaf, a Boolean and a call's answer cut it, as for [`answered_secrets`]; a
 /// secret sent nowhere isn't listed. Every pair is known before the flow runs (a request's host is
 /// a frozen param), so the approval says it beside the secret: "read the secret "k", and send it
 /// to https://api.example.com".
@@ -382,6 +380,23 @@ pub fn deployed_capabilities(root: &Unit, resolver: &impl Resolver, scheduled: b
         caps.insert(Capability::SecretAnswer(name));
     }
     caps
+}
+
+/// Where a capability sends what its node is fed, as [`sent_secrets`] names it: an outbound
+/// request's host (`api.example.com`), or a database read's database (`db:shop`, its parameters
+/// go to the database's server). A database write isn't one: the host refuses to write a secret.
+pub fn destination_of(capability: &Capability) -> Option<String> {
+    match capability {
+        Capability::HttpRequest(host) => Some(host.clone()),
+        Capability::DbRead(table) => Some(format!("db:{}", table.split('/').next().unwrap_or(table))),
+        _ => None,
+    }
+}
+
+/// Whether a node with `capability` does something outside the run with what it is fed: an
+/// effect, or a database read, whose parameters go to the database.
+fn is_sink(capability: &Capability) -> bool {
+    !capability.is_sourced() || matches!(capability, Capability::DbRead(_))
 }
 
 /// Kahn's algorithm over the child→child edges: an order in which every child comes after those
@@ -610,5 +625,29 @@ mod tests {
         assert!(sinks("key").is_empty());
         // A request's answer is what the far side said: answering with it sends nothing back out.
         assert!(answered_secrets(&root, &r).is_empty());
+    }
+
+    /// A secret in a database read's parameters goes to that database: `db:shop`, and the read is
+    /// a sink the canvas marks. A read fed nothing secret sends nothing.
+    #[test]
+    fn a_secret_in_a_database_read_is_sent_to_its_database() {
+        let mut r = MapResolver::new();
+        let key = leaf(&mut r, "secret", vec![Param::frozen("name", "key")]);
+        let params = leaf(&mut r, "list", vec![]);
+        let query = |database: &str, sql: &str| vec![Param::frozen("database", database), Param::frozen("sql", sql)];
+        let shop = leaf(&mut r, "db_query", query("shop", "select * from orders where api_key = $1"));
+        let audit = leaf(&mut r, "db_one", query("audit", "select * from log"));
+        let root = Unit {
+            body: UnitBody::Composite { children: vec![key, params, shop, audit], edges: vec![e(0, 0, 1, 0), e(1, 0, 2, 0), e(BOUNDARY, 0, 3, 0), e(2, 0, BOUNDARY, 0)] },
+            params: vec![],
+            inputs: vec![Port { name: "nothing".into(), ty: Type::list_any() }],
+            outputs: vec![Port { name: "answer".into(), ty: Type::Any }],
+        };
+        assert_eq!(sent_secrets(&root, &r), BTreeMap::from([("key".to_string(), BTreeSet::from(["db:shop".to_string()]))]));
+        let sinks: Vec<_> = SecretFed::of_secret(&root, &r, "key").sinks().map(|(p, c)| (p.to_vec(), c.clone())).collect();
+        assert_eq!(sinks, vec![(vec![2], Capability::DbRead("shop/orders".into()))]);
+        assert!(answered_secrets(&root, &r).is_empty(), "the rows are what the database said");
+        assert!(!SecretFed::of(&root, &r).derives_output(0));
+        assert_eq!(destination_of(&Capability::DbWrite("shop/orders".into())), None, "a write isn't where a secret goes: the host refuses it");
     }
 }

@@ -99,7 +99,11 @@ does one whose answer holds a secret's value it didn't compute (a service echoin
 
 The approval also says where each secret goes. A secret that reaches a request's path, headers or
 body, as it is or computed from it, is listed with the hosts it is sent to: "read the secret
-"slack_webhook_path", and send it to https://hooks.slack.com". That isn't a permission of its own
+"slack_webhook_path", and send it to https://hooks.slack.com". A secret passed as a database
+read's value (`vendor.one("… where license_key = $1", secret.license_key)`) goes to the
+database's server with the query: "…, and send it to the database "vendor"". The rows a read
+answers are what the database said, as a request's response is what the far side said, so
+answering with them isn't answering with the secret. That isn't a permission of its own
 (the hosts are, and the graph fixes which secret goes to which before the flow runs); it is said
 there so you see it when you approve, and when you update a flow whose version moves a key to
 another host. `holon check`, `holon deploy` and the editor's hover on `secret.name` say the same.

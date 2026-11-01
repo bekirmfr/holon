@@ -175,6 +175,32 @@ test("stripe-to-slack's approval says where each secret goes, and unsigned reque
   expect((await request.post(`http://127.0.0.1:${port}/stripe`, { data: { type: "x" } })).status()).toBe(400);
 });
 
+test("license-check's approval says its key goes to the database, and the route answers the plan the key unlocks", async ({ page, request, adminToken }) => {
+  await openSample(page, "A key in a query goes to the database");
+  // The canvas marks the read the key is a parameter of.
+  const marks = page.locator(".hl-node__secret");
+  await expect(marks).toHaveCount(1);
+  await expect(marks).toHaveText('🔑 sends the secret "license_key" to the database "vendor", reading its table "licenses"');
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const portField = settings.getByRole("textbox").first();
+  const port = Number(await portField.inputValue()) + SAMPLE_SHIFT;
+  await portField.fill(String(port));
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText('read the secret "license_key", and send it to the database "vendor"');
+  // The row it answers is what the database said: answering with it isn't answering with the key.
+  await expect(dialog).not.toContainText("answer its callers with the secret");
+  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
+  await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
+  expect((await deployed).status()).toBe(200);
+  await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
+  expect((await request.post(`${SERVER}/deployments/license-check/secrets/license_key`, { data: { value: "lic-demo-1234" }, headers: { Authorization: `Bearer ${adminToken}` } })).ok()).toBe(true);
+  const license = await request.get(`http://127.0.0.1:${port}/license`);
+  expect(license.status()).toBe(200);
+  expect(await license.json()).toEqual({ plan: "team", seats: 5 });
+});
+
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
   // The port moved in the text (the text's wins while it is open), so the text still stands for
   // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains
