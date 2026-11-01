@@ -1726,12 +1726,12 @@ fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&s
     review.hunks.extend(touched);
     // Asked beside its code (an agent's new site to answer pages from).
     let listed: Vec<&str> = staged.touches.as_array().into_iter().flatten().flat_map(|r| r["uses"].as_array().into_iter().flatten()).filter_map(|u| u["item"].as_str()).collect();
-    let also: Vec<Said> = staged.needs.iter().filter(|n| !listed.contains(&n.as_str())).map(|n| (Tone::Warn, format!("+ {}", agent::describe(n)))).collect();
+    let also = review::rows('a', staged.needs.iter().filter(|n| !listed.contains(&n.as_str())).map(|n| agent::describe(n)));
     if !also.is_empty() {
-        review.hunks.push(Hunk::lines("Also asked", vec![(Tone::Warn, format!("{} to approve", also.len()))], also, true));
+        review.hunks.push(Hunk::new("Also asked", vec![(Tone::Warn, format!("{} to approve", also.len()))], also, true));
     }
     if !plan.routes.is_empty() {
-        review.hunks.push(Hunk::lines("Its routes", vec![(Tone::Dim, plan.routes.len().to_string())], plan.routes.iter().map(|r| (Tone::Plain, r.clone())).collect(), true));
+        review.hunks.push(Hunk::new("Its routes", vec![(Tone::Dim, plan.routes.len().to_string())], review::rows(' ', plan.routes.iter().cloned()), true));
     }
     review.foot.push(match staged.needs.len() {
         0 => (Tone::Good, "Nothing new to approve: its grant covers all of this.".into()),

@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use super::app::{App, Ask, List, Modal, Page, Said, Then, Tone};
 use super::client::{Client, Detail, Moment, Point};
 use super::graph::GraphView;
-use super::review::{self, Hunk, Review};
+use super::review::{self, Review};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Section {
@@ -605,17 +605,7 @@ impl App {
         }
         review.hunks.extend(review::touched(&preview));
         if !preview["state"].is_null() {
-            let mut lines: Vec<Said> = vec![];
-            for l in crate::restore::state_lines(&preview["state"]).lines() {
-                let tone = if l.contains("doesn't undo") || l.contains("doesn't put back") { Tone::Warn } else { Tone::Plain };
-                lines.push((tone, l.to_string()));
-            }
-            let values = crate::mcp::state_values(&preview["state"]);
-            // A value's line is indented, under the line that says what they are.
-            let changes = values.iter().filter(|l| l.starts_with("  ") && l.contains(" → ")).count();
-            lines.extend(values.into_iter().map(|l| (if l.starts_with("  ") { Tone::Plain } else { Tone::Dim }, l)));
-            let sum = if changes == 0 { vec![] } else { vec![(Tone::Warn, format!("{changes} put back"))] };
-            review.hunks.push(Hunk::lines("Its state", sum, lines, true));
+            review.hunks.push(review::state(&preview["state"]));
         }
         self.modal = Some(Modal::DryRun { slug: slug.to_string(), point, code, state, review, needs, refused: refused.is_some() });
     }

@@ -13,7 +13,7 @@ use super::{bold, chips, coloured, dim, fit, list, pad, panel, scrollbar, tone, 
 use crate::workbench::app::{App, List, Modal, Said, Tone};
 use crate::workbench::flow::restore_options;
 use crate::workbench::palette;
-use crate::workbench::review::{Body, Code, Review, Row};
+use crate::workbench::review::{Code, Review, Row};
 
 const NONE: KeyModifiers = KeyModifiers::NONE;
 
@@ -69,8 +69,9 @@ const HELP: &[(&str, &str)] = &[
     ("ctrl+pgup pgdn", "the tab before or after; ctrl+w closes this one"),
     ("", ""),
     ("A deploy to approve, a dry run", ""),
+    ("↑ ↓", "a line at a time (pgup pgdn a page, home end)"),
     ("n  N", "the next hunk or fold, the one before (tab, shift+tab too)"),
-    ("space  → ←", "open or close it (a click on it too); a fold shows its unchanged lines"),
+    ("space  → ←", "open or close the hunk the line is in (a click on its head too); a fold opens"),
     ("w  d", "the whole of it, every hunk open; back to the diff"),
     ("enter  esc", "approve it (deploy, restore); cancel (x too)"),
     ("", ""),
@@ -104,23 +105,24 @@ fn said(lines: &[Said], width: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// A tinted ground for a line put in, and one taken out.
+/// The grounds a review's rows are tinted with: put in or new, taken out or gone (or not ready),
+/// and to approve or changed.
 const ADDED_GROUND: Color = Color::Rgb(20, 46, 34);
 const REMOVED_GROUND: Color = Color::Rgb(54, 22, 26);
+const ASKED_GROUND: Color = Color::Rgb(50, 42, 18);
 /// A line taken out: its text quieter than the rest.
 const REMOVED_TEXT: Color = Color::Rgb(150, 112, 112);
 
-/// A review (a deploy to approve, a restore's dry run): its hunks, each opening and closing, its
-/// code numbered and coloured, the names a new permission comes from marked; the focus on a
-/// hunk's head or a fold. `go` is what enter does (none when it can't be done); `foot` stays
-/// under it, outside what scrolls.
+/// A review (a deploy to approve, a restore's dry run): its hunks, each opening and closing, each
+/// a diff drawn alike; the cursor on a row, marked down the left. `go` is what enter does (none
+/// when it can't be done); `foot` stays under it, outside what scrolls.
 fn reviewed(f: &mut Frame, app: &mut App, area: Rect, review: &mut Review, title: &str, go: &str, foot: Option<(&str, Color)>) {
     let rows = review.rows();
     let mut buttons = vec![];
     if !go.is_empty() {
         buttons.push(("enter", go, KeyCode::Enter, NONE));
     }
-    buttons.extend([("n", "next", KeyCode::Char('n'), NONE), ("space", "open/close", KeyCode::Char(' '), NONE)]);
+    buttons.extend([("↑ ↓", "lines", KeyCode::Down, NONE), ("n", "next hunk", KeyCode::Char('n'), NONE), ("space", "open/close", KeyCode::Char(' '), NONE)]);
     buttons.push(if review.whole { ("d", "diff", KeyCode::Char('d'), NONE) } else { ("w", "whole", KeyCode::Char('w'), NONE) });
     buttons.push(("esc", "cancel", KeyCode::Esc, NONE));
     let rect = centred(area, 120, rows.len() as u16 + 6 + u16::from(foot.is_some()));
@@ -131,31 +133,31 @@ fn reviewed(f: &mut Frame, app: &mut App, area: Rect, review: &mut Review, title
     }
     review.height = shown.height as usize;
     review.scroll = review.scroll.min(rows.len().saturating_sub(shown.height as usize));
-    let width = shown.width.saturating_sub(1) as usize;
-    let focus = review.focus().map(|(_, row)| row);
-    let stops = Review::stops(&rows);
+    let width = shown.width.saturating_sub(2) as usize;
+    let cursor = review.cursor(&rows);
     app.hit(shown, crate::workbench::app::Click::Scroll(List::Dialog));
     let mut lines = vec![];
     for (i, row) in rows.iter().enumerate().skip(review.scroll).take(shown.height as usize) {
-        let mut line = review_row(review, *row, width);
-        if focus == Some(i) {
-            line = line.style(Style::new().bg(super::PICKED));
+        let (mut line, ground) = review_row(review, *row, width);
+        let here = i == cursor && *row != Row::Blank;
+        line.spans.insert(0, if here { coloured("▌", ACCENT) } else { Span::raw(" ") });
+        if let Some(g) = ground.or(here.then_some(super::PICKED)) {
+            line = line.style(Style::new().bg(g));
         }
-        if let Some(stop) = stops.iter().position(|(_, r)| *r == i) {
-            let y = shown.y + (i - review.scroll) as u16;
-            app.hit(Rect { y, height: 1, ..shown }, crate::workbench::app::Click::Row(List::Review, stop));
-        }
+        let y = shown.y + (i - review.scroll) as u16;
+        app.hit(Rect { y, height: 1, ..shown }, crate::workbench::app::Click::Row(List::Review, i));
         lines.push(line);
     }
     f.render_widget(Paragraph::new(lines), shown);
     scrollbar(f, shown, rows.len(), review.scroll);
 }
 
-fn review_row(review: &Review, row: Row, width: usize) -> Line<'static> {
+/// A row as drawn, and the ground it is tinted with.
+fn review_row(review: &Review, row: Row, width: usize) -> (Line<'static>, Option<Color>) {
     match row {
-        Row::Top(i) => said_line(&review.top[i], width),
-        Row::Foot(i) => said_line(&review.foot[i], width),
-        Row::Blank => Line::default(),
+        Row::Top(i) => (said_line(&review.top[i], width), None),
+        Row::Foot(i) => (said_line(&review.foot[i], width), None),
+        Row::Blank => (Line::default(), None),
         Row::Head(h) => {
             let hunk = &review.hunks[h];
             let open = hunk.open || review.whole;
@@ -164,18 +166,10 @@ fn review_row(review: &Review, row: Row, width: usize) -> Line<'static> {
                 spans.push(dim(if k == 0 { "   " } else { " · " }));
                 spans.push(Span::styled(s.clone(), tone(*t)));
             }
-            Line::from(spans)
+            (Line::from(spans), None)
         }
-        Row::Fold(_, _, n) => Line::from(dim(format!("{:>6} ⋯ {n} unchanged line{} (space shows them)", "", if n == 1 { "" } else { "s" }))),
-        Row::Code(h, i) => {
-            let Body::Code(code) = &review.hunks[h].body else { return Line::default() };
-            code_line(&code[i], width)
-        }
-        Row::Line(h, i) => {
-            let Body::Lines(lines) = &review.hunks[h].body else { return Line::default() };
-            let (t, s) = &lines[i];
-            Line::from(vec![Span::raw("  "), Span::styled(fit(s, width.saturating_sub(2)), tone(*t))])
-        }
+        Row::Fold(_, _, n) => (Line::from(dim(format!("{:>6} ⋯ {n} unchanged line{} (space shows them)", "", if n == 1 { "" } else { "s" }))), None),
+        Row::Code(h, i) => code_line(&review.hunks[h].rows[i], width),
     }
 }
 
@@ -183,24 +177,31 @@ fn said_line((t, s): &Said, width: usize) -> Line<'static> {
     Line::from(Span::styled(fit(s, width), tone(*t)))
 }
 
-/// A line of code in a review: its number, its mark, its text coloured on a ground that says
-/// whether it was put in or taken out, the names a permission comes from marked.
-fn code_line(c: &Code, width: usize) -> Line<'static> {
+/// A row of a review's diff (a line of code, a thing it touches, a value it puts back): its
+/// number, its mark, its text coloured, the names a permission comes from marked, its note; and
+/// the ground that says what the change does to it.
+fn code_line(c: &Code, width: usize) -> (Line<'static>, Option<Color>) {
     let (sign, ground) = match c.kind {
-        '+' => (coloured("+ ", GOOD), Some(ADDED_GROUND)),
-        '-' => (coloured("− ", super::BAD), Some(REMOVED_GROUND)),
-        _ => (Span::raw("  "), None),
+        '+' => (GOOD, Some(ADDED_GROUND)),
+        'a' | '~' => (WARN, Some(ASKED_GROUND)),
+        '-' | '!' => (super::BAD, Some(REMOVED_GROUND)),
+        _ => (super::DIM, None),
     };
     let chars: Vec<char> = c.text.chars().collect();
     let room = width.saturating_sub(7);
-    let mut styles: Vec<Style> = vec![Style::new(); chars.len()];
-    for &(from, to, class) in &c.colours {
-        for s in styles.iter_mut().take(to).skip(from) {
-            *s = super::editor::colour(class);
+    let plain = match c.kind {
+        'i' => Style::new().fg(super::DIM),
+        'w' => Style::new().fg(WARN),
+        '-' => Style::new().fg(REMOVED_TEXT),
+        _ => Style::new(),
+    };
+    let mut styles: Vec<Style> = vec![plain; chars.len()];
+    if c.kind != '-' {
+        for &(from, to, class) in &c.colours {
+            for s in styles.iter_mut().take(to).skip(from) {
+                *s = super::editor::colour(class);
+            }
         }
-    }
-    if c.kind == '-' {
-        styles.iter_mut().for_each(|s| *s = Style::new().fg(REMOVED_TEXT));
     }
     for &(from, to) in &c.marked {
         for s in styles.iter_mut().take(to).skip(from) {
@@ -214,18 +215,20 @@ fn code_line(c: &Code, width: usize) -> Line<'static> {
             _ => text.push(Span::styled(ch.to_string(), style)),
         }
     }
-    let mut spans = vec![dim(format!("{:>4} ", c.number)), sign];
+    let number = c.number.map(|n| format!("{n:>4} ")).unwrap_or_else(|| " ".repeat(5));
+    let mut spans = vec![dim(number), coloured(c.sign(), sign)];
     spans.extend(text);
     if chars.len() > room {
         spans.push(dim("…"));
+    } else if !c.note.is_empty() {
+        let left = room - chars.len();
+        if left > 6 {
+            spans.push(Span::styled(fit(&format!("  {}", c.note), left), Style::new().fg(if c.kind == '!' { super::BAD } else { super::DIM })));
+        }
     }
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
-    let line = Line::from(spans);
-    match ground {
-        Some(g) => line.style(Style::new().bg(g)),
-        None => line,
-    }
+    (Line::from(spans), ground)
 }
 
 /// Lines that scroll: as many as fit from `scroll`, kept in range.

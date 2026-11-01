@@ -1,10 +1,12 @@
 //! A change looked at before it is made (a deploy to approve, a restore's dry run): everything it
-//! changes, in hunks that open and close. Its code line by line, numbered, the unchanged runs far
-//! from a change folded, the names a new permission comes from marked; then what it touches,
-//! group by group; then its state. A hunk with nothing new in it starts closed.
+//! changes, in hunks that open and close, each a diff drawn alike. Its code line by line,
+//! numbered, the unchanged runs far from a change folded, the names a new permission comes from
+//! marked; what it touches, group by group, a row a thing; its state, each value as the code
+//! that would set it, taken out and put back. A hunk with nothing new in it starts closed.
 
 use std::collections::BTreeSet;
 
+use holon_author::agent;
 use holon_author::editing::{self, Class};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
@@ -16,38 +18,54 @@ use crate::touches::Mark;
 /// Unchanged lines kept either side of a change; a longer run between changes folds.
 const AROUND: usize = 3;
 
-/// A line of code: kept (' '), taken out ('-') or put in ('+'); its number (in the text before
-/// for one taken out, after for the rest); its colours, and the names in it a permission comes
-/// from, in characters.
-#[derive(Clone, Debug)]
+/// A row of a diff: what the change does to it (`kind`); its number in the text, for code (in the
+/// text before for a line taken out, after for the rest); its colours, the names in it a
+/// permission comes from, in characters; and a note after it.
+///
+/// Kinds: ' ' the same, '+' put in or new, 'a' new and approved by confirming, '~' changed,
+/// '-' taken out or no longer, '!' not ready on this server; 'i' a line saying what follows, and
+/// 'w' one that warns.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Code {
     pub(crate) kind: char,
-    pub(crate) number: usize,
+    pub(crate) number: Option<usize>,
     pub(crate) text: String,
     pub(crate) colours: Vec<(usize, usize, Class)>,
     pub(crate) marked: Vec<(usize, usize)>,
+    pub(crate) note: String,
 }
 
-#[derive(Debug)]
-pub(crate) enum Body {
-    Code(Vec<Code>),
-    Lines(Vec<Said>),
+impl Code {
+    fn said(kind: char, text: impl Into<String>) -> Code {
+        Code { kind, text: text.into(), ..Code::default() }
+    }
+
+    /// The mark it is drawn after.
+    pub(crate) fn sign(&self) -> &'static str {
+        match self.kind {
+            '+' | 'a' => "+ ",
+            '-' => "− ",
+            '~' => "~ ",
+            '!' => "! ",
+            _ => "  ",
+        }
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct Hunk {
     pub(crate) head: String,
-    /// What is in it, in a word or two each, coloured: `+4 −1`, `2 new · 1 not ready`.
+    /// What is in it, in a word or two each, coloured: `+4 −1`, `1 to approve · 2 the same`.
     pub(crate) sum: Vec<Said>,
-    pub(crate) body: Body,
+    pub(crate) rows: Vec<Code>,
     pub(crate) open: bool,
     /// The folds opened: by the first line of each.
     pub(crate) unfolded: BTreeSet<usize>,
 }
 
 impl Hunk {
-    pub(crate) fn lines(head: impl Into<String>, sum: Vec<Said>, lines: Vec<Said>, open: bool) -> Hunk {
-        Hunk { head: head.into(), sum, body: Body::Lines(lines), open, unfolded: BTreeSet::new() }
+    pub(crate) fn new(head: impl Into<String>, sum: Vec<Said>, rows: Vec<Code>, open: bool) -> Hunk {
+        Hunk { head: head.into(), sum, rows, open, unfolded: BTreeSet::new() }
     }
 }
 
@@ -62,14 +80,6 @@ pub(crate) enum Row {
     /// Hunk, its first folded line, how many.
     Fold(usize, usize, usize),
     Code(usize, usize),
-    Line(usize, usize),
-}
-
-/// A place the focus stops at: a hunk's head, or a fold.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Stop {
-    Head(usize),
-    Fold(usize, usize),
 }
 
 #[derive(Debug, Default)]
@@ -79,8 +89,8 @@ pub(crate) struct Review {
     pub(crate) foot: Vec<Said>,
     /// Every hunk open and nothing folded, whatever each was.
     pub(crate) whole: bool,
-    /// The stop with the focus.
-    pub(crate) at: usize,
+    /// The row the cursor is on; none until it moves, on the first hunk's head.
+    pub(crate) at: Option<usize>,
     pub(crate) scroll: usize,
     /// How many rows showed when last drawn: what moving the focus keeps it in.
     pub(crate) height: usize,
@@ -97,22 +107,16 @@ impl Review {
             if !(hunk.open || self.whole) {
                 continue;
             }
-            match &hunk.body {
-                Body::Lines(lines) => out.extend((0..lines.len()).map(|i| Row::Line(h, i))),
-                Body::Code(code) => {
-                    let near = near_a_change(code);
-                    let mut i = 0;
-                    while i < code.len() {
-                        let run = (i..code.len()).take_while(|&j| !near[j]).count();
-                        if run >= 2 && !self.whole && !hunk.unfolded.contains(&i) {
-                            out.push(Row::Fold(h, i, run));
-                            i += run;
-                        } else {
-                            out.push(Row::Code(h, i));
-                            i += 1;
-                        }
-                    }
+            let near = near_a_change(&hunk.rows);
+            let mut i = 0;
+            while i < hunk.rows.len() {
+                let run = (i..hunk.rows.len()).take_while(|&j| !near[j]).count();
+                if run >= 2 && !self.whole && !hunk.unfolded.contains(&i) {
+                    out.push(Row::Fold(h, i, run));
+                } else {
+                    out.extend((i..i + run.max(1)).map(|j| Row::Code(h, j)));
                 }
+                i += run.max(1);
             }
         }
         if !self.foot.is_empty() {
@@ -122,76 +126,109 @@ impl Review {
         out
     }
 
-    pub(crate) fn stops(rows: &[Row]) -> Vec<(Stop, usize)> {
-        rows.iter()
-            .enumerate()
-            .filter_map(|(i, r)| match *r {
-                Row::Head(h) => Some((Stop::Head(h), i)),
-                Row::Fold(h, from, _) => Some((Stop::Fold(h, from), i)),
-                _ => None,
-            })
-            .collect()
+    /// The rows the cursor jumps between: hunks' heads and folds.
+    pub(crate) fn stops(rows: &[Row]) -> Vec<usize> {
+        rows.iter().enumerate().filter(|(_, r)| matches!(r, Row::Head(_) | Row::Fold(..))).map(|(i, _)| i).collect()
     }
 
-    /// The stop with the focus, and its row.
-    pub(crate) fn focus(&self) -> Option<(Stop, usize)> {
-        let stops = Review::stops(&self.rows());
-        stops.get(self.at.min(stops.len().saturating_sub(1))).copied()
+    /// The row the cursor is on: the first hunk's head until it moves.
+    pub(crate) fn cursor(&self, rows: &[Row]) -> usize {
+        self.at.or_else(|| rows.iter().position(|r| matches!(r, Row::Head(_)))).unwrap_or(0).min(rows.len().saturating_sub(1))
     }
 
-    /// The focus to the next stop (or the one before), its row brought into view.
+    fn put(&mut self, row: usize) {
+        self.at = Some(row);
+        self.show(row);
+    }
+
+    /// The cursor a row down (or up), past the blank ones, kept in view.
+    pub(crate) fn move_by(&mut self, by: isize) {
+        let rows = self.rows();
+        let mut at = self.cursor(&rows) as isize;
+        let last = rows.len() as isize - 1;
+        for _ in 0..by.unsigned_abs() {
+            let mut next = at + by.signum();
+            while (0..=last).contains(&next) && rows[next as usize] == Row::Blank {
+                next += by.signum();
+            }
+            if !(0..=last).contains(&next) {
+                break;
+            }
+            at = next;
+        }
+        self.put(at.max(0) as usize);
+    }
+
+    /// The cursor to the next hunk or fold (or the one before), round the end.
     pub(crate) fn step(&mut self, by: isize) {
-        let stops = Review::stops(&self.rows());
+        let rows = self.rows();
+        let stops = Review::stops(&rows);
         if stops.is_empty() {
             return;
         }
-        self.at = (self.at as isize + by).rem_euclid(stops.len() as isize) as usize;
-        self.show(stops[self.at].1);
+        let at = self.cursor(&rows);
+        self.put(if by > 0 { stops.iter().copied().find(|&s| s > at).unwrap_or(stops[0]) } else { stops.iter().copied().rev().find(|&s| s < at).unwrap_or(stops[stops.len() - 1]) });
     }
 
     fn show(&mut self, row: usize) {
         let h = self.height.max(1);
-        if row < self.scroll || row >= self.scroll + h {
-            self.scroll = row.saturating_sub(2);
+        if row < self.scroll {
+            self.scroll = row.saturating_sub(1);
+        } else if row >= self.scroll + h {
+            self.scroll = row + 2 - h.min(row + 2);
         }
     }
 
-    /// Open or close the hunk or the fold with the focus (`to`: open it, close it, or the other).
+    /// Open or close what the cursor is on (`to`: open it, close it, or the other): a hunk's head
+    /// opens or closes it, a fold opens, a row inside a hunk closes it, the cursor on its head.
     pub(crate) fn toggle(&mut self, to: Option<bool>) {
-        let Some((stop, _)) = self.focus() else { return };
-        match stop {
-            Stop::Head(h) => {
-                let hunk = &mut self.hunks[h];
-                hunk.open = to.unwrap_or(!hunk.open);
-            }
-            // A fold opened stays a stop no more: the focus goes back to its hunk's head.
-            Stop::Fold(h, from) if to != Some(false) => {
+        let rows = self.rows();
+        let Some(&row) = rows.get(self.cursor(&rows)) else { return };
+        match row {
+            Row::Head(h) => self.hunks[h].open = to.unwrap_or(!(self.hunks[h].open || self.whole)),
+            Row::Fold(h, from, _) if to != Some(false) => {
                 self.hunks[h].unfolded.insert(from);
-                self.at = Review::stops(&self.rows()).iter().position(|(s, _)| *s == Stop::Head(h)).unwrap_or(0);
             }
-            Stop::Fold(..) => {}
+            Row::Fold(h, ..) | Row::Code(h, _) if to != Some(true) => {
+                self.hunks[h].open = false;
+                self.whole = false;
+                self.at = self.rows().iter().position(|r| *r == Row::Head(h));
+            }
+            _ => {}
         }
-        if let Some((_, row)) = self.focus() {
-            self.show(row);
+        let at = self.cursor(&self.rows());
+        self.put(at);
+    }
+
+    /// A row clicked: the cursor on it; a hunk's head or a fold opens or closes.
+    pub(crate) fn click(&mut self, row: usize) {
+        self.at = Some(row);
+        if matches!(self.rows().get(row), Some(Row::Head(_) | Row::Fold(..))) {
+            self.toggle(None);
         }
     }
 
-    /// Focus the `i`th stop, and open or close it: a click.
-    pub(crate) fn click(&mut self, i: usize) {
-        self.at = i;
-        self.toggle(None);
-    }
-
-    /// Everything open and unfolded, or back as each hunk was.
+    /// Everything open and unfolded, or back as each hunk was; the cursor on the same row, or
+    /// the head of its hunk.
     pub(crate) fn set_whole(&mut self, whole: bool) {
-        let focus = self.focus().map(|f| f.0);
+        let rows = self.rows();
+        let on = rows.get(self.cursor(&rows)).copied();
         self.whole = whole;
-        self.at = focus.and_then(|f| Review::stops(&self.rows()).iter().position(|(s, _)| *s == f)).unwrap_or(0);
+        let rows = self.rows();
+        let head = |h: usize| rows.iter().position(|r| *r == Row::Head(h));
+        let at = match on {
+            Some(Row::Code(h, _) | Row::Fold(h, ..)) => rows.iter().position(|r| Some(*r) == on).or_else(|| head(h)),
+            Some(r) => rows.iter().position(|x| *x == r),
+            None => None,
+        }
+        .unwrap_or(0);
         self.scroll = 0;
+        self.put(at);
     }
 
     /// A key that moves through it, opens or closes a hunk, or shows it whole; false for any other.
     pub(crate) fn key(&mut self, k: KeyEvent) -> bool {
+        let page = self.height.max(2) as isize - 1;
         match k.code {
             KeyCode::Char('n') | KeyCode::Tab => self.step(1),
             KeyCode::Char('N') | KeyCode::Char('p') | KeyCode::BackTab => self.step(-1),
@@ -200,45 +237,45 @@ impl Review {
             KeyCode::Left => self.toggle(Some(false)),
             KeyCode::Char('w') => self.set_whole(!self.whole),
             KeyCode::Char('d') => self.set_whole(false),
-            KeyCode::Up | KeyCode::Char('k') => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll += 1,
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(self.height.max(2) - 1),
-            KeyCode::PageDown => self.scroll += self.height.max(2) - 1,
-            KeyCode::Home => self.scroll = 0,
-            KeyCode::End => self.scroll = usize::MAX / 2,
+            KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
+            KeyCode::PageUp => self.move_by(-page),
+            KeyCode::PageDown => self.move_by(page),
+            KeyCode::Home => self.move_by(-(isize::MAX / 2)),
+            KeyCode::End => self.move_by(isize::MAX / 2),
             _ => return false,
         }
         true
     }
 
-    /// Everything it says, every hunk open and nothing folded, as lines: a code line after its
-    /// mark (`+ `, `- `, `  `).
+    /// Everything it says, every hunk open and nothing folded, as lines: a row after its mark
+    /// (`+ `, `− `, `~ `, `! `, `  `), its note after a dash.
     #[cfg(test)]
     pub(crate) fn said(&self) -> Vec<Said> {
         let mut out = self.top.clone();
         for hunk in &self.hunks {
             let sum: Vec<&str> = hunk.sum.iter().map(|(_, s)| s.as_str()).collect();
             out.push((Tone::Head, if sum.is_empty() { hunk.head.clone() } else { format!("{}  {}", hunk.head, sum.join(" ")) }));
-            match &hunk.body {
-                Body::Lines(lines) => out.extend(lines.iter().cloned()),
-                Body::Code(code) => out.extend(code.iter().map(|c| {
-                    let tone = match c.kind {
-                        '+' => Tone::Added,
-                        '-' => Tone::Removed,
-                        _ => Tone::Plain,
-                    };
-                    (tone, format!("{} {}", if c.kind == ' ' { ' ' } else { c.kind }, c.text))
-                })),
-            }
+            out.extend(hunk.rows.iter().map(|c| {
+                let tone = match c.kind {
+                    '+' => Tone::Added,
+                    '-' => Tone::Removed,
+                    '!' => Tone::Bad,
+                    'a' | '~' | 'w' => Tone::Warn,
+                    'i' => Tone::Dim,
+                    _ => Tone::Plain,
+                };
+                (tone, format!("{}{}{}", c.sign(), c.text, if c.note.is_empty() { String::new() } else { format!(" — {}", c.note) }))
+            }));
         }
         out.extend(self.foot.iter().cloned());
         out
     }
 }
 
-/// Whether each line is a change or within `AROUND` lines of one.
-fn near_a_change(code: &[Code]) -> Vec<bool> {
-    (0..code.len()).map(|i| code[i.saturating_sub(AROUND)..(i + AROUND + 1).min(code.len())].iter().any(|c| c.kind != ' ')).collect()
+/// Whether each row is a change or within `AROUND` rows of one.
+fn near_a_change(rows: &[Code]) -> Vec<bool> {
+    (0..rows.len()).map(|i| rows[i.saturating_sub(AROUND)..(i + AROUND + 1).min(rows.len())].iter().any(|c| c.kind != ' ')).collect()
 }
 
 /// The code hunk: `then` to `now`, line by line, coloured, the names `touches` says a change in
@@ -252,7 +289,7 @@ pub(crate) fn code(head: impl Into<String>, then: &str, now: &str, touches: &Val
     let (then_colours, now_colours) = (colours(then), colours(now));
     let names = names(touches);
     let (mut old, mut new) = (0, 0);
-    let code = lines
+    let rows = lines
         .into_iter()
         .map(|(kind, text)| {
             let (number, colours) = if kind == '-' {
@@ -264,11 +301,15 @@ pub(crate) fn code(head: impl Into<String>, then: &str, now: &str, touches: &Val
                 (new, now_colours.get(new - 1).cloned().unwrap_or_default())
             };
             let marked = marks(&text, &colours, &names);
-            Code { kind, number, text, colours, marked }
+            Code { kind, number: Some(number), text, colours, marked, note: String::new() }
         })
         .collect();
-    let sum = vec![(Tone::Added, format!("+{added}")), (Tone::Removed, format!("−{removed}"))];
-    Some(Hunk { head: head.into(), sum, body: Body::Code(code), open: true, unfolded: BTreeSet::new() })
+    Some(Hunk::new(head, counted(added, removed), rows, true))
+}
+
+/// `+added · −removed`, coloured.
+fn counted(added: usize, removed: usize) -> Vec<Said> {
+    vec![(Tone::Added, format!("+{added}")), (Tone::Removed, format!("−{removed}"))]
 }
 
 /// A text's colours by line (from 0): (from, to, class), in characters.
@@ -332,47 +373,77 @@ fn marks(line: &str, colours: &[(usize, usize, Class)], names: &[String]) -> Vec
     out
 }
 
-/// What a flow touches (a preview's `touches` and `settings`), a hunk a group: its rows coloured
-/// by what the change does to each, a note under each; open when something in it changes or
-/// isn't ready.
+/// What a flow touches (a preview's `touches` and `settings`), a hunk a group, a row a thing: what
+/// the change does to it, its note after it; open when something in it changes or isn't ready.
 pub(crate) fn touched(preview: &Value) -> Vec<Hunk> {
     let mut out: Vec<Hunk> = vec![];
-    let mut counts: Vec<Vec<Mark>> = vec![];
     for l in crate::touches::lines(&preview["touches"], &preview["settings"]) {
-        if l.mark == Mark::Head {
-            out.push(Hunk::lines(l.text, vec![], vec![], false));
-            counts.push(vec![]);
-            continue;
-        }
-        let (Some(hunk), Some(marks)) = (out.last_mut(), counts.last_mut()) else { continue };
-        let Body::Lines(lines) = &mut hunk.body else { continue };
-        marks.push(l.mark);
-        let tone = match l.mark {
-            Mark::Head | Mark::Same => Tone::Plain,
-            Mark::Approve | Mark::Changed => Tone::Warn,
-            Mark::New => Tone::Added,
-            Mark::Gone => Tone::Removed,
-            Mark::Unready => Tone::Bad,
+        let kind = match l.mark {
+            Mark::Head => {
+                out.push(Hunk::new(l.text, vec![], vec![], false));
+                continue;
+            }
+            Mark::Same => ' ',
+            Mark::New => '+',
+            Mark::Approve => 'a',
+            Mark::Changed => '~',
+            Mark::Gone => '-',
+            Mark::Unready => '!',
         };
-        lines.push((tone, format!("{}{}", l.mark.sign(), l.text)));
-        if !l.note.is_empty() {
-            lines.push((if l.mark == Mark::Unready { Tone::Bad } else { Tone::Dim }, format!("    {}", l.note)));
-        }
+        let Some(hunk) = out.last_mut() else { continue };
+        // The thing it is, coloured as a noun is in code; what it does with it, plain.
+        let thing = l.text.find(':').unwrap_or(l.text.len());
+        let colours = vec![(0, l.text[..thing].chars().count(), Class::Noun)];
+        hunk.rows.push(Code { kind, number: None, colours, text: l.text, marked: vec![], note: l.note });
     }
-    for (hunk, marks) in out.iter_mut().zip(counts) {
-        let n = |m: &[Mark]| marks.iter().filter(|k| m.contains(k)).count();
-        let said = [
-            (n(&[Mark::Approve]), "to approve", Tone::Warn),
-            (n(&[Mark::New]), "new", Tone::Added),
-            (n(&[Mark::Changed]), "changed", Tone::Warn),
-            (n(&[Mark::Gone]), "no longer", Tone::Removed),
-            (n(&[Mark::Unready]), "not ready", Tone::Bad),
-            (n(&[Mark::Same]), "the same", Tone::Dim),
-        ];
+    for hunk in &mut out {
+        let n = |k: char| hunk.rows.iter().filter(|r| r.kind == k).count();
+        let said = [(n('a'), "to approve", Tone::Warn), (n('+'), "new", Tone::Added), (n('~'), "changed", Tone::Warn), (n('-'), "no longer", Tone::Removed), (n('!'), "not ready", Tone::Bad), (n(' '), "the same", Tone::Dim)];
         hunk.open = said[..5].iter().any(|(k, _, _)| *k > 0);
         hunk.sum = said.into_iter().filter(|(k, _, _)| *k > 0).map(|(k, what, tone)| (tone, format!("{k} {what}"))).collect();
     }
     out
+}
+
+/// What putting the state back does (a restore's `state`): what it says of it, then each value
+/// as the code that sets it, the value now taken out and the one put back put in.
+pub(crate) fn state(change: &Value) -> Hunk {
+    let mut rows: Vec<Code> = vec![];
+    for l in crate::restore::state_lines(change).lines() {
+        let warns = l.contains("doesn't undo") || l.contains("doesn't put back");
+        rows.push(Code::said(if warns { 'w' } else { 'i' }, l.trim_start()));
+    }
+    let mut values: Vec<(String, &Value)> = change["values"].as_object().into_iter().flatten().map(|(k, v)| (format!("state.{k}"), v)).collect();
+    for (name, c) in change["collections"].as_object().into_iter().flatten() {
+        values.extend(c["items"].as_object().into_iter().flatten().map(|(key, v)| (format!("{name}[{}]", Value::from(key.as_str())), v)));
+    }
+    let (mut added, mut removed) = (0, 0);
+    for (name, v) in values {
+        for (kind, value) in [('-', &v["now"]), ('+', &v["then"])] {
+            if value.is_null() {
+                continue;
+            }
+            let text = format!("{name} = {}", agent::show(value));
+            let colours = colours(&text).swap_remove(0);
+            rows.push(Code { kind, colours, text, ..Code::default() });
+            if kind == '+' {
+                added += 1;
+            } else {
+                removed += 1;
+            }
+        }
+    }
+    for (name, c) in change["collections"].as_object().into_iter().flatten() {
+        if c["more"] == true {
+            rows.push(Code::said('i', format!("{name}: and more items")));
+        }
+    }
+    Hunk::new("Its state: now → as it would be put back", counted(added, removed), rows, true)
+}
+
+/// Lines said as rows of their own kind: a hunk's rows that aren't code.
+pub(crate) fn rows(kind: char, lines: impl IntoIterator<Item = String>) -> Vec<Code> {
+    lines.into_iter().map(|l| Code::said(kind, l)).collect()
 }
 
 #[cfg(test)]
@@ -387,21 +458,26 @@ mod tests {
         let touches = json!([{ "kind": "secret", "name": "key", "change": "new", "ready": null, "uses": [] }]);
         let hunk = code("Code", &then, &now, &touches).unwrap();
         assert_eq!(hunk.sum, [(Tone::Added, "+1".to_string()), (Tone::Removed, "−1".to_string())]);
-        let Body::Code(lines) = &hunk.body else { panic!() };
-        let added = lines.iter().find(|c| c.kind == '+').unwrap();
-        assert_eq!((added.number, &added.text[..], &added.marked[..]), (10, "a10 = secret.key", &[(6, 16)][..]));
-        assert_eq!(lines.iter().find(|c| c.kind == '-').unwrap().number, 10);
+        let added = hunk.rows.iter().find(|c| c.kind == '+').unwrap();
+        assert_eq!((added.number, &added.text[..], &added.marked[..]), (Some(10), "a10 = secret.key", &[(6, 16)][..]));
+        assert_eq!(hunk.rows.iter().find(|c| c.kind == '-').unwrap().number, Some(10));
 
         let mut r = Review { hunks: vec![hunk], height: 20, ..Review::default() };
         // Lines 1 to 6 fold; 7 to 12 show, around the change.
         assert_eq!(r.rows()[..3], [Row::Head(0), Row::Fold(0, 0, 6), Row::Code(0, 6)]);
+        let at = |r: &Review| r.cursor(&r.rows());
+        assert_eq!(at(&r), 0, "on the first head");
         r.step(1);
-        assert_eq!(r.focus().map(|f| f.0), Some(Stop::Fold(0, 0)));
+        assert_eq!(at(&r), 1, "n: the fold");
         r.toggle(None);
-        assert_eq!(r.rows()[1], Row::Code(0, 0), "the fold opened");
-        assert_eq!(r.focus().map(|f| f.0), Some(Stop::Head(0)));
+        assert_eq!(r.rows()[1], Row::Code(0, 0), "the fold opened, the cursor on its first line");
+        r.move_by(3);
+        assert_eq!(r.rows()[at(&r)], Row::Code(0, 3), "↓ goes a line at a time");
+        r.move_by(-10);
+        assert_eq!(at(&r), 0, "↑ stops at the top");
+        r.move_by(5);
         r.toggle(None);
-        assert_eq!(r.rows(), [Row::Head(0)], "the hunk closed");
+        assert_eq!((r.rows(), at(&r)), (vec![Row::Head(0)], 0), "space inside a hunk closes it, the cursor on its head");
         r.set_whole(true);
         assert_eq!(r.rows().len(), 1 + 13, "whole: everything open, nothing folded");
     }
@@ -424,7 +500,20 @@ mod tests {
         assert_eq!(heads, [("What it reaches outside", true), ("What it keeps", false)]);
         assert_eq!(hunks[0].sum, [(Tone::Warn, "1 to approve".to_string())]);
         assert_eq!(hunks[1].sum, [(Tone::Dim, "1 the same".to_string())]);
-        let Body::Lines(lines) = &hunks[0].body else { panic!() };
-        assert_eq!(lines[..], [(Tone::Warn, "+ host b.example: call".to_string()), (Tone::Dim, "    approved by confirming".to_string())]);
+        let row = &hunks[0].rows[0];
+        assert_eq!((row.kind, &row.text[..], &row.note[..], &row.colours[..]), ('a', "host b.example: call", "approved by confirming", &[(0, 14, Class::Noun)][..]));
+    }
+
+    #[test]
+    fn the_state_put_back_is_the_code_that_sets_it_taken_out_and_put_in() {
+        let change = json!({ "from": "run 6", "changed": ["n"], "removed": ["#collection:notes"], "runs_since": 2,
+            "values": { "n": { "now": { "type": "Number", "value": 3 }, "then": { "type": "Number", "value": 1 } } },
+            "collections": { "notes": { "items": { "k": { "now": { "type": "Text", "value": "hi" }, "then": null } } } } });
+        let hunk = state(&change);
+        let said: Vec<(char, &str)> = hunk.rows.iter().map(|r| (r.kind, r.text.as_str())).collect();
+        assert_eq!(said[2..], [('-', "state.n = 3"), ('+', "state.n = 1"), ('-', "notes[\"k\"] = \"hi\"")]);
+        assert_eq!(said[0].0, 'i');
+        assert_eq!(hunk.sum, counted(1, 2));
+        assert!(hunk.rows[2].colours.iter().any(|c| c.2 == Class::Number), "coloured as code: {:?}", hunk.rows[2].colours);
     }
 }

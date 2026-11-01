@@ -336,7 +336,7 @@ fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     ctrl(&mut app, 'd');
     // Its approval shows what it touches beside what it touches now.
     let shown = screen(&mut app, 120, 40);
-    assert!(shown.contains("What it keeps") && shown.contains("+ key last: write") && shown.contains("· key n: read, write"), "{shown}");
+    assert!(shown.contains("What it keeps") && shown.contains("+ key last: write") && shown.contains("  key n: read, write"), "{shown}");
     press(&mut app, KeyCode::Enter);
     assert!(app.note.as_ref().is_some_and(|n| !n.error), "{:?}", app.note.as_ref().map(|n| &n.text));
     let c = app.client.as_ref().unwrap();
@@ -363,15 +363,14 @@ fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     assert!(!refused);
     let lines = review.said();
     assert!(lines.iter().any(|(_, l)| l.contains("Version 1's code deploys again")), "{lines:#?}");
-    assert!(lines.iter().any(|(t, l)| *t == Tone::Removed && l == "-   state.last = n"), "the text it puts back, as a diff: {lines:#?}");
+    assert!(lines.iter().any(|(t, l)| *t == Tone::Removed && l == "−   state.last = n"), "the text it puts back, as a diff: {lines:#?}");
     // What it touches: the key version 1 doesn't keep, gone, and what putting the state back does
-    // to each key, with its values now and then.
+    // to each key; and its values, now taken out and as put back put in, as the code setting them.
     let at = |text: &str| lines.iter().position(|(_, l)| l == text).unwrap_or_else(|| panic!("{text:?} in {lines:#?}"));
-    let (n_row, last_row) = (at("· key n: read, write"), at("- key last: write"));
-    assert_eq!(lines[n_row + 1].1.trim(), "putting the state back changes it");
-    assert_eq!(lines[last_row + 1].1.trim(), "no longer; putting the state back drops it");
-    assert_eq!(lines[last_row].0, Tone::Removed);
-    at("  n: 3 → 1");
+    at("  key n: read, write — putting the state back changes it");
+    assert_eq!(lines[at("− key last: write — no longer; putting the state back drops it")].0, Tone::Removed);
+    assert_eq!(lines[at("+ state.n = 1")].0, Tone::Added);
+    assert_eq!(at("− state.n = 3") + 1, at("+ state.n = 1"));
     let shown = screen(&mut app, 120, 40);
     assert!(shown.contains("Dry run") && shown.contains("Nothing has changed yet"), "{shown}");
     // Its code numbered, in a hunk that closes; what it keeps in another.
@@ -382,9 +381,19 @@ fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     assert!(shown.contains("▸ Its code") && !shown.contains("state.last = n"), "closed: {shown}");
     press(&mut app, KeyCode::Char('n'));
     let Some(Modal::DryRun { review, .. }) = &app.modal else { panic!() };
-    assert_eq!(review.focus().map(|f| f.0), Some(super::review::Stop::Head(1)), "the next hunk");
+    let rows = review.rows();
+    assert_eq!(rows[review.cursor(&rows)], super::review::Row::Head(1), "the next hunk");
+    // ↓ a row at a time: past the blank one, to the next hunk (what starts it, closed: nothing
+    // in it changes); ↑ back.
+    press(&mut app, KeyCode::Down);
+    let Some(Modal::DryRun { review, .. }) = &app.modal else { panic!() };
+    assert_eq!(rows[review.cursor(&rows)], super::review::Row::Head(2));
+    press(&mut app, KeyCode::Up);
+    let Some(Modal::DryRun { review, .. }) = &app.modal else { panic!() };
+    assert_eq!(rows[review.cursor(&rows)], super::review::Row::Head(1));
     // A click on a head opens it again, or closes it.
-    click(&mut app, Click::Row(List::Review, 0));
+    let head = rows.iter().position(|r| *r == super::review::Row::Head(0)).unwrap();
+    click(&mut app, Click::Row(List::Review, head));
     let shown = screen(&mut app, 120, 40);
     assert!(shown.contains("▾ Its code") && shown.contains("state.last = n"), "{shown}");
 
