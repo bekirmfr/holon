@@ -1396,6 +1396,36 @@ pub(crate) struct Sender<'a> {
     pub(crate) sends: BTreeSet<String>,
     /// The run's side of its calls to other flows' actions (calls.rs).
     pub(crate) calls: Option<&'a calls::Caller<'a>>,
+    /// For a run given a secret: where each may be sent, by its value.
+    pub(crate) secret_sends: Option<SecretSends<'a>>,
+}
+
+/// Where a run's secrets may be sent: each to the hosts its flow's approval shows it going to
+/// (core's `sent_secrets`). A request holding a secret's value, as it is, bound for another host
+/// isn't sent: the graph shows where a secret goes, but not a value it can't follow, such as one
+/// a call answered back (an API echoing a header) and the flow passed on.
+pub(crate) struct SecretSends<'a> {
+    pub(crate) vault: &'a secrets::Vault,
+    pub(crate) sent: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl SecretSends<'_> {
+    /// Why `request` isn't sent, when it holds a secret's value bound for a host the secret isn't
+    /// shown going to: `{status: 0, error: "blocked_secret", message}`, naming the secret, never
+    /// its value.
+    pub(crate) fn refuses(&self, request: &Value) -> Option<Value> {
+        let Value::Record(r) = request else { return None };
+        let host = match r.get("url") {
+            Some(Value::Text(url)) => outbound::authority_of(url)?,
+            _ => return None,
+        };
+        let name = secrets::secrets_in(request, self.vault).into_iter().find(|name| !self.sent.get(name).is_some_and(|hosts| hosts.contains(&host)))?;
+        let shown = match self.sent.get(&name) {
+            Some(hosts) if !hosts.is_empty() => hosts.iter().map(|h| format!("https://{h}")).collect::<Vec<_>>().join(", "),
+            _ => "nowhere".to_string(),
+        };
+        Some(outbound::failure("blocked_secret", format!("the secret {name:?} isn't sent to {host}: this flow's approval shows it going to {shown}")))
+    }
 }
 
 /// A file a request sends, as the run's handle names it.
@@ -1453,6 +1483,9 @@ impl Performer for Sender<'_> {
         // A call to another flow's action isn't an HTTP request: the server runs it in-process.
         if calls::is_call(request) {
             return calls::failure("failed", "a call is made by a node that says where it is");
+        }
+        if let Some(refused) = self.secret_sends.as_ref().and_then(|s| s.refuses(request)) {
+            return refused;
         }
         let Value::Record(r) = request else { return self.outbound.perform(request, limits) };
         if r.get("stream") == Some(&Value::Boolean(true)) {

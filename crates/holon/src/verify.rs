@@ -223,6 +223,11 @@ pub(crate) struct Report {
     /// Whether each run's state follows from the one before; none when no run kept the state it
     /// left (a deployment without state, or a log from before rc.30).
     pub(crate) states: Option<States>,
+    /// Where the secrets went: the outbound requests that carried one (its mark in the request),
+    /// and those that went to a host its unit doesn't send it to (`sent_secrets`): by seq,
+    /// secret and host.
+    pub(crate) secret_requests: usize,
+    pub(crate) secrets_outside: Vec<(u64, String, String)>,
 }
 
 /// What checking that each run's state follows from the one before found (`check_states`).
@@ -279,6 +284,7 @@ impl Report {
             && self.bad_units.is_empty()
             && !self.reruns.iter().any(|(_, r)| matches!(r, Rerun::Differs(_)))
             && self.states.as_ref().is_none_or(|s| s.breaks.is_empty())
+            && self.secrets_outside.is_empty()
     }
 }
 
@@ -351,7 +357,49 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     }
     let events: Vec<crate::events::Event> = export.events.iter().filter_map(|l| serde_json::from_str(l).ok()).collect();
     report.states = check_states(&entries, &lefts, &events, &marks);
+    check_sends(&entries, &resolver, &marks, &mut report);
     report
+}
+
+/// What a request failed with before it left the host: it went nowhere.
+const NOT_SENT: &[&str] = &["blocked_secret", "blocked_host", "blocked_scheme", "blocked_address", "blocked_channel", "revoked", "bad_url", "bad_header", "bad_request"];
+
+/// Where the secrets went: each outbound request that carried a secret's value (the log marks it
+/// in the request) went to a host its unit sends that secret to (core's `sent_secrets`, what the
+/// approval showed). A request refused before it left went nowhere.
+fn check_sends(entries: &[(LogEntry, &str)], resolver: &impl holon_core::Resolver, marks: &Marks, report: &mut Report) {
+    let mut sent_by_unit: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> = BTreeMap::new();
+    for (entry, _) in entries {
+        for x in entry.rounds.iter().flat_map(|r| &r.exchanges) {
+            let request = marks.read(&x.request, entry.escaped);
+            let named = marks.secrets_in(&request);
+            if named.is_empty() {
+                continue;
+            }
+            if let Value::Record(r) = marks.read(&x.response, entry.escaped)
+                && let Some(Value::Text(error)) = r.get("error")
+                && NOT_SENT.contains(&error.as_str())
+            {
+                continue;
+            }
+            let host = match &request {
+                Value::Record(r) => match r.get("url") {
+                    Some(Value::Text(url)) => outbound::authority_of(url).unwrap_or_default(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            let sent = sent_by_unit
+                .entry(entry.unit.clone())
+                .or_insert_with(|| parse_hash(&entry.unit).and_then(|h| resolver.resolve(&h)).map(|u| holon_core::sent_secrets(u, resolver)).unwrap_or_default());
+            report.secret_requests += 1;
+            for name in named {
+                if !sent.get(&name).is_some_and(|hosts| hosts.contains(&host)) {
+                    report.secrets_outside.push((entry.seq, name, host.clone()));
+                }
+            }
+        }
+    }
 }
 
 /// Whether a log entry is of a run: a request no route took ran nothing.
@@ -952,6 +1000,21 @@ impl Marks {
         format!("{}{kind}:{name}›", self.start)
     }
 
+    /// The secrets whose placeholder is in `v` (as [`Marks::read`] gives it), by name.
+    fn secrets_in(&self, v: &Value) -> BTreeSet<String> {
+        let start = format!("{}secret:", self.start);
+        let found = std::cell::RefCell::new(BTreeSet::new());
+        secrets::value_holds(v, &|s: &str| {
+            for (i, _) in s.match_indices(start.as_str()) {
+                let rest = &s[i + start.len()..];
+                let name = &rest[..rest.find([' ', '›']).unwrap_or(rest.len())];
+                found.borrow_mut().insert(name.to_string());
+            }
+            false
+        });
+        found.into_inner()
+    }
+
     /// A value the log wrote (its entry `escaped` or not), as the run is run again with it.
     fn read(&self, v: &SValue, escaped: bool) -> Value {
         let mut v = v.clone();
@@ -1180,6 +1243,16 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         if let Rerun::Differs(what) = x {
             out += &format!("  run {seq} DIFFERS: {what}\n");
         }
+    }
+    if r.secret_requests > 0 && r.secrets_outside.is_empty() {
+        out += &format!(
+            "  secrets: {} outbound request{} carried one, each to a host its approval shows it going to\n",
+            r.secret_requests,
+            if r.secret_requests == 1 { "" } else { "s" }
+        );
+    }
+    for (seq, name, host) in &r.secrets_outside {
+        out += &format!("  run {seq} SENT the secret {name:?} to {host}, where its approval doesn't show it going\n");
     }
     if let Some(s) = &r.states {
         let mut how = Vec::new();

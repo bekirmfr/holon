@@ -4414,6 +4414,61 @@ route POST /go (req) {{
     assert!(!export.contains("c2tfbGl2ZV9iYXNp") && !export.contains("MIIabc") && !export.contains("pk_private_value_123"));
 }
 
+/// A secret goes only where the flow's approval shows it going. The flow sends `token` to one host
+/// (its graph says so); a caller's body that holds the token's value, bound for another host, isn't
+/// sent: the graph can't follow a value that came in from outside, but the host finds it by its
+/// value. The export checks: the one request that left with it went where the approval shows, and
+/// an export changed to say it went elsewhere is caught.
+#[test]
+fn a_secret_goes_only_where_its_approval_shows_it_going() {
+    let (shown, shown_hits) = counting_server();
+    let (other, other_hits) = counting_server();
+    let state = claims_state("");
+    let text = format!(
+        r#"flow sends
+port 18143
+secret token
+
+route POST /go (req) {{
+  authed = http.get("{shown}", "/api", headers: {{ authorization: "Bearer {{secret.token}}" }})
+  passed = http.post("{other}", "/relay", body: req.body)
+  respond {{ authed: authed.status, passed: passed.error ?? passed.status, message: passed.message ?? "" }}
+}}
+"#
+    );
+    let slug = deploy_text_to(&state, &text, &[&shown, &other]);
+    let set = req("POST", &format!("/deployments/{slug}/secrets/token"), serde_json::to_vec(&serde_json::json!({ "value": "tok_live_sends_42" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+
+    // Something else passed on: sent.
+    let (status, body, _) = data_call(&state, &slug, "POST", "/go", "hello");
+    assert_eq!((status, body.as_str()), (200, r#"{"authed":200,"message":"","passed":200}"#));
+    // The token's value passed on to the other host: not sent.
+    let (status, body, _) = data_call(&state, &slug, "POST", "/go", "key=tok_live_sends_42");
+    assert_eq!(status, 200, "{body}");
+    let answer: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(answer["passed"], "blocked_secret", "{body}");
+    let message = answer["message"].as_str().unwrap();
+    assert!(message.contains(&format!("the secret \"token\" isn't sent to {other}")) && message.contains(&format!("https://{shown}")), "{message}");
+    assert!(!message.contains("tok_live"), "{message}");
+    assert_eq!((hits_of(&shown_hits, "/api"), hits_of(&other_hits, "/relay")), (2, 1), "the other host got only the first");
+
+    // Exported, it checks: two requests carried the token (the second was refused before it left).
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!((report.secret_requests, report.secrets_outside.len()), (2, 0), "{}", verify::describe(&report, None));
+    assert!(verify::describe(&report, None).contains("secrets: 2 outbound requests carried one, each to a host its approval shows it going to"));
+
+    // Changed to say the first went to the other host, it is caught (and the chain breaks).
+    let mut changed: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    changed.lines[0] = changed.lines[0].replace(&format!("{shown}/api"), &format!("{other}/api"));
+    let report = verify::check(&changed, None, &BTreeMap::new());
+    assert!(!report.ok());
+    assert_eq!(report.secrets_outside, vec![(0, "token".to_string(), other.clone())], "{}", verify::describe(&report, None));
+    assert!(verify::describe(&report, None).contains(&format!("run 0 SENT the secret \"token\" to {other}, where its approval doesn't show it going")));
+}
+
 /// A token a call answers to a request that held a secret (an OAuth exchange) is as good as the
 /// secret until it expires: kept out of the log by its value, with a fingerprint like a secret's,
 /// and out of state, as a secret is. What the caller needs it for still works: the run sends it
@@ -4669,12 +4724,17 @@ fn claims_state(extra: &str) -> AppState {
 /// Compile `text` with the language, stage its units, and deploy it acknowledging what it asks;
 /// its slug.
 fn deploy_text(state: &AppState, text: &str, host: &str) -> String {
+    deploy_text_to(state, text, &[host])
+}
+
+/// The same, for a flow that calls several local hosts.
+fn deploy_text_to(state: &AppState, text: &str, hosts: &[&str]) -> String {
     let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
     for u in &plan.units {
         assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
     let unit = parse_hash(&plan.unit).unwrap();
-    let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
+    let requirements = serde_json::json!({ "plain_http": hosts, "private_addresses": true });
     let preview = body_json(route(
         state,
         &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit, "requirements": requirements })).unwrap()),

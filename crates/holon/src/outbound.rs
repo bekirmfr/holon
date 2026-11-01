@@ -152,6 +152,12 @@ fn parse_url(url: &str) -> Option<Target> {
     Some(Target { plain, authority, rest })
 }
 
+/// The host a request's URL names (`api.example.com`, `127.0.0.1:8080`), lowercased, as a grant
+/// names it; none for a URL the host wouldn't call.
+pub(crate) fn authority_of(url: &str) -> Option<String> {
+    parse_url(url).map(|t| t.authority)
+}
+
 impl Outbound {
     /// Whether `target` may be called: a granted host, over HTTPS unless granted plain HTTP.
     fn check(&self, target: &Target) -> Result<(), Value> {

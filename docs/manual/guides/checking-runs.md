@@ -70,6 +70,7 @@ notes-api: 42 runs, runs 1 to 42
   re-ran 42 runs: each produced what its log entry says
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret or a resume token (not computed again)
   2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
+  secrets: 38 outbound requests carried one, each to a host its approval shows it going to
   state: 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
   state not checked (1 run: 1), where it began: no run before it here
 ok
@@ -84,13 +85,18 @@ ok
    so nothing is sent;
 4. each run's state follows from the one before: it began from the state the run before it left,
    and left what its writes make of the state it began with (see
-   [The state, run to run](#the-state-run-to-run)).
+   [The state, run to run](#the-state-run-to-run));
+5. every outbound request that carried a secret (the log marks where it stood:
+   `‹secret:stripe_key v3 #…›`) went to a host the flow's unit sends that secret to: what its
+   approval showed ("read the secret "stripe_key", and send it to https://api.stripe.com"). A
+   request the host refused before it left went nowhere.
 
 It exits 0 when everything checks, and 1 otherwise, with what failed:
 
 ```
   chain: BROKEN at run 17: changed, removed or inserted outside holon
   run 23 DIFFERS: …
+  run 26 SENT the secret "stripe_key" to hooks.example.com, where its approval doesn't show it going
   run 30's state DOESN'T FOLLOW: it began from a state the run before it (run 29) didn't leave, nor a run beside it
 FAILED
 ```

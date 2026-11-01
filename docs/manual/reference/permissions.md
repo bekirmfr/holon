@@ -94,7 +94,8 @@ can change both columns ([Server configuration](server.md#the-policy)).
 
 A run past its time budget fails and performs nothing. An outbound call past a limit doesn't
 fail the run: it answers `{status: 0, error, message}`, with `error` one of `timeout`, `connect`,
-`dns`, `too_large`, `too_many_redirects`, `blocked_host`, `blocked_redirect` (a redirect to
+`dns`, `too_large`, `too_many_redirects`, `blocked_host`, `blocked_secret` (it holds a secret's value bound for a
+host the flow's approval doesn't show it going to), `blocked_redirect` (a redirect to
 another host that would resend the body), `blocked_address`, `blocked_scheme`,
 `revoked`, and a few more. A js holon's budget is part of its manifest:
 

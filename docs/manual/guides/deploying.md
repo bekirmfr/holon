@@ -103,6 +103,10 @@ body, as it is or computed from it, is listed with the hosts it is sent to: "rea
 (the hosts are, and the graph fixes which secret goes to which before the flow runs); it is said
 there so you see it when you approve, and when you update a flow whose version moves a key to
 another host. `holon check`, `holon deploy` and the editor's hover on `secret.name` say the same.
+The host holds a run to it: a request that holds a secret's value bound for a host the secret
+isn't shown going to (a key a service echoed back, passed on elsewhere) isn't sent, and answers
+`{status: 0, error: "blocked_secret", message}` naming the secret. `holon verify` checks it from
+an export (see [Checking runs](checking-runs.md)).
 
 Until a secret is set, the nodes that read it have no value, and what depends on them doesn't
 run.

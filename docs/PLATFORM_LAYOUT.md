@@ -396,7 +396,10 @@ only the editor.
   the graph, or its value found in the answer) is answered 500. Where each secret is sent is
   derived too (`taint::sent_secrets`: the hosts of the requests it reaches) and said beside its
   `SecretRead` in the approval, `holon check` and the editor; it isn't an item of its own, since
-  the hosts are, and the graph fixes the pairs before a run. A credential a call answers with to a request that held a secret (an
+  the hosts are, and the graph fixes the pairs before a run. A request holding a secret's value
+  bound for a host its secret isn't shown going to (a value the graph can't follow: echoed back by
+  a call, or come in from outside) isn't sent (`blocked_secret`, `folders::SecretSends`), and
+  `holon verify` checks every request that carried one against the unit. A credential a call answers with to a request that held a secret (an
   OAuth exchange's `access_token`, `refresh_token`, `id_token`, …: `ANSWER_FIELDS` in
   `secrets.rs`) is redacted by its value as `‹token:answer access_token #a1b2c3d4›` and refused
   the writes a secret is, rather than treating every answer to such a call as computed from the
